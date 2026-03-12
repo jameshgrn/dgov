@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
 import tempfile
 import time
@@ -614,6 +615,8 @@ def create_worker_pane(
     # 5b. Inject env vars
     if env_vars:
         for key, val in env_vars.items():
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                raise ValueError(f"Invalid environment variable name: {key!r}")
             tmux.send_command(pane_id, f"export {key}={val!r}")
 
     # 6. Trigger worktree_created hook
@@ -682,7 +685,7 @@ def create_worker_pane(
                 extra_flags=extra_flags,
             )
             # Wrap with done signal
-            wrapped_cmd = f"{base_cmd}; touch {done_signal}"
+            wrapped_cmd = f"{base_cmd}; touch {shlex.quote(done_signal)}"
             tmux.send_command(pane_id, wrapped_cmd)
             if agent_def.send_keys_ready_delay_ms > 0:
                 time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
@@ -699,7 +702,7 @@ def create_worker_pane(
                 extra_flags=extra_flags,
             )
             # Wrap with done signal: when agent exits, touch the file
-            wrapped_cmd = f"{launch_cmd}; touch {done_signal}"
+            wrapped_cmd = f"{launch_cmd}; touch {shlex.quote(done_signal)}"
             tmux.send_command(pane_id, wrapped_cmd)
 
     # 9b. Set tmux pane title
@@ -738,14 +741,11 @@ def _full_cleanup(
 
     Returns {"cleaned": True, "skipped_worktree": bool}.
     """
-    # 1. Remove from dgov state
-    _remove_pane(session_root, slug)
-
-    # 2. Delete done signal
+    # 1. Delete done signal
     done_path = Path(session_root) / _STATE_DIR / "done" / slug
     done_path.unlink(missing_ok=True)
 
-    # 4. Kill tmux pane
+    # 2. Kill tmux pane
     pane_id = pane_record.get("pane_id")
     if pane_id:
         tmux.kill_pane(pane_id)
@@ -753,7 +753,7 @@ def _full_cleanup(
             time.sleep(0.2)
             tmux.kill_pane(pane_id)
 
-    # 5. Remove worktree + branch
+    # 3. Remove worktree + branch
     skipped_worktree = False
     if remove_worktree and pane_record.get("owns_worktree", True):
         wt = pane_record.get("worktree_path")
@@ -771,6 +771,10 @@ def _full_cleanup(
             _remove_worktree(project_root, wt, branch)
 
     tmux.select_layout("tiled")
+
+    # 4. Remove from dgov state (after tmux kill and worktree removal)
+    _remove_pane(session_root, slug)
+
     return {"cleaned": True, "skipped_worktree": skipped_worktree}
 
 
@@ -1630,19 +1634,22 @@ def escalate_worker_pane(
 
     original_agent = target.get("agent", "unknown")
 
-    # Close the old pane
-    close_worker_pane(project_root, slug, session_root=session_root)
-
-    # Relaunch with target agent
+    # Create the new pane first, then close the old one
     new_slug = f"{slug}-esc"
-    new_pane = create_worker_pane(
-        project_root=project_root,
-        prompt=original_prompt,
-        agent=target_agent,
-        permission_mode=permission_mode,
-        slug=new_slug,
-        session_root=session_root,
-    )
+    try:
+        new_pane = create_worker_pane(
+            project_root=project_root,
+            prompt=original_prompt,
+            agent=target_agent,
+            permission_mode=permission_mode,
+            slug=new_slug,
+            session_root=session_root,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Close the old pane only after new pane is created successfully
+    close_worker_pane(project_root, slug, session_root=session_root)
 
     return {
         "escalated": True,
