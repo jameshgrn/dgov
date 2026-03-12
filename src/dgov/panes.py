@@ -47,6 +47,19 @@ _PROTECTED_FILES = {"CLAUDE.md", "CLAUDE.md.full", "THEORY.md", "ARCH-NOTES.md",
 _STATE_FILE = "state.json"
 
 
+def _build_pane_title(slug: str, project_root: str) -> str:
+    """Build pane title matching dmux's buildWorktreePaneTitle format.
+
+    Format: ``slug@project_name-hash`` where *hash* is the first 4 hex
+    chars of the MD5 digest of *project_root*.
+    """
+    import hashlib
+
+    project_name = os.path.basename(project_root)
+    hash_prefix = hashlib.md5(project_root.encode()).hexdigest()[:4]
+    return f"{slug}@{project_name}-{hash_prefix}"
+
+
 def _state_path(session_root: str) -> Path:
     return Path(session_root) / _STATE_DIR / _STATE_FILE
 
