@@ -567,12 +567,14 @@ def create_worker_pane(
             raise RuntimeError("SSH tunnel to river is down -- run the tunnel first")
 
     # 2. Split tmux pane
+    tmux.setup_pane_borders()
     pane_id = tmux.split_pane(cwd=worktree_path)
 
     # 3. Lock pane title (prevent agent/tmux from overwriting)
     tmux._run(["set-option", "-p", "-t", pane_id, "allow-rename", "off"])
     tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
-    tmux.set_title(pane_id, slug)
+    title = _build_pane_title(slug, project_root)
+    tmux.set_title(pane_id, title)
 
     # 4. Tidy layout
     tmux.select_layout("tiled")
@@ -667,7 +669,8 @@ def create_worker_pane(
             tmux.send_command(pane_id, wrapped_cmd)
 
     # 9b. Set tmux pane title
-    tmux.set_title(pane_id, slug)
+    title = _build_pane_title(slug, project_root)
+    tmux.set_title(pane_id, title)
 
     # 10. Build pane record and save to state
     pane = WorkerPane(
