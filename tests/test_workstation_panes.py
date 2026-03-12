@@ -25,7 +25,6 @@ from dgov.panes import (
     classify_task,
     list_worker_panes,
     prune_stale_panes,
-    read_tdd_status,
 )
 
 pytestmark = pytest.mark.unit
@@ -212,37 +211,6 @@ class TestAllPanes:
 
     def test_empty(self, tmp_path: Path) -> None:
         assert _all_panes(str(tmp_path)) == []
-
-
-# ---------------------------------------------------------------------------
-# TDD status
-# ---------------------------------------------------------------------------
-
-
-class TestReadTddStatus:
-    def test_missing_returns_none(self, tmp_path: Path) -> None:
-        assert read_tdd_status(str(tmp_path), "test-slug") is None
-
-    def test_valid_file(self, tmp_path: Path) -> None:
-        tdd_dir = tmp_path / ".workstation" / "tdd"
-        tdd_dir.mkdir(parents=True)
-        (tdd_dir / "test-slug.json").write_text(
-            json.dumps(
-                {
-                    "step": 3,
-                    "step_name": "implement",
-                    "iteration": 0,
-                    "max_iterations": 0,
-                    "tests_passed": 5,
-                    "tests_failed": 0,
-                    "tests_total": 5,
-                    "elapsed_s": 10.0,
-                }
-            )
-        )
-        result = read_tdd_status(str(tmp_path), "test-slug")
-        assert result is not None
-        assert result.step == 3
 
 
 # ---------------------------------------------------------------------------
@@ -1035,50 +1003,11 @@ class TestQwen4bRequest:
 
 
 # ---------------------------------------------------------------------------
-# _generate_commit_message
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateCommitMessage:
-    def test_no_diff_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _generate_commit_message
-
-        def fake_run(cmd, **kw):
-            m = MagicMock()
-            m.returncode = 0
-            m.stdout = ""
-            return m
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        assert _generate_commit_message("/wt", "slug", "prompt") is None
-
-    def test_exception_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _generate_commit_message
-
-        def fake_run(cmd, **kw):
-            m = MagicMock()
-            m.returncode = 0
-            m.stdout = "some diff data"
-            return m
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        monkeypatch.setattr("dgov._llm_compat.call_qwen", MagicMock(side_effect=RuntimeError))
-        monkeypatch.setattr("dgov._llm_compat.pick_gpu", lambda name: {"url": "x", "ssh_host": ""})
-        assert _generate_commit_message("/wt", "slug", "prompt") is None
-
-
-# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 
 class TestPaneConstants:
-    def test_tdd_protocol_prompt_content(self) -> None:
-        from dgov.panes import _TDD_WORKSTATION_PROMPT
-
-        assert "TDD Protocol" in _TDD_WORKSTATION_PROMPT
-        assert "DISTRIBUTARY_TDD_STATUS_FILE" in _TDD_WORKSTATION_PROMPT
-
     def test_state_dir(self) -> None:
         from dgov.panes import _STATE_DIR
 

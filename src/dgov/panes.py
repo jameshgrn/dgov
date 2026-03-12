@@ -19,7 +19,7 @@ from pathlib import Path
 
 from dgov import tmux
 from dgov.agents import AGENT_REGISTRY, build_launch_command
-from dgov.models import MergeResult, TddProgress
+from dgov.models import MergeResult
 
 logger = logging.getLogger(__name__)
 
@@ -110,38 +110,6 @@ def _get_pane(session_root: str, slug: str) -> dict | None:
 
 def _all_panes(session_root: str) -> list[dict]:
     return _read_state(session_root).get("panes", [])
-
-
-# -- TDD status helpers --
-
-_TDD_DIR = "tdd"
-
-# Shared TDD protocol text injected into workstation-spawned worker prompts.
-# Mirrors _TDD_PROTOCOL_PROMPT from distributary.scheduler but is self-contained
-# so workstation doesn't import the scheduler module.
-_TDD_WORKSTATION_PROMPT = """\
-
-## TDD Protocol (mandatory)
-
-After EACH step, write a JSON status update to $DISTRIBUTARY_TDD_STATUS_FILE:
-{"step": N, "step_name": "...", "iteration": I, "max_iterations": M, \
-"tests_passed": P, "tests_failed": F, "tests_total": T, "elapsed_s": E, \
-"escalation_needed": false, "failing_tests": []}
-
-1. READ — read the task and all relevant source files.
-2. WRITE TESTS — write failing tests first (red phase).
-3. IMPLEMENT — minimum code to pass the tests.
-4. TEST LOOP (max 5 iters) — fix code, re-run. Set escalation_needed=true after 5 fails.
-5. FULL SUITE — run the full test suite (override partial-run rules).
-6. REGRESSION FIX (max 3 iters) — fix regressions. Set escalation_needed=true after 3 fails.
-7. COMPLETE — all tests pass. Commit your work.
-"""
-
-
-def read_tdd_status(session_root: str, slug: str) -> TddProgress | None:
-    """Read TDD progress JSON for *slug*. Returns None if missing/invalid."""
-    path = Path(session_root) / _STATE_DIR / _TDD_DIR / f"{slug}.json"
-    return TddProgress.from_file(path)
 
 
 # -- Qwen 4B helper (tunnel-aware) --
@@ -658,13 +626,6 @@ def create_worker_pane(
         if protected_warning.strip() not in rewritten_prompt:
             rewritten_prompt += protected_warning
 
-    # 7b. Inject TDD protocol prompt and env var
-    tdd_dir = Path(session_root) / _STATE_DIR / _TDD_DIR
-    tdd_dir.mkdir(parents=True, exist_ok=True)
-    tdd_status_file = str(tdd_dir / f"{slug}.json")
-    tmux.send_command(pane_id, f"export DISTRIBUTARY_TDD_STATUS_FILE={tdd_status_file!r}")
-    rewritten_prompt += _TDD_WORKSTATION_PROMPT
-
     # 8. Build done-signal path
     done_signal = str(Path(session_root) / _STATE_DIR / "done" / slug)
     Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
@@ -864,17 +825,6 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
             "branch": p.get("branch_name"),
             "prompt": p.get("prompt", "")[:80],
         }
-        # Enrich with TDD progress if available
-        tdd = read_tdd_status(session_root, slug)
-        if tdd:
-            entry["tdd_step"] = tdd.step
-            entry["tdd_step_name"] = tdd.step_name
-            entry["tdd_iteration"] = tdd.iteration
-            entry["tdd_tests_passed"] = tdd.tests_passed
-            entry["tdd_tests_failed"] = tdd.tests_failed
-            entry["tdd_tests_total"] = tdd.tests_total
-            entry["tdd_elapsed_s"] = tdd.elapsed_s
-            entry["tdd_escalation_needed"] = tdd.escalation_needed
         result.append(entry)
 
     # Deduplicate by slug: prefer alive entry, then latest (last in list)
@@ -955,52 +905,6 @@ def _detect_conflicts(project_root: str, branch_name: str) -> list[str]:
             if parts:
                 conflicts.append(parts[-1])
     return conflicts
-
-
-def _generate_commit_message(worktree_path: str, slug: str, prompt: str) -> str | None:
-    """Ask the 4B model for a commit message based on the staged diff.
-
-    Returns a single-line commit subject (≤72 chars) or None on any failure.
-    """
-    from dgov._llm_compat import call_qwen, pick_gpu
-
-    stat = subprocess.run(
-        ["git", "-C", worktree_path, "diff", "--cached", "--stat"],
-        capture_output=True,
-        text=True,
-    )
-    diff = subprocess.run(
-        ["git", "-C", worktree_path, "diff", "--cached"],
-        capture_output=True,
-        text=True,
-    )
-    diff_text = diff.stdout[:4000] if diff.stdout else ""
-    if not diff_text:
-        return None
-
-    user_content = (
-        f"Write a single-line git commit message (imperative mood, ≤72 chars) "
-        f"for this change.\n\nTask: {prompt}\n\n"
-        f"Files changed:\n{stat.stdout}\n\nDiff:\n{diff_text}"
-    )
-    try:
-        msg = call_qwen(
-            user_content,
-            **pick_gpu("river-4b"),
-            preset="nothink-general",
-            max_tokens=256,
-            timeout=10,
-        )
-        # Strip <think> tags Qwen sometimes emits
-        msg = re.sub(r"<think>.*?</think>", "", msg, flags=re.DOTALL).strip()
-        # Take first non-empty line, cap at 72 chars
-        for line in msg.splitlines():
-            line = line.strip().strip('"').strip("'")
-            if line:
-                return line[:72]
-    except Exception:
-        logger.warning("Failed to generate commit message via LLM", exc_info=True)
-    return None
 
 
 def _pick_resolver_agent() -> str:
@@ -1176,12 +1080,9 @@ def _commit_worktree(pane_record: dict) -> dict:
         check=True,
     )
 
-    # Generate commit message via local 4B model, fall back to static
     prompt = pane_record.get("prompt", "worker changes")
     slug = pane_record.get("slug", "worker")
-    subject = _generate_commit_message(wt, slug, prompt)
-    if not subject:
-        subject = prompt.split("\n")[0][:72].rstrip(".")
+    subject = prompt.split("\n")[0][:72].rstrip(".")
 
     subprocess.run(
         ["git", "-C", wt, "commit", "-m", f"{subject}\n\nWorker: {slug}"],
@@ -1653,60 +1554,3 @@ def escalate_worker_pane(
         "pane_id": new_pane.pane_id,
         "worktree": new_pane.worktree_path,
     }
-
-
-# -- TDD auto-debugger --
-
-
-def spawn_debugger_pane(
-    project_root: str,
-    slug: str,
-    session_root: str | None = None,
-) -> WorkerPane:
-    """Spawn a debugger pane for a worker that breached TDD max iterations.
-
-    Reads TDD status, git diff, and worker output to construct a diagnostic
-    prompt, then launches a claude agent to fix the issue.
-    """
-    session_root = os.path.abspath(session_root or project_root)
-    tdd = read_tdd_status(session_root, slug)
-    pane_record = _get_pane(session_root, slug)
-
-    # Gather context for the debugger
-    failing = ", ".join(tdd.failing_tests) if tdd and tdd.failing_tests else "(unknown)"
-    step_info = f"step {tdd.step} ({tdd.step_name})" if tdd else "unknown step"
-
-    # Git diff of worker's changes
-    diff_text = ""
-    if pane_record:
-        branch = pane_record.get("branch_name", "")
-        base_sha = pane_record.get("base_sha", "")
-        if branch and base_sha:
-            diff_result = subprocess.run(
-                ["git", "-C", project_root, "diff", f"{base_sha}..{branch}"],
-                capture_output=True,
-                text=True,
-            )
-            diff_text = diff_result.stdout[:4000] if diff_result.stdout else ""
-
-    # Last N lines of worker output
-    output_tail = capture_worker_output(project_root, slug, lines=50, session_root=session_root)
-
-    debugger_prompt = (
-        f"A worker agent failed the TDD protocol at {step_info}.\nFailing tests: {failing}\n\n"
-    )
-    if diff_text:
-        debugger_prompt += f"Changes made by the worker:\n```\n{diff_text}\n```\n\n"
-    if output_tail:
-        debugger_prompt += f"Last worker output:\n```\n{output_tail}\n```\n\n"
-    debugger_prompt += "Diagnose the root cause and fix the failing tests."
-
-    dbg_slug = f"{slug}-dbg"
-    return create_worker_pane(
-        project_root=project_root,
-        prompt=debugger_prompt,
-        agent="claude",
-        slug=dbg_slug,
-        session_root=session_root,
-        existing_worktree=pane_record.get("worktree_path") if pane_record else None,
-    )
