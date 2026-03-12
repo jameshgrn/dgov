@@ -6,6 +6,7 @@ fixable failures (tunnel down, kerberos expired, stale worktrees, deps).
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass, field
@@ -454,6 +455,36 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
     )
 
 
+def check_gpu_concurrency(
+    project_root: str, agent: str, session_root: str | None = None
+) -> CheckResult:
+    """Check if spawning another pi worker would exceed GPU limits."""
+    if agent != "pi":
+        return CheckResult(
+            name="gpu_concurrency",
+            passed=True,
+            critical=False,
+            message="Not a pi worker, GPU check skipped",
+        )
+    from dgov.panes import _MAX_CONCURRENT_PI_WORKERS, _count_active_pi_workers
+
+    session_root_resolved = os.path.abspath(session_root or project_root)
+    active = _count_active_pi_workers(session_root_resolved)
+    if active >= _MAX_CONCURRENT_PI_WORKERS:
+        return CheckResult(
+            name="gpu_concurrency",
+            passed=False,
+            critical=True,
+            message=f"{active} pi workers running (max {_MAX_CONCURRENT_PI_WORKERS})",
+        )
+    return CheckResult(
+        name="gpu_concurrency",
+        passed=True,
+        critical=True,
+        message=f"{active} pi workers running (max {_MAX_CONCURRENT_PI_WORKERS})",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -517,6 +548,8 @@ def run_preflight(
     if agent in _KERBEROS_AGENTS:
         checks.append(check_kerberos())
 
+    checks.append(check_gpu_concurrency(project_root, agent, session_root))
+
     checks.append(check_deps())
     checks.append(check_stale_worktrees(project_root))
     checks.append(check_file_locks(project_root, touches or []))
@@ -562,7 +595,6 @@ def _fix_tunnel() -> bool:
 
 def _fix_kerberos() -> bool:
     """Attempt to renew Kerberos ticket via kinit."""
-    import os
 
     pw = os.environ.get("RIVER_PW")
     if not pw:
