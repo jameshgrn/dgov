@@ -643,40 +643,6 @@ def rebase(project_root, onto):
         sys.exit(1)
 
 
-@cli.command("batch")
-@click.argument("spec_file", type=click.Path(exists=True))
-@click.option(
-    "--project-root",
-    "-r",
-    default=None,
-    help="Override project_root from spec file",
-)
-@SESSION_ROOT_OPTION
-@click.option("--dry-run", is_flag=True, help="Show computed tiers without executing")
-def batch_cmd(spec_file, project_root, session_root, dry_run):
-    """Execute a batch of tasks with DAG-ordered parallelism.
-
-    Reads a JSON spec file with tasks and their file-touch declarations.
-    Tasks touching disjoint files run in parallel; overlapping files get
-    serialized into separate tiers.
-    """
-    from dgov.batch import load_batch, run_batch
-
-    spec_root, tasks = load_batch(spec_file)
-    root = project_root or spec_root
-
-    result = run_batch(
-        project_root=root,
-        tasks=tasks,
-        session_root=session_root,
-        dry_run=dry_run,
-    )
-    click.echo(json.dumps(result, indent=2))
-
-    if not dry_run and result.get("failed"):
-        sys.exit(1)
-
-
 @cli.command("agents")
 def list_agents():
     """List available agents and which are installed."""
