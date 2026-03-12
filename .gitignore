@@ -1,0 +1,9 @@
+.dmux/
+.workstation/
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+.ruff_cache/
+HANDOVER.md
+.napkin.md
