@@ -307,7 +307,7 @@ def test_check_stale_worktrees_none(monkeypatch: pytest.MonkeyPatch, tmp_path) -
 
 def test_check_stale_worktrees_found(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     resolved = str(tmp_path.resolve())
-    stale_wt = f"{resolved}/.workstation/worktrees/old-task"
+    stale_wt = f"{resolved}/.dgov/worktrees/old-task"
 
     def fake_run(cmd, **kwargs):
         mock = MagicMock()
@@ -768,7 +768,7 @@ class TestCheckStaleWorktreesEdgeCases:
 
     def test_all_tracked(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         resolved = str(tmp_path.resolve())
-        wt = f"{resolved}/.workstation/worktrees/task-1"
+        wt = f"{resolved}/.dgov/worktrees/task-1"
 
         def fake_run(cmd, **kwargs):
             mock = MagicMock()

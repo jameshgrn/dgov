@@ -16,7 +16,7 @@ SESSION_ROOT_OPTION = click.option(
     "--session-root",
     "-S",
     default=None,
-    help="Session root (where .workstation/ lives). Defaults to --project-root.",
+    help="Session root (where .dgov/ lives). Defaults to --project-root.",
 )
 
 _DMUX_PACKAGE_JSON = Path.home() / ".npm-global" / "lib" / "node_modules" / "dmux" / "package.json"
@@ -266,7 +266,12 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
     import time as _time
     from pathlib import Path
 
-    from dgov.panes import _STATE_DIR, _get_pane, _is_done, capture_worker_output
+    from dgov.panes import (
+        _STATE_DIR,
+        _get_pane,
+        _is_done,
+        capture_worker_output,
+    )
 
     session_root = os.path.abspath(session_root or project_root)
     pane_record = _get_pane(session_root, slug)
@@ -301,6 +306,9 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
 
         elapsed = _time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
+            from dgov.panes import _update_pane_state
+
+            _update_pane_state(session_root, slug, "timed_out")
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
             timeout_result = {
                 "error": f"Timeout after {timeout}s",

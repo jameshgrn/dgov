@@ -1,7 +1,7 @@
 """Core pane lifecycle: create, close, list, merge.
 
 Each worker pane = git worktree + tmux pane + agent CLI.
-State tracked in .workstation/state.json (NOT .dmux/dmux.config.json —
+State tracked in .dgov/state.json (NOT .dmux/dmux.config.json —
 writing there causes dmux's ConfigWatcher to fight for pane control).
 """
 
@@ -27,6 +27,31 @@ logger = logging.getLogger(__name__)
 # -- Pane record --
 
 
+# Canonical pane states — no others allowed
+PANE_STATES = frozenset(
+    {
+        "active",
+        "done",
+        "reviewed_pass",
+        "reviewed_fail",
+        "merged",
+        "merge_conflict",
+        "timed_out",
+        "escalated",
+        "superseded",
+        "closed",
+        "abandoned",
+    }
+)
+
+
+def _validate_state(state: str) -> str:
+    """Validate and return a canonical pane state. Raises ValueError for unknown states."""
+    if state not in PANE_STATES:
+        raise ValueError(f"Unknown pane state: {state!r}. Valid: {sorted(PANE_STATES)}")
+    return state
+
+
 @dataclass
 class WorkerPane:
     slug: str
@@ -39,11 +64,15 @@ class WorkerPane:
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
     base_sha: str = ""
+    state: str = "active"
+
+    def __post_init__(self) -> None:
+        _validate_state(self.state)
 
 
 # -- State file helpers --
 
-_STATE_DIR = ".workstation"
+_STATE_DIR = ".dgov"
 _PROTECTED_FILES = {"CLAUDE.md", "CLAUDE.md.full", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
 _STATE_FILE = "state.json"
 _MAX_CONCURRENT_PI_WORKERS = 2
@@ -112,6 +141,17 @@ def _get_pane(session_root: str, slug: str) -> dict | None:
 
 def _all_panes(session_root: str) -> list[dict]:
     return _read_state(session_root).get("panes", [])
+
+
+def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
+    """Update the state field of a pane record."""
+    _validate_state(new_state)
+    state = _read_state(session_root)
+    for p in state["panes"]:
+        if p.get("slug") == slug:
+            p["state"] = new_state
+            break
+    _write_state(session_root, state)
 
 
 def _count_active_pi_workers(session_root: str) -> int:
@@ -525,7 +565,7 @@ def create_worker_pane(
 
     Args:
         project_root: Git repo for the worktree (where the work happens).
-        session_root: Where .workstation/state.json lives. Defaults to project_root.
+        session_root: Where .dgov/state.json lives. Defaults to project_root.
         existing_worktree: Use this path as CWD instead of creating a new worktree.
             Useful for conflict resolution where we operate on the main repo directly.
     """
@@ -537,7 +577,7 @@ def create_worker_pane(
     worktree_path = (
         existing_worktree
         if existing_worktree
-        else str(Path(project_root) / ".workstation" / "worktrees" / slug)
+        else str(Path(project_root) / ".dgov" / "worktrees" / slug)
     )
 
     # 0. Capture base SHA (HEAD of project_root before worktree creation)
@@ -776,6 +816,7 @@ def close_worker_pane(project_root: str, slug: str, session_root: str | None = N
     if not target:
         return False
 
+    _update_pane_state(session_root, slug, "closed")
     _full_cleanup(
         project_root,
         session_root,
@@ -805,10 +846,11 @@ def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> b
     2. Branch has new commits beyond base_sha (worker committed work).
     3. Pane is no longer alive (process died / was killed).
 
-    Any one signal returning True means done.
+    Any one signal returning True means done. Also updates pane state to "done".
     """
     # Signal 1: done-signal file
     if Path(session_root, _STATE_DIR, "done", slug).exists():
+        _update_pane_state(session_root, slug, "done")
         return True
 
     if pane_record is None:
@@ -820,11 +862,13 @@ def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> b
     base_sha = pane_record.get("base_sha", "")
     if project_root and branch_name and base_sha:
         if _has_new_commits(project_root, branch_name, base_sha):
+            _update_pane_state(session_root, slug, "done")
             return True
 
     # Signal 3: pane no longer alive
     pane_id = pane_record.get("pane_id", "")
     if pane_id and not tmux.pane_exists(pane_id):
+        _update_pane_state(session_root, slug, "done")
         return True
 
     return False
@@ -852,6 +896,7 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
             "pane_id": pane_id,
             "alive": alive,
             "done": done,
+            "state": p.get("state", "active"),
             "current_command": cmd,
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),
@@ -1240,6 +1285,7 @@ def merge_worker_pane(
     merge = _plumbing_merge(pane_project_root, branch_name)
 
     if merge.success:
+        _update_pane_state(session_root, slug, "merged")
         _full_cleanup(pane_project_root, session_root, slug, target)
 
         # Post-merge hook: lint, verify protected files, etc.
@@ -1288,11 +1334,13 @@ def merge_worker_pane(
     conflicts = _detect_conflicts(pane_project_root, branch_name)
 
     if conflicts:
+        _update_pane_state(session_root, slug, "merge_conflict")
         if resolve == "agent":
             resolved = _resolve_conflicts_with_agent(
                 pane_project_root, branch_name, target, session_root
             )
             if resolved:
+                _update_pane_state(session_root, slug, "merged")
                 return {"merged": slug, "branch": branch_name, "resolved_by": "agent"}
             return {
                 "slug": slug,
@@ -1329,7 +1377,7 @@ def merge_worker_pane_with_close(
     Args:
         project_root: Git repo root (where worktree is).
         slug: Pane slug to merge.
-        session_root: Where .workstation/state.json lives. Defaults to project_root.
+        session_root: Where .dgov/state.json lives. Defaults to project_root.
         resolve: Conflict resolution mode ("agent", "manual").
 
     Returns:
@@ -1577,7 +1625,8 @@ def escalate_worker_pane(
     except Exception as e:
         return {"error": str(e)}
 
-    # Close the old pane only after new pane is created successfully
+    # Mark old pane as escalated then close
+    _update_pane_state(session_root, slug, "escalated")
     close_worker_pane(project_root, slug, session_root=session_root)
 
     return {

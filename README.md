@@ -14,7 +14,7 @@ Requires Python >= 3.12, a running tmux session, and dmux installed globally.
 
 **Governor** runs on `main` in the root repo. It never writes code directly -- it dispatches workers.
 
-**Workers** run in git worktrees under `.workstation/worktrees/<slug>/`. Each worker gets a tmux pane, an agent CLI, and a branch named after its slug. Workers commit their changes and exit; the governor merges results back.
+**Workers** run in git worktrees under `.dgov/worktrees/<slug>/`. Each worker gets a tmux pane, an agent CLI, and a branch named after its slug. Workers commit their changes and exit; the governor merges results back.
 
 dgov enforces this boundary: it refuses to run from inside a worktree or on any branch other than `main`.
 
@@ -198,7 +198,7 @@ Every worker prompt gets the TDD protocol appended. Workers write structured JSO
 
 ## State
 
-All state lives in `.workstation/state.json` (not dmux's config). Pane records track slug, agent, pane ID, worktree path, branch, base SHA, and creation time.
+All state lives in `.dgov/state.json` (not dmux's config). Pane records track slug, agent, pane ID, worktree path, branch, base SHA, and creation time.
 
 ```
 dgov status            # panes + tunnel health + kerberos status
