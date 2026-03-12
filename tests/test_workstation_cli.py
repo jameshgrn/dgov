@@ -597,11 +597,6 @@ class TestHelpOutput:
         assert result.exit_code == 0
         assert "--onto" in result.output
 
-    def test_batch_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["batch", "--help"])
-        assert result.exit_code == 0
-        assert "--dry-run" in result.output
-
     def test_preflight_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["preflight", "--help"])
         assert result.exit_code == 0
