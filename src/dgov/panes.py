@@ -46,6 +46,7 @@ class WorkerPane:
 _STATE_DIR = ".workstation"
 _PROTECTED_FILES = {"CLAUDE.md", "CLAUDE.md.full", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
 _STATE_FILE = "state.json"
+_MAX_CONCURRENT_PI_WORKERS = 2
 
 
 def _build_pane_title(slug: str, project_root: str) -> str:
@@ -111,6 +112,18 @@ def _get_pane(session_root: str, slug: str) -> dict | None:
 
 def _all_panes(session_root: str) -> list[dict]:
     return _read_state(session_root).get("panes", [])
+
+
+def _count_active_pi_workers(session_root: str) -> int:
+    """Count how many pi workers are currently alive."""
+    panes = _all_panes(session_root)
+    count = 0
+    for p in panes:
+        if p.get("agent") == "pi":
+            pane_id = p.get("pane_id", "")
+            if pane_id and tmux.pane_exists(pane_id):
+                count += 1
+    return count
 
 
 # -- Qwen 4B helper (tunnel-aware) --
@@ -565,6 +578,18 @@ def create_worker_pane(
             if owns_worktree:
                 _remove_worktree(project_root, worktree_path, branch_name)
             raise RuntimeError("SSH tunnel to river is down -- run the tunnel first")
+
+    # 1c. GPU concurrency guard for pi workers
+    if agent == "pi":
+        active_pi = _count_active_pi_workers(session_root)
+        if active_pi >= _MAX_CONCURRENT_PI_WORKERS:
+            if owns_worktree:
+                _remove_worktree(project_root, worktree_path, branch_name)
+            raise RuntimeError(
+                f"GPU concurrency limit: {active_pi} pi workers already running "
+                f"(max {_MAX_CONCURRENT_PI_WORKERS}). "
+                f"Wait for one to finish or use a different agent."
+            )
 
     # 2. Split tmux pane
     pane_id = tmux.split_pane(cwd=worktree_path)

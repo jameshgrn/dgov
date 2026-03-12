@@ -382,6 +382,7 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "ok"),
             "check_kerberos": CheckResult("kerberos", True, True, "ok"),
+            "check_gpu_concurrency": CheckResult("gpu_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
@@ -389,7 +390,7 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     report = run_preflight("/tmp/repo", agent="pi")
     assert report.passed is True
-    assert len(report.checks) == 9
+    assert len(report.checks) == 10
 
 
 def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -402,6 +403,7 @@ def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "ok"),
             "check_kerberos": CheckResult("kerberos", True, True, "ok"),
+            "check_gpu_concurrency": CheckResult("gpu_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
@@ -419,6 +421,7 @@ def test_run_preflight_skips_tunnel_for_claude(monkeypatch: pytest.MonkeyPatch) 
             "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_gpu_concurrency": CheckResult("gpu_concurrency", True, False, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
@@ -994,6 +997,7 @@ class TestRunPreflightEdgeCases:
                 "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
                 "check_git_clean": CheckResult("git_clean", True, True, "ok"),
                 "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+                "check_gpu_concurrency": CheckResult("gpu_concurrency", True, False, "ok"),
                 "check_deps": CheckResult("deps", True, False, "ok"),
                 "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
                 "check_file_locks": CheckResult("file_locks", True, True, "ok"),
@@ -1014,6 +1018,7 @@ class TestRunPreflightEdgeCases:
                 "check_git_branch": CheckResult("git_branch", False, False, "wrong branch"),
                 "check_tunnel": CheckResult("tunnel", True, True, "ok"),
                 "check_kerberos": CheckResult("kerberos", True, True, "ok"),
+                "check_gpu_concurrency": CheckResult("gpu_concurrency", True, True, "ok"),
                 "check_deps": CheckResult("deps", False, False, "out of sync"),
                 "check_stale_worktrees": CheckResult("stale_worktrees", False, False, "stale"),
                 "check_file_locks": CheckResult("file_locks", True, True, "ok"),
