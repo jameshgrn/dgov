@@ -24,7 +24,7 @@ wheels = [
 
 [[package]]
 name = "dmux-governor"
-version = "0.1.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

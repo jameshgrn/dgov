@@ -27,6 +27,9 @@ def _check_governor_context() -> None:
 
     Raises click.UsageError if either check fails.
     """
+    if os.environ.get("DGOV_SKIP_GOVERNOR_CHECK") == "1":
+        return
+
     try:
         git_dir = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
@@ -689,19 +692,31 @@ def _check_dmux_compat(version: str, spec: str) -> bool:
 
     Supports ==X.Y.Z (exact), >=X.Y.Z, <X.Y.Z, and comma-separated combos.
     """
-    parts = [int(x) for x in version.split(".")[:3]]
+    try:
+        parts = [int(x) for x in version.split(".")[:3]]
+    except ValueError:
+        return False
     for constraint in spec.split(","):
         constraint = constraint.strip()
         if constraint.startswith("=="):
-            target = [int(x) for x in constraint[2:].split(".")[:3]]
+            try:
+                target = [int(x) for x in constraint[2:].split(".")[:3]]
+            except ValueError:
+                return False
             if parts != target:
                 return False
         elif constraint.startswith(">="):
-            target = [int(x) for x in constraint[2:].split(".")[:3]]
+            try:
+                target = [int(x) for x in constraint[2:].split(".")[:3]]
+            except ValueError:
+                return False
             if parts < target:
                 return False
         elif constraint.startswith("<"):
-            target = [int(x) for x in constraint[1:].split(".")[:3]]
+            try:
+                target = [int(x) for x in constraint[1:].split(".")[:3]]
+            except ValueError:
+                return False
             if parts >= target:
                 return False
     return True
