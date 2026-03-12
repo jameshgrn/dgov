@@ -122,6 +122,26 @@ def list_panes() -> list[dict[str, str]]:
     return panes
 
 
+def setup_pane_borders(session_name: str | None = None) -> None:
+    """Set pane border styling to match dmux conventions (idempotent)."""
+    _run(["set-option", "-g", "pane-border-status", "top"], silent=True)
+    _run(
+        ["set-option", "-g", "pane-active-border-style", "fg=colour214"],
+        silent=True,
+    )
+    _run(["set-option", "-g", "pane-border-style", "fg=colour240"], silent=True)
+    _run(
+        ["set-option", "-g", "pane-border-format", " #{pane_title} "],
+        silent=True,
+    )
+
+
+def style_governor_pane(pane_id: str) -> None:
+    """Style the governor pane with default background and a [gov] title marker."""
+    _run(["select-pane", "-t", pane_id, "-P", "bg=default"], silent=True)
+    _run(["select-pane", "-t", pane_id, "-T", "[gov] main"], silent=True)
+
+
 def select_pane(pane_id: str) -> None:
     """Focus the given tmux pane."""
     _run(["select-pane", "-t", pane_id])
