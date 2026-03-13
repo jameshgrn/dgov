@@ -122,7 +122,7 @@ class TestLoadRegistry:
 
     def test_user_config_adds_agent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path)
-        user_config = tmp_path / ".config" / "dgov"
+        user_config = tmp_path / ".dgov"
         user_config.mkdir(parents=True)
         (user_config / "agents.toml").write_text(
             "[agents.aider]\n"
@@ -160,7 +160,7 @@ class TestLoadRegistry:
 
     def test_project_overrides_user(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path)
-        user_config = tmp_path / ".config" / "dgov"
+        user_config = tmp_path / ".dgov"
         user_config.mkdir(parents=True)
         (user_config / "agents.toml").write_text(
             '[agents.pi]\ncommand = "pi"\ntransport = "positional"\ncolor = 34\n'

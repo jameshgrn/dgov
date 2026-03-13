@@ -186,8 +186,8 @@ def load_registry(project_root: str | None = None) -> dict[str, AgentDef]:
     """
     registry = dict(_BUILTIN_AGENTS)
 
-    # User global: ~/.config/dgov/agents.toml
-    user_config = Path.home() / ".config" / "dgov" / "agents.toml"
+    # User global: ~/.dgov/agents.toml
+    user_config = Path.home() / ".dgov" / "agents.toml"
     for agent_id, table in _load_toml_file(user_config).items():
         table = dict(table)  # shallow copy so pops don't mutate cache
         if agent_id in registry:
