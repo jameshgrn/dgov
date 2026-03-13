@@ -561,16 +561,11 @@ def _trigger_hook(
     1. .dgov-hooks/ (version controlled, team hooks)
     2. .dgov/hooks/ (gitignored, local overrides)
     3. ~/.dgov/hooks/ (global user hooks)
-    4-6. Legacy .dmux-hooks/, .dmux/hooks/, ~/.dmux/hooks/ fallbacks
     """
     hook_dirs = [
         Path(project_root) / ".dgov-hooks",
         Path(project_root) / ".dgov" / "hooks",
         Path.home() / ".dgov" / "hooks",
-        # Legacy fallbacks
-        Path(project_root) / ".dmux-hooks",
-        Path(project_root) / ".dmux" / "hooks",
-        Path.home() / ".dmux" / "hooks",
     ]
     for hook_dir in hook_dirs:
         hook_path = hook_dir / hook_name
@@ -816,8 +811,8 @@ def _full_cleanup(
 ) -> dict:
     """Single cleanup function for all pane teardown paths.
 
-    Handles: kill tmux pane, remove from state, remove from dmux config,
-    delete done signal, remove git worktree + branch.
+    Handles: kill tmux pane, remove from state, delete done signal,
+    remove git worktree + branch.
 
     Returns {"cleaned": True, "skipped_worktree": bool}.
     """
