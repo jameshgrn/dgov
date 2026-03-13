@@ -60,6 +60,17 @@ from dgov.persistence import (  # noqa: F401
     _validate_state,
     _write_state,
 )
+from dgov.responder import (  # noqa: F401
+    BUILT_IN_RULES,
+    COOLDOWN_SECONDS,
+    ResponseRule,
+    auto_respond,
+    check_cooldown,
+    load_response_rules,
+    match_response,
+    record_cooldown,
+    reset_cooldowns,
+)
 from dgov.retry import (  # noqa: F401
     RetryPolicy,
     get_retry_policy,
@@ -202,6 +213,28 @@ def _build_pane_title(slug: str, project_root: str) -> str:
 
 
 # -- Freshness --
+
+
+def _count_auto_responses(session_root: str, slug: str) -> int:
+    """Count pane_auto_responded events for a slug from the event journal."""
+    import json as _json
+
+    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
+    if not events_path.exists():
+        return 0
+    count = 0
+    with open(events_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug:
+                count += 1
+    return count
 
 
 def _compute_freshness(project_root: str, pane_record: dict) -> dict:
@@ -792,6 +825,9 @@ def review_worker_pane(
 
     retry_count = _count_retries(session_root, slug)
 
+    # Count auto-responses from event journal
+    auto_respond_count = _count_auto_responses(session_root, slug)
+
     result = {
         "slug": slug,
         "branch": branch,
@@ -803,6 +839,7 @@ def review_worker_pane(
         "uncommitted": uncommitted,
         "files_changed": len(changed_files),
         "retry_count": retry_count,
+        "auto_responses": auto_respond_count,
         **freshness,
     }
     if issues:
