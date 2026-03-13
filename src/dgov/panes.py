@@ -66,6 +66,11 @@ from dgov.retry import (  # noqa: F401
     maybe_auto_retry,
     retry_context,
 )
+from dgov.review_fix import (  # noqa: F401
+    ReviewFinding,
+    parse_review_findings,
+    run_review_fix_pipeline,
+)
 from dgov.strategy import (  # noqa: F401
     _QWEN_4B_TIMEOUT,
     _QWEN_4B_URL,
