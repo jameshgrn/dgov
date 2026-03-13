@@ -20,6 +20,7 @@ from dgov.panes import (
     _read_state,
     _remove_pane,
     _state_path,
+    _structure_pi_prompt,
     _trigger_hook,
     _write_state,
     capture_worker_output,
@@ -2257,3 +2258,73 @@ class TestPaneTimeoutError:
         panes = [{"slug": "a", "agent": "pi"}, {"slug": "b", "agent": "claude"}]
         err = PaneTimeoutError("a", 60, "pi", pending_panes=panes)
         assert err.pending_panes == panes
+
+
+# ---------------------------------------------------------------------------
+# _structure_pi_prompt
+# ---------------------------------------------------------------------------
+
+
+class TestStructurePiPrompt:
+    def test_structure_pi_prompt_extracts_files(self) -> None:
+        prompt = "Add an htop shortcut to src/dgov/cli.py following the lazygit pattern"
+        structured = _structure_pi_prompt(prompt)
+        assert "1. Read src/dgov/cli.py" in structured
+        assert "2. Add an htop shortcut to src/dgov/cli.py" in structured
+        assert "3. Run: uv run ruff check src/dgov/cli.py" in structured
+        assert "4. git add src/dgov/cli.py" in structured
+        # First 50 chars of prompt used for commit message
+        assert '5. git commit -m "Add an htop shortcut to src/dgov/cli.py following"' in structured
+
+    def test_structure_pi_prompt_adds_commit(self) -> None:
+        prompt = "Update tests/test_dgov_panes.py"
+        structured = _structure_pi_prompt(prompt)
+        assert "git commit -m" in structured
+        assert "Update tests/test_dgov_panes.py" in structured
+
+    def test_structure_pi_prompt_no_files(self) -> None:
+        prompt = "Explain why the code is slow"
+        structured = _structure_pi_prompt(prompt)
+        # Should still have task and commit
+        assert "1. Explain why the code is slow" in structured
+        assert '2. git commit -m "Explain why the code is slow"' in structured
+        # Should not have read/add steps
+        assert "Read" not in structured
+        assert "git add" not in structured
+
+    @patch("dgov.panes.tmux")
+    @patch("dgov.panes.subprocess.run")
+    @patch("dgov.panes._trigger_hook", return_value=False)
+    @patch("dgov.panes._generate_slug", return_value="pi-test")
+    @patch("dgov.panes._count_active_pi_workers", return_value=0)
+    def test_create_worker_pane_uses_structured_prompt_for_pi(
+        self, mock_count, mock_slug, mock_hook, mock_run, mock_tmux, tmp_path: Path
+    ) -> None:
+        from dgov.panes import create_worker_pane
+
+        def fake_run(cmd, **kwargs):
+            m = MagicMock()
+            m.returncode = 0
+            if "curl" in cmd:
+                m.stdout = "200"
+            else:
+                m.stdout = "abc123\n"
+            return m
+
+        mock_run.side_effect = fake_run
+        mock_tmux.split_pane.return_value = "%99"
+
+        create_worker_pane(
+            project_root=str(tmp_path),
+            prompt="Fix src/foo.py",
+            agent="pi",
+            session_root=str(tmp_path),
+        )
+
+        # Check if structured prompt was sent via send_prompt_via_buffer
+        # First arg is pane_id, second is prompt
+        calls = mock_tmux.send_prompt_via_buffer.call_args_list
+        assert len(calls) == 1
+        sent_prompt = calls[0][0][1]
+        assert "1. Read src/foo.py" in sent_prompt
+        assert "2. Fix src/foo.py" in sent_prompt

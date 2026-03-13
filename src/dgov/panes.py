@@ -315,6 +315,70 @@ def classify_task(prompt: str) -> str:
         return "claude"
 
 
+def _structure_pi_prompt(raw_prompt: str, files: list[str] | None = None) -> str:
+    """Wrap a raw task description into pi's numbered-step format.
+
+    Takes a freeform prompt and returns a structured prompt with:
+    1. Read instructions for mentioned files
+    2. The original task description
+    3. Lint step
+    4. Explicit git add + git commit steps
+
+    If files are provided, they're used for the read/add steps.
+    If not, extract file paths from the prompt text.
+    """
+    if files is None:
+        # Extract file paths from prompt
+        # Patterns: src/..., tests/..., or anything with an extension
+        matches = re.findall(r"\b(?:src/|tests/)[\w\-\./]+|[\w\-\./]+\.\w+", raw_prompt)
+        files = []
+        seen = set()
+        for f in matches:
+            f = f.strip("./")
+            if f and f not in seen and ("/" in f or "." in f):
+                # Avoid matching things like "3.5" or "1.2.3"
+                if not re.match(r"^\d+(\.\d+)+$", f):
+                    files.append(f)
+                    seen.add(f)
+
+    steps = []
+    step_num = 1
+
+    # 1. Read steps
+    if files:
+        for f in files:
+            steps.append(f"{step_num}. Read {f}")
+            step_num += 1
+
+    # 2. Original task
+    steps.append(f"{step_num}. {raw_prompt.strip()}")
+    step_num += 1
+
+    # 3. Lint step
+    if files:
+        py_files = [f for f in files if f.endswith(".py")]
+        if py_files:
+            steps.append(f"{step_num}. Run: uv run ruff check {' '.join(py_files)}")
+            step_num += 1
+
+    # 4. git add
+    if files:
+        steps.append(f"{step_num}. git add {' '.join(files)}")
+        step_num += 1
+
+    # 5. git commit
+    # Infer commit message from first line of prompt
+    first_line = raw_prompt.strip().split("\n")[0]
+    commit_msg = first_line[:50].strip().rstrip(".")
+    if not commit_msg:
+        commit_msg = "Worker changes"
+
+    # Use double quotes for the commit message in the step text
+    steps.append(f'{step_num}. git commit -m "{commit_msg}"')
+
+    return "\n".join(steps)
+
+
 # -- Slug generation --
 
 
@@ -729,6 +793,9 @@ def create_worker_pane(
             exclude_file.parent.mkdir(parents=True, exist_ok=True)
             with open(exclude_file, "a") as f:
                 f.write("\nCLAUDE.md.full\n")
+
+    if agent == "pi":
+        prompt = _structure_pi_prompt(prompt)
 
     # 7. Rewrite absolute paths in prompt so agent edits worktree, not main repo
     rewritten_prompt = prompt.replace(project_root, worktree_path)
