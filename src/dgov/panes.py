@@ -1804,3 +1804,153 @@ def escalate_worker_pane(
         "pane_id": new_pane.pane_id,
         "worktree": new_pane.worktree_path,
     }
+
+
+def retry_worker_pane(
+    project_root: str,
+    slug: str,
+    session_root: str | None = None,
+    agent: str | None = None,
+    prompt: str | None = None,
+    permission_mode: str = "acceptEdits",
+) -> dict:
+    """Retry a pane by creating a new one linked to the original.
+
+    Reads original pane record (prompt, agent, base_sha), computes a new
+    slug ``<original-base>-<attempt+1>``, creates a new worktree + branch +
+    pane via the normal create path, then cross-links the old and new records.
+    """
+    session_root = os.path.abspath(session_root or project_root)
+    target = _get_pane(session_root, slug)
+    if not target:
+        return {"error": f"Pane not found: {slug}"}
+
+    original_prompt = prompt or target.get("prompt", "")
+    original_agent = agent or target.get("agent", "claude")
+
+    # Compute attempt number from slug pattern
+    base_slug = re.sub(r"-\d+$", "", slug)  # strip trailing -N
+    attempt = 1
+    existing = _all_panes(session_root)
+    for p in existing:
+        m = re.match(rf"^{re.escape(base_slug)}-(\d+)$", p.get("slug", ""))
+        if m:
+            attempt = max(attempt, int(m.group(1)))
+    attempt += 1
+    new_slug = f"{base_slug}-{attempt}"
+
+    # Create new pane
+    try:
+        new_pane = create_worker_pane(
+            project_root=project_root,
+            prompt=original_prompt,
+            agent=original_agent,
+            permission_mode=permission_mode,
+            slug=new_slug,
+            session_root=session_root,
+        )
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Link records: update new pane with retried_from
+    state = _read_state(session_root)
+    for p in state["panes"]:
+        if p.get("slug") == new_slug:
+            p["retried_from"] = slug
+        if p.get("slug") == slug:
+            p["superseded_by"] = new_slug
+            p["state"] = "superseded"
+    _write_state(session_root, state)
+
+    # Emit events
+    _emit_event(session_root, "pane_retry_spawned", slug, new_slug=new_slug, attempt=attempt)
+    _emit_event(session_root, "pane_retry_spawned", new_slug, retried_from=slug, attempt=attempt)
+    _emit_event(session_root, "pane_superseded", slug, superseded_by=new_slug)
+
+    return {
+        "retried": True,
+        "original_slug": slug,
+        "new_slug": new_pane.slug,
+        "agent": original_agent,
+        "attempt": attempt,
+        "pane_id": new_pane.pane_id,
+    }
+
+
+def create_checkpoint(
+    project_root: str,
+    name: str,
+    session_root: str | None = None,
+) -> dict:
+    """Create a checkpoint snapshot of current state."""
+    from datetime import datetime, timezone
+
+    session_root = os.path.abspath(session_root or project_root)
+
+    # Get main SHA
+    main_sha_result = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    main_sha = main_sha_result.stdout.strip() if main_sha_result.returncode == 0 else ""
+
+    # Get all pane records
+    panes = _all_panes(session_root)
+
+    # Get branch heads for each pane
+    branch_heads = {}
+    for p in panes:
+        branch = p.get("branch_name", "")
+        wt = p.get("worktree_path", "")
+        if branch and wt and Path(wt).exists():
+            head_result = subprocess.run(
+                ["git", "-C", wt, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if head_result.returncode == 0:
+                branch_heads[branch] = head_result.stdout.strip()
+
+    checkpoint = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "name": name,
+        "main_sha": main_sha,
+        "panes": panes,
+        "branch_heads": branch_heads,
+    }
+
+    # Write to .dgov/checkpoints/<name>.json
+    checkpoint_dir = Path(session_root) / _STATE_DIR / "checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"{name}.json"
+    with open(checkpoint_path, "w") as f:
+        json.dump(checkpoint, f, indent=2, default=str)
+        f.write("\n")
+
+    _emit_event(session_root, "checkpoint_created", f"checkpoint/{name}", main_sha=main_sha)
+
+    return {"checkpoint": name, "main_sha": main_sha, "pane_count": len(panes)}
+
+
+def list_checkpoints(session_root: str) -> list[dict]:
+    """List all checkpoints."""
+    checkpoint_dir = Path(session_root) / _STATE_DIR / "checkpoints"
+    if not checkpoint_dir.exists():
+        return []
+
+    checkpoints = []
+    for f in sorted(checkpoint_dir.glob("*.json")):
+        try:
+            data = json.loads(f.read_text())
+            checkpoints.append(
+                {
+                    "name": data.get("name", f.stem),
+                    "ts": data.get("ts", ""),
+                    "pane_count": len(data.get("panes", [])),
+                    "main_sha": data.get("main_sha", "")[:8],
+                }
+            )
+        except (json.JSONDecodeError, OSError):
+            continue
+    return checkpoints
