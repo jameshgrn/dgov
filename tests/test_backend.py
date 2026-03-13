@@ -24,6 +24,7 @@ class TestProtocolConformance:
             "start_logging",
             "stop_logging",
             "send_prompt_via_buffer",
+            "send_keys",
             "setup_pane_borders",
             "set_pane_option",
             "select_layout",
@@ -86,6 +87,9 @@ class TestFactory:
             def send_prompt_via_buffer(self, worker_id: str, prompt: str) -> None:
                 pass
 
+            def send_keys(self, worker_id: str, keys: list[str]) -> None:
+                pass
+
             def setup_pane_borders(self) -> None:
                 pass
 
@@ -136,6 +140,9 @@ class TestFactory:
                 pass
 
             def send_prompt_via_buffer(self, worker_id: str, prompt: str) -> None:
+                pass
+
+            def send_keys(self, worker_id: str, keys: list[str]) -> None:
                 pass
 
             def setup_pane_borders(self) -> None:

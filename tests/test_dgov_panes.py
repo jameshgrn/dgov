@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from dgov.backend import set_backend
 from dgov.panes import (
     WorkerPane,
     _add_pane,
@@ -30,6 +31,17 @@ from dgov.panes import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def mock_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    mock = MagicMock()
+    # Default return values for common methods
+    mock.create_pane.return_value = "%1"
+    mock.is_alive.return_value = True
+    mock.bulk_info.return_value = {}
+    set_backend(mock)
+    return mock
 
 
 class TestWorkerPane:
@@ -334,16 +346,16 @@ class TestIsDone:
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
 
-    def test_dead_pane_sets_abandoned(self, tmp_path: Path) -> None:
+    def test_dead_pane_sets_abandoned(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         record = {
             "project_root": "/repo",
             "branch_name": "br",
             "base_sha": "abc",
             "pane_id": "%5",
         }
+        mock_backend.is_alive.return_value = False
         with (
             patch("dgov.panes._has_new_commits", return_value=False),
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
             patch("dgov.panes._update_pane_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
@@ -357,16 +369,16 @@ class TestIsDone:
             assert _is_done(str(tmp_path), "test-slug") is True
             mock_state.assert_called_once_with(str(tmp_path), "test-slug", "failed")
 
-    def test_alive_pane_no_commits(self, tmp_path: Path) -> None:
+    def test_alive_pane_no_commits(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         record = {
             "project_root": "/repo",
             "branch_name": "br",
             "base_sha": "abc",
             "pane_id": "%5",
         }
+        mock_backend.is_alive.return_value = True
         with (
             patch("dgov.panes._has_new_commits", return_value=False),
-            patch("dgov.panes.tmux.pane_exists", return_value=True),
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is False
 
@@ -430,7 +442,9 @@ class TestListWorkerPanes:
         result = list_worker_panes(str(tmp_path))
         assert result == []
 
-    def test_deduplicates_by_slug_prefers_alive(self, tmp_path: Path) -> None:
+    def test_deduplicates_by_slug_prefers_alive(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """When state has duplicate slugs, list should return one entry preferring alive."""
         _write_state(
             str(tmp_path),
@@ -458,11 +472,8 @@ class TestListWorkerPanes:
             },
         )
 
+        mock_backend.bulk_info.return_value = {"%2": {"title": "gov", "current_command": "claude"}}
         with (
-            patch(
-                "dgov.panes.tmux.bulk_pane_info",
-                return_value={"%2": {"title": "gov", "current_command": "claude"}},
-            ),
             patch("dgov.panes._is_done", return_value=False),
         ):
             result = list_worker_panes(str(tmp_path))
@@ -471,7 +482,7 @@ class TestListWorkerPanes:
         assert result[0]["pane_id"] == "%2"
         assert result[0]["alive"] is True
 
-    def test_enriches_with_alive_status(self, tmp_path: Path) -> None:
+    def test_enriches_with_alive_status(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         _write_state(
             str(tmp_path),
             {
@@ -488,11 +499,10 @@ class TestListWorkerPanes:
                 ]
             },
         )
+        mock_backend.bulk_info.return_value = {
+            "%5": {"title": "test", "current_command": "claude"}
+        }
         with (
-            patch(
-                "dgov.panes.tmux.bulk_pane_info",
-                return_value={"%5": {"title": "test", "current_command": "claude"}},
-            ),
             patch("dgov.panes._is_done", return_value=False),
         ):
             result = list_worker_panes(str(tmp_path))
@@ -508,7 +518,7 @@ class TestListWorkerPanes:
 
 
 class TestPruneStale:
-    def test_prunes_dead_pane_no_worktree(self, tmp_path: Path) -> None:
+    def test_prunes_dead_pane_no_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         _write_state(
             str(tmp_path),
             {
@@ -521,12 +531,12 @@ class TestPruneStale:
                 ]
             },
         )
-        with patch("dgov.panes.tmux.pane_exists", return_value=False):
-            pruned = prune_stale_panes(str(tmp_path))
+        mock_backend.is_alive.return_value = False
+        pruned = prune_stale_panes(str(tmp_path))
         assert "stale" in pruned
         assert _all_panes(str(tmp_path)) == []
 
-    def test_keeps_alive_pane(self, tmp_path: Path) -> None:
+    def test_keeps_alive_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         _write_state(
             str(tmp_path),
             {
@@ -539,12 +549,12 @@ class TestPruneStale:
                 ]
             },
         )
-        with patch("dgov.panes.tmux.pane_exists", return_value=True):
-            pruned = prune_stale_panes(str(tmp_path))
+        mock_backend.is_alive.return_value = True
+        pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
         assert len(_all_panes(str(tmp_path))) == 1
 
-    def test_keeps_pane_with_worktree(self, tmp_path: Path) -> None:
+    def test_keeps_pane_with_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         wt_dir = tmp_path / "wt"
         wt_dir.mkdir()
         _write_state(
@@ -559,25 +569,27 @@ class TestPruneStale:
                 ]
             },
         )
-        with patch("dgov.panes.tmux.pane_exists", return_value=False):
-            pruned = prune_stale_panes(str(tmp_path))
+        mock_backend.is_alive.return_value = False
+        pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
 
-    def test_prunes_orphaned_worktree_dir(self, tmp_path: Path) -> None:
+    def test_prunes_orphaned_worktree_dir(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         """Worktree dir exists in .dgov/worktrees/ but no pane entry references it."""
         orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-task"
         orphan_dir.mkdir(parents=True)
         # Empty state — no pane entries at all
         _write_state(str(tmp_path), {"panes": []})
+        mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
             patch("dgov.panes._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert "orphan:orphan-task" in pruned
         mock_rm.assert_called_once_with(str(tmp_path), str(orphan_dir), "orphan-task")
 
-    def test_skips_worktree_dir_with_matching_pane(self, tmp_path: Path) -> None:
+    def test_skips_worktree_dir_with_matching_pane(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """Worktree dir that IS referenced by a pane entry should not be pruned."""
         wt_dir = tmp_path / ".dgov" / "worktrees" / "active-task"
         wt_dir.mkdir(parents=True)
@@ -593,15 +605,17 @@ class TestPruneStale:
                 ]
             },
         )
+        mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.panes.tmux.pane_exists", return_value=True),
             patch("dgov.panes._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
         mock_rm.assert_not_called()
 
-    def test_prunes_both_stale_entries_and_orphans(self, tmp_path: Path) -> None:
+    def test_prunes_both_stale_entries_and_orphans(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """Both a stale pane entry AND an orphaned dir get pruned in one call."""
         orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-slug"
         orphan_dir.mkdir(parents=True)
@@ -617,8 +631,8 @@ class TestPruneStale:
                 ]
             },
         )
+        mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
             patch("dgov.panes._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
@@ -636,18 +650,16 @@ class TestCaptureWorkerOutput:
     def test_missing_pane_returns_none(self, tmp_path: Path) -> None:
         assert capture_worker_output(str(tmp_path), "nonexistent") is None
 
-    def test_dead_pane_returns_none(self, tmp_path: Path) -> None:
+    def test_dead_pane_returns_none(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
-        with patch("dgov.panes.tmux.pane_exists", return_value=False):
-            assert capture_worker_output(str(tmp_path), "test") is None
+        mock_backend.is_alive.return_value = False
+        assert capture_worker_output(str(tmp_path), "test") is None
 
-    def test_captures_output(self, tmp_path: Path) -> None:
+    def test_captures_output(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
-        with (
-            patch("dgov.panes.tmux.pane_exists", return_value=True),
-            patch("dgov.panes.tmux.capture_pane", return_value="output here"),
-        ):
-            result = capture_worker_output(str(tmp_path), "test")
+        mock_backend.is_alive.return_value = True
+        mock_backend.capture_output.return_value = "output here"
+        result = capture_worker_output(str(tmp_path), "test")
         assert result == "output here"
 
 
@@ -742,7 +754,9 @@ class TestCloseWorkerPane:
         _, kwargs = mock_cleanup.call_args
         assert kwargs["skip_worktree_if_dirty"] is False
 
-    def test_no_force_skips_dirty_preserves_branch(self, tmp_path: Path) -> None:
+    def test_no_force_skips_dirty_preserves_branch(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         from dgov.panes import close_worker_pane
 
         wt = tmp_path / "wt"
@@ -775,10 +789,8 @@ class TestCloseWorkerPane:
                 m.stdout = ""
             return m
 
+        mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes.tmux.kill_pane"),
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.select_layout"),
             patch("subprocess.run", fake_run),
         ):
             close_worker_pane(str(tmp_path), "test")
@@ -874,7 +886,7 @@ class TestCommitWorktree:
 
 
 class TestFullCleanup:
-    def test_removes_state_and_cleanup(self, tmp_path: Path) -> None:
+    def test_removes_state_and_cleanup(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import _full_cleanup
 
         _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
@@ -885,18 +897,14 @@ class TestFullCleanup:
 
         pane_record = {"pane_id": "%5", "owns_worktree": False}
 
-        with (
-            patch("dgov.panes.tmux.kill_pane"),
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.select_layout"),
-        ):
-            result = _full_cleanup(str(tmp_path), str(tmp_path), "test", pane_record)
+        mock_backend.is_alive.return_value = False
+        result = _full_cleanup(str(tmp_path), str(tmp_path), "test", pane_record)
 
         assert result["cleaned"] is True
         assert not (done_dir / "test").exists()
         assert _get_pane(str(tmp_path), "test") is None
 
-    def test_skips_worktree_if_dirty(self, tmp_path: Path) -> None:
+    def test_skips_worktree_if_dirty(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import _full_cleanup
 
         _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
@@ -920,10 +928,8 @@ class TestFullCleanup:
             m.returncode = 0
             return m
 
+        mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes.tmux.kill_pane"),
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.select_layout"),
             patch("subprocess.run", fake_run),
         ):
             result = _full_cleanup(
@@ -938,7 +944,9 @@ class TestFullCleanup:
         wt_remove_cmds = [c for c in calls if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmds) == 0
 
-    def test_checkout_before_worktree_remove_on_clean(self, tmp_path: Path) -> None:
+    def test_checkout_before_worktree_remove_on_clean(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """Verify git checkout . is called before worktree remove --force."""
         from dgov.panes import _full_cleanup
 
@@ -962,10 +970,8 @@ class TestFullCleanup:
             m.stdout = ""
             return m
 
+        mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes.tmux.kill_pane"),
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.select_layout"),
             patch("subprocess.run", fake_run),
         ):
             _full_cleanup(
@@ -1267,11 +1273,10 @@ class TestMergeWorkerPane:
 
 
 class TestPruneStalePane:
-    @patch("dgov.panes.tmux")
-    def test_prunes_dead_no_worktree(self, mock_tmux, tmp_path: Path) -> None:
+    def test_prunes_dead_no_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import prune_stale_panes
 
-        mock_tmux.pane_exists.return_value = False
+        mock_backend.is_alive.return_value = False
         pane = WorkerPane(
             slug="stale",
             prompt="x",
@@ -1286,11 +1291,10 @@ class TestPruneStalePane:
         assert "stale" in pruned
         assert _get_pane(str(tmp_path), "stale") is None
 
-    @patch("dgov.panes.tmux")
-    def test_keeps_alive_pane(self, mock_tmux, tmp_path: Path) -> None:
+    def test_keeps_alive_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import prune_stale_panes
 
-        mock_tmux.pane_exists.return_value = True
+        mock_backend.is_alive.return_value = True
         pane = WorkerPane(
             slug="alive",
             prompt="x",
@@ -1305,11 +1309,10 @@ class TestPruneStalePane:
         assert pruned == []
         assert _get_pane(str(tmp_path), "alive") is not None
 
-    @patch("dgov.panes.tmux")
-    def test_keeps_pane_with_worktree(self, mock_tmux, tmp_path: Path) -> None:
+    def test_keeps_pane_with_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import prune_stale_panes
 
-        mock_tmux.pane_exists.return_value = False
+        mock_backend.is_alive.return_value = False
         wt = tmp_path / "existing-wt"
         wt.mkdir()
         pane = WorkerPane(
@@ -1468,9 +1471,8 @@ class TestUpdatePaneState:
         state = _read_state(str(tmp_path))
         assert state["panes"][0]["state"] == "active"
 
-    @patch("dgov.tmux.set_title")
     def test_updates_pane_title_on_state_change(
-        self, mock_set_title: Mock, tmp_path: Path
+        self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         from dgov.panes import _update_pane_state
 
@@ -1479,7 +1481,7 @@ class TestUpdatePaneState:
             {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
         )
         _update_pane_state(str(tmp_path), "fix", "done")
-        mock_set_title.assert_called_once_with("%5", "[pi] fix \u2713")
+        mock_backend.set_title.assert_called_once_with("%5", "[pi] fix \u2713")
 
 
 # ---------------------------------------------------------------------------
@@ -1564,18 +1566,12 @@ class TestEmitEvent:
         with pytest.raises(ValueError, match="Unknown event"):
             _emit_event(str(tmp_path), "bogus_event", "slug")
 
-    def test_create_worker_pane_emits_event(self, tmp_path: Path) -> None:
+    def test_create_worker_pane_emits_event(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import create_worker_pane
 
+        mock_backend.create_pane.return_value = "%99"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%99"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.send_prompt_via_buffer"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes._generate_slug", return_value="test-slug"),
         ):
@@ -1602,20 +1598,14 @@ class TestEmitEvent:
 
 
 class TestBlockTitleOverride:
-    def test_allow_set_title_off_during_create(self, tmp_path: Path) -> None:
+    def test_allow_set_title_off_during_create(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         from dgov.panes import create_worker_pane
 
+        mock_backend.create_pane.return_value = "%99"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%99"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.style_worker_pane"),
-            patch("dgov.panes.tmux.set_pane_option") as mock_set_opt,
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.send_prompt_via_buffer"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes._generate_slug", return_value="title-test"),
         ):
@@ -1626,7 +1616,7 @@ class TestBlockTitleOverride:
                 agent="claude",
                 session_root=str(tmp_path),
             )
-        mock_set_opt.assert_any_call("%99", "allow-set-title", "off")
+        mock_backend.set_pane_option.assert_any_call("%99", "allow-set-title", "off")
 
 
 # ---------------------------------------------------------------------------
@@ -2092,7 +2082,7 @@ class TestWaitWorkerPane:
             result = wait_worker_pane(str(tmp_path), "s1", timeout=5, poll=0)
         assert result == {"done": "s1", "method": "signal_or_commit"}
 
-    def test_stable_output_detection(self, tmp_path: Path) -> None:
+    def test_stable_output_detection(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         """Stabilization is now handled inside _is_done via stable_seconds."""
         from dgov.panes import _add_pane, _is_done
 
@@ -2109,8 +2099,8 @@ class TestWaitWorkerPane:
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
+        mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
             patch("dgov.panes._agent_still_running", return_value=False),
         ):
@@ -2149,7 +2139,9 @@ class TestWaitWorkerPane:
 
 
 class TestStableDetectionAgentCheck:
-    def test_stable_skipped_when_agent_running(self, tmp_path: Path) -> None:
+    def test_stable_skipped_when_agent_running(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """When output is stable but agent process is still running, don't trigger done."""
         from dgov.panes import _add_pane, _is_done
 
@@ -2166,8 +2158,8 @@ class TestStableDetectionAgentCheck:
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
+        mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
             patch("dgov.panes._agent_still_running", return_value=True),
         ):
@@ -2181,7 +2173,9 @@ class TestStableDetectionAgentCheck:
             assert result is False
             assert stable_state["stable_since"] is None  # Reset because agent is alive
 
-    def test_stable_triggers_when_agent_exited(self, tmp_path: Path) -> None:
+    def test_stable_triggers_when_agent_exited(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """When output is stable and agent process has exited (shell prompt), trigger done."""
         from dgov.panes import _add_pane, _is_done
 
@@ -2198,8 +2192,8 @@ class TestStableDetectionAgentCheck:
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
+        mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
             patch("dgov.panes._agent_still_running", return_value=False),
         ):
@@ -2212,7 +2206,9 @@ class TestStableDetectionAgentCheck:
             )
             assert result is True
 
-    def test_no_stable_seconds_skips_stabilization(self, tmp_path: Path) -> None:
+    def test_no_stable_seconds_skips_stabilization(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         """Without stable_seconds, _is_done does not perform output stabilization."""
         from dgov.panes import _add_pane, _is_done
 
@@ -2228,9 +2224,9 @@ class TestStableDetectionAgentCheck:
         _add_pane(str(tmp_path), pane)
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
 
-        with patch("dgov.tmux.pane_exists", return_value=True):
-            result = _is_done(str(tmp_path), "s1", pane_record=pane_record)
-            assert result is False
+        mock_backend.is_alive.return_value = True
+        result = _is_done(str(tmp_path), "s1", pane_record=pane_record)
+        assert result is False
 
 
 class TestWaitAllWorkerPanes:
@@ -2342,7 +2338,7 @@ class TestStructurePiPrompt:
 
     @patch("dgov.panes._structure_pi_prompt", wraps=_structure_pi_prompt)
     def test_create_worker_pane_calls_structure_for_pi(
-        self, mock_structure: Mock, tmp_path: Path
+        self, mock_structure: Mock, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """Verify _structure_pi_prompt is called when agent is pi."""
         from dgov.agents import AgentDef
@@ -2359,17 +2355,9 @@ class TestStructurePiPrompt:
             )
         }
 
+        mock_backend.create_pane.return_value = "%99"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%99"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.style_worker_pane"),
-            patch("dgov.panes.tmux.set_pane_option"),
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.send_prompt_via_buffer"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes._generate_slug", return_value="pi-test"),
             patch("dgov.panes.load_registry", return_value=pi_registry),
@@ -2396,7 +2384,7 @@ class TestStructurePiPrompt:
 
 
 class TestResumeWorkerPane:
-    def test_basic_resume(self, tmp_path: Path) -> None:
+    def test_basic_resume(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef
         from dgov.panes import resume_worker_pane
 
@@ -2431,18 +2419,10 @@ class TestResumeWorkerPane:
             )
         }
 
+        mock_backend.is_alive.return_value = False
+        mock_backend.create_pane.return_value = "%10"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%10"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.style_worker_pane"),
-            patch("dgov.panes.tmux.set_pane_option"),
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.start_logging"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes.load_registry", return_value=registry),
         ):
@@ -2460,7 +2440,7 @@ class TestResumeWorkerPane:
         assert pane["pane_id"] == "%10"
         assert pane["state"] == "active"
 
-    def test_resume_with_agent_override(self, tmp_path: Path) -> None:
+    def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef
         from dgov.panes import resume_worker_pane
 
@@ -2495,18 +2475,10 @@ class TestResumeWorkerPane:
             )
         }
 
+        mock_backend.is_alive.return_value = False
+        mock_backend.create_pane.return_value = "%20"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%20"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.style_worker_pane"),
-            patch("dgov.panes.tmux.set_pane_option"),
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.start_logging"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes.load_registry", return_value=registry),
         ):
@@ -2520,7 +2492,7 @@ class TestResumeWorkerPane:
         pane = next(p for p in state["panes"] if p["slug"] == "task-x")
         assert pane["agent"] == "claude"
 
-    def test_resume_with_prompt_override(self, tmp_path: Path) -> None:
+    def test_resume_with_prompt_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef
         from dgov.panes import resume_worker_pane
 
@@ -2555,18 +2527,10 @@ class TestResumeWorkerPane:
             )
         }
 
+        mock_backend.is_alive.return_value = False
+        mock_backend.create_pane.return_value = "%30"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.pane_exists", return_value=False),
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%30"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.style_worker_pane"),
-            patch("dgov.panes.tmux.set_pane_option"),
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.start_logging"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes.load_registry", return_value=registry),
             patch("dgov.panes.build_launch_command", return_value="claude 'prompt'") as mock_blc,
@@ -2646,7 +2610,7 @@ class TestResumeWorkerPane:
         assert "error" in result
         assert "branch" in result["error"].lower()
 
-    def test_resume_kills_old_pane(self, tmp_path: Path) -> None:
+    def test_resume_kills_old_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef
         from dgov.panes import resume_worker_pane
 
@@ -2681,26 +2645,17 @@ class TestResumeWorkerPane:
             )
         }
 
+        mock_backend.is_alive.return_value = True
+        mock_backend.create_pane.return_value = "%new"
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes.tmux.pane_exists", return_value=True),
-            patch("dgov.panes.tmux.kill_pane") as mock_kill,
-            patch("dgov.panes.tmux.setup_pane_borders"),
-            patch("dgov.panes.tmux.split_pane", return_value="%new"),
-            patch("dgov.panes.tmux._run"),
-            patch("dgov.panes.tmux.set_title"),
-            patch("dgov.panes.tmux.style_worker_pane"),
-            patch("dgov.panes.tmux.set_pane_option"),
-            patch("dgov.panes.tmux.select_layout"),
-            patch("dgov.panes.tmux.send_command"),
-            patch("dgov.panes.tmux.start_logging"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             resume_worker_pane(str(tmp_path), "stale-pane", session_root=str(tmp_path))
 
-        mock_kill.assert_called_once_with("%old")
+        mock_backend.destroy.assert_called_once_with("%old")
 
 
 # ---------------------------------------------------------------------------

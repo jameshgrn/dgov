@@ -64,6 +64,10 @@ class WorkerBackend(Protocol):
         """Send a large prompt via paste buffer (for send-keys transport)."""
         ...
 
+    def send_keys(self, worker_id: str, keys: list[str]) -> None:
+        """Send raw keys to the worker (e.g. ['C-c'] or ['Enter'])."""
+        ...
+
     def setup_pane_borders(self) -> None:
         """Set pane border styling (tmux global/session options)."""
         ...
@@ -142,6 +146,11 @@ class TmuxBackend:
         from dgov import tmux
 
         tmux.send_prompt_via_buffer(worker_id, prompt)
+
+    def send_keys(self, worker_id: str, keys: list[str]) -> None:
+        from dgov import tmux
+
+        tmux._run(["send-keys", "-t", worker_id, *keys])
 
     def setup_pane_borders(self) -> None:
         from dgov import tmux
