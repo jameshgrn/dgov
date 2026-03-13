@@ -47,21 +47,42 @@ def blame_file(
             sha_to_slug[ev["merge_sha"]] = ev["pane"]
 
     result = subprocess.run(
-        ["git", "-C", project_root, "log", "--format=%H %s", "--follow", "--", rel_file],
+        [
+            "git",
+            "-C",
+            project_root,
+            "log",
+            "--format=COMMIT:%H %s",
+            "--name-only",
+            "--follow",
+            "--",
+            rel_file,
+        ],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         return {"file": rel_file, "history": [], "error": result.stderr.strip()}
 
-    history = []
-    for line in result.stdout.strip().splitlines():
-        if not line:
-            continue
-        parts = line.split(" ", 1)
-        commit_hash = parts[0]
-        subject = parts[1] if len(parts) > 1 else ""
+    commits: list[tuple[str, str, int]] = []
+    cur_hash = cur_subject = ""
+    cur_files = 0
+    for line in result.stdout.splitlines():
+        if line.startswith("COMMIT:"):
+            if cur_hash:
+                commits.append((cur_hash, cur_subject, cur_files))
+            payload = line[7:]
+            parts = payload.split(" ", 1)
+            cur_hash = parts[0]
+            cur_subject = parts[1] if len(parts) > 1 else ""
+            cur_files = 0
+        elif line.strip():
+            cur_files += 1
+    if cur_hash:
+        commits.append((cur_hash, cur_subject, cur_files))
 
+    history = []
+    for commit_hash, subject, files_in_change in commits:
         slug = (
             sha_to_slug.get(commit_hash)
             or sha_to_slug.get(commit_hash[:7])
@@ -72,24 +93,6 @@ def blame_file(
         agent = info.get("agent", "")
         prompt = info.get("prompt", "")
         merged_at = merge_times.get(slug, "") if slug else ""
-
-        files_result = subprocess.run(
-            [
-                "git",
-                "-C",
-                project_root,
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "-r",
-                commit_hash,
-            ],
-            capture_output=True,
-            text=True,
-        )
-        files_in_change = (
-            len(files_result.stdout.strip().splitlines()) if files_result.returncode == 0 else 0
-        )
 
         entry = {
             "commit": commit_hash[:7],
