@@ -23,7 +23,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dmux-governor"
+name = "dgov"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
