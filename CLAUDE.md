@@ -54,3 +54,49 @@ dgov pane close <slug>                          # cleanup
 - Lint: `uv run ruff check <file>` then `uv run ruff format <file>`
 - Test: `uv run pytest <test_file> -q -m unit`
 - Status: `dgov status -r .`
+
+## Action Grammar
+
+Every governor turn emits exactly one typed decision:
+
+```yaml
+action: RETRY
+target: pane/fix-parser-1
+reason: no commits after 22m, task remains well-scoped
+confidence: 0.82
+attempt: 2
+alternatives_considered:
+  - ESCALATE
+requires:
+  - preserve original prompt
+produces:
+  - new pane linked via retried_from
+```
+
+### Action set
+
+| Action | Description |
+|--------|-------------|
+| `DISPATCH` | Create a new worker pane |
+| `WAIT` | Block until a pane finishes |
+| `REVIEW` | Inspect a pane's diff and verdict |
+| `RETRY` | Re-dispatch a failed pane with new attempt |
+| `ESCALATE` | Re-dispatch to a stronger agent |
+| `MERGE` | Integrate a worker's branch into main |
+| `ABANDON` | Mark a pane as abandoned, close it |
+| `CHECKPOINT` | Snapshot current state |
+| `NOOP` | No action needed this turn |
+| `REQUEST_INFO` | Ask for clarification before acting |
+
+### Target grammar
+
+- `pane/<slug>` — a specific worker pane
+- `checkpoint/<name>` — a named checkpoint
+- `mission/current` — the overall task
+- `session/current` — the current session
+
+### Rules
+
+- One primary action per turn, always typed, never prose-only
+- If uncertain, emit `REQUEST_INFO` with reason
+- Two-stage pattern: internal assessment block first, then final decision block
