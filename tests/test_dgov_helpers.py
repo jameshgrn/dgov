@@ -129,8 +129,11 @@ class TestPaneHelpers:
         )
 
         with patch(
-            "dgov.panes.tmux.pane_exists",
-            side_effect=lambda pane_id: pane_id in {"%1", "%3"},
+            "dgov.panes.tmux.bulk_pane_info",
+            return_value={
+                "%1": {"title": "pi-live", "current_command": "pi"},
+                "%3": {"title": "claude-live", "current_command": "claude"},
+            },
         ):
             assert _count_active_agent_workers(str(tmp_path), "pi") == 1
             assert _count_active_agent_workers(str(tmp_path), "claude") == 1
