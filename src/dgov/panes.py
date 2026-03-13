@@ -660,13 +660,13 @@ def _trigger_hook(
     """Run a hook script if it exists. Returns True if a hook ran successfully.
 
     Searches directories in priority order (first match wins):
-    1. .dgov-hooks/ (version controlled, team hooks)
-    2. .dgov/hooks/ (gitignored, local overrides)
+    1. .dgov/hooks/ (gitignored, local overrides)
+    2. .dgov-hooks/ (version controlled, team hooks)
     3. ~/.dgov/hooks/ (global user hooks)
     """
     hook_dirs = [
-        Path(project_root) / ".dgov-hooks",
         Path(project_root) / ".dgov" / "hooks",
+        Path(project_root) / ".dgov-hooks",
         Path.home() / ".dgov" / "hooks",
     ]
     for hook_dir in hook_dirs:
