@@ -73,7 +73,8 @@ Add tests too.
 - Run `dgov` commands (dispatch, wait, review, merge, status, preflight)
 - Read files to understand context before dispatching
 - Run tests/lint to verify merged results
-- Git operations on main (commit, push, tag)
+- Git operations on main (commit, tag)
+- Push `main` to `origin/main` when the user explicitly requests it
 - Triage and prioritize tasks
 
 ## What you must NEVER do
