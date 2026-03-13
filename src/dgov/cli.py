@@ -206,6 +206,12 @@ def pane_top(cwd):
 @click.option(
     "--fix/--no-fix", default=True, help="Auto-fix fixable preflight failures (default: on)"
 )
+@click.option(
+    "--max-retries",
+    default=None,
+    type=int,
+    help="Override agent max auto-retries for this pane (0=disable)",
+)
 def pane_create(
     agent,
     prompt,
@@ -217,6 +223,7 @@ def pane_create(
     env,
     preflight,
     fix,
+    max_retries,
 ):
     """Create a worker pane: worktree + tmux + agent."""
     from dgov.agents import load_registry
@@ -264,6 +271,19 @@ def pane_create(
         extra_flags=extra_flags,
         session_root=session_root,
     )
+
+    # Store per-pane max_retries override in metadata
+    if max_retries is not None:
+        from dgov.persistence import _read_state, _write_state
+
+        session_root_abs = os.path.abspath(session_root or project_root)
+        state = _read_state(session_root_abs)
+        for p in state["panes"]:
+            if p.get("slug") == pane_obj.slug:
+                p["max_retries"] = max_retries
+                break
+        _write_state(session_root_abs, state)
+
     result = {
         "slug": pane_obj.slug,
         "pane_id": pane_obj.pane_id,
@@ -271,6 +291,8 @@ def pane_create(
         "worktree": pane_obj.worktree_path,
         "branch": pane_obj.branch_name,
     }
+    if max_retries is not None:
+        result["max_retries"] = max_retries
     click.echo(json.dumps(result, indent=2))
 
 
@@ -346,7 +368,12 @@ def pane_merge(slug, project_root, session_root, close, resolve):
 @click.option("--timeout", "-t", default=600, help="Max seconds to wait (0=forever)")
 @click.option("--poll", "-i", default=3, help="Poll interval in seconds")
 @click.option("--stable", "-s", default=15, help="Seconds of stable output before declaring done")
-def pane_wait(slug, project_root, session_root, timeout, poll, stable):
+@click.option(
+    "--auto-retry/--no-auto-retry",
+    default=True,
+    help="Auto-retry failed panes per agent retry policy (default: on)",
+)
+def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retry):
     """Wait for a worker pane to finish.
 
     Three detection modes (checked each poll cycle, first wins):
@@ -364,6 +391,7 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
             timeout=timeout,
             poll=poll,
             stable=stable,
+            auto_retry=auto_retry,
         )
         click.echo(json.dumps(result))
     except PaneTimeoutError as exc:

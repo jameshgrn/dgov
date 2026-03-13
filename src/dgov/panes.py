@@ -60,6 +60,12 @@ from dgov.persistence import (  # noqa: F401
     _validate_state,
     _write_state,
 )
+from dgov.retry import (  # noqa: F401
+    RetryPolicy,
+    get_retry_policy,
+    maybe_auto_retry,
+    retry_context,
+)
 from dgov.strategy import (  # noqa: F401
     _QWEN_4B_TIMEOUT,
     _QWEN_4B_URL,
@@ -776,6 +782,11 @@ def review_worker_pane(
 
     freshness = _compute_freshness(project_root, target)
 
+    # Retry count from events
+    from dgov.retry import _count_retries
+
+    retry_count = _count_retries(session_root, slug)
+
     result = {
         "slug": slug,
         "branch": branch,
@@ -786,6 +797,7 @@ def review_worker_pane(
         "commit_log": commit_log,
         "uncommitted": uncommitted,
         "files_changed": len(changed_files),
+        "retry_count": retry_count,
         **freshness,
     }
     if issues:

@@ -36,6 +36,8 @@ class AgentDef:
     health_check: str | None = None
     health_fix: str | None = None
     max_concurrent: int | None = None
+    max_retries: int = 0
+    retry_escalate_to: str | None = None
     color: int | None = None
     env: dict[str, str] = field(default_factory=dict)
     source: str = "built-in"
@@ -214,6 +216,8 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
         health_check=table.get("health_check"),
         health_fix=table.get("health_fix"),
         max_concurrent=table.get("max_concurrent"),
+        max_retries=table.get("max_retries", 0),
+        retry_escalate_to=table.get("retry_escalate_to"),
         color=table.get("color"),
         env=dict(env_section),
         source=source,
