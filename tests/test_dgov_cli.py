@@ -1172,6 +1172,50 @@ class TestPaneYazi:
             mock_create.assert_called_once_with("yazi", "[util] yazi", cwd="/home/user")
 
 
+class TestPaneHtop:
+    @pytest.fixture(autouse=True)
+    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+    def test_htop_calls_create_utility_pane(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%70") as mock_create:
+            result = runner.invoke(cli, ["pane", "htop"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("htop", "[util] htop", cwd=".")
+            data = json.loads(result.output)
+            assert data["pane_id"] == "%70"
+            assert data["command"] == "htop"
+            assert data["title"] == "htop"
+
+    def test_htop_custom_cwd(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%71") as mock_create:
+            result = runner.invoke(cli, ["pane", "htop", "-c", "/var/log"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("htop", "[util] htop", cwd="/var/log")
+
+
+class TestPaneK9s:
+    @pytest.fixture(autouse=True)
+    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+    def test_k9s_calls_create_utility_pane(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%72") as mock_create:
+            result = runner.invoke(cli, ["pane", "k9s"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("k9s", "[util] k9s", cwd=".")
+            data = json.loads(result.output)
+            assert data["pane_id"] == "%72"
+            assert data["command"] == "k9s"
+            assert data["title"] == "k9s"
+
+    def test_k9s_custom_cwd(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%73") as mock_create:
+            result = runner.invoke(cli, ["pane", "k9s", "-c", "/home/user"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("k9s", "[util] k9s", cwd="/home/user")
+
+
 # ---------------------------------------------------------------------------
 # batch
 # ---------------------------------------------------------------------------
