@@ -1333,6 +1333,40 @@ class TestMergeWorkerPane:
         assert result["merged"] == "mergeable"
         assert result["branch"] == "feat"
 
+    @patch("dgov.panes._full_cleanup")
+    @patch("dgov.panes._plumbing_merge")
+    @patch("dgov.panes._restore_protected_files")
+    @patch("dgov.panes._commit_worktree", return_value={"committed": False})
+    @patch("dgov.panes.subprocess.run")
+    def test_successful_merge_ignores_stale_abandoned_state(
+        self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
+    ) -> None:
+        from dgov.models import MergeResult
+        from dgov.panes import IllegalTransitionError, merge_worker_pane
+
+        mock_merge.return_value = MergeResult(success=True)
+        mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
+        pane = WorkerPane(
+            slug="mergeable",
+            prompt="x",
+            pane_id="%1",
+            agent="pi",
+            state="done",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="feat",
+            base_sha="abc",
+        )
+        _add_pane(str(tmp_path), pane)
+
+        with patch("dgov.panes._update_pane_state") as mock_state:
+            mock_state.side_effect = IllegalTransitionError("abandoned", "merged", "mergeable")
+            result = merge_worker_pane(str(tmp_path), "mergeable")
+
+        assert result["merged"] == "mergeable"
+        assert result["branch"] == "feat"
+        mock_cleanup.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # review_worker_pane

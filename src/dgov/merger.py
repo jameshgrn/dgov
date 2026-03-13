@@ -520,7 +520,13 @@ def merge_worker_pane(
     merge = _p._plumbing_merge(pane_project_root, branch_name)
 
     if merge.success:
-        _p._update_pane_state(session_root, slug, "merged")
+        try:
+            _p._update_pane_state(session_root, slug, "merged")
+        except _p.IllegalTransitionError as e:
+            if e.current == "abandoned":
+                logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
+            else:
+                raise
         merge_sha_r = subprocess.run(
             ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
             capture_output=True,
@@ -582,7 +588,13 @@ def merge_worker_pane(
                 pane_project_root, branch_name, target, session_root
             )
             if resolved:
-                _p._update_pane_state(session_root, slug, "merged")
+                try:
+                    _p._update_pane_state(session_root, slug, "merged")
+                except _p.IllegalTransitionError as e:
+                    if e.current == "abandoned":
+                        logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
+                    else:
+                        raise
                 return {"merged": slug, "branch": branch_name, "resolved_by": "agent"}
             return {
                 "slug": slug,
