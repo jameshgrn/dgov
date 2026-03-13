@@ -1465,7 +1465,7 @@ def _resolve_conflicts_with_agent(
 def _commit_worktree(pane_record: dict) -> dict:
     """Auto-commit uncommitted changes in a worker's worktree.
 
-    Stages all modified/new files except hook artifacts (CLAUDE.md, CLAUDE.md.full).
+    Stages all modified/new files except hook artifacts like CLAUDE.md.
     Returns {"committed": True, "files": [...]} or {"committed": False}.
     """
     wt = pane_record.get("worktree_path")
