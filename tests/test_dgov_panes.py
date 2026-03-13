@@ -2349,3 +2349,660 @@ class TestStructurePiPrompt:
                 session_root=str(tmp_path),
             )
         mock_structure.assert_called_once_with("Fix src/foo.py")
+
+
+# ---------------------------------------------------------------------------
+# resume_worker_pane
+# ---------------------------------------------------------------------------
+
+
+class TestResumeWorkerPane:
+    def test_basic_resume(self, tmp_path: Path) -> None:
+        from dgov.agents import AgentDef
+        from dgov.panes import resume_worker_pane
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "fix-it"
+        wt_dir.mkdir(parents=True)
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "fix-it",
+                        "agent": "claude",
+                        "prompt": "Fix the bug",
+                        "pane_id": "%5",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(wt_dir),
+                        "branch_name": "fix-it",
+                        "state": "abandoned",
+                    }
+                ]
+            },
+        )
+
+        registry = {
+            "claude": AgentDef(
+                id="claude",
+                name="claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        }
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%10"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.style_worker_pane"),
+            patch("dgov.panes.tmux.set_pane_option"),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.start_logging"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes.load_registry", return_value=registry),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
+            result = resume_worker_pane(str(tmp_path), "fix-it", session_root=str(tmp_path))
+
+        assert result["resumed"] is True
+        assert result["slug"] == "fix-it"
+        assert result["agent"] == "claude"
+        assert result["pane_id"] == "%10"
+
+        # State should be updated
+        state = _read_state(str(tmp_path))
+        pane = next(p for p in state["panes"] if p["slug"] == "fix-it")
+        assert pane["pane_id"] == "%10"
+        assert pane["state"] == "active"
+
+    def test_resume_with_agent_override(self, tmp_path: Path) -> None:
+        from dgov.agents import AgentDef
+        from dgov.panes import resume_worker_pane
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "task-x"
+        wt_dir.mkdir(parents=True)
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "task-x",
+                        "agent": "pi",
+                        "prompt": "Refactor",
+                        "pane_id": "%3",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(wt_dir),
+                        "branch_name": "task-x",
+                        "state": "failed",
+                    }
+                ]
+            },
+        )
+
+        registry = {
+            "claude": AgentDef(
+                id="claude",
+                name="claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        }
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%20"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.style_worker_pane"),
+            patch("dgov.panes.tmux.set_pane_option"),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.start_logging"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes.load_registry", return_value=registry),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
+            result = resume_worker_pane(
+                str(tmp_path), "task-x", session_root=str(tmp_path), agent="claude"
+            )
+
+        assert result["agent"] == "claude"
+        state = _read_state(str(tmp_path))
+        pane = next(p for p in state["panes"] if p["slug"] == "task-x")
+        assert pane["agent"] == "claude"
+
+    def test_resume_with_prompt_override(self, tmp_path: Path) -> None:
+        from dgov.agents import AgentDef
+        from dgov.panes import resume_worker_pane
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "task-y"
+        wt_dir.mkdir(parents=True)
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "task-y",
+                        "agent": "claude",
+                        "prompt": "Old prompt",
+                        "pane_id": "%7",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(wt_dir),
+                        "branch_name": "task-y",
+                        "state": "abandoned",
+                    }
+                ]
+            },
+        )
+
+        registry = {
+            "claude": AgentDef(
+                id="claude",
+                name="claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        }
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%30"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.style_worker_pane"),
+            patch("dgov.panes.tmux.set_pane_option"),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.start_logging"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes.load_registry", return_value=registry),
+            patch("dgov.panes.build_launch_command", return_value="claude 'prompt'") as mock_blc,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
+            result = resume_worker_pane(
+                str(tmp_path),
+                "task-y",
+                session_root=str(tmp_path),
+                prompt="New prompt for resume",
+            )
+
+        assert result["resumed"] is True
+        # build_launch_command should receive the new prompt (with resume context appended)
+        call_args = mock_blc.call_args
+        prompt_arg = call_args[0][1] if len(call_args[0]) > 1 else call_args[1].get("prompt")
+        assert "New prompt for resume" in prompt_arg
+
+    def test_resume_nonexistent_slug(self, tmp_path: Path) -> None:
+        from dgov.panes import resume_worker_pane
+
+        _write_state(str(tmp_path), {"panes": []})
+        result = resume_worker_pane(str(tmp_path), "no-such-pane", session_root=str(tmp_path))
+        assert "error" in result
+        assert "not found" in result["error"].lower()
+
+    def test_resume_missing_worktree(self, tmp_path: Path) -> None:
+        from dgov.panes import resume_worker_pane
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "gone",
+                        "agent": "claude",
+                        "prompt": "Task",
+                        "pane_id": "%1",
+                        "project_root": str(tmp_path),
+                        "worktree_path": "/nonexistent/path",
+                        "branch_name": "gone",
+                    }
+                ]
+            },
+        )
+        result = resume_worker_pane(str(tmp_path), "gone", session_root=str(tmp_path))
+        assert "error" in result
+        assert "no longer exists" in result["error"].lower()
+
+    def test_resume_missing_branch(self, tmp_path: Path) -> None:
+        from dgov.panes import resume_worker_pane
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "dead-branch"
+        wt_dir.mkdir(parents=True)
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "dead-branch",
+                        "agent": "claude",
+                        "prompt": "Task",
+                        "pane_id": "%1",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(wt_dir),
+                        "branch_name": "dead-branch",
+                    }
+                ]
+            },
+        )
+
+        with patch("dgov.panes.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=128, stdout="", stderr="not found")
+            result = resume_worker_pane(str(tmp_path), "dead-branch", session_root=str(tmp_path))
+
+        assert "error" in result
+        assert "branch" in result["error"].lower()
+
+    def test_resume_kills_old_pane(self, tmp_path: Path) -> None:
+        from dgov.agents import AgentDef
+        from dgov.panes import resume_worker_pane
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "stale-pane"
+        wt_dir.mkdir(parents=True)
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "stale-pane",
+                        "agent": "claude",
+                        "prompt": "Task",
+                        "pane_id": "%old",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(wt_dir),
+                        "branch_name": "stale-pane",
+                        "state": "abandoned",
+                    }
+                ]
+            },
+        )
+
+        registry = {
+            "claude": AgentDef(
+                id="claude",
+                name="claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        }
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.pane_exists", return_value=True),
+            patch("dgov.panes.tmux.kill_pane") as mock_kill,
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%new"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.style_worker_pane"),
+            patch("dgov.panes.tmux.set_pane_option"),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.start_logging"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes.load_registry", return_value=registry),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
+            resume_worker_pane(str(tmp_path), "stale-pane", session_root=str(tmp_path))
+
+        mock_kill.assert_called_once_with("%old")
+
+
+# ---------------------------------------------------------------------------
+# _plumbing_merge edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestPlumbingMerge:
+    def test_successful_merge(self, tmp_path: Path) -> None:
+        from dgov.panes import _plumbing_merge
+
+        call_log = []
+
+        def fake_run(cmd, **kw):
+            call_log.append(cmd)
+            m = MagicMock()
+            if "rev-parse" in cmd and "HEAD" in cmd and "symbolic-ref" not in cmd:
+                m.returncode = 0
+                m.stdout = "aaa111\n"
+            elif "merge-tree" in cmd:
+                m.returncode = 0
+                m.stdout = "tree_hash_abc\n"
+            elif "rev-parse" in cmd:
+                m.returncode = 0
+                m.stdout = "bbb222\n"
+            elif "commit-tree" in cmd:
+                m.returncode = 0
+                m.stdout = "ccc333\n"
+            elif "symbolic-ref" in cmd:
+                m.returncode = 0
+                m.stdout = "main\n"
+            elif "update-ref" in cmd:
+                m.returncode = 0
+                m.stdout = ""
+            elif "reset" in cmd:
+                m.returncode = 0
+                m.stdout = ""
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with patch("dgov.merger.subprocess.run", side_effect=fake_run):
+            result = _plumbing_merge(str(tmp_path), "fix-branch")
+
+        assert result.success is True
+        # Verify we went through the full pipeline
+        cmds = [" ".join(c) if isinstance(c, list) else str(c) for c in call_log]
+        assert any("merge-tree" in c for c in cmds)
+        assert any("commit-tree" in c for c in cmds)
+        assert any("update-ref" in c for c in cmds)
+        assert any("reset" in c for c in cmds)
+
+    def test_detached_head(self, tmp_path: Path) -> None:
+        from dgov.panes import _plumbing_merge
+
+        call_count = {"n": 0}
+
+        def fake_run(cmd, **kw):
+            call_count["n"] += 1
+            m = MagicMock()
+            if "rev-parse" in cmd and "HEAD" in cmd and "symbolic-ref" not in cmd:
+                m.returncode = 0
+                m.stdout = "aaa111\n"
+            elif "merge-tree" in cmd:
+                m.returncode = 0
+                m.stdout = "tree_hash_abc\n"
+            elif "rev-parse" in cmd:
+                m.returncode = 0
+                m.stdout = "bbb222\n"
+            elif "commit-tree" in cmd:
+                m.returncode = 0
+                m.stdout = "ccc333\n"
+            elif "symbolic-ref" in cmd:
+                m.returncode = 128
+                m.stdout = ""
+                m.stderr = "fatal: ref HEAD is not a symbolic ref"
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            m.stderr = m.stderr if hasattr(m, "stderr") and m.stderr else ""
+            return m
+
+        with patch("dgov.merger.subprocess.run", side_effect=fake_run):
+            result = _plumbing_merge(str(tmp_path), "some-branch")
+
+        assert result.success is False
+        assert "Detached HEAD" in result.stderr
+
+    def test_reset_hard_failure(self, tmp_path: Path) -> None:
+        from dgov.panes import _plumbing_merge
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "rev-parse" in cmd and "HEAD" in cmd and "symbolic-ref" not in cmd:
+                m.returncode = 0
+                m.stdout = "aaa111\n"
+            elif "merge-tree" in cmd:
+                m.returncode = 0
+                m.stdout = "tree_hash_abc\n"
+            elif "rev-parse" in cmd:
+                m.returncode = 0
+                m.stdout = "bbb222\n"
+            elif "commit-tree" in cmd:
+                m.returncode = 0
+                m.stdout = "ccc333\n"
+            elif "symbolic-ref" in cmd:
+                m.returncode = 0
+                m.stdout = "main\n"
+            elif "update-ref" in cmd:
+                m.returncode = 0
+                m.stdout = ""
+            elif "reset" in cmd:
+                m.returncode = 1
+                m.stdout = ""
+                m.stderr = "error: unable to reset"
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            m.stderr = getattr(m, "stderr", "") or ""
+            return m
+
+        with patch("dgov.merger.subprocess.run", side_effect=fake_run):
+            result = _plumbing_merge(str(tmp_path), "fix-branch")
+
+        assert result.success is False
+        assert "reset" in result.stderr.lower()
+
+    def test_merge_tree_conflict(self, tmp_path: Path) -> None:
+        from dgov.panes import _plumbing_merge
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "rev-parse" in cmd and "HEAD" in cmd:
+                m.returncode = 0
+                m.stdout = "aaa111\n"
+            elif "merge-tree" in cmd:
+                m.returncode = 1
+                m.stdout = "CONFLICT (content): ..."
+                m.stderr = ""
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            m.stderr = getattr(m, "stderr", "") or ""
+            return m
+
+        with patch("dgov.merger.subprocess.run", side_effect=fake_run):
+            result = _plumbing_merge(str(tmp_path), "conflict-branch")
+
+        assert result.success is False
+
+    def test_head_resolve_failure(self, tmp_path: Path) -> None:
+        from dgov.panes import _plumbing_merge
+
+        mock_result = MagicMock(returncode=128, stdout="", stderr="not a git repo")
+        with patch("dgov.merger.subprocess.run", return_value=mock_result):
+            result = _plumbing_merge(str(tmp_path), "any-branch")
+
+        assert result.success is False
+        assert "not a git repo" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# Batch: _compute_tiers — deep dependency chains
+# ---------------------------------------------------------------------------
+
+
+class TestComputeTiersDeep:
+    def test_four_level_chain(self) -> None:
+        """A -> B -> C -> D: each touches the same file, so 4 tiers."""
+        from dgov.panes import _compute_tiers
+
+        tasks = [
+            {"id": "A", "touches": ["src/shared.py"]},
+            {"id": "B", "touches": ["src/shared.py"]},
+            {"id": "C", "touches": ["src/shared.py"]},
+            {"id": "D", "touches": ["src/shared.py"]},
+        ]
+        tiers = _compute_tiers(tasks)
+        assert len(tiers) == 4
+        assert [tiers[i][0]["id"] for i in range(4)] == ["A", "B", "C", "D"]
+
+    def test_mixed_chain_and_parallel(self) -> None:
+        """A touches x, B touches x, C touches y, D touches y+x."""
+        from dgov.panes import _compute_tiers
+
+        tasks = [
+            {"id": "A", "touches": ["x"]},
+            {"id": "B", "touches": ["x"]},
+            {"id": "C", "touches": ["y"]},
+            {"id": "D", "touches": ["x", "y"]},
+        ]
+        tiers = _compute_tiers(tasks)
+        # Tier 0: A, C (disjoint)
+        # Tier 1: B (overlaps A on x), D cannot go here because overlaps C on y
+        # Tier 2: D
+        assert len(tiers) == 3
+        tier0_ids = {t["id"] for t in tiers[0]}
+        assert tier0_ids == {"A", "C"}
+
+    def test_circular_deps_do_not_hang(self) -> None:
+        """Tasks with identical touches serialize; no infinite loop."""
+        from dgov.panes import _compute_tiers
+
+        tasks = [{"id": f"t{i}", "touches": ["shared"]} for i in range(5)]
+        tiers = _compute_tiers(tasks)
+        assert len(tiers) == 5
+        # Each tier has exactly one task
+        for tier in tiers:
+            assert len(tier) == 1
+
+
+# ---------------------------------------------------------------------------
+# Batch: run_batch with live wait (mocked)
+# ---------------------------------------------------------------------------
+
+
+class TestRunBatchLiveWait:
+    def test_batch_creates_waits_merges(self, tmp_path: Path) -> None:
+        from dgov.panes import run_batch
+
+        spec = {
+            "project_root": str(tmp_path),
+            "tasks": [
+                {"id": "t1", "prompt": "do x", "agent": "claude", "touches": ["src/a.py"]},
+                {"id": "t2", "prompt": "do y", "agent": "claude", "touches": ["src/b.py"]},
+            ],
+        }
+        spec_file = tmp_path / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+
+        create_calls = []
+
+        def fake_create(**kw):
+            create_calls.append(kw.get("slug"))
+            return WorkerPane(
+                slug=kw["slug"],
+                prompt=kw["prompt"],
+                pane_id=f"%{len(create_calls)}",
+                agent=kw.get("agent", "claude"),
+                project_root=kw["project_root"],
+                worktree_path=str(tmp_path / "wt" / kw["slug"]),
+                branch_name=kw["slug"],
+            )
+
+        def fake_get_pane(sr, slug):
+            return {"slug": slug, "state": "done"}
+
+        def fake_is_done(sr, slug, pane_record=None):
+            return True
+
+        with (
+            patch("dgov.panes.create_worker_pane", side_effect=fake_create),
+            patch("dgov.panes._get_pane", side_effect=fake_get_pane),
+            patch("dgov.panes._is_done", side_effect=fake_is_done),
+            patch(
+                "dgov.panes.merge_worker_pane",
+                return_value={"merged": "t1", "branch": "t1"},
+            ),
+            patch("dgov.panes.time.sleep"),
+        ):
+            result = run_batch(str(spec_file), session_root=str(tmp_path))
+
+        assert "dry_run" not in result
+        assert set(create_calls) == {"t1", "t2"}
+        assert "t1" in result["merged"] or "t2" in result["merged"]
+        assert result["failed"] == []
+
+    def test_batch_aborts_on_merge_failure(self, tmp_path: Path) -> None:
+        from dgov.panes import run_batch
+
+        spec = {
+            "project_root": str(tmp_path),
+            "tasks": [
+                {"id": "t1", "prompt": "task1", "agent": "claude", "touches": ["a"]},
+                {"id": "t2", "prompt": "task2", "agent": "claude", "touches": ["a"]},
+            ],
+        }
+        spec_file = tmp_path / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+
+        def fake_create(**kw):
+            return WorkerPane(
+                slug=kw["slug"],
+                prompt=kw["prompt"],
+                pane_id="%1",
+                agent="claude",
+                project_root=kw["project_root"],
+                worktree_path=str(tmp_path / "wt"),
+                branch_name=kw["slug"],
+            )
+
+        with (
+            patch("dgov.panes.create_worker_pane", side_effect=fake_create),
+            patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "done"}),
+            patch("dgov.panes._is_done", return_value=True),
+            patch("dgov.panes.merge_worker_pane", return_value={"error": "conflict"}),
+            patch("dgov.panes.time.sleep"),
+        ):
+            result = run_batch(str(spec_file), session_root=str(tmp_path))
+
+        assert len(result["failed"]) > 0
+        assert result.get("aborted_remaining") is True
+
+    def test_batch_timeout_marks_failed(self, tmp_path: Path) -> None:
+        from dgov.panes import run_batch
+
+        spec = {
+            "project_root": str(tmp_path),
+            "tasks": [
+                {"id": "t1", "prompt": "slow", "agent": "claude", "touches": ["x"], "timeout": 1},
+            ],
+        }
+        spec_file = tmp_path / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+
+        def fake_create(**kw):
+            return WorkerPane(
+                slug=kw["slug"],
+                prompt=kw["prompt"],
+                pane_id="%1",
+                agent="claude",
+                project_root=kw["project_root"],
+                worktree_path=str(tmp_path / "wt"),
+                branch_name=kw["slug"],
+            )
+
+        def fake_is_done(sr, slug, pane_record=None):
+            return False
+
+        with (
+            patch("dgov.panes.create_worker_pane", side_effect=fake_create),
+            patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "active"}),
+            patch("dgov.panes._is_done", side_effect=fake_is_done),
+            patch("dgov.panes.time.sleep"),
+            patch("dgov.panes.time.monotonic") as mock_mono,
+            patch("dgov.panes.merge_worker_pane", return_value={"error": "timed out"}),
+        ):
+            # First monotonic() = start, second = way past timeout
+            mock_mono.side_effect = [0, 0, 999]
+            result = run_batch(str(spec_file), session_root=str(tmp_path))
+
+        assert "t1" in result["failed"]
