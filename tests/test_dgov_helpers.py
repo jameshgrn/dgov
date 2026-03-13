@@ -110,7 +110,9 @@ class TestPaneHelpers:
         with patch("dgov.panes.tmux.update_pane_status") as mock_update_status:
             _update_pane_state(str(tmp_path), "task-1", "merged")
 
-        state = json.loads((tmp_path / ".dgov" / "state.json").read_text())
+        from dgov.panes import _read_state
+
+        state = _read_state(str(tmp_path))
         assert state["panes"][0]["state"] == "merged"
         mock_update_status.assert_called_once_with("%2", "claude", "task-1", "merged")
 
