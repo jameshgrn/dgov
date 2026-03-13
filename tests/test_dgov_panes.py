@@ -1691,6 +1691,7 @@ class TestValidEvents:
         expected = {
             "pane_created",
             "pane_done",
+            "pane_resumed",
             "pane_timed_out",
             "pane_merged",
             "pane_merge_failed",
