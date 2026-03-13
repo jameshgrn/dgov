@@ -578,6 +578,17 @@ def pane_merge_all(project_root, session_root, close, resolve):
         sys.exit(1)
 
 
+def _fmt_duration(seconds: int) -> str:
+    """Format duration in human-readable format."""
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60}s"
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    return f"{h}h{m}m"
+
+
 @pane.command("list")
 @click.option(
     "--project-root",
@@ -591,7 +602,29 @@ def pane_list(project_root, session_root):
     from dgov.panes import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
-    click.echo(json.dumps(panes, indent=2))
+
+    # Format as table
+    header = (
+        f"{'Slug':<20} {'Agent':<10} {'State':<10} {'Alive':<6} "
+        f"{'Done':<5} {'Freshness':<8} {'Duration':<12} {'Prompt'}"
+    )
+    print(header)
+    print("-" * len(header))
+    for p in panes:
+        slug = (p.get("slug", "") or "")[:19]
+        agent = p.get("agent", "unknown") or "unknown"
+        state = p.get("state", "active") or "active"
+        alive = "✓" if p.get("alive") else "✗"
+        done = "✓" if p.get("done") else "✗"
+        freshness = p.get("freshness", "unknown") or "unknown"
+        duration_s = int(p.get("duration_s", 0))
+        duration = _fmt_duration(duration_s)
+        prompt = (p.get("prompt", "") or "")[:40]
+        row = (
+            f"{slug:<20} {agent:<10} {state:<10} {alive:<6} "
+            f"{done:<5} {freshness:<8} {duration:<12} {prompt}"
+        )
+        print(row)
 
 
 @pane.command("prune")
