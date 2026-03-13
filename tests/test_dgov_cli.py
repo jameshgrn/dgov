@@ -256,6 +256,7 @@ class TestPaneCreate:
             "env_vars": {"FOO": "bar", "BAZ": "qux"},
             "extra_flags": "--verbose",
             "session_root": "/session",
+            "skip_auto_structure": False,
         }
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:

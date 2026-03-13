@@ -67,7 +67,14 @@ def _check_governor_context() -> None:
 def cli(ctx):
     """dgov: governor + worker pane orchestration."""
     # Skip the guard for info-only commands and the bare invocation
-    if ctx.invoked_subcommand not in (None, "version", "agents", "checkpoint", "experiment"):
+    if ctx.invoked_subcommand not in (
+        None,
+        "version",
+        "agents",
+        "checkpoint",
+        "experiment",
+        "template",
+    ):
         _check_governor_context()
 
     if ctx.invoked_subcommand is not None:
@@ -175,10 +182,8 @@ def pane_top(cwd):
 
 
 @pane.command("create")
-@click.option(
-    "--agent", "-a", default="claude", help="Agent CLI to launch (use 'auto' to classify)"
-)
-@click.option("--prompt", "-p", required=True, help="Task prompt for the agent")
+@click.option("--agent", "-a", default=None, help="Agent CLI to launch (use 'auto' to classify)")
+@click.option("--prompt", "-p", default=None, help="Task prompt for the agent")
 @click.option(
     "--project-root",
     "-r",
@@ -212,6 +217,17 @@ def pane_top(cwd):
     type=int,
     help="Override agent max auto-retries for this pane (0=disable)",
 )
+@click.option(
+    "--template",
+    "-T",
+    default=None,
+    help="Use a prompt template by name",
+)
+@click.option(
+    "--var",
+    multiple=True,
+    help="Template variable as key=value (repeatable)",
+)
 def pane_create(
     agent,
     prompt,
@@ -224,10 +240,50 @@ def pane_create(
     preflight,
     fix,
     max_retries,
+    template,
+    var,
 ):
     """Create a worker pane: worktree + tmux + agent."""
     from dgov.agents import load_registry
     from dgov.panes import classify_task, create_worker_pane
+
+    skip_auto_structure = False
+
+    if template:
+        from dgov.templates import load_templates, render_template
+
+        session_root_abs = os.path.abspath(session_root or project_root)
+        templates = load_templates(session_root_abs)
+        if template not in templates:
+            click.echo(
+                f"Unknown template: {template}. Available: {', '.join(templates)}", err=True
+            )
+            sys.exit(1)
+        tpl = templates[template]
+
+        template_vars = {}
+        for item in var:
+            if "=" not in item:
+                click.echo(f"Invalid var (need key=value): {item}", err=True)
+                sys.exit(1)
+            k, v = item.split("=", 1)
+            template_vars[k] = v
+
+        try:
+            prompt = render_template(tpl, template_vars)
+        except ValueError as exc:
+            click.echo(str(exc), err=True)
+            sys.exit(1)
+
+        if agent is None:
+            agent = tpl.default_agent or "claude"
+        skip_auto_structure = True
+    elif prompt is None:
+        click.echo("Either --prompt or --template is required.", err=True)
+        sys.exit(1)
+
+    if agent is None:
+        agent = "claude"
 
     registry = load_registry(project_root)
 
@@ -270,6 +326,7 @@ def pane_create(
         env_vars=env_vars if env_vars else None,
         extra_flags=extra_flags,
         session_root=session_root,
+        skip_auto_structure=skip_auto_structure,
     )
 
     # Store per-pane max_retries override in metadata
@@ -912,6 +969,62 @@ def version_cmd():
 
     result = {"dgov": __version__}
     click.echo(json.dumps(result, indent=2))
+
+
+@cli.group()
+def template():
+    """Manage prompt templates."""
+
+
+@template.command("list")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+def template_list(project_root, session_root):
+    """List all available templates (built-in + user)."""
+    from dgov.templates import list_templates
+
+    session_root_abs = os.path.abspath(session_root or project_root)
+    click.echo(json.dumps(list_templates(session_root_abs), indent=2))
+
+
+@template.command("show")
+@click.argument("name")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+def template_show(name, project_root, session_root):
+    """Show template details and required variables."""
+    from dgov.templates import load_templates
+
+    session_root_abs = os.path.abspath(session_root or project_root)
+    templates = load_templates(session_root_abs)
+    if name not in templates:
+        click.echo(f"Unknown template: {name}. Available: {', '.join(templates)}", err=True)
+        sys.exit(1)
+    tpl = templates[name]
+    click.echo(
+        json.dumps(
+            {
+                "name": tpl.name,
+                "description": tpl.description,
+                "template": tpl.template,
+                "required_vars": tpl.required_vars,
+                "default_agent": tpl.default_agent,
+            },
+            indent=2,
+        )
+    )
+
+
+@template.command("create")
+@click.argument("name")
+def template_create(name):
+    """Print TOML format for creating a new template file."""
+    click.echo(f"# Save to .dgov/templates/{name}.toml")
+    click.echo(f'name = "{name}"')
+    click.echo('description = ""')
+    click.echo('template = "Do {{thing}} in {{file}}. Commit."')
+    click.echo('required_vars = ["thing", "file"]')
+    click.echo('default_agent = "pi"')
 
 
 @cli.group()
