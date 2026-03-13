@@ -210,11 +210,12 @@ def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
 def _count_active_agent_workers(session_root: str, agent: str) -> int:
     """Count how many workers for *agent* are currently alive."""
     panes = _all_panes(session_root)
+    all_tmux = tmux.bulk_pane_info()
     count = 0
     for p in panes:
         if p.get("agent") == agent:
             pane_id = p.get("pane_id", "")
-            if pane_id and tmux.pane_exists(pane_id):
+            if pane_id and pane_id in all_tmux:
                 count += 1
     return count
 
@@ -1050,17 +1051,13 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
     """List worker panes with live status from tmux."""
     session_root = os.path.abspath(session_root or project_root)
     panes = _all_panes(session_root)
+    all_tmux = tmux.bulk_pane_info()
     result = []
     for p in panes:
         pane_id = p.get("pane_id", "")
         slug = p["slug"]
-        alive = tmux.pane_exists(pane_id) if pane_id else False
-        cmd = ""
-        if alive:
-            try:
-                cmd = tmux.current_command(pane_id)
-            except RuntimeError:
-                pass
+        alive = pane_id in all_tmux if pane_id else False
+        cmd = all_tmux.get(pane_id, {}).get("current_command", "") if alive else ""
         done = _is_done(session_root, slug, pane_record=p)
         freshness = _compute_freshness(project_root, p)
         entry: dict = {
