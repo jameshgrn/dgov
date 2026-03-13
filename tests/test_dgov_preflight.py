@@ -275,9 +275,9 @@ def test_check_deps_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_deps_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_run(cmd, **kwargs):
         mock = MagicMock()
-        mock.returncode = 0
+        mock.returncode = 1
         mock.stdout = ""
-        mock.stderr = "Would install foo==1.0"
+        mock.stderr = "Resolved 5 packages; would install foo==1.0"
         return mock
 
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
@@ -733,12 +733,12 @@ class TestCheckDepsEdgeCases:
         assert r.passed is False
         assert "Resolution" in r.message
 
-    def test_would_install_in_stdout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_locked_out_of_sync(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_run(cmd, **kwargs):
             mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = "Would install foo==1.0"
-            mock.stderr = ""
+            mock.returncode = 1
+            mock.stdout = ""
+            mock.stderr = "Lockfile is not up to date"
             return mock
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
