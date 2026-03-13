@@ -71,7 +71,7 @@ class TestWorkerPane:
 class TestStatePath:
     def test_returns_correct_path(self) -> None:
         result = _state_path("/tmp/session")
-        assert result == Path("/tmp/session/.dgov/state.json")
+        assert result == Path("/tmp/session/.dgov/state.db")
 
 
 class TestReadState:
@@ -91,16 +91,17 @@ class TestReadState:
 class TestWriteState:
     def test_creates_dirs_and_writes(self, tmp_path: Path) -> None:
         _write_state(str(tmp_path), {"panes": [{"slug": "a"}]})
-        path = tmp_path / ".dgov" / "state.json"
-        assert path.exists()
-        data = json.loads(path.read_text())
-        assert data["panes"][0]["slug"] == "a"
+        db_path = tmp_path / ".dgov" / "state.db"
+        assert db_path.exists()
+        state = _read_state(str(tmp_path))
+        assert state["panes"][0]["slug"] == "a"
 
     def test_overwrites_existing(self, tmp_path: Path) -> None:
         _write_state(str(tmp_path), {"panes": [{"slug": "old"}]})
         _write_state(str(tmp_path), {"panes": [{"slug": "new"}]})
-        data = json.loads((tmp_path / ".dgov" / "state.json").read_text())
-        assert data["panes"][0]["slug"] == "new"
+        state = _read_state(str(tmp_path))
+        assert len(state["panes"]) == 1
+        assert state["panes"][0]["slug"] == "new"
 
 
 class TestAddPane:
