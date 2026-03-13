@@ -250,12 +250,17 @@ def _poll_once(
             stable_state.get("stable_since"),
         )
 
-    # Check for blocked state
+    # Check for blocked state and auto-respond if possible
     current_output = stable_state.get("last_output")
     if current_output:
         blocked_match = _detect_blocked(current_output)
         if blocked_match:
-            _p._emit_event(session_root, "pane_blocked", slug, question=blocked_match)
+            from dgov.responder import auto_respond
+
+            rule = auto_respond(session_root, slug, current_output)
+            if rule is None:
+                # No matching rule or cooldown — emit generic blocked event
+                _p._emit_event(session_root, "pane_blocked", slug, question=blocked_match)
 
     return False, "", stable_state.get("last_output"), stable_state.get("stable_since")
 

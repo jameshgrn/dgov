@@ -709,6 +709,22 @@ def pane_interact(slug, message, session_root):
         sys.exit(1)
 
 
+@pane.command("respond")
+@click.argument("slug")
+@click.argument("message")
+@SESSION_ROOT_OPTION
+def pane_respond(slug, message, session_root):
+    """Send a response to a worker pane (alias for interact)."""
+    from dgov.panes import interact_with_pane
+
+    session_root = os.path.abspath(session_root or ".")
+    if interact_with_pane(session_root, slug, message):
+        click.echo(json.dumps({"sent": True, "slug": slug}))
+    else:
+        click.echo(json.dumps({"error": f"Pane not found or dead: {slug}"}), err=True)
+        sys.exit(1)
+
+
 @pane.command("nudge")
 @click.argument("slug")
 @SESSION_ROOT_OPTION

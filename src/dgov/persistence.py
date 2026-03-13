@@ -31,6 +31,7 @@ VALID_EVENTS = frozenset(
         "pane_closed",
         "pane_retry_spawned",
         "pane_blocked",
+        "pane_auto_responded",
         "checkpoint_created",
         "review_pass",
         "review_fail",
