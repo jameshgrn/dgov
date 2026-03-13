@@ -2,7 +2,7 @@
 """Agent registry and launch command builder.
 
 Mirrors dmux's AGENT_REGISTRY from agentLaunch.js but in Python.
-Only includes agents Jake actually uses on this workstation.
+Only includes agents Jake actually uses on this machine.
 """
 
 from __future__ import annotations

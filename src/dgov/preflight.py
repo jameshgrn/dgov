@@ -1,4 +1,4 @@
-"""Pre-flight validation for workstation dispatch.
+"""Pre-flight validation for dgov dispatch.
 
 Runs all checks before spawning worker panes and optionally auto-fixes
 fixable failures (tunnel down, kerberos expired, stale worktrees, deps).

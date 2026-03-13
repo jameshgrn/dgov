@@ -30,7 +30,7 @@ def has_session() -> bool:
     return result.returncode == 0
 
 
-def ensure_session(name: str = "workstation") -> None:
+def ensure_session(name: str = "dgov") -> None:
     """Start a tmux session if no server is running, then attach to it.
 
     If already inside tmux ($TMUX is set), this is a no-op.
@@ -154,7 +154,7 @@ def select_layout(layout: str = "tiled") -> None:
 
 def send_prompt_via_buffer(pane_id: str, prompt: str) -> None:
     """Send prompt via tmux paste buffer (for send-keys transport agents)."""
-    buf_name = f"workstation-{int(time.time() * 1000)}"
+    buf_name = f"dgov-{int(time.time() * 1000)}"
     _run(["set-buffer", "-b", buf_name, "--", prompt])
     _run(["paste-buffer", "-b", buf_name, "-t", pane_id])
     _run(["send-keys", "-t", pane_id, "Enter"])

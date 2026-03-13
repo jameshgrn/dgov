@@ -94,7 +94,7 @@ def _check_kerberos_ticket() -> dict:
 
 
 def get_status(project_root: str, session_root: str | None = None) -> dict:
-    """Get full workstation status as JSON-serializable dict."""
+    """Get full dgov status as JSON-serializable dict."""
     panes = list_worker_panes(project_root, session_root=session_root)
     return {
         "panes": panes,

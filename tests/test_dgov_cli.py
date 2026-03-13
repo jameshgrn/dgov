@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,7 +28,7 @@ class TestCliGroup:
     def test_cli_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        assert "Workstation" in result.output
+        assert "dgov" in result.output
 
     def test_pane_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["pane", "--help"])
@@ -531,7 +532,7 @@ class TestHelpOutput:
     def test_main_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["--help"])
         assert result.exit_code == 0
-        assert "Workstation" in result.output
+        assert "dgov" in result.output
 
     def test_pane_help(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["pane", "--help"])
@@ -1048,6 +1049,34 @@ class TestStatusCommand:
         assert result.exit_code == 0
         output = json.loads(result.output)
         assert "panes" in output
+
+
+# ---------------------------------------------------------------------------
+# batch
+# ---------------------------------------------------------------------------
+
+
+class TestBatchCommand:
+    def test_batch_dry_run(self, runner: CliRunner, tmp_path: Path) -> None:
+        spec = {
+            "project_root": "/tmp/repo",
+            "tasks": [
+                {"id": "t1", "prompt": "do x", "touches": ["a.py"]},
+                {"id": "t2", "prompt": "do y", "touches": ["b.py"]},
+            ],
+        }
+        spec_file = tmp_path / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+        result = runner.invoke(cli, ["batch", str(spec_file), "--dry-run"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["dry_run"] is True
+        assert data["total_tasks"] == 2
+
+    def test_batch_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["batch", "--help"])
+        assert result.exit_code == 0
+        assert "DAG-ordered" in result.output
 
 
 # ---------------------------------------------------------------------------
