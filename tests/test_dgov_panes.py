@@ -715,7 +715,11 @@ class TestCloseWorkerPane:
 
         _write_state(
             str(tmp_path),
-            {"panes": [{"slug": "test", "pane_id": "%5", "owns_worktree": False}]},
+            {
+                "panes": [
+                    {"slug": "test", "pane_id": "%5", "owns_worktree": False, "state": "active"}
+                ]
+            },
         )
         with patch("dgov.panes._full_cleanup") as mock_cleanup:
             result = close_worker_pane(str(tmp_path), "test")
@@ -727,7 +731,11 @@ class TestCloseWorkerPane:
 
         _write_state(
             str(tmp_path),
-            {"panes": [{"slug": "test", "pane_id": "%5", "owns_worktree": True}]},
+            {
+                "panes": [
+                    {"slug": "test", "pane_id": "%5", "owns_worktree": True, "state": "active"}
+                ]
+            },
         )
         with patch("dgov.panes._full_cleanup") as mock_cleanup:
             close_worker_pane(str(tmp_path), "test", force=True)
@@ -749,6 +757,7 @@ class TestCloseWorkerPane:
                         "owns_worktree": True,
                         "worktree_path": str(wt),
                         "branch_name": "test-br",
+                        "state": "active",
                     }
                 ]
             },
@@ -1035,7 +1044,11 @@ class TestEscalateWorkerPane:
 
         _write_state(
             str(tmp_path),
-            {"panes": [{"slug": "old", "prompt": "Fix the bug", "agent": "pi"}]},
+            {
+                "panes": [
+                    {"slug": "old", "prompt": "Fix the bug", "agent": "pi", "state": "failed"}
+                ]
+            },
         )
         new_pane = WorkerPane(
             slug="old-esc",
@@ -1236,6 +1249,7 @@ class TestMergeWorkerPane:
             prompt="x",
             pane_id="%1",
             agent="pi",
+            state="done",
             project_root=str(tmp_path),
             worktree_path=str(tmp_path / "wt"),
             branch_name="feat",
