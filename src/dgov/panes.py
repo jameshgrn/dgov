@@ -29,6 +29,7 @@ VALID_EVENTS = frozenset(
     {
         "pane_created",
         "pane_done",
+        "pane_resumed",
         "pane_timed_out",
         "pane_merged",
         "pane_merge_failed",
@@ -2170,6 +2171,160 @@ def retry_worker_pane(
         "agent": original_agent,
         "attempt": attempt,
         "pane_id": new_pane.pane_id,
+    }
+
+
+def resume_worker_pane(
+    project_root: str,
+    slug: str,
+    session_root: str | None = None,
+    agent: str | None = None,
+    prompt: str | None = None,
+    permission_mode: str = "acceptEdits",
+) -> dict:
+    """Resume a pane by re-launching an agent in its existing worktree.
+
+    Works when the agent crashed, tmux pane died, or a dirty close left the
+    worktree on disk. Reuses the same slug, branch, and worktree.
+    """
+    from pathlib import Path
+
+    session_root = os.path.abspath(session_root or project_root)
+    target = _get_pane(session_root, slug)
+
+    if not target:
+        return {"error": f"Pane not found: {slug}"}
+
+    worktree_path = target.get("worktree_path", "")
+    branch_name = target.get("branch_name", "")
+
+    # Verify worktree still exists on disk
+    if not worktree_path or not Path(worktree_path).exists():
+        return {"error": f"Worktree no longer exists: {worktree_path}"}
+
+    # Verify branch still exists
+    branch_check = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", "--verify", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    if branch_check.returncode != 0:
+        return {"error": f"Branch no longer exists: {branch_name}"}
+
+    # Kill old tmux pane if it still exists
+    old_pane_id = target.get("pane_id", "")
+    if old_pane_id and tmux.pane_exists(old_pane_id):
+        tmux.kill_pane(old_pane_id)
+
+    # Resolve agent and prompt
+    resume_agent = agent or target.get("agent", "claude")
+    original_prompt = prompt or target.get("prompt", "")
+    resume_context = (
+        "\n\nYou are RESUMING a previous session in this worktree. "
+        "Run 'git status' and 'git log --oneline -5' first to see what has "
+        "already been done. Continue from where the previous agent left off. "
+        "Do NOT redo work that is already committed."
+    )
+    full_prompt = original_prompt + resume_context
+
+    if resume_agent == "pi":
+        full_prompt = _structure_pi_prompt(full_prompt)
+
+    # Rewrite paths
+    rewritten_prompt = full_prompt.replace(project_root, worktree_path)
+
+    # Create new tmux pane
+    tmux.setup_pane_borders()
+    pane_id = tmux.split_pane(cwd=worktree_path)
+    tmux._run(["set-option", "-p", "-t", pane_id, "allow-rename", "off"])
+    tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
+    title = _build_pane_title(slug, project_root)
+    tmux.set_title(pane_id, title)
+    tmux.style_worker_pane(pane_id, resume_agent)
+    tmux.set_pane_option(pane_id, "allow-set-title", "off")
+    tmux.select_layout("tiled")
+
+    # Clear recursion guard + inject env
+    tmux.send_command(pane_id, "unset CLAUDECODE")
+
+    # Trigger worktree_created hook
+    hook_env = {
+        "DGOV_ROOT": project_root,
+        "DGOV_PANE_ID": pane_id,
+        "DGOV_SLUG": slug,
+        "DGOV_PROMPT": original_prompt,
+        "DGOV_AGENT": resume_agent,
+        "DGOV_WORKTREE_PATH": worktree_path,
+        "DGOV_BRANCH": branch_name,
+        "DGOV_OWNS_WORKTREE": "1",
+    }
+    hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
+
+    if not hook_ran:
+        protected_warning = (
+            "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
+            + ", ".join(sorted(_PROTECTED_FILES))
+            + ". Do NOT create new documentation files."
+        )
+        if protected_warning.strip() not in rewritten_prompt:
+            rewritten_prompt += protected_warning
+
+    # Build done signal
+    done_signal = str(Path(session_root) / _STATE_DIR / "done" / slug)
+    Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
+    # Clear old done signal if it exists
+    Path(done_signal).unlink(missing_ok=True)
+
+    # Launch agent
+    agent_def = AGENT_REGISTRY.get(resume_agent)
+    if agent_def:
+        if agent_def.prompt_transport == "send-keys":
+            base_cmd = build_launch_command(
+                resume_agent,
+                None,
+                permission_mode,
+                project_root=worktree_path,
+                slug=slug,
+                extra_flags="",
+            )
+            wrapped_cmd = f"{base_cmd}; touch {shlex.quote(done_signal)}"
+            tmux.send_command(pane_id, wrapped_cmd)
+            if agent_def.send_keys_ready_delay_ms > 0:
+                time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
+            for key in agent_def.send_keys_pre_prompt:
+                tmux._run(["send-keys", "-t", pane_id, key])
+            tmux.send_prompt_via_buffer(pane_id, rewritten_prompt)
+        else:
+            launch_cmd = build_launch_command(
+                resume_agent,
+                rewritten_prompt,
+                permission_mode,
+                project_root=worktree_path,
+                slug=slug,
+                extra_flags="",
+            )
+            wrapped_cmd = f"{launch_cmd}; touch {shlex.quote(done_signal)}"
+            tmux.send_command(pane_id, wrapped_cmd)
+
+    # Update state: new pane_id, back to active
+    state = _read_state(session_root)
+    for p in state["panes"]:
+        if p.get("slug") == slug:
+            p["pane_id"] = pane_id
+            p["state"] = "active"
+            if agent:
+                p["agent"] = resume_agent
+            break
+    _write_state(session_root, state)
+
+    _emit_event(session_root, "pane_resumed", slug, agent=resume_agent)
+
+    return {
+        "resumed": True,
+        "slug": slug,
+        "agent": resume_agent,
+        "pane_id": pane_id,
+        "worktree": worktree_path,
     }
 
 
