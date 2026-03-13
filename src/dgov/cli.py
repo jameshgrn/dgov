@@ -62,13 +62,37 @@ def _check_governor_context() -> None:
         pass
 
 
-@click.group()
-def cli():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
     """dgov: governor + worker pane orchestration."""
-    ctx = click.get_current_context()
-    # Skip the guard for 'version' and 'agents' (info-only commands)
-    if ctx.invoked_subcommand not in ("version", "agents", "checkpoint"):
+    # Skip the guard for info-only commands and the bare invocation
+    if ctx.invoked_subcommand not in (None, "version", "agents", "checkpoint"):
         _check_governor_context()
+
+    if ctx.invoked_subcommand is not None:
+        return
+
+    # Bare `dgov` — launch or announce the governor session
+    from dgov.tmux import setup_pane_borders
+
+    if os.environ.get("TMUX"):
+        setup_pane_borders()
+        repo = Path.cwd().name
+        click.echo(f"{repo} — governor ready")
+    else:
+        # Ensure the dgov tmux session exists, then hand off
+        exists = subprocess.run(
+            ["tmux", "has-session", "-t", "dgov"],
+            capture_output=True,
+        )
+        if exists.returncode != 0:
+            subprocess.run(
+                ["tmux", "new-session", "-d", "-s", "dgov"],
+                capture_output=True,
+                check=True,
+            )
+        os.execvp("tmux", ["tmux", "attach-session", "-t", "dgov"])
 
 
 @cli.group()
