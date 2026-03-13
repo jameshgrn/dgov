@@ -387,6 +387,22 @@ def _structure_pi_prompt(raw_prompt: str, files: list[str] | None = None) -> str
     return "\n".join(steps)
 
 
+# -- Slug validation --
+
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,49}$")
+
+
+def _validate_slug(slug: str) -> str:
+    """Validate slug for safe use in file paths and shell commands."""
+    if not _SLUG_RE.match(slug):
+        raise ValueError(
+            f"Invalid slug: {slug!r}. "
+            "Must be 1-50 chars, lowercase alphanumeric and hyphens, "
+            "starting with alphanumeric."
+        )
+    return slug
+
+
 # -- Slug generation --
 
 
@@ -410,7 +426,7 @@ def _generate_slug(prompt: str, max_words: int = 4) -> str:
         )
         raw = result["choices"][0]["message"]["content"].strip().lower()
         slug = re.sub(r"[^a-z0-9-]", "", raw).strip("-")
-        if slug and len(slug) <= 50:
+        if slug and _SLUG_RE.match(slug):
             return slug
     except Exception:
         logger.debug("LLM-based slug generation failed, using word extraction fallback")
@@ -419,7 +435,10 @@ def _generate_slug(prompt: str, max_words: int = 4) -> str:
     skip = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "or", "is", "it"}
     content = [w for w in words if w not in skip][:max_words]
     slug = "-".join(content) if content else f"task-{int(time.time())}"
-    return slug[:50]
+    slug = slug[:50]
+    # Ensure generated slug passes validation (strip leading hyphens if needed)
+    slug = slug.lstrip("-") or f"task-{int(time.time())}"
+    return slug
 
 
 # -- Git worktree helpers --
@@ -692,6 +711,7 @@ def create_worker_pane(
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
     slug = slug or _generate_slug(prompt)
+    _validate_slug(slug)
     owns_worktree = existing_worktree is None
     branch_name = slug
     worktree_path = (
