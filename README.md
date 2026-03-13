@@ -71,6 +71,15 @@ dgov pane review <slug> --full     # include complete diff
 dgov pane capture <slug> -n 50     # last 50 lines of pane output
 ```
 
+### Freshness
+
+Computed on demand during `review` and `list`. Checks:
+- Commits on main since the pane's base SHA
+- File overlap between worker branch and main changes
+- Pane age in hours
+
+Classification: `fresh` (no overlap, main unchanged), `warn` (overlap or age >4h), `stale` (significant overlap or age >12h).
+
 ### Merge
 
 ```
@@ -95,6 +104,31 @@ Post-merge: runs `ruff check --fix` + `ruff format` on changed `.py` files, amen
 ```
 dgov pane escalate <slug> -a claude    # re-dispatch to a stronger agent
 ```
+
+### Retry
+
+```
+dgov pane retry <slug>             # re-dispatch failed pane with a new attempt
+```
+
+Creates a new pane with an incremented attempt suffix (e.g. `fix-parser-2`), inheriting the original prompt and agent. The original pane is marked `superseded`.
+
+### Diff
+
+```
+dgov pane diff <slug>              # show full diff vs base
+dgov pane diff <slug> --stat       # diffstat summary
+dgov pane diff <slug> --name-only  # changed file names only
+```
+
+### Checkpoint
+
+```
+dgov checkpoint create <name>      # snapshot current state
+dgov checkpoint list               # list all checkpoints
+```
+
+Saves a copy of `.dgov/state.json` and `.dgov/events.jsonl` to `.dgov/checkpoints/<name>/`.
 
 ### Close and Prune
 
@@ -200,10 +234,22 @@ Every worker prompt gets the TDD protocol appended. Workers write structured JSO
 
 All state lives in `.dgov/state.json` (not dmux's config). Pane records track slug, agent, pane ID, worktree path, branch, base SHA, and creation time.
 
+Canonical pane states: `active`, `done`, `reviewed_pass`, `reviewed_fail`, `merged`, `merge_conflict`, `timed_out`, `escalated`, `superseded`, `closed`, `abandoned`.
+
 ```
 dgov status            # panes + tunnel health + kerberos status
 dgov pane list         # pane details with live tmux status + TDD progress
 ```
+
+## Events
+
+Append-only log at `.dgov/events.jsonl`. Every lifecycle command writes a structured event:
+
+```json
+{"ts": "2026-03-12T18:22:10Z", "event": "pane_created", "pane": "fix-parser-1", "agent": "claude"}
+```
+
+Event types: `pane_created`, `pane_done`, `pane_timed_out`, `pane_merged`, `pane_merge_failed`, `pane_escalated`, `pane_superseded`, `pane_closed`, `pane_retry_spawned`, `checkpoint_created`, `review_pass`, `review_fail`.
 
 ## Full Command Reference
 
@@ -220,6 +266,10 @@ dgov pane close        # kill pane + cleanup
 dgov pane prune        # remove stale entries
 dgov pane classify     # classify prompt -> agent recommendation
 dgov pane list         # list panes with status
+dgov pane retry        # re-dispatch failed pane with new attempt
+dgov pane diff         # show diff vs base (--stat, --name-only)
+dgov checkpoint create # snapshot current state
+dgov checkpoint list   # list checkpoints
 dgov batch             # DAG-ordered batch execution
 dgov preflight         # run preflight checks
 dgov rebase            # rebase governor onto upstream

@@ -1,4 +1,4 @@
-"""Unit tests for workstation preflight validation."""
+"""Unit tests for dgov preflight validation."""
 
 from __future__ import annotations
 

@@ -278,7 +278,7 @@ class TestSendPromptViaBuffer:
 
 
 class TestTmuxPaneManagement:
-    """Unit tests for workstation/tmux.py functions using monkeypatched subprocess.run."""
+    """Unit tests for dgov/tmux.py functions using monkeypatched subprocess.run."""
 
     def test_split_pane_horizontal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Verify correct tmux split-window command constructed with -h flag."""
