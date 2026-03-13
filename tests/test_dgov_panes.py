@@ -331,6 +331,30 @@ class TestIsDone:
         (done_dir / "test-slug").touch()
         assert _is_done(str(tmp_path), "test-slug") is True
 
+    def test_done_signal_ignored_while_agent_still_running(self, tmp_path: Path) -> None:
+        done_dir = tmp_path / ".dgov" / "done"
+        done_dir.mkdir(parents=True)
+        (done_dir / "test-slug").touch()
+        record = {"pane_id": "%5"}
+        with (
+            patch("dgov.panes._agent_still_running", return_value=True),
+            patch("dgov.panes._update_pane_state") as mock_state,
+        ):
+            assert _is_done(str(tmp_path), "test-slug", pane_record=record) is False
+        mock_state.assert_not_called()
+
+    def test_done_signal_returns_true_after_agent_exits(self, tmp_path: Path) -> None:
+        done_dir = tmp_path / ".dgov" / "done"
+        done_dir.mkdir(parents=True)
+        (done_dir / "test-slug").touch()
+        record = {"pane_id": "%5"}
+        with (
+            patch("dgov.panes._agent_still_running", return_value=False),
+            patch("dgov.panes._update_pane_state") as mock_state,
+        ):
+            assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
+        mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done")
+
     def test_no_pane_record_no_signal(self, tmp_path: Path) -> None:
         assert _is_done(str(tmp_path), "test-slug") is False
 
@@ -510,6 +534,49 @@ class TestListWorkerPanes:
         assert result[0]["alive"] is True
         assert result[0]["current_command"] == "claude"
         assert result[0]["done"] is False
+
+    def test_skips_is_done_for_superseded_pane(self, tmp_path: Path) -> None:
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "old-task",
+                        "agent": "pi",
+                        "pane_id": "%1",
+                        "project_root": str(tmp_path),
+                        "worktree_path": "/wt-old",
+                        "branch_name": "old-task",
+                        "prompt": "Old task",
+                        "state": "superseded",
+                    },
+                    {
+                        "slug": "active-task",
+                        "agent": "pi",
+                        "pane_id": "%2",
+                        "project_root": str(tmp_path),
+                        "worktree_path": "/wt-active",
+                        "branch_name": "active-task",
+                        "prompt": "Active task",
+                        "state": "active",
+                    },
+                ]
+            },
+        )
+
+        checked: list[str] = []
+
+        def fake_is_done(session_root, slug, pane_record=None):
+            checked.append(slug)
+            return False
+
+        with patch("dgov.panes._is_done", side_effect=fake_is_done):
+            result = list_worker_panes(str(tmp_path))
+
+        assert checked == ["active-task"]
+        superseded = next(pane for pane in result if pane["slug"] == "old-task")
+        assert superseded["state"] == "superseded"
+        assert superseded["done"] is True
 
 
 # ---------------------------------------------------------------------------

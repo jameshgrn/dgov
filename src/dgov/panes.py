@@ -643,9 +643,12 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
     for p in panes:
         pane_id = p.get("pane_id", "")
         slug = p["slug"]
+        state = p.get("state") or "active"
         alive = pane_id in all_tmux if pane_id else False
         cmd = all_tmux.get(pane_id, {}).get("current_command", "") if alive else ""
-        done = _is_done(session_root, slug, pane_record=p)
+        done = state != "active"
+        if state == "active":
+            done = _is_done(session_root, slug, pane_record=p)
         freshness = _compute_freshness(project_root, p)
         entry: dict = {
             "slug": slug,
@@ -653,7 +656,7 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
             "pane_id": pane_id,
             "alive": alive,
             "done": done,
-            "state": p.get("state", "active"),
+            "state": state,
             "current_command": cmd,
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),

@@ -103,6 +103,9 @@ def _is_done(
 
     # Signal 1a: done-signal file (clean exit)
     if done_path.exists():
+        pane_id = pane_record.get("pane_id", "") if pane_record else ""
+        if pane_id and _p._agent_still_running(pane_id):
+            return False
         _p._update_pane_state(session_root, slug, "done")
         return True
 
