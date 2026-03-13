@@ -1720,3 +1720,97 @@ class TestListCheckpoints:
         result = list_checkpoints(str(tmp_path))
         assert len(result) == 1
         assert result[0]["name"] == "good"
+
+
+# ---------------------------------------------------------------------------
+# Batch: _compute_tiers
+# ---------------------------------------------------------------------------
+
+
+class TestComputeTiers:
+    def test_disjoint_touches_single_tier(self) -> None:
+        from dgov.panes import _compute_tiers
+
+        tasks = [
+            {"id": "a", "touches": ["src/foo.py"]},
+            {"id": "b", "touches": ["tests/test_bar.py"]},
+            {"id": "c", "touches": ["docs/readme.md"]},
+        ]
+        tiers = _compute_tiers(tasks)
+        assert len(tiers) == 1
+        assert {t["id"] for t in tiers[0]} == {"a", "b", "c"}
+
+    def test_overlapping_touches_multiple_tiers(self) -> None:
+        from dgov.panes import _compute_tiers
+
+        tasks = [
+            {"id": "a", "touches": ["src/foo.py"]},
+            {"id": "b", "touches": ["src/foo.py"]},
+            {"id": "c", "touches": ["tests/bar.py"]},
+        ]
+        tiers = _compute_tiers(tasks)
+        assert len(tiers) == 2
+        # First tier: a and c (disjoint), second tier: b
+        tier0_ids = {t["id"] for t in tiers[0]}
+        tier1_ids = {t["id"] for t in tiers[1]}
+        assert "a" in tier0_ids
+        assert "c" in tier0_ids
+        assert "b" in tier1_ids
+
+    def test_prefix_containment(self) -> None:
+        from dgov.panes import _compute_tiers
+
+        tasks = [
+            {"id": "a", "touches": ["src/"]},
+            {"id": "b", "touches": ["src/foo.py"]},
+        ]
+        tiers = _compute_tiers(tasks)
+        assert len(tiers) == 2
+        assert tiers[0][0]["id"] == "a"
+        assert tiers[1][0]["id"] == "b"
+
+    def test_no_touches_same_tier(self) -> None:
+        from dgov.panes import _compute_tiers
+
+        tasks = [
+            {"id": "a", "touches": []},
+            {"id": "b", "touches": []},
+        ]
+        tiers = _compute_tiers(tasks)
+        assert len(tiers) == 1
+        assert len(tiers[0]) == 2
+
+    def test_empty_tasks(self) -> None:
+        from dgov.panes import _compute_tiers
+
+        assert _compute_tiers([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Batch: run_batch dry_run
+# ---------------------------------------------------------------------------
+
+
+class TestRunBatchDryRun:
+    def test_dry_run_returns_tiers(self, tmp_path: Path) -> None:
+        from dgov.panes import run_batch
+
+        spec = {
+            "project_root": "/tmp/repo",
+            "tasks": [
+                {"id": "t1", "prompt": "do x", "agent": "pi", "touches": ["src/a.py"]},
+                {"id": "t2", "prompt": "do y", "agent": "claude", "touches": ["src/b.py"]},
+                {"id": "t3", "prompt": "do z", "agent": "pi", "touches": ["src/a.py"]},
+            ],
+        }
+        spec_file = tmp_path / "spec.json"
+        spec_file.write_text(json.dumps(spec))
+
+        result = run_batch(str(spec_file), dry_run=True)
+        assert result["dry_run"] is True
+        assert result["total_tasks"] == 3
+        # t1 and t2 disjoint -> tier 0, t3 overlaps t1 -> tier 1
+        assert len(result["tiers"]) == 2
+        assert "t1" in result["tiers"][0]
+        assert "t2" in result["tiers"][0]
+        assert "t3" in result["tiers"][1]

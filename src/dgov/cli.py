@@ -1,4 +1,4 @@
-"""Workstation CLI — programmatic pane management for the governor."""
+"""dgov CLI — programmatic pane management for the governor."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _get_dmux_version() -> str | None:
 
 @click.group()
 def cli():
-    """Workstation: governor + worker pane orchestration."""
+    """dgov: governor + worker pane orchestration."""
     ctx = click.get_current_context()
     # Skip the guard for 'version' and 'agents' (info-only commands)
     if ctx.invoked_subcommand not in ("version", "agents", "checkpoint"):
@@ -665,7 +665,7 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
 )
 @SESSION_ROOT_OPTION
 def status(project_root, session_root):
-    """Get full workstation status as JSON."""
+    """Get full dgov status as JSON."""
     from dgov.state import get_status
 
     click.echo(json.dumps(get_status(project_root, session_root=session_root), indent=2))
@@ -800,6 +800,20 @@ def checkpoint_list(project_root, session_root):
     session_root = os.path.abspath(session_root or project_root)
     result = list_checkpoints(session_root)
     click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("batch")
+@click.argument("spec_path", type=click.Path(exists=True))
+@SESSION_ROOT_OPTION
+@click.option("--dry-run", is_flag=True, help="Show computed tiers without executing")
+def batch(spec_path, session_root, dry_run):
+    """Execute a batch spec with DAG-ordered parallelism."""
+    from dgov.panes import run_batch
+
+    result = run_batch(spec_path, session_root=session_root, dry_run=dry_run)
+    click.echo(json.dumps(result, indent=2))
+    if result.get("failed"):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

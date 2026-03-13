@@ -1695,7 +1695,7 @@ def rebase_governor(project_root: str, onto: str | None = None) -> dict:
     stashed = False
     if dirty:
         stash = subprocess.run(
-            ["git", "-C", project_root, "stash", "push", "-m", "workstation-rebase-auto"],
+            ["git", "-C", project_root, "stash", "push", "-m", "dgov-rebase-auto"],
             capture_output=True,
             text=True,
         )
@@ -1954,3 +1954,155 @@ def list_checkpoints(session_root: str) -> list[dict]:
         except (json.JSONDecodeError, OSError):
             continue
     return checkpoints
+
+
+# ---------------------------------------------------------------------------
+# Batch execution
+# ---------------------------------------------------------------------------
+
+
+def _compute_tiers(tasks: list[dict]) -> list[list[dict]]:
+    """Group tasks into parallel tiers based on file touches.
+
+    Tasks with disjoint `touches` go into the same tier.
+    Tasks with overlapping touches are serialized into subsequent tiers.
+    """
+    tiers: list[list[dict]] = []
+    remaining = list(tasks)
+
+    while remaining:
+        tier: list[dict] = []
+        tier_touches: set[str] = set()
+        next_remaining: list[dict] = []
+
+        for task in remaining:
+            task_touches = set(task.get("touches", []))
+            has_overlap = False
+            for tt in task_touches:
+                for et in tier_touches:
+                    if tt == et or tt.startswith(et) or et.startswith(tt):
+                        has_overlap = True
+                        break
+                if has_overlap:
+                    break
+
+            if not has_overlap:
+                tier.append(task)
+                tier_touches.update(task_touches)
+            else:
+                next_remaining.append(task)
+
+        if tier:
+            tiers.append(tier)
+        remaining = next_remaining
+
+    return tiers
+
+
+def run_batch(
+    spec_path: str,
+    session_root: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Execute a batch spec: create panes, wait, merge in tier order.
+
+    Spec format (JSON file):
+    {
+        "project_root": "/path/to/repo",
+        "tasks": [
+            {"id": "task-1", "prompt": "...", "agent": "pi", "touches": ["src/foo.py"]},
+            {"id": "task-2", "prompt": "...", "agent": "claude", "touches": ["tests/"]}
+        ]
+    }
+
+    Tasks with disjoint `touches` run in parallel tiers.
+    Overlapping touches are serialized.
+    """
+    with open(spec_path) as f:
+        spec = json.load(f)
+
+    project_root = spec["project_root"]
+    tasks = spec["tasks"]
+    session_root = os.path.abspath(session_root or project_root)
+
+    tiers = _compute_tiers(tasks)
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "tiers": [[t["id"] for t in tier] for tier in tiers],
+            "total_tasks": len(tasks),
+        }
+
+    results: dict = {"tiers": [], "merged": [], "failed": []}
+
+    for tier_idx, tier in enumerate(tiers):
+        tier_result: dict = {"tier": tier_idx, "tasks": []}
+
+        # Create all panes in this tier
+        slugs = []
+        for task in tier:
+            try:
+                pane = create_worker_pane(
+                    project_root=project_root,
+                    prompt=task["prompt"],
+                    agent=task.get("agent", "claude"),
+                    permission_mode=task.get("permission_mode", "acceptEdits"),
+                    slug=task["id"],
+                    session_root=session_root,
+                )
+                slugs.append(pane.slug)
+                tier_result["tasks"].append(
+                    {"id": task["id"], "slug": pane.slug, "status": "created"}
+                )
+            except Exception as e:
+                tier_result["tasks"].append(
+                    {"id": task["id"], "status": "failed", "error": str(e)}
+                )
+                results["failed"].append(task["id"])
+
+        # Wait for all panes in tier
+        timeout = max(t.get("timeout", 600) for t in tier) if tier else 600
+        start = time.monotonic()
+        pending = set(slugs)
+
+        while pending and (time.monotonic() - start < timeout):
+            for slug in list(pending):
+                rec = _get_pane(session_root, slug)
+                if _is_done(session_root, slug, pane_record=rec):
+                    pending.discard(slug)
+            if pending:
+                time.sleep(3)
+
+        # Merge completed panes
+        for slug in slugs:
+            if slug in pending:
+                tier_result["tasks"] = [
+                    {**t, "status": "timed_out"} if t.get("slug") == slug else t
+                    for t in tier_result["tasks"]
+                ]
+                results["failed"].append(slug)
+                continue
+
+            merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
+            if "merged" in merge_result:
+                results["merged"].append(slug)
+                tier_result["tasks"] = [
+                    {**t, "status": "merged"} if t.get("slug") == slug else t
+                    for t in tier_result["tasks"]
+                ]
+            else:
+                results["failed"].append(slug)
+                tier_result["tasks"] = [
+                    {**t, "status": "merge_failed"} if t.get("slug") == slug else t
+                    for t in tier_result["tasks"]
+                ]
+
+        results["tiers"].append(tier_result)
+
+        # Abort remaining tiers if any failure
+        if results["failed"]:
+            results["aborted_remaining"] = True
+            break
+
+    return results
