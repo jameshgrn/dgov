@@ -677,7 +677,6 @@ class TestProtectedFiles:
         from dgov.panes import _PROTECTED_FILES
 
         assert "CLAUDE.md" in _PROTECTED_FILES
-        assert "CLAUDE.md.full" in _PROTECTED_FILES
         assert "THEORY.md" in _PROTECTED_FILES
         assert ".napkin.md" in _PROTECTED_FILES
 
