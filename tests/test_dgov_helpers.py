@@ -1,4 +1,4 @@
-"""Unit tests for workstation helper functions — panes state, slug generation."""
+"""Unit tests for dgov helper functions — panes state, slug generation."""
 
 from __future__ import annotations
 
