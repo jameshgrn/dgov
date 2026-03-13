@@ -294,27 +294,18 @@ def check_deps() -> CheckResult:
     """Verify installed deps match pyproject.toml via uv."""
     try:
         result = subprocess.run(
-            ["uv", "sync", "--dry-run"],
+            ["uv", "sync", "--locked"],
             capture_output=True,
             text=True,
             timeout=30,
         )
-        # If uv sync --dry-run reports nothing to do, deps are in sync.
-        # A non-zero exit or "Would install" in output means out of sync.
+        # --locked asserts the lockfile won't change. Non-zero exit = out of sync.
         if result.returncode != 0:
             return CheckResult(
                 name="deps",
                 passed=False,
                 critical=False,
                 message=f"Dependency check failed: {result.stderr.strip()[:200]}",
-                fixable=True,
-            )
-        if "would install" in result.stderr.lower() or "would install" in result.stdout.lower():
-            return CheckResult(
-                name="deps",
-                passed=False,
-                critical=False,
-                message="Dependencies out of sync (uv sync needed)",
                 fixable=True,
             )
     except FileNotFoundError:
@@ -329,7 +320,7 @@ def check_deps() -> CheckResult:
             name="deps",
             passed=False,
             critical=False,
-            message="uv sync --dry-run timed out",
+            message="uv sync --locked timed out",
         )
     return CheckResult(
         name="deps",
