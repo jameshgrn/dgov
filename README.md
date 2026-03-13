@@ -1,6 +1,6 @@
 # dgov
 
-Programmatic governor CLI for [dmux](https://github.com/anthropics/dmux). Dispatches AI coding agents into isolated git worktrees, manages their lifecycle, and integrates results back to main.
+Governor CLI for dispatching AI coding agents across git worktrees. Manages their lifecycle and integrates results back to main.
 
 ## Install
 
@@ -8,7 +8,7 @@ Programmatic governor CLI for [dmux](https://github.com/anthropics/dmux). Dispat
 uv pip install -e .
 ```
 
-Requires Python >= 3.12, a running tmux session, and dmux installed globally.
+Requires Python >= 3.12 and a running tmux session.
 
 ## Architecture
 
@@ -170,7 +170,6 @@ dgov preflight -a claude -t src/foo.py -t src/bar.py
 
 Checks:
 - **agent_cli**: agent binary on PATH
-- **dmux_compat**: installed dmux version matches pin (currently `==5.5.3`)
 - **git_clean**: no staged/unstaged changes to tracked files
 - **git_branch**: on expected branch
 - **tunnel**: SSH tunnel health-check (pi only, ports 8080-8082)
@@ -181,24 +180,16 @@ Checks:
 
 Auto-fix (`--fix`, on by default during create): brings up SSH tunnel, renews Kerberos via `kinit`, runs `uv sync`, prunes stale worktrees. Re-runs failed checks after fix attempts.
 
-## dmux Version Pinning
-
-dgov pins to an exact dmux version (`==5.5.3`). Any dmux update breaks dgov until the pin is updated. Check compatibility:
-
-```
-dgov version
-```
-
 ## Hook System
 
 Hooks are searched in priority order:
-1. `.dmux-hooks/` (version controlled)
-2. `.dmux/hooks/` (gitignored, local)
-3. `~/.dmux/hooks/` (global)
+1. `.dgov-hooks/` (version controlled)
+2. `.dgov/hooks/` (gitignored, local)
+3. `~/.dgov/hooks/` (global)
 
 ### worktree_created
 
-Runs after worktree + tmux pane are created, before the agent launches. Receives `DMUX_ROOT`, `DMUX_SLUG`, `DMUX_PROMPT`, `DMUX_AGENT`, `DMUX_WORKTREE_PATH`, `DMUX_BRANCH` in env.
+Runs after worktree + tmux pane are created, before the agent launches. Receives `DGOV_ROOT`, `DGOV_SLUG`, `DGOV_PROMPT`, `DGOV_AGENT`, `DGOV_WORKTREE_PATH`, `DGOV_BRANCH` in env.
 
 If the hook doesn't run, dgov falls back to: adding `CLAUDE.md.full` to the worktree's git exclude, and appending a protected-file warning to the prompt.
 
@@ -232,7 +223,7 @@ Every worker prompt gets the TDD protocol appended. Workers write structured JSO
 
 ## State
 
-All state lives in `.dgov/state.json` (not dmux's config). Pane records track slug, agent, pane ID, worktree path, branch, base SHA, and creation time.
+All state lives in `.dgov/state.json`. Pane records track slug, agent, pane ID, worktree path, branch, base SHA, and creation time.
 
 Canonical pane states: `active`, `done`, `reviewed_pass`, `reviewed_fail`, `merged`, `merge_conflict`, `timed_out`, `escalated`, `superseded`, `closed`, `abandoned`.
 
@@ -275,5 +266,5 @@ dgov preflight         # run preflight checks
 dgov rebase            # rebase governor onto upstream
 dgov status            # full workstation status
 dgov agents            # list agent registry
-dgov version           # dgov + dmux version + compat check
+dgov version           # dgov version
 ```
