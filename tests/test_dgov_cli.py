@@ -159,10 +159,10 @@ class TestPaneMerge:
             result = runner.invoke(cli, ["pane", "merge", "slug", "-r", "/tmp"])
             assert result.exit_code == 1
 
-    def test_merge_dmux_registered_exits_ok(self, runner: CliRunner) -> None:
+    def test_merge_registered_exits_ok(self, runner: CliRunner) -> None:
         with patch(
             "dgov.panes.merge_worker_pane_with_close",
-            return_value={"dmux_registered": True},
+            return_value={"registered": True},
         ):
             result = runner.invoke(cli, ["pane", "merge", "slug", "-r", "/tmp"])
             assert result.exit_code == 0
@@ -924,7 +924,7 @@ class TestPaneMergeCommand:
             result = runner.invoke(cli, ["pane", "merge", "task-1"])
         assert result.exit_code == 1
 
-    def test_merge_conflicts_dmux(self, runner: CliRunner) -> None:
+    def test_merge_conflicts(self, runner: CliRunner) -> None:
         from unittest.mock import patch
 
         conflict_result = {

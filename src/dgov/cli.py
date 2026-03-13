@@ -19,8 +19,6 @@ SESSION_ROOT_OPTION = click.option(
     help="Session root (where .dgov/ lives). Defaults to --project-root.",
 )
 
-_DMUX_PACKAGE_JSON = Path.home() / ".npm-global" / "lib" / "node_modules" / "dmux" / "package.json"
-
 
 def _check_governor_context() -> None:
     """Verify we're the governor: on main branch and not inside a worktree.
@@ -62,15 +60,6 @@ def _check_governor_context() -> None:
                 )
     except subprocess.TimeoutExpired:
         pass
-
-
-def _get_dmux_version() -> str | None:
-    """Read dmux version from its package.json."""
-    try:
-        data = json.loads(_DMUX_PACKAGE_JSON.read_text())
-        return data.get("version")
-    except (OSError, json.JSONDecodeError):
-        return None
 
 
 @click.group()
@@ -264,7 +253,6 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
     3. Output stabilization (TUI agents that stay open).
     """
     import time as _time
-    from pathlib import Path
 
     from dgov.panes import (
         _STATE_DIR,
@@ -337,7 +325,6 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
 def pane_wait_all(project_root, session_root, timeout, poll, stable):
     """Wait for ALL worker panes to finish. Prints each as it completes."""
     import time as _time
-    from pathlib import Path
 
     from dgov.panes import (
         _STATE_DIR,
@@ -415,7 +402,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 @SESSION_ROOT_OPTION
 @click.option(
     "--resolve",
-    type=click.Choice(["agent", "dmux", "manual"]),
+    type=click.Choice(["agent", "manual"]),
     default="agent",
     help="Conflict resolution strategy",
 )
@@ -716,61 +703,11 @@ def list_agents():
 
 @cli.command("version")
 def version_cmd():
-    """Show dgov and dmux versions with compatibility status."""
-    from dgov import __dmux_compat__, __version__
+    """Show dgov version."""
+    from dgov import __version__
 
-    dmux_version = _get_dmux_version()
-
-    result: dict = {
-        "dgov": __version__,
-        "dmux": dmux_version or "not found",
-        "dmux_compat": __dmux_compat__,
-    }
-
-    if dmux_version:
-        result["compatible"] = _check_dmux_compat(dmux_version, __dmux_compat__)
-    else:
-        result["compatible"] = False
-        result["error"] = f"dmux not found at {_DMUX_PACKAGE_JSON}"
-
+    result = {"dgov": __version__}
     click.echo(json.dumps(result, indent=2))
-    if not result["compatible"]:
-        sys.exit(1)
-
-
-def _check_dmux_compat(version: str, spec: str) -> bool:
-    """Check if dmux version satisfies the compat spec.
-
-    Supports ==X.Y.Z (exact), >=X.Y.Z, <X.Y.Z, and comma-separated combos.
-    """
-    try:
-        parts = [int(x) for x in version.split(".")[:3]]
-    except ValueError:
-        return False
-    for constraint in spec.split(","):
-        constraint = constraint.strip()
-        if constraint.startswith("=="):
-            try:
-                target = [int(x) for x in constraint[2:].split(".")[:3]]
-            except ValueError:
-                return False
-            if parts != target:
-                return False
-        elif constraint.startswith(">="):
-            try:
-                target = [int(x) for x in constraint[2:].split(".")[:3]]
-            except ValueError:
-                return False
-            if parts < target:
-                return False
-        elif constraint.startswith("<"):
-            try:
-                target = [int(x) for x in constraint[1:].split(".")[:3]]
-            except ValueError:
-                return False
-            if parts >= target:
-                return False
-    return True
 
 
 @cli.group()

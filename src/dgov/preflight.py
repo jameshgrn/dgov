@@ -495,39 +495,6 @@ _TUNNEL_AGENTS = {"pi"}
 _KERBEROS_AGENTS = {"pi"}
 
 
-def check_dmux_compat() -> CheckResult:
-    """Check that the installed dmux version is within dgov's compat range."""
-    import json as _json
-
-    from dgov import __dmux_compat__
-    from dgov.cli import _DMUX_PACKAGE_JSON, _check_dmux_compat
-
-    try:
-        data = _json.loads(_DMUX_PACKAGE_JSON.read_text())
-        version = data.get("version", "")
-    except (OSError, _json.JSONDecodeError):
-        return CheckResult(
-            name="dmux_compat",
-            passed=False,
-            critical=True,
-            message=f"dmux not found at {_DMUX_PACKAGE_JSON}",
-        )
-
-    if _check_dmux_compat(version, __dmux_compat__):
-        return CheckResult(
-            name="dmux_compat",
-            passed=True,
-            critical=True,
-            message=f"dmux {version} matches pin ({__dmux_compat__})",
-        )
-    return CheckResult(
-        name="dmux_compat",
-        passed=False,
-        critical=True,
-        message=f"dmux {version} does not match pin {__dmux_compat__} — update dgov",
-    )
-
-
 def run_preflight(
     project_root: str,
     agent: str = "claude",
@@ -539,7 +506,6 @@ def run_preflight(
     checks: list[CheckResult] = []
 
     checks.append(check_agent_cli(agent))
-    checks.append(check_dmux_compat())
     checks.append(check_git_clean(project_root))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
