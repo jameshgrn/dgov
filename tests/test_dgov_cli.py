@@ -1124,6 +1124,55 @@ class TestPaneUtil:
 
 
 # ---------------------------------------------------------------------------
+# pane lazygit / yazi shortcuts
+# ---------------------------------------------------------------------------
+
+
+class TestPaneLazygit:
+    @pytest.fixture(autouse=True)
+    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+    def test_lazygit_calls_create_utility_pane(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%50") as mock_create:
+            result = runner.invoke(cli, ["pane", "lazygit"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd=".")
+            data = json.loads(result.output)
+            assert data["pane_id"] == "%50"
+            assert data["command"] == "lazygit"
+            assert data["title"] == "lazygit"
+
+    def test_lazygit_custom_cwd(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%51") as mock_create:
+            result = runner.invoke(cli, ["pane", "lazygit", "-c", "/tmp/repo"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd="/tmp/repo")
+
+
+class TestPaneYazi:
+    @pytest.fixture(autouse=True)
+    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+    def test_yazi_calls_create_utility_pane(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%60") as mock_create:
+            result = runner.invoke(cli, ["pane", "yazi"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("yazi", "[util] yazi", cwd=".")
+            data = json.loads(result.output)
+            assert data["pane_id"] == "%60"
+            assert data["command"] == "yazi"
+            assert data["title"] == "yazi"
+
+    def test_yazi_custom_cwd(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%61") as mock_create:
+            result = runner.invoke(cli, ["pane", "yazi", "-c", "/home/user"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("yazi", "[util] yazi", cwd="/home/user")
+
+
+# ---------------------------------------------------------------------------
 # batch
 # ---------------------------------------------------------------------------
 
