@@ -1709,6 +1709,7 @@ class TestValidEvents:
             "pane_superseded",
             "pane_closed",
             "pane_retry_spawned",
+            "pane_auto_retried",
             "pane_blocked",
             "checkpoint_created",
             "review_pass",

@@ -270,11 +270,16 @@ def wait_worker_pane(
     timeout: int = 600,
     poll: int = 3,
     stable: int = 15,
+    auto_retry: bool = True,
 ) -> dict:
     """Wait for a single worker pane to finish.
 
     Returns ``{"done": slug, "method": ...}`` on success.
     Raises ``PaneTimeoutError`` on timeout.
+
+    When *auto_retry* is True and the pane ends in "failed" or "abandoned"
+    state, consults the agent's retry policy and may automatically retry
+    or escalate.
     """
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
@@ -296,6 +301,24 @@ def wait_worker_pane(
             stable,
         )
         if done:
+            # Check if it failed and we should auto-retry
+            rec = _p._get_pane(session_root, slug)
+            current_state = rec.get("state", "") if rec else ""
+
+            if auto_retry and current_state in ("failed", "abandoned"):
+                from dgov.retry import maybe_auto_retry
+
+                retry_result = maybe_auto_retry(session_root, slug, project_root)
+                if retry_result:
+                    new_slug = retry_result.get("new_slug", "")
+                    if new_slug:
+                        # Continue waiting on the new pane
+                        slug = new_slug
+                        pane_record = _p._get_pane(session_root, slug)
+                        last_output = None
+                        stable_since = None
+                        continue
+
             _p._update_pane_state(session_root, slug, "done")
             return {"done": slug, "method": method}
 
