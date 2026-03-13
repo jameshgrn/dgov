@@ -24,6 +24,9 @@ class TestProtocolConformance:
             "start_logging",
             "stop_logging",
             "send_prompt_via_buffer",
+            "setup_pane_borders",
+            "set_pane_option",
+            "select_layout",
         }
         actual = {name for name in dir(TmuxBackend) if not name.startswith("_")}
         assert expected <= actual, f"Missing: {expected - actual}"
@@ -83,6 +86,15 @@ class TestFactory:
             def send_prompt_via_buffer(self, worker_id: str, prompt: str) -> None:
                 pass
 
+            def setup_pane_borders(self) -> None:
+                pass
+
+            def set_pane_option(self, worker_id: str, option: str, value: str) -> None:
+                pass
+
+            def select_layout(self, layout: str = "tiled") -> None:
+                pass
+
         fake = FakeBackend()
         set_backend(fake)
         assert get_backend() is fake
@@ -124,6 +136,15 @@ class TestFactory:
                 pass
 
             def send_prompt_via_buffer(self, worker_id: str, prompt: str) -> None:
+                pass
+
+            def setup_pane_borders(self) -> None:
+                pass
+
+            def set_pane_option(self, worker_id: str, option: str, value: str) -> None:
+                pass
+
+            def select_layout(self, layout: str = "tiled") -> None:
                 pass
 
         mock = MockBackend()

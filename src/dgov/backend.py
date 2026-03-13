@@ -64,6 +64,18 @@ class WorkerBackend(Protocol):
         """Send a large prompt via paste buffer (for send-keys transport)."""
         ...
 
+    def setup_pane_borders(self) -> None:
+        """Set pane border styling (tmux global/session options)."""
+        ...
+
+    def set_pane_option(self, worker_id: str, option: str, value: str) -> None:
+        """Set a pane-level tmux option."""
+        ...
+
+    def select_layout(self, layout: str = "tiled") -> None:
+        """Apply a tmux layout to the current window."""
+        ...
+
 
 class TmuxBackend:
     """tmux-based worker backend — wraps dgov.tmux functions."""
@@ -130,6 +142,21 @@ class TmuxBackend:
         from dgov import tmux
 
         tmux.send_prompt_via_buffer(worker_id, prompt)
+
+    def setup_pane_borders(self) -> None:
+        from dgov import tmux
+
+        tmux.setup_pane_borders()
+
+    def set_pane_option(self, worker_id: str, option: str, value: str) -> None:
+        from dgov import tmux
+
+        tmux.set_pane_option(worker_id, option, value)
+
+    def select_layout(self, layout: str = "tiled") -> None:
+        from dgov import tmux
+
+        tmux.select_layout(layout)
 
 
 _backend: WorkerBackend | None = None
