@@ -1757,7 +1757,13 @@ def review_worker_pane(
         capture_output=True,
         text=True,
     )
-    uncommitted = bool(porcelain.stdout.strip())
+    # Filter out CLAUDE.md files — always modified by worktree hook, not by worker
+    porcelain_lines = [
+        ln
+        for ln in porcelain.stdout.strip().splitlines()
+        if not ln.lstrip(" MAD??").lstrip().startswith("CLAUDE.md")
+    ]
+    uncommitted = bool(porcelain_lines)
 
     # Verdict
     issues = []
