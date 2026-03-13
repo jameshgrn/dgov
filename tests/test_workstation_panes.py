@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -1307,3 +1308,174 @@ class TestWorkerPaneStateValidation:
             state="done",
         )
         assert pane.state == "done"
+
+
+# ---------------------------------------------------------------------------
+# _emit_event
+# ---------------------------------------------------------------------------
+
+
+class TestEmitEvent:
+    def test_creates_events_file_and_appends(self, tmp_path: Path) -> None:
+        from dgov.panes import _emit_event
+
+        _emit_event(str(tmp_path), "pane_created", "my-slug", agent="pi")
+        events_path = tmp_path / ".dgov" / "events.jsonl"
+        assert events_path.exists()
+        lines = events_path.read_text().strip().splitlines()
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["event"] == "pane_created"
+        assert record["pane"] == "my-slug"
+        assert record["agent"] == "pi"
+        assert "ts" in record
+
+    def test_appends_multiple_events(self, tmp_path: Path) -> None:
+        from dgov.panes import _emit_event
+
+        _emit_event(str(tmp_path), "pane_created", "slug-1")
+        _emit_event(str(tmp_path), "pane_done", "slug-1")
+        events_path = tmp_path / ".dgov" / "events.jsonl"
+        lines = events_path.read_text().strip().splitlines()
+        assert len(lines) == 2
+        assert json.loads(lines[0])["event"] == "pane_created"
+        assert json.loads(lines[1])["event"] == "pane_done"
+
+    def test_rejects_unknown_event(self, tmp_path: Path) -> None:
+        from dgov.panes import _emit_event
+
+        with pytest.raises(ValueError, match="Unknown event"):
+            _emit_event(str(tmp_path), "bogus_event", "slug")
+
+    def test_create_worker_pane_emits_event(self, tmp_path: Path) -> None:
+        from dgov.panes import create_worker_pane
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%99"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.send_prompt_via_buffer"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes._generate_slug", return_value="test-slug"),
+        ):
+            mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
+            create_worker_pane(
+                project_root=str(tmp_path),
+                prompt="Fix the thing",
+                agent="claude",
+                session_root=str(tmp_path),
+            )
+        events_path = tmp_path / ".dgov" / "events.jsonl"
+        assert events_path.exists()
+        lines = events_path.read_text().strip().splitlines()
+        records = [json.loads(ln) for ln in lines]
+        created = [r for r in records if r["event"] == "pane_created"]
+        assert len(created) == 1
+        assert created[0]["agent"] == "claude"
+        assert created[0]["pane"] == "test-slug"
+
+
+# ---------------------------------------------------------------------------
+# _compute_freshness
+# ---------------------------------------------------------------------------
+
+
+class TestComputeFreshness:
+    def test_fresh_no_main_changes(self, tmp_path: Path) -> None:
+        from dgov.panes import _compute_freshness
+
+        record = {
+            "base_sha": "abc",
+            "created_at": time.time(),
+            "worktree_path": str(tmp_path),
+        }
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = ""
+            return m
+
+        with patch("dgov.panes.subprocess.run", fake_run):
+            result = _compute_freshness(str(tmp_path), record)
+        assert result["freshness"] == "fresh"
+        assert result["commits_since_base"] == 0
+        assert result["overlapping_files"] == []
+
+    def test_warn_main_advanced(self, tmp_path: Path) -> None:
+        from dgov.panes import _compute_freshness
+
+        # Age > 4h triggers warn even without overlap
+        record = {
+            "base_sha": "abc",
+            "created_at": time.time() - 5 * 3600,  # 5 hours ago
+            "worktree_path": str(tmp_path),
+        }
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = ""
+            return m
+
+        with patch("dgov.panes.subprocess.run", fake_run):
+            result = _compute_freshness(str(tmp_path), record)
+        assert result["freshness"] == "warn"
+        assert result["pane_age_hours"] > 4
+
+    def test_stale_overlap_many_commits(self, tmp_path: Path) -> None:
+        from dgov.panes import _compute_freshness
+
+        record = {
+            "base_sha": "abc",
+            "created_at": time.time() - 15 * 3600,  # 15 hours ago
+            "worktree_path": str(tmp_path),
+        }
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            m.returncode = 0
+            if "log" in cmd:
+                m.stdout = "\n".join(f"commit{i} msg" for i in range(8))
+            elif "--name-only" in cmd:
+                # Both main and worker changed the same file
+                m.stdout = "src/shared.py\n"
+            else:
+                m.stdout = ""
+            return m
+
+        with patch("dgov.panes.subprocess.run", fake_run):
+            result = _compute_freshness(str(tmp_path), record)
+        assert result["freshness"] == "stale"
+        assert result["commits_since_base"] == 8
+        assert "src/shared.py" in result["overlapping_files"]
+
+
+# ---------------------------------------------------------------------------
+# VALID_EVENTS
+# ---------------------------------------------------------------------------
+
+
+class TestValidEvents:
+    def test_contains_expected_events(self) -> None:
+        from dgov.panes import VALID_EVENTS
+
+        expected = {
+            "pane_created",
+            "pane_done",
+            "pane_timed_out",
+            "pane_merged",
+            "pane_merge_failed",
+            "pane_escalated",
+            "pane_superseded",
+            "pane_closed",
+            "pane_retry_spawned",
+            "checkpoint_created",
+            "review_pass",
+            "review_fail",
+        }
+        assert expected == VALID_EVENTS

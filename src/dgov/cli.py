@@ -306,9 +306,10 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
 
         elapsed = _time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
-            from dgov.panes import _update_pane_state
+            from dgov.panes import _emit_event, _update_pane_state
 
             _update_pane_state(session_root, slug, "timed_out")
+            _emit_event(session_root, "pane_timed_out", slug)
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
             timeout_result = {
                 "error": f"Timeout after {timeout}s",
@@ -540,6 +541,24 @@ def pane_review(slug, project_root, session_root, full):
     from dgov.panes import review_worker_pane
 
     result = review_worker_pane(project_root, slug, session_root=session_root, full=full)
+    click.echo(json.dumps(result, indent=2))
+    if "error" in result:
+        sys.exit(1)
+
+
+@pane.command("diff")
+@click.argument("slug")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+@click.option("--stat", is_flag=True, help="Show diffstat only")
+@click.option("--name-only", is_flag=True, help="Show changed file names only")
+def pane_diff(slug, project_root, session_root, stat, name_only):
+    """Show diff for a worker pane's branch vs base."""
+    from dgov.panes import diff_worker_pane
+
+    result = diff_worker_pane(
+        project_root, slug, session_root=session_root, stat=stat, name_only=name_only
+    )
     click.echo(json.dumps(result, indent=2))
     if "error" in result:
         sys.exit(1)
