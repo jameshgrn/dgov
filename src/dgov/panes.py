@@ -60,6 +60,11 @@ from dgov.persistence import (  # noqa: F401
     _validate_state,
     _write_state,
 )
+from dgov.review_fix import (  # noqa: F401
+    ReviewFinding,
+    parse_review_findings,
+    run_review_fix_pipeline,
+)
 from dgov.strategy import (  # noqa: F401
     _QWEN_4B_TIMEOUT,
     _QWEN_4B_URL,

@@ -1716,6 +1716,9 @@ class TestValidEvents:
             "experiment_started",
             "experiment_accepted",
             "experiment_rejected",
+            "review_fix_started",
+            "review_fix_finding",
+            "review_fix_completed",
         }
         assert expected == VALID_EVENTS
 
