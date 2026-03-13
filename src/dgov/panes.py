@@ -1431,65 +1431,70 @@ def _resolve_conflicts_with_agent(
     agent = _pick_resolver_agent()
     slug = f"resolve-{branch_name[:30]}"
 
-    resolver = create_worker_pane(
-        project_root=project_root,
-        prompt=resolver_prompt,
-        agent=agent,
-        permission_mode="bypassPermissions",
-        slug=slug,
-        session_root=session_root,
-        existing_worktree=project_root,
-    )
-
-    # Wait for done signal with timeout
-    start = time.monotonic()
-    poll_interval = 3
-    last_output = None
-    stable_since: float | None = None
-    stable_threshold = 15
-
-    while time.monotonic() - start < timeout:
-        if _is_done(session_root, resolver.slug):
-            break
-        # Also check output stabilization
-        output = capture_worker_output(
-            project_root, resolver.slug, lines=20, session_root=session_root
+    resolved = False
+    resolver = None
+    try:
+        resolver = create_worker_pane(
+            project_root=project_root,
+            prompt=resolver_prompt,
+            agent=agent,
+            permission_mode="bypassPermissions",
+            slug=slug,
+            session_root=session_root,
+            existing_worktree=project_root,
         )
-        if output is not None:
-            if output == last_output:
-                if stable_since is None:
-                    stable_since = time.monotonic()
-                elif time.monotonic() - stable_since >= stable_threshold:
-                    break
-            else:
-                last_output = output
-                stable_since = None
-        time.sleep(poll_interval)
 
-    # Close the resolver pane
-    close_worker_pane(project_root, resolver.slug, session_root=session_root)
+        # Wait for done signal with timeout
+        start = time.monotonic()
+        poll_interval = 3
+        last_output = None
+        stable_since: float | None = None
+        stable_threshold = 15
 
-    # Check if conflicts were resolved
-    still_unmerged = subprocess.run(
-        ["git", "-C", project_root, "diff", "--name-only", "--diff-filter=U"],
-        capture_output=True,
-        text=True,
-    )
-    if not still_unmerged.stdout.strip():
-        # All resolved — commit
-        subprocess.run(
-            ["git", "-C", project_root, "commit", "--no-edit"],
+        while time.monotonic() - start < timeout:
+            if _is_done(session_root, resolver.slug):
+                break
+            # Also check output stabilization
+            output = capture_worker_output(
+                project_root, resolver.slug, lines=20, session_root=session_root
+            )
+            if output is not None:
+                if output == last_output:
+                    if stable_since is None:
+                        stable_since = time.monotonic()
+                    elif time.monotonic() - stable_since >= stable_threshold:
+                        break
+                else:
+                    last_output = output
+                    stable_since = None
+            time.sleep(poll_interval)
+
+        # Check if conflicts were resolved
+        still_unmerged = subprocess.run(
+            ["git", "-C", project_root, "diff", "--name-only", "--diff-filter=U"],
             capture_output=True,
             text=True,
         )
-        return True
+        if not still_unmerged.stdout.strip():
+            # All resolved — commit
+            subprocess.run(
+                ["git", "-C", project_root, "commit", "--no-edit"],
+                capture_output=True,
+                text=True,
+            )
+            resolved = True
+    finally:
+        if resolver is not None:
+            close_worker_pane(project_root, resolver.slug, session_root=session_root)
+        if not resolved:
+            merge_head = Path(project_root) / ".git" / "MERGE_HEAD"
+            if merge_head.exists():
+                subprocess.run(
+                    ["git", "-C", project_root, "merge", "--abort"],
+                    capture_output=True,
+                )
 
-    # Failed — abort merge
-    subprocess.run(
-        ["git", "-C", project_root, "merge", "--abort"],
-        capture_output=True,
-    )
-    return False
+    return resolved
 
 
 def _commit_worktree(pane_record: dict) -> dict:
