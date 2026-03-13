@@ -123,7 +123,7 @@ def list_panes() -> list[dict[str, str]]:
 
 
 def setup_pane_borders(session_name: str | None = None) -> None:
-    """Set pane border styling to match dmux conventions (idempotent)."""
+    """Set pane border styling (idempotent)."""
     _run(["set-option", "-g", "pane-border-status", "top"], silent=True)
     _run(
         ["set-option", "-g", "pane-active-border-style", "fg=colour214"],

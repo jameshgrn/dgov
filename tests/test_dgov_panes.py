@@ -366,7 +366,7 @@ class TestIsDone:
 
 class TestTriggerHook:
     def test_runs_executable_hook(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        hook_dir = tmp_path / ".dmux-hooks"
+        hook_dir = tmp_path / ".dgov-hooks"
         hook_dir.mkdir(parents=True)
         hook = hook_dir / "post-merge"
         hook.write_text("#!/bin/bash\necho done")
@@ -394,7 +394,7 @@ class TestTriggerHook:
     def test_timeout_swallowed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import subprocess
 
-        hook_dir = tmp_path / ".dmux-hooks"
+        hook_dir = tmp_path / ".dgov-hooks"
         hook_dir.mkdir(parents=True)
         hook = hook_dir / "post-merge"
         hook.write_text("#!/bin/bash\nsleep 100")
@@ -730,7 +730,7 @@ class TestCommitWorktree:
 
 
 class TestFullCleanup:
-    def test_removes_state_and_dmux(self, tmp_path: Path) -> None:
+    def test_removes_state_and_cleanup(self, tmp_path: Path) -> None:
         from dgov.panes import _full_cleanup
 
         _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
