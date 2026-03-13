@@ -189,9 +189,12 @@ _AGENT_COLORS: dict[str, int] = {
 _DEFAULT_AGENT_COLOR = 252  # white
 
 
-def style_worker_pane(pane_id: str, agent: str) -> None:
-    """Color-code a worker pane border by agent type."""
-    colour = _AGENT_COLORS.get(agent, _DEFAULT_AGENT_COLOR)
+def style_worker_pane(pane_id: str, agent: str, *, color: int | None = None) -> None:
+    """Color-code a worker pane border by agent type.
+
+    If *color* is provided it takes precedence over the built-in lookup.
+    """
+    colour = color if color is not None else _AGENT_COLORS.get(agent, _DEFAULT_AGENT_COLOR)
     set_pane_option(pane_id, "pane-border-style", f"fg=colour{colour}")
 
 

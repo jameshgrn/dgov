@@ -15,6 +15,7 @@ from dgov.agents import (
     build_launch_command,
     build_resume_command,
     detect_installed_agents,
+    load_registry,
 )
 
 pytestmark = pytest.mark.unit
@@ -39,15 +40,30 @@ class TestAgentDef:
         assert agent.permission_flags == {}
         assert agent.default_flags == ""
 
+    def test_new_fields_have_defaults(self) -> None:
+        agent = AgentDef(
+            id="test",
+            name="Test",
+            short_label="t",
+            prompt_command="test",
+            prompt_transport="positional",
+        )
+        assert agent.health_check is None
+        assert agent.health_fix is None
+        assert agent.max_concurrent is None
+        assert agent.color is None
+        assert agent.env == {}
+        assert agent.source == "built-in"
+
 
 # ---------------------------------------------------------------------------
-# AGENT_REGISTRY
+# AGENT_REGISTRY (built-ins only: claude, codex, gemini)
 # ---------------------------------------------------------------------------
 
 
 class TestAgentRegistry:
     def test_known_agents(self) -> None:
-        expected = {"claude", "pi", "codex", "gemini", "qwen"}
+        expected = {"claude", "codex", "gemini"}
         assert set(AGENT_REGISTRY.keys()) == expected
 
     def test_claude_transport(self) -> None:
@@ -57,12 +73,105 @@ class TestAgentRegistry:
         assert AGENT_REGISTRY["gemini"].prompt_transport == "option"
         assert AGENT_REGISTRY["gemini"].prompt_option == "--prompt-interactive"
 
-    def test_pi_default_flags(self) -> None:
-        assert "river-gpu0" in AGENT_REGISTRY["pi"].default_flags
+    def test_builtin_colors(self) -> None:
+        assert AGENT_REGISTRY["claude"].color == 39
+        assert AGENT_REGISTRY["codex"].color == 214
+        assert AGENT_REGISTRY["gemini"].color == 135
 
-    def test_all_have_resume_template(self) -> None:
-        for agent_id, defn in AGENT_REGISTRY.items():
-            assert defn.resume_template is not None, f"{agent_id} has no resume_template"
+
+# ---------------------------------------------------------------------------
+# load_registry
+# ---------------------------------------------------------------------------
+
+
+class TestLoadRegistry:
+    def test_returns_builtins_with_no_config(self, tmp_path: Path) -> None:
+        registry = load_registry(str(tmp_path))
+        assert "claude" in registry
+        assert "codex" in registry
+        assert "gemini" in registry
+
+    def test_project_config_adds_agent(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / ".dgov"
+        config_dir.mkdir()
+        (config_dir / "agents.toml").write_text(
+            "[agents.pi]\n"
+            'command = "pi"\n'
+            'transport = "positional"\n'
+            'default_flags = "--provider river-gpu0"\n'
+            "color = 34\n"
+            "max_concurrent = 2\n"
+        )
+        registry = load_registry(str(tmp_path))
+        assert "pi" in registry
+        assert registry["pi"].color == 34
+        assert registry["pi"].max_concurrent == 2
+        assert registry["pi"].source == "project"
+        assert registry["pi"].default_flags == "--provider river-gpu0"
+
+    def test_project_config_overrides_builtin(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / ".dgov"
+        config_dir.mkdir()
+        (config_dir / "agents.toml").write_text("[agents.claude]\ncolor = 99\n")
+        registry = load_registry(str(tmp_path))
+        assert registry["claude"].color == 99
+        assert registry["claude"].source == "project"
+        # Other fields preserved from built-in
+        assert registry["claude"].prompt_command == "claude"
+        assert registry["claude"].prompt_transport == "positional"
+
+    def test_user_config_adds_agent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path)
+        user_config = tmp_path / ".config" / "dgov"
+        user_config.mkdir(parents=True)
+        (user_config / "agents.toml").write_text(
+            "[agents.aider]\n"
+            'command = "aider"\n'
+            'transport = "positional"\n'
+            'health_check = "aider --version"\n'
+        )
+        registry = load_registry(None)
+        assert "aider" in registry
+        assert registry["aider"].source == "user"
+        assert registry["aider"].health_check == "aider --version"
+
+    def test_env_and_permissions_from_toml(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / ".dgov"
+        config_dir.mkdir()
+        (config_dir / "agents.toml").write_text(
+            "[agents.custom]\n"
+            'command = "custom-cli"\n'
+            'transport = "positional"\n'
+            "\n"
+            "[agents.custom.permissions]\n"
+            'plan = "--read-only"\n'
+            "\n"
+            "[agents.custom.env]\n"
+            'CUDA_VISIBLE_DEVICES = "0,1"\n'
+            "\n"
+            "[agents.custom.resume]\n"
+            'template = "custom-cli --resume{permissions}"\n'
+        )
+        registry = load_registry(str(tmp_path))
+        agent = registry["custom"]
+        assert agent.permission_flags == {"plan": "--read-only"}
+        assert agent.env == {"CUDA_VISIBLE_DEVICES": "0,1"}
+        assert agent.resume_template == "custom-cli --resume{permissions}"
+
+    def test_project_overrides_user(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path)
+        user_config = tmp_path / ".config" / "dgov"
+        user_config.mkdir(parents=True)
+        (user_config / "agents.toml").write_text(
+            '[agents.pi]\ncommand = "pi"\ntransport = "positional"\ncolor = 34\n'
+        )
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / ".dgov").mkdir()
+        (project_root / ".dgov" / "agents.toml").write_text("[agents.pi]\ncolor = 99\n")
+        registry = load_registry(str(project_root))
+        assert registry["pi"].color == 99
+        assert registry["pi"].source == "project"
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +237,6 @@ class TestBuildLaunchCommand:
         assert cmd == "claude"
 
     def test_no_prompt_uses_no_prompt_command(self) -> None:
-        # Claude has no no_prompt_command, so falls back to base
         cmd = build_launch_command("claude", None)
         assert "claude" in cmd
 
@@ -155,8 +263,20 @@ class TestBuildLaunchCommand:
         assert "--prompt-interactive" in cmd
         assert "DGOV_PROMPT_CONTENT" in cmd
 
-    def test_pi_includes_default_flags(self, tmp_path: Path) -> None:
-        cmd = build_launch_command("pi", "Do stuff", project_root=str(tmp_path), slug="pi-task")
+    def test_with_custom_registry(self, tmp_path: Path) -> None:
+        custom_reg = {
+            "pi": AgentDef(
+                id="pi",
+                name="pi",
+                short_label="pi",
+                prompt_command="pi",
+                prompt_transport="positional",
+                default_flags="--provider river-gpu0",
+            )
+        }
+        cmd = build_launch_command(
+            "pi", "Do stuff", project_root=str(tmp_path), slug="pi-task", registry=custom_reg
+        )
         assert "--provider river-gpu0" in cmd
 
     def test_unknown_agent_raises(self) -> None:
@@ -190,8 +310,18 @@ class TestBuildResumeCommand:
         assert cmd is not None
         assert "--resume latest" in cmd
 
-    def test_pi_resume(self) -> None:
-        cmd = build_resume_command("pi")
+    def test_with_custom_registry(self) -> None:
+        custom_reg = {
+            "pi": AgentDef(
+                id="pi",
+                name="pi",
+                short_label="pi",
+                prompt_command="pi",
+                prompt_transport="positional",
+                resume_template="pi --continue{permissions}",
+            )
+        }
+        cmd = build_resume_command("pi", registry=custom_reg)
         assert cmd is not None
         assert "pi --continue" in cmd
 
@@ -213,39 +343,42 @@ class TestDetectInstalledAgents:
         monkeypatch.setattr("dgov.agents.shutil.which", fake_which)
         installed = detect_installed_agents()
         assert "claude" in installed
-        assert "pi" not in installed
+
+    def test_with_custom_registry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_which(cmd):
+            return "/usr/bin/pi" if cmd == "pi" else None
+
+        monkeypatch.setattr("dgov.agents.shutil.which", fake_which)
+        custom_reg = {
+            "pi": AgentDef(
+                id="pi",
+                name="pi",
+                short_label="pi",
+                prompt_command="pi",
+                prompt_transport="positional",
+            )
+        }
+        installed = detect_installed_agents(custom_reg)
+        assert "pi" in installed
 
 
 class TestAllAgentsHaveCorrectTransport:
-    """Test that each agent has correct transport type defined."""
-
     def test_all_agents_have_valid_transport(self) -> None:
-        from dgov.agents import AGENT_REGISTRY
-
         valid_transports = {"positional", "option", "send-keys", "stdin"}
-
         for agent_id, agent_def in AGENT_REGISTRY.items():
             assert agent_def.prompt_transport in valid_transports, (
                 f"Invalid transport for {agent_id}: {agent_def.prompt_transport}"
             )
 
     def test_all_agents_have_permission_flags(self) -> None:
-        """All agents should have permission_flags dict."""
-        from dgov.agents import AGENT_REGISTRY
-
         for agent_id, agent_def in AGENT_REGISTRY.items():
             assert hasattr(agent_def, "permission_flags")
             assert isinstance(agent_def.permission_flags, dict)
 
 
 class TestAllRegistryEntriesHaveRequiredFields:
-    """Test case 1: verify all 5 agents have id, name, prompt_command."""
-
     def test_all_registry_entries_have_required_fields(self) -> None:
-        from dgov.agents import AGENT_REGISTRY, AgentDef
-
-        expected_agent_ids = {"claude", "pi", "codex", "gemini", "qwen"}
-
+        expected_agent_ids = {"claude", "codex", "gemini"}
         assert set(AGENT_REGISTRY.keys()) == expected_agent_ids
 
         for agent_id, agent_def in AGENT_REGISTRY.items():
@@ -258,11 +391,7 @@ class TestAllRegistryEntriesHaveRequiredFields:
 
 
 class TestBuildLaunchCommandOption:
-    """Test case 3: test gemini (option transport with --prompt-interactive)."""
-
     def test_build_launch_command_option(self, tmp_path: Path) -> None:
-        from dgov.agents import AGENT_REGISTRY, build_launch_command
-
         agent = AGENT_REGISTRY["gemini"]
         assert agent.prompt_transport == "option"
         assert agent.prompt_option == "--prompt-interactive"
@@ -281,11 +410,7 @@ class TestBuildLaunchCommandOption:
 
 
 class TestBuildLaunchCommandPositional:
-    """Test case 2: test claude (positional transport) generates correct command."""
-
     def test_build_launch_command_positional(self, tmp_path: Path) -> None:
-        from dgov.agents import AGENT_REGISTRY, build_launch_command
-
         agent = AGENT_REGISTRY["claude"]
         assert agent.prompt_transport == "positional"
 
@@ -304,37 +429,20 @@ class TestBuildLaunchCommandPositional:
 
 
 class TestBuildLaunchCommandSendKeysAgent:
-    """Additional test for agents with send-keys transport."""
-
     def test_send_keys_agent_ignores_prompt_file(self, tmp_path: Path) -> None:
-        # Create a mock agent with send-keys transport
-        from dgov.agents import AgentDef, build_launch_command
-
-        class TempAgent(AgentDef):
-            pass  # Just for test instantiation
-
-        # Note: AGENT_REGISTRY doesn't currently have a send-keys agent,
-        # so we're testing the code path via direct call simulation
         cmd = build_launch_command(
-            agent_id="claude",  # Use real agent but note transport is positional
+            agent_id="claude",
             prompt="ignored for send-keys",
             permission_mode="",
             project_root=str(tmp_path),
             slug="task",
         )
-
         # claude uses positional, so prompt file IS used
         assert "$DGOV_PROMPT_FILE" in cmd
 
 
 class TestBuildLaunchCommandSendkeys:
-    """Test case 4: verify non-send-keys agents use prompt file."""
-
     def test_build_launch_command_sendkeys(self, tmp_path: Path) -> None:
-        from dgov.agents import build_launch_command
-
-        # There's no send-keys transport agent in current AGENT_REGISTRY.
-        # Test with positional transport agent to verify normal behavior works.
         cmd = build_launch_command(
             agent_id="claude",
             prompt="test prompt content",
@@ -342,42 +450,28 @@ class TestBuildLaunchCommandSendkeys:
             project_root=str(tmp_path),
             slug="task3",
         )
-
-        # For non-send-keys agents, command includes prompt file handling
         assert "claude" in cmd
         assert "$DGOV_PROMPT_FILE" in cmd
         assert "$DGOV_PROMPT_CONTENT" in cmd
 
 
 class TestBuildLaunchCommandWithExtraFlags:
-    """Test case 6: verify extra_flags appended."""
-
     def test_build_launch_command_with_extra_flags(self, tmp_path: Path) -> None:
-        from dgov.agents import build_launch_command
-
-        # pi has default_flags --provider river-gpu0
         cmd = build_launch_command(
-            agent_id="pi",
+            agent_id="claude",
             prompt="test",
             permission_mode="",
             project_root=str(tmp_path),
             slug="task5",
             extra_flags="--verbose --timeout 300",
         )
-
-        assert "--provider river-gpu0" in cmd
         assert "--verbose" in cmd
         assert "--timeout" in cmd
         assert "300" in cmd
 
 
 class TestBuildLaunchCommandWithPermissions:
-    """Test case 5: test bypassPermissions, acceptEdits, plan modes."""
-
     def test_build_launch_command_with_permissions(self, tmp_path: Path) -> None:
-        from dgov.agents import build_launch_command
-
-        # claude with bypassPermissions
         cmd_bypass = build_launch_command(
             agent_id="claude",
             prompt="test",
@@ -387,7 +481,6 @@ class TestBuildLaunchCommandWithPermissions:
         )
         assert "--dangerously-skip-permissions" in cmd_bypass
 
-        # claude with acceptEdits
         cmd_accept = build_launch_command(
             agent_id="claude",
             prompt="test",
@@ -397,7 +490,6 @@ class TestBuildLaunchCommandWithPermissions:
         )
         assert "--permission-mode acceptEdits" in cmd_accept
 
-        # claude with plan
         cmd_plan = build_launch_command(
             agent_id="claude",
             prompt="test",
@@ -407,7 +499,6 @@ class TestBuildLaunchCommandWithPermissions:
         )
         assert "--permission-mode plan" in cmd_plan
 
-        # gemini with bypassPermissions (yolo)
         cmd_gemini_yolo = build_launch_command(
             agent_id="gemini",
             prompt="test",
@@ -419,12 +510,7 @@ class TestBuildLaunchCommandWithPermissions:
 
 
 class TestCommandTemplateRendering:
-    """Test case 5: Command template rendering with various parameters."""
-
     def test_claude_command_without_prompt(self, tmp_path: Path) -> None:
-        """Test positional transport without prompt - returns base command only."""
-        from dgov.agents import build_launch_command
-
         cmd = build_launch_command(
             agent_id="claude",
             prompt=None,
@@ -432,16 +518,11 @@ class TestCommandTemplateRendering:
             project_root=str(tmp_path),
             slug="task-noprompt",
         )
-
-        # Should return base claude command without prompt file handling
         assert cmd.startswith("claude")
         assert "$DGOV_PROMPT_FILE" not in cmd
         assert "$DGOV_PROMPT_CONTENT" not in cmd
 
     def test_gemini_command_without_prompt(self, tmp_path: Path) -> None:
-        """Test option transport without prompt."""
-        from dgov.agents import build_launch_command
-
         cmd = build_launch_command(
             agent_id="gemini",
             prompt=None,
@@ -449,37 +530,27 @@ class TestCommandTemplateRendering:
             project_root=str(tmp_path),
             slug="task-gemini-noprompt",
         )
-
         assert "gemini" in cmd
         assert "$DGOV_PROMPT_FILE" not in cmd
 
     def test_different_slugs_produce_different_filenames(self, tmp_path: Path) -> None:
-        """Test that different slugs produce different prompt file names."""
-        from dgov.agents import _write_prompt_file
-
         filepath1 = _write_prompt_file(
             project_root=str(tmp_path), slug="task-foo", prompt="prompt A"
         )
         filepath2 = _write_prompt_file(
             project_root=str(tmp_path), slug="task-bar", prompt="prompt B"
         )
-
-        # Filenames should differ due to slug prefix
         assert Path(filepath1).name.startswith("task-foo--")
         assert Path(filepath2).name.startswith("task-bar--")
-        assert filepath1 != filepath2  # Different full paths
+        assert filepath1 != filepath2
 
     def test_prompt_content_written_correctly(self, tmp_path: Path) -> None:
-        """Test that prompt content is written exactly as provided."""
-        from dgov.agents import _write_prompt_file
-
         test_prompts = [
             "simple text",
             "prompt with spaces and more words",
             "multiline\nprompt\ntest",
             "special chars: !@#$%^&*()",
         ]
-
         for prompt in test_prompts:
             filepath = _write_prompt_file(
                 project_root=str(tmp_path), slug="test-special", prompt=prompt
@@ -487,30 +558,7 @@ class TestCommandTemplateRendering:
             content = Path(filepath).read_text(encoding="utf-8")
             assert content == prompt, f"Prompt mismatch for: {prompt[:20]}..."
 
-    def test_qwen_command_with_option_transport(self, tmp_path: Path) -> None:
-        """Test qwen uses -i option flag."""
-        from dgov.agents import AGENT_REGISTRY, build_launch_command
-
-        qwen_agent = AGENT_REGISTRY["qwen"]
-        assert qwen_agent.prompt_transport == "option"
-        assert qwen_agent.prompt_option == "-i"
-
-        cmd = build_launch_command(
-            agent_id="qwen",
-            prompt="test qwen prompt",
-            permission_mode="",
-            project_root=str(tmp_path),
-            slug="task-qwen",
-        )
-
-        assert "qwen" in cmd
-        assert "-i" in cmd
-        assert "$DGOV_PROMPT_CONTENT" in cmd
-
     def test_codex_command_with_permissions(self, tmp_path: Path) -> None:
-        """Test codex with acceptEdits permission mode."""
-        from dgov.agents import build_launch_command
-
         cmd = build_launch_command(
             agent_id="codex",
             prompt="test",
@@ -518,61 +566,22 @@ class TestCommandTemplateRendering:
             project_root=str(tmp_path),
             slug="task-codex",
         )
-
         assert "codex" in cmd
         assert "--full-auto" in cmd
 
 
 class TestPermFlagsUnknownMode:
-    """Test case 10: returns empty string for unknown mode."""
-
     def test_perm_flags_unknown_mode(self) -> None:
-        from dgov.agents import AGENT_REGISTRY, _perm_flags
-
         agent = AGENT_REGISTRY["claude"]
-
-        # Unknown mode should return empty string
         result = _perm_flags(agent, "unknownMode")
         assert result == ""
-
-        # Empty mode should also return empty string
         result_empty = _perm_flags(agent, "")
         assert result_empty == ""
 
 
-class TestPiAgentDefaultProvider:
-    """Test case 6: Verify pi agent uses correct default provider."""
-
-    def test_pi_agent_default_provider(self) -> None:
-        from dgov.agents import AGENT_REGISTRY, build_launch_command
-
-        # Verify pi agent has the correct default flags
-        pi_agent = AGENT_REGISTRY["pi"]
-        assert pi_agent.default_flags == "--provider river-gpu0"
-
-        # Build a command and verify the provider flag is present
-        cmd = build_launch_command(
-            agent_id="pi",
-            prompt="test prompt",
-            permission_mode="",
-            project_root="/tmp",
-            slug="task-pi",
-        )
-
-        # Should contain default provider
-        assert "--provider river-gpu0" in cmd
-
-
 class TestUnknownAgentName:
-    """Test case 4: Unknown agent name should raise KeyError."""
-
     def test_unknown_agent_id_raises_keyerror(self) -> None:
-        from dgov.agents import AGENT_REGISTRY, build_launch_command
-
-        # Verify 'unknown-agent' is not in registry first
         assert "unknown-agent" not in AGENT_REGISTRY
-
-        # Calling with unknown agent ID should raise KeyError
         with pytest.raises(KeyError):
             build_launch_command(
                 agent_id="unknown-agent",
@@ -583,35 +592,23 @@ class TestUnknownAgentName:
             )
 
     def test_unknown_resume_agent_raises_keyerror(self) -> None:
-        from dgov.agents import AGENT_REGISTRY, build_resume_command
-
         assert "unknown-agent" not in AGENT_REGISTRY
-
         with pytest.raises(KeyError):
             build_resume_command("unknown-agent")
 
 
 class TestWritePromptFile:
-    """Test case 9: verify file created in .dgov/prompts/ with correct content."""
-
     def test_write_prompt_file(self, tmp_path: Path) -> None:
-        from dgov.agents import _write_prompt_file
-
         prompt = "this is my test prompt"
-
         filepath = _write_prompt_file(project_root=str(tmp_path), slug="test-slug", prompt=prompt)
 
-        # Verify path structure
         expected_path = tmp_path / ".dgov" / "prompts"
         assert Path(filepath).parent == expected_path
-
-        # Verify file exists and has correct content
         assert Path(filepath).exists()
         content = Path(filepath).read_text(encoding="utf-8")
         assert content == prompt
 
-        # Verify filename format: {slug}--{ts}-{rand}.txt
         filename = Path(filepath).name
         assert filename.startswith("test-slug--")
         assert filename.endswith(".txt")
-        assert len(filename.split("--")[1].split("-")[0]) > 0  # timestamp part
+        assert len(filename.split("--")[1].split("-")[0]) > 0

@@ -277,6 +277,14 @@ class TestStyling:
             call(["select-pane", "-t", "%1", "-T", "[gov] main"], silent=True),
         ]
 
+    def test_style_worker_pane_explicit_color(self) -> None:
+        with patch("dgov.tmux.set_pane_option") as mock_set_option:
+            style_worker_pane("%3", "custom-agent", color=99)
+
+        assert mock_set_option.call_args_list == [
+            call("%3", "pane-border-style", "fg=colour99"),
+        ]
+
 
 class TestComposedHelpers:
     def test_create_utility_pane_sequences_calls(self) -> None:

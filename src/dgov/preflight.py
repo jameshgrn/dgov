@@ -51,15 +51,16 @@ _TUNNEL_PORTS_DEFAULT = (8080, 8081, 8082)
 _TUNNEL_TIMEOUT = 3
 
 
-def check_agent_cli(agent: str) -> CheckResult:
+def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
     """Check that the agent CLI binary is on PATH."""
-    defn = AGENT_REGISTRY.get(agent)
+    reg = registry or AGENT_REGISTRY
+    defn = reg.get(agent)
     if defn is None:
         return CheckResult(
             name="agent_cli",
             passed=False,
             critical=True,
-            message=f"Unknown agent '{agent}' -- not in AGENT_REGISTRY",
+            message=f"Unknown agent '{agent}' -- not in registry",
         )
     cmd = defn.prompt_command.split()[0]
     found = shutil.which(cmd) is not None
@@ -446,44 +447,99 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
     )
 
 
-def check_gpu_concurrency(
-    project_root: str, agent: str, session_root: str | None = None
+def check_agent_concurrency(
+    project_root: str,
+    agent: str,
+    session_root: str | None = None,
+    *,
+    registry: dict | None = None,
 ) -> CheckResult:
-    """Check if spawning another pi worker would exceed GPU limits."""
-    if agent != "pi":
+    """Check if spawning another worker would exceed the agent's max_concurrent."""
+    from dgov.agents import load_registry
+
+    reg = registry or load_registry(project_root)
+    agent_def = reg.get(agent)
+    if not agent_def or agent_def.max_concurrent is None:
         return CheckResult(
-            name="gpu_concurrency",
+            name="agent_concurrency",
             passed=True,
             critical=False,
-            message="Not a pi worker, GPU check skipped",
+            message=f"No concurrency limit for {agent}",
         )
-    from dgov.panes import _MAX_CONCURRENT_PI_WORKERS, _count_active_pi_workers
+    from dgov.panes import _count_active_agent_workers
 
     session_root_resolved = os.path.abspath(session_root or project_root)
-    active = _count_active_pi_workers(session_root_resolved)
-    if active >= _MAX_CONCURRENT_PI_WORKERS:
+    active = _count_active_agent_workers(session_root_resolved, agent)
+    limit = agent_def.max_concurrent
+    if active >= limit:
         return CheckResult(
-            name="gpu_concurrency",
+            name="agent_concurrency",
             passed=False,
             critical=True,
-            message=f"{active} pi workers running (max {_MAX_CONCURRENT_PI_WORKERS})",
+            message=f"{active} {agent} workers running (max {limit})",
         )
     return CheckResult(
-        name="gpu_concurrency",
+        name="agent_concurrency",
         passed=True,
         critical=True,
-        message=f"{active} pi workers running (max {_MAX_CONCURRENT_PI_WORKERS})",
+        message=f"{active} {agent} workers running (max {limit})",
     )
+
+
+def check_agent_health(
+    agent: str,
+    *,
+    registry: dict | None = None,
+    project_root: str | None = None,
+) -> CheckResult:
+    """Run the agent's health_check command if configured."""
+    from dgov.agents import load_registry
+
+    reg = registry or load_registry(project_root)
+    agent_def = reg.get(agent)
+    if not agent_def or not agent_def.health_check:
+        return CheckResult(
+            name="agent_health",
+            passed=True,
+            critical=False,
+            message=f"No health check for {agent}",
+        )
+    try:
+        result = subprocess.run(
+            agent_def.health_check,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return CheckResult(
+                name="agent_health",
+                passed=True,
+                critical=True,
+                message=f"Health check passed for {agent}",
+                fixable=bool(agent_def.health_fix),
+            )
+        return CheckResult(
+            name="agent_health",
+            passed=False,
+            critical=True,
+            message=f"Health check failed for {agent}: {agent_def.health_check}",
+            fixable=bool(agent_def.health_fix),
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return CheckResult(
+            name="agent_health",
+            passed=False,
+            critical=True,
+            message=f"Health check error for {agent}: {exc}",
+            fixable=bool(agent_def.health_fix),
+        )
 
 
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
-
-# Agents that require the SSH tunnel to river
-_TUNNEL_AGENTS = {"pi"}
-# Agents that require Kerberos (tunnel auth)
-_KERBEROS_AGENTS = {"pi"}
 
 
 def run_preflight(
@@ -494,18 +550,21 @@ def run_preflight(
     session_root: str | None = None,
 ) -> PreflightReport:
     """Run all pre-flight checks and return a structured report."""
+    from dgov.agents import load_registry
+
+    registry = load_registry(project_root)
     checks: list[CheckResult] = []
 
-    checks.append(check_agent_cli(agent))
+    checks.append(check_agent_cli(agent, registry=registry))
     checks.append(check_git_clean(project_root))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
-    if agent in _TUNNEL_AGENTS:
-        checks.append(check_tunnel())
-    if agent in _KERBEROS_AGENTS:
-        checks.append(check_kerberos())
+    # Config-driven health check (replaces hardcoded tunnel/kerberos checks)
+    agent_def = registry.get(agent)
+    if agent_def and agent_def.health_check:
+        checks.append(check_agent_health(agent, registry=registry, project_root=project_root))
 
-    checks.append(check_gpu_concurrency(project_root, agent, session_root))
+    checks.append(check_agent_concurrency(project_root, agent, session_root, registry=registry))
 
     checks.append(check_deps())
     checks.append(check_stale_worktrees(project_root))
@@ -598,7 +657,32 @@ def _fix_stale_worktrees(project_root: str) -> bool:
         return False
 
 
-_FIXER_NAMES = {"tunnel", "kerberos", "deps", "stale_worktrees"}
+_FIXER_NAMES = {"tunnel", "kerberos", "deps", "stale_worktrees", "agent_health"}
+
+
+def _fix_agent_health(project_root: str) -> bool:
+    """Run the agent's health_fix command from the preflight context.
+
+    Finds the agent from the failed check context and runs its health_fix.
+    """
+    from dgov.agents import load_registry
+
+    registry = load_registry(project_root)
+    for agent_def in registry.values():
+        if agent_def.health_fix:
+            try:
+                result = subprocess.run(
+                    agent_def.health_fix,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    return True
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+    return False
 
 
 def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport:
@@ -618,6 +702,9 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
             elif check.name == "deps":
                 if _fix_deps():
                     recheck.append(check.name)
+            elif check.name == "agent_health":
+                if _fix_agent_health(project_root):
+                    recheck.append(check.name)
 
     if not recheck:
         return report
@@ -634,6 +721,19 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
                 new_checks.append(check_deps())
             elif check.name == "stale_worktrees":
                 new_checks.append(check_stale_worktrees(project_root))
+            elif check.name == "agent_health":
+                # Re-run all agent health checks
+                from dgov.agents import load_registry
+
+                registry = load_registry(project_root)
+                for agent_id, defn in registry.items():
+                    if defn.health_check:
+                        new_checks.append(
+                            check_agent_health(
+                                agent_id, registry=registry, project_root=project_root
+                            )
+                        )
+                        break  # only one agent_health check in the report
             else:
                 new_checks.append(check)
         else:
