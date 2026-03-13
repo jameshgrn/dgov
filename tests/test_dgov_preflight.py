@@ -18,6 +18,7 @@ from dgov.preflight import (
     check_file_locks,
     check_git_branch,
     check_git_clean,
+    check_gpu_concurrency,
     check_kerberos,
     check_stale_worktrees,
     check_tunnel,
@@ -359,6 +360,43 @@ def test_check_file_locks_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
 def test_check_file_locks_no_touches() -> None:
     r = check_file_locks("/tmp/repo", [])
     assert r.passed is True
+
+
+# ---------------------------------------------------------------------------
+# check_gpu_concurrency
+# ---------------------------------------------------------------------------
+
+
+def test_check_gpu_concurrency_skips_non_pi() -> None:
+    r = check_gpu_concurrency("/tmp/repo", "claude")
+    assert r.passed is True
+    assert "skipped" in r.message
+
+
+def test_check_gpu_concurrency_blocks_when_limit_reached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("dgov.panes._count_active_pi_workers", lambda session_root: 2)
+    monkeypatch.setattr("dgov.panes._MAX_CONCURRENT_PI_WORKERS", 2)
+    r = check_gpu_concurrency("/tmp/repo", "pi", session_root="/tmp/session")
+    assert r.passed is False
+    assert "max 2" in r.message
+
+
+def test_check_gpu_concurrency_uses_resolved_session_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, str] = {}
+
+    def fake_count(session_root: str) -> int:
+        seen["session_root"] = session_root
+        return 1
+
+    monkeypatch.setattr("dgov.panes._count_active_pi_workers", fake_count)
+    monkeypatch.setattr("dgov.panes._MAX_CONCURRENT_PI_WORKERS", 2)
+    r = check_gpu_concurrency("/tmp/repo", "pi", session_root="relative-session")
+    assert r.passed is True
+    assert seen["session_root"].endswith("relative-session")
 
 
 # ---------------------------------------------------------------------------
