@@ -1,7 +1,7 @@
 # Agent registry and launch commands
 """Agent registry and launch command builder.
 
-Mirrors dmux's AGENT_REGISTRY from agentLaunch.js but in Python.
+Agent registry and launch command builder.
 Only includes agents Jake actually uses on this machine.
 """
 
@@ -131,11 +131,11 @@ def _write_prompt_file(project_root: str, slug: str, prompt: str) -> str:
 
 
 def _prompt_read_and_delete_snippet(filepath: str) -> str:
-    """Shell snippet that reads prompt from file into $DMUX_PROMPT_CONTENT, then deletes file."""
+    """Shell snippet that reads prompt from file into $DGOV_PROMPT_CONTENT, then deletes file."""
     return (
-        f'DMUX_PROMPT_FILE="{filepath}"; '
-        f'DMUX_PROMPT_CONTENT="$(cat "$DMUX_PROMPT_FILE")"; '
-        f'rm -f "$DMUX_PROMPT_FILE"'
+        f'DGOV_PROMPT_FILE="{filepath}"; '
+        f'DGOV_PROMPT_CONTENT="$(cat "$DGOV_PROMPT_FILE")"; '
+        f'rm -f "$DGOV_PROMPT_FILE"'
     )
 
 
@@ -176,13 +176,13 @@ def build_launch_command(
     snippet = _prompt_read_and_delete_snippet(prompt_file)
 
     if agent.prompt_transport == "stdin":
-        return f"{snippet}; printf '%s\\n' \"$DMUX_PROMPT_CONTENT\" | {base}"
+        return f"{snippet}; printf '%s\\n' \"$DGOV_PROMPT_CONTENT\" | {base}"
 
     if agent.prompt_transport == "option" and agent.prompt_option:
-        return f'{snippet}; {base} {agent.prompt_option} "$DMUX_PROMPT_CONTENT"'
+        return f'{snippet}; {base} {agent.prompt_option} "$DGOV_PROMPT_CONTENT"'
 
     # positional
-    return f'{snippet}; {base} "$DMUX_PROMPT_CONTENT"'
+    return f'{snippet}; {base} "$DGOV_PROMPT_CONTENT"'
 
 
 def build_resume_command(agent_id: str, permission_mode: str = "") -> str | None:

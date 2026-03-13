@@ -104,8 +104,8 @@ class TestPromptFile:
 
     def test_snippet_format(self) -> None:
         snippet = _prompt_read_and_delete_snippet("/tmp/prompt.txt")
-        assert "DMUX_PROMPT_FILE" in snippet
-        assert "DMUX_PROMPT_CONTENT" in snippet
+        assert "DGOV_PROMPT_FILE" in snippet
+        assert "DGOV_PROMPT_CONTENT" in snippet
         assert "rm -f" in snippet
         assert "/tmp/prompt.txt" in snippet
 
@@ -121,7 +121,7 @@ class TestBuildLaunchCommand:
             "claude", "Fix the bug", project_root=str(tmp_path), slug="fix-bug"
         )
         assert "claude" in cmd
-        assert "DMUX_PROMPT_CONTENT" in cmd
+        assert "DGOV_PROMPT_CONTENT" in cmd
 
     def test_no_prompt_returns_base(self) -> None:
         cmd = build_launch_command("claude", None)
@@ -153,7 +153,7 @@ class TestBuildLaunchCommand:
     def test_option_transport(self, tmp_path: Path) -> None:
         cmd = build_launch_command("gemini", "Do stuff", project_root=str(tmp_path), slug="gem")
         assert "--prompt-interactive" in cmd
-        assert "DMUX_PROMPT_CONTENT" in cmd
+        assert "DGOV_PROMPT_CONTENT" in cmd
 
     def test_pi_includes_default_flags(self, tmp_path: Path) -> None:
         cmd = build_launch_command("pi", "Do stuff", project_root=str(tmp_path), slug="pi-task")
@@ -277,7 +277,7 @@ class TestBuildLaunchCommandOption:
 
         assert "gemini" in cmd
         assert "--prompt-interactive" in cmd
-        assert "$DMUX_PROMPT_CONTENT" in cmd
+        assert "$DGOV_PROMPT_CONTENT" in cmd
 
 
 class TestBuildLaunchCommandPositional:
@@ -298,9 +298,9 @@ class TestBuildLaunchCommandPositional:
         )
 
         assert "claude" in cmd
-        assert "$DMUX_PROMPT_CONTENT" in cmd
-        assert 'cat "$DMUX_PROMPT_FILE"' in cmd
-        assert 'rm -f "$DMUX_PROMPT_FILE"' in cmd
+        assert "$DGOV_PROMPT_CONTENT" in cmd
+        assert 'cat "$DGOV_PROMPT_FILE"' in cmd
+        assert 'rm -f "$DGOV_PROMPT_FILE"' in cmd
 
 
 class TestBuildLaunchCommandSendKeysAgent:
@@ -324,7 +324,7 @@ class TestBuildLaunchCommandSendKeysAgent:
         )
 
         # claude uses positional, so prompt file IS used
-        assert "$DMUX_PROMPT_FILE" in cmd
+        assert "$DGOV_PROMPT_FILE" in cmd
 
 
 class TestBuildLaunchCommandSendkeys:
@@ -345,8 +345,8 @@ class TestBuildLaunchCommandSendkeys:
 
         # For non-send-keys agents, command includes prompt file handling
         assert "claude" in cmd
-        assert "$DMUX_PROMPT_FILE" in cmd
-        assert "$DMUX_PROMPT_CONTENT" in cmd
+        assert "$DGOV_PROMPT_FILE" in cmd
+        assert "$DGOV_PROMPT_CONTENT" in cmd
 
 
 class TestBuildLaunchCommandWithExtraFlags:
@@ -435,8 +435,8 @@ class TestCommandTemplateRendering:
 
         # Should return base claude command without prompt file handling
         assert cmd.startswith("claude")
-        assert "$DMUX_PROMPT_FILE" not in cmd
-        assert "$DMUX_PROMPT_CONTENT" not in cmd
+        assert "$DGOV_PROMPT_FILE" not in cmd
+        assert "$DGOV_PROMPT_CONTENT" not in cmd
 
     def test_gemini_command_without_prompt(self, tmp_path: Path) -> None:
         """Test option transport without prompt."""
@@ -451,7 +451,7 @@ class TestCommandTemplateRendering:
         )
 
         assert "gemini" in cmd
-        assert "$DMUX_PROMPT_FILE" not in cmd
+        assert "$DGOV_PROMPT_FILE" not in cmd
 
     def test_different_slugs_produce_different_filenames(self, tmp_path: Path) -> None:
         """Test that different slugs produce different prompt file names."""
@@ -505,7 +505,7 @@ class TestCommandTemplateRendering:
 
         assert "qwen" in cmd
         assert "-i" in cmd
-        assert "$DMUX_PROMPT_CONTENT" in cmd
+        assert "$DGOV_PROMPT_CONTENT" in cmd
 
     def test_codex_command_with_permissions(self, tmp_path: Path) -> None:
         """Test codex with acceptEdits permission mode."""
