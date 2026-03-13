@@ -217,11 +217,12 @@ def pane_create(
     help="Git repo root",
 )
 @SESSION_ROOT_OPTION
-def pane_close(slug, project_root, session_root):
+@click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
+def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
     from dgov.panes import close_worker_pane
 
-    if close_worker_pane(project_root, slug, session_root=session_root):
+    if close_worker_pane(project_root, slug, session_root=session_root, force=force):
         click.echo(json.dumps({"closed": slug}))
     else:
         click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)

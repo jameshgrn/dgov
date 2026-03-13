@@ -550,6 +550,69 @@ class TestPruneStale:
             pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
 
+    def test_prunes_orphaned_worktree_dir(self, tmp_path: Path) -> None:
+        """Worktree dir exists in .dgov/worktrees/ but no pane entry references it."""
+        orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-task"
+        orphan_dir.mkdir(parents=True)
+        # Empty state — no pane entries at all
+        _write_state(str(tmp_path), {"panes": []})
+        with (
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes._remove_worktree") as mock_rm,
+        ):
+            pruned = prune_stale_panes(str(tmp_path))
+        assert "orphan:orphan-task" in pruned
+        mock_rm.assert_called_once_with(str(tmp_path), str(orphan_dir), "orphan-task")
+
+    def test_skips_worktree_dir_with_matching_pane(self, tmp_path: Path) -> None:
+        """Worktree dir that IS referenced by a pane entry should not be pruned."""
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "active-task"
+        wt_dir.mkdir(parents=True)
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "active-task",
+                        "pane_id": "%10",
+                        "worktree_path": str(wt_dir),
+                    }
+                ]
+            },
+        )
+        with (
+            patch("dgov.panes.tmux.pane_exists", return_value=True),
+            patch("dgov.panes._remove_worktree") as mock_rm,
+        ):
+            pruned = prune_stale_panes(str(tmp_path))
+        assert pruned == []
+        mock_rm.assert_not_called()
+
+    def test_prunes_both_stale_entries_and_orphans(self, tmp_path: Path) -> None:
+        """Both a stale pane entry AND an orphaned dir get pruned in one call."""
+        orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-slug"
+        orphan_dir.mkdir(parents=True)
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "stale-entry",
+                        "pane_id": "%5",
+                        "worktree_path": "/nonexistent",
+                    }
+                ]
+            },
+        )
+        with (
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes._remove_worktree") as mock_rm,
+        ):
+            pruned = prune_stale_panes(str(tmp_path))
+        assert "stale-entry" in pruned
+        assert "orphan:orphan-slug" in pruned
+        mock_rm.assert_called_once_with(str(tmp_path), str(orphan_dir), "orphan-slug")
+
 
 # ---------------------------------------------------------------------------
 # capture_worker_output
@@ -646,6 +709,67 @@ class TestCloseWorkerPane:
             result = close_worker_pane(str(tmp_path), "test")
         assert result is True
         mock_cleanup.assert_called_once()
+
+    def test_force_removes_dirty_worktree(self, tmp_path: Path) -> None:
+        from dgov.panes import close_worker_pane
+
+        _write_state(
+            str(tmp_path),
+            {"panes": [{"slug": "test", "pane_id": "%5", "owns_worktree": True}]},
+        )
+        with patch("dgov.panes._full_cleanup") as mock_cleanup:
+            close_worker_pane(str(tmp_path), "test", force=True)
+        _, kwargs = mock_cleanup.call_args
+        assert kwargs["skip_worktree_if_dirty"] is False
+
+    def test_no_force_skips_dirty_but_deletes_branch(self, tmp_path: Path) -> None:
+        from dgov.panes import close_worker_pane
+
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "test",
+                        "pane_id": "%5",
+                        "owns_worktree": True,
+                        "worktree_path": str(wt),
+                        "branch_name": "test-br",
+                    }
+                ]
+            },
+        )
+
+        git_cmds: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            git_cmds.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = "M dirty.py\n"
+            else:
+                m.stdout = ""
+            return m
+
+        with (
+            patch("dgov.panes.tmux.kill_pane"),
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("subprocess.run", fake_run),
+        ):
+            close_worker_pane(str(tmp_path), "test")
+
+        # Branch should be deleted even though worktree was skipped
+        branch_cmds = [c for c in git_cmds if "branch" in c and "-D" in c]
+        assert len(branch_cmds) == 1
+        assert "test-br" in branch_cmds[0]
+
+        # Worktree remove should NOT have been called
+        wt_remove_cmds = [c for c in git_cmds if "worktree" in c and "remove" in c]
+        assert len(wt_remove_cmds) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +911,13 @@ class TestFullCleanup:
             )
 
         assert result["skipped_worktree"] is True
+        # Branch should still be deleted even when worktree removal is skipped
+        branch_cmds = [c for c in calls if "branch" in c and "-D" in c]
+        assert len(branch_cmds) == 1
+        assert "test-br" in branch_cmds[0]
+        # Worktree remove should NOT have been called
+        wt_remove_cmds = [c for c in calls if "worktree" in c and "remove" in c]
+        assert len(wt_remove_cmds) == 0
 
 
 # ---------------------------------------------------------------------------

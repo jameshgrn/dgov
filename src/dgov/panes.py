@@ -842,8 +842,21 @@ def _full_cleanup(
                 logger.warning("Worktree %s has uncommitted changes — skipping removal", wt)
                 skipped_worktree = True
 
-        if not skipped_worktree and wt and branch:
-            _remove_worktree(project_root, wt, branch)
+        if not skipped_worktree and wt:
+            subprocess.run(
+                ["git", "-C", project_root, "worktree", "remove", "--force", wt],
+                capture_output=True,
+            )
+        if branch:
+            subprocess.run(
+                ["git", "-C", project_root, "branch", "-D", branch],
+                capture_output=True,
+            )
+        if not skipped_worktree:
+            subprocess.run(
+                ["git", "-C", project_root, "worktree", "prune"],
+                capture_output=True,
+            )
 
     tmux.select_layout("tiled")
 
@@ -853,7 +866,9 @@ def _full_cleanup(
     return {"cleaned": True, "skipped_worktree": skipped_worktree}
 
 
-def close_worker_pane(project_root: str, slug: str, session_root: str | None = None) -> bool:
+def close_worker_pane(
+    project_root: str, slug: str, session_root: str | None = None, *, force: bool = False
+) -> bool:
     """Close a worker pane: kill tmux pane, remove worktree, update state."""
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
@@ -869,7 +884,7 @@ def close_worker_pane(project_root: str, slug: str, session_root: str | None = N
         session_root,
         slug,
         target,
-        skip_worktree_if_dirty=True,
+        skip_worktree_if_dirty=not force,
     )
     return True
 
@@ -979,10 +994,18 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
 
 
 def prune_stale_panes(project_root: str, session_root: str | None = None) -> list[str]:
-    """Remove state entries for panes that are dead and have no worktree."""
+    """Remove state entries for panes that are dead and have no worktree.
+
+    Also removes orphaned worktree directories in ``.dgov/worktrees/`` that
+    have no matching pane entry in state (e.g. left behind after ``pane close``
+    skipped a dirty worktree).
+    """
+    project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
     panes = _all_panes(session_root)
     pruned = []
+
+    # Pass 1: prune stale state entries (existing behaviour)
     for p in panes:
         pane_id = p.get("pane_id", "")
         slug = p["slug"]
@@ -994,6 +1017,25 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             done_path = Path(session_root) / _STATE_DIR / "done" / slug
             done_path.unlink(missing_ok=True)
             pruned.append(slug)
+
+    # Pass 2: remove orphaned worktree dirs with no matching pane entry
+    worktrees_dir = Path(project_root) / _STATE_DIR / "worktrees"
+    if worktrees_dir.is_dir():
+        # Re-read state after pass 1 removals
+        remaining_panes = _all_panes(session_root)
+        known_worktrees = {p.get("worktree_path") for p in remaining_panes}
+        for entry in worktrees_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            entry_str = str(entry)
+            if entry_str in known_worktrees:
+                continue
+            # Orphan — no pane entry references this dir.
+            # Only remove if there's no live tmux pane using it.
+            branch_name = entry.name
+            _remove_worktree(project_root, entry_str, branch_name)
+            pruned.append(f"orphan:{branch_name}")
+
     return pruned
 
 
