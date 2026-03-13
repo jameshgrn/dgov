@@ -164,6 +164,16 @@ def pane_k9s(cwd):
     click.echo(json.dumps({"pane_id": pane_id, "command": "k9s", "title": "k9s"}))
 
 
+@pane.command("top")
+@click.option("--cwd", "-c", default=".", help="Working directory")
+def pane_top(cwd):
+    """Launch btop in a utility pane."""
+    from dgov.tmux import create_utility_pane
+
+    pane_id = create_utility_pane("btop", "[util] btop", cwd=cwd)
+    click.echo(json.dumps({"pane_id": pane_id, "command": "btop", "title": "btop"}))
+
+
 @pane.command("create")
 @click.option(
     "--agent", "-a", default="claude", help="Agent CLI to launch (use 'auto' to classify)"
