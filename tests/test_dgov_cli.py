@@ -1074,6 +1074,56 @@ class TestStatusCommand:
 
 
 # ---------------------------------------------------------------------------
+# pane util
+# ---------------------------------------------------------------------------
+
+
+class TestPaneUtil:
+    @pytest.fixture(autouse=True)
+    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+    def test_util_calls_create_utility_pane(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%99") as mock_create:
+            result = runner.invoke(cli, ["pane", "util", "lazygit"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd=".")
+            data = json.loads(result.output)
+            assert data["pane_id"] == "%99"
+            assert data["command"] == "lazygit"
+            assert data["title"] == "lazygit"
+
+    def test_util_custom_title(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%10") as mock_create:
+            result = runner.invoke(cli, ["pane", "util", "yazi /tmp", "-t", "files"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("yazi /tmp", "[util] files", cwd=".")
+            data = json.loads(result.output)
+            assert data["title"] == "files"
+
+    def test_util_custom_cwd(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%11") as mock_create:
+            result = runner.invoke(cli, ["pane", "util", "lazygit", "-c", "/tmp/repo"])
+            assert result.exit_code == 0
+            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd="/tmp/repo")
+
+    def test_util_title_defaults_to_first_word(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%12"):
+            result = runner.invoke(cli, ["pane", "util", "htop -d 10"])
+            data = json.loads(result.output)
+            assert data["title"] == "htop"
+
+    def test_util_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["pane", "util", "--help"])
+        assert result.exit_code == 0
+        assert "utility pane" in result.output.lower()
+
+    def test_util_listed_in_pane_help(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["pane", "--help"])
+        assert "util" in result.output
+
+
+# ---------------------------------------------------------------------------
 # batch
 # ---------------------------------------------------------------------------
 

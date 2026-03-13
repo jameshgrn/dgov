@@ -70,6 +70,14 @@ def set_title(pane_id: str, title: str) -> None:
     _run(["select-pane", "-t", pane_id, "-T", title])
 
 
+def update_pane_status(pane_id: str, agent: str, slug: str, status: str) -> None:
+    """Update pane title to reflect current status."""
+    icon = {"active": "\u23f3", "done": "\u2713", "failed": "\u2717", "timed_out": "\u23f0"}.get(
+        status, "?"
+    )
+    set_title(pane_id, f"[{agent}] {slug} {icon}")
+
+
 def set_pane_option(pane_id: str, option: str, value: str) -> None:
     """Set a pane-level tmux option."""
     _run(["set-option", "-p", "-t", pane_id, option, value])
@@ -172,6 +180,21 @@ def style_dgov_session(session_name: str | None = None) -> None:
     )
 
 
+_AGENT_COLORS: dict[str, int] = {
+    "claude": 39,  # blue
+    "pi": 34,  # green
+    "codex": 214,  # yellow/orange
+    "gemini": 135,  # magenta
+}
+_DEFAULT_AGENT_COLOR = 252  # white
+
+
+def style_worker_pane(pane_id: str, agent: str) -> None:
+    """Color-code a worker pane border by agent type."""
+    colour = _AGENT_COLORS.get(agent, _DEFAULT_AGENT_COLOR)
+    set_pane_option(pane_id, "pane-border-style", f"fg=colour{colour}")
+
+
 def style_governor_pane(pane_id: str) -> None:
     """Style the governor pane: bright active bg, [gov] title."""
     _run(["select-pane", "-t", pane_id, "-P", "fg=default,bg=colour234"], silent=True)
@@ -186,6 +209,15 @@ def select_pane(pane_id: str) -> None:
 def select_layout(layout: str = "tiled") -> None:
     """Apply a tmux layout to the current window."""
     _run(["select-layout", layout], silent=True)
+
+
+def create_utility_pane(command: str, title: str, cwd: str | None = None) -> str:
+    """Split a new pane, run command, set title. Returns pane_id."""
+    pane_id = split_pane(cwd=cwd)
+    send_command(pane_id, command)
+    set_title(pane_id, title)
+    select_layout("tiled")
+    return pane_id
 
 
 def send_prompt_via_buffer(pane_id: str, prompt: str) -> None:

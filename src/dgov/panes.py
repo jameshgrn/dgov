@@ -190,6 +190,14 @@ def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
             break
     _write_state(session_root, state)
 
+    # Update tmux pane title to reflect new status
+    pane = _get_pane(session_root, slug)
+    if pane:
+        pane_id = pane.get("pane_id", "")
+        agent = pane.get("agent", "")
+        if pane_id and tmux.pane_exists(pane_id):
+            tmux.update_pane_status(pane_id, agent, slug, new_state)
+
 
 def _count_active_pi_workers(session_root: str) -> int:
     """Count how many pi workers are currently alive."""
@@ -677,6 +685,7 @@ def create_worker_pane(
     tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
+    tmux.style_worker_pane(pane_id, agent)
 
     # 4. Tidy layout
     tmux.select_layout("tiled")
@@ -773,6 +782,7 @@ def create_worker_pane(
     # 9b. Set tmux pane title
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
+    tmux.style_worker_pane(pane_id, agent)
 
     # 10. Build pane record and save to state
     pane = WorkerPane(

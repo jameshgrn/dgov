@@ -111,6 +111,19 @@ def pane():
     """Manage worker panes."""
 
 
+@pane.command("util")
+@click.argument("command")
+@click.option("--title", "-t", default=None, help="Pane title (defaults to command name)")
+@click.option("--cwd", "-c", default=".", help="Working directory")
+def pane_util(command, title, cwd):
+    """Launch a utility pane (e.g. lazygit, yazi). No worktree or agent."""
+    from dgov.tmux import create_utility_pane
+
+    title = title or command.split()[0]
+    pane_id = create_utility_pane(command, f"[util] {title}", cwd=cwd)
+    click.echo(json.dumps({"pane_id": pane_id, "command": command, "title": title}))
+
+
 @pane.command("create")
 @click.option(
     "--agent", "-a", default="claude", help="Agent CLI to launch (use 'auto' to classify)"

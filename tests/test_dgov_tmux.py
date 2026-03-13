@@ -9,6 +9,7 @@ import pytest
 from dgov.tmux import (
     _run,
     capture_pane,
+    create_utility_pane,
     current_command,
     kill_pane,
     list_panes,
@@ -19,6 +20,7 @@ from dgov.tmux import (
     send_prompt_via_buffer,
     set_title,
     split_pane,
+    style_worker_pane,
 )
 
 pytestmark = pytest.mark.unit
@@ -477,3 +479,81 @@ class TestTmuxPaneManagement:
         select_pane("#pane123")
 
         assert call_args[0] == ["select-pane", "-t", "#pane123"]
+
+
+# ---------------------------------------------------------------------------
+# style_worker_pane
+# ---------------------------------------------------------------------------
+
+
+class TestStyleWorkerPane:
+    @pytest.mark.parametrize(
+        "agent, expected_colour",
+        [
+            ("claude", "fg=colour39"),
+            ("pi", "fg=colour34"),
+            ("codex", "fg=colour214"),
+            ("gemini", "fg=colour135"),
+            ("unknown-agent", "fg=colour252"),
+        ],
+    )
+    def test_style_worker_pane_colors(
+        self, monkeypatch: pytest.MonkeyPatch, agent: str, expected_colour: str
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = ""
+            mock.stderr = ""
+            return mock
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        style_worker_pane("%5", agent)
+        # set_pane_option calls: tmux set-option -p -t %5 pane-border-style fg=colourN
+        assert len(calls) == 1
+        cmd = calls[0]
+        assert "set-option" in cmd
+        assert "-p" in cmd
+        assert "%5" in cmd
+        assert "pane-border-style" in cmd
+        assert expected_colour in cmd
+
+
+# ---------------------------------------------------------------------------
+# create_utility_pane
+# ---------------------------------------------------------------------------
+
+
+class TestCreateUtilityPane:
+    def test_creates_pane_and_returns_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("dgov.tmux.split_pane", return_value="%42") as mock_split,
+            patch("dgov.tmux.send_command") as mock_send,
+            patch("dgov.tmux.set_title") as mock_title,
+            patch("dgov.tmux.select_layout") as mock_layout,
+        ):
+            result = create_utility_pane("lazygit", "[util] lazygit", cwd="/tmp")
+
+        assert result == "%42"
+        mock_split.assert_called_once_with(cwd="/tmp")
+        mock_send.assert_called_once_with("%42", "lazygit")
+        mock_title.assert_called_once_with("%42", "[util] lazygit")
+        mock_layout.assert_called_once_with("tiled")
+
+    def test_no_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch
+
+        with (
+            patch("dgov.tmux.split_pane", return_value="%43") as mock_split,
+            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.set_title"),
+            patch("dgov.tmux.select_layout"),
+        ):
+            create_utility_pane("yazi", "[util] yazi")
+
+        mock_split.assert_called_once_with(cwd=None)
