@@ -1479,3 +1479,244 @@ class TestValidEvents:
             "review_fail",
         }
         assert expected == VALID_EVENTS
+
+
+# ---------------------------------------------------------------------------
+# retry_worker_pane
+# ---------------------------------------------------------------------------
+
+
+class TestRetryWorkerPane:
+    def test_not_found_returns_error(self, tmp_path: Path) -> None:
+        from dgov.panes import retry_worker_pane
+
+        _write_state(str(tmp_path), {"panes": []})
+        result = retry_worker_pane(str(tmp_path), "nope", session_root=str(tmp_path))
+        assert "error" in result
+
+    def test_retry_creates_new_pane_and_links(self, tmp_path: Path) -> None:
+        from dgov.panes import retry_worker_pane
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "fix-bug",
+                        "prompt": "Fix the bug",
+                        "agent": "pi",
+                        "state": "timed_out",
+                    }
+                ]
+            },
+        )
+
+        new_pane = WorkerPane(
+            slug="fix-bug-2",
+            prompt="Fix the bug",
+            pane_id="%42",
+            agent="pi",
+            project_root=str(tmp_path),
+            worktree_path="/wt",
+            branch_name="fix-bug-2",
+        )
+
+        def fake_create(**kwargs):
+            _add_pane(str(tmp_path), new_pane)
+            return new_pane
+
+        with patch("dgov.panes.create_worker_pane", side_effect=fake_create):
+            result = retry_worker_pane(str(tmp_path), "fix-bug", session_root=str(tmp_path))
+
+        assert result["retried"] is True
+        assert result["new_slug"] == "fix-bug-2"
+        assert result["attempt"] == 2
+        assert result["original_slug"] == "fix-bug"
+
+        # Check that old pane is superseded
+        state = _read_state(str(tmp_path))
+        old = next(p for p in state["panes"] if p["slug"] == "fix-bug")
+        assert old["state"] == "superseded"
+        assert old["superseded_by"] == "fix-bug-2"
+
+        # Check new pane has retried_from
+        new = next(p for p in state["panes"] if p["slug"] == "fix-bug-2")
+        assert new["retried_from"] == "fix-bug"
+
+    def test_attempt_increments_past_existing(self, tmp_path: Path) -> None:
+        from dgov.panes import retry_worker_pane
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {"slug": "task", "prompt": "Do it", "agent": "claude", "state": "superseded"},
+                    {
+                        "slug": "task-2",
+                        "prompt": "Do it",
+                        "agent": "claude",
+                        "state": "superseded",
+                    },
+                    {"slug": "task-3", "prompt": "Do it", "agent": "claude", "state": "timed_out"},
+                ]
+            },
+        )
+
+        new_pane = WorkerPane(
+            slug="task-4",
+            prompt="Do it",
+            pane_id="%50",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path="/wt",
+            branch_name="task-4",
+        )
+        with patch("dgov.panes.create_worker_pane", return_value=new_pane):
+            result = retry_worker_pane(str(tmp_path), "task-3", session_root=str(tmp_path))
+
+        assert result["attempt"] == 4
+        assert result["new_slug"] == "task-4"
+
+    def test_create_failure_returns_error(self, tmp_path: Path) -> None:
+        from dgov.panes import retry_worker_pane
+
+        _write_state(
+            str(tmp_path),
+            {"panes": [{"slug": "fail", "prompt": "x", "agent": "pi", "state": "timed_out"}]},
+        )
+        with patch("dgov.panes.create_worker_pane", side_effect=RuntimeError("tunnel down")):
+            result = retry_worker_pane(str(tmp_path), "fail", session_root=str(tmp_path))
+        assert "error" in result
+        assert "tunnel down" in result["error"]
+
+    def test_agent_override(self, tmp_path: Path) -> None:
+        from dgov.panes import retry_worker_pane
+
+        _write_state(
+            str(tmp_path),
+            {"panes": [{"slug": "orig", "prompt": "task", "agent": "pi", "state": "timed_out"}]},
+        )
+        new_pane = WorkerPane(
+            slug="orig-2",
+            prompt="task",
+            pane_id="%9",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path="/wt",
+            branch_name="orig-2",
+        )
+        with patch("dgov.panes.create_worker_pane", return_value=new_pane) as mock_create:
+            result = retry_worker_pane(
+                str(tmp_path), "orig", session_root=str(tmp_path), agent="claude"
+            )
+        assert result["agent"] == "claude"
+        assert mock_create.call_args.kwargs["agent"] == "claude"
+
+
+# ---------------------------------------------------------------------------
+# create_checkpoint / list_checkpoints
+# ---------------------------------------------------------------------------
+
+
+class TestCreateCheckpoint:
+    def test_creates_checkpoint_file(self, tmp_path: Path) -> None:
+        from dgov.panes import create_checkpoint
+
+        _write_state(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
+        with patch("dgov.panes.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="deadbeef\n")
+            result = create_checkpoint(str(tmp_path), "wave1", session_root=str(tmp_path))
+
+        assert result["checkpoint"] == "wave1"
+        assert result["main_sha"] == "deadbeef"
+        assert result["pane_count"] == 2
+
+        cp_path = tmp_path / ".dgov" / "checkpoints" / "wave1.json"
+        assert cp_path.exists()
+        data = json.loads(cp_path.read_text())
+        assert data["name"] == "wave1"
+        assert len(data["panes"]) == 2
+
+    def test_checkpoint_with_no_panes(self, tmp_path: Path) -> None:
+        from dgov.panes import create_checkpoint
+
+        _write_state(str(tmp_path), {"panes": []})
+        with patch("dgov.panes.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="abc123\n")
+            result = create_checkpoint(str(tmp_path), "empty", session_root=str(tmp_path))
+
+        assert result["pane_count"] == 0
+        cp_path = tmp_path / ".dgov" / "checkpoints" / "empty.json"
+        assert cp_path.exists()
+
+    def test_emits_checkpoint_event(self, tmp_path: Path) -> None:
+        from dgov.panes import create_checkpoint
+
+        _write_state(str(tmp_path), {"panes": []})
+        with patch("dgov.panes.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="abc\n")
+            create_checkpoint(str(tmp_path), "ev-test", session_root=str(tmp_path))
+
+        events_path = tmp_path / ".dgov" / "events.jsonl"
+        assert events_path.exists()
+        lines = events_path.read_text().strip().splitlines()
+        records = [json.loads(ln) for ln in lines]
+        cp_events = [r for r in records if r["event"] == "checkpoint_created"]
+        assert len(cp_events) == 1
+        assert cp_events[0]["pane"] == "checkpoint/ev-test"
+
+
+class TestListCheckpoints:
+    def test_empty_when_no_dir(self, tmp_path: Path) -> None:
+        from dgov.panes import list_checkpoints
+
+        result = list_checkpoints(str(tmp_path))
+        assert result == []
+
+    def test_lists_checkpoints(self, tmp_path: Path) -> None:
+        from dgov.panes import list_checkpoints
+
+        cp_dir = tmp_path / ".dgov" / "checkpoints"
+        cp_dir.mkdir(parents=True)
+        (cp_dir / "alpha.json").write_text(
+            json.dumps(
+                {
+                    "name": "alpha",
+                    "ts": "2026-01-01T00:00:00Z",
+                    "panes": [{}],
+                    "main_sha": "abcdef12",
+                }
+            )
+        )
+        (cp_dir / "beta.json").write_text(
+            json.dumps(
+                {
+                    "name": "beta",
+                    "ts": "2026-01-02T00:00:00Z",
+                    "panes": [{}, {}],
+                    "main_sha": "12345678",
+                }
+            )
+        )
+
+        result = list_checkpoints(str(tmp_path))
+        assert len(result) == 2
+        assert result[0]["name"] == "alpha"
+        assert result[0]["pane_count"] == 1
+        assert result[0]["main_sha"] == "abcdef12"
+        assert result[1]["name"] == "beta"
+        assert result[1]["pane_count"] == 2
+
+    def test_skips_corrupt_files(self, tmp_path: Path) -> None:
+        from dgov.panes import list_checkpoints
+
+        cp_dir = tmp_path / ".dgov" / "checkpoints"
+        cp_dir.mkdir(parents=True)
+        (cp_dir / "good.json").write_text(
+            json.dumps({"name": "good", "ts": "t", "panes": [], "main_sha": "abc"})
+        )
+        (cp_dir / "bad.json").write_text("not json{{{")
+
+        result = list_checkpoints(str(tmp_path))
+        assert len(result) == 1
+        assert result[0]["name"] == "good"

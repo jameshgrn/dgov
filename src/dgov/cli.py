@@ -78,7 +78,7 @@ def cli():
     """Workstation: governor + worker pane orchestration."""
     ctx = click.get_current_context()
     # Skip the guard for 'version' and 'agents' (info-only commands)
-    if ctx.invoked_subcommand not in ("version", "agents"):
+    if ctx.invoked_subcommand not in ("version", "agents", "checkpoint"):
         _check_governor_context()
 
 
@@ -596,6 +596,30 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
         sys.exit(1)
 
 
+@pane.command("retry")
+@click.argument("slug")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+@click.option("--agent", "-a", default=None, help="Override agent for retry")
+@click.option("--prompt", "-p", default=None, help="Override prompt for retry")
+@click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
+def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode):
+    """Retry a failed pane with a new attempt."""
+    from dgov.panes import retry_worker_pane
+
+    result = retry_worker_pane(
+        project_root,
+        slug,
+        session_root=session_root,
+        agent=agent,
+        prompt=prompt,
+        permission_mode=permission_mode,
+    )
+    click.echo(json.dumps(result, indent=2))
+    if "error" in result:
+        sys.exit(1)
+
+
 @cli.command("preflight")
 @click.option(
     "--project-root",
@@ -747,6 +771,35 @@ def _check_dmux_compat(version: str, spec: str) -> bool:
             if parts >= target:
                 return False
     return True
+
+
+@cli.group()
+def checkpoint():
+    """Manage state checkpoints."""
+
+
+@checkpoint.command("create")
+@click.argument("name")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+def checkpoint_create(name, project_root, session_root):
+    """Create a named checkpoint of current state."""
+    from dgov.panes import create_checkpoint
+
+    result = create_checkpoint(project_root, name, session_root=session_root)
+    click.echo(json.dumps(result, indent=2))
+
+
+@checkpoint.command("list")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+def checkpoint_list(project_root, session_root):
+    """List all checkpoints."""
+    from dgov.panes import list_checkpoints
+
+    session_root = os.path.abspath(session_root or project_root)
+    result = list_checkpoints(session_root)
+    click.echo(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
