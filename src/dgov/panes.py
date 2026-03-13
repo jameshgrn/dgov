@@ -1078,6 +1078,20 @@ def capture_worker_output(
 
 # -- Wait helpers (public API) --
 
+# Known foreground commands that indicate an agent is still active
+_AGENT_COMMANDS = frozenset(
+    {"node", "pi", "claude", "codex", "gemini", "qwen", "python", "python3"}
+)
+
+
+def _agent_still_running(pane_id: str) -> bool:
+    """Check if the tmux pane's foreground process is still an agent."""
+    try:
+        cmd = tmux.current_command(pane_id)
+        return cmd.strip().lower() in _AGENT_COMMANDS
+    except (RuntimeError, OSError):
+        return False
+
 
 class PaneTimeoutError(Exception):
     """Raised when waiting for a pane exceeds the timeout."""
@@ -1118,10 +1132,15 @@ def _poll_once(
             if stable_since is None:
                 stable_since = time.monotonic()
             elif time.monotonic() - stable_since >= stable:
-                done_path = Path(session_root) / _STATE_DIR / "done" / slug
-                done_path.parent.mkdir(parents=True, exist_ok=True)
-                done_path.touch()
-                return True, "stable", current_output, stable_since
+                # Check if agent process is still running — if so, it's thinking, not done
+                pane_id = pane_record.get("pane_id", "") if pane_record else ""
+                if pane_id and _agent_still_running(pane_id):
+                    stable_since = None  # Reset — agent is alive, just quiet
+                else:
+                    done_path = Path(session_root) / _STATE_DIR / "done" / slug
+                    done_path.parent.mkdir(parents=True, exist_ok=True)
+                    done_path.touch()
+                    return True, "stable", current_output, stable_since
         else:
             last_output = current_output
             stable_since = None

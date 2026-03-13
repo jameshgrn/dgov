@@ -2101,6 +2101,89 @@ class TestWaitWorkerPane:
             assert exc_info.value.timeout == 10
 
 
+# ---------------------------------------------------------------------------
+# _poll_once stable detection with agent process check
+# ---------------------------------------------------------------------------
+
+
+class TestStableDetectionAgentCheck:
+    def test_stable_skipped_when_agent_running(self, tmp_path: Path) -> None:
+        """When output is stable but agent process is still running, don't trigger done."""
+        from dgov.panes import _poll_once
+
+        with (
+            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.panes.capture_worker_output", return_value="same output"),
+            patch("dgov.panes.tmux.current_command", return_value="node"),
+        ):
+            # First call: sets stable_since
+            done, method, last_out, stable_since = _poll_once(
+                session_root=str(tmp_path),
+                project_root=str(tmp_path),
+                slug="s1",
+                pane_record={"slug": "s1", "pane_id": "%5"},
+                last_output="same output",
+                stable_since=None,
+                stable=15,
+            )
+            assert not done
+            assert stable_since is not None
+
+            # Second call: stable timer exceeded, but agent ("node") is still running
+            done, method, last_out, stable_since = _poll_once(
+                session_root=str(tmp_path),
+                project_root=str(tmp_path),
+                slug="s1",
+                pane_record={"slug": "s1", "pane_id": "%5"},
+                last_output="same output",
+                stable_since=time.monotonic() - 20,  # 20s ago, exceeds stable=15
+                stable=15,
+            )
+            assert not done
+            assert stable_since is None  # Reset because agent is alive
+
+    def test_stable_triggers_when_agent_exited(self, tmp_path: Path) -> None:
+        """When output is stable and agent process has exited (shell prompt), trigger done."""
+        from dgov.panes import _poll_once
+
+        with (
+            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.panes.capture_worker_output", return_value="same output"),
+            patch("dgov.panes.tmux.current_command", return_value="zsh"),
+        ):
+            done, method, last_out, stable_since = _poll_once(
+                session_root=str(tmp_path),
+                project_root=str(tmp_path),
+                slug="s1",
+                pane_record={"slug": "s1", "pane_id": "%5"},
+                last_output="same output",
+                stable_since=time.monotonic() - 20,
+                stable=15,
+            )
+            assert done
+            assert method == "stable"
+
+    def test_stable_triggers_when_no_pane_id(self, tmp_path: Path) -> None:
+        """When pane_record has no pane_id, fall through to stable done (no process to check)."""
+        from dgov.panes import _poll_once
+
+        with (
+            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.panes.capture_worker_output", return_value="same output"),
+        ):
+            done, method, last_out, stable_since = _poll_once(
+                session_root=str(tmp_path),
+                project_root=str(tmp_path),
+                slug="s1",
+                pane_record={"slug": "s1"},
+                last_output="same output",
+                stable_since=time.monotonic() - 20,
+                stable=15,
+            )
+            assert done
+            assert method == "stable"
+
+
 class TestWaitAllWorkerPanes:
     def test_empty_pending(self, tmp_path: Path) -> None:
         from dgov.panes import wait_all_worker_panes
