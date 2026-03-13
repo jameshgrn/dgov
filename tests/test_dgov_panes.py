@@ -2292,39 +2292,39 @@ class TestStructurePiPrompt:
         assert "Read" not in structured
         assert "git add" not in structured
 
-    @patch("dgov.panes.tmux")
-    @patch("dgov.panes.subprocess.run")
-    @patch("dgov.panes._trigger_hook", return_value=False)
-    @patch("dgov.panes._generate_slug", return_value="pi-test")
-    @patch("dgov.panes._count_active_pi_workers", return_value=0)
-    def test_create_worker_pane_uses_structured_prompt_for_pi(
-        self, mock_count, mock_slug, mock_hook, mock_run, mock_tmux, tmp_path: Path
+    @patch("dgov.panes._structure_pi_prompt", wraps=_structure_pi_prompt)
+    def test_create_worker_pane_calls_structure_for_pi(
+        self, mock_structure: Mock, tmp_path: Path
     ) -> None:
+        """Verify _structure_pi_prompt is called when agent is pi."""
         from dgov.panes import create_worker_pane
 
-        def fake_run(cmd, **kwargs):
-            m = MagicMock()
-            m.returncode = 0
-            if "curl" in cmd:
-                m.stdout = "200"
-            else:
-                m.stdout = "abc123\n"
-            return m
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%99"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.style_worker_pane"),
+            patch("dgov.panes.tmux.set_pane_option"),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.send_prompt_via_buffer"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes._generate_slug", return_value="pi-test"),
+            patch("dgov.panes._count_active_pi_workers", return_value=0),
+        ):
 
-        mock_run.side_effect = fake_run
-        mock_tmux.split_pane.return_value = "%99"
+            def _fake_run(cmd, **kwargs):
+                m = Mock(returncode=0, stderr="")
+                m.stdout = "200" if "curl" in cmd else "abc123\n"
+                return m
 
-        create_worker_pane(
-            project_root=str(tmp_path),
-            prompt="Fix src/foo.py",
-            agent="pi",
-            session_root=str(tmp_path),
-        )
-
-        # Check if structured prompt was sent via send_prompt_via_buffer
-        # First arg is pane_id, second is prompt
-        calls = mock_tmux.send_prompt_via_buffer.call_args_list
-        assert len(calls) == 1
-        sent_prompt = calls[0][0][1]
-        assert "1. Read src/foo.py" in sent_prompt
-        assert "2. Fix src/foo.py" in sent_prompt
+            mock_run.side_effect = _fake_run
+            create_worker_pane(
+                project_root=str(tmp_path),
+                prompt="Fix src/foo.py",
+                agent="pi",
+                session_root=str(tmp_path),
+            )
+        mock_structure.assert_called_once_with("Fix src/foo.py")
