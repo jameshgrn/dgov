@@ -660,6 +660,7 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),
             "prompt": p.get("prompt", "")[:80],
+            "duration_s": round(time.time() - p.get("created_at", time.time())),
             **freshness,
         }
         result.append(entry)
