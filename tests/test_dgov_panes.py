@@ -1522,6 +1522,39 @@ class TestEmitEvent:
 
 
 # ---------------------------------------------------------------------------
+# allow-set-title blocked during pane creation
+# ---------------------------------------------------------------------------
+
+
+class TestBlockTitleOverride:
+    def test_allow_set_title_off_during_create(self, tmp_path: Path) -> None:
+        from dgov.panes import create_worker_pane
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes.tmux.setup_pane_borders"),
+            patch("dgov.panes.tmux.split_pane", return_value="%99"),
+            patch("dgov.panes.tmux._run"),
+            patch("dgov.panes.tmux.set_title"),
+            patch("dgov.panes.tmux.style_worker_pane"),
+            patch("dgov.panes.tmux.set_pane_option") as mock_set_opt,
+            patch("dgov.panes.tmux.select_layout"),
+            patch("dgov.panes.tmux.send_command"),
+            patch("dgov.panes.tmux.send_prompt_via_buffer"),
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes._generate_slug", return_value="title-test"),
+        ):
+            mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
+            create_worker_pane(
+                project_root=str(tmp_path),
+                prompt="Test title block",
+                agent="claude",
+                session_root=str(tmp_path),
+            )
+        mock_set_opt.assert_any_call("%99", "allow-set-title", "off")
+
+
+# ---------------------------------------------------------------------------
 # _compute_freshness
 # ---------------------------------------------------------------------------
 
