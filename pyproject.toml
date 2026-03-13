@@ -1,7 +1,7 @@
 [project]
 name = "dgov"
 version = "0.4.0"
-description = "Governor CLI for dispatching AI coding agents across git worktrees."
+description = "Distributed governance for AI coding agents. Orchestrates any CLI agent across git worktrees."
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1",

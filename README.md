@@ -1,6 +1,6 @@
 # dgov
 
-Governor CLI for dispatching AI coding agents across git worktrees. Manages their lifecycle and integrates results back to main.
+Distributed governance for AI coding agents. Orchestrates any CLI agent across git worktrees — dispatch, wait, review, merge.
 
 ## Install
 
