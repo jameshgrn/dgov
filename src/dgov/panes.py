@@ -860,6 +860,10 @@ def _full_cleanup(
 
         if not skipped_worktree and wt:
             subprocess.run(
+                ["git", "-C", wt, "checkout", "."],
+                capture_output=True,
+            )
+            subprocess.run(
                 ["git", "-C", project_root, "worktree", "remove", "--force", wt],
                 capture_output=True,
             )

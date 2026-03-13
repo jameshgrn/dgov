@@ -919,6 +919,55 @@ class TestFullCleanup:
         wt_remove_cmds = [c for c in calls if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmds) == 0
 
+    def test_checkout_before_worktree_remove_on_clean(self, tmp_path: Path) -> None:
+        """Verify git checkout . is called before worktree remove --force."""
+        from dgov.panes import _full_cleanup
+
+        _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        wt = tmp_path / "wt"
+        wt.mkdir()
+
+        pane_record = {
+            "pane_id": "%5",
+            "owns_worktree": True,
+            "worktree_path": str(wt),
+            "branch_name": "test-br",
+        }
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            m = MagicMock()
+            m.returncode = 0
+            m.stdout = ""
+            return m
+
+        with (
+            patch("dgov.panes.tmux.kill_pane"),
+            patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes.tmux.select_layout"),
+            patch("subprocess.run", fake_run),
+        ):
+            _full_cleanup(
+                str(tmp_path), str(tmp_path), "test", pane_record, skip_worktree_if_dirty=False
+            )
+
+        # Verify git checkout . is called first (on worktree path)
+        checkout_cmd = [c for c in calls if "checkout" in c]
+        assert len(checkout_cmd) == 1
+        assert checkout_cmd[0] == ["git", "-C", str(wt), "checkout", "."]
+
+        # Verify worktree remove is called second
+        wt_remove_cmd = [c for c in calls if "worktree" in c and "remove" in c]
+        assert len(wt_remove_cmd) == 1
+        assert wt_remove_cmd[0][-1] == str(wt)
+
+        # checkout should come before worktree remove
+        checkout_idx = next(i for i, c in enumerate(calls) if "checkout" in c)
+        remove_idx = next(i for i, c in enumerate(calls) if "worktree" in c and "remove" in c)
+        assert checkout_idx < remove_idx
+
 
 # ---------------------------------------------------------------------------
 # merge_worker_pane_with_close
