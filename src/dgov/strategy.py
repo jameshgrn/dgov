@@ -226,11 +226,47 @@ def _generate_slug(prompt: str, max_words: int = 4) -> str:
     except Exception:
         logger.debug("LLM-based slug generation failed, using word extraction fallback")
     # Fallback: local word extraction
-    words = re.sub(r"[^a-z0-9\s]", "", prompt.lower()).split()
-    skip = {"the", "a", "an", "in", "on", "at", "to", "for", "of", "and", "or", "is", "it"}
-    content = [w for w in words if w not in skip][:max_words]
+    # Strip absolute path segments (e.g. /Users/jake/...) and keep only the tail
+    prompt_tail = re.sub(r"/\S+/", " ", prompt)
+    words = re.sub(r"[^a-z0-9\s]", " ", prompt_tail.lower()).split()
+    noise = {
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "and",
+        "or",
+        "is",
+        "it",
+        "read",
+        "run",
+        "git",
+        "add",
+        "commit",
+        "pytest",
+        "ruff",
+        "uv",
+        "file",
+        "files",
+        "path",
+        "paths",
+    }
+    content = []
+    for w in words:
+        if w in noise:
+            continue
+        if w.isdigit():
+            continue
+        content.append(w)
+        if len(content) >= max_words:
+            break
     slug = "-".join(content) if content else f"task-{int(time.time())}"
     slug = slug[:50]
-    # Ensure generated slug passes validation (strip leading hyphens if needed)
-    slug = slug.lstrip("-") or f"task-{int(time.time())}"
+    # Ensure generated slug passes validation (strip leading/trailing hyphens)
+    slug = slug.strip("-") or f"task-{int(time.time())}"
     return slug

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -286,6 +287,46 @@ class TestGenerateSlug:
             slug = _generate_slug("fix the bug")
         # Should fall back to local extraction since slug > 50 chars
         assert len(slug) <= 50
+
+    def test_fallback_with_absolute_path_and_numbered_steps(self) -> None:
+        """Regression test: numbered prompt with absolute path should not generate garbage."""
+        prompt = "1. Read /Users/jakegearon/projects/dgov/src/dgov/panes.py\n2. Fix the bug"
+        with patch("dgov.panes._qwen_4b_request", side_effect=ConnectionError):
+            slug = _generate_slug(prompt)
+        # Should strip "/Users/jakegearon/projects/dgov/src/dgov/" and numbered step
+        # Content: panes, py, fix, bug
+        assert slug == "panes-py-fix-bug"
+        assert not slug.startswith("1-")
+        assert "users" not in slug
+
+
+class TestCreateWorktree:
+    @patch("subprocess.run")
+    def test_create_worktree_failure_wrapping(self, mock_run: MagicMock) -> None:
+        """Regression test: git worktree add failure should be wrapped in RuntimeError."""
+        import subprocess
+
+        from dgov.panes import _create_worktree
+
+        def side_effect(cmd, **kwargs):
+            if "rev-parse" in cmd:
+                return Mock(returncode=1)  # branch does not exist
+            if "worktree" in cmd and "add" in cmd:
+                raise subprocess.CalledProcessError(
+                    returncode=128,
+                    cmd=cmd,
+                    stderr="fatal: invalid branch name\n",
+                )
+            return Mock(returncode=0)
+
+        mock_run.side_effect = side_effect
+
+        with pytest.raises(RuntimeError) as exc_info:
+            _create_worktree("/repo", "/wt/path", "bad-branch")
+
+        assert "Failed to create worktree for branch 'bad-branch'" in str(exc_info.value)
+        assert "at path '/wt/path'" in str(exc_info.value)
+        assert "fatal: invalid branch name" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
