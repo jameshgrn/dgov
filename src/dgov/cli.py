@@ -597,19 +597,24 @@ def _fmt_duration(seconds: int) -> str:
     help="Git repo root",
 )
 @SESSION_ROOT_OPTION
-def pane_list(project_root, session_root):
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+def pane_list(project_root, session_root, as_json):
     """List all worker panes with live status."""
     from dgov.panes import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
+
+    if as_json:
+        click.echo(json.dumps(panes, indent=2))
+        return
 
     # Format as table
     header = (
         f"{'Slug':<20} {'Agent':<10} {'State':<10} {'Alive':<6} "
         f"{'Done':<5} {'Freshness':<8} {'Duration':<12} {'Prompt'}"
     )
-    print(header)
-    print("-" * len(header))
+    click.echo(header)
+    click.echo("-" * len(header))
     for p in panes:
         slug = (p.get("slug", "") or "")[:19]
         agent = p.get("agent", "unknown") or "unknown"
@@ -624,7 +629,7 @@ def pane_list(project_root, session_root):
             f"{slug:<20} {agent:<10} {state:<10} {alive:<6} "
             f"{done:<5} {freshness:<8} {duration:<12} {prompt}"
         )
-        print(row)
+        click.echo(row)
 
 
 @pane.command("prune")
