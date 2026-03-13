@@ -647,6 +647,28 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
         sys.exit(1)
 
 
+@pane.command("resume")
+@click.argument("slug")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option("--session-root", "-R", default=None, help="Session root")
+@click.option("--agent", "-a", default=None, help="Override agent")
+@click.option("--prompt", "-p", default=None, help="Override prompt")
+@click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
+def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode):
+    """Resume a pane by re-launching an agent in its existing worktree."""
+    from dgov.panes import resume_worker_pane
+
+    result = resume_worker_pane(
+        project_root=project_root,
+        slug=slug,
+        session_root=session_root,
+        agent=agent,
+        prompt=prompt,
+        permission_mode=permission_mode,
+    )
+    click.echo(json.dumps(result, indent=2))
+
+
 @cli.command("preflight")
 @click.option(
     "--project-root",
