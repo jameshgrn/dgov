@@ -48,6 +48,8 @@ from dgov.persistence import (  # noqa: F401
     _STATE_DIR,
     PANE_STATES,
     VALID_EVENTS,
+    VALID_TRANSITIONS,
+    IllegalTransitionError,
     WorkerPane,
     _add_pane,
     _all_panes,

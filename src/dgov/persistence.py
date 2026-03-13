@@ -86,6 +86,33 @@ PANE_STATES = frozenset(
 )
 
 
+# Legal state transitions. Same-state transitions are always allowed (no-op).
+VALID_TRANSITIONS: dict[str, frozenset[str]] = {
+    "active": frozenset({"done", "failed", "abandoned", "timed_out", "closed"}),
+    "done": frozenset(
+        {"reviewed_pass", "reviewed_fail", "merged", "merge_conflict", "closed", "superseded"}
+    ),
+    "failed": frozenset({"closed", "superseded", "escalated"}),
+    "reviewed_pass": frozenset({"merged", "merge_conflict", "closed"}),
+    "reviewed_fail": frozenset({"closed", "superseded", "escalated"}),
+    "merged": frozenset({"closed"}),
+    "merge_conflict": frozenset({"merged", "closed", "escalated"}),
+    "timed_out": frozenset({"closed", "superseded", "escalated"}),
+    "escalated": frozenset({"closed"}),
+    "superseded": frozenset({"closed"}),
+    "closed": frozenset(),
+    "abandoned": frozenset({"closed", "superseded", "escalated"}),
+}
+
+
+class IllegalTransitionError(ValueError):
+    def __init__(self, current: str, target: str, slug: str):
+        self.current = current
+        self.target = target
+        self.slug = slug
+        super().__init__(f"Illegal state transition for '{slug}': {current} -> {target}")
+
+
 def _validate_state(state: str) -> str:
     """Validate and return a canonical pane state. Raises ValueError for unknown states."""
     if state not in PANE_STATES:
@@ -279,10 +306,23 @@ def _all_panes(session_root: str) -> list[dict]:
 
 
 def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
-    """Update the state field of a pane record."""
+    """Update the state field of a pane record.
+
+    Enforces VALID_TRANSITIONS. Same-state transitions are no-ops.
+    Raises IllegalTransitionError for disallowed transitions.
+    """
     _validate_state(new_state)
     conn = _get_db(session_root)
     try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
+        if row is not None:
+            current_state = row["state"]
+            if current_state == new_state:
+                return
+            allowed = VALID_TRANSITIONS.get(current_state, frozenset())
+            if new_state not in allowed:
+                raise IllegalTransitionError(current_state, new_state, slug)
         conn.execute("UPDATE panes SET state = ? WHERE slug = ?", (new_state, slug))
         conn.commit()
     finally:
