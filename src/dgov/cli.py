@@ -124,6 +124,26 @@ def pane_util(command, title, cwd):
     click.echo(json.dumps({"pane_id": pane_id, "command": command, "title": title}))
 
 
+@pane.command("lazygit")
+@click.option("--cwd", "-c", default=".", help="Working directory")
+def pane_lazygit(cwd):
+    """Launch lazygit in a utility pane."""
+    from dgov.tmux import create_utility_pane
+
+    pane_id = create_utility_pane("lazygit", "[util] lazygit", cwd=cwd)
+    click.echo(json.dumps({"pane_id": pane_id, "command": "lazygit", "title": "lazygit"}))
+
+
+@pane.command("yazi")
+@click.option("--cwd", "-c", default=".", help="Working directory")
+def pane_yazi(cwd):
+    """Launch yazi in a utility pane."""
+    from dgov.tmux import create_utility_pane
+
+    pane_id = create_utility_pane("yazi", "[util] yazi", cwd=cwd)
+    click.echo(json.dumps({"pane_id": pane_id, "command": "yazi", "title": "yazi"}))
+
+
 @pane.command("create")
 @click.option(
     "--agent", "-a", default="claude", help="Agent CLI to launch (use 'auto' to classify)"
