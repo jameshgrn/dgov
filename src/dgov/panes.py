@@ -694,14 +694,14 @@ def create_worker_pane(
 
     # 6. Trigger worktree_created hook
     hook_env = {
-        "DMUX_ROOT": project_root,
-        "DMUX_PANE_ID": pane_id,
-        "DMUX_SLUG": slug,
-        "DMUX_PROMPT": prompt,
-        "DMUX_AGENT": agent,
-        "DMUX_WORKTREE_PATH": worktree_path,
-        "DMUX_BRANCH": branch_name,
-        "DMUX_OWNS_WORKTREE": "1" if owns_worktree else "0",
+        "DGOV_ROOT": project_root,
+        "DGOV_PANE_ID": pane_id,
+        "DGOV_SLUG": slug,
+        "DGOV_PROMPT": prompt,
+        "DGOV_AGENT": agent,
+        "DGOV_WORKTREE_PATH": worktree_path,
+        "DGOV_BRANCH": branch_name,
+        "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
     }
     hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
 
@@ -1306,12 +1306,12 @@ def merge_worker_pane(
 
     # Pre-merge hook: restore protected files, etc.
     pre_merge_env = {
-        "DMUX_PROJECT_ROOT": pane_project_root,
-        "DMUX_WORKTREE_PATH": target.get("worktree_path", ""),
-        "DMUX_BRANCH": branch_name or "",
-        "DMUX_BASE_SHA": target.get("base_sha", ""),
-        "DMUX_SLUG": slug,
-        "DMUX_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
+        "DGOV_PROJECT_ROOT": pane_project_root,
+        "DGOV_WORKTREE_PATH": target.get("worktree_path", ""),
+        "DGOV_BRANCH": branch_name or "",
+        "DGOV_BASE_SHA": target.get("base_sha", ""),
+        "DGOV_SLUG": slug,
+        "DGOV_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
     }
     if not _trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
         _restore_protected_files(pane_project_root, target)
@@ -1350,12 +1350,12 @@ def merge_worker_pane(
 
         # Post-merge hook: lint, verify protected files, etc.
         post_merge_env = {
-            "DMUX_PROJECT_ROOT": pane_project_root,
-            "DMUX_BASE_SHA": target.get("base_sha", ""),
-            "DMUX_SLUG": slug,
-            "DMUX_BRANCH": branch_name or "",
-            "DMUX_CHANGED_FILES": "\n".join(changed_file_names),
-            "DMUX_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
+            "DGOV_PROJECT_ROOT": pane_project_root,
+            "DGOV_BASE_SHA": target.get("base_sha", ""),
+            "DGOV_SLUG": slug,
+            "DGOV_BRANCH": branch_name or "",
+            "DGOV_CHANGED_FILES": "\n".join(changed_file_names),
+            "DGOV_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
         }
         hook_ran = _trigger_hook("post_merge", pane_project_root, post_merge_env, timeout=30)
 
