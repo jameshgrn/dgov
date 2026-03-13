@@ -25,6 +25,11 @@ from dgov.batch import (  # noqa: F401
     list_checkpoints,
     run_batch,
 )
+from dgov.experiment import (  # noqa: F401
+    ExperimentLog,
+    run_experiment,
+    run_experiment_loop,
+)
 from dgov.merger import (  # noqa: F401
     _commit_worktree,
     _detect_conflicts,

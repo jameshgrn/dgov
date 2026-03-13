@@ -67,7 +67,7 @@ def _check_governor_context() -> None:
 def cli(ctx):
     """dgov: governor + worker pane orchestration."""
     # Skip the guard for info-only commands and the bare invocation
-    if ctx.invoked_subcommand not in (None, "version", "agents", "checkpoint"):
+    if ctx.invoked_subcommand not in (None, "version", "agents", "checkpoint", "experiment"):
         _check_governor_context()
 
     if ctx.invoked_subcommand is not None:
@@ -864,6 +864,91 @@ def batch(spec_path, session_root, dry_run):
     click.echo(json.dumps(result, indent=2))
     if result.get("failed"):
         sys.exit(1)
+
+
+@cli.group()
+def experiment():
+    """Manage experiment loops."""
+
+
+@experiment.command("start")
+@click.option(
+    "--program", "-p", required=True, type=click.Path(exists=True), help="Program file (markdown)"
+)
+@click.option("--metric", "-m", required=True, help="Metric name to optimize")
+@click.option("--budget", "-b", default=5, help="Max experiments to run")
+@click.option("--agent", "-a", default="claude", help="Agent to use")
+@click.option("--direction", "-d", type=click.Choice(["minimize", "maximize"]), default="minimize")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+@click.option("--timeout", "-t", default=600, help="Timeout per experiment in seconds")
+@click.option("--dry-run", is_flag=True, help="Show plan without executing")
+def experiment_start(
+    program, metric, budget, agent, direction, project_root, session_root, timeout, dry_run
+):
+    """Run an experiment loop."""
+    from dgov.experiment import run_experiment_loop
+
+    session_root_abs = os.path.abspath(session_root or project_root)
+
+    if dry_run:
+        program_name = Path(program).stem
+        click.echo(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "program": program,
+                    "program_name": program_name,
+                    "metric": metric,
+                    "budget": budget,
+                    "agent": agent,
+                    "direction": direction,
+                },
+                indent=2,
+            )
+        )
+        return
+
+    for result in run_experiment_loop(
+        project_root=project_root,
+        program_path=program,
+        metric_name=metric,
+        budget=budget,
+        agent=agent,
+        direction=direction,
+        session_root=session_root_abs,
+        timeout=timeout,
+    ):
+        if isinstance(result, dict):
+            click.echo(json.dumps(result))
+
+
+@experiment.command("log")
+@click.option("--program", "-p", required=True, help="Program name (stem of the program file)")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+def experiment_log(program, project_root, session_root):
+    """Show the experiment log as JSON."""
+    from dgov.experiment import ExperimentLog
+
+    session_root_abs = os.path.abspath(session_root or project_root)
+    log = ExperimentLog(session_root_abs, program)
+    entries = log.read_log()
+    click.echo(json.dumps(entries, indent=2))
+
+
+@experiment.command("summary")
+@click.option("--program", "-p", required=True, help="Program name (stem of the program file)")
+@click.option("--project-root", "-r", default=".", help="Git repo root")
+@SESSION_ROOT_OPTION
+@click.option("--direction", "-d", type=click.Choice(["minimize", "maximize"]), default="minimize")
+def experiment_summary(program, project_root, session_root, direction):
+    """Show summary stats for an experiment program."""
+    from dgov.experiment import ExperimentLog
+
+    session_root_abs = os.path.abspath(session_root or project_root)
+    log = ExperimentLog(session_root_abs, program)
+    click.echo(json.dumps(log.summary(direction), indent=2))
 
 
 if __name__ == "__main__":
