@@ -903,14 +903,14 @@ class TestPaneListCommand:
                 "slug": "test-task",
                 "agent": "pi",
                 "done": True,
-                "branch": "distributary/test-task-abc123",
+                "branch": "test-task",
                 "worktree": "/tmp/worktrees/test-task",
             },
             {
                 "slug": "another-task",
                 "agent": "claude",
                 "done": False,
-                "branch": "distributary/another-task-def456",
+                "branch": "another-task",
                 "worktree": "/tmp/worktrees/another-task",
             },
         ]

@@ -157,7 +157,7 @@ dgov batch spec.json                 # execute
 dgov batch spec.json --dry-run       # show computed tiers without executing
 ```
 
-Tiers are computed by the distributary DAG engine (optional dependency). Without it, all tasks run in a single tier (sequential). Each tier spawns workers concurrently, waits for all, merges results, then proceeds to the next tier. A failure in any tier aborts remaining tiers.
+Tiers are computed by the dgov DAG engine (optional dependency). Without it, all tasks run in a single tier (sequential). Each tier spawns workers concurrently, waits for all, merges results, then proceeds to the next tier. A failure in any tier aborts remaining tiers.
 
 ## Preflight Checks
 
@@ -211,7 +211,7 @@ Workers routinely clobber these. The pre-merge step restores them from the base 
 
 ## TDD Protocol Injection
 
-Every worker prompt gets the TDD protocol appended. Workers write structured JSON progress to `$DISTRIBUTARY_TDD_STATUS_FILE`:
+Every worker prompt gets the TDD protocol appended. Workers write structured JSON progress to `$DGOV_TDD_STATUS_FILE`:
 
 ```json
 {"step": 3, "step_name": "IMPLEMENT", "iteration": 1, "max_iterations": 5,
@@ -244,27 +244,47 @@ Event types: `pane_created`, `pane_done`, `pane_timed_out`, `pane_merged`, `pane
 
 ## Full Command Reference
 
-```
-dgov pane create       # create worker pane
-dgov pane wait         # wait for single pane
-dgov pane wait-all     # wait for all panes
-dgov pane review       # preview changes
-dgov pane capture      # capture pane output
-dgov pane merge        # merge + optional close
-dgov pane merge-all    # merge all done panes
-dgov pane escalate     # re-dispatch to stronger agent
-dgov pane close        # kill pane + cleanup
-dgov pane prune        # remove stale entries
-dgov pane classify     # classify prompt -> agent recommendation
-dgov pane list         # list panes with status
-dgov pane retry        # re-dispatch failed pane with new attempt
-dgov pane diff         # show diff vs base (--stat, --name-only)
-dgov checkpoint create # snapshot current state
-dgov checkpoint list   # list checkpoints
-dgov batch             # DAG-ordered batch execution
-dgov preflight         # run preflight checks
-dgov rebase            # rebase governor onto upstream
-dgov status            # full workstation status
-dgov agents            # list agent registry
-dgov version           # dgov version
-```
+### General
+| Command | Description |
+|---|---|
+| `dgov` | Bare command — hand off to or style a tmux session |
+| `dgov status` | Full workstation health (panes, tunnel, kerberos) |
+| `dgov agents` | List registry and install status |
+| `dgov version` | Show dgov version |
+| `dgov rebase` | Rebase the main repo/worktree onto upstream |
+
+### Worker Panes
+| Command | Description |
+|---|---|
+| `dgov pane create` | Create worker pane (worktree + tmux + agent) |
+| `dgov pane list` | List active and completed panes with status |
+| `dgov pane wait` | Wait for a single pane to finish |
+| `dgov pane wait-all` | Wait for all active panes |
+| `dgov pane review` | Preview changes before merging |
+| `dgov pane capture` | Capture the last N lines of pane output |
+| `dgov pane diff` | Show full diff vs base (`--stat`, `--name-only`) |
+| `dgov pane merge` | Merge worker branch back to main |
+| `dgov pane merge-all` | Merge all completed panes sequentially |
+| `dgov pane escalate` | Hand off a task to a stronger agent |
+| `dgov pane retry` | Re-dispatch a failed task with a new attempt |
+| `dgov pane close` | Kill pane and cleanup worktree |
+| `dgov pane prune` | Remove stale/dead pane entries |
+| `dgov pane classify` | Recommend an agent for a prompt |
+
+### Utility Panes
+| Command | Description |
+|---|---|
+| `dgov pane util` | Launch a generic utility command in a pane |
+| `dgov pane lazygit` | Shortcut for lazygit utility pane |
+| `dgov pane yazi` | Shortcut for yazi (file manager) pane |
+| `dgov pane htop` | Shortcut for htop pane |
+| `dgov pane k9s` | Shortcut for k9s (kubernetes) pane |
+| `dgov pane top` | Shortcut for btop pane |
+
+### Batch & Checkpoints
+| Command | Description |
+|---|---|
+| `dgov batch` | Execute multiple tasks with DAG parallelism |
+| `dgov preflight` | Run agent/git readiness checks standalone |
+| `dgov checkpoint create` | Snapshot current state and events |
+| `dgov checkpoint list` | List available snapshots |
