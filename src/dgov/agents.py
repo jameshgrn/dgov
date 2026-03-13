@@ -1,7 +1,8 @@
 # Agent registry and launch commands
 """Agent registry and launch command builder.
 
-Built-in agents: claude, codex, gemini.
+Built-in agents: claude, codex, gemini, opencode, cline, qwen, amp,
+pi, cursor, copilot, crush.
 Users add custom agents via TOML config files.
 """
 
@@ -83,6 +84,106 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
+    ),
+    "opencode": AgentDef(
+        id="opencode",
+        name="OpenCode",
+        short_label="oc",
+        prompt_command="opencode",
+        prompt_transport="option",
+        prompt_option="--prompt",
+        color=82,
+    ),
+    "cline": AgentDef(
+        id="cline",
+        name="Cline CLI",
+        short_label="cl",
+        prompt_command="cline",
+        prompt_transport="send-keys",
+        send_keys_post_paste_delay_ms=120,
+        send_keys_ready_delay_ms=2500,
+        permission_flags={
+            "plan": "--plan",
+            "acceptEdits": "--act",
+            "bypassPermissions": "--act --yolo",
+        },
+        color=196,
+    ),
+    "qwen": AgentDef(
+        id="qwen",
+        name="Qwen CLI",
+        short_label="qn",
+        prompt_command="qwen",
+        prompt_transport="option",
+        prompt_option="-i",
+        permission_flags={
+            "plan": "--approval-mode plan",
+            "acceptEdits": "--approval-mode auto-edit",
+            "bypassPermissions": "--approval-mode yolo",
+        },
+        resume_template="qwen --continue{permissions}",
+        color=99,
+    ),
+    "amp": AgentDef(
+        id="amp",
+        name="Amp CLI",
+        short_label="ap",
+        prompt_command="amp",
+        prompt_transport="stdin",
+        permission_flags={
+            "bypassPermissions": "--dangerously-allow-all",
+        },
+        color=208,
+    ),
+    "pi": AgentDef(
+        id="pi",
+        name="pi CLI",
+        short_label="pi",
+        prompt_command="pi",
+        prompt_transport="positional",
+        permission_flags={
+            "plan": "--tools read,grep,find,ls",
+        },
+        resume_template="pi --continue{permissions}",
+        color=34,
+    ),
+    "cursor": AgentDef(
+        id="cursor",
+        name="Cursor CLI",
+        short_label="cr",
+        prompt_command="cursor-agent",
+        prompt_transport="positional",
+        color=45,
+    ),
+    "copilot": AgentDef(
+        id="copilot",
+        name="Copilot CLI",
+        short_label="co",
+        prompt_command="copilot",
+        prompt_transport="option",
+        prompt_option="-i",
+        permission_flags={
+            "acceptEdits": "--allow-tool write",
+            "bypassPermissions": "--allow-all",
+        },
+        resume_template="copilot --continue{permissions}",
+        color=231,
+    ),
+    "crush": AgentDef(
+        id="crush",
+        name="Crush CLI",
+        short_label="cs",
+        prompt_command="crush run",
+        no_prompt_command="crush",
+        prompt_transport="send-keys",
+        send_keys_pre_prompt=("Escape", "Tab"),
+        send_keys_submit=("Enter",),
+        send_keys_post_paste_delay_ms=200,
+        send_keys_ready_delay_ms=1200,
+        permission_flags={
+            "bypassPermissions": "--yolo",
+        },
+        color=219,
     ),
 }
 

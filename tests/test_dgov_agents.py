@@ -57,14 +57,27 @@ class TestAgentDef:
 
 
 # ---------------------------------------------------------------------------
-# AGENT_REGISTRY (built-ins only: claude, codex, gemini)
+# AGENT_REGISTRY (all built-ins)
 # ---------------------------------------------------------------------------
+
+_ALL_BUILTIN_IDS = {
+    "claude",
+    "codex",
+    "gemini",
+    "opencode",
+    "cline",
+    "qwen",
+    "amp",
+    "pi",
+    "cursor",
+    "copilot",
+    "crush",
+}
 
 
 class TestAgentRegistry:
     def test_known_agents(self) -> None:
-        expected = {"claude", "codex", "gemini"}
-        assert set(AGENT_REGISTRY.keys()) == expected
+        assert set(AGENT_REGISTRY.keys()) == _ALL_BUILTIN_IDS
 
     def test_claude_transport(self) -> None:
         assert AGENT_REGISTRY["claude"].prompt_transport == "positional"
@@ -78,6 +91,38 @@ class TestAgentRegistry:
         assert AGENT_REGISTRY["codex"].color == 214
         assert AGENT_REGISTRY["gemini"].color == 135
 
+    def test_new_agent_colors(self) -> None:
+        assert AGENT_REGISTRY["opencode"].color == 82
+        assert AGENT_REGISTRY["cline"].color == 196
+        assert AGENT_REGISTRY["qwen"].color == 99
+        assert AGENT_REGISTRY["amp"].color == 208
+        assert AGENT_REGISTRY["pi"].color == 34
+        assert AGENT_REGISTRY["cursor"].color == 45
+        assert AGENT_REGISTRY["copilot"].color == 231
+        assert AGENT_REGISTRY["crush"].color == 219
+
+    def test_new_agent_transports(self) -> None:
+        assert AGENT_REGISTRY["opencode"].prompt_transport == "option"
+        assert AGENT_REGISTRY["cline"].prompt_transport == "send-keys"
+        assert AGENT_REGISTRY["qwen"].prompt_transport == "option"
+        assert AGENT_REGISTRY["amp"].prompt_transport == "stdin"
+        assert AGENT_REGISTRY["pi"].prompt_transport == "positional"
+        assert AGENT_REGISTRY["cursor"].prompt_transport == "positional"
+        assert AGENT_REGISTRY["copilot"].prompt_transport == "option"
+        assert AGENT_REGISTRY["crush"].prompt_transport == "send-keys"
+
+    def test_crush_send_keys_config(self) -> None:
+        crush = AGENT_REGISTRY["crush"]
+        assert crush.send_keys_pre_prompt == ("Escape", "Tab")
+        assert crush.send_keys_post_paste_delay_ms == 200
+        assert crush.send_keys_ready_delay_ms == 1200
+        assert crush.no_prompt_command == "crush"
+
+    def test_cline_send_keys_config(self) -> None:
+        cline = AGENT_REGISTRY["cline"]
+        assert cline.send_keys_post_paste_delay_ms == 120
+        assert cline.send_keys_ready_delay_ms == 2500
+
 
 # ---------------------------------------------------------------------------
 # load_registry
@@ -87,9 +132,7 @@ class TestAgentRegistry:
 class TestLoadRegistry:
     def test_returns_builtins_with_no_config(self, tmp_path: Path) -> None:
         registry = load_registry(str(tmp_path))
-        assert "claude" in registry
-        assert "codex" in registry
-        assert "gemini" in registry
+        assert set(registry.keys()) >= _ALL_BUILTIN_IDS
 
     def test_project_config_adds_agent(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".dgov"
@@ -378,8 +421,7 @@ class TestAllAgentsHaveCorrectTransport:
 
 class TestAllRegistryEntriesHaveRequiredFields:
     def test_all_registry_entries_have_required_fields(self) -> None:
-        expected_agent_ids = {"claude", "codex", "gemini"}
-        assert set(AGENT_REGISTRY.keys()) == expected_agent_ids
+        assert set(AGENT_REGISTRY.keys()) == _ALL_BUILTIN_IDS
 
         for agent_id, agent_def in AGENT_REGISTRY.items():
             assert isinstance(agent_def, AgentDef)
