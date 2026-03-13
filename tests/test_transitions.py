@@ -41,14 +41,14 @@ def _seed_pane(state_dir: str, slug: str = "test", state: str = "active") -> Non
 
 class TestValidTransition:
     def test_active_to_done(self, state_dir, monkeypatch):
-        monkeypatch.setattr("dgov.persistence.tmux.update_pane_status", lambda *a: None)
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
         _seed_pane(state_dir)
         _update_pane_state(state_dir, "test", "done")
         rec = _get_pane(state_dir, "test")
         assert rec["state"] == "done"
 
     def test_done_to_merged(self, state_dir, monkeypatch):
-        monkeypatch.setattr("dgov.persistence.tmux.update_pane_status", lambda *a: None)
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
         _seed_pane(state_dir, state="done")
         _update_pane_state(state_dir, "test", "merged")
         rec = _get_pane(state_dir, "test")
@@ -57,7 +57,7 @@ class TestValidTransition:
 
 class TestSameStateNoop:
     def test_done_to_done(self, state_dir, monkeypatch):
-        monkeypatch.setattr("dgov.persistence.tmux.update_pane_status", lambda *a: None)
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
         _seed_pane(state_dir, state="done")
         # Should not raise, should be a no-op
         _update_pane_state(state_dir, "test", "done")
@@ -65,7 +65,7 @@ class TestSameStateNoop:
         assert rec["state"] == "done"
 
     def test_active_to_active(self, state_dir, monkeypatch):
-        monkeypatch.setattr("dgov.persistence.tmux.update_pane_status", lambda *a: None)
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
         _seed_pane(state_dir)
         _update_pane_state(state_dir, "test", "active")
         rec = _get_pane(state_dir, "test")

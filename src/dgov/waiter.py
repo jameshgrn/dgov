@@ -9,7 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from dgov import tmux
+from dgov.backend import get_backend
 from dgov.persistence import _STATE_DIR
 
 # -- Done-signal wrapper --
@@ -129,7 +129,7 @@ def _is_done(
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     pane_id = pane_record.get("pane_id", "")
-    if pane_id and not tmux.pane_exists(pane_id):
+    if pane_id and not get_backend().is_alive(pane_id):
         _p._update_pane_state(session_root, slug, "abandoned")
         _p._emit_event(session_root, "pane_done", slug)
         return True
@@ -169,9 +169,9 @@ _AGENT_COMMANDS = frozenset(
 
 
 def _agent_still_running(pane_id: str) -> bool:
-    """Check if the tmux pane's foreground process is still an agent."""
+    """Check if the worker's foreground process is still an agent."""
     try:
-        cmd = tmux.current_command(pane_id)
+        cmd = get_backend().current_command(pane_id)
         return cmd.strip().lower() in _AGENT_COMMANDS
     except (RuntimeError, OSError):
         return False
@@ -405,7 +405,7 @@ def wait_all_worker_panes(
 
 
 def interact_with_pane(session_root: str, slug: str, message: str) -> bool:
-    """Send a message to a worker pane via tmux send-keys.
+    """Send a message to a worker pane.
 
     Returns True if the message was sent, False if the pane wasn't found or dead.
     """
@@ -416,10 +416,10 @@ def interact_with_pane(session_root: str, slug: str, message: str) -> bool:
         return False
 
     pane_id = target.get("pane_id", "")
-    if not pane_id or not tmux.pane_exists(pane_id):
+    if not pane_id or not get_backend().is_alive(pane_id):
         return False
 
-    tmux.send_command(pane_id, message)
+    get_backend().send_input(pane_id, message)
     return True
 
 
@@ -438,15 +438,15 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
         return {"response": "error", "output": "Pane not found"}
 
     pane_id = target.get("pane_id", "")
-    if not pane_id or not tmux.pane_exists(pane_id):
+    if not pane_id or not get_backend().is_alive(pane_id):
         return {"response": "error", "output": "Pane dead"}
 
     # Send the nudge
-    tmux.send_command(pane_id, "Are you done? Reply YES or NO.")
+    get_backend().send_input(pane_id, "Are you done? Reply YES or NO.")
     time.sleep(wait_seconds)
 
     # Capture output
-    captured = tmux.capture_pane(pane_id, lines=15)
+    captured = get_backend().capture_output(pane_id, lines=15)
 
     # Parse for YES/NO
     response = "unclear"

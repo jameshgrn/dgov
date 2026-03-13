@@ -1468,8 +1468,10 @@ class TestUpdatePaneState:
         state = _read_state(str(tmp_path))
         assert state["panes"][0]["state"] == "active"
 
-    @patch("dgov.panes.tmux.update_pane_status")
-    def test_updates_pane_title_on_state_change(self, mock_update: Mock, tmp_path: Path) -> None:
+    @patch("dgov.tmux.set_title")
+    def test_updates_pane_title_on_state_change(
+        self, mock_set_title: Mock, tmp_path: Path
+    ) -> None:
         from dgov.panes import _update_pane_state
 
         _write_state(
@@ -1477,7 +1479,7 @@ class TestUpdatePaneState:
             {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
         )
         _update_pane_state(str(tmp_path), "fix", "done")
-        mock_update.assert_called_once_with("%5", "pi", "fix", "done")
+        mock_set_title.assert_called_once_with("%5", "[pi] fix \u2713")
 
 
 # ---------------------------------------------------------------------------

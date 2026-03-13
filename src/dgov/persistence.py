@@ -12,8 +12,6 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from dgov import tmux
-
 logger = logging.getLogger(__name__)
 
 # -- Event log --
@@ -330,10 +328,21 @@ def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
     finally:
         conn.close()
 
-    # Update tmux pane title to reflect new status
+    # Update pane title to reflect new status
     pane = _get_pane(session_root, slug)
     if pane:
         pane_id = pane.get("pane_id", "")
         agent = pane.get("agent", "")
         if pane_id:
-            tmux.update_pane_status(pane_id, agent, slug, new_state)
+            from dgov.backend import get_backend
+
+            icon = {
+                "active": "\u23f3",
+                "done": "\u2713",
+                "failed": "\u2717",
+                "timed_out": "\u23f0",
+            }.get(new_state, "?")
+            try:
+                get_backend().set_title(pane_id, f"[{agent}] {slug} {icon}")
+            except (RuntimeError, OSError):
+                pass  # pane may already be dead
