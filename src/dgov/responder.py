@@ -121,7 +121,7 @@ def auto_respond(
     Returns the matched rule if an action was taken, None otherwise.
     Does NOT send for 'escalate' actions — the caller should handle those.
     """
-    from dgov import tmux
+    from dgov.backend import get_backend
     from dgov.persistence import _STATE_DIR, _emit_event, _get_pane
 
     if rules is None:
@@ -146,8 +146,8 @@ def auto_respond(
         return rule
 
     if rule.action == "send":
-        if pane_id and tmux.pane_exists(pane_id):
-            tmux.send_command(pane_id, rule.response)
+        if pane_id and get_backend().is_alive(pane_id):
+            get_backend().send_input(pane_id, rule.response)
             _emit_event(
                 session_root,
                 "pane_auto_responded",
