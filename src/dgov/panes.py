@@ -137,20 +137,26 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
         capture_output=True,
         text=True,
     )
-    if result.returncode == 0:
-        subprocess.run(
-            ["git", "-C", project_root, "worktree", "add", worktree_path, branch_name],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    else:
-        subprocess.run(
-            ["git", "-C", project_root, "worktree", "add", "-b", branch_name, worktree_path],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+    try:
+        if result.returncode == 0:
+            subprocess.run(
+                ["git", "-C", project_root, "worktree", "add", worktree_path, branch_name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "-C", project_root, "worktree", "add", "-b", branch_name, worktree_path],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(
+            f"Failed to create worktree for branch {branch_name!r} "
+            f"at path {worktree_path!r}: {e.stderr.strip()}"
+        ) from e
 
 
 def _remove_worktree(project_root: str, worktree_path: str, branch_name: str) -> None:
