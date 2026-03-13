@@ -131,17 +131,14 @@ def list_panes() -> list[dict[str, str]]:
 
 
 def setup_pane_borders(session_name: str | None = None) -> None:
-    """Set pane border styling to match IDE theme (idempotent)."""
+    """Set pane border styling to match IDE theme (idempotent).
+
+    Only sets border-status and a default border-format here.
+    Per-pane colors are applied by ``style_worker_pane`` — setting a
+    global ``pane-border-style`` would override those per-pane values.
+    """
     scope = ["-t", session_name] if session_name else ["-g"]
     _run(["set-option", *scope, "pane-border-status", "top"], silent=True)
-    _run(
-        ["set-option", *scope, "pane-active-border-style", "fg=colour39,bg=default"],
-        silent=True,
-    )
-    _run(
-        ["set-option", *scope, "pane-border-style", "fg=colour238,bg=default"],
-        silent=True,
-    )
     _run(
         [
             "set-option",
@@ -193,9 +190,24 @@ def style_worker_pane(pane_id: str, agent: str, *, color: int | None = None) -> 
     """Color-code a worker pane border by agent type.
 
     If *color* is provided it takes precedence over the built-in lookup.
+    Sets per-pane border style, active-border style, and border format so
+    the color is visible whether the pane is focused or not.
     """
     colour = color if color is not None else _AGENT_COLORS.get(agent, _DEFAULT_AGENT_COLOR)
     set_pane_option(pane_id, "pane-border-style", f"fg=colour{colour}")
+    set_pane_option(pane_id, "pane-active-border-style", f"fg=colour{colour},bold")
+    _run(
+        [
+            "set-option",
+            "-p",
+            "-t",
+            pane_id,
+            "pane-border-format",
+            f" #[fg=colour{colour},bold]#P "
+            f"#[default]#{{?pane_title,#{{pane_title}},#{{pane_current_command}}}} ",
+        ],
+        silent=True,
+    )
 
 
 def style_governor_pane(pane_id: str) -> None:

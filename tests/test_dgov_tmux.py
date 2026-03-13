@@ -182,22 +182,10 @@ class TestStyling:
         with patch("dgov.tmux._run") as mock_run:
             setup_pane_borders("dgov-repo")
 
+        # No global pane-border-style or pane-active-border-style — those
+        # are set per-pane by style_worker_pane() so agents get distinct colors.
         assert mock_run.call_args_list == [
             call(["set-option", "-t", "dgov-repo", "pane-border-status", "top"], silent=True),
-            call(
-                [
-                    "set-option",
-                    "-t",
-                    "dgov-repo",
-                    "pane-active-border-style",
-                    "fg=colour39,bg=default",
-                ],
-                silent=True,
-            ),
-            call(
-                ["set-option", "-t", "dgov-repo", "pane-border-style", "fg=colour238,bg=default"],
-                silent=True,
-            ),
             call(
                 [
                     "set-option",
@@ -260,13 +248,38 @@ class TestStyling:
         ]
 
     def test_style_worker_and_governor_panes(self) -> None:
-        with patch("dgov.tmux.set_pane_option") as mock_set_option:
+        with (
+            patch("dgov.tmux.set_pane_option") as mock_set_option,
+            patch("dgov.tmux._run") as mock_run,
+        ):
             style_worker_pane("%2", "pi")
-            style_worker_pane("%2", "unknown")
 
         assert mock_set_option.call_args_list == [
             call("%2", "pane-border-style", "fg=colour34"),
+            call("%2", "pane-active-border-style", "fg=colour34,bold"),
+        ]
+        mock_run.assert_called_once_with(
+            [
+                "set-option",
+                "-p",
+                "-t",
+                "%2",
+                "pane-border-format",
+                " #[fg=colour34,bold]#P "
+                "#[default]#{?pane_title,#{pane_title},#{pane_current_command}} ",
+            ],
+            silent=True,
+        )
+
+        with (
+            patch("dgov.tmux.set_pane_option") as mock_set_option,
+            patch("dgov.tmux._run"),
+        ):
+            style_worker_pane("%2", "unknown")
+
+        assert mock_set_option.call_args_list == [
             call("%2", "pane-border-style", "fg=colour252"),
+            call("%2", "pane-active-border-style", "fg=colour252,bold"),
         ]
 
         with patch("dgov.tmux._run") as mock_run:
@@ -278,12 +291,28 @@ class TestStyling:
         ]
 
     def test_style_worker_pane_explicit_color(self) -> None:
-        with patch("dgov.tmux.set_pane_option") as mock_set_option:
+        with (
+            patch("dgov.tmux.set_pane_option") as mock_set_option,
+            patch("dgov.tmux._run") as mock_run,
+        ):
             style_worker_pane("%3", "custom-agent", color=99)
 
         assert mock_set_option.call_args_list == [
             call("%3", "pane-border-style", "fg=colour99"),
+            call("%3", "pane-active-border-style", "fg=colour99,bold"),
         ]
+        mock_run.assert_called_once_with(
+            [
+                "set-option",
+                "-p",
+                "-t",
+                "%3",
+                "pane-border-format",
+                " #[fg=colour99,bold]#P "
+                "#[default]#{?pane_title,#{pane_title},#{pane_current_command}} ",
+            ],
+            silent=True,
+        )
 
 
 class TestComposedHelpers:
