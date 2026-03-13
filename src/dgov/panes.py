@@ -13,12 +13,8 @@ import subprocess
 import time
 from pathlib import Path
 
-from dgov import tmux
 from dgov.agents import build_launch_command, load_registry
-
-# -- Re-exports: preserve public API for tests and cli --
-# These symbols are imported by tests/cli via `from dgov.panes import X`.
-# They now live in sub-modules but must remain accessible here.
+from dgov.backend import get_backend
 from dgov.batch import (  # noqa: F401
     _compute_tiers,
     create_checkpoint,
@@ -315,7 +311,7 @@ def _compute_freshness(project_root: str, pane_record: dict) -> dict:
 def _count_active_agent_workers(session_root: str, agent: str) -> int:
     """Count how many workers for *agent* are currently alive."""
     panes = _all_panes(session_root)
-    all_tmux = tmux.bulk_pane_info()
+    all_tmux = get_backend().bulk_info()
     count = 0
     for p in panes:
         if p.get("agent") == agent:
@@ -409,33 +405,33 @@ def create_worker_pane(
                 )
 
         # 3. Split tmux pane
-        tmux.setup_pane_borders()
-        pane_id = tmux.split_pane(cwd=worktree_path)
+        get_backend().setup_pane_borders()
+        pane_id = get_backend().create_pane(cwd=worktree_path)
 
         # 4. Lock pane title (prevent agent/tmux from overwriting)
-        tmux._run(["set-option", "-p", "-t", pane_id, "allow-rename", "off"])
-        tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
+        get_backend().set_pane_option(pane_id, "allow-rename", "off")
+        get_backend().set_pane_option(pane_id, "automatic-rename", "off")
         title = _build_pane_title(slug, project_root)
-        tmux.set_title(pane_id, title)
+        get_backend().set_title(pane_id, title)
         agent_color = agent_def.color if agent_def else None
-        tmux.style_worker_pane(pane_id, agent, color=agent_color)
-        tmux.set_pane_option(pane_id, "allow-set-title", "off")
+        get_backend().style(pane_id, agent, color=agent_color)
+        get_backend().set_pane_option(pane_id, "allow-set-title", "off")
 
         # 5. Tidy layout
-        tmux.select_layout("tiled")
+        get_backend().select_layout("tiled")
 
         # 6. Clear CLAUDECODE recursion guard (inherited from parent claude session)
-        tmux.send_command(pane_id, "unset CLAUDECODE")
+        get_backend().send_input(pane_id, "unset CLAUDECODE")
 
         # 6a. Start persistent logging via tmux pipe-pane
         logs_dir = Path(session_root) / _STATE_DIR / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = str(logs_dir / f"{slug}.log")
-        tmux.start_logging(pane_id, log_file)
+        get_backend().start_logging(pane_id, log_file)
 
         # 6b. Inject env vars
         for key, val in all_env.items():
-            tmux.send_command(pane_id, f"export {key}={val!r}")
+            get_backend().send_input(pane_id, f"export {key}={val!r}")
 
         # 7. Trigger worktree_created hook
         hook_env = {
@@ -483,12 +479,12 @@ def create_worker_pane(
                     registry=registry,
                 )
                 wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
-                tmux.send_command(pane_id, wrapped_cmd)
+                get_backend().send_input(pane_id, wrapped_cmd)
                 if agent_def.send_keys_ready_delay_ms > 0:
                     time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
                 for key in agent_def.send_keys_pre_prompt:
-                    tmux._run(["send-keys", "-t", pane_id, key])
-                tmux.send_prompt_via_buffer(pane_id, rewritten_prompt)
+                    get_backend().send_keys(pane_id, [key])
+                get_backend().send_prompt_via_buffer(pane_id, rewritten_prompt)
             else:
                 launch_cmd = build_launch_command(
                     agent,
@@ -500,13 +496,13 @@ def create_worker_pane(
                     registry=registry,
                 )
                 wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
-                tmux.send_command(pane_id, wrapped_cmd)
+                get_backend().send_input(pane_id, wrapped_cmd)
 
         # 10b. Set tmux pane title
         title = _build_pane_title(slug, project_root)
-        tmux.set_title(pane_id, title)
-        tmux.style_worker_pane(pane_id, agent, color=agent_color)
-        tmux.set_pane_option(pane_id, "allow-set-title", "off")
+        get_backend().set_title(pane_id, title)
+        get_backend().style(pane_id, agent, color=agent_color)
+        get_backend().set_pane_option(pane_id, "allow-set-title", "off")
 
         # 11. Build pane record and save to state
         pane = WorkerPane(
@@ -535,7 +531,7 @@ def create_worker_pane(
 
     except BaseException:
         if pane_id:
-            tmux.kill_pane(pane_id)
+            get_backend().destroy(pane_id)
         if owns_worktree and Path(worktree_path).exists():
             _remove_worktree(project_root, worktree_path, branch_name)
         raise
@@ -564,10 +560,10 @@ def _full_cleanup(
     # 2. Kill tmux pane
     pane_id = pane_record.get("pane_id")
     if pane_id:
-        tmux.kill_pane(pane_id)
-        if tmux.pane_exists(pane_id):
+        get_backend().destroy(pane_id)
+        if get_backend().is_alive(pane_id):
             time.sleep(0.2)
-            tmux.kill_pane(pane_id)
+            get_backend().destroy(pane_id)
 
     # 3. Remove worktree + branch
     skipped_worktree = False
@@ -607,7 +603,7 @@ def _full_cleanup(
                 capture_output=True,
             )
 
-    tmux.select_layout("tiled")
+    get_backend().select_layout("tiled")
 
     # 4. Remove from dgov state (after tmux kill and worktree removal)
     _remove_pane(session_root, slug)
@@ -642,7 +638,7 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
     """List worker panes with live status from tmux."""
     session_root = os.path.abspath(session_root or project_root)
     panes = _all_panes(session_root)
-    all_tmux = tmux.bulk_pane_info()
+    all_tmux = get_backend().bulk_info()
     result = []
     for p in panes:
         pane_id = p.get("pane_id", "")
@@ -699,7 +695,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
     for p in panes:
         pane_id = p.get("pane_id", "")
         slug = p["slug"]
-        alive = tmux.pane_exists(pane_id) if pane_id else False
+        alive = get_backend().is_alive(pane_id) if pane_id else False
         wt = p.get("worktree_path", "")
         wt_exists = bool(wt) and Path(wt).exists()
         if not alive and not wt_exists:
@@ -740,10 +736,10 @@ def capture_worker_output(
         return None
 
     pane_id = target["pane_id"]
-    if not tmux.pane_exists(pane_id):
+    if not get_backend().is_alive(pane_id):
         return None
 
-    return tmux.capture_pane(pane_id, lines)
+    return get_backend().capture_output(pane_id, lines)
 
 
 def review_worker_pane(
@@ -1154,8 +1150,8 @@ def resume_worker_pane(
 
     # Kill old tmux pane if it still exists
     old_pane_id = target.get("pane_id", "")
-    if old_pane_id and tmux.pane_exists(old_pane_id):
-        tmux.kill_pane(old_pane_id)
+    if old_pane_id and get_backend().is_alive(old_pane_id):
+        get_backend().destroy(old_pane_id)
 
     # Resolve agent and prompt
     resume_agent = agent or target.get("agent", "claude")
@@ -1198,31 +1194,31 @@ def resume_worker_pane(
     rewritten_prompt = full_prompt.replace(project_root, worktree_path)
 
     # Create new tmux pane
-    tmux.setup_pane_borders()
-    pane_id = tmux.split_pane(cwd=worktree_path)
-    tmux._run(["set-option", "-p", "-t", pane_id, "allow-rename", "off"])
-    tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
+    get_backend().setup_pane_borders()
+    pane_id = get_backend().create_pane(cwd=worktree_path)
+    get_backend().set_pane_option(pane_id, "allow-rename", "off")
+    get_backend().set_pane_option(pane_id, "automatic-rename", "off")
     title = _build_pane_title(slug, project_root)
-    tmux.set_title(pane_id, title)
+    get_backend().set_title(pane_id, title)
     agent_color = agent_def.color if agent_def else None
-    tmux.style_worker_pane(pane_id, resume_agent, color=agent_color)
-    tmux.set_pane_option(pane_id, "allow-set-title", "off")
-    tmux.select_layout("tiled")
+    get_backend().style(pane_id, resume_agent, color=agent_color)
+    get_backend().set_pane_option(pane_id, "allow-set-title", "off")
+    get_backend().select_layout("tiled")
 
     # Clear recursion guard + inject env
-    tmux.send_command(pane_id, "unset CLAUDECODE")
+    get_backend().send_input(pane_id, "unset CLAUDECODE")
 
     # Inject agent config env vars
     if agent_def and agent_def.env:
         for key, val in agent_def.env.items():
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-                tmux.send_command(pane_id, f"export {key}={val!r}")
+                get_backend().send_input(pane_id, f"export {key}={val!r}")
 
     # Start persistent logging via tmux pipe-pane
     logs_dir = Path(session_root) / _STATE_DIR / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = str(logs_dir / f"{slug}.log")
-    tmux.start_logging(pane_id, log_file)
+    get_backend().start_logging(pane_id, log_file)
 
     # Trigger worktree_created hook
     hook_env = {
@@ -1265,12 +1261,12 @@ def resume_worker_pane(
                 registry=registry,
             )
             wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
-            tmux.send_command(pane_id, wrapped_cmd)
+            get_backend().send_input(pane_id, wrapped_cmd)
             if agent_def.send_keys_ready_delay_ms > 0:
                 time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
             for key in agent_def.send_keys_pre_prompt:
-                tmux._run(["send-keys", "-t", pane_id, key])
-            tmux.send_prompt_via_buffer(pane_id, rewritten_prompt)
+                get_backend().send_keys(pane_id, [key])
+            get_backend().send_prompt_via_buffer(pane_id, rewritten_prompt)
         else:
             launch_cmd = build_launch_command(
                 resume_agent,
@@ -1282,7 +1278,7 @@ def resume_worker_pane(
                 registry=registry,
             )
             wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
-            tmux.send_command(pane_id, wrapped_cmd)
+            get_backend().send_input(pane_id, wrapped_cmd)
 
     # Update state: new pane_id, back to active
     state = _read_state(session_root)

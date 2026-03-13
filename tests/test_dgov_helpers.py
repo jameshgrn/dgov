@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock
 
 import pytest
 
+from dgov.backend import set_backend
 from dgov.models import ConflictDetails, MergeResult, TaskSpec
 from dgov.panes import (
     WorkerPane,
@@ -17,6 +18,18 @@ from dgov.panes import (
     _validate_state,
     _write_state,
 )
+
+
+@pytest.fixture(autouse=True)
+def mock_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    mock = MagicMock()
+    # Default return values for common methods
+    mock.create_pane.return_value = "%1"
+    mock.is_alive.return_value = True
+    mock.bulk_info.return_value = {}
+    set_backend(mock)
+    return mock
+
 
 pytestmark = pytest.mark.unit
 
@@ -92,7 +105,9 @@ class TestPaneHelpers:
         assert title_a.startswith("audit@project-")
         assert title_a != title_c
 
-    def test_update_pane_state_writes_state_and_updates_tmux(self, tmp_path: Path) -> None:
+    def test_update_pane_state_writes_state_and_updates_tmux(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         _write_state(
             str(tmp_path),
             {
@@ -107,16 +122,17 @@ class TestPaneHelpers:
             },
         )
 
-        with patch("dgov.tmux.set_title") as mock_set_title:
-            _update_pane_state(str(tmp_path), "task-1", "done")
+        _update_pane_state(str(tmp_path), "task-1", "done")
 
         from dgov.panes import _read_state
 
         state = _read_state(str(tmp_path))
         assert state["panes"][0]["state"] == "done"
-        mock_set_title.assert_called_once_with("%2", "[claude] task-1 \u2713")
+        mock_backend.set_title.assert_called_once_with("%2", "[claude] task-1 \u2713")
 
-    def test_count_active_agent_workers_only_counts_live_panes(self, tmp_path: Path) -> None:
+    def test_count_active_agent_workers_only_counts_live_panes(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         from dgov.panes import _count_active_agent_workers
 
         _write_state(
@@ -130,12 +146,9 @@ class TestPaneHelpers:
             },
         )
 
-        with patch(
-            "dgov.panes.tmux.bulk_pane_info",
-            return_value={
-                "%1": {"title": "pi-live", "current_command": "pi"},
-                "%3": {"title": "claude-live", "current_command": "claude"},
-            },
-        ):
-            assert _count_active_agent_workers(str(tmp_path), "pi") == 1
-            assert _count_active_agent_workers(str(tmp_path), "claude") == 1
+        mock_backend.bulk_info.return_value = {
+            "%1": {"title": "pi-live", "current_command": "pi"},
+            "%3": {"title": "claude-live", "current_command": "claude"},
+        }
+        assert _count_active_agent_workers(str(tmp_path), "pi") == 1
+        assert _count_active_agent_workers(str(tmp_path), "claude") == 1

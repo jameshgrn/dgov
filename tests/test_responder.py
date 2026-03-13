@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
+from dgov.backend import set_backend
 from dgov.cli import cli
 from dgov.persistence import _STATE_DIR, VALID_EVENTS, WorkerPane, _add_pane
 from dgov.responder import (
@@ -25,6 +26,18 @@ from dgov.responder import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def mock_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    mock = MagicMock()
+    # Default return values for common methods
+    mock.create_pane.return_value = "%1"
+    mock.is_alive.return_value = True
+    mock.bulk_info.return_value = {}
+    set_backend(mock)
+    return mock
+
 
 # Pattern constants to avoid false positive from secrets scanner
 _PAT_PASSWORD = r"password"
@@ -261,17 +274,14 @@ class TestCooldown:
 
 
 class TestAutoRespond:
-    def test_send_action_calls_tmux(self, tmp_path: Path) -> None:
+    def test_send_action_calls_tmux(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         session_root = _setup_pane(tmp_path)
         rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
-        with (
-            patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command") as mock_send,
-        ):
-            result = auto_respond(session_root, "test-worker", "proceed?", rules)
-            assert result is not None
-            assert result.action == "send"
-            mock_send.assert_called_once_with("%99", "yes")
+        mock_backend.is_alive.return_value = True
+        result = auto_respond(session_root, "test-worker", "proceed?", rules)
+        assert result is not None
+        assert result.action == "send"
+        mock_backend.send_input.assert_called_once_with("%99", "yes")
 
     def test_escalate_does_not_send(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
@@ -375,20 +385,19 @@ class TestAutoRespondEvent:
 
 
 class TestRespondCLI:
-    def test_respond_sends_message(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_respond_sends_message(
+        self, runner: CliRunner, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
         session_root = _setup_pane(tmp_path)
-        with (
-            patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command") as mock_send,
-        ):
-            result = runner.invoke(
-                cli,
-                ["pane", "respond", "test-worker", "yes", "-S", session_root],
-            )
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["sent"] is True
-            mock_send.assert_called_once_with("%99", "yes")
+        mock_backend.is_alive.return_value = True
+        result = runner.invoke(
+            cli,
+            ["pane", "respond", "test-worker", "yes", "-S", session_root],
+        )
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["sent"] is True
+        mock_backend.send_input.assert_called_once_with("%99", "yes")
 
     def test_respond_missing_pane(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(
