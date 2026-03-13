@@ -721,7 +721,19 @@ def create_worker_pane(
         else str(Path(project_root) / ".dgov" / "worktrees" / slug)
     )
 
-    # 0. Capture base SHA (HEAD of project_root before worktree creation)
+    # 0. Validate env vars BEFORE any side effects
+    all_env: dict[str, str] = {}
+    registry = load_registry(project_root)
+    agent_def = registry.get(agent)
+    if agent_def:
+        all_env.update(agent_def.env)
+    if env_vars:
+        all_env.update(env_vars)
+    for key in all_env:
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            raise ValueError(f"Invalid environment variable name: {key!r}")
+
+    # 1. Capture base SHA (HEAD of project_root before worktree creation)
     base_sha_result = subprocess.run(
         ["git", "-C", project_root, "rev-parse", "HEAD"],
         capture_output=True,
@@ -729,164 +741,165 @@ def create_worker_pane(
     )
     base_sha = base_sha_result.stdout.strip() if base_sha_result.returncode == 0 else ""
 
-    # 1. Create git worktree (skip if using existing path)
-    if owns_worktree:
-        _create_worktree(project_root, worktree_path, branch_name)
+    # From here on, side effects need cleanup on failure
+    pane_id: str | None = None
+    try:
+        # 2. Create git worktree (skip if using existing path)
+        if owns_worktree:
+            _create_worktree(project_root, worktree_path, branch_name)
 
-    # 1b. Generic health check (config-driven)
-    registry = load_registry(project_root)
-    agent_def = registry.get(agent)
-    if agent_def and agent_def.health_check:
-        hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
-        if hc.returncode != 0 and agent_def.health_fix:
-            subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
+        # 2b. Generic health check (config-driven)
+        if agent_def and agent_def.health_check:
             hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
-        if hc.returncode != 0:
-            if owns_worktree:
-                _remove_worktree(project_root, worktree_path, branch_name)
-            raise RuntimeError(f"Health check failed for {agent}: {agent_def.health_check}")
+            if hc.returncode != 0 and agent_def.health_fix:
+                subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
+                hc = subprocess.run(
+                    agent_def.health_check, shell=True, capture_output=True, text=True
+                )
+            if hc.returncode != 0:
+                raise RuntimeError(f"Health check failed for {agent}: {agent_def.health_check}")
 
-    # 1c. Generic concurrency guard (config-driven)
-    if agent_def and agent_def.max_concurrent is not None:
-        active = _count_active_agent_workers(session_root, agent)
-        if active >= agent_def.max_concurrent:
-            if owns_worktree:
-                _remove_worktree(project_root, worktree_path, branch_name)
-            raise RuntimeError(
-                f"Concurrency limit: {active} {agent} workers already running "
-                f"(max {agent_def.max_concurrent}). "
-                f"Wait for one to finish or use a different agent."
+        # 2c. Generic concurrency guard (config-driven)
+        if agent_def and agent_def.max_concurrent is not None:
+            active = _count_active_agent_workers(session_root, agent)
+            if active >= agent_def.max_concurrent:
+                raise RuntimeError(
+                    f"Concurrency limit: {active} {agent} workers already running "
+                    f"(max {agent_def.max_concurrent}). "
+                    f"Wait for one to finish or use a different agent."
+                )
+
+        # 3. Split tmux pane
+        tmux.setup_pane_borders()
+        pane_id = tmux.split_pane(cwd=worktree_path)
+
+        # 4. Lock pane title (prevent agent/tmux from overwriting)
+        tmux._run(["set-option", "-p", "-t", pane_id, "allow-rename", "off"])
+        tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
+        title = _build_pane_title(slug, project_root)
+        tmux.set_title(pane_id, title)
+        agent_color = agent_def.color if agent_def else None
+        tmux.style_worker_pane(pane_id, agent, color=agent_color)
+        tmux.set_pane_option(pane_id, "allow-set-title", "off")
+
+        # 5. Tidy layout
+        tmux.select_layout("tiled")
+
+        # 6. Clear CLAUDECODE recursion guard (inherited from parent claude session)
+        tmux.send_command(pane_id, "unset CLAUDECODE")
+
+        # 6a. Start persistent logging via tmux pipe-pane
+        logs_dir = Path(session_root) / _STATE_DIR / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_file = str(logs_dir / f"{slug}.log")
+        tmux.start_logging(pane_id, log_file)
+
+        # 6b. Inject env vars
+        for key, val in all_env.items():
+            tmux.send_command(pane_id, f"export {key}={val!r}")
+
+        # 7. Trigger worktree_created hook
+        hook_env = {
+            "DGOV_ROOT": project_root,
+            "DGOV_PANE_ID": pane_id,
+            "DGOV_SLUG": slug,
+            "DGOV_PROMPT": prompt,
+            "DGOV_AGENT": agent,
+            "DGOV_WORKTREE_PATH": worktree_path,
+            "DGOV_BRANCH": branch_name,
+            "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
+        }
+        hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
+
+        if agent == "pi":
+            prompt = _structure_pi_prompt(prompt)
+
+        # 8. Rewrite absolute paths in prompt so agent edits worktree, not main repo
+        rewritten_prompt = prompt.replace(project_root, worktree_path)
+
+        # 8b. Fallback protected-file warning if hook didn't write CLAUDE.md
+        if not hook_ran:
+            protected_warning = (
+                "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
+                + ", ".join(sorted(_PROTECTED_FILES))
+                + ". Do NOT create new documentation files."
             )
+            if protected_warning.strip() not in rewritten_prompt:
+                rewritten_prompt += protected_warning
 
-    # 2. Split tmux pane
-    tmux.setup_pane_borders()
-    pane_id = tmux.split_pane(cwd=worktree_path)
+        # 9. Build done-signal path
+        done_signal = str(Path(session_root) / _STATE_DIR / "done" / slug)
+        Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
 
-    # 3. Lock pane title (prevent agent/tmux from overwriting)
-    tmux._run(["set-option", "-p", "-t", pane_id, "allow-rename", "off"])
-    tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
-    title = _build_pane_title(slug, project_root)
-    tmux.set_title(pane_id, title)
-    agent_color = agent_def.color if agent_def else None
-    tmux.style_worker_pane(pane_id, agent, color=agent_color)
-    tmux.set_pane_option(pane_id, "allow-set-title", "off")
+        # 10. Launch agent (with done-signal wrapper)
+        if agent_def:
+            if agent_def.prompt_transport == "send-keys":
+                base_cmd = build_launch_command(
+                    agent,
+                    None,
+                    permission_mode,
+                    project_root=worktree_path,
+                    slug=slug,
+                    extra_flags=extra_flags,
+                    registry=registry,
+                )
+                wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
+                tmux.send_command(pane_id, wrapped_cmd)
+                if agent_def.send_keys_ready_delay_ms > 0:
+                    time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
+                for key in agent_def.send_keys_pre_prompt:
+                    tmux._run(["send-keys", "-t", pane_id, key])
+                tmux.send_prompt_via_buffer(pane_id, rewritten_prompt)
+            else:
+                launch_cmd = build_launch_command(
+                    agent,
+                    rewritten_prompt,
+                    permission_mode,
+                    project_root=worktree_path,
+                    slug=slug,
+                    extra_flags=extra_flags,
+                    registry=registry,
+                )
+                wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
+                tmux.send_command(pane_id, wrapped_cmd)
 
-    # 4. Tidy layout
-    tmux.select_layout("tiled")
+        # 10b. Set tmux pane title
+        title = _build_pane_title(slug, project_root)
+        tmux.set_title(pane_id, title)
+        tmux.style_worker_pane(pane_id, agent, color=agent_color)
+        tmux.set_pane_option(pane_id, "allow-set-title", "off")
 
-    # 5. Clear CLAUDECODE recursion guard (inherited from parent claude session)
-    tmux.send_command(pane_id, "unset CLAUDECODE")
-
-    # 5a. Start persistent logging via tmux pipe-pane
-    logs_dir = Path(session_root) / _STATE_DIR / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = str(logs_dir / f"{slug}.log")
-    tmux.start_logging(pane_id, log_file)
-
-    # 5b. Inject env vars (agent config env + CLI-provided env)
-    all_env = dict(agent_def.env) if agent_def else {}
-    if env_vars:
-        all_env.update(env_vars)
-    for key, val in all_env.items():
-        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-            raise ValueError(f"Invalid environment variable name: {key!r}")
-        tmux.send_command(pane_id, f"export {key}={val!r}")
-
-    # 6. Trigger worktree_created hook
-    hook_env = {
-        "DGOV_ROOT": project_root,
-        "DGOV_PANE_ID": pane_id,
-        "DGOV_SLUG": slug,
-        "DGOV_PROMPT": prompt,
-        "DGOV_AGENT": agent,
-        "DGOV_WORKTREE_PATH": worktree_path,
-        "DGOV_BRANCH": branch_name,
-        "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
-    }
-    hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
-
-    if agent == "pi":
-        prompt = _structure_pi_prompt(prompt)
-
-    # 7. Rewrite absolute paths in prompt so agent edits worktree, not main repo
-    rewritten_prompt = prompt.replace(project_root, worktree_path)
-
-    # 7b. Fallback protected-file warning if hook didn't write CLAUDE.md
-    if not hook_ran:
-        protected_warning = (
-            "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
-            + ", ".join(sorted(_PROTECTED_FILES))
-            + ". Do NOT create new documentation files."
+        # 11. Build pane record and save to state
+        pane = WorkerPane(
+            slug=slug,
+            prompt=prompt,
+            pane_id=pane_id,
+            agent=agent,
+            project_root=project_root,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            owns_worktree=owns_worktree,
+            base_sha=base_sha,
         )
-        if protected_warning.strip() not in rewritten_prompt:
-            rewritten_prompt += protected_warning
+        _add_pane(session_root, pane)
 
-    # 8. Build done-signal path
-    done_signal = str(Path(session_root) / _STATE_DIR / "done" / slug)
-    Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
+        _emit_event(
+            session_root,
+            "pane_created",
+            slug,
+            agent=agent,
+            prompt=prompt[:200],
+            base_sha=base_sha,
+        )
 
-    # 9. Launch agent (with done-signal wrapper)
-    if agent_def:
-        if agent_def.prompt_transport == "send-keys":
-            base_cmd = build_launch_command(
-                agent,
-                None,
-                permission_mode,
-                project_root=worktree_path,
-                slug=slug,
-                extra_flags=extra_flags,
-                registry=registry,
-            )
-            wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
-            tmux.send_command(pane_id, wrapped_cmd)
-            if agent_def.send_keys_ready_delay_ms > 0:
-                time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
-            for key in agent_def.send_keys_pre_prompt:
-                tmux._run(["send-keys", "-t", pane_id, key])
-            tmux.send_prompt_via_buffer(pane_id, rewritten_prompt)
-        else:
-            launch_cmd = build_launch_command(
-                agent,
-                rewritten_prompt,
-                permission_mode,
-                project_root=worktree_path,
-                slug=slug,
-                extra_flags=extra_flags,
-                registry=registry,
-            )
-            wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
-            tmux.send_command(pane_id, wrapped_cmd)
+        return pane
 
-    # 9b. Set tmux pane title
-    title = _build_pane_title(slug, project_root)
-    tmux.set_title(pane_id, title)
-    tmux.style_worker_pane(pane_id, agent, color=agent_color)
-    tmux.set_pane_option(pane_id, "allow-set-title", "off")
-
-    # 10. Build pane record and save to state
-    pane = WorkerPane(
-        slug=slug,
-        prompt=prompt,
-        pane_id=pane_id,
-        agent=agent,
-        project_root=project_root,
-        worktree_path=worktree_path,
-        branch_name=branch_name,
-        owns_worktree=owns_worktree,
-        base_sha=base_sha,
-    )
-    _add_pane(session_root, pane)
-
-    _emit_event(
-        session_root,
-        "pane_created",
-        slug,
-        agent=agent,
-        prompt=prompt[:200],
-        base_sha=base_sha,
-    )
-
-    return pane
+    except BaseException:
+        if pane_id:
+            tmux.kill_pane(pane_id)
+        if owns_worktree and Path(worktree_path).exists():
+            _remove_worktree(project_root, worktree_path, branch_name)
+        raise
 
 
 def _full_cleanup(
