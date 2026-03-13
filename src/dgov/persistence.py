@@ -34,6 +34,9 @@ VALID_EVENTS = frozenset(
         "checkpoint_created",
         "review_pass",
         "review_fail",
+        "experiment_started",
+        "experiment_accepted",
+        "experiment_rejected",
     }
 )
 

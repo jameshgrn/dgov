@@ -1713,6 +1713,9 @@ class TestValidEvents:
             "checkpoint_created",
             "review_pass",
             "review_fail",
+            "experiment_started",
+            "experiment_accepted",
+            "experiment_rejected",
         }
         assert expected == VALID_EVENTS
 
