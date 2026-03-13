@@ -70,6 +70,7 @@ PANE_STATES = frozenset(
     {
         "active",
         "done",
+        "failed",
         "reviewed_pass",
         "reviewed_fail",
         "merged",
@@ -81,6 +82,13 @@ PANE_STATES = frozenset(
         "abandoned",
     }
 )
+
+
+def _wrap_done_signal(cmd: str, done_signal: str) -> str:
+    """Wrap *cmd* so done-signal is only touched on success."""
+    ok = shlex.quote(done_signal)
+    fail = shlex.quote(done_signal + ".exit")
+    return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
 
 
 def _validate_state(state: str) -> str:
@@ -805,8 +813,7 @@ def create_worker_pane(
                 extra_flags=extra_flags,
                 registry=registry,
             )
-            # Wrap with done signal
-            wrapped_cmd = f"{base_cmd}; touch {shlex.quote(done_signal)}"
+            wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
             tmux.send_command(pane_id, wrapped_cmd)
             if agent_def.send_keys_ready_delay_ms > 0:
                 time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
@@ -823,8 +830,7 @@ def create_worker_pane(
                 extra_flags=extra_flags,
                 registry=registry,
             )
-            # Wrap with done signal: when agent exits, touch the file
-            wrapped_cmd = f"{launch_cmd}; touch {shlex.quote(done_signal)}"
+            wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
             tmux.send_command(pane_id, wrapped_cmd)
 
     # 9b. Set tmux pane title
@@ -969,19 +975,26 @@ def _has_new_commits(project_root: str, branch_name: str, base_sha: str) -> bool
 
 
 def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> bool:
-    """Check if a worker is done via any of three signals.
+    """Check if a worker is done via any of four signals.
 
-    1. Done-signal file exists (agent exited cleanly).
-    2. Branch has new commits beyond base_sha (worker committed work).
-    3. Pane is no longer alive (process died / was killed).
+    1a. Done-signal file exists (agent exited cleanly) → state "done".
+    1b. Exit-code file exists (agent exited nonzero) → state "failed".
+    2.  Branch has new commits beyond base_sha → state "done".
+    3.  Pane is no longer alive with no done file and no commits → state "abandoned".
 
-    Any one signal returning True means done. Also updates pane state to "done".
+    Returns True when the worker is no longer running (regardless of outcome).
     """
     done_path = Path(session_root, _STATE_DIR, "done", slug)
+    exit_path = Path(session_root, _STATE_DIR, "done", slug + ".exit")
 
-    # Signal 1: done-signal file
+    # Signal 1a: done-signal file (clean exit)
     if done_path.exists():
         _update_pane_state(session_root, slug, "done")
+        return True
+
+    # Signal 1b: exit-code file (agent crashed / nonzero exit)
+    if exit_path.exists():
+        _update_pane_state(session_root, slug, "failed")
         return True
 
     if pane_record is None:
@@ -1000,13 +1013,11 @@ def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> b
             done_path.touch()
             return True
 
-    # Signal 3: pane no longer alive
+    # Signal 3: pane no longer alive with no done file and no commits → abandoned
     pane_id = pane_record.get("pane_id", "")
     if pane_id and not tmux.pane_exists(pane_id):
-        _update_pane_state(session_root, slug, "done")
+        _update_pane_state(session_root, slug, "abandoned")
         _emit_event(session_root, "pane_done", slug)
-        done_path.parent.mkdir(parents=True, exist_ok=True)
-        done_path.touch()
         return True
 
     return False
@@ -2324,7 +2335,7 @@ def resume_worker_pane(
                 extra_flags="",
                 registry=registry,
             )
-            wrapped_cmd = f"{base_cmd}; touch {shlex.quote(done_signal)}"
+            wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
             tmux.send_command(pane_id, wrapped_cmd)
             if agent_def.send_keys_ready_delay_ms > 0:
                 time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
@@ -2341,7 +2352,7 @@ def resume_worker_pane(
                 extra_flags="",
                 registry=registry,
             )
-            wrapped_cmd = f"{launch_cmd}; touch {shlex.quote(done_signal)}"
+            wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
             tmux.send_command(pane_id, wrapped_cmd)
 
     # Update state: new pane_id, back to active
