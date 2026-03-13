@@ -1945,3 +1945,139 @@ class TestRunBatchDryRun:
         assert "t1" in result["tiers"][0]
         assert "t2" in result["tiers"][0]
         assert "t3" in result["tiers"][1]
+
+
+# ---------------------------------------------------------------------------
+# wait_worker_pane / wait_all_worker_panes
+# ---------------------------------------------------------------------------
+
+
+class TestWaitWorkerPane:
+    def test_done_on_first_poll(self, tmp_path: Path) -> None:
+        from dgov.panes import wait_worker_pane
+
+        with (
+            patch("dgov.panes._get_pane", return_value={"slug": "s1", "agent": "claude"}),
+            patch("dgov.panes._is_done", return_value=True),
+        ):
+            result = wait_worker_pane(str(tmp_path), "s1", timeout=5, poll=0)
+        assert result == {"done": "s1", "method": "signal_or_commit"}
+
+    def test_stable_output_detection(self, tmp_path: Path) -> None:
+        from dgov.panes import wait_worker_pane
+
+        call_count = 0
+
+        def fake_is_done(*a, **kw):
+            return False
+
+        def fake_capture(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return "same output"
+
+        with (
+            patch("dgov.panes._get_pane", return_value={"slug": "s1"}),
+            patch("dgov.panes._is_done", side_effect=fake_is_done),
+            patch("dgov.panes.capture_worker_output", side_effect=fake_capture),
+            patch("dgov.panes.time.sleep"),
+            patch("dgov.panes.time.monotonic") as mock_mono,
+        ):
+            # t=0 start, t=0 poll1, t=0 poll2 (stable_since=0), t=20 poll3
+            mock_mono.side_effect = [0, 0, 0, 0, 20, 20]
+            result = wait_worker_pane(str(tmp_path), "s1", timeout=600, poll=1, stable=15)
+        assert result == {"done": "s1", "method": "stable"}
+
+    def test_timeout_raises(self, tmp_path: Path) -> None:
+        from dgov.panes import PaneTimeoutError, wait_worker_pane
+
+        with (
+            patch("dgov.panes._get_pane", return_value={"slug": "s1", "agent": "pi"}),
+            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.panes.capture_worker_output", return_value=None),
+            patch("dgov.panes._update_pane_state"),
+            patch("dgov.panes._emit_event"),
+            patch("dgov.panes.time.sleep"),
+            patch("dgov.panes.time.monotonic") as mock_mono,
+        ):
+            mock_mono.side_effect = [0, 100]
+            with pytest.raises(PaneTimeoutError) as exc_info:
+                wait_worker_pane(str(tmp_path), "s1", timeout=10, poll=1)
+            assert exc_info.value.slug == "s1"
+            assert exc_info.value.agent == "pi"
+            assert exc_info.value.timeout == 10
+
+
+class TestWaitAllWorkerPanes:
+    def test_empty_pending(self, tmp_path: Path) -> None:
+        from dgov.panes import wait_all_worker_panes
+
+        with patch(
+            "dgov.panes.list_worker_panes",
+            return_value=[{"slug": "s1", "done": True}],
+        ):
+            results = list(wait_all_worker_panes(str(tmp_path), timeout=5))
+        assert results == []
+
+    def test_yields_done_panes(self, tmp_path: Path) -> None:
+        from dgov.panes import wait_all_worker_panes
+
+        with (
+            patch(
+                "dgov.panes.list_worker_panes",
+                return_value=[
+                    {"slug": "s1", "done": False},
+                    {"slug": "s2", "done": False},
+                ],
+            ),
+            patch("dgov.panes._get_pane", return_value={"slug": "s1"}),
+            patch("dgov.panes._is_done", return_value=True),
+        ):
+            results = list(wait_all_worker_panes(str(tmp_path), timeout=5, poll=0))
+        assert len(results) == 2
+        assert all(r["method"] == "signal_or_commit" for r in results)
+
+    def test_timeout_includes_all_pending(self, tmp_path: Path) -> None:
+        from dgov.panes import PaneTimeoutError, wait_all_worker_panes
+
+        def fake_get_pane(session_root, slug):
+            return {"slug": slug, "agent": "pi" if slug == "s1" else "claude"}
+
+        with (
+            patch(
+                "dgov.panes.list_worker_panes",
+                return_value=[
+                    {"slug": "s1", "done": False},
+                    {"slug": "s2", "done": False},
+                ],
+            ),
+            patch("dgov.panes._get_pane", side_effect=fake_get_pane),
+            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.panes.capture_worker_output", return_value=None),
+            patch("dgov.panes.time.sleep"),
+            patch("dgov.panes.time.monotonic") as mock_mono,
+        ):
+            mock_mono.side_effect = [0, 100]
+            with pytest.raises(PaneTimeoutError) as exc_info:
+                list(wait_all_worker_panes(str(tmp_path), timeout=10, poll=1))
+            assert len(exc_info.value.pending_panes) == 2
+            slugs = {p["slug"] for p in exc_info.value.pending_panes}
+            assert slugs == {"s1", "s2"}
+
+
+class TestPaneTimeoutError:
+    def test_attributes(self) -> None:
+        from dgov.panes import PaneTimeoutError
+
+        err = PaneTimeoutError("s1", 30, "pi")
+        assert err.slug == "s1"
+        assert err.timeout == 30
+        assert err.agent == "pi"
+        assert err.pending_panes == [{"slug": "s1", "agent": "pi"}]
+
+    def test_pending_panes_override(self) -> None:
+        from dgov.panes import PaneTimeoutError
+
+        panes = [{"slug": "a", "agent": "pi"}, {"slug": "b", "agent": "claude"}]
+        err = PaneTimeoutError("a", 60, "pi", pending_panes=panes)
+        assert err.pending_panes == panes

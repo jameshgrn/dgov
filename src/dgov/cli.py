@@ -288,63 +288,28 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
     2. New commits on the worker branch beyond base_sha.
     3. Output stabilization (TUI agents that stay open).
     """
-    import time as _time
+    from dgov.panes import PaneTimeoutError, wait_worker_pane
 
-    from dgov.panes import (
-        _STATE_DIR,
-        _get_pane,
-        _is_done,
-        capture_worker_output,
-    )
-
-    session_root = os.path.abspath(session_root or project_root)
-    pane_record = _get_pane(session_root, slug)
-    start = _time.monotonic()
-    last_output = None
-    stable_since: float | None = None
-
-    while True:
-        # Unified check: done-signal, commit-based, or pane-dead
-        if _is_done(session_root, slug, pane_record=pane_record):
-            click.echo(json.dumps({"done": slug, "method": "signal_or_commit"}))
-            return
-
-        # Fallback: output stabilization (TUI agents)
-        current_output = capture_worker_output(
-            project_root, slug, lines=20, session_root=session_root
+    try:
+        result = wait_worker_pane(
+            project_root,
+            slug,
+            session_root=session_root,
+            timeout=timeout,
+            poll=poll,
+            stable=stable,
         )
-        if current_output is not None:
-            if current_output == last_output:
-                if stable_since is None:
-                    stable_since = _time.monotonic()
-                elif _time.monotonic() - stable_since >= stable:
-                    # Touch done-signal so _is_done / merge-all can see it
-                    done_path = Path(session_root) / _STATE_DIR / "done" / slug
-                    done_path.parent.mkdir(parents=True, exist_ok=True)
-                    done_path.touch()
-                    click.echo(json.dumps({"done": slug, "method": "stable"}))
-                    return
-            else:
-                last_output = current_output
-                stable_since = None
-
-        elapsed = _time.monotonic() - start
-        if timeout > 0 and elapsed >= timeout:
-            from dgov.panes import _emit_event, _update_pane_state
-
-            _update_pane_state(session_root, slug, "timed_out")
-            _emit_event(session_root, "pane_timed_out", slug)
-            agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
-            timeout_result = {
-                "error": f"Timeout after {timeout}s",
-                "slug": slug,
-                "agent": agent,
-            }
-            if agent == "pi":
-                timeout_result["suggest_escalate"] = True
-            click.echo(json.dumps(timeout_result), err=True)
-            sys.exit(1)
-        _time.sleep(poll)
+        click.echo(json.dumps(result))
+    except PaneTimeoutError as exc:
+        timeout_result = {
+            "error": f"Timeout after {exc.timeout}s",
+            "slug": exc.slug,
+            "agent": exc.agent,
+        }
+        if exc.agent == "pi":
+            timeout_result["suggest_escalate"] = True
+        click.echo(json.dumps(timeout_result), err=True)
+        sys.exit(1)
 
 
 @pane.command("wait-all")
@@ -360,72 +325,38 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable):
 @click.option("--stable", "-s", default=15, help="Seconds of stable output before declaring done")
 def pane_wait_all(project_root, session_root, timeout, poll, stable):
     """Wait for ALL worker panes to finish. Prints each as it completes."""
-    import time as _time
+    from dgov.panes import PaneTimeoutError, list_worker_panes, wait_all_worker_panes
 
-    from dgov.panes import (
-        _STATE_DIR,
-        _get_pane,
-        _is_done,
-        capture_worker_output,
-        list_worker_panes,
-    )
-
-    session_root = os.path.abspath(session_root or project_root)
-    panes = list_worker_panes(project_root, session_root=session_root)
+    session_root_abs = os.path.abspath(session_root or project_root)
+    panes = list_worker_panes(project_root, session_root=session_root_abs)
     pending = {p["slug"] for p in panes if not p["done"]}
     if not pending:
         click.echo(json.dumps({"done": "all", "count": 0}))
         return
 
-    start = _time.monotonic()
-    stable_trackers: dict[str, tuple[str | None, float | None]] = {
-        s: (None, None) for s in pending
-    }
-
-    while pending:
-        for slug in list(pending):
-            rec = _get_pane(session_root, slug)
-            if _is_done(session_root, slug, pane_record=rec):
-                click.echo(json.dumps({"done": slug, "method": "signal_or_commit"}))
-                pending.discard(slug)
-                continue
-
-            output = capture_worker_output(project_root, slug, lines=20, session_root=session_root)
-            last, since = stable_trackers.get(slug, (None, None))
-            if output is not None:
-                if output == last:
-                    if since is None:
-                        since = _time.monotonic()
-                    elif _time.monotonic() - since >= stable:
-                        # Touch done-signal so _is_done / merge-all can see it
-                        done_path = Path(session_root) / _STATE_DIR / "done" / slug
-                        done_path.parent.mkdir(parents=True, exist_ok=True)
-                        done_path.touch()
-                        click.echo(json.dumps({"done": slug, "method": "stable"}))
-                        pending.discard(slug)
-                        continue
-                else:
-                    since = None
-                stable_trackers[slug] = (output, since)
-
-        elapsed = _time.monotonic() - start
-        if timeout > 0 and elapsed >= timeout:
-            for slug in pending:
-                rec = _get_pane(session_root, slug)
-                agent = rec.get("agent", "unknown") if rec else "unknown"
-                timeout_result = {
-                    "error": f"Timeout after {timeout}s",
-                    "slug": slug,
-                    "agent": agent,
-                }
-                if agent == "pi":
-                    timeout_result["suggest_escalate"] = True
-                click.echo(json.dumps(timeout_result), err=True)
-            sys.exit(1)
-        if pending:
-            _time.sleep(poll)
-
-    click.echo(json.dumps({"done": "all", "count": len(panes)}))
+    try:
+        count = 0
+        for result in wait_all_worker_panes(
+            project_root,
+            session_root=session_root,
+            timeout=timeout,
+            poll=poll,
+            stable=stable,
+        ):
+            click.echo(json.dumps(result))
+            count += 1
+        click.echo(json.dumps({"done": "all", "count": count}))
+    except PaneTimeoutError as exc:
+        for p in exc.pending_panes:
+            timeout_result = {
+                "error": f"Timeout after {exc.timeout}s",
+                "slug": p["slug"],
+                "agent": p["agent"],
+            }
+            if p["agent"] == "pi":
+                timeout_result["suggest_escalate"] = True
+            click.echo(json.dumps(timeout_result), err=True)
+        sys.exit(1)
 
 
 @pane.command("merge-all")
@@ -437,14 +368,17 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 )
 @SESSION_ROOT_OPTION
 @click.option(
+    "--close/--no-close", default=True, help="Close worker panes after merge (default: on)"
+)
+@click.option(
     "--resolve",
     type=click.Choice(["agent", "manual"]),
     default="agent",
     help="Conflict resolution strategy",
 )
-def pane_merge_all(project_root, session_root, resolve):
+def pane_merge_all(project_root, session_root, close, resolve):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
-    from dgov.panes import list_worker_panes, merge_worker_pane
+    from dgov.panes import list_worker_panes, merge_worker_pane, merge_worker_pane_with_close
 
     panes = list_worker_panes(project_root, session_root=session_root)
     done_panes = [p for p in panes if p["done"]]
@@ -452,16 +386,21 @@ def pane_merge_all(project_root, session_root, resolve):
         click.echo(json.dumps({"merged": [], "skipped": "no done panes"}))
         return
 
+    merge_fn = merge_worker_pane_with_close if close else merge_worker_pane
+
     merged_slugs = []
+    closed_slugs = []
     failed_slugs = []
     total_files = 0
     warnings = []
 
     for p in done_panes:
         slug = p["slug"]
-        result = merge_worker_pane(project_root, slug, session_root=session_root, resolve=resolve)
+        result = merge_fn(project_root, slug, session_root=session_root, resolve=resolve)
         if "merged" in result:
             merged_slugs.append(slug)
+            if close:
+                closed_slugs.append(slug)
             total_files += result.get("files_changed", 0)
             if result.get("warning"):
                 warnings.append(f"{slug}: {result['warning']}")
@@ -476,6 +415,8 @@ def pane_merge_all(project_root, session_root, resolve):
         "total_files_changed": total_files,
         "merged": merged_slugs,
     }
+    if closed_slugs:
+        summary["closed"] = closed_slugs
     if failed_slugs:
         summary["failed"] = failed_slugs
     if warnings:

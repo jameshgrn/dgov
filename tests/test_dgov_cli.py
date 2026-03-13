@@ -482,22 +482,43 @@ class TestMergeAll:
         with (
             patch("dgov.panes.list_worker_panes", return_value=mock_panes),
             patch(
-                "dgov.panes.merge_worker_pane",
+                "dgov.panes.merge_worker_pane_with_close",
                 return_value={"merged": "ok", "files_changed": 2},
-            ),
+            ) as mock_merge,
         ):
             result = runner.invoke(cli, ["pane", "merge-all", "-r", "/tmp"])
             assert result.exit_code == 0
             data = json.loads(result.output)
             assert data["merged_count"] == 2
             assert set(data["merged"]) == {"a", "b"}
+            assert set(data["closed"]) == {"a", "b"}
+            assert mock_merge.call_count == 2
+
+    def test_merge_all_no_close(self, runner: CliRunner) -> None:
+        mock_panes = [
+            {"slug": "a", "done": True},
+            {"slug": "b", "done": True},
+        ]
+        with (
+            patch("dgov.panes.list_worker_panes", return_value=mock_panes),
+            patch(
+                "dgov.panes.merge_worker_pane",
+                return_value={"merged": "ok", "files_changed": 1},
+            ) as mock_merge,
+        ):
+            result = runner.invoke(cli, ["pane", "merge-all", "-r", "/tmp", "--no-close"])
+            assert result.exit_code == 0
+            data = json.loads(result.output)
+            assert data["merged_count"] == 2
+            assert "closed" not in data
+            assert mock_merge.call_count == 2
 
     def test_merge_all_with_failure(self, runner: CliRunner) -> None:
         mock_panes = [{"slug": "a", "done": True}]
         with (
             patch("dgov.panes.list_worker_panes", return_value=mock_panes),
             patch(
-                "dgov.panes.merge_worker_pane",
+                "dgov.panes.merge_worker_pane_with_close",
                 return_value={"error": "conflict"},
             ),
         ):
@@ -639,13 +660,14 @@ class TestMergeAllCommand:
 
         with (
             patch("dgov.panes.list_worker_panes", return_value=panes),
-            patch("dgov.panes.merge_worker_pane", side_effect=merge_results),
+            patch("dgov.panes.merge_worker_pane_with_close", side_effect=merge_results),
         ):
             result = runner.invoke(cli, ["pane", "merge-all"])
         assert result.exit_code == 0
         output = json.loads(result.output)
         assert output["merged_count"] == 2
         assert output["failed_count"] == 0
+        assert set(output["closed"]) == {"t1", "t2"}
 
     def test_merge_all_with_failure(self, runner: CliRunner) -> None:
         from unittest.mock import patch
@@ -654,7 +676,7 @@ class TestMergeAllCommand:
         with (
             patch("dgov.panes.list_worker_panes", return_value=panes),
             patch(
-                "dgov.panes.merge_worker_pane",
+                "dgov.panes.merge_worker_pane_with_close",
                 return_value={"error": "conflict"},
             ),
         ):
