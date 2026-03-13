@@ -110,7 +110,7 @@ class WorkerPane:
 # -- State file helpers --
 
 _STATE_DIR = ".dgov"
-_PROTECTED_FILES = {"CLAUDE.md", "CLAUDE.md.full", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
+_PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
 _STATE_FILE = "state.json"
 _MAX_CONCURRENT_PI_WORKERS = 2
 
@@ -777,22 +777,6 @@ def create_worker_pane(
         "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
     }
     hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
-
-    # 6b. Fallback if hook missing/failed: CLAUDE.md.full exclude + protected-file warning
-    if not hook_ran and owns_worktree:
-        git_dir_result = subprocess.run(
-            ["git", "-C", worktree_path, "rev-parse", "--git-dir"],
-            capture_output=True,
-            text=True,
-        )
-        if git_dir_result.returncode == 0:
-            git_dir = Path(git_dir_result.stdout.strip())
-            if not git_dir.is_absolute():
-                git_dir = Path(worktree_path) / git_dir
-            exclude_file = git_dir / "info" / "exclude"
-            exclude_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(exclude_file, "a") as f:
-                f.write("\nCLAUDE.md.full\n")
 
     if agent == "pi":
         prompt = _structure_pi_prompt(prompt)
@@ -1481,7 +1465,7 @@ def _resolve_conflicts_with_agent(
 def _commit_worktree(pane_record: dict) -> dict:
     """Auto-commit uncommitted changes in a worker's worktree.
 
-    Stages all modified/new files except hook artifacts (CLAUDE.md, CLAUDE.md.full).
+    Stages all modified/new files except hook artifacts like CLAUDE.md.
     Returns {"committed": True, "files": [...]} or {"committed": False}.
     """
     wt = pane_record.get("worktree_path")
