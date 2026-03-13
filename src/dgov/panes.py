@@ -1,8 +1,7 @@
 """Core pane lifecycle: create, close, list, merge.
 
 Each worker pane = git worktree + tmux pane + agent CLI.
-State tracked in .dgov/state.json (NOT .dmux/dmux.config.json —
-writing there causes dmux's ConfigWatcher to fight for pane control).
+State tracked in .dgov/state.json.
 """
 
 from __future__ import annotations
@@ -117,7 +116,7 @@ _MAX_CONCURRENT_PI_WORKERS = 2
 
 
 def _build_pane_title(slug: str, project_root: str) -> str:
-    """Build pane title matching dmux's buildWorktreePaneTitle format.
+    """Build pane title for tmux pane border display.
 
     Format: ``slug@project_name-hash`` where *hash* is the first 4 hex
     chars of the MD5 digest of *project_root*.
@@ -558,12 +557,17 @@ def _trigger_hook(
 ) -> bool:
     """Run a hook script if it exists. Returns True if a hook ran successfully.
 
-    Searches the same directories as dmux (in priority order):
-    1. .dmux-hooks/ (version controlled, team hooks)
-    2. .dmux/hooks/ (gitignored, local overrides)
-    3. ~/.dmux/hooks/ (global user hooks)
+    Searches directories in priority order (first match wins):
+    1. .dgov-hooks/ (version controlled, team hooks)
+    2. .dgov/hooks/ (gitignored, local overrides)
+    3. ~/.dgov/hooks/ (global user hooks)
+    4-6. Legacy .dmux-hooks/, .dmux/hooks/, ~/.dmux/hooks/ fallbacks
     """
     hook_dirs = [
+        Path(project_root) / ".dgov-hooks",
+        Path(project_root) / ".dgov" / "hooks",
+        Path.home() / ".dgov" / "hooks",
+        # Legacy fallbacks
         Path(project_root) / ".dmux-hooks",
         Path(project_root) / ".dmux" / "hooks",
         Path.home() / ".dmux" / "hooks",
