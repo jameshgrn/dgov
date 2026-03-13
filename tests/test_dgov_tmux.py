@@ -1,8 +1,8 @@
-"""Unit tests for dgov.tmux — thin tmux command wrappers."""
+"""Unit tests for dgov.tmux."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -11,6 +11,8 @@ from dgov.tmux import (
     capture_pane,
     create_utility_pane,
     current_command,
+    ensure_session,
+    has_session,
     kill_pane,
     list_panes,
     pane_exists,
@@ -19,541 +21,289 @@ from dgov.tmux import (
     send_command,
     send_prompt_via_buffer,
     set_title,
+    setup_pane_borders,
     split_pane,
+    style_dgov_session,
+    style_governor_pane,
     style_worker_pane,
+    update_pane_status,
 )
 
 pytestmark = pytest.mark.unit
 
 
-def _mock_subprocess(monkeypatch, stdout: str = "", returncode: int = 0, stderr: str = ""):
-    """Monkeypatch subprocess.run for all tmux tests."""
-    mock = MagicMock()
-    mock.stdout = stdout
-    mock.returncode = returncode
-    mock.stderr = stderr
-    monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock)
-    return mock
-
-
-# ---------------------------------------------------------------------------
-# _run
-# ---------------------------------------------------------------------------
+def _cp(*, stdout: str = "", returncode: int = 0, stderr: str = "") -> MagicMock:
+    result = MagicMock()
+    result.stdout = stdout
+    result.returncode = returncode
+    result.stderr = stderr
+    return result
 
 
 class TestRun:
-    def test_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, stdout="  output  \n")
-        result = _run(["list-sessions"])
-        assert result == "output"
+    def test_returns_stripped_stdout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "dgov.tmux.subprocess.run",
+            lambda *args, **kwargs: _cp(stdout=" %1 \n"),
+        )
+        assert _run(["list-sessions"]) == "%1"
 
-    def test_failure_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, returncode=1, stderr="no server")
-        with pytest.raises(RuntimeError, match="tmux"):
+    def test_raises_for_nonzero_exit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "dgov.tmux.subprocess.run",
+            lambda *args, **kwargs: _cp(returncode=1, stderr="no server"),
+        )
+        with pytest.raises(RuntimeError, match="no server"):
             _run(["list-sessions"])
 
-    def test_failure_silent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, returncode=1, stderr="no server")
-        # Should not raise when silent=True
-        result = _run(["list-sessions"], silent=True)
-        assert isinstance(result, str)
+    def test_silent_mode_suppresses_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "dgov.tmux.subprocess.run",
+            lambda *args, **kwargs: _cp(returncode=1, stderr="ignored"),
+        )
+        assert _run(["list-sessions"], silent=True) == ""
 
 
-# ---------------------------------------------------------------------------
-# split_pane
-# ---------------------------------------------------------------------------
+class TestSessionHelpers:
+    def test_has_session_returns_boolean(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.tmux.subprocess.run", lambda *args, **kwargs: _cp(returncode=0))
+        assert has_session() is True
+        monkeypatch.setattr("dgov.tmux.subprocess.run", lambda *args, **kwargs: _cp(returncode=1))
+        assert has_session() is False
 
-
-class TestSplitPane:
-    def test_basic(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            mock = MagicMock()
-            mock.stdout = "%5\n"
-            mock.returncode = 0
-            mock.stderr = ""
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        result = split_pane()
-        assert result == "%5"
-        assert "split-window" in captured["cmd"]
-
-    def test_with_cwd_and_target(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            mock = MagicMock()
-            mock.stdout = "%6\n"
-            mock.returncode = 0
-            mock.stderr = ""
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        split_pane(cwd="/tmp/repo", target="%1")
-        assert "-c" in captured["cmd"]
-        assert "/tmp/repo" in captured["cmd"]
-        assert "-t" in captured["cmd"]
-
-
-# ---------------------------------------------------------------------------
-# send_command
-# ---------------------------------------------------------------------------
-
-
-class TestSendCommand:
-    def test_sends_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        send_command("%5", "ls -la")
-        assert "send-keys" in captured["cmd"]
-        assert "%5" in captured["cmd"]
-        assert "ls -la" in captured["cmd"]
-        assert "Enter" in captured["cmd"]
-
-
-# ---------------------------------------------------------------------------
-# set_title
-# ---------------------------------------------------------------------------
-
-
-class TestSetTitle:
-    def test_sets_title(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        set_title("%5", "my-task")
-        assert "select-pane" in captured["cmd"]
-        assert "-T" in captured["cmd"]
-        assert "my-task" in captured["cmd"]
-
-
-# ---------------------------------------------------------------------------
-# capture_pane
-# ---------------------------------------------------------------------------
-
-
-class TestCapturePane:
-    def test_captures(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, stdout="line1\nline2\nline3\n")
-        result = capture_pane("%5", lines=3)
-        assert "line1" in result
-
-
-# ---------------------------------------------------------------------------
-# pane_exists
-# ---------------------------------------------------------------------------
-
-
-class TestPaneExists:
-    def test_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, stdout="%5")
-        assert pane_exists("%5") is True
-
-    def test_not_exists(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, stdout="", returncode=1)
-        assert pane_exists("%5") is False
-
-
-# ---------------------------------------------------------------------------
-# current_command
-# ---------------------------------------------------------------------------
-
-
-class TestCurrentCommand:
-    def test_returns_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, stdout="zsh")
-        result = current_command("%5")
-        assert result == "zsh"
-
-
-# ---------------------------------------------------------------------------
-# kill_pane
-# ---------------------------------------------------------------------------
-
-
-class TestKillPane:
-    def test_kills_silently(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        kill_pane("%5")
-        assert "kill-pane" in captured["cmd"]
-
-
-# ---------------------------------------------------------------------------
-# list_panes
-# ---------------------------------------------------------------------------
-
-
-class TestListPanes:
-    def test_parses_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        output = "%1|task-1|120|40\n%2|task-2|120|40\n"
-        _mock_subprocess(monkeypatch, stdout=output)
-        panes = list_panes()
-        assert len(panes) == 2
-        assert panes[0]["pane_id"] == "%1"
-        assert panes[0]["title"] == "task-1"
-        assert panes[0]["width"] == "120"
-        assert panes[0]["height"] == "40"
-
-    def test_empty_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch, stdout="")
-        panes = list_panes()
-        assert panes == []
-
-    def test_malformed_lines_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        output = "%1|task-1|120|40\nbadline\n%2|t|80|30\n"
-        _mock_subprocess(monkeypatch, stdout=output)
-        panes = list_panes()
-        assert len(panes) == 2
-
-
-# ---------------------------------------------------------------------------
-# select_pane / select_layout
-# ---------------------------------------------------------------------------
-
-
-class TestSelectPaneLayout:
-    def test_select_pane(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch)
-        select_pane("%5")  # Should not raise
-
-    def test_select_layout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _mock_subprocess(monkeypatch)
-        select_layout("tiled")  # Should not raise
-
-
-# ---------------------------------------------------------------------------
-# send_prompt_via_buffer
-# ---------------------------------------------------------------------------
-
-
-class TestSendPromptViaBuffer:
-    def test_sends_via_buffer(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        send_prompt_via_buffer("%5", "Fix the bug")
-        # Should have: set-buffer, paste-buffer, send-keys Enter, delete-buffer
-        assert len(calls) == 4
-        assert "set-buffer" in calls[0]
-        assert "paste-buffer" in calls[1]
-        assert "send-keys" in calls[2]
-        assert "delete-buffer" in calls[3]
-
-
-class TestTmuxPaneManagement:
-    """Unit tests for dgov/tmux.py functions using monkeypatched subprocess.run."""
-
-    def test_split_pane_horizontal(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify correct tmux split-window command constructed with -h flag."""
-        call_args: list[list[str]] = []
+    def test_ensure_session_noops_inside_tmux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TMUX", "1")
+        calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])  # Skip 'tmux' prefix
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout.strip.return_value = "#pane123"
-            return result
+            calls.append(cmd)
+            return _cp()
 
-        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr("dgov.tmux.subprocess.run", fake_run)
+        ensure_session("dgov-test")
+        assert calls == []
 
-        from dgov.tmux import split_pane
+    def test_ensure_session_noops_when_server_exists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.setattr("dgov.tmux.has_session", lambda: True)
+        with patch("dgov.tmux.subprocess.run") as mock_run:
+            ensure_session("dgov-test")
+        mock_run.assert_not_called()
 
-        pane_id = split_pane(cwd="/tmp/test", target="window1")
+    def test_ensure_session_creates_detached_session(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.setattr("dgov.tmux.has_session", lambda: False)
+        with patch("dgov.tmux.subprocess.run", return_value=_cp()) as mock_run:
+            ensure_session("dgov-test")
+        mock_run.assert_called_once_with(
+            ["tmux", "new-session", "-d", "-s", "dgov-test"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
-        assert "-h" in call_args[0]
-        assert "-P" in call_args[0]
-        assert "-F" in call_args[0]
-        assert "#{pane_id}" in call_args[0]
+
+class TestPaneCommands:
+    def test_split_send_set_title_capture_and_select(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            seen.append(cmd)
+            if "split-window" in cmd:
+                return _cp(stdout="%5\n")
+            if "capture-pane" in cmd:
+                return _cp(stdout="line1\nline2\n")
+            return _cp(stdout="zsh\n")
+
+        monkeypatch.setattr("dgov.tmux.subprocess.run", fake_run)
+
+        assert split_pane(cwd="/repo", target="%1") == "%5"
+        send_command("%5", "ls -la")
+        set_title("%5", "worker")
+        assert capture_pane("%5", lines=2) == "line1\nline2"
+        assert current_command("%5") == "zsh"
+        select_pane("%5")
+        select_layout("tiled")
+        kill_pane("%5")
+
         assert [
+            "tmux",
             "split-window",
             "-h",
             "-P",
             "-F",
             "#{pane_id}",
             "-t",
-            "window1",
+            "%1",
             "-c",
-            "/tmp/test",
-        ] == call_args[0]
-        assert pane_id == "#pane123"
+            "/repo",
+        ] in seen
+        assert ["tmux", "send-keys", "-t", "%5", "ls -la", "Enter"] in seen
+        assert ["tmux", "select-pane", "-t", "%5", "-T", "worker"] in seen
+        assert ["tmux", "select-pane", "-t", "%5"] in seen
+        assert ["tmux", "select-layout", "tiled"] in seen
+        assert ["tmux", "kill-pane", "-t", "%5"] in seen
 
-    def test_split_pane_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify default split-window command with -h flag."""
-        call_args: list[list[str]] = []
+    def test_pane_exists_checks_display_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.tmux._run", lambda args, silent=False: "%5")
+        assert pane_exists("%5") is True
+        monkeypatch.setattr("dgov.tmux._run", lambda args, silent=False: "")
+        assert pane_exists("%5") is False
 
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout.strip.return_value = "#pane456"
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import split_pane
-
-        pane_id = split_pane()
-
-        assert call_args[0] == ["split-window", "-h", "-P", "-F", "#{pane_id}"]
-        assert pane_id == "#pane456"
-
-    def test_send_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify send-keys command with proper escaping."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import send_command
-
-        send_command("#pane123", "echo hello world")
-
-        assert call_args[0] == ["send-keys", "-t", "#pane123", "echo hello world", "Enter"]
-
-    def test_capture_pane(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mock subprocess to return captured output."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout.strip.return_value = "line1\nline2\noutput"
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import capture_pane
-
-        output = capture_pane("#pane123", lines=50)
-
-        assert call_args[0] == ["capture-pane", "-t", "#pane123", "-p", "-S", "-50"]
-        assert output == "line1\nline2\noutput"
-
-    def test_pane_exists_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mock returncode 0, verify True."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout.strip.return_value = "#pane123"
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import pane_exists
-
-        exists = pane_exists("#pane123")
-
-        assert call_args[0] == ["display-message", "-t", "#pane123", "-p", "#{pane_id}"]
-        assert exists is True
-
-    def test_pane_exists_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mock returncode 1 (exception raised), verify False."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 1
-            result.stderr.strip.return_value = "pane does not exist"
-            raise RuntimeError(f"tmux {' '.join(cmd)}: {result.stderr.strip()}")
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import pane_exists
-
-        exists = pane_exists("#nonexistent")
-
-        assert call_args[0] == ["display-message", "-t", "#nonexistent", "-p", "#{pane_id}"]
-        assert exists is False
-
-    def test_kill_pane(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify kill-pane command constructed."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import kill_pane
-
-        kill_pane("#pane123")
-
-        assert call_args[0] == ["kill-pane", "-t", "#pane123"]
-
-    def test_list_panes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Mock output, verify parsed pane list."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            result.stdout.strip.return_value = "#pane123|My Pane|80|24\n#pane456|Another|120|40\n"
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import list_panes
-
-        panes = list_panes()
-
-        assert call_args[0] == [
-            "list-panes",
-            "-F",
-            "#{pane_id}|#{pane_title}|#{pane_width}|#{pane_height}",
+    def test_list_panes_parses_and_skips_malformed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "dgov.tmux._run",
+            lambda args, silent=False: "%1|one|120|40\nbadline\n%2|two|80|30\n",
+        )
+        assert list_panes() == [
+            {"pane_id": "%1", "title": "one", "width": "120", "height": "40"},
+            {"pane_id": "%2", "title": "two", "width": "80", "height": "30"},
         ]
-        assert len(panes) == 2
-        assert panes[0]["pane_id"] == "#pane123"
-        assert panes[0]["title"] == "My Pane"
-        assert panes[0]["width"] == "80"
-        assert panes[0]["height"] == "24"
-        assert panes[1]["pane_id"] == "#pane456"
-        assert panes[1]["title"] == "Another"
-
-    def test_select_pane(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Verify select-pane command."""
-        call_args: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            call_args.append(cmd[1:])
-            result = MagicMock()
-            result.returncode = 0
-            return result
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-
-        from dgov.tmux import select_pane
-
-        select_pane("#pane123")
-
-        assert call_args[0] == ["select-pane", "-t", "#pane123"]
 
 
-# ---------------------------------------------------------------------------
-# style_worker_pane
-# ---------------------------------------------------------------------------
+class TestStyling:
+    def test_update_pane_status_uses_expected_icons(self) -> None:
+        with patch("dgov.tmux._run") as mock_run:
+            update_pane_status("%9", "claude", "audit", "done")
+            update_pane_status("%9", "claude", "audit", "mystery")
 
+        assert mock_run.call_args_list == [
+            call(["select-pane", "-t", "%9", "-T", "[claude] audit ✓"], silent=True),
+            call(["select-pane", "-t", "%9", "-T", "[claude] audit ?"], silent=True),
+        ]
 
-class TestStyleWorkerPane:
-    @pytest.mark.parametrize(
-        "agent, expected_colour",
-        [
-            ("claude", "fg=colour39"),
-            ("pi", "fg=colour34"),
-            ("codex", "fg=colour214"),
-            ("gemini", "fg=colour135"),
-            ("unknown-agent", "fg=colour252"),
-        ],
-    )
-    def test_style_worker_pane_colors(
-        self, monkeypatch: pytest.MonkeyPatch, agent: str, expected_colour: str
-    ) -> None:
-        calls: list[list[str]] = []
+    def test_setup_pane_borders_applies_session_scope(self) -> None:
+        with patch("dgov.tmux._run") as mock_run:
+            setup_pane_borders("dgov-repo")
 
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            mock = MagicMock()
-            mock.returncode = 0
-            mock.stdout = ""
-            mock.stderr = ""
-            return mock
+        assert mock_run.call_args_list == [
+            call(["set-option", "-t", "dgov-repo", "pane-border-status", "top"], silent=True),
+            call(
+                [
+                    "set-option",
+                    "-t",
+                    "dgov-repo",
+                    "pane-active-border-style",
+                    "fg=colour39,bg=default",
+                ],
+                silent=True,
+            ),
+            call(
+                ["set-option", "-t", "dgov-repo", "pane-border-style", "fg=colour238,bg=default"],
+                silent=True,
+            ),
+            call(
+                [
+                    "set-option",
+                    "-t",
+                    "dgov-repo",
+                    "pane-border-format",
+                    " #[bold]#P #[default]#{?pane_title,#{pane_title},#{pane_current_command}} ",
+                ],
+                silent=True,
+            ),
+        ]
 
-        monkeypatch.setattr("subprocess.run", fake_run)
-        style_worker_pane("%5", agent)
-        # set_pane_option calls: tmux set-option -p -t %5 pane-border-style fg=colourN
-        assert len(calls) == 1
-        cmd = calls[0]
-        assert "set-option" in cmd
-        assert "-p" in cmd
-        assert "%5" in cmd
-        assert "pane-border-style" in cmd
-        assert expected_colour in cmd
-
-
-# ---------------------------------------------------------------------------
-# create_utility_pane
-# ---------------------------------------------------------------------------
-
-
-class TestCreateUtilityPane:
-    def test_creates_pane_and_returns_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from unittest.mock import patch
-
+    def test_style_dgov_session_sets_window_and_status_options(self) -> None:
         with (
-            patch("dgov.tmux.split_pane", return_value="%42") as mock_split,
+            patch("dgov.tmux.setup_pane_borders") as mock_borders,
+            patch("dgov.tmux._run") as mock_run,
+        ):
+            style_dgov_session("dgov-repo")
+
+        mock_borders.assert_called_once_with("dgov-repo")
+        assert mock_run.call_args_list == [
+            call(
+                ["set-option", "-t", "dgov-repo", "window-style", "fg=colour247,bg=colour236"],
+                silent=True,
+            ),
+            call(
+                [
+                    "set-option",
+                    "-t",
+                    "dgov-repo",
+                    "window-active-style",
+                    "fg=default,bg=colour234",
+                ],
+                silent=True,
+            ),
+            call(
+                ["set-option", "-t", "dgov-repo", "status-style", "fg=colour252,bg=colour236"],
+                silent=True,
+            ),
+            call(
+                [
+                    "set-option",
+                    "-t",
+                    "dgov-repo",
+                    "status-left",
+                    " #[bold,fg=colour39]dgov#[default] │ ",
+                ],
+                silent=True,
+            ),
+            call(
+                [
+                    "set-option",
+                    "-t",
+                    "dgov-repo",
+                    "status-right",
+                    " #{pane_title} │ %H:%M ",
+                ],
+                silent=True,
+            ),
+        ]
+
+    def test_style_worker_and_governor_panes(self) -> None:
+        with patch("dgov.tmux.set_pane_option") as mock_set_option:
+            style_worker_pane("%2", "pi")
+            style_worker_pane("%2", "unknown")
+
+        assert mock_set_option.call_args_list == [
+            call("%2", "pane-border-style", "fg=colour34"),
+            call("%2", "pane-border-style", "fg=colour252"),
+        ]
+
+        with patch("dgov.tmux._run") as mock_run:
+            style_governor_pane("%1")
+
+        assert mock_run.call_args_list == [
+            call(["select-pane", "-t", "%1", "-P", "fg=default,bg=colour234"], silent=True),
+            call(["select-pane", "-t", "%1", "-T", "[gov] main"], silent=True),
+        ]
+
+
+class TestComposedHelpers:
+    def test_create_utility_pane_sequences_calls(self) -> None:
+        with (
+            patch("dgov.tmux.split_pane", return_value="%44") as mock_split,
             patch("dgov.tmux.send_command") as mock_send,
             patch("dgov.tmux.set_title") as mock_title,
             patch("dgov.tmux.select_layout") as mock_layout,
         ):
-            result = create_utility_pane("lazygit", "[util] lazygit", cwd="/tmp")
+            pane_id = create_utility_pane("lazygit", "[util] lazygit", cwd="/repo")
 
-        assert result == "%42"
-        mock_split.assert_called_once_with(cwd="/tmp")
-        mock_send.assert_called_once_with("%42", "lazygit")
-        mock_title.assert_called_once_with("%42", "[util] lazygit")
+        assert pane_id == "%44"
+        mock_split.assert_called_once_with(cwd="/repo")
+        mock_send.assert_called_once_with("%44", "lazygit")
+        mock_title.assert_called_once_with("%44", "[util] lazygit")
         mock_layout.assert_called_once_with("tiled")
 
-    def test_no_cwd(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from unittest.mock import patch
+    def test_send_prompt_via_buffer_uses_temp_buffer_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("dgov.tmux.time.time", lambda: 123.456)
+        with patch("dgov.tmux._run") as mock_run:
+            send_prompt_via_buffer("%5", "Fix the bug")
 
-        with (
-            patch("dgov.tmux.split_pane", return_value="%43") as mock_split,
-            patch("dgov.tmux.send_command"),
-            patch("dgov.tmux.set_title"),
-            patch("dgov.tmux.select_layout"),
-        ):
-            create_utility_pane("yazi", "[util] yazi")
-
-        mock_split.assert_called_once_with(cwd=None)
+        assert mock_run.call_args_list == [
+            call(["set-buffer", "-b", "dgov-123456", "--", "Fix the bug"]),
+            call(["paste-buffer", "-b", "dgov-123456", "-t", "%5"]),
+            call(["send-keys", "-t", "%5", "Enter"]),
+            call(["delete-buffer", "-b", "dgov-123456"], silent=True),
+        ]

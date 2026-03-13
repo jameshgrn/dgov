@@ -1,15 +1,18 @@
-"""Tests for dgov.cli — Click CLI commands."""
+"""Unit tests for dgov.cli."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
-from dgov.cli import cli
+from dgov import __version__
+from dgov.cli import _check_governor_context, cli
 
 pytestmark = pytest.mark.unit
 
@@ -19,1231 +22,599 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
-# ---------------------------------------------------------------------------
-# CLI group structure
-# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def skip_governor_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
 
 
-class TestCliGroup:
-    def test_cli_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["--help"])
-        assert result.exit_code == 0
-        assert "dgov" in result.output
-
-    def test_pane_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "--help"])
-        assert result.exit_code == 0
-        assert "Manage worker panes" in result.output
-
-    def test_pane_subcommands_listed(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "--help"])
-        for cmd in ["create", "close", "merge", "wait", "list", "prune", "classify", "capture"]:
-            assert cmd in result.output
+def _pane(slug: str = "task", agent: str = "claude") -> SimpleNamespace:
+    return SimpleNamespace(
+        slug=slug,
+        pane_id="%7",
+        agent=agent,
+        worktree_path=f"/tmp/{slug}",
+        branch_name=slug,
+    )
 
 
-# ---------------------------------------------------------------------------
-# pane list
-# ---------------------------------------------------------------------------
+def _cp(*, stdout: str = "", returncode: int = 0, stderr: str = "") -> MagicMock:
+    result = MagicMock()
+    result.stdout = stdout
+    result.returncode = returncode
+    result.stderr = stderr
+    return result
 
 
-class TestPaneList:
-    def test_empty_list(self, runner: CliRunner) -> None:
+class TestGovernorContext:
+    def test_skip_env_short_circuits_subprocess(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            calls.append(cmd)
+            return _cp()
+
+        monkeypatch.setattr("dgov.cli.subprocess.run", fake_run)
+        _check_governor_context()
+        assert calls == []
+
+    def test_rejects_running_inside_worktree(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DGOV_SKIP_GOVERNOR_CHECK", raising=False)
+        monkeypatch.setattr(
+            "dgov.cli.subprocess.run",
+            lambda cmd, **kwargs: _cp(stdout=".git/worktrees/test-audit\n"),
+        )
+        with pytest.raises(click.UsageError, match="main repo"):
+            _check_governor_context()
+
+    def test_rejects_non_main_branch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DGOV_SKIP_GOVERNOR_CHECK", raising=False)
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            if cmd[-1] == "--git-dir":
+                return _cp(stdout=".git\n")
+            return _cp(stdout="feature/test\n")
+
+        monkeypatch.setattr("dgov.cli.subprocess.run", fake_run)
+        with pytest.raises(click.UsageError, match="must stay on 'main'"):
+            _check_governor_context()
+
+    def test_ignores_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("DGOV_SKIP_GOVERNOR_CHECK", raising=False)
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            raise TimeoutError
+
+        def fake_subprocess_run(cmd: list[str], **kwargs) -> MagicMock:
+            raise __import__("subprocess").TimeoutExpired(cmd, 5)
+
+        monkeypatch.setattr("dgov.cli.subprocess.run", fake_subprocess_run)
+        _check_governor_context()
+
+
+class TestBareCli:
+    def test_inside_tmux_styles_governor_pane(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TMUX", "1")
+
         with (
-            patch("dgov.cli.click.echo") as _,
-            patch("dgov.panes.list_worker_panes", return_value=[]),
+            patch("dgov.tmux.style_dgov_session") as mock_style_session,
+            patch("dgov.tmux.style_governor_pane") as mock_style_governor,
+            patch(
+                "dgov.cli.subprocess.run",
+                return_value=_cp(stdout="%11\n"),
+            ),
         ):
-            result = runner.invoke(cli, ["pane", "list", "-r", "/tmp"])
-            assert result.exit_code == 0
+            result = runner.invoke(cli, [])
 
-    def test_returns_json(self, runner: CliRunner) -> None:
-        mock_panes = [{"slug": "test-1", "agent": "pi", "done": False}]
-        with patch("dgov.panes.list_worker_panes", return_value=mock_panes):
-            result = runner.invoke(cli, ["pane", "list", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert len(data) == 1
-            assert data[0]["slug"] == "test-1"
+        assert result.exit_code == 0
+        assert f"{tmp_path.name} \u2014 governor ready" in result.output
+        mock_style_session.assert_called_once_with()
+        mock_style_governor.assert_called_once_with("%11")
 
+    def test_outside_tmux_creates_session_and_attaches(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("TMUX", raising=False)
 
-# ---------------------------------------------------------------------------
-# pane classify
-# ---------------------------------------------------------------------------
+        calls: list[list[str]] = []
 
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            calls.append(cmd)
+            if cmd[1:3] == ["has-session", "-t"]:
+                return _cp(returncode=1)
+            return _cp()
 
-class TestPaneClassify:
-    def test_classify_returns_json(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.classify_task", return_value="pi"):
-            result = runner.invoke(cli, ["pane", "classify", "fix the lint errors"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["recommended_agent"] == "pi"
-            assert "fix the lint" in data["prompt_preview"]
-
-    def test_classify_claude(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.classify_task", return_value="claude"):
-            result = runner.invoke(cli, ["pane", "classify", "refactor the whole module"])
-            data = json.loads(result.output)
-            assert data["recommended_agent"] == "claude"
-
-
-# ---------------------------------------------------------------------------
-# pane prune
-# ---------------------------------------------------------------------------
-
-
-class TestPanePrune:
-    def test_prune_returns_json(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.prune_stale_panes", return_value=["dead-slug"]):
-            result = runner.invoke(cli, ["pane", "prune", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["pruned"] == ["dead-slug"]
-
-    def test_prune_empty(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.prune_stale_panes", return_value=[]):
-            result = runner.invoke(cli, ["pane", "prune", "-r", "/tmp"])
-            data = json.loads(result.output)
-            assert data["pruned"] == []
-
-
-# ---------------------------------------------------------------------------
-# pane close
-# ---------------------------------------------------------------------------
-
-
-class TestPaneClose:
-    def test_close_success(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.close_worker_pane", return_value=True):
-            result = runner.invoke(cli, ["pane", "close", "my-slug", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["closed"] == "my-slug"
-
-    def test_close_not_found(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.close_worker_pane", return_value=False):
-            result = runner.invoke(cli, ["pane", "close", "missing", "-r", "/tmp"])
-            assert result.exit_code == 1
-
-
-# ---------------------------------------------------------------------------
-# pane merge
-# ---------------------------------------------------------------------------
-
-
-class TestPaneMerge:
-    def test_merge_success_default_close(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.merge_worker_pane_with_close",
-            return_value={"merged": "slug", "branch": "slug"},
+        with (
+            patch("dgov.cli.subprocess.run", side_effect=fake_run),
+            patch("dgov.tmux.style_dgov_session") as mock_style_session,
+            patch("dgov.cli.os.execvp") as mock_execvp,
         ):
-            result = runner.invoke(cli, ["pane", "merge", "slug", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["merged"] == "slug"
+            result = runner.invoke(cli, [])
 
-    def test_merge_no_close(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.merge_worker_pane",
-            return_value={"merged": "slug", "files_changed": 3},
+        assert result.exit_code == 0
+        session_name = f"dgov-{tmp_path.name}"
+        assert ["tmux", "has-session", "-t", session_name] in calls
+        assert ["tmux", "new-session", "-d", "-s", session_name] in calls
+        mock_style_session.assert_called_once_with(session_name)
+        mock_execvp.assert_called_once_with(
+            "tmux",
+            ["tmux", "attach-session", "-t", session_name],
+        )
+
+
+class TestPaneHelp:
+    def test_pane_help_lists_current_commands(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["pane", "--help"])
+        assert result.exit_code == 0
+        for command in (
+            "util",
+            "create",
+            "close",
+            "merge",
+            "wait",
+            "wait-all",
+            "merge-all",
+            "list",
+            "prune",
+            "classify",
+            "capture",
+            "review",
+            "diff",
+            "escalate",
+            "retry",
         ):
-            result = runner.invoke(cli, ["pane", "merge", "slug", "-r", "/tmp", "--no-close"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["merged"] == "slug"
+            assert command in result.output
 
-    def test_merge_error_exit_1(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.merge_worker_pane_with_close",
-            return_value={"error": "conflicts detected"},
-        ):
-            result = runner.invoke(cli, ["pane", "merge", "slug", "-r", "/tmp"])
-            assert result.exit_code == 1
 
-    def test_merge_registered_exits_ok(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.merge_worker_pane_with_close",
-            return_value={"registered": True},
-        ):
-            result = runner.invoke(cli, ["pane", "merge", "slug", "-r", "/tmp"])
-            assert result.exit_code == 0
+class TestUtilityPanes:
+    @pytest.mark.parametrize(
+        ("argv", "command", "title"),
+        [
+            (["pane", "lazygit"], "lazygit", "lazygit"),
+            (["pane", "yazi"], "yazi", "yazi"),
+            (["pane", "htop"], "htop", "htop"),
+            (["pane", "k9s"], "k9s", "k9s"),
+            (["pane", "top"], "btop", "btop"),
+        ],
+    )
+    def test_shortcuts_launch_utility_pane(
+        self, runner: CliRunner, argv: list[str], command: str, title: str
+    ) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%22") as mock_create:
+            result = runner.invoke(cli, argv)
 
-    def test_merge_resolve_option(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.merge_worker_pane",
-            return_value={"merged": "slug"},
-        ) as mock_merge:
+        assert result.exit_code == 0
+        mock_create.assert_called_once_with(command, f"[util] {title}", cwd=".")
+        assert json.loads(result.output) == {
+            "pane_id": "%22",
+            "command": command,
+            "title": title,
+        }
+
+    def test_util_allows_custom_title_and_cwd(self, runner: CliRunner) -> None:
+        with patch("dgov.tmux.create_utility_pane", return_value="%30") as mock_create:
             result = runner.invoke(
-                cli, ["pane", "merge", "slug", "-r", "/tmp", "--no-close", "--resolve", "manual"]
-            )
-            assert result.exit_code == 0
-            mock_merge.assert_called_once()
-            assert mock_merge.call_args.kwargs.get("resolve") == "manual" or (
-                len(mock_merge.call_args.args) > 2
+                cli,
+                ["pane", "util", "yazi /tmp", "--title", "files", "--cwd", "/repo"],
             )
 
-
-# ---------------------------------------------------------------------------
-# pane capture
-# ---------------------------------------------------------------------------
-
-
-class TestPaneCapture:
-    def test_capture_success(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.capture_worker_output", return_value="line 1\nline 2\n"):
-            result = runner.invoke(cli, ["pane", "capture", "slug", "-r", "/tmp"])
-            assert result.exit_code == 0
-            assert "line 1" in result.output
-
-    def test_capture_not_found(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.capture_worker_output", return_value=None):
-            result = runner.invoke(cli, ["pane", "capture", "slug", "-r", "/tmp"])
-            assert result.exit_code == 1
-
-    def test_capture_lines_option(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.capture_worker_output", return_value="output") as mock_cap:
-            runner.invoke(cli, ["pane", "capture", "slug", "-r", "/tmp", "-n", "50"])
-            assert mock_cap.call_args[1].get("lines") == 50 or mock_cap.call_args[0][2] == 50
-
-
-# ---------------------------------------------------------------------------
-# pane review
-# ---------------------------------------------------------------------------
-
-
-class TestPaneReview:
-    def test_review_success(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.review_worker_pane",
-            return_value={"stat": "+10 -5", "files": ["a.py"]},
-        ):
-            result = runner.invoke(cli, ["pane", "review", "slug", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert "stat" in data
-
-    def test_review_error(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.review_worker_pane",
-            return_value={"error": "no branch found"},
-        ):
-            result = runner.invoke(cli, ["pane", "review", "slug", "-r", "/tmp"])
-            assert result.exit_code == 1
-
-
-# ---------------------------------------------------------------------------
-# pane escalate
-# ---------------------------------------------------------------------------
-
-
-class TestPaneEscalate:
-    def test_escalate_success(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.escalate_worker_pane",
-            return_value={"escalated": "slug", "new_agent": "claude"},
-        ):
-            result = runner.invoke(cli, ["pane", "escalate", "slug", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["new_agent"] == "claude"
-
-    def test_escalate_error(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.escalate_worker_pane",
-            return_value={"error": "pane not found"},
-        ):
-            result = runner.invoke(cli, ["pane", "escalate", "slug", "-r", "/tmp"])
-            assert result.exit_code == 1
-
-
-# ---------------------------------------------------------------------------
-# pane create
-# ---------------------------------------------------------------------------
+        assert result.exit_code == 0
+        mock_create.assert_called_once_with("yazi /tmp", "[util] files", cwd="/repo")
+        assert json.loads(result.output) == {
+            "pane_id": "%30",
+            "command": "yazi /tmp",
+            "title": "files",
+        }
 
 
 class TestPaneCreate:
-    def test_create_success(self, runner: CliRunner) -> None:
-        mock_pane = MagicMock()
-        mock_pane.slug = "test-slug"
-        mock_pane.pane_id = "%5"
-        mock_pane.agent = "pi"
-        mock_pane.worktree_path = "/tmp/wt"
-        mock_pane.branch_name = "wt/test-slug"
-        with patch("dgov.panes.create_worker_pane", return_value=mock_pane):
-            result = runner.invoke(
-                cli,
-                ["pane", "create", "-a", "pi", "-p", "fix lint", "-r", "/tmp", "--no-preflight"],
-            )
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["slug"] == "test-slug"
-            assert data["agent"] == "pi"
-
-    def test_create_unknown_agent(self, runner: CliRunner) -> None:
-        result = runner.invoke(
-            cli, ["pane", "create", "-a", "unknown_agent", "-p", "fix stuff", "-r", "/tmp"]
-        )
-        assert result.exit_code == 1
-
-    def test_create_auto_classifies(self, runner: CliRunner) -> None:
-        mock_pane = MagicMock()
-        mock_pane.slug = "s"
-        mock_pane.pane_id = "%1"
-        mock_pane.agent = "pi"
-        mock_pane.worktree_path = "/tmp/wt"
-        mock_pane.branch_name = "b"
-        with (
-            patch("dgov.panes.classify_task", return_value="pi") as mock_classify,
-            patch("dgov.panes.create_worker_pane", return_value=mock_pane),
-        ):
-            result = runner.invoke(
-                cli,
-                ["pane", "create", "-a", "auto", "-p", "fix lint", "-r", "/tmp", "--no-preflight"],
-            )
-            assert result.exit_code == 0
-            mock_classify.assert_called_once_with("fix lint")
-
-    def test_create_env_parsing(self, runner: CliRunner) -> None:
-        mock_pane = MagicMock()
-        mock_pane.slug = "s"
-        mock_pane.pane_id = "%1"
-        mock_pane.agent = "pi"
-        mock_pane.worktree_path = "/tmp/wt"
-        mock_pane.branch_name = "b"
-        with patch("dgov.panes.create_worker_pane", return_value=mock_pane) as mock_create:
+    def test_create_success_passes_env_vars(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.panes.create_worker_pane",
+            return_value=_pane("lint-fix", "pi"),
+        ) as mock_create:
             result = runner.invoke(
                 cli,
                 [
                     "pane",
                     "create",
-                    "-a",
+                    "--agent",
                     "pi",
-                    "-p",
-                    "task",
-                    "-r",
-                    "/tmp",
-                    "-e",
+                    "--prompt",
+                    "Fix tests",
+                    "--project-root",
+                    "/repo",
+                    "--session-root",
+                    "/session",
+                    "--extra-flags",
+                    "--verbose",
+                    "--env",
                     "FOO=bar",
-                    "-e",
+                    "--env",
                     "BAZ=qux",
                     "--no-preflight",
                 ],
             )
-            assert result.exit_code == 0
-            call_kwargs = mock_create.call_args[1]
-            assert call_kwargs["env_vars"] == {"FOO": "bar", "BAZ": "qux"}
 
-    def test_create_invalid_env(self, runner: CliRunner) -> None:
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {
+            "slug": "lint-fix",
+            "pane_id": "%7",
+            "agent": "pi",
+            "worktree": "/tmp/lint-fix",
+            "branch": "lint-fix",
+        }
+        assert mock_create.call_args.kwargs == {
+            "project_root": "/repo",
+            "prompt": "Fix tests",
+            "agent": "pi",
+            "permission_mode": "acceptEdits",
+            "slug": None,
+            "env_vars": {"FOO": "bar", "BAZ": "qux"},
+            "extra_flags": "--verbose",
+            "session_root": "/session",
+        }
+
+    def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
+        with (
+            patch("dgov.panes.classify_task", return_value="pi") as mock_classify,
+            patch("dgov.panes.create_worker_pane", return_value=_pane("auto-task", "pi")),
+        ):
+            result = runner.invoke(
+                cli,
+                ["pane", "create", "--agent", "auto", "--prompt", "Fix lint", "--no-preflight"],
+            )
+
+        assert result.exit_code == 0
+        mock_classify.assert_called_once_with("Fix lint")
+        assert json.loads(result.stderr)["auto_classified"] == "pi"
+
+    def test_invalid_env_var_exits(self, runner: CliRunner) -> None:
         result = runner.invoke(
             cli,
             [
                 "pane",
                 "create",
-                "-a",
+                "--agent",
                 "pi",
-                "-p",
-                "task",
-                "-r",
-                "/tmp",
-                "-e",
-                "NOEQUALS",
+                "--prompt",
+                "Fix lint",
+                "--env",
+                "BROKEN",
                 "--no-preflight",
             ],
         )
         assert result.exit_code == 1
+        assert "KEY=VALUE" in result.output
 
-    def test_create_requires_prompt(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "create", "-a", "pi", "-r", "/tmp"])
-        assert result.exit_code != 0  # missing required --prompt
+    def test_unknown_agent_exits(self, runner: CliRunner) -> None:
+        result = runner.invoke(
+            cli,
+            ["pane", "create", "--agent", "unknown", "--prompt", "Fix lint", "--no-preflight"],
+        )
+        assert result.exit_code == 1
+        assert "Unknown agent" in result.output
 
+    def test_preflight_failure_exits_with_report(self, runner: CliRunner) -> None:
+        report = MagicMock()
+        report.passed = False
+        report.to_dict.return_value = {"passed": False, "checks": [{"name": "git_clean"}]}
 
-# ---------------------------------------------------------------------------
-# status
-# ---------------------------------------------------------------------------
+        with patch("dgov.preflight.run_preflight", return_value=report):
+            result = runner.invoke(
+                cli,
+                ["pane", "create", "--agent", "pi", "--prompt", "Fix lint", "--no-fix"],
+            )
 
+        assert result.exit_code == 1
+        assert json.loads(result.output)["passed"] is False
 
-class TestStatus:
-    def test_status_returns_json(self, runner: CliRunner) -> None:
-        mock_status = {"panes": [], "tunnel": "up"}
-        with patch("dgov.state.get_status", return_value=mock_status):
-            result = runner.invoke(cli, ["status", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["tunnel"] == "up"
+    def test_preflight_fix_retries_report(self, runner: CliRunner) -> None:
+        failing = MagicMock()
+        failing.passed = False
+        fixed = MagicMock()
+        fixed.passed = True
+        fixed.to_dict.return_value = {"passed": True}
 
-
-# ---------------------------------------------------------------------------
-# rebase
-# ---------------------------------------------------------------------------
-
-
-class TestRebase:
-    def test_rebase_success(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.rebase_governor",
-            return_value={"rebased": True, "onto": "main"},
-        ):
-            result = runner.invoke(cli, ["rebase", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["rebased"] is True
-
-    def test_rebase_failure(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.rebase_governor",
-            return_value={"rebased": False, "error": "conflicts"},
-        ):
-            result = runner.invoke(cli, ["rebase", "-r", "/tmp"])
-            assert result.exit_code == 1
-
-    def test_rebase_onto_option(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.rebase_governor",
-            return_value={"rebased": True},
-        ) as mock_rebase:
-            result = runner.invoke(cli, ["rebase", "-r", "/tmp", "--onto", "develop"])
-            assert result.exit_code == 0
-            mock_rebase.assert_called_once_with("/tmp", onto="develop")
-
-
-# ---------------------------------------------------------------------------
-# agents
-# ---------------------------------------------------------------------------
-
-
-class TestAgents:
-    def test_agents_lists_all(self, runner: CliRunner) -> None:
-        with patch("dgov.cli.detect_installed_agents", return_value=["claude", "pi"]):
-            result = runner.invoke(cli, ["agents"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            ids = {a["id"] for a in data}
-            assert "claude" in ids
-            assert "pi" in ids
-            # claude should be marked installed
-            claude = next(a for a in data if a["id"] == "claude")
-            assert claude["installed"] is True
-
-
-# ---------------------------------------------------------------------------
-# preflight
-# ---------------------------------------------------------------------------
-
-
-class TestPreflight:
-    def test_preflight_pass(self, runner: CliRunner) -> None:
-        mock_report = MagicMock()
-        mock_report.passed = True
-        mock_report.to_dict.return_value = {"passed": True, "checks": []}
-        with patch("dgov.preflight.run_preflight", return_value=mock_report):
-            result = runner.invoke(cli, ["preflight", "-r", "/tmp"])
-            assert result.exit_code == 0
-
-    def test_preflight_fail(self, runner: CliRunner) -> None:
-        mock_report = MagicMock()
-        mock_report.passed = False
-        mock_report.to_dict.return_value = {"passed": False, "checks": [{"fail": "dirty tree"}]}
-        with patch("dgov.preflight.run_preflight", return_value=mock_report):
-            result = runner.invoke(cli, ["preflight", "-r", "/tmp"])
-            assert result.exit_code == 1
-
-    def test_preflight_fix(self, runner: CliRunner) -> None:
-        mock_report_fail = MagicMock()
-        mock_report_fail.passed = False
-        mock_report_fixed = MagicMock()
-        mock_report_fixed.passed = True
-        mock_report_fixed.to_dict.return_value = {"passed": True}
         with (
-            patch("dgov.preflight.run_preflight", return_value=mock_report_fail),
-            patch("dgov.preflight.fix_preflight", return_value=mock_report_fixed),
+            patch("dgov.preflight.run_preflight", return_value=failing),
+            patch("dgov.preflight.fix_preflight", return_value=fixed) as mock_fix,
+            patch("dgov.panes.create_worker_pane", return_value=_pane("fixed-task")),
         ):
-            result = runner.invoke(cli, ["preflight", "-r", "/tmp", "--fix"])
-            assert result.exit_code == 0
+            result = runner.invoke(
+                cli,
+                ["pane", "create", "--agent", "pi", "--prompt", "Fix lint"],
+            )
+
+        assert result.exit_code == 0
+        mock_fix.assert_called_once_with(failing, ".")
 
 
-# ---------------------------------------------------------------------------
-# merge-all
-# ---------------------------------------------------------------------------
+class TestPaneCommands:
+    def test_close_success_and_not_found(self, runner: CliRunner) -> None:
+        with patch("dgov.panes.close_worker_pane", return_value=True):
+            ok = runner.invoke(cli, ["pane", "close", "task"])
+        with patch("dgov.panes.close_worker_pane", return_value=False):
+            missing = runner.invoke(cli, ["pane", "close", "missing"])
 
+        assert ok.exit_code == 0
+        assert json.loads(ok.output) == {"closed": "task"}
+        assert missing.exit_code == 1
+        assert json.loads(missing.output)["error"] == "Pane not found: missing"
 
-class TestMergeAll:
-    def test_merge_all_no_done(self, runner: CliRunner) -> None:
+    def test_merge_uses_selected_strategy(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.panes.merge_worker_pane_with_close",
+            return_value={"merged": "task", "branch": "task"},
+        ) as mock_merge_close:
+            close_result = runner.invoke(cli, ["pane", "merge", "task"])
+
+        with patch(
+            "dgov.panes.merge_worker_pane",
+            return_value={"merged": "task", "branch": "task"},
+        ) as mock_merge:
+            open_result = runner.invoke(
+                cli,
+                ["pane", "merge", "task", "--no-close", "--resolve", "manual"],
+            )
+
+        assert close_result.exit_code == 0
+        assert open_result.exit_code == 0
+        mock_merge_close.assert_called_once_with(".", "task", session_root=None, resolve="agent")
+        mock_merge.assert_called_once_with(".", "task", session_root=None, resolve="manual")
+
+    def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.panes.merge_worker_pane_with_close",
+            return_value={"error": "conflicts"},
+        ):
+            result = runner.invoke(cli, ["pane", "merge", "task"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output)["error"] == "conflicts"
+
+    def test_wait_success_and_timeout(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.panes.wait_worker_pane",
+            return_value={"done": "task", "method": "stable"},
+        ):
+            ok = runner.invoke(cli, ["pane", "wait", "task"])
+
+        timeout = __import__("dgov.panes", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
+            "task",
+            30,
+            "pi",
+        )
+        with patch("dgov.panes.wait_worker_pane", side_effect=timeout):
+            failed = runner.invoke(cli, ["pane", "wait", "task"])
+
+        assert ok.exit_code == 0
+        assert json.loads(ok.output) == {"done": "task", "method": "stable"}
+        assert failed.exit_code == 1
+        assert json.loads(failed.output) == {
+            "error": "Timeout after 30s",
+            "slug": "task",
+            "agent": "pi",
+            "suggest_escalate": True,
+        }
+
+    def test_wait_all_handles_empty_and_timeout(self, runner: CliRunner) -> None:
         with patch("dgov.panes.list_worker_panes", return_value=[]):
-            result = runner.invoke(cli, ["pane", "merge-all", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["skipped"] == "no done panes"
+            empty = runner.invoke(cli, ["pane", "wait-all"])
 
-    def test_merge_all_success(self, runner: CliRunner) -> None:
-        mock_panes = [
+        timeout = __import__("dgov.panes", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
+            "a",
+            10,
+            "pi",
+            pending_panes=[{"slug": "a", "agent": "pi"}, {"slug": "b", "agent": "claude"}],
+        )
+        with (
+            patch(
+                "dgov.panes.list_worker_panes",
+                return_value=[{"slug": "a", "done": False}, {"slug": "b", "done": False}],
+            ),
+            patch("dgov.panes.wait_all_worker_panes", side_effect=timeout),
+        ):
+            failed = runner.invoke(cli, ["pane", "wait-all"])
+
+        assert empty.exit_code == 0
+        assert json.loads(empty.output) == {"done": "all", "count": 0}
+        assert failed.exit_code == 1
+        lines = [json.loads(line) for line in failed.output.strip().splitlines()]
+        assert lines == [
+            {
+                "error": "Timeout after 10s",
+                "slug": "a",
+                "agent": "pi",
+                "suggest_escalate": True,
+            },
+            {
+                "error": "Timeout after 10s",
+                "slug": "b",
+                "agent": "claude",
+            },
+        ]
+
+    def test_merge_all_summarizes_results(self, runner: CliRunner) -> None:
+        panes = [
             {"slug": "a", "done": True},
             {"slug": "b", "done": True},
             {"slug": "c", "done": False},
         ]
         with (
-            patch("dgov.panes.list_worker_panes", return_value=mock_panes),
-            patch(
-                "dgov.panes.merge_worker_pane_with_close",
-                return_value={"merged": "ok", "files_changed": 2},
-            ) as mock_merge,
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all", "-r", "/tmp"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["merged_count"] == 2
-            assert set(data["merged"]) == {"a", "b"}
-            assert set(data["closed"]) == {"a", "b"}
-            assert mock_merge.call_count == 2
-
-    def test_merge_all_no_close(self, runner: CliRunner) -> None:
-        mock_panes = [
-            {"slug": "a", "done": True},
-            {"slug": "b", "done": True},
-        ]
-        with (
-            patch("dgov.panes.list_worker_panes", return_value=mock_panes),
-            patch(
-                "dgov.panes.merge_worker_pane",
-                return_value={"merged": "ok", "files_changed": 1},
-            ) as mock_merge,
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all", "-r", "/tmp", "--no-close"])
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["merged_count"] == 2
-            assert "closed" not in data
-            assert mock_merge.call_count == 2
-
-    def test_merge_all_with_failure(self, runner: CliRunner) -> None:
-        mock_panes = [{"slug": "a", "done": True}]
-        with (
-            patch("dgov.panes.list_worker_panes", return_value=mock_panes),
-            patch(
-                "dgov.panes.merge_worker_pane_with_close",
-                return_value={"error": "conflict"},
-            ),
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all", "-r", "/tmp"])
-            assert result.exit_code == 1
-            data = json.loads(result.output)
-            assert data["failed_count"] == 1
-
-
-class TestAgentsCommand:
-    def test_agents_list(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        with patch(
-            "dgov.agents.detect_installed_agents",
-            return_value=["pi", "claude"],
-        ):
-            result = runner.invoke(cli, ["agents"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert isinstance(output, list)
-        assert len(output) > 0
-        assert all("id" in a for a in output)
-
-
-# ---------------------------------------------------------------------------
-# merge-all
-# ---------------------------------------------------------------------------
-
-
-class TestHelpOutput:
-    def test_main_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["--help"])
-        assert result.exit_code == 0
-        assert "dgov" in result.output
-
-    def test_pane_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "--help"])
-        assert result.exit_code == 0
-        assert "Manage worker panes" in result.output
-
-    def test_pane_create_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "create", "--help"])
-        assert result.exit_code == 0
-        assert "--agent" in result.output
-        assert "--prompt" in result.output
-        assert "--slug" in result.output
-
-    def test_pane_close_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "close", "--help"])
-        assert result.exit_code == 0
-        assert "SLUG" in result.output
-
-    def test_pane_merge_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "merge", "--help"])
-        assert result.exit_code == 0
-        assert "--resolve" in result.output
-        assert "--close" in result.output
-
-    def test_pane_wait_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "wait", "--help"])
-        assert result.exit_code == 0
-        assert "--timeout" in result.output
-        assert "--poll" in result.output
-
-    def test_pane_wait_all_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "wait-all", "--help"])
-        assert result.exit_code == 0
-        assert "--timeout" in result.output
-
-    def test_pane_merge_all_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "merge-all", "--help"])
-        assert result.exit_code == 0
-        assert "--resolve" in result.output
-
-    def test_pane_classify_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "classify", "--help"])
-        assert result.exit_code == 0
-        assert "PROMPT" in result.output
-
-    def test_pane_review_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "review", "--help"])
-        assert result.exit_code == 0
-        assert "--full" in result.output
-
-    def test_pane_escalate_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "escalate", "--help"])
-        assert result.exit_code == 0
-        assert "--agent" in result.output
-
-    def test_status_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["status", "--help"])
-        assert result.exit_code == 0
-        assert "status" in result.output.lower()
-
-    def test_rebase_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["rebase", "--help"])
-        assert result.exit_code == 0
-        assert "--onto" in result.output
-
-    def test_preflight_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["preflight", "--help"])
-        assert result.exit_code == 0
-        assert "--fix" in result.output
-
-    def test_agents_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["agents", "--help"])
-        assert result.exit_code == 0
-        assert "agent" in result.output.lower()
-
-
-# ---------------------------------------------------------------------------
-# pane create
-# ---------------------------------------------------------------------------
-
-
-class TestMergeAllCommand:
-    def test_no_done_panes(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        with patch("dgov.panes.list_worker_panes", return_value=[]):
-            result = runner.invoke(cli, ["pane", "merge-all"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["merged"] == []
-
-    def test_merge_all_success(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        panes = [
-            {"slug": "t1", "done": True},
-            {"slug": "t2", "done": True},
-            {"slug": "t3", "done": False},
-        ]
-        merge_results = [
-            {"merged": "t1", "branch": "t1", "files_changed": 2},
-            {"merged": "t2", "branch": "t2", "files_changed": 1},
-        ]
-
-        with (
-            patch("dgov.panes.list_worker_panes", return_value=panes),
-            patch("dgov.panes.merge_worker_pane_with_close", side_effect=merge_results),
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["merged_count"] == 2
-        assert output["failed_count"] == 0
-        assert set(output["closed"]) == {"t1", "t2"}
-
-    def test_merge_all_with_failure(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        panes = [{"slug": "t1", "done": True}]
-        with (
             patch("dgov.panes.list_worker_panes", return_value=panes),
             patch(
                 "dgov.panes.merge_worker_pane_with_close",
-                return_value={"error": "conflict"},
+                side_effect=[
+                    {"merged": "a", "files_changed": 2},
+                    {"error": "conflict"},
+                ],
             ),
         ):
             result = runner.invoke(cli, ["pane", "merge-all"])
-        assert result.exit_code == 1
-        output = json.loads(result.output)
-        assert output["failed_count"] == 1
-
-
-class TestPaneCaptureCommand:
-    """Tests for pane capture subcommand."""
-
-    def test_pane_capture_success(self, runner: CliRunner) -> None:
-        """Monkeypatch capture to return text, verify output."""
-        from unittest.mock import patch
-
-        mock_output = "line1\nline2\nline3"
-
-        with patch("dgov.panes.capture_worker_output", return_value=mock_output):
-            result = runner.invoke(cli, ["pane", "capture", "my-task"])
-
-        assert result.exit_code == 0
-        assert mock_output in result.output
-
-    def test_pane_capture_missing(self, runner: CliRunner) -> None:
-        """Monkeypatch capture to raise, verify error exit."""
-        from unittest.mock import patch
-
-        with patch("dgov.panes.capture_worker_output", return_value=None):
-            result = runner.invoke(cli, ["pane", "capture", "missing-task"])
 
         assert result.exit_code == 1
-        output = json.loads(result.output)
-        assert "error" in output
-        assert "missing-task" in output["error"]
+        assert json.loads(result.output) == {
+            "merged_count": 1,
+            "failed_count": 1,
+            "total_files_changed": 2,
+            "merged": ["a"],
+            "closed": ["a"],
+            "failed": ["b"],
+            "warnings": ["b: conflict"],
+        }
 
-
-class TestPaneClassifyCommand:
-    def test_classify(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
+    def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
+        with patch("dgov.panes.list_worker_panes", return_value=[{"slug": "task"}]):
+            listed = runner.invoke(cli, ["pane", "list"])
+        with patch("dgov.panes.prune_stale_panes", return_value=["old-task"]):
+            pruned = runner.invoke(cli, ["pane", "prune"])
         with patch("dgov.panes.classify_task", return_value="claude"):
-            result = runner.invoke(cli, ["pane", "classify", "debug flaky test"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["recommended_agent"] == "claude"
+            classified = runner.invoke(cli, ["pane", "classify", "debug flaky test"])
+        with patch("dgov.panes.capture_worker_output", return_value="line 1\nline 2"):
+            captured = runner.invoke(cli, ["pane", "capture", "task", "--lines", "50"])
 
-
-# ---------------------------------------------------------------------------
-# pane review
-# ---------------------------------------------------------------------------
-
-
-class TestPaneCloseCommand:
-    def test_close_not_found(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        with patch("dgov.panes.close_worker_pane", return_value=False):
-            result = runner.invoke(cli, ["pane", "close", "missing"])
-        assert result.exit_code == 1
-        output = json.loads(result.output)
-        assert "error" in output
-
-    def test_close_success(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        with patch("dgov.panes.close_worker_pane", return_value=True):
-            result = runner.invoke(cli, ["pane", "close", "my-task"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["closed"] == "my-task"
-
-
-# ---------------------------------------------------------------------------
-# pane merge
-# ---------------------------------------------------------------------------
-
-
-class TestPaneCreateCommand:
-    def test_unknown_agent_exits_1(self, runner: CliRunner) -> None:
-        result = runner.invoke(
-            cli, ["pane", "create", "--agent", "nonexistent-agent", "--prompt", "test"]
-        )
-        assert result.exit_code == 1
-        assert "Unknown agent" in result.output
-
-    def test_invalid_env_var(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        with patch("dgov.panes.create_worker_pane"):
-            result = runner.invoke(
-                cli,
-                [
-                    "pane",
-                    "create",
-                    "--agent",
-                    "pi",
-                    "--prompt",
-                    "x",
-                    "-e",
-                    "BADFORMAT",
-                    "--no-preflight",
-                ],
-            )
-        assert result.exit_code == 1
-        assert "KEY=VALUE" in result.output
-
-    def test_auto_classify(self, runner: CliRunner) -> None:
-        from unittest.mock import MagicMock, patch
-
-        mock_pane = MagicMock()
-        mock_pane.slug = "test-slug"
-        mock_pane.pane_id = "%5"
-        mock_pane.agent = "pi"
-        mock_pane.worktree_path = "/tmp/wt"
-        mock_pane.branch_name = "test-slug"
-
-        with (
-            patch("dgov.panes.classify_task", return_value="pi") as mock_classify,
-            patch("dgov.panes.create_worker_pane", return_value=mock_pane),
-        ):
-            result = runner.invoke(
-                cli,
-                [
-                    "pane",
-                    "create",
-                    "--agent",
-                    "auto",
-                    "--prompt",
-                    "fix typo",
-                    "--no-preflight",
-                ],
-            )
-        assert result.exit_code == 0
-        mock_classify.assert_called_once_with("fix typo")
-
-    def test_create_success(self, runner: CliRunner) -> None:
-        from unittest.mock import MagicMock, patch
-
-        mock_pane = MagicMock()
-        mock_pane.slug = "my-task"
-        mock_pane.pane_id = "%10"
-        mock_pane.agent = "pi"
-        mock_pane.worktree_path = "/tmp/wt/my-task"
-        mock_pane.branch_name = "my-task"
-
-        with patch("dgov.panes.create_worker_pane", return_value=mock_pane):
-            result = runner.invoke(
-                cli,
-                [
-                    "pane",
-                    "create",
-                    "--agent",
-                    "pi",
-                    "--prompt",
-                    "do stuff",
-                    "--slug",
-                    "my-task",
-                    "--no-preflight",
-                ],
-            )
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["slug"] == "my-task"
-        assert output["agent"] == "pi"
-
-
-# ---------------------------------------------------------------------------
-# pane close
-# ---------------------------------------------------------------------------
-
-
-class TestPaneEscalateCommand:
-    def test_escalate_success(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        esc_result = {
-            "escalated": True,
-            "original_slug": "task-1",
-            "new_slug": "task-1-esc",
-            "agent": "claude",
+        assert json.loads(listed.output) == [{"slug": "task"}]
+        assert json.loads(pruned.output) == {"pruned": ["old-task"]}
+        assert json.loads(classified.output) == {
+            "recommended_agent": "claude",
+            "prompt_preview": "debug flaky test",
         }
-        with patch("dgov.panes.escalate_worker_pane", return_value=esc_result):
-            result = runner.invoke(cli, ["pane", "escalate", "task-1"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["escalated"] is True
+        assert captured.exit_code == 0
+        assert captured.output == "line 1\nline 2\n"
 
-    def test_escalate_error(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
+    def test_capture_missing_exits(self, runner: CliRunner) -> None:
+        with patch("dgov.panes.capture_worker_output", return_value=None):
+            result = runner.invoke(cli, ["pane", "capture", "missing"])
 
-        with patch(
-            "dgov.panes.escalate_worker_pane",
-            return_value={"error": "not found"},
-        ):
-            result = runner.invoke(cli, ["pane", "escalate", "missing"])
         assert result.exit_code == 1
+        assert json.loads(result.output) == {"error": "Pane not found or dead: missing"}
 
-
-# ---------------------------------------------------------------------------
-# status
-# ---------------------------------------------------------------------------
-
-
-class TestPaneListCommand:
-    """Tests for pane list subcommand."""
-
-    def test_pane_list_empty(self, runner: CliRunner) -> None:
-        """Monkeypatch list_worker_panes to return [], verify empty JSON array."""
-        from unittest.mock import patch
-
-        with patch("dgov.panes.list_worker_panes", return_value=[]):
-            result = runner.invoke(cli, ["pane", "list"])
-
-        assert result.exit_code == 0
-        assert json.loads(result.output) == []
-
-    def test_pane_list_with_panes(self, runner: CliRunner) -> None:
-        """Monkeypatch to return pane dicts, verify JSON output."""
-        from unittest.mock import patch
-
-        mock_panes = [
-            {
-                "slug": "test-task",
-                "agent": "pi",
-                "done": True,
-                "branch": "test-task",
-                "worktree": "/tmp/worktrees/test-task",
-            },
-            {
-                "slug": "another-task",
-                "agent": "claude",
-                "done": False,
-                "branch": "another-task",
-                "worktree": "/tmp/worktrees/another-task",
-            },
-        ]
-
-        with patch("dgov.panes.list_worker_panes", return_value=mock_panes):
-            result = runner.invoke(cli, ["pane", "list"])
-
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert len(output) == 2
-        assert output[0]["slug"] == "test-task"
-        assert output[1]["agent"] == "claude"
-
-
-class TestPaneMergeCommand:
-    def test_merge_success(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        merge_result = {"merged": "task-1", "branch": "task-1", "files_changed": 3}
-        with patch("dgov.panes.merge_worker_pane", return_value=merge_result):
-            result = runner.invoke(cli, ["pane", "merge", "task-1"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["merged"] == "task-1"
-
-    def test_merge_error(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        with patch(
-            "dgov.panes.merge_worker_pane_with_close",
-            return_value={"error": "Merge failed"},
-        ):
-            result = runner.invoke(cli, ["pane", "merge", "task-1"])
-        assert result.exit_code == 1
-
-    def test_merge_conflicts(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        conflict_result = {
-            "slug": "task-1",
-            "branch": "task-1",
-            "conflicts": ["src/foo.py"],
-            "error": "conflicts detected",
-        }
-        with patch("dgov.panes.merge_worker_pane_with_close", return_value=conflict_result):
-            result = runner.invoke(cli, ["pane", "merge", "task-1"])
-        assert result.exit_code == 1
-
-    def test_merge_default_closes(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        merge_result = {"merged": "task-1", "branch": "b"}
-        with patch(
-            "dgov.panes.merge_worker_pane_with_close",
-            return_value=merge_result,
-        ):
-            result = runner.invoke(cli, ["pane", "merge", "task-1"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["merged"] == "task-1"
-
-
-# ---------------------------------------------------------------------------
-# pane classify
-# ---------------------------------------------------------------------------
-
-
-class TestPanePruneCommand:
-    """Tests for pane prune subcommand."""
-
-    def test_pane_prune(self, runner: CliRunner) -> None:
-        """Monkeypatch prune_stale_panes, verify it's called."""
-        from unittest.mock import patch
-
-        pruned_slugs = ["stale-task-1", "stale-task-2"]
-
-        with patch("dgov.panes.prune_stale_panes", return_value=pruned_slugs) as mock_prune:
-            result = runner.invoke(cli, ["pane", "prune"])
-
-        assert result.exit_code == 0
-        mock_prune.assert_called_once()
-        output = json.loads(result.output)
-        assert output["pruned"] == pruned_slugs
-
-
-# ---------------------------------------------------------------------------
-# Help smoke tests
-# ---------------------------------------------------------------------------
-
-
-class TestPaneReviewCommand:
-    def test_review_success(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        review_result = {
-            "slug": "task-1",
-            "verdict": "safe",
-            "commit_count": 2,
-        }
-        with patch("dgov.panes.review_worker_pane", return_value=review_result):
-            result = runner.invoke(cli, ["pane", "review", "task-1"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["verdict"] == "safe"
-
-    def test_review_error(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
+    def test_review_diff_escalate_and_retry(self, runner: CliRunner) -> None:
         with patch(
             "dgov.panes.review_worker_pane",
-            return_value={"error": "not found"},
+            return_value={"slug": "task", "verdict": "safe"},
         ):
-            result = runner.invoke(cli, ["pane", "review", "missing"])
-        assert result.exit_code == 1
+            review = runner.invoke(cli, ["pane", "review", "task", "--full"])
+        with patch(
+            "dgov.panes.diff_worker_pane",
+            return_value={"slug": "task", "diff": "patch"},
+        ):
+            diff = runner.invoke(cli, ["pane", "diff", "task", "--name-only"])
+        with patch(
+            "dgov.panes.escalate_worker_pane",
+            return_value={"escalated": True, "agent": "claude"},
+        ):
+            escalate = runner.invoke(
+                cli,
+                ["pane", "escalate", "task", "--agent", "claude", "--permission-mode", "plan"],
+            )
+        with patch(
+            "dgov.panes.retry_worker_pane",
+            return_value={"retried": True, "new_slug": "task-2"},
+        ):
+            retry = runner.invoke(
+                cli,
+                ["pane", "retry", "task", "--agent", "pi", "--prompt", "Try again"],
+            )
+
+        assert review.exit_code == 0
+        assert diff.exit_code == 0
+        assert escalate.exit_code == 0
+        assert retry.exit_code == 0
+        assert json.loads(review.output)["verdict"] == "safe"
+        assert json.loads(diff.output)["diff"] == "patch"
+        assert json.loads(escalate.output)["escalated"] is True
+        assert json.loads(retry.output)["retried"] is True
 
 
-# ---------------------------------------------------------------------------
-# pane escalate
-# ---------------------------------------------------------------------------
+class TestTopLevelCommands:
+    def test_preflight_status_rebase_agents_and_version(self, runner: CliRunner) -> None:
+        report = MagicMock()
+        report.passed = True
+        report.to_dict.return_value = {"passed": True, "checks": []}
 
-
-class TestRebaseCommand:
-    def test_rebase_success(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
+        with patch("dgov.preflight.run_preflight", return_value=report) as mock_preflight:
+            preflight = runner.invoke(
+                cli,
+                [
+                    "preflight",
+                    "--project-root",
+                    "/repo",
+                    "--session-root",
+                    "/session",
+                    "--agent",
+                    "pi",
+                    "--touches",
+                    "src/app.py",
+                    "--branch",
+                    "main",
+                ],
+            )
+        with patch(
+            "dgov.state.get_status",
+            return_value={"panes": [], "tunnel": {"any_up": False}},
+        ):
+            status = runner.invoke(cli, ["status"])
         with patch(
             "dgov.panes.rebase_governor",
             return_value={"rebased": True, "base": "main"},
-        ):
-            result = runner.invoke(cli, ["rebase"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert output["rebased"] is True
+        ) as mock_rebase:
+            rebase = runner.invoke(cli, ["rebase", "--project-root", "/repo", "--onto", "develop"])
+        with patch("dgov.cli.detect_installed_agents", return_value=["claude"]):
+            agents = runner.invoke(cli, ["agents"])
+        version = runner.invoke(cli, ["version"])
 
-    def test_rebase_failure(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
+        assert preflight.exit_code == 0
+        mock_preflight.assert_called_once_with(
+            project_root="/repo",
+            agent="pi",
+            touches=["src/app.py"],
+            expected_branch="main",
+            session_root="/session",
+        )
+        assert json.loads(preflight.output)["passed"] is True
+        assert json.loads(status.output)["tunnel"]["any_up"] is False
+        mock_rebase.assert_called_once_with("/repo", onto="develop")
+        assert json.loads(rebase.output)["rebased"] is True
+        agents_payload = json.loads(agents.output)
+        assert next(item for item in agents_payload if item["id"] == "claude")["installed"] is True
+        assert json.loads(version.output) == {"dgov": __version__}
+
+    def test_checkpoint_and_batch_commands(self, runner: CliRunner, tmp_path: Path) -> None:
+        spec_path = tmp_path / "spec.json"
+        spec_path.write_text(json.dumps({"project_root": "/repo", "tasks": []}))
 
         with patch(
-            "dgov.panes.rebase_governor",
-            return_value={"rebased": False, "error": "conflicts"},
+            "dgov.panes.create_checkpoint",
+            return_value={"checkpoint": "wave-1", "main_sha": "abc", "pane_count": 1},
         ):
-            result = runner.invoke(cli, ["rebase"])
-        assert result.exit_code == 1
+            created = runner.invoke(cli, ["checkpoint", "create", "wave-1"])
+        with patch(
+            "dgov.panes.list_checkpoints",
+            return_value=[{"name": "wave-1", "pane_count": 1}],
+        ) as mock_list_checkpoints:
+            listed = runner.invoke(cli, ["checkpoint", "list", "--project-root", "/repo"])
+        with patch(
+            "dgov.panes.run_batch",
+            return_value={"dry_run": True, "tiers": [["a"]], "total_tasks": 1},
+        ) as mock_run_batch:
+            batch_ok = runner.invoke(cli, ["batch", str(spec_path), "--dry-run"])
+        with patch(
+            "dgov.panes.run_batch",
+            return_value={"failed": ["a"], "tiers": []},
+        ):
+            batch_fail = runner.invoke(cli, ["batch", str(spec_path)])
 
-
-# ---------------------------------------------------------------------------
-# agents
-# ---------------------------------------------------------------------------
-
-
-class TestStatusCommand:
-    def test_status_output(self, runner: CliRunner) -> None:
-        from unittest.mock import patch
-
-        mock_status = {"panes": [], "session_root": "/tmp"}
-        with patch("dgov.state.get_status", return_value=mock_status):
-            result = runner.invoke(cli, ["status"])
-        assert result.exit_code == 0
-        output = json.loads(result.output)
-        assert "panes" in output
-
-
-# ---------------------------------------------------------------------------
-# pane util
-# ---------------------------------------------------------------------------
-
-
-class TestPaneUtil:
-    @pytest.fixture(autouse=True)
-    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
-
-    def test_util_calls_create_utility_pane(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%99") as mock_create:
-            result = runner.invoke(cli, ["pane", "util", "lazygit"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd=".")
-            data = json.loads(result.output)
-            assert data["pane_id"] == "%99"
-            assert data["command"] == "lazygit"
-            assert data["title"] == "lazygit"
-
-    def test_util_custom_title(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%10") as mock_create:
-            result = runner.invoke(cli, ["pane", "util", "yazi /tmp", "-t", "files"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("yazi /tmp", "[util] files", cwd=".")
-            data = json.loads(result.output)
-            assert data["title"] == "files"
-
-    def test_util_custom_cwd(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%11") as mock_create:
-            result = runner.invoke(cli, ["pane", "util", "lazygit", "-c", "/tmp/repo"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd="/tmp/repo")
-
-    def test_util_title_defaults_to_first_word(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%12"):
-            result = runner.invoke(cli, ["pane", "util", "htop -d 10"])
-            data = json.loads(result.output)
-            assert data["title"] == "htop"
-
-    def test_util_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "util", "--help"])
-        assert result.exit_code == 0
-        assert "utility pane" in result.output.lower()
-
-    def test_util_listed_in_pane_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["pane", "--help"])
-        assert "util" in result.output
-
-
-# ---------------------------------------------------------------------------
-# pane lazygit / yazi shortcuts
-# ---------------------------------------------------------------------------
-
-
-class TestPaneLazygit:
-    @pytest.fixture(autouse=True)
-    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
-
-    def test_lazygit_calls_create_utility_pane(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%50") as mock_create:
-            result = runner.invoke(cli, ["pane", "lazygit"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd=".")
-            data = json.loads(result.output)
-            assert data["pane_id"] == "%50"
-            assert data["command"] == "lazygit"
-            assert data["title"] == "lazygit"
-
-    def test_lazygit_custom_cwd(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%51") as mock_create:
-            result = runner.invoke(cli, ["pane", "lazygit", "-c", "/tmp/repo"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("lazygit", "[util] lazygit", cwd="/tmp/repo")
-
-
-class TestPaneYazi:
-    @pytest.fixture(autouse=True)
-    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
-
-    def test_yazi_calls_create_utility_pane(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%60") as mock_create:
-            result = runner.invoke(cli, ["pane", "yazi"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("yazi", "[util] yazi", cwd=".")
-            data = json.loads(result.output)
-            assert data["pane_id"] == "%60"
-            assert data["command"] == "yazi"
-            assert data["title"] == "yazi"
-
-    def test_yazi_custom_cwd(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%61") as mock_create:
-            result = runner.invoke(cli, ["pane", "yazi", "-c", "/home/user"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("yazi", "[util] yazi", cwd="/home/user")
-
-
-class TestPaneHtop:
-    @pytest.fixture(autouse=True)
-    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
-
-    def test_htop_calls_create_utility_pane(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%70") as mock_create:
-            result = runner.invoke(cli, ["pane", "htop"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("htop", "[util] htop", cwd=".")
-            data = json.loads(result.output)
-            assert data["pane_id"] == "%70"
-            assert data["command"] == "htop"
-            assert data["title"] == "htop"
-
-    def test_htop_custom_cwd(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%71") as mock_create:
-            result = runner.invoke(cli, ["pane", "htop", "-c", "/var/log"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("htop", "[util] htop", cwd="/var/log")
-
-
-class TestPaneK9s:
-    @pytest.fixture(autouse=True)
-    def _skip_governor(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
-
-    def test_k9s_calls_create_utility_pane(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%72") as mock_create:
-            result = runner.invoke(cli, ["pane", "k9s"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("k9s", "[util] k9s", cwd=".")
-            data = json.loads(result.output)
-            assert data["pane_id"] == "%72"
-            assert data["command"] == "k9s"
-            assert data["title"] == "k9s"
-
-    def test_k9s_custom_cwd(self, runner: CliRunner) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%73") as mock_create:
-            result = runner.invoke(cli, ["pane", "k9s", "-c", "/home/user"])
-            assert result.exit_code == 0
-            mock_create.assert_called_once_with("k9s", "[util] k9s", cwd="/home/user")
-
-
-# ---------------------------------------------------------------------------
-# batch
-# ---------------------------------------------------------------------------
-
-
-class TestBatchCommand:
-    def test_batch_dry_run(self, runner: CliRunner, tmp_path: Path) -> None:
-        spec = {
-            "project_root": "/tmp/repo",
-            "tasks": [
-                {"id": "t1", "prompt": "do x", "touches": ["a.py"]},
-                {"id": "t2", "prompt": "do y", "touches": ["b.py"]},
-            ],
-        }
-        spec_file = tmp_path / "spec.json"
-        spec_file.write_text(json.dumps(spec))
-        result = runner.invoke(cli, ["batch", str(spec_file), "--dry-run"])
-        assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["dry_run"] is True
-        assert data["total_tasks"] == 2
-
-    def test_batch_help(self, runner: CliRunner) -> None:
-        result = runner.invoke(cli, ["batch", "--help"])
-        assert result.exit_code == 0
-        assert "DAG-ordered" in result.output
-
-
-# ---------------------------------------------------------------------------
-# rebase
-# ---------------------------------------------------------------------------
+        assert created.exit_code == 0
+        assert json.loads(created.output)["checkpoint"] == "wave-1"
+        assert listed.exit_code == 0
+        mock_list_checkpoints.assert_called_once_with(str(Path("/repo").resolve()))
+        assert json.loads(listed.output) == [{"name": "wave-1", "pane_count": 1}]
+        mock_run_batch.assert_called_once_with(str(spec_path), session_root=None, dry_run=True)
+        assert json.loads(batch_ok.output)["dry_run"] is True
+        assert batch_fail.exit_code == 1
+        assert json.loads(batch_fail.output)["failed"] == ["a"]
