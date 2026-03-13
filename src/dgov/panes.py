@@ -24,6 +24,44 @@ from dgov.models import MergeResult
 
 logger = logging.getLogger(__name__)
 
+# -- Event log --
+
+VALID_EVENTS = frozenset(
+    {
+        "pane_created",
+        "pane_done",
+        "pane_timed_out",
+        "pane_merged",
+        "pane_merge_failed",
+        "pane_escalated",
+        "pane_superseded",
+        "pane_closed",
+        "pane_retry_spawned",
+        "checkpoint_created",
+        "review_pass",
+        "review_fail",
+    }
+)
+
+
+def _emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
+    """Append a structured event to .dgov/events.jsonl."""
+    from datetime import datetime, timezone
+
+    if event not in VALID_EVENTS:
+        raise ValueError(f"Unknown event: {event!r}. Valid: {sorted(VALID_EVENTS)}")
+    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        "pane": pane,
+        **kwargs,
+    }
+    with open(events_path, "a") as f:
+        f.write(json.dumps(record, default=str) + "\n")
+
+
 # -- Pane record --
 
 
@@ -751,6 +789,15 @@ def create_worker_pane(
     )
     _add_pane(session_root, pane)
 
+    _emit_event(
+        session_root,
+        "pane_created",
+        slug,
+        agent=agent,
+        prompt=prompt[:200],
+        base_sha=base_sha,
+    )
+
     return pane
 
 
@@ -817,6 +864,7 @@ def close_worker_pane(project_root: str, slug: str, session_root: str | None = N
         return False
 
     _update_pane_state(session_root, slug, "closed")
+    _emit_event(session_root, "pane_closed", slug)
     _full_cleanup(
         project_root,
         session_root,
@@ -848,8 +896,10 @@ def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> b
 
     Any one signal returning True means done. Also updates pane state to "done".
     """
+    done_path = Path(session_root, _STATE_DIR, "done", slug)
+
     # Signal 1: done-signal file
-    if Path(session_root, _STATE_DIR, "done", slug).exists():
+    if done_path.exists():
         _update_pane_state(session_root, slug, "done")
         return True
 
@@ -863,12 +913,19 @@ def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> b
     if project_root and branch_name and base_sha:
         if _has_new_commits(project_root, branch_name, base_sha):
             _update_pane_state(session_root, slug, "done")
+            _emit_event(session_root, "pane_done", slug)
+            # Touch done-signal so we don't re-emit
+            done_path.parent.mkdir(parents=True, exist_ok=True)
+            done_path.touch()
             return True
 
     # Signal 3: pane no longer alive
     pane_id = pane_record.get("pane_id", "")
     if pane_id and not tmux.pane_exists(pane_id):
         _update_pane_state(session_root, slug, "done")
+        _emit_event(session_root, "pane_done", slug)
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        done_path.touch()
         return True
 
     return False
@@ -890,6 +947,7 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
             except RuntimeError:
                 pass
         done = _is_done(session_root, slug, pane_record=p)
+        freshness = _compute_freshness(project_root, p)
         entry: dict = {
             "slug": slug,
             "agent": p.get("agent"),
@@ -901,6 +959,7 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),
             "prompt": p.get("prompt", "")[:80],
+            **freshness,
         }
         result.append(entry)
 
@@ -1286,6 +1345,7 @@ def merge_worker_pane(
 
     if merge.success:
         _update_pane_state(session_root, slug, "merged")
+        _emit_event(session_root, "pane_merged", slug)
         _full_cleanup(pane_project_root, session_root, slug, target)
 
         # Post-merge hook: lint, verify protected files, etc.
@@ -1363,6 +1423,7 @@ def merge_worker_pane(
             }
 
     error_msg = merge.stderr.strip() if merge.stderr else f"Merge failed for {branch_name}"
+    _emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
     return {"error": error_msg}
 
 
@@ -1470,6 +1531,13 @@ def review_worker_pane(
 
     verdict = "safe" if not issues else "review"
 
+    if verdict == "safe":
+        _emit_event(session_root, "review_pass", slug)
+    else:
+        _emit_event(session_root, "review_fail", slug, issues=issues)
+
+    freshness = _compute_freshness(project_root, target)
+
     result = {
         "slug": slug,
         "branch": branch,
@@ -1480,6 +1548,7 @@ def review_worker_pane(
         "commit_log": commit_log,
         "uncommitted": uncommitted,
         "files_changed": len(changed_files),
+        **freshness,
     }
     if issues:
         result["issues"] = issues
@@ -1492,6 +1561,102 @@ def review_worker_pane(
         result["diff"] = diff_result.stdout if diff_result.returncode == 0 else ""
 
     return result
+
+
+def _compute_freshness(project_root: str, pane_record: dict) -> dict:
+    """Compute freshness score for a pane relative to main.
+
+    Returns {"freshness": "fresh"|"warn"|"stale", "commits_since_base": int,
+             "overlapping_files": [...], "pane_age_hours": float}
+    """
+    base_sha = pane_record.get("base_sha", "")
+    created_at = pane_record.get("created_at", 0)
+    wt = pane_record.get("worktree_path", "")
+
+    age_hours = (time.time() - created_at) / 3600 if created_at else 0
+
+    # Commits on main since base
+    commits_since = 0
+    if base_sha:
+        log_result = subprocess.run(
+            ["git", "-C", project_root, "log", f"{base_sha}..HEAD", "--oneline"],
+            capture_output=True,
+            text=True,
+        )
+        if log_result.returncode == 0:
+            commits_since = len([ln for ln in log_result.stdout.strip().splitlines() if ln])
+
+    # Files changed on main since base
+    main_files: set[str] = set()
+    if base_sha:
+        main_diff = subprocess.run(
+            ["git", "-C", project_root, "diff", "--name-only", f"{base_sha}..HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if main_diff.returncode == 0:
+            main_files = set(main_diff.stdout.strip().splitlines())
+
+    # Files changed on worker branch
+    worker_files: set[str] = set()
+    if wt and Path(wt).exists() and base_sha:
+        worker_diff = subprocess.run(
+            ["git", "-C", wt, "diff", "--name-only", f"{base_sha}..HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if worker_diff.returncode == 0:
+            worker_files = set(worker_diff.stdout.strip().splitlines())
+
+    overlap = sorted(main_files & worker_files)
+
+    # Classification
+    if overlap and (commits_since > 5 or age_hours > 12):
+        freshness = "stale"
+    elif overlap or commits_since > 0 or age_hours > 4:
+        freshness = "warn"
+    else:
+        freshness = "fresh"
+
+    return {
+        "freshness": freshness,
+        "commits_since_base": commits_since,
+        "overlapping_files": overlap,
+        "pane_age_hours": round(age_hours, 1),
+    }
+
+
+def diff_worker_pane(
+    project_root: str,
+    slug: str,
+    session_root: str | None = None,
+    stat: bool = False,
+    name_only: bool = False,
+) -> dict:
+    """Get the diff for a worker pane's branch vs its base_sha."""
+    session_root = os.path.abspath(session_root or project_root)
+    target = _get_pane(session_root, slug)
+    if not target:
+        return {"error": f"Pane not found: {slug}"}
+
+    wt = target.get("worktree_path", "")
+    base_sha = target.get("base_sha", "")
+    if not wt or not Path(wt).exists():
+        return {"error": f"Worktree not found: {wt}"}
+    if not base_sha:
+        return {"error": "No base_sha recorded"}
+
+    cmd = ["git", "-C", wt, "diff", f"{base_sha}..HEAD"]
+    if stat:
+        cmd.append("--stat")
+    elif name_only:
+        cmd.append("--name-only")
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        return {"error": result.stderr.strip()}
+
+    return {"slug": slug, "base_sha": base_sha, "diff": result.stdout}
 
 
 def rebase_governor(project_root: str, onto: str | None = None) -> dict:
@@ -1627,6 +1792,7 @@ def escalate_worker_pane(
 
     # Mark old pane as escalated then close
     _update_pane_state(session_root, slug, "escalated")
+    _emit_event(session_root, "pane_escalated", slug, new_slug=new_slug, target_agent=target_agent)
     close_worker_pane(project_root, slug, session_root=session_root)
 
     return {
