@@ -71,11 +71,11 @@ def set_title(pane_id: str, title: str) -> None:
 
 
 def update_pane_status(pane_id: str, agent: str, slug: str, status: str) -> None:
-    """Update pane title to reflect current status."""
+    """Update pane title to reflect current status (tolerates dead panes)."""
     icon = {"active": "\u23f3", "done": "\u2713", "failed": "\u2717", "timed_out": "\u23f0"}.get(
         status, "?"
     )
-    set_title(pane_id, f"[{agent}] {slug} {icon}")
+    _run(["select-pane", "-t", pane_id, "-T", f"[{agent}] {slug} {icon}"], silent=True)
 
 
 def set_pane_option(pane_id: str, option: str, value: str) -> None:

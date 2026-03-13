@@ -1396,10 +1396,7 @@ class TestUpdatePaneState:
         assert state["panes"][0]["state"] == "active"
 
     @patch("dgov.panes.tmux.update_pane_status")
-    @patch("dgov.panes.tmux.pane_exists", return_value=True)
-    def test_updates_pane_title_when_alive(
-        self, mock_exists: Mock, mock_update: Mock, tmp_path: Path
-    ) -> None:
+    def test_updates_pane_title_on_state_change(self, mock_update: Mock, tmp_path: Path) -> None:
         from dgov.panes import _update_pane_state
 
         _write_state(
@@ -1407,23 +1404,7 @@ class TestUpdatePaneState:
             {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
         )
         _update_pane_state(str(tmp_path), "fix", "done")
-        mock_exists.assert_called_once_with("%5")
         mock_update.assert_called_once_with("%5", "pi", "fix", "done")
-
-    @patch("dgov.panes.tmux.update_pane_status")
-    @patch("dgov.panes.tmux.pane_exists", return_value=False)
-    def test_skips_title_update_when_pane_dead(
-        self, mock_exists: Mock, mock_update: Mock, tmp_path: Path
-    ) -> None:
-        from dgov.panes import _update_pane_state
-
-        _write_state(
-            str(tmp_path),
-            {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
-        )
-        _update_pane_state(str(tmp_path), "fix", "done")
-        mock_exists.assert_called_once_with("%5")
-        mock_update.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

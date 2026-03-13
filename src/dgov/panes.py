@@ -195,7 +195,7 @@ def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
     if pane:
         pane_id = pane.get("pane_id", "")
         agent = pane.get("agent", "")
-        if pane_id and tmux.pane_exists(pane_id):
+        if pane_id:
             tmux.update_pane_status(pane_id, agent, slug, new_state)
 
 
