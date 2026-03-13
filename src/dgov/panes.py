@@ -606,7 +606,8 @@ def _full_cleanup(
     get_backend().select_layout("tiled")
 
     # 4. Remove from dgov state (after tmux kill and worktree removal)
-    _remove_pane(session_root, slug)
+    if not skipped_worktree:
+        _remove_pane(session_root, slug)
 
     return {"cleaned": True, "skipped_worktree": skipped_worktree}
 

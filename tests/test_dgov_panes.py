@@ -353,7 +353,7 @@ class TestIsDone:
             patch("dgov.panes._update_pane_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
-        mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done")
+        mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done", force=False)
 
     def test_no_pane_record_no_signal(self, tmp_path: Path) -> None:
         assert _is_done(str(tmp_path), "test-slug") is False
@@ -391,7 +391,7 @@ class TestIsDone:
         (done_dir / "test-slug.exit").write_text("1")
         with patch("dgov.panes._update_pane_state") as mock_state:
             assert _is_done(str(tmp_path), "test-slug") is True
-            mock_state.assert_called_once_with(str(tmp_path), "test-slug", "failed")
+            mock_state.assert_called_once_with(str(tmp_path), "test-slug", "failed", force=False)
 
     def test_alive_pane_no_commits(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         record = {
@@ -405,6 +405,39 @@ class TestIsDone:
             patch("dgov.panes._has_new_commits", return_value=False),
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is False
+
+    def test_done_signal_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
+        """Verify abandoned -> done transition works when a done signal is found."""
+        _write_state(str(tmp_path), {"panes": [{"slug": "stale", "state": "abandoned"}]})
+        done_dir = tmp_path / ".dgov" / "done"
+        done_dir.mkdir(parents=True)
+        (done_dir / "stale").touch()
+
+        record = _get_pane(str(tmp_path), "stale")
+        assert _is_done(str(tmp_path), "stale", pane_record=record) is True
+        assert _get_pane(str(tmp_path), "stale")["state"] == "done"
+
+    def test_new_commits_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
+        """Verify abandoned -> done transition works when new commits are found."""
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "stale",
+                        "state": "abandoned",
+                        "project_root": "/repo",
+                        "branch_name": "br",
+                        "base_sha": "abc",
+                    }
+                ]
+            },
+        )
+
+        record = _get_pane(str(tmp_path), "stale")
+        with patch("dgov.panes._has_new_commits", return_value=True):
+            assert _is_done(str(tmp_path), "stale", pane_record=record) is True
+        assert _get_pane(str(tmp_path), "stale")["state"] == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -869,6 +902,83 @@ class TestCloseWorkerPane:
         # Worktree remove should NOT have been called
         wt_remove_cmds = [c for c in git_cmds if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmds) == 0
+
+    def test_close_dirty_pane_without_force_preserves_record(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Verify closing a dirty pane without force keeps the state record."""
+        from dgov.panes import close_worker_pane
+
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "dirty-task",
+                        "pane_id": "%5",
+                        "owns_worktree": True,
+                        "worktree_path": str(wt),
+                        "branch_name": "dirty-br",
+                        "state": "active",
+                    }
+                ]
+            },
+        )
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = "M dirty.py\n"
+            else:
+                m.stdout = ""
+            m.returncode = 0
+            return m
+
+        mock_backend.is_alive.return_value = False
+        with patch("subprocess.run", fake_run):
+            close_worker_pane(str(tmp_path), "dirty-task", force=False)
+
+        # Record should still be in state
+        assert _get_pane(str(tmp_path), "dirty-task") is not None
+
+    def test_close_dirty_pane_with_force_removes_record(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Verify closing a dirty pane WITH force removes the state record."""
+        from dgov.panes import close_worker_pane
+
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "dirty-task",
+                        "pane_id": "%5",
+                        "owns_worktree": True,
+                        "worktree_path": str(wt),
+                        "branch_name": "dirty-br",
+                        "state": "active",
+                    }
+                ]
+            },
+        )
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            m.stdout = ""
+            m.returncode = 0
+            return m
+
+        mock_backend.is_alive.return_value = False
+        with patch("subprocess.run", fake_run):
+            close_worker_pane(str(tmp_path), "dirty-task", force=True)
+
+        # Record should be removed
+        assert _get_pane(str(tmp_path), "dirty-task") is None
 
 
 # ---------------------------------------------------------------------------
