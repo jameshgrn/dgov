@@ -21,10 +21,12 @@ dgov pane close <slug>                          # cleanup
 
 ## When to use which agent
 
-- `pi` — mechanical: formatting, linting, find-replace, simple edits
-- `claude` — analytical: debugging, architecture, multi-file reasoning, new features
-- `codex` — adversarial review, hard implementation, security audit
-- `gemini` — large context analysis, broad refactors, codebase-wide changes
+**Default to `pi`.** It's free, fast, and handles most tasks when given a clear prompt. Escalate only when pi can't do the job — don't preemptively reach for claude. Review exists to catch failures; use it.
+
+- `pi` — **default**. Any well-scoped task: single-file features, bug fixes, test additions, refactors, formatting, find-replace. Give it a precise prompt with code snippets and it delivers.
+- `claude` — escalate when: multi-file reasoning across 3+ files, architectural decisions, ambiguous debugging, complex test logic
+- `codex` — adversarial review, security audit, hard algorithmic implementation
+- `gemini` — large context analysis (full codebase reads), broad refactors touching many files
 - `auto` — let Qwen 4B classify (falls back to claude)
 
 ## What you CAN do directly
