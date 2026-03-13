@@ -22,11 +22,17 @@ dgov enforces this boundary: it refuses to run from inside a worktree or on any 
 
 | ID | CLI | Transport | Notes |
 |---|---|---|---|
-| `claude` | `claude` | positional | Default. Claude Code with `--permission-mode` flags |
-| `pi` | `pi` | positional | Qwen 35B via SSH tunnel to river. Free tier |
+| `claude` | `claude` | positional | Claude Code with `--permission-mode` flags |
 | `codex` | `codex` | positional | OpenAI Codex |
 | `gemini` | `gemini` | option | `--prompt-interactive` |
+| `opencode` | `opencode` | option | `--prompt` |
+| `cline` | `cline` | send-keys | Cline CLI with `--plan`/`--act`/`--yolo` |
 | `qwen` | `qwen` | option | `-i` flag |
+| `amp` | `amp` | stdin | Amp CLI with `--dangerously-allow-all` |
+| `pi` | `pi` | positional | pi CLI with `--continue` resume |
+| `cursor` | `cursor-agent` | positional | Cursor CLI |
+| `copilot` | `copilot` | option | `-i` flag, `--allow-all` bypass |
+| `crush` | `crush run` | send-keys | Crush CLI with Escape+Tab pre-prompt |
 
 Each agent has its own permission flag mappings (`plan`, `acceptEdits`, `bypassPermissions`) and resume template. Transport abstraction handles how the prompt reaches the agent (positional arg, CLI option, tmux send-keys, or stdin).
 
