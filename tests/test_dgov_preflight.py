@@ -377,7 +377,6 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         {
             "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
-            "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "ok"),
@@ -390,7 +389,7 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     report = run_preflight("/tmp/repo", agent="pi")
     assert report.passed is True
-    assert len(report.checks) == 10
+    assert len(report.checks) == 9
 
 
 def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -398,7 +397,6 @@ def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch,
         {
             "check_agent_cli": CheckResult("agent_cli", False, True, "not found"),
-            "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "ok"),
@@ -418,7 +416,6 @@ def test_run_preflight_skips_tunnel_for_claude(monkeypatch: pytest.MonkeyPatch) 
         monkeypatch,
         {
             "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
-            "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_gpu_concurrency": CheckResult("gpu_concurrency", True, False, "ok"),
@@ -994,7 +991,6 @@ class TestRunPreflightEdgeCases:
             monkeypatch,
             {
                 "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
-                "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
                 "check_git_clean": CheckResult("git_clean", True, True, "ok"),
                 "check_git_branch": CheckResult("git_branch", True, False, "ok"),
                 "check_gpu_concurrency": CheckResult("gpu_concurrency", True, False, "ok"),
@@ -1013,7 +1009,6 @@ class TestRunPreflightEdgeCases:
             monkeypatch,
             {
                 "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
-                "check_dmux_compat": CheckResult("dmux_compat", True, True, "ok"),
                 "check_git_clean": CheckResult("git_clean", True, True, "ok"),
                 "check_git_branch": CheckResult("git_branch", False, False, "wrong branch"),
                 "check_tunnel": CheckResult("tunnel", True, True, "ok"),
