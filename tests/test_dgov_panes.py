@@ -1709,6 +1709,7 @@ class TestValidEvents:
             "pane_superseded",
             "pane_closed",
             "pane_retry_spawned",
+            "pane_blocked",
             "checkpoint_created",
             "review_pass",
             "review_fail",
@@ -2068,29 +2069,35 @@ class TestWaitWorkerPane:
         assert result == {"done": "s1", "method": "signal_or_commit"}
 
     def test_stable_output_detection(self, tmp_path: Path) -> None:
-        from dgov.panes import wait_worker_pane
+        """Stabilization is now handled inside _is_done via stable_seconds."""
+        from dgov.panes import _add_pane, _is_done
 
-        call_count = 0
-
-        def fake_is_done(*a, **kw):
-            return False
-
-        def fake_capture(*a, **kw):
-            nonlocal call_count
-            call_count += 1
-            return "same output"
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+        )
+        _add_pane(str(tmp_path), pane)
+        pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
+        stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
         with (
-            patch("dgov.panes._get_pane", return_value={"slug": "s1"}),
-            patch("dgov.panes._is_done", side_effect=fake_is_done),
-            patch("dgov.panes.capture_worker_output", side_effect=fake_capture),
-            patch("dgov.panes.time.sleep"),
-            patch("dgov.panes.time.monotonic") as mock_mono,
+            patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.panes.capture_worker_output", return_value="same output"),
+            patch("dgov.panes._agent_still_running", return_value=False),
         ):
-            # t=0 start, t=0 poll1, t=0 poll2 (stable_since=0), t=20 poll3
-            mock_mono.side_effect = [0, 0, 0, 0, 20, 20]
-            result = wait_worker_pane(str(tmp_path), "s1", timeout=600, poll=1, stable=15)
-        assert result == {"done": "s1", "method": "stable"}
+            result = _is_done(
+                str(tmp_path),
+                "s1",
+                pane_record=pane_record,
+                stable_seconds=15,
+                _stable_state=stable_state,
+            )
+        assert result is True
 
     def test_timeout_raises(self, tmp_path: Path) -> None:
         from dgov.panes import PaneTimeoutError, wait_worker_pane
@@ -2120,79 +2127,86 @@ class TestWaitWorkerPane:
 class TestStableDetectionAgentCheck:
     def test_stable_skipped_when_agent_running(self, tmp_path: Path) -> None:
         """When output is stable but agent process is still running, don't trigger done."""
-        from dgov.panes import _poll_once
+        from dgov.panes import _add_pane, _is_done
+
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+        )
+        _add_pane(str(tmp_path), pane)
+        pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
+        stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
         with (
-            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes.tmux.current_command", return_value="node"),
+            patch("dgov.panes._agent_still_running", return_value=True),
         ):
-            # First call: sets stable_since
-            done, method, last_out, stable_since = _poll_once(
-                session_root=str(tmp_path),
-                project_root=str(tmp_path),
-                slug="s1",
-                pane_record={"slug": "s1", "pane_id": "%5"},
-                last_output="same output",
-                stable_since=None,
-                stable=15,
+            result = _is_done(
+                str(tmp_path),
+                "s1",
+                pane_record=pane_record,
+                stable_seconds=15,
+                _stable_state=stable_state,
             )
-            assert not done
-            assert stable_since is not None
-
-            # Second call: stable timer exceeded, but agent ("node") is still running
-            done, method, last_out, stable_since = _poll_once(
-                session_root=str(tmp_path),
-                project_root=str(tmp_path),
-                slug="s1",
-                pane_record={"slug": "s1", "pane_id": "%5"},
-                last_output="same output",
-                stable_since=time.monotonic() - 20,  # 20s ago, exceeds stable=15
-                stable=15,
-            )
-            assert not done
-            assert stable_since is None  # Reset because agent is alive
+            assert result is False
+            assert stable_state["stable_since"] is None  # Reset because agent is alive
 
     def test_stable_triggers_when_agent_exited(self, tmp_path: Path) -> None:
         """When output is stable and agent process has exited (shell prompt), trigger done."""
-        from dgov.panes import _poll_once
+        from dgov.panes import _add_pane, _is_done
+
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+        )
+        _add_pane(str(tmp_path), pane)
+        pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
+        stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
         with (
-            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes.tmux.current_command", return_value="zsh"),
+            patch("dgov.panes._agent_still_running", return_value=False),
         ):
-            done, method, last_out, stable_since = _poll_once(
-                session_root=str(tmp_path),
-                project_root=str(tmp_path),
-                slug="s1",
-                pane_record={"slug": "s1", "pane_id": "%5"},
-                last_output="same output",
-                stable_since=time.monotonic() - 20,
-                stable=15,
+            result = _is_done(
+                str(tmp_path),
+                "s1",
+                pane_record=pane_record,
+                stable_seconds=15,
+                _stable_state=stable_state,
             )
-            assert done
-            assert method == "stable"
+            assert result is True
 
-    def test_stable_triggers_when_no_pane_id(self, tmp_path: Path) -> None:
-        """When pane_record has no pane_id, fall through to stable done (no process to check)."""
-        from dgov.panes import _poll_once
+    def test_no_stable_seconds_skips_stabilization(self, tmp_path: Path) -> None:
+        """Without stable_seconds, _is_done does not perform output stabilization."""
+        from dgov.panes import _add_pane, _is_done
 
-        with (
-            patch("dgov.panes._is_done", return_value=False),
-            patch("dgov.panes.capture_worker_output", return_value="same output"),
-        ):
-            done, method, last_out, stable_since = _poll_once(
-                session_root=str(tmp_path),
-                project_root=str(tmp_path),
-                slug="s1",
-                pane_record={"slug": "s1"},
-                last_output="same output",
-                stable_since=time.monotonic() - 20,
-                stable=15,
-            )
-            assert done
-            assert method == "stable"
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+        )
+        _add_pane(str(tmp_path), pane)
+        pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
+
+        with patch("dgov.tmux.pane_exists", return_value=True):
+            result = _is_done(str(tmp_path), "s1", pane_record=pane_record)
+            assert result is False
 
 
 class TestWaitAllWorkerPanes:

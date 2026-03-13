@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import time
@@ -36,16 +37,61 @@ def _has_new_commits(project_root: str, branch_name: str, base_sha: str) -> bool
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+# -- Blocked / question detection --
+
+_BLOCKED_PATTERNS = [
+    re.compile(r"(?i)do you want to proceed"),
+    re.compile(r"(?i)proceed\?"),
+    re.compile(r"\by/n\b", re.IGNORECASE),
+    re.compile(r"\bY/N\b"),
+    re.compile(r"\[yes/no\]", re.IGNORECASE),
+    re.compile(r"(?i)are you sure"),
+    re.compile(r"(?i)enter password"),
+    re.compile(r"(?i)enter passphrase"),
+    re.compile(r"(?i)permission denied"),
+]
+
+
+def _detect_blocked(output: str) -> str | None:
+    """Check captured output for question/prompt patterns.
+
+    Returns the matched text or None.
+    """
+    if not output:
+        return None
+    # Only scan the last 10 lines to avoid false positives from old output
+    lines = output.strip().splitlines()[-10:]
+    tail = "\n".join(lines)
+    for pattern in _BLOCKED_PATTERNS:
+        m = pattern.search(tail)
+        if m:
+            return m.group(0)
+    return None
+
+
 # -- Done detection --
 
 
-def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> bool:
+def _is_done(
+    session_root: str,
+    slug: str,
+    pane_record: dict | None = None,
+    *,
+    stable_seconds: int | None = None,
+    _stable_state: dict | None = None,
+) -> bool:
     """Check if a worker is done via any of four signals.
 
     1a. Done-signal file exists (agent exited cleanly) → state "done".
     1b. Exit-code file exists (agent exited nonzero) → state "failed".
     2.  Branch has new commits beyond base_sha → state "done".
     3.  Pane is no longer alive with no done file and no commits → state "abandoned".
+
+    If *stable_seconds* is set, also checks for output stabilization:
+    4.  Output unchanged for *stable_seconds* while agent is not running → state "done".
+
+    *_stable_state* is a mutable dict used to track stabilization across calls.
+    Callers should pass the same dict each time (keys: last_output, stable_since).
 
     Returns True when the worker is no longer running (regardless of outcome).
     """
@@ -87,6 +133,29 @@ def _is_done(session_root: str, slug: str, pane_record: dict | None = None) -> b
         _p._update_pane_state(session_root, slug, "abandoned")
         _p._emit_event(session_root, "pane_done", slug)
         return True
+
+    # Signal 4 (optional): output stabilization
+    if stable_seconds is not None and _stable_state is not None and pane_id:
+        current_output = _p.capture_worker_output(
+            project_root, slug, lines=20, session_root=session_root
+        )
+        if current_output is not None:
+            last_output = _stable_state.get("last_output")
+            stable_since = _stable_state.get("stable_since")
+            if current_output == last_output:
+                if stable_since is None:
+                    _stable_state["stable_since"] = time.monotonic()
+                elif time.monotonic() - stable_since >= stable_seconds:
+                    if _p._agent_still_running(pane_id):
+                        _stable_state["stable_since"] = None
+                    else:
+                        done_path.parent.mkdir(parents=True, exist_ok=True)
+                        done_path.touch()
+                        _p._update_pane_state(session_root, slug, "done")
+                        return True
+            else:
+                _stable_state["last_output"] = current_output
+                _stable_state["stable_since"] = None
 
     return False
 
@@ -147,31 +216,48 @@ def _poll_once(
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
 
-    if _p._is_done(session_root, slug, pane_record=pane_record):
-        return True, "signal_or_commit", last_output, stable_since
+    # Build stabilization state dict for unified _is_done
+    stable_state: dict = {"last_output": last_output, "stable_since": stable_since}
 
-    current_output = _p.capture_worker_output(
-        project_root, slug, lines=20, session_root=session_root
-    )
-    if current_output is not None:
-        if current_output == last_output:
-            if stable_since is None:
-                stable_since = time.monotonic()
-            elif time.monotonic() - stable_since >= stable:
-                # Check if agent process is still running — if so, it's thinking, not done
-                pane_id = pane_record.get("pane_id", "") if pane_record else ""
-                if pane_id and _p._agent_still_running(pane_id):
-                    stable_since = None  # Reset — agent is alive, just quiet
-                else:
-                    done_path = Path(session_root) / _STATE_DIR / "done" / slug
-                    done_path.parent.mkdir(parents=True, exist_ok=True)
-                    done_path.touch()
-                    return True, "stable", current_output, stable_since
-        else:
-            last_output = current_output
-            stable_since = None
+    if _p._is_done(
+        session_root,
+        slug,
+        pane_record=pane_record,
+        stable_seconds=stable,
+        _stable_state=stable_state,
+    ):
+        # Determine method: check if done file existed before we called _is_done
+        done_path = Path(session_root, _STATE_DIR, "done", slug)
+        if done_path.exists():
+            # Could be signal, commit, or stable — check stable_state to distinguish
+            if stable_state.get("stable_since") is not None:
+                return (
+                    True,
+                    "stable",
+                    stable_state.get("last_output"),
+                    stable_state.get("stable_since"),
+                )
+            return (
+                True,
+                "signal_or_commit",
+                stable_state.get("last_output"),
+                stable_state.get("stable_since"),
+            )
+        return (
+            True,
+            "signal_or_commit",
+            stable_state.get("last_output"),
+            stable_state.get("stable_since"),
+        )
 
-    return False, "", last_output, stable_since
+    # Check for blocked state
+    current_output = stable_state.get("last_output")
+    if current_output:
+        blocked_match = _detect_blocked(current_output)
+        if blocked_match:
+            _p._emit_event(session_root, "pane_blocked", slug, question=blocked_match)
+
+    return False, "", stable_state.get("last_output"), stable_state.get("stable_since")
 
 
 # -- Public wait API --
@@ -287,3 +373,99 @@ def wait_all_worker_panes(
             )
         if pending:
             time.sleep(poll)
+
+
+# -- Communication helpers --
+
+
+def interact_with_pane(session_root: str, slug: str, message: str) -> bool:
+    """Send a message to a worker pane via tmux send-keys.
+
+    Returns True if the message was sent, False if the pane wasn't found or dead.
+    """
+    import dgov.panes as _p
+
+    target = _p._get_pane(session_root, slug)
+    if not target:
+        return False
+
+    pane_id = target.get("pane_id", "")
+    if not pane_id or not tmux.pane_exists(pane_id):
+        return False
+
+    tmux.send_command(pane_id, message)
+    return True
+
+
+def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
+    """Send 'are you done?' to a worker and parse the response.
+
+    Sends the nudge, waits *wait_seconds*, captures output, and looks for
+    YES or NO. If YES, touches the done-signal file.
+
+    Returns {"response": "YES"|"NO"|"unclear", "output": str}.
+    """
+    import dgov.panes as _p
+
+    target = _p._get_pane(session_root, slug)
+    if not target:
+        return {"response": "error", "output": "Pane not found"}
+
+    pane_id = target.get("pane_id", "")
+    if not pane_id or not tmux.pane_exists(pane_id):
+        return {"response": "error", "output": "Pane dead"}
+
+    # Send the nudge
+    tmux.send_command(pane_id, "Are you done? Reply YES or NO.")
+    time.sleep(wait_seconds)
+
+    # Capture output
+    captured = tmux.capture_pane(pane_id, lines=15)
+
+    # Parse for YES/NO
+    response = "unclear"
+    if captured:
+        lines = captured.strip().splitlines()
+        for line in reversed(lines):
+            upper = line.strip().upper()
+            if "YES" in upper:
+                response = "YES"
+                break
+            if "NO" in upper:
+                response = "NO"
+                break
+
+    if response == "YES":
+        done_path = Path(session_root) / _STATE_DIR / "done" / slug
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        done_path.touch()
+        _p._update_pane_state(session_root, slug, "done")
+
+    return {"response": response, "output": captured or ""}
+
+
+def signal_pane(session_root: str, slug: str, signal: str) -> bool:
+    """Manually signal a pane as done or failed.
+
+    Touches the appropriate signal file and updates state.
+    Returns True on success, False if pane not found.
+    """
+    import dgov.panes as _p
+
+    target = _p._get_pane(session_root, slug)
+    if not target:
+        return False
+
+    done_dir = Path(session_root) / _STATE_DIR / "done"
+    done_dir.mkdir(parents=True, exist_ok=True)
+
+    if signal == "done":
+        (done_dir / slug).touch()
+        _p._update_pane_state(session_root, slug, "done")
+    elif signal == "failed":
+        (done_dir / f"{slug}.exit").write_text("manual")
+        _p._update_pane_state(session_root, slug, "failed")
+    else:
+        raise ValueError(f"Unknown signal: {signal!r}. Must be 'done' or 'failed'.")
+
+    return True

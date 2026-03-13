@@ -693,6 +693,53 @@ def pane_logs(slug, project_root, session_root, tail):
     click.echo("".join(lines), nl=False)
 
 
+@pane.command("interact")
+@click.argument("slug")
+@click.argument("message")
+@SESSION_ROOT_OPTION
+def pane_interact(slug, message, session_root):
+    """Send a message to a worker pane via tmux send-keys."""
+    from dgov.panes import interact_with_pane
+
+    session_root = os.path.abspath(session_root or ".")
+    if interact_with_pane(session_root, slug, message):
+        click.echo(json.dumps({"sent": True, "slug": slug}))
+    else:
+        click.echo(json.dumps({"error": f"Pane not found or dead: {slug}"}), err=True)
+        sys.exit(1)
+
+
+@pane.command("nudge")
+@click.argument("slug")
+@SESSION_ROOT_OPTION
+@click.option("--wait", "-w", default=10, help="Seconds to wait for response")
+def pane_nudge(slug, session_root, wait):
+    """Nudge a worker: ask if done, parse YES/NO response."""
+    from dgov.panes import nudge_pane
+
+    session_root = os.path.abspath(session_root or ".")
+    result = nudge_pane(session_root, slug, wait_seconds=wait)
+    click.echo(json.dumps(result))
+    if result.get("response") == "error":
+        sys.exit(1)
+
+
+@pane.command("signal")
+@click.argument("slug")
+@click.argument("signal_type", type=click.Choice(["done", "failed"]))
+@SESSION_ROOT_OPTION
+def pane_signal(slug, signal_type, session_root):
+    """Manually signal a pane as done or failed."""
+    from dgov.panes import signal_pane
+
+    session_root = os.path.abspath(session_root or ".")
+    if signal_pane(session_root, slug, signal_type):
+        click.echo(json.dumps({"signaled": signal_type, "slug": slug}))
+    else:
+        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
+        sys.exit(1)
+
+
 @cli.command("preflight")
 @click.option(
     "--project-root",
