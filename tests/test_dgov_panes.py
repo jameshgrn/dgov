@@ -1720,6 +1720,7 @@ class TestValidEvents:
             "review_fix_started",
             "review_fix_finding",
             "review_fix_completed",
+            "pane_auto_responded",
         }
         assert expected == VALID_EVENTS
 
