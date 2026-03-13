@@ -123,22 +123,58 @@ def list_panes() -> list[dict[str, str]]:
 
 
 def setup_pane_borders(session_name: str | None = None) -> None:
-    """Set pane border styling (idempotent)."""
-    _run(["set-option", "-g", "pane-border-status", "top"], silent=True)
+    """Set pane border styling to match IDE theme (idempotent)."""
+    scope = ["-t", session_name] if session_name else ["-g"]
+    _run(["set-option", *scope, "pane-border-status", "top"], silent=True)
     _run(
-        ["set-option", "-g", "pane-active-border-style", "fg=colour214"],
+        ["set-option", *scope, "pane-active-border-style", "fg=colour39,bg=default"],
         silent=True,
     )
-    _run(["set-option", "-g", "pane-border-style", "fg=colour240"], silent=True)
     _run(
-        ["set-option", "-g", "pane-border-format", " #{pane_title} "],
+        ["set-option", *scope, "pane-border-style", "fg=colour238,bg=default"],
+        silent=True,
+    )
+    _run(
+        [
+            "set-option",
+            *scope,
+            "pane-border-format",
+            " #[bold]#P #[default]#{?pane_title,#{pane_title},#{pane_current_command}} ",
+        ],
+        silent=True,
+    )
+
+
+def style_dgov_session(session_name: str | None = None) -> None:
+    """Apply full IDE styling: pane borders, window shading, status bar."""
+    scope = ["-t", session_name] if session_name else ["-g"]
+
+    setup_pane_borders(session_name)
+
+    # Dim inactive panes, normal active — gives visual depth
+    _run(["set-option", *scope, "window-style", "fg=colour247,bg=colour236"], silent=True)
+    _run(["set-option", *scope, "window-active-style", "fg=default,bg=colour234"], silent=True)
+
+    # Status bar
+    _run(["set-option", *scope, "status-style", "fg=colour252,bg=colour236"], silent=True)
+    _run(
+        ["set-option", *scope, "status-left", " #[bold,fg=colour39]dgov#[default] │ "],
+        silent=True,
+    )
+    _run(
+        [
+            "set-option",
+            *scope,
+            "status-right",
+            " #{pane_title} │ %H:%M ",
+        ],
         silent=True,
     )
 
 
 def style_governor_pane(pane_id: str) -> None:
-    """Style the governor pane with default background and a [gov] title marker."""
-    _run(["select-pane", "-t", pane_id, "-P", "bg=default"], silent=True)
+    """Style the governor pane: bright active bg, [gov] title."""
+    _run(["select-pane", "-t", pane_id, "-P", "fg=default,bg=colour234"], silent=True)
     _run(["select-pane", "-t", pane_id, "-T", "[gov] main"], silent=True)
 
 

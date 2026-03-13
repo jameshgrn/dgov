@@ -74,25 +74,36 @@ def cli(ctx):
         return
 
     # Bare `dgov` — launch or announce the governor session
-    from dgov.tmux import setup_pane_borders
+    from dgov.tmux import style_dgov_session, style_governor_pane
+
+    repo = Path.cwd().name
+    session_name = f"dgov-{repo}"
 
     if os.environ.get("TMUX"):
-        setup_pane_borders()
-        repo = Path.cwd().name
+        style_dgov_session()
+        # Style the current pane as governor
+        pane_id = subprocess.run(
+            ["tmux", "display-message", "-p", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if pane_id:
+            style_governor_pane(pane_id)
         click.echo(f"{repo} — governor ready")
     else:
-        # Ensure the dgov tmux session exists, then hand off
+        # Ensure the per-repo tmux session exists, then hand off
         exists = subprocess.run(
-            ["tmux", "has-session", "-t", "dgov"],
+            ["tmux", "has-session", "-t", session_name],
             capture_output=True,
         )
         if exists.returncode != 0:
             subprocess.run(
-                ["tmux", "new-session", "-d", "-s", "dgov"],
+                ["tmux", "new-session", "-d", "-s", session_name],
                 capture_output=True,
                 check=True,
             )
-        os.execvp("tmux", ["tmux", "attach-session", "-t", "dgov"])
+        style_dgov_session(session_name)
+        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
 @cli.group()
