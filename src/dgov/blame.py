@@ -40,6 +40,12 @@ def blame_file(
         if ev.get("event") == "pane_merged":
             merge_times[ev["pane"]] = ev.get("ts", "")
 
+    sha_to_slug: dict[str, str] = {}
+    for ev in events:
+        if ev.get("event") == "pane_merged" and ev.get("merge_sha"):
+            sha_to_slug[ev["merge_sha"][:7]] = ev["pane"]
+            sha_to_slug[ev["merge_sha"]] = ev["pane"]
+
     result = subprocess.run(
         ["git", "-C", project_root, "log", "--format=%H %s", "--follow", "--", rel_file],
         capture_output=True,
@@ -56,7 +62,11 @@ def blame_file(
         commit_hash = parts[0]
         subject = parts[1] if len(parts) > 1 else ""
 
-        slug = _extract_slug_from_subject(subject)
+        slug = (
+            sha_to_slug.get(commit_hash)
+            or sha_to_slug.get(commit_hash[:7])
+            or _extract_slug_from_subject(subject)
+        )
 
         info = slug_info.get(slug, {}) if slug else {}
         agent = info.get("agent", "")

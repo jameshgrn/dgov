@@ -1642,7 +1642,13 @@ def merge_worker_pane(
 
     if merge.success:
         _update_pane_state(session_root, slug, "merged")
-        _emit_event(session_root, "pane_merged", slug)
+        merge_sha_r = subprocess.run(
+            ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
+        _emit_event(session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name)
         _full_cleanup(pane_project_root, session_root, slug, target)
 
         # Post-merge hook: lint, verify protected files, etc.
