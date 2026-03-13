@@ -305,10 +305,11 @@ def _all_panes(session_root: str) -> list[dict]:
         conn.close()
 
 
-def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
+def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool = False) -> None:
     """Update the state field of a pane record.
 
-    Enforces VALID_TRANSITIONS. Same-state transitions are no-ops.
+    Enforces VALID_TRANSITIONS unless *force* is True.
+    Same-state transitions are no-ops.
     Raises IllegalTransitionError for disallowed transitions.
     """
     _validate_state(new_state)
@@ -321,7 +322,7 @@ def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
             if current_state == new_state:
                 return
             allowed = VALID_TRANSITIONS.get(current_state, frozenset())
-            if new_state not in allowed:
+            if not force and new_state not in allowed:
                 raise IllegalTransitionError(current_state, new_state, slug)
         conn.execute("UPDATE panes SET state = ? WHERE slug = ?", (new_state, slug))
         conn.commit()

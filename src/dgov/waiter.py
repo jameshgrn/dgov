@@ -106,12 +106,17 @@ def _is_done(
         pane_id = pane_record.get("pane_id", "") if pane_record else ""
         if pane_id and _p._agent_still_running(pane_id):
             return False
-        _p._update_pane_state(session_root, slug, "done")
+        # If we were abandoned, allow late discovery of done
+        current_state = pane_record.get("state", "") if pane_record else ""
+        force = current_state == "abandoned"
+        _p._update_pane_state(session_root, slug, "done", force=force)
         return True
 
     # Signal 1b: exit-code file (agent crashed / nonzero exit)
     if exit_path.exists():
-        _p._update_pane_state(session_root, slug, "failed")
+        current_state = pane_record.get("state", "") if pane_record else ""
+        force = current_state == "abandoned"
+        _p._update_pane_state(session_root, slug, "failed", force=force)
         return True
 
     if pane_record is None:
@@ -123,7 +128,9 @@ def _is_done(
     base_sha = pane_record.get("base_sha", "")
     if project_root and branch_name and base_sha:
         if _p._has_new_commits(project_root, branch_name, base_sha):
-            _p._update_pane_state(session_root, slug, "done")
+            current_state = pane_record.get("state", "")
+            force = current_state == "abandoned"
+            _p._update_pane_state(session_root, slug, "done", force=force)
             _p._emit_event(session_root, "pane_done", slug)
             # Touch done-signal so we don't re-emit
             done_path.parent.mkdir(parents=True, exist_ok=True)
