@@ -119,8 +119,8 @@ def _perm_flags(agent: AgentDef, mode: str) -> str:
 
 
 def _write_prompt_file(project_root: str, slug: str, prompt: str) -> str:
-    """Write prompt to .workstation/prompts/<slug>--<ts>-<rand>.txt, return path."""
-    prompts_dir = Path(project_root) / ".workstation" / "prompts"
+    """Write prompt to .dgov/prompts/<slug>--<ts>-<rand>.txt, return path."""
+    prompts_dir = Path(project_root) / ".dgov" / "prompts"
     prompts_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time() * 1000)
     rand = "".join(random.choices(string.ascii_lowercase, k=4))

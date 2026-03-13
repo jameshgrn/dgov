@@ -38,7 +38,7 @@ class TestWorkerPane:
             pane_id="%5",
             agent="pi",
             project_root="/repo",
-            worktree_path="/repo/.workstation/worktrees/fix-bug",
+            worktree_path="/repo/.dgov/worktrees/fix-bug",
             branch_name="fix-bug",
         )
         assert wp.owns_worktree is True
@@ -69,7 +69,7 @@ class TestWorkerPane:
 class TestStatePath:
     def test_returns_correct_path(self) -> None:
         result = _state_path("/tmp/session")
-        assert result == Path("/tmp/session/.workstation/state.json")
+        assert result == Path("/tmp/session/.dgov/state.json")
 
 
 class TestReadState:
@@ -78,7 +78,7 @@ class TestReadState:
         assert state == {"panes": []}
 
     def test_reads_existing_file(self, tmp_path: Path) -> None:
-        state_dir = tmp_path / ".workstation"
+        state_dir = tmp_path / ".dgov"
         state_dir.mkdir()
         (state_dir / "state.json").write_text(json.dumps({"panes": [{"slug": "test"}]}))
         state = _read_state(str(tmp_path))
@@ -89,7 +89,7 @@ class TestReadState:
 class TestWriteState:
     def test_creates_dirs_and_writes(self, tmp_path: Path) -> None:
         _write_state(str(tmp_path), {"panes": [{"slug": "a"}]})
-        path = tmp_path / ".workstation" / "state.json"
+        path = tmp_path / ".dgov" / "state.json"
         assert path.exists()
         data = json.loads(path.read_text())
         assert data["panes"][0]["slug"] == "a"
@@ -97,7 +97,7 @@ class TestWriteState:
     def test_overwrites_existing(self, tmp_path: Path) -> None:
         _write_state(str(tmp_path), {"panes": [{"slug": "old"}]})
         _write_state(str(tmp_path), {"panes": [{"slug": "new"}]})
-        data = json.loads((tmp_path / ".workstation" / "state.json").read_text())
+        data = json.loads((tmp_path / ".dgov" / "state.json").read_text())
         assert data["panes"][0]["slug"] == "new"
 
 
@@ -311,7 +311,7 @@ class TestHasNewCommits:
 
 class TestIsDone:
     def test_done_signal_file(self, tmp_path: Path) -> None:
-        done_dir = tmp_path / ".workstation" / "done"
+        done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug").touch()
         assert _is_done(str(tmp_path), "test-slug") is True
@@ -734,7 +734,7 @@ class TestFullCleanup:
 
         _write_state(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         # Create done signal
-        done_dir = tmp_path / ".workstation" / "done"
+        done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test").touch()
 
@@ -1011,7 +1011,7 @@ class TestPaneConstants:
     def test_state_dir(self) -> None:
         from dgov.panes import _STATE_DIR
 
-        assert _STATE_DIR == ".workstation"
+        assert _STATE_DIR == ".dgov"
 
     def test_qwen_4b_url(self) -> None:
         from dgov.panes import _QWEN_4B_URL
@@ -1207,5 +1207,103 @@ class TestWorkerPaneDataclass:
 
 
 # ---------------------------------------------------------------------------
-# _pick_resolver_agent
+# _validate_state
 # ---------------------------------------------------------------------------
+
+
+class TestValidateState:
+    def test_accepts_all_valid_states(self) -> None:
+        from dgov.panes import PANE_STATES, _validate_state
+
+        for state in PANE_STATES:
+            assert _validate_state(state) == state
+
+    def test_rejects_unknown_state(self) -> None:
+        from dgov.panes import _validate_state
+
+        with pytest.raises(ValueError, match="Unknown pane state"):
+            _validate_state("bogus")
+
+    def test_rejects_empty_string(self) -> None:
+        from dgov.panes import _validate_state
+
+        with pytest.raises(ValueError):
+            _validate_state("")
+
+
+# ---------------------------------------------------------------------------
+# _update_pane_state
+# ---------------------------------------------------------------------------
+
+
+class TestUpdatePaneState:
+    def test_updates_state_in_json(self, tmp_path: Path) -> None:
+        from dgov.panes import _update_pane_state
+
+        _write_state(
+            str(tmp_path),
+            {"panes": [{"slug": "test", "state": "active"}]},
+        )
+        _update_pane_state(str(tmp_path), "test", "done")
+        state = _read_state(str(tmp_path))
+        assert state["panes"][0]["state"] == "done"
+
+    def test_rejects_invalid_state(self, tmp_path: Path) -> None:
+        from dgov.panes import _update_pane_state
+
+        _write_state(str(tmp_path), {"panes": [{"slug": "test", "state": "active"}]})
+        with pytest.raises(ValueError, match="Unknown pane state"):
+            _update_pane_state(str(tmp_path), "test", "invalid")
+
+    def test_noop_for_missing_slug(self, tmp_path: Path) -> None:
+        from dgov.panes import _update_pane_state
+
+        _write_state(str(tmp_path), {"panes": [{"slug": "other", "state": "active"}]})
+        _update_pane_state(str(tmp_path), "missing", "done")
+        state = _read_state(str(tmp_path))
+        assert state["panes"][0]["state"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# WorkerPane state validation
+# ---------------------------------------------------------------------------
+
+
+class TestWorkerPaneStateValidation:
+    def test_default_state_is_active(self) -> None:
+        pane = WorkerPane(
+            slug="s",
+            prompt="p",
+            pane_id="%1",
+            agent="pi",
+            project_root="/r",
+            worktree_path="/w",
+            branch_name="b",
+        )
+        assert pane.state == "active"
+
+    def test_rejects_bad_state(self) -> None:
+        with pytest.raises(ValueError, match="Unknown pane state"):
+            WorkerPane(
+                slug="s",
+                prompt="p",
+                pane_id="%1",
+                agent="pi",
+                project_root="/r",
+                worktree_path="/w",
+                branch_name="b",
+                state="invalid_state",
+            )
+
+    def test_accepts_valid_state(self) -> None:
+        pane = WorkerPane(
+            slug="s",
+            prompt="p",
+            pane_id="%1",
+            agent="pi",
+            project_root="/r",
+            worktree_path="/w",
+            branch_name="b",
+            state="done",
+        )
+        assert pane.state == "done"

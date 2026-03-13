@@ -20,7 +20,7 @@ class TestPanesStateHelpers:
         from dgov.panes import _state_path
 
         result = _state_path(str(tmp_path))
-        assert result == tmp_path / ".workstation" / "state.json"
+        assert result == tmp_path / ".dgov" / "state.json"
 
     def test_read_state_empty(self, tmp_path: Path) -> None:
         from dgov.panes import _read_state
@@ -31,7 +31,7 @@ class TestPanesStateHelpers:
     def test_read_state_existing(self, tmp_path: Path) -> None:
         from dgov.panes import _read_state
 
-        ws = tmp_path / ".workstation"
+        ws = tmp_path / ".dgov"
         ws.mkdir()
         (ws / "state.json").write_text(json.dumps({"panes": [{"slug": "s1"}]}))
         result = _read_state(str(tmp_path))

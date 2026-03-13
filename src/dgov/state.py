@@ -1,5 +1,5 @@
 # state management
-"""State module — reads .workstation/state.json."""
+"""State module — reads .dgov/state.json."""
 
 from __future__ import annotations
 

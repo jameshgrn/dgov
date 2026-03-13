@@ -99,7 +99,7 @@ class TestPromptFile:
 
     def test_write_creates_prompts_dir(self, tmp_path: Path) -> None:
         filepath = _write_prompt_file(str(tmp_path), "slug", "prompt")
-        assert (tmp_path / ".workstation" / "prompts").is_dir()
+        assert (tmp_path / ".dgov" / "prompts").is_dir()
         assert "slug" in Path(filepath).name
 
     def test_snippet_format(self) -> None:
@@ -592,7 +592,7 @@ class TestUnknownAgentName:
 
 
 class TestWritePromptFile:
-    """Test case 9: verify file created in .workstation/prompts/ with correct content."""
+    """Test case 9: verify file created in .dgov/prompts/ with correct content."""
 
     def test_write_prompt_file(self, tmp_path: Path) -> None:
         from dgov.agents import _write_prompt_file
@@ -602,7 +602,7 @@ class TestWritePromptFile:
         filepath = _write_prompt_file(project_root=str(tmp_path), slug="test-slug", prompt=prompt)
 
         # Verify path structure
-        expected_path = tmp_path / ".workstation" / "prompts"
+        expected_path = tmp_path / ".dgov" / "prompts"
         assert Path(filepath).parent == expected_path
 
         # Verify file exists and has correct content
