@@ -227,3 +227,13 @@ def send_prompt_via_buffer(pane_id: str, prompt: str) -> None:
     _run(["paste-buffer", "-b", buf_name, "-t", pane_id])
     _run(["send-keys", "-t", pane_id, "Enter"])
     _run(["delete-buffer", "-b", buf_name], silent=True)
+
+
+def start_logging(pane_id: str, log_file: str) -> None:
+    """Start logging pane output to a file via pipe-pane."""
+    _run(["pipe-pane", "-t", pane_id, "-o", f"cat >> {log_file}"])
+
+
+def stop_logging(pane_id: str) -> None:
+    """Stop logging pane output."""
+    _run(["pipe-pane", "-t", pane_id])
