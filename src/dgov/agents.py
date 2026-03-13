@@ -301,6 +301,11 @@ def load_registry(project_root: str | None = None) -> dict[str, AgentDef]:
         project_config = Path(project_root) / ".dgov" / "agents.toml"
         for agent_id, table in _load_toml_file(project_config).items():
             table = dict(table)
+            # Project-local config cannot define shell commands — security boundary.
+            # A malicious repo could get arbitrary code execution via health_check/health_fix
+            # which run with shell=True. Only user-global and built-in agents may define these.
+            table.pop("health_check", None)
+            table.pop("health_fix", None)
             if agent_id in registry:
                 registry[agent_id] = _merge_agent_def(registry[agent_id], table, "project")
             else:
