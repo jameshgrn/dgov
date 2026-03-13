@@ -669,6 +669,27 @@ def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode
     click.echo(json.dumps(result, indent=2))
 
 
+@pane.command("logs")
+@click.argument("slug")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option("--session-root", "-R", default=None, help="Session root")
+@click.option("--tail", "-n", default=None, type=int, help="Show last N lines")
+def pane_logs(slug, project_root, session_root, tail):
+    """Show persistent log for a pane."""
+    import os
+
+    session_root = os.path.abspath(session_root or project_root)
+    log_file = os.path.join(session_root, ".dgov", "logs", f"{slug}.log")
+    if not os.path.exists(log_file):
+        click.echo(json.dumps({"error": f"No log file found: {log_file}"}))
+        return
+    with open(log_file) as f:
+        lines = f.readlines()
+    if tail:
+        lines = lines[-tail:]
+    click.echo("".join(lines), nl=False)
+
+
 @cli.command("preflight")
 @click.option(
     "--project-root",

@@ -759,6 +759,12 @@ def create_worker_pane(
     # 5. Clear CLAUDECODE recursion guard (inherited from parent claude session)
     tmux.send_command(pane_id, "unset CLAUDECODE")
 
+    # 5a. Start persistent logging via tmux pipe-pane
+    logs_dir = Path(session_root) / _STATE_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = str(logs_dir / f"{slug}.log")
+    tmux.start_logging(pane_id, log_file)
+
     # 5b. Inject env vars
     if env_vars:
         for key, val in env_vars.items():
@@ -2246,6 +2252,12 @@ def resume_worker_pane(
 
     # Clear recursion guard + inject env
     tmux.send_command(pane_id, "unset CLAUDECODE")
+
+    # Start persistent logging via tmux pipe-pane
+    logs_dir = Path(session_root) / _STATE_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = str(logs_dir / f"{slug}.log")
+    tmux.start_logging(pane_id, log_file)
 
     # Trigger worktree_created hook
     hook_env = {
