@@ -86,7 +86,7 @@ PANE_STATES = frozenset(
 )
 
 
-# Legal state transitions. Same-state transitions are always allowed (no-op).
+# Transition table: 12 states, enforced in _update_pane_state
 VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "active": frozenset(
         {"done", "failed", "abandoned", "timed_out", "closed", "escalated", "superseded"}
