@@ -686,6 +686,7 @@ def create_worker_pane(
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
     tmux.style_worker_pane(pane_id, agent)
+    tmux.set_pane_option(pane_id, "allow-set-title", "off")
 
     # 4. Tidy layout
     tmux.select_layout("tiled")
@@ -783,6 +784,7 @@ def create_worker_pane(
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
     tmux.style_worker_pane(pane_id, agent)
+    tmux.set_pane_option(pane_id, "allow-set-title", "off")
 
     # 10. Build pane record and save to state
     pane = WorkerPane(
