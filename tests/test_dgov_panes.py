@@ -333,7 +333,7 @@ class TestIsDone:
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
 
-    def test_dead_pane_signal(self, tmp_path: Path) -> None:
+    def test_dead_pane_sets_abandoned(self, tmp_path: Path) -> None:
         record = {
             "project_root": "/repo",
             "branch_name": "br",
@@ -343,8 +343,18 @@ class TestIsDone:
         with (
             patch("dgov.panes._has_new_commits", return_value=False),
             patch("dgov.panes.tmux.pane_exists", return_value=False),
+            patch("dgov.panes._update_pane_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
+            mock_state.assert_called_once_with(str(tmp_path), "slug", "abandoned")
+
+    def test_exit_file_sets_failed(self, tmp_path: Path) -> None:
+        done_dir = tmp_path / ".dgov" / "done"
+        done_dir.mkdir(parents=True)
+        (done_dir / "test-slug.exit").write_text("1")
+        with patch("dgov.panes._update_pane_state") as mock_state:
+            assert _is_done(str(tmp_path), "test-slug") is True
+            mock_state.assert_called_once_with(str(tmp_path), "test-slug", "failed")
 
     def test_alive_pane_no_commits(self, tmp_path: Path) -> None:
         record = {
