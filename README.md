@@ -8,13 +8,15 @@ Distributed governance for AI coding agents. Orchestrates any CLI agent across g
 uv pip install -e .
 ```
 
-Requires Python >= 3.12 and a running tmux session.
+Requires Python >= 3.12 and a running `tmux` session (default backend).
 
 ## Architecture
 
 **Governor** runs on `main` in the root repo. It never writes code directly -- it dispatches workers.
 
-**Workers** run in git worktrees under `.dgov/worktrees/<slug>/`. Each worker gets a tmux pane, an agent CLI, and a branch named after its slug. Workers commit their changes and exit; the governor merges results back.
+**Workers** run in git worktrees under `.dgov/worktrees/<slug>/`. Each worker gets a dedicated environment (pane, container, or remote session) and a branch named after its slug. Workers commit their changes and exit; the governor merges results back.
+
+**WorkerBackend** abstraction decouples the lifecycle from `tmux`. The default `TmuxBackend` manages local panes, but alternative backends (Docker, SSH, etc.) can be swapped in.
 
 dgov enforces this boundary: it refuses to run from inside a worktree or on any branch other than `main`.
 
@@ -65,7 +67,7 @@ dgov pane wait-all                 # wait for all active panes
 Three completion signals (first wins):
 1. Done-signal file (agent exited cleanly)
 2. New commits on the worker branch beyond `base_sha`
-3. Output stabilization (tmux capture unchanged for N seconds)
+3. Output stabilization (worker output captured via backend unchanged for N seconds)
 
 Timeout on `pi` workers includes `"suggest_escalate": true` in the output.
 
@@ -134,7 +136,7 @@ dgov checkpoint create <name>      # snapshot current state
 dgov checkpoint list               # list all checkpoints
 ```
 
-Saves a copy of `.dgov/state.json` and `.dgov/events.jsonl` to `.dgov/checkpoints/<name>/`.
+Saves a copy of `.dgov/state.db` and `.dgov/events.jsonl` to `.dgov/checkpoints/<name>/`.
 
 ### Close and Prune
 
@@ -229,7 +231,7 @@ Every worker prompt gets the TDD protocol appended. Workers write structured JSO
 
 ## State
 
-All state lives in `.dgov/state.json`. Pane records track slug, agent, pane ID, worktree path, branch, base SHA, and creation time.
+All state lives in a SQLite database at `.dgov/state.db` (using WAL mode for concurrent access) and an event log at `.dgov/events.jsonl`. Pane records track slug, agent, backend ID, worktree path, branch, base SHA, and creation time.
 
 Canonical pane states: `active`, `done`, `reviewed_pass`, `reviewed_fail`, `merged`, `merge_conflict`, `timed_out`, `escalated`, `superseded`, `closed`, `abandoned`.
 
