@@ -108,13 +108,13 @@ class TestPaneHelpers:
         )
 
         with patch("dgov.panes.tmux.update_pane_status") as mock_update_status:
-            _update_pane_state(str(tmp_path), "task-1", "merged")
+            _update_pane_state(str(tmp_path), "task-1", "done")
 
         from dgov.panes import _read_state
 
         state = _read_state(str(tmp_path))
-        assert state["panes"][0]["state"] == "merged"
-        mock_update_status.assert_called_once_with("%2", "claude", "task-1", "merged")
+        assert state["panes"][0]["state"] == "done"
+        mock_update_status.assert_called_once_with("%2", "claude", "task-1", "done")
 
     def test_count_active_agent_workers_only_counts_live_panes(self, tmp_path: Path) -> None:
         from dgov.panes import _count_active_agent_workers

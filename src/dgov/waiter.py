@@ -324,7 +324,6 @@ def wait_worker_pane(
                         stable_since = None
                         continue
 
-            _p._update_pane_state(session_root, slug, "done")
             return {"done": slug, "method": method}
 
         elapsed = time.monotonic() - start
@@ -377,7 +376,6 @@ def wait_all_worker_panes(
             )
             stable_trackers[slug] = (last, since)
             if done:
-                _p._update_pane_state(session_root, slug, "done")
                 pending.discard(slug)
                 yield {"done": slug, "method": method}
 
