@@ -470,7 +470,7 @@ class TestPaneCommands:
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
         with patch("dgov.panes.list_worker_panes", return_value=[{"slug": "task"}]):
-            listed = runner.invoke(cli, ["pane", "list"])
+            listed = runner.invoke(cli, ["pane", "list", "--json"])
         with patch("dgov.panes.prune_stale_panes", return_value=["old-task"]):
             pruned = runner.invoke(cli, ["pane", "prune"])
         with patch("dgov.panes.classify_task", return_value="claude"):
