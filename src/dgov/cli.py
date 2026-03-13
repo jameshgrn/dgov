@@ -746,6 +746,26 @@ def rebase(project_root, onto):
         sys.exit(1)
 
 
+@cli.command("blame")
+@click.argument("file_path")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option("--session-root", "-R", default=None, help="Session root")
+@click.option("--all", "-a", "show_all", is_flag=True, default=False, help="Show full history")
+@click.option("--agent", default=None, help="Filter by agent")
+def blame(file_path, project_root, session_root, show_all, agent):
+    """Show which agent/pane last touched a file."""
+    from dgov.blame import blame_file
+
+    result = blame_file(
+        project_root=project_root,
+        file_path=file_path,
+        session_root=session_root,
+        last_only=not show_all,
+        agent_filter=agent,
+    )
+    click.echo(json.dumps(result, indent=2))
+
+
 @cli.command("agents")
 def list_agents():
     """List available agents and which are installed."""
