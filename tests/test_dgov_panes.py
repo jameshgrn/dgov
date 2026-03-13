@@ -722,7 +722,7 @@ class TestCloseWorkerPane:
         _, kwargs = mock_cleanup.call_args
         assert kwargs["skip_worktree_if_dirty"] is False
 
-    def test_no_force_skips_dirty_but_deletes_branch(self, tmp_path: Path) -> None:
+    def test_no_force_skips_dirty_preserves_branch(self, tmp_path: Path) -> None:
         from dgov.panes import close_worker_pane
 
         wt = tmp_path / "wt"
@@ -762,10 +762,9 @@ class TestCloseWorkerPane:
         ):
             close_worker_pane(str(tmp_path), "test")
 
-        # Branch should be deleted even though worktree was skipped
+        # Branch should NOT be deleted when worktree was skipped (dirty)
         branch_cmds = [c for c in git_cmds if "branch" in c and "-D" in c]
-        assert len(branch_cmds) == 1
-        assert "test-br" in branch_cmds[0]
+        assert len(branch_cmds) == 0
 
         # Worktree remove should NOT have been called
         wt_remove_cmds = [c for c in git_cmds if "worktree" in c and "remove" in c]
@@ -911,10 +910,9 @@ class TestFullCleanup:
             )
 
         assert result["skipped_worktree"] is True
-        # Branch should still be deleted even when worktree removal is skipped
+        # Branch should NOT be deleted when worktree removal is skipped
         branch_cmds = [c for c in calls if "branch" in c and "-D" in c]
-        assert len(branch_cmds) == 1
-        assert "test-br" in branch_cmds[0]
+        assert len(branch_cmds) == 0
         # Worktree remove should NOT have been called
         wt_remove_cmds = [c for c in calls if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmds) == 0

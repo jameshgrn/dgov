@@ -543,10 +543,13 @@ def _plumbing_merge(
         return MergeResult(success=False, stderr=update.stderr.strip())
 
     # Reset working tree to match new commit
-    subprocess.run(
+    reset = subprocess.run(
         ["git", "-C", project_root, "reset", "--hard", "HEAD"],
         capture_output=True,
+        text=True,
     )
+    if reset.returncode != 0:
+        return MergeResult(success=False, stderr="reset --hard failed after ref update")
 
     return MergeResult(success=True)
 
@@ -914,11 +917,11 @@ def _full_cleanup(
                 ["git", "-C", project_root, "worktree", "remove", "--force", wt],
                 capture_output=True,
             )
-        if branch:
-            subprocess.run(
-                ["git", "-C", project_root, "branch", "-D", branch],
-                capture_output=True,
-            )
+            if branch:
+                subprocess.run(
+                    ["git", "-C", project_root, "branch", "-D", branch],
+                    capture_output=True,
+                )
         if not skipped_worktree:
             subprocess.run(
                 ["git", "-C", project_root, "worktree", "prune"],
