@@ -70,6 +70,13 @@ from dgov.strategy import (  # noqa: F401
     _validate_slug,
     classify_task,
 )
+from dgov.templates import (  # noqa: F401
+    BUILT_IN_TEMPLATES,
+    PromptTemplate,
+    list_templates,
+    load_templates,
+    render_template,
+)
 from dgov.waiter import (  # noqa: F401
     _AGENT_COMMANDS,
     PaneTimeoutError,
@@ -285,6 +292,7 @@ def create_worker_pane(
     extra_flags: str = "",
     session_root: str | None = None,
     existing_worktree: str | None = None,
+    skip_auto_structure: bool = False,
 ) -> WorkerPane:
     """Create a worker pane: worktree + tmux split + agent launch.
 
@@ -396,7 +404,7 @@ def create_worker_pane(
         }
         hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
 
-        if agent == "pi":
+        if agent == "pi" and not skip_auto_structure:
             prompt = _structure_pi_prompt(prompt)
 
         # 8. Rewrite absolute paths in prompt so agent edits worktree, not main repo
