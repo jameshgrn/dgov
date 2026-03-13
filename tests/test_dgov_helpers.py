@@ -12,7 +12,6 @@ from dgov.models import ConflictDetails, MergeResult, TaskSpec
 from dgov.panes import (
     WorkerPane,
     _build_pane_title,
-    _count_active_pi_workers,
     _emit_event,
     _update_pane_state,
     _validate_state,
@@ -115,7 +114,9 @@ class TestPaneHelpers:
         assert state["panes"][0]["state"] == "merged"
         mock_update_status.assert_called_once_with("%2", "claude", "task-1", "merged")
 
-    def test_count_active_pi_workers_only_counts_live_pi_panes(self, tmp_path: Path) -> None:
+    def test_count_active_agent_workers_only_counts_live_panes(self, tmp_path: Path) -> None:
+        from dgov.panes import _count_active_agent_workers
+
         _write_state(
             str(tmp_path),
             {
@@ -131,4 +132,5 @@ class TestPaneHelpers:
             "dgov.panes.tmux.pane_exists",
             side_effect=lambda pane_id: pane_id in {"%1", "%3"},
         ):
-            assert _count_active_pi_workers(str(tmp_path)) == 1
+            assert _count_active_agent_workers(str(tmp_path), "pi") == 1
+            assert _count_active_agent_workers(str(tmp_path), "claude") == 1

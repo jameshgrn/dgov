@@ -2297,7 +2297,19 @@ class TestStructurePiPrompt:
         self, mock_structure: Mock, tmp_path: Path
     ) -> None:
         """Verify _structure_pi_prompt is called when agent is pi."""
+        from dgov.agents import AgentDef
         from dgov.panes import create_worker_pane
+
+        pi_registry = {
+            "pi": AgentDef(
+                id="pi",
+                name="pi",
+                short_label="pi",
+                prompt_command="pi",
+                prompt_transport="positional",
+                default_flags="--provider river-gpu0",
+            )
+        }
 
         with (
             patch("dgov.panes.subprocess.run") as mock_run,
@@ -2312,12 +2324,12 @@ class TestStructurePiPrompt:
             patch("dgov.panes.tmux.send_prompt_via_buffer"),
             patch("dgov.panes._trigger_hook", return_value=False),
             patch("dgov.panes._generate_slug", return_value="pi-test"),
-            patch("dgov.panes._count_active_pi_workers", return_value=0),
+            patch("dgov.panes.load_registry", return_value=pi_registry),
         ):
 
             def _fake_run(cmd, **kwargs):
                 m = Mock(returncode=0, stderr="")
-                m.stdout = "200" if "curl" in cmd else "abc123\n"
+                m.stdout = "abc123\n"
                 return m
 
             mock_run.side_effect = _fake_run

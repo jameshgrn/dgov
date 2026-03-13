@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from dgov import tmux
-from dgov.agents import AGENT_REGISTRY, build_launch_command
+from dgov.agents import build_launch_command, load_registry
 from dgov.models import MergeResult
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,6 @@ class WorkerPane:
 _STATE_DIR = ".dgov"
 _PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
 _STATE_FILE = "state.json"
-_MAX_CONCURRENT_PI_WORKERS = 2
 
 
 def _build_pane_title(slug: str, project_root: str) -> str:
@@ -200,12 +199,12 @@ def _update_pane_state(session_root: str, slug: str, new_state: str) -> None:
             tmux.update_pane_status(pane_id, agent, slug, new_state)
 
 
-def _count_active_pi_workers(session_root: str) -> int:
-    """Count how many pi workers are currently alive."""
+def _count_active_agent_workers(session_root: str, agent: str) -> int:
+    """Count how many workers for *agent* are currently alive."""
     panes = _all_panes(session_root)
     count = 0
     for p in panes:
-        if p.get("agent") == "pi":
+        if p.get("agent") == agent:
             pane_id = p.get("pane_id", "")
             if pane_id and tmux.pane_exists(pane_id):
                 count += 1
@@ -702,42 +701,28 @@ def create_worker_pane(
     if owns_worktree:
         _create_worktree(project_root, worktree_path, branch_name)
 
-    # 1b. Preflight health check for pi workers (35B + 4B ports)
-    if agent == "pi":
-        tunnel_up = False
-        for port in (8080, 8081, 8082):
-            health = subprocess.run(
-                [
-                    "curl",
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "--max-time",
-                    "5",
-                    f"http://localhost:{port}/health",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if health.stdout.strip() == "200":
-                tunnel_up = True
-                break
-        if not tunnel_up:
+    # 1b. Generic health check (config-driven)
+    registry = load_registry(project_root)
+    agent_def = registry.get(agent)
+    if agent_def and agent_def.health_check:
+        hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
+        if hc.returncode != 0 and agent_def.health_fix:
+            subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
+            hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
+        if hc.returncode != 0:
             if owns_worktree:
                 _remove_worktree(project_root, worktree_path, branch_name)
-            raise RuntimeError("SSH tunnel to river is down -- run the tunnel first")
+            raise RuntimeError(f"Health check failed for {agent}: {agent_def.health_check}")
 
-    # 1c. GPU concurrency guard for pi workers
-    if agent == "pi":
-        active_pi = _count_active_pi_workers(session_root)
-        if active_pi >= _MAX_CONCURRENT_PI_WORKERS:
+    # 1c. Generic concurrency guard (config-driven)
+    if agent_def and agent_def.max_concurrent is not None:
+        active = _count_active_agent_workers(session_root, agent)
+        if active >= agent_def.max_concurrent:
             if owns_worktree:
                 _remove_worktree(project_root, worktree_path, branch_name)
             raise RuntimeError(
-                f"GPU concurrency limit: {active_pi} pi workers already running "
-                f"(max {_MAX_CONCURRENT_PI_WORKERS}). "
+                f"Concurrency limit: {active} {agent} workers already running "
+                f"(max {agent_def.max_concurrent}). "
                 f"Wait for one to finish or use a different agent."
             )
 
@@ -750,7 +735,8 @@ def create_worker_pane(
     tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
-    tmux.style_worker_pane(pane_id, agent)
+    agent_color = agent_def.color if agent_def else None
+    tmux.style_worker_pane(pane_id, agent, color=agent_color)
     tmux.set_pane_option(pane_id, "allow-set-title", "off")
 
     # 4. Tidy layout
@@ -765,12 +751,14 @@ def create_worker_pane(
     log_file = str(logs_dir / f"{slug}.log")
     tmux.start_logging(pane_id, log_file)
 
-    # 5b. Inject env vars
+    # 5b. Inject env vars (agent config env + CLI-provided env)
+    all_env = dict(agent_def.env) if agent_def else {}
     if env_vars:
-        for key, val in env_vars.items():
-            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-                raise ValueError(f"Invalid environment variable name: {key!r}")
-            tmux.send_command(pane_id, f"export {key}={val!r}")
+        all_env.update(env_vars)
+    for key, val in all_env.items():
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+            raise ValueError(f"Invalid environment variable name: {key!r}")
+        tmux.send_command(pane_id, f"export {key}={val!r}")
 
     # 6. Trigger worktree_created hook
     hook_env = {
@@ -806,7 +794,6 @@ def create_worker_pane(
     Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
 
     # 9. Launch agent (with done-signal wrapper)
-    agent_def = AGENT_REGISTRY.get(agent)
     if agent_def:
         if agent_def.prompt_transport == "send-keys":
             base_cmd = build_launch_command(
@@ -816,6 +803,7 @@ def create_worker_pane(
                 project_root=worktree_path,
                 slug=slug,
                 extra_flags=extra_flags,
+                registry=registry,
             )
             # Wrap with done signal
             wrapped_cmd = f"{base_cmd}; touch {shlex.quote(done_signal)}"
@@ -833,6 +821,7 @@ def create_worker_pane(
                 project_root=worktree_path,
                 slug=slug,
                 extra_flags=extra_flags,
+                registry=registry,
             )
             # Wrap with done signal: when agent exits, touch the file
             wrapped_cmd = f"{launch_cmd}; touch {shlex.quote(done_signal)}"
@@ -841,7 +830,7 @@ def create_worker_pane(
     # 9b. Set tmux pane title
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
-    tmux.style_worker_pane(pane_id, agent)
+    tmux.style_worker_pane(pane_id, agent, color=agent_color)
     tmux.set_pane_option(pane_id, "allow-set-title", "off")
 
     # 10. Build pane record and save to state
@@ -2231,6 +2220,29 @@ def resume_worker_pane(
     # Resolve agent and prompt
     resume_agent = agent or target.get("agent", "claude")
     original_prompt = prompt or target.get("prompt", "")
+
+    # Load registry for agent config
+    registry = load_registry(project_root)
+    agent_def = registry.get(resume_agent)
+
+    # Health check (config-driven)
+    if agent_def and agent_def.health_check:
+        hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
+        if hc.returncode != 0 and agent_def.health_fix:
+            subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
+            hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
+        if hc.returncode != 0:
+            return {"error": f"Health check failed for {resume_agent}: {agent_def.health_check}"}
+
+    # Concurrency guard (config-driven)
+    if agent_def and agent_def.max_concurrent is not None:
+        active = _count_active_agent_workers(session_root, resume_agent)
+        if active >= agent_def.max_concurrent:
+            return {
+                "error": f"Concurrency limit: {active} {resume_agent} workers "
+                f"running (max {agent_def.max_concurrent})"
+            }
+
     resume_context = (
         "\n\nYou are RESUMING a previous session in this worktree. "
         "Run 'git status' and 'git log --oneline -5' first to see what has "
@@ -2252,12 +2264,19 @@ def resume_worker_pane(
     tmux._run(["set-option", "-p", "-t", pane_id, "automatic-rename", "off"])
     title = _build_pane_title(slug, project_root)
     tmux.set_title(pane_id, title)
-    tmux.style_worker_pane(pane_id, resume_agent)
+    agent_color = agent_def.color if agent_def else None
+    tmux.style_worker_pane(pane_id, resume_agent, color=agent_color)
     tmux.set_pane_option(pane_id, "allow-set-title", "off")
     tmux.select_layout("tiled")
 
     # Clear recursion guard + inject env
     tmux.send_command(pane_id, "unset CLAUDECODE")
+
+    # Inject agent config env vars
+    if agent_def and agent_def.env:
+        for key, val in agent_def.env.items():
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                tmux.send_command(pane_id, f"export {key}={val!r}")
 
     # Start persistent logging via tmux pipe-pane
     logs_dir = Path(session_root) / _STATE_DIR / "logs"
@@ -2294,7 +2313,6 @@ def resume_worker_pane(
     Path(done_signal).unlink(missing_ok=True)
 
     # Launch agent
-    agent_def = AGENT_REGISTRY.get(resume_agent)
     if agent_def:
         if agent_def.prompt_transport == "send-keys":
             base_cmd = build_launch_command(
@@ -2304,6 +2322,7 @@ def resume_worker_pane(
                 project_root=worktree_path,
                 slug=slug,
                 extra_flags="",
+                registry=registry,
             )
             wrapped_cmd = f"{base_cmd}; touch {shlex.quote(done_signal)}"
             tmux.send_command(pane_id, wrapped_cmd)
@@ -2320,6 +2339,7 @@ def resume_worker_pane(
                 project_root=worktree_path,
                 slug=slug,
                 extra_flags="",
+                registry=registry,
             )
             wrapped_cmd = f"{launch_cmd}; touch {shlex.quote(done_signal)}"
             tmux.send_command(pane_id, wrapped_cmd)

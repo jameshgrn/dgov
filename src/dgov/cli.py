@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from dgov.agents import AGENT_REGISTRY, detect_installed_agents
+from dgov.agents import detect_installed_agents
 
 SESSION_ROOT_OPTION = click.option(
     "--session-root",
@@ -219,14 +219,17 @@ def pane_create(
     fix,
 ):
     """Create a worker pane: worktree + tmux + agent."""
+    from dgov.agents import load_registry
     from dgov.panes import classify_task, create_worker_pane
+
+    registry = load_registry(project_root)
 
     if agent == "auto":
         agent = classify_task(prompt)
         click.echo(json.dumps({"auto_classified": agent}), err=True)
 
-    if agent not in AGENT_REGISTRY:
-        click.echo(f"Unknown agent: {agent}. Available: {', '.join(AGENT_REGISTRY)}", err=True)
+    if agent not in registry:
+        click.echo(f"Unknown agent: {agent}. Available: {', '.join(registry)}", err=True)
         sys.exit(1)
 
     if preflight:
@@ -788,19 +791,26 @@ def blame(file_path, project_root, session_root, show_all, agent):
 
 
 @cli.command("agents")
-def list_agents():
+@click.option("--project-root", "-r", default=".", help="Project root for registry loading")
+def list_agents(project_root):
     """List available agents and which are installed."""
-    installed = set(detect_installed_agents())
+    from dgov.agents import load_registry
+
+    registry = load_registry(project_root)
+    installed = set(detect_installed_agents(registry))
     agents = []
-    for agent_id, defn in AGENT_REGISTRY.items():
-        agents.append(
-            {
-                "id": agent_id,
-                "name": defn.name,
-                "installed": agent_id in installed,
-                "transport": defn.prompt_transport,
-            }
-        )
+    for agent_id, defn in registry.items():
+        entry = {
+            "id": agent_id,
+            "name": defn.name,
+            "installed": agent_id in installed,
+            "transport": defn.prompt_transport,
+            "source": defn.source,
+        }
+        if defn.health_check:
+            hc = subprocess.run(defn.health_check, shell=True, capture_output=True, text=True)
+            entry["healthy"] = hc.returncode == 0
+        agents.append(entry)
     click.echo(json.dumps(agents, indent=2))
 
 

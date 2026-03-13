@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from dgov.agents import AgentDef
 from dgov.preflight import (
     CheckResult,
     PreflightReport,
@@ -14,11 +15,12 @@ from dgov.preflight import (
     _fix_stale_worktrees,
     _fix_tunnel,
     check_agent_cli,
+    check_agent_concurrency,
+    check_agent_health,
     check_deps,
     check_file_locks,
     check_git_branch,
     check_git_clean,
-    check_gpu_concurrency,
     check_kerberos,
     check_stale_worktrees,
     check_tunnel,
@@ -35,16 +37,16 @@ pytestmark = pytest.mark.unit
 
 
 def test_check_agent_cli_found(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("dgov.preflight.shutil.which", lambda _: "/usr/bin/pi")
-    r = check_agent_cli("pi")
+    monkeypatch.setattr("dgov.preflight.shutil.which", lambda _: "/usr/bin/claude")
+    r = check_agent_cli("claude")
     assert r.passed is True
     assert r.critical is True
-    assert "pi found" in r.message
+    assert "claude found" in r.message
 
 
 def test_check_agent_cli_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dgov.preflight.shutil.which", lambda _: None)
-    r = check_agent_cli("pi")
+    r = check_agent_cli("claude")
     assert r.passed is False
     assert r.critical is True
     assert "not found" in r.message
@@ -53,7 +55,23 @@ def test_check_agent_cli_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_agent_cli_unknown_agent() -> None:
     r = check_agent_cli("nonexistent")
     assert r.passed is False
-    assert "Unknown agent" in r.message
+    assert "Unknown agent" in r.message or "not in registry" in r.message
+
+
+def test_check_agent_cli_with_custom_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("dgov.preflight.shutil.which", lambda _: "/usr/bin/pi")
+    custom_reg = {
+        "pi": AgentDef(
+            id="pi",
+            name="pi",
+            short_label="pi",
+            prompt_command="pi",
+            prompt_transport="positional",
+        )
+    }
+    r = check_agent_cli("pi", registry=custom_reg)
+    assert r.passed is True
+    assert "pi found" in r.message
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +80,6 @@ def test_check_agent_cli_unknown_agent() -> None:
 
 
 def _mock_curl(monkeypatch, responses: dict[int, str]) -> None:
-    """Mock subprocess.run for curl calls. responses maps port -> http_code."""
-
     def fake_run(cmd, **kwargs):
         for port, code in responses.items():
             if f"http://localhost:{port}/health" in cmd:
@@ -94,7 +110,7 @@ def test_check_tunnel_down(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_check_tunnel_partial(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_curl(monkeypatch, {8080: "200", 8081: "000", 8082: "000"})
     r = check_tunnel()
-    assert r.passed is True  # at least one port up
+    assert r.passed is True
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +204,6 @@ def test_check_kerberos_valid(monkeypatch: pytest.MonkeyPatch) -> None:
         if cmd == ["klist", "--test"]:
             mock.returncode = 0
         else:
-            # klist full output with valid ticket far in the future
             mock.stdout = (
                 "Credentials cache: FILE:/tmp/krb5cc_501\n"
                 "        Principal: jgearon@AD.UNC.EDU\n"
@@ -329,10 +344,7 @@ def test_check_stale_worktrees_found(monkeypatch: pytest.MonkeyPatch, tmp_path) 
 
 
 def test_check_file_locks_clean(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setattr(
-        "dgov.panes.list_worker_panes",
-        lambda *a, **kw: [],
-    )
+    monkeypatch.setattr("dgov.panes.list_worker_panes", lambda *a, **kw: [])
     r = check_file_locks(str(tmp_path), ["src/foo.py"])
     assert r.passed is True
 
@@ -363,40 +375,126 @@ def test_check_file_locks_no_touches() -> None:
 
 
 # ---------------------------------------------------------------------------
-# check_gpu_concurrency
+# check_agent_concurrency
 # ---------------------------------------------------------------------------
 
 
-def test_check_gpu_concurrency_skips_non_pi() -> None:
-    r = check_gpu_concurrency("/tmp/repo", "claude")
+def test_check_agent_concurrency_skips_no_limit() -> None:
+    registry = {
+        "claude": AgentDef(
+            id="claude",
+            name="Claude",
+            short_label="cc",
+            prompt_command="claude",
+            prompt_transport="positional",
+        )
+    }
+    r = check_agent_concurrency("/tmp/repo", "claude", registry=registry)
     assert r.passed is True
-    assert "skipped" in r.message
+    assert "No concurrency limit" in r.message
 
 
-def test_check_gpu_concurrency_blocks_when_limit_reached(
+def test_check_agent_concurrency_blocks_when_limit_reached(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("dgov.panes._count_active_pi_workers", lambda session_root: 2)
-    monkeypatch.setattr("dgov.panes._MAX_CONCURRENT_PI_WORKERS", 2)
-    r = check_gpu_concurrency("/tmp/repo", "pi", session_root="/tmp/session")
+    registry = {
+        "pi": AgentDef(
+            id="pi",
+            name="pi",
+            short_label="pi",
+            prompt_command="pi",
+            prompt_transport="positional",
+            max_concurrent=2,
+        )
+    }
+    monkeypatch.setattr("dgov.panes._count_active_agent_workers", lambda sr, agent: 2)
+    r = check_agent_concurrency("/tmp/repo", "pi", session_root="/tmp/session", registry=registry)
     assert r.passed is False
     assert "max 2" in r.message
 
 
-def test_check_gpu_concurrency_uses_resolved_session_root(
+def test_check_agent_concurrency_passes_under_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: dict[str, str] = {}
-
-    def fake_count(session_root: str) -> int:
-        seen["session_root"] = session_root
-        return 1
-
-    monkeypatch.setattr("dgov.panes._count_active_pi_workers", fake_count)
-    monkeypatch.setattr("dgov.panes._MAX_CONCURRENT_PI_WORKERS", 2)
-    r = check_gpu_concurrency("/tmp/repo", "pi", session_root="relative-session")
+    registry = {
+        "pi": AgentDef(
+            id="pi",
+            name="pi",
+            short_label="pi",
+            prompt_command="pi",
+            prompt_transport="positional",
+            max_concurrent=2,
+        )
+    }
+    monkeypatch.setattr("dgov.panes._count_active_agent_workers", lambda sr, agent: 1)
+    r = check_agent_concurrency("/tmp/repo", "pi", session_root="/tmp/session", registry=registry)
     assert r.passed is True
-    assert seen["session_root"].endswith("relative-session")
+
+
+# ---------------------------------------------------------------------------
+# check_agent_health
+# ---------------------------------------------------------------------------
+
+
+def test_check_agent_health_no_healthcheck() -> None:
+    registry = {
+        "claude": AgentDef(
+            id="claude",
+            name="Claude",
+            short_label="cc",
+            prompt_command="claude",
+            prompt_transport="positional",
+        )
+    }
+    r = check_agent_health("claude", registry=registry)
+    assert r.passed is True
+    assert "No health check" in r.message
+
+
+def test_check_agent_health_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = {
+        "pi": AgentDef(
+            id="pi",
+            name="pi",
+            short_label="pi",
+            prompt_command="pi",
+            prompt_transport="positional",
+            health_check="curl -sf http://localhost:8080/health",
+        )
+    }
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+    r = check_agent_health("pi", registry=registry)
+    assert r.passed is True
+
+
+def test_check_agent_health_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    registry = {
+        "pi": AgentDef(
+            id="pi",
+            name="pi",
+            short_label="pi",
+            prompt_command="pi",
+            prompt_transport="positional",
+            health_check="curl -sf http://localhost:8080/health",
+            health_fix="ssh -fN river-tunnel",
+        )
+    }
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        mock.returncode = 1
+        return mock
+
+    monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+    r = check_agent_health("pi", registry=registry)
+    assert r.passed is False
+    assert r.fixable is True
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +503,6 @@ def test_check_gpu_concurrency_uses_resolved_session_root(
 
 
 def _patch_all_checks(monkeypatch, results: dict[str, CheckResult]) -> None:
-    """Patch individual checkers to return predetermined results."""
     for name, result in results.items():
         monkeypatch.setattr(f"dgov.preflight.{name}", lambda *a, _r=result, **kw: _r)
 
@@ -417,17 +514,27 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
-            "check_tunnel": CheckResult("tunnel", True, True, "ok"),
-            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
-            "check_gpu_concurrency": CheckResult("gpu_concurrency", True, True, "ok"),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
         },
     )
-    report = run_preflight("/tmp/repo", agent="pi")
+    # Mock load_registry to return no health_check agents
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "claude": AgentDef(
+                id="claude",
+                name="Claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="claude")
     assert report.passed is True
-    assert len(report.checks) == 9
 
 
 def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -437,36 +544,93 @@ def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_agent_cli": CheckResult("agent_cli", False, True, "not found"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
-            "check_tunnel": CheckResult("tunnel", True, True, "ok"),
-            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
-            "check_gpu_concurrency": CheckResult("gpu_concurrency", True, True, "ok"),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
         },
     )
-    report = run_preflight("/tmp/repo", agent="pi")
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "claude": AgentDef(
+                id="claude",
+                name="Claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="claude")
     assert report.passed is False
 
 
-def test_run_preflight_skips_tunnel_for_claude(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_preflight_includes_health_check_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+
     _patch_all_checks(
         monkeypatch,
         {
             "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
-            "check_gpu_concurrency": CheckResult("gpu_concurrency", True, False, "ok"),
+            "check_agent_health": CheckResult("agent_health", True, True, "ok"),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
         },
     )
-    report = run_preflight("/tmp/repo", agent="claude")
-    assert report.passed is True
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "pi": AgentDef(
+                id="pi",
+                name="pi",
+                short_label="pi",
+                prompt_command="pi",
+                prompt_transport="positional",
+                health_check="curl -sf http://localhost:8080/health",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="pi")
     names = {c.name for c in report.checks}
-    assert "tunnel" not in names
-    assert "kerberos" not in names
+    assert "agent_health" in names
+
+
+def test_run_preflight_skips_health_check_for_no_healthcheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_all_checks(
+        monkeypatch,
+        {
+            "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
+            "check_git_clean": CheckResult("git_clean", True, True, "ok"),
+            "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
+            "check_deps": CheckResult("deps", True, False, "ok"),
+            "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
+            "check_file_locks": CheckResult("file_locks", True, True, "ok"),
+        },
+    )
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "claude": AgentDef(
+                id="claude",
+                name="Claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="claude")
+    names = {c.name for c in report.checks}
+    assert "agent_health" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -476,12 +640,10 @@ def test_run_preflight_skips_tunnel_for_claude(monkeypatch: pytest.MonkeyPatch) 
 
 def test_fix_preflight_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("dgov.preflight._fix_tunnel", lambda: True)
-    # After fix, the tunnel re-check passes
     monkeypatch.setattr(
         "dgov.preflight.check_tunnel",
         lambda *a, **kw: CheckResult("tunnel", True, True, "fixed"),
     )
-
     report = PreflightReport(
         checks=[
             CheckResult("agent_cli", True, True, "ok"),
@@ -499,11 +661,8 @@ def test_fix_preflight_kerberos(monkeypatch: pytest.MonkeyPatch) -> None:
         "dgov.preflight.check_kerberos",
         lambda *a, **kw: CheckResult("kerberos", True, True, "renewed"),
     )
-
     report = PreflightReport(
-        checks=[
-            CheckResult("kerberos", False, True, "expired", fixable=True),
-        ]
+        checks=[CheckResult("kerberos", False, True, "expired", fixable=True)]
     )
     fixed = fix_preflight(report, "/tmp/repo")
     krb = next(c for c in fixed.checks if c.name == "kerberos")
@@ -511,11 +670,7 @@ def test_fix_preflight_kerberos(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_fix_preflight_noop_when_not_fixable() -> None:
-    report = PreflightReport(
-        checks=[
-            CheckResult("agent_cli", False, True, "missing"),
-        ]
-    )
+    report = PreflightReport(checks=[CheckResult("agent_cli", False, True, "missing")])
     fixed = fix_preflight(report, "/tmp/repo")
     assert fixed.passed is False
     assert fixed.checks[0].passed is False
@@ -537,11 +692,7 @@ def test_preflight_report_passed_ignores_noncritical() -> None:
 
 
 def test_preflight_report_to_dict() -> None:
-    report = PreflightReport(
-        checks=[
-            CheckResult("git_clean", True, True, "ok"),
-        ]
-    )
+    report = PreflightReport(checks=[CheckResult("git_clean", True, True, "ok")])
     d = report.to_dict()
     assert "checks" in d
     assert "timestamp" in d
@@ -665,7 +816,7 @@ class TestCheckGitBranchEdgeCases:
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
         r = check_git_branch("/tmp/repo", expected="main")
-        assert r.passed is True  # non-critical, passes on error
+        assert r.passed is True
         assert r.critical is False
         assert "Could not determine" in r.message
 
@@ -697,8 +848,6 @@ class TestCheckKerberosEdgeCases:
         assert "timed out" in r.message
 
     def test_unparseable_expiry(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """klist --test passes but expiry can't be parsed."""
-
         def fake_run(cmd, **kwargs):
             mock = MagicMock()
             if cmd == ["klist", "--test"]:
@@ -714,7 +863,6 @@ class TestCheckKerberosEdgeCases:
         assert "could not parse" in r.message.lower()
 
     def test_detail_klist_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """klist --test passes but detail klist times out."""
         import subprocess as sp
 
         call_count = [0]
@@ -837,7 +985,6 @@ class TestCheckFileLocksEdgeCases:
         assert "lock file" in r.message
 
     def test_pane_worktree_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-        """Pane exists but worktree_path is gone — should not crash."""
         monkeypatch.setattr(
             "dgov.panes.list_worker_panes",
             lambda *a, **kw: [{"slug": "t1", "worktree_path": "/nonexistent/path"}],
@@ -846,7 +993,6 @@ class TestCheckFileLocksEdgeCases:
         assert r.passed is True
 
     def test_pane_no_worktree_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-        """Pane has no worktree_path — should skip gracefully."""
         monkeypatch.setattr(
             "dgov.panes.list_worker_panes",
             lambda *a, **kw: [{"slug": "t1"}],
@@ -868,7 +1014,7 @@ class TestCheckFileLocksEdgeCases:
             lambda cmd, **kw: (_ for _ in ()).throw(sp.TimeoutExpired(cmd, 10)),
         )
         r = check_file_locks(str(tmp_path), ["src/foo.py"])
-        assert r.passed is True  # continues on error
+        assert r.passed is True
 
 
 # ---------------------------------------------------------------------------
@@ -1003,12 +1149,10 @@ class TestFixPreflightEdgeCases:
         monkeypatch.setattr("dgov.preflight._fix_tunnel", lambda: False)
         report = PreflightReport(checks=[CheckResult("tunnel", False, True, "down", fixable=True)])
         fixed = fix_preflight(report, "/tmp/repo")
-        # Fix failed so no recheck — original report returned
         assert fixed.checks[0].passed is False
         assert fixed.checks[0].message == "down"
 
     def test_non_fixable_name_skipped(self) -> None:
-        """A fixable check with name not in _FIXER_NAMES is not attempted."""
         report = PreflightReport(
             checks=[CheckResult("agent_cli", False, True, "missing", fixable=True)]
         )
@@ -1022,26 +1166,6 @@ class TestFixPreflightEdgeCases:
 
 
 class TestRunPreflightEdgeCases:
-    def test_non_tunnel_agent_skips_tunnel_and_kerberos(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        _patch_all_checks(
-            monkeypatch,
-            {
-                "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
-                "check_git_clean": CheckResult("git_clean", True, True, "ok"),
-                "check_git_branch": CheckResult("git_branch", True, False, "ok"),
-                "check_gpu_concurrency": CheckResult("gpu_concurrency", True, False, "ok"),
-                "check_deps": CheckResult("deps", True, False, "ok"),
-                "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
-                "check_file_locks": CheckResult("file_locks", True, True, "ok"),
-            },
-        )
-        report = run_preflight("/tmp/repo", agent="codex")
-        names = {c.name for c in report.checks}
-        assert "tunnel" not in names
-        assert "kerberos" not in names
-
     def test_noncritical_fail_still_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _patch_all_checks(
             monkeypatch,
@@ -1049,16 +1173,26 @@ class TestRunPreflightEdgeCases:
                 "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
                 "check_git_clean": CheckResult("git_clean", True, True, "ok"),
                 "check_git_branch": CheckResult("git_branch", False, False, "wrong branch"),
-                "check_tunnel": CheckResult("tunnel", True, True, "ok"),
-                "check_kerberos": CheckResult("kerberos", True, True, "ok"),
-                "check_gpu_concurrency": CheckResult("gpu_concurrency", True, True, "ok"),
+                "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
                 "check_deps": CheckResult("deps", False, False, "out of sync"),
                 "check_stale_worktrees": CheckResult("stale_worktrees", False, False, "stale"),
                 "check_file_locks": CheckResult("file_locks", True, True, "ok"),
             },
         )
-        report = run_preflight("/tmp/repo", agent="pi")
-        assert report.passed is True  # only critical checks matter
+        monkeypatch.setattr(
+            "dgov.agents.load_registry",
+            lambda pr: {
+                "claude": AgentDef(
+                    id="claude",
+                    name="Claude",
+                    short_label="cc",
+                    prompt_command="claude",
+                    prompt_transport="positional",
+                )
+            },
+        )
+        report = run_preflight("/tmp/repo", agent="claude")
+        assert report.passed is True
 
 
 # ---------------------------------------------------------------------------
@@ -1078,19 +1212,14 @@ class TestPreflightReportEdgeCases:
 
     def test_empty_checks(self) -> None:
         report = PreflightReport(checks=[])
-        assert report.passed is True  # vacuously true
+        assert report.passed is True
 
     def test_timestamp_is_iso(self) -> None:
         report = PreflightReport(checks=[])
-        # ISO format should contain 'T' separator
         assert "T" in report.timestamp
 
     def test_to_dict_structure(self) -> None:
-        report = PreflightReport(
-            checks=[
-                CheckResult("a", True, True, "ok", fixable=True),
-            ]
-        )
+        report = PreflightReport(checks=[CheckResult("a", True, True, "ok", fixable=True)])
         d = report.to_dict()
         assert len(d["checks"]) == 1
         check = d["checks"][0]

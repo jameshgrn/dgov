@@ -214,7 +214,7 @@ class TestPaneCreate:
     def test_create_success_passes_env_vars(self, runner: CliRunner) -> None:
         with patch(
             "dgov.panes.create_worker_pane",
-            return_value=_pane("lint-fix", "pi"),
+            return_value=_pane("lint-fix", "claude"),
         ) as mock_create:
             result = runner.invoke(
                 cli,
@@ -222,7 +222,7 @@ class TestPaneCreate:
                     "pane",
                     "create",
                     "--agent",
-                    "pi",
+                    "claude",
                     "--prompt",
                     "Fix tests",
                     "--project-root",
@@ -243,14 +243,14 @@ class TestPaneCreate:
         assert json.loads(result.output) == {
             "slug": "lint-fix",
             "pane_id": "%7",
-            "agent": "pi",
+            "agent": "claude",
             "worktree": "/tmp/lint-fix",
             "branch": "lint-fix",
         }
         assert mock_create.call_args.kwargs == {
             "project_root": "/repo",
             "prompt": "Fix tests",
-            "agent": "pi",
+            "agent": "claude",
             "permission_mode": "acceptEdits",
             "slug": None,
             "env_vars": {"FOO": "bar", "BAZ": "qux"},
@@ -260,8 +260,8 @@ class TestPaneCreate:
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
         with (
-            patch("dgov.panes.classify_task", return_value="pi") as mock_classify,
-            patch("dgov.panes.create_worker_pane", return_value=_pane("auto-task", "pi")),
+            patch("dgov.panes.classify_task", return_value="claude") as mock_classify,
+            patch("dgov.panes.create_worker_pane", return_value=_pane("auto-task", "claude")),
         ):
             result = runner.invoke(
                 cli,
@@ -270,7 +270,7 @@ class TestPaneCreate:
 
         assert result.exit_code == 0
         mock_classify.assert_called_once_with("Fix lint")
-        assert json.loads(result.stderr)["auto_classified"] == "pi"
+        assert json.loads(result.stderr)["auto_classified"] == "claude"
 
     def test_invalid_env_var_exits(self, runner: CliRunner) -> None:
         result = runner.invoke(
@@ -279,7 +279,7 @@ class TestPaneCreate:
                 "pane",
                 "create",
                 "--agent",
-                "pi",
+                "claude",
                 "--prompt",
                 "Fix lint",
                 "--env",
@@ -306,7 +306,7 @@ class TestPaneCreate:
         with patch("dgov.preflight.run_preflight", return_value=report):
             result = runner.invoke(
                 cli,
-                ["pane", "create", "--agent", "pi", "--prompt", "Fix lint", "--no-fix"],
+                ["pane", "create", "--agent", "claude", "--prompt", "Fix lint", "--no-fix"],
             )
 
         assert result.exit_code == 1
@@ -326,7 +326,7 @@ class TestPaneCreate:
         ):
             result = runner.invoke(
                 cli,
-                ["pane", "create", "--agent", "pi", "--prompt", "Fix lint"],
+                ["pane", "create", "--agent", "claude", "--prompt", "Fix lint"],
             )
 
         assert result.exit_code == 0
