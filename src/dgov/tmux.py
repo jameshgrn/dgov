@@ -88,6 +88,31 @@ def capture_pane(pane_id: str, lines: int = 30) -> str:
     return _run(["capture-pane", "-t", pane_id, "-p", "-S", f"-{lines}"])
 
 
+def bulk_pane_info() -> dict[str, dict[str, str]]:
+    """Fetch pane_id, title, current_command for ALL panes in one tmux call.
+
+    Returns {pane_id: {"title": ..., "current_command": ...}}.
+    """
+    try:
+        output = _run(
+            ["list-panes", "-a", "-F", "#{pane_id}|#{pane_title}|#{pane_current_command}"],
+            silent=True,
+        )
+    except RuntimeError:
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for line in output.strip().split("\n"):
+        if not line:
+            continue
+        parts = line.split("|", 2)
+        if len(parts) >= 3:
+            result[parts[0]] = {
+                "title": parts[1],
+                "current_command": parts[2],
+            }
+    return result
+
+
 def pane_exists(pane_id: str) -> bool:
     """Check if a tmux pane exists."""
     try:

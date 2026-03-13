@@ -156,6 +156,39 @@ class TestPaneCommands:
         monkeypatch.setattr("dgov.tmux._run", lambda args, silent=False: "")
         assert pane_exists("%5") is False
 
+    def test_bulk_pane_info_parses_all_panes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from dgov.tmux import bulk_pane_info
+
+        monkeypatch.setattr(
+            "dgov.tmux._run",
+            lambda args, silent=False: "%1|worker|claude\n%2|gov|zsh\n",
+        )
+        assert bulk_pane_info() == {
+            "%1": {"title": "worker", "current_command": "claude"},
+            "%2": {"title": "gov", "current_command": "zsh"},
+        }
+
+    def test_bulk_pane_info_returns_empty_on_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from dgov.tmux import bulk_pane_info
+
+        def raise_err(args, silent=False):
+            raise RuntimeError("no server")
+
+        monkeypatch.setattr("dgov.tmux._run", raise_err)
+        assert bulk_pane_info() == {}
+
+    def test_bulk_pane_info_skips_malformed_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from dgov.tmux import bulk_pane_info
+
+        monkeypatch.setattr(
+            "dgov.tmux._run",
+            lambda args, silent=False: "%1|worker|claude\nbadline\n\n%2|gov|zsh\n",
+        )
+        assert bulk_pane_info() == {
+            "%1": {"title": "worker", "current_command": "claude"},
+            "%2": {"title": "gov", "current_command": "zsh"},
+        }
+
     def test_list_panes_parses_and_skips_malformed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "dgov.tmux._run",

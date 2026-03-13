@@ -457,12 +457,11 @@ class TestListWorkerPanes:
             },
         )
 
-        def fake_pane_exists(pid: str) -> bool:
-            return pid == "%2"  # Only the second entry is alive
-
         with (
-            patch("dgov.panes.tmux.pane_exists", side_effect=fake_pane_exists),
-            patch("dgov.panes.tmux.current_command", return_value="claude"),
+            patch(
+                "dgov.panes.tmux.bulk_pane_info",
+                return_value={"%2": {"title": "gov", "current_command": "claude"}},
+            ),
             patch("dgov.panes._is_done", return_value=False),
         ):
             result = list_worker_panes(str(tmp_path))
@@ -489,8 +488,10 @@ class TestListWorkerPanes:
             },
         )
         with (
-            patch("dgov.panes.tmux.pane_exists", return_value=True),
-            patch("dgov.panes.tmux.current_command", return_value="claude"),
+            patch(
+                "dgov.panes.tmux.bulk_pane_info",
+                return_value={"%5": {"title": "test", "current_command": "claude"}},
+            ),
             patch("dgov.panes._is_done", return_value=False),
         ):
             result = list_worker_panes(str(tmp_path))
