@@ -1,7 +1,7 @@
 """Pre-flight validation for dgov dispatch.
 
 Runs all checks before spawning worker panes and optionally auto-fixes
-fixable failures (tunnel down, kerberos expired, stale worktrees, deps).
+fixable failures (stale worktrees, deps, agent health).
 """
 
 from __future__ import annotations
@@ -47,9 +47,6 @@ class PreflightReport:
 # Individual checkers
 # ---------------------------------------------------------------------------
 
-_TUNNEL_PORTS_DEFAULT = (8080, 8081, 8082)
-_TUNNEL_TIMEOUT = 3
-
 
 def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
     """Check that the agent CLI binary is on PATH."""
@@ -69,46 +66,6 @@ def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
         passed=found,
         critical=True,
         message=f"{cmd} found on PATH" if found else f"{cmd} not found on PATH",
-    )
-
-
-def check_tunnel(ports: tuple[int, ...] = _TUNNEL_PORTS_DEFAULT) -> CheckResult:
-    """Curl health-check each llama.cpp port."""
-    up: list[int] = []
-    down: list[int] = []
-    for port in ports:
-        try:
-            result = subprocess.run(
-                [
-                    "curl",
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "--max-time",
-                    str(_TUNNEL_TIMEOUT),
-                    f"http://localhost:{port}/health",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=_TUNNEL_TIMEOUT + 2,
-            )
-            if result.stdout.strip() == "200":
-                up.append(port)
-            else:
-                down.append(port)
-        except (subprocess.TimeoutExpired, OSError):
-            down.append(port)
-
-    passed = len(up) > 0
-    detail = f"up={up} down={down}" if down else f"all ports up: {up}"
-    return CheckResult(
-        name="tunnel",
-        passed=passed,
-        critical=True,
-        message=f"SSH tunnel: {detail}",
-        fixable=True,
     )
 
 
@@ -200,99 +157,6 @@ def check_git_branch(project_root: str, expected: str | None = None) -> CheckRes
             if expected
             else (" (not main)" if branch not in ("main", "master", "HEAD") else "")
         ),
-    )
-
-
-def check_kerberos(min_remaining_hours: int = 2) -> CheckResult:
-    """Check Kerberos ticket validity and remaining lifetime."""
-    try:
-        result = subprocess.run(
-            ["klist", "--test"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return CheckResult(
-                name="kerberos",
-                passed=False,
-                critical=True,
-                message="No valid Kerberos ticket",
-                fixable=True,
-            )
-    except FileNotFoundError:
-        return CheckResult(
-            name="kerberos",
-            passed=False,
-            critical=True,
-            message="klist not found -- Kerberos not installed",
-        )
-    except subprocess.TimeoutExpired:
-        return CheckResult(
-            name="kerberos",
-            passed=False,
-            critical=True,
-            message="klist timed out",
-        )
-
-    # Ticket exists -- try to parse expiry for remaining time check
-    try:
-        detail = subprocess.run(
-            ["klist"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        for line in detail.stdout.splitlines():
-            if "krbtgt/" in line:
-                parts = line.split()
-                for idx, p in enumerate(parts):
-                    if p.startswith("krbtgt/"):
-                        if idx >= 4:
-                            expiry_str = " ".join(parts[idx - 4 : idx])
-                            # Try common klist date formats
-                            for fmt in (
-                                "%b %d %H:%M:%S %Y",  # "Mar  5 15:17:55 2026"
-                                "%m/%d/%Y %H:%M:%S",  # "03/05/2026 15:17:55"
-                            ):
-                                try:
-                                    expiry = datetime.strptime(expiry_str, fmt)
-                                    remaining = expiry - datetime.now()
-                                    hours_left = remaining.total_seconds() / 3600
-                                    if hours_left < min_remaining_hours:
-                                        return CheckResult(
-                                            name="kerberos",
-                                            passed=False,
-                                            critical=True,
-                                            message=(
-                                                f"Kerberos ticket expires in "
-                                                f"{hours_left:.1f}h "
-                                                f"(min {min_remaining_hours}h)"
-                                            ),
-                                            fixable=True,
-                                        )
-                                    return CheckResult(
-                                        name="kerberos",
-                                        passed=True,
-                                        critical=True,
-                                        message=(
-                                            f"Kerberos ticket valid, {hours_left:.1f}h remaining"
-                                        ),
-                                        fixable=True,
-                                    )
-                                except ValueError:
-                                    continue
-                        break
-    except (subprocess.TimeoutExpired, OSError):
-        pass
-
-    # Could not parse expiry but ticket is valid per --test
-    return CheckResult(
-        name="kerberos",
-        passed=True,
-        critical=True,
-        message="Kerberos ticket valid (could not parse expiry)",
-        fixable=True,
     )
 
 
@@ -567,11 +431,6 @@ def run_preflight(
     checks.append(check_git_clean(project_root))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
-    # Tunnel and Kerberos checks — only for 'pi' agent
-    if agent == "pi":
-        checks.append(check_tunnel())
-        checks.append(check_kerberos())
-
     # Config-driven health check for agents with custom health_check
     agent_def = registry.get(agent)
     if agent_def and agent_def.health_check:
@@ -589,56 +448,6 @@ def run_preflight(
 # ---------------------------------------------------------------------------
 # Auto-fix
 # ---------------------------------------------------------------------------
-
-
-def _fix_tunnel() -> bool:
-    """Bring up the SSH tunnel to river."""
-    try:
-        result = subprocess.run(
-            [
-                "ssh",
-                "-N",
-                "-f",
-                "-L",
-                "8080:localhost:8080",
-                "-L",
-                "8081:localhost:8081",
-                "-L",
-                "8082:localhost:8082",
-                "-L",
-                "8083:localhost:8083",
-                "-o",
-                "ServerAliveInterval=60",
-                "-o",
-                "ServerAliveCountMax=3",
-                "jgearon@river.emes.unc.edu",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
-
-
-def _fix_kerberos() -> bool:
-    """Attempt to renew Kerberos ticket via kinit."""
-
-    pw = os.environ.get("RIVER_PW")
-    if not pw:
-        return False
-    try:
-        proc = subprocess.run(
-            ["kinit", "jgearon@AD.UNC.EDU"],
-            input=pw + "\n",
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-        return proc.returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
 
 
 def _fix_deps() -> bool:
@@ -670,7 +479,7 @@ def _fix_stale_worktrees(project_root: str) -> bool:
         return False
 
 
-_FIXER_NAMES = {"tunnel", "kerberos", "deps", "stale_worktrees", "agent_health"}
+_FIXER_NAMES = {"deps", "stale_worktrees", "agent_health"}
 
 
 def _fix_agent_health(project_root: str) -> bool:
@@ -706,12 +515,6 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
             if check.name == "stale_worktrees":
                 if _fix_stale_worktrees(project_root):
                     recheck.append(check.name)
-            elif check.name == "tunnel":
-                if _fix_tunnel():
-                    recheck.append(check.name)
-            elif check.name == "kerberos":
-                if _fix_kerberos():
-                    recheck.append(check.name)
             elif check.name == "deps":
                 if _fix_deps():
                     recheck.append(check.name)
@@ -726,11 +529,7 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
     new_checks = []
     for check in report.checks:
         if check.name in recheck:
-            if check.name == "tunnel":
-                new_checks.append(check_tunnel())
-            elif check.name == "kerberos":
-                new_checks.append(check_kerberos())
-            elif check.name == "deps":
+            if check.name == "deps":
                 new_checks.append(check_deps())
             elif check.name == "stale_worktrees":
                 new_checks.append(check_stale_worktrees(project_root))
