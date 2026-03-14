@@ -123,7 +123,7 @@ def pane():
 @click.option("--title", "-t", default=None, help="Pane title (defaults to command name)")
 @click.option("--cwd", "-c", default=".", help="Working directory")
 def pane_util(command, title, cwd):
-    """Launch a utility pane (e.g. lazygit, yazi). No worktree or agent."""
+    """Run a command in a utility pane (no worktree)."""
     from dgov.tmux import create_utility_pane
 
     title = title or command.split()[0]
@@ -188,7 +188,7 @@ def pane_top(cwd):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root for the worktree",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option(
@@ -282,6 +282,10 @@ def pane_create(
         click.echo("Either --prompt or --template is required.", err=True)
         sys.exit(1)
 
+    if prompt is not None and not prompt.strip():
+        click.echo("Prompt cannot be empty.", err=True)
+        sys.exit(1)
+
     if agent is None:
         agent = "claude"
 
@@ -317,17 +321,21 @@ def pane_create(
         k, v = item.split("=", 1)
         env_vars[k] = v
 
-    pane_obj = create_worker_pane(
-        project_root=project_root,
-        prompt=prompt,
-        agent=agent,
-        permission_mode=permission_mode,
-        slug=slug,
-        env_vars=env_vars if env_vars else None,
-        extra_flags=extra_flags,
-        session_root=session_root,
-        skip_auto_structure=skip_auto_structure,
-    )
+    try:
+        pane_obj = create_worker_pane(
+            project_root=project_root,
+            prompt=prompt,
+            agent=agent,
+            permission_mode=permission_mode,
+            slug=slug,
+            env_vars=env_vars if env_vars else None,
+            extra_flags=extra_flags,
+            session_root=session_root,
+            skip_auto_structure=skip_auto_structure,
+        )
+    except ValueError as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
 
     # Store per-pane max_retries override in metadata
     if max_retries is not None:
@@ -359,7 +367,7 @@ def pane_create(
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
@@ -380,7 +388,7 @@ def pane_close(slug, project_root, session_root, force):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option(
@@ -419,7 +427,7 @@ def pane_merge(slug, project_root, session_root, close, resolve):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--timeout", "-t", default=600, help="Max seconds to wait (0=forever)")
@@ -438,7 +446,12 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     2. New commits on the worker branch beyond base_sha.
     3. Output stabilization (TUI agents that stay open).
     """
-    from dgov.panes import PaneTimeoutError, wait_worker_pane
+    from dgov.panes import PaneTimeoutError, list_worker_panes, wait_worker_pane
+
+    panes = list_worker_panes(project_root, session_root=session_root)
+    if not any(p.get("slug") == slug for p in panes):
+        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
+        sys.exit(1)
 
     try:
         result = wait_worker_pane(
@@ -468,7 +481,7 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--timeout", "-t", default=600, help="Max seconds to wait (0=forever)")
@@ -515,7 +528,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option(
@@ -594,7 +607,7 @@ def _fmt_duration(seconds: int) -> str:
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
@@ -606,6 +619,10 @@ def pane_list(project_root, session_root, as_json):
 
     if as_json:
         click.echo(json.dumps(panes, indent=2))
+        return
+
+    if not panes:
+        click.echo("No panes.")
         return
 
     # Format as table
@@ -637,7 +654,7 @@ def pane_list(project_root, session_root, as_json):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 def pane_prune(project_root, session_root):
@@ -664,7 +681,7 @@ def pane_classify(prompt):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--lines", "-n", default=30, help="Number of lines to capture")
@@ -685,7 +702,7 @@ def pane_capture(slug, project_root, session_root, lines):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--full", is_flag=True, help="Show complete diff (not just stat)")
@@ -723,7 +740,7 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default="claude", help="Agent to escalate to")
@@ -734,7 +751,7 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
     help="Permission mode for the new agent",
 )
 def pane_escalate(slug, project_root, session_root, agent, permission_mode):
-    """Escalate a worker pane to a different agent (e.g. pi -> claude)."""
+    """Re-dispatch to a stronger agent."""
     from dgov.panes import escalate_worker_pane
 
     result = escalate_worker_pane(
@@ -776,12 +793,12 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
 @pane.command("resume")
 @click.argument("slug")
 @click.option("--project-root", "-r", default=".", help="Project root")
-@click.option("--session-root", "-R", default=None, help="Session root")
+@SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Override agent")
 @click.option("--prompt", "-p", default=None, help="Override prompt")
 @click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
 def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode):
-    """Resume a pane by re-launching an agent in its existing worktree."""
+    """Re-launch agent in an existing worktree."""
     from dgov.panes import resume_worker_pane
 
     result = resume_worker_pane(
@@ -793,12 +810,14 @@ def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode
         permission_mode=permission_mode,
     )
     click.echo(json.dumps(result, indent=2))
+    if "error" in result:
+        sys.exit(1)
 
 
 @pane.command("logs")
 @click.argument("slug")
 @click.option("--project-root", "-r", default=".", help="Project root")
-@click.option("--session-root", "-R", default=None, help="Session root")
+@SESSION_ROOT_OPTION
 @click.option("--tail", "-n", default=None, type=int, help="Show last N lines")
 def pane_logs(slug, project_root, session_root, tail):
     """Show persistent log for a pane."""
@@ -807,8 +826,8 @@ def pane_logs(slug, project_root, session_root, tail):
     session_root = os.path.abspath(session_root or project_root)
     log_file = os.path.join(session_root, ".dgov", "logs", f"{slug}.log")
     if not os.path.exists(log_file):
-        click.echo(json.dumps({"error": f"No log file found: {log_file}"}))
-        return
+        click.echo(json.dumps({"error": f"No log file found: {log_file}"}), err=True)
+        sys.exit(1)
     with open(log_file) as f:
         lines = f.readlines()
     if tail:
@@ -884,7 +903,7 @@ def pane_signal(slug, signal_type, session_root):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default="claude", help="Agent to validate for")
@@ -920,7 +939,7 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root",
+    help="Project root",
 )
 @SESSION_ROOT_OPTION
 def status(project_root, session_root):
@@ -935,7 +954,7 @@ def status(project_root, session_root):
     "--project-root",
     "-r",
     default=".",
-    help="Git repo root (worktree to rebase)",
+    help="Project root",
 )
 @click.option(
     "--onto",
