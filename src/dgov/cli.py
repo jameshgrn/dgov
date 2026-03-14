@@ -116,6 +116,11 @@ def cli(ctx):
                 check=True,
             )
         style_dgov_session(session_name)
+        # Run dgov inside the session so the banner triggers via the TMUX branch
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session_name, "dgov", "Enter"],
+            capture_output=True,
+        )
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
