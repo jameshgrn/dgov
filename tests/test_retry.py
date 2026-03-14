@@ -14,8 +14,7 @@ from dgov.persistence import (
     WorkerPane,
     _add_pane,
     _emit_event,
-    _read_state,
-    _write_state,
+    _set_pane_metadata,
 )
 from dgov.retry import (
     RetryPolicy,
@@ -186,12 +185,8 @@ class TestGetRetryPolicy:
     def test_pane_override_takes_priority(self, mock_registry, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path, agent="test-agent")
 
-        # Set per-pane override
-        state = _read_state(session_root)
-        for p in state["panes"]:
-            if p.get("slug") == "test-worker":
-                p["max_retries"] = 5
-        _write_state(session_root, state)
+        # Set per-pane override via SQLite metadata
+        _set_pane_metadata(session_root, "test-worker", max_retries=5)
 
         agent_def = MagicMock()
         agent_def.max_retries = 2

@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -56,13 +57,14 @@ from dgov.persistence import (  # noqa: F401
     _add_pane,
     _all_panes,
     _emit_event,
+    _get_db,
     _get_pane,
-    _read_state,
+    _insert_pane_dict,
     _remove_pane,
-    _state_path,
+    _row_to_dict,
+    _set_pane_metadata,
     _update_pane_state,
     _validate_state,
-    _write_state,
 )
 from dgov.responder import (  # noqa: F401
     BUILT_IN_RULES,
@@ -1114,15 +1116,10 @@ def retry_worker_pane(
     except Exception as e:
         return {"error": str(e)}
 
-    # Link records: update new pane with retried_from
-    state = _read_state(session_root)
-    for p in state["panes"]:
-        if p.get("slug") == new_slug:
-            p["retried_from"] = slug
-        if p.get("slug") == slug:
-            p["superseded_by"] = new_slug
-            p["state"] = "superseded"
-    _write_state(session_root, state)
+    # Link records via SQLite metadata
+    _set_pane_metadata(session_root, new_slug, retried_from=slug)
+    _set_pane_metadata(session_root, slug, superseded_by=new_slug)
+    _update_pane_state(session_root, slug, "superseded", force=True)
 
     # Emit events
     _emit_event(session_root, "pane_retry_spawned", slug, new_slug=new_slug, attempt=attempt)
@@ -1316,15 +1313,20 @@ def resume_worker_pane(
             get_backend().send_input(pane_id, wrapped_cmd)
 
     # Update state: new pane_id, back to active
-    state = _read_state(session_root)
-    for p in state["panes"]:
-        if p.get("slug") == slug:
-            p["pane_id"] = pane_id
-            p["state"] = "active"
+    conn = _get_db(session_root)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
+        if row:
+            d = _row_to_dict(row)
+            d["pane_id"] = pane_id
+            d["state"] = "active"
             if agent:
-                p["agent"] = resume_agent
-            break
-    _write_state(session_root, state)
+                d["agent"] = resume_agent
+            _insert_pane_dict(conn, d)
+            conn.commit()
+    finally:
+        conn.close()
 
     _emit_event(session_root, "pane_resumed", slug, agent=resume_agent)
 

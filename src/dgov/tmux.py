@@ -68,7 +68,6 @@ def split_pane(
     return _run(args)
 
 
-
 def send_command(pane_id: str, command: str) -> None:
     """Send a shell command to a pane and press Enter."""
     _run(["send-keys", "-t", pane_id, command, "Enter"])

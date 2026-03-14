@@ -16,8 +16,8 @@ from dgov.panes import (
     _emit_event,
     _update_pane_state,
     _validate_state,
-    _write_state,
 )
+from dgov.persistence import _all_panes, _replace_all_panes
 
 
 @pytest.fixture(autouse=True)
@@ -108,7 +108,7 @@ class TestPaneHelpers:
     def test_update_pane_state_writes_state_and_updates_tmux(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        _write_state(
+        _replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -124,10 +124,8 @@ class TestPaneHelpers:
 
         _update_pane_state(str(tmp_path), "task-1", "done")
 
-        from dgov.panes import _read_state
-
-        state = _read_state(str(tmp_path))
-        assert state["panes"][0]["state"] == "done"
+        panes = _all_panes(str(tmp_path))
+        assert panes[0]["state"] == "done"
         mock_backend.set_title.assert_called_once_with("%2", "[claude] task-1 \u2713")
 
     def test_count_active_agent_workers_only_counts_live_panes(
@@ -135,7 +133,7 @@ class TestPaneHelpers:
     ) -> None:
         from dgov.panes import _count_active_agent_workers
 
-        _write_state(
+        _replace_all_panes(
             str(tmp_path),
             {
                 "panes": [

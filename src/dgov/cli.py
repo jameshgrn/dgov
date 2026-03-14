@@ -342,15 +342,10 @@ def pane_create(
 
     # Store per-pane max_retries override in metadata
     if max_retries is not None:
-        from dgov.persistence import _read_state, _write_state
+        from dgov.persistence import _set_pane_metadata
 
         session_root_abs = os.path.abspath(session_root or project_root)
-        state = _read_state(session_root_abs)
-        for p in state["panes"]:
-            if p.get("slug") == pane_obj.slug:
-                p["max_retries"] = max_retries
-                break
-        _write_state(session_root_abs, state)
+        _set_pane_metadata(session_root_abs, pane_obj.slug, max_retries=max_retries)
 
     result = {
         "slug": pane_obj.slug,

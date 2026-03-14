@@ -329,6 +329,7 @@ class TestCheckStatus:
             patch("dgov.openrouter._get_api_key", return_value="sk-or-test"),
             patch("dgov.openrouter._get_default_model", return_value="test/model:free"),
             patch("dgov.openrouter.urllib.request.urlopen", return_value=fake_resp),
+            patch("dgov.openrouter.get_key_info", return_value={"label": "test"}),
         ):
             status = check_status()
 

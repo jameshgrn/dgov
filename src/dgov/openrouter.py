@@ -192,7 +192,7 @@ def chat_completion(
         return _openrouter_request(
             messages, model=model, max_tokens=max_tokens, temperature=temperature
         )
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+    except (RuntimeError, urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
         logger.debug("OpenRouter request failed, trying Qwen 4B fallback")
 
     # Try local Qwen 4B
