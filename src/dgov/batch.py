@@ -62,13 +62,22 @@ def create_checkpoint(
     checkpoint_dir = Path(session_root) / _STATE_DIR / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / f"{name}.json"
+
+    overwrote = None
+    if checkpoint_path.exists():
+        existing = json.loads(checkpoint_path.read_text())
+        overwrote = existing.get("ts", "unknown")
+
     with open(checkpoint_path, "w") as f:
         json.dump(checkpoint, f, indent=2, default=str)
         f.write("\n")
 
     _emit_event(session_root, "checkpoint_created", f"checkpoint/{name}", main_sha=main_sha)
 
-    return {"checkpoint": name, "main_sha": main_sha, "pane_count": len(panes)}
+    result = {"checkpoint": name, "main_sha": main_sha, "pane_count": len(panes)}
+    if overwrote:
+        result["overwrote"] = overwrote
+    return result
 
 
 def list_checkpoints(session_root: str) -> list[dict]:
