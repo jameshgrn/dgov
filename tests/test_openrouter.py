@@ -188,11 +188,12 @@ class TestClassifyTask:
 
 
 class TestGenerateSlug:
-    def test_slug_from_openrouter(self):
+    def test_slug_from_qwen4b(self):
+        """Slug gen uses local Qwen 4B, not OpenRouter (efficiency)."""
         from dgov.strategy import _generate_slug
 
         with patch(
-            "dgov.panes.chat_completion",
+            "dgov.panes._qwen_4b_request",
             return_value={"choices": [{"message": {"content": "fix-login-bug"}}]},
         ):
             assert _generate_slug("Fix the login bug in auth.py") == "fix-login-bug"
@@ -200,7 +201,7 @@ class TestGenerateSlug:
     def test_slug_word_extraction_fallback(self):
         from dgov.strategy import _generate_slug
 
-        with patch("dgov.panes.chat_completion", side_effect=RuntimeError("fail")):
+        with patch("dgov.panes._qwen_4b_request", side_effect=RuntimeError("fail")):
             slug = _generate_slug("fix login bug auth")
             assert "fix" in slug or "login" in slug or "bug" in slug
 
@@ -208,7 +209,7 @@ class TestGenerateSlug:
         from dgov.strategy import _generate_slug
 
         with patch(
-            "dgov.panes.chat_completion",
+            "dgov.panes._qwen_4b_request",
             return_value={"choices": [{"message": {"content": "Here is a slug: my-slug!"}}]},
         ):
             # The LLM returned something that doesn't pass validation after cleanup

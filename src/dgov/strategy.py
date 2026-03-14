@@ -17,11 +17,8 @@ from dgov.openrouter import _QWEN_4B_TIMEOUT, _QWEN_4B_URL, _qwen_4b_request  # 
 def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str:
     """Classify a task prompt and recommend an agent.
 
-    Uses OpenRouter (with Qwen 4B fallback) to classify.
-    When installed_agents is provided and OpenRouter is available,
-    classifies across all installed agents (not just pi/claude).
-
-    Falls back to "claude" if all LLM providers are unreachable.
+    Uses OpenRouter (high-powered free models) for classification — this
+    benefits from real intelligence. Falls back to Qwen 4B then "claude".
     """
     import dgov.panes as _p  # access through panes so test mocks propagate
 
@@ -156,11 +153,15 @@ def _validate_slug(slug: str) -> str:
 
 
 def _generate_slug(prompt: str, max_words: int = 4) -> str:
-    """Generate a descriptive kebab-case slug, with local fallback."""
+    """Generate a descriptive kebab-case slug using local Qwen 4B.
+
+    Slug gen is trivial — use the local model, don't waste OpenRouter requests.
+    Fallback chain: Qwen 4B -> word extraction.
+    """
     import dgov.panes as _p  # access through panes so test mocks propagate
 
     try:
-        result = _p.chat_completion(
+        result = _p._qwen_4b_request(
             messages=[
                 {
                     "role": "system",

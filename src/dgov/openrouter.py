@@ -21,8 +21,9 @@ logger = logging.getLogger(__name__)
 
 _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key"
 _OPENROUTER_TIMEOUT = 10
-_DEFAULT_MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+_DEFAULT_MODEL = "openrouter/hunter-alpha"
 _REFERER = "https://github.com/jameshgrn/dgov"
 _TITLE = "dgov"
 
@@ -225,18 +226,54 @@ def list_free_models() -> list[dict]:
     models = []
     for m in data.get("data", []):
         model_id = m.get("id", "")
-        if model_id.endswith(":free"):
-            models.append({"id": model_id, "name": m.get("name", model_id)})
+        pricing = m.get("pricing", {})
+        prompt_cost = str(pricing.get("prompt", "1"))
+        completion_cost = str(pricing.get("completion", "1"))
+        is_free = model_id.endswith(":free") or (prompt_cost == "0" and completion_cost == "0")
+        if is_free:
+            models.append(
+                {
+                    "id": model_id,
+                    "name": m.get("name", model_id),
+                    "context_length": m.get("context_length", 0),
+                }
+            )
 
     _free_models_cache = models
     _free_models_cache_time = now
     return models
 
 
-def check_status() -> dict:
-    """Verify API key is set and API is reachable.
+def get_key_info() -> dict:
+    """Fetch account info for the current API key.
 
-    Returns dict with 'api_key_set', 'api_reachable', 'default_model', 'error'.
+    Returns dict with 'label', 'usage', 'limit', 'credits', 'rate_limit', etc.
+    Returns empty dict with 'error' on failure.
+    """
+    api_key = _get_api_key()
+    if not api_key:
+        return {"error": "No API key configured"}
+
+    req = urllib.request.Request(
+        _OPENROUTER_KEY_URL,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "HTTP-Referer": _REFERER,
+            "X-Title": _TITLE,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_OPENROUTER_TIMEOUT) as resp:
+            return json.loads(resp.read()).get("data", {})
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def check_status() -> dict:
+    """Verify API key is set and API is reachable, including account info.
+
+    Returns dict with 'api_key_set', 'api_reachable', 'default_model',
+    'account', 'error'.
     """
 
     api_key = _get_api_key()
@@ -244,6 +281,7 @@ def check_status() -> dict:
         "api_key_set": bool(api_key),
         "default_model": _get_default_model(),
         "api_reachable": False,
+        "account": None,
         "error": None,
     }
 
@@ -265,5 +303,10 @@ def check_status() -> dict:
                 result["api_reachable"] = True
     except Exception as exc:
         result["error"] = str(exc)
+
+    # Fetch account/key info
+    key_info = get_key_info()
+    if "error" not in key_info:
+        result["account"] = key_info
 
     return result
