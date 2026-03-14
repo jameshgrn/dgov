@@ -30,6 +30,7 @@ from dgov.persistence import (
     _row_to_dict,
     _set_pane_metadata,
     _update_pane_state,
+    read_events,
 )
 from dgov.strategy import _generate_slug, _structure_pi_prompt, _validate_slug
 from dgov.waiter import _is_done, _wrap_done_signal
@@ -145,28 +146,6 @@ def _build_pane_title(slug: str, project_root: str) -> str:
 
 
 # -- Freshness --
-
-
-def _count_auto_responses(session_root: str, slug: str) -> int:
-    """Count pane_auto_responded events for a slug from the event journal."""
-    import json as _json
-
-    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
-    if not events_path.exists():
-        return 0
-    count = 0
-    with open(events_path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                ev = _json.loads(line)
-            except _json.JSONDecodeError:
-                continue
-            if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug:
-                count += 1
-    return count
 
 
 def _compute_freshness(project_root: str, pane_record: dict) -> dict:
@@ -798,13 +777,14 @@ def review_worker_pane(
 
     freshness = _compute_freshness(project_root, target)
 
-    # Retry count from events
+    # Load events once, derive both counters from one pass
     from dgov.retry import _count_retries
 
-    retry_count = _count_retries(session_root, slug)
-
-    # Count auto-responses from event journal
-    auto_respond_count = _count_auto_responses(session_root, slug)
+    events = read_events(session_root)
+    retry_count = _count_retries(session_root, slug, events=events)
+    auto_respond_count = sum(
+        1 for ev in events if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug
+    )
 
     result = {
         "slug": slug,

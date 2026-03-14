@@ -11,11 +11,11 @@ import pytest
 from dgov.blame import (
     _extract_slug_from_subject,
     _group_blame_lines,
-    _load_events,
     _parse_porcelain_blame,
     blame_file,
     blame_lines,
 )
+from dgov.persistence import read_events
 
 pytestmark = pytest.mark.unit
 
@@ -42,13 +42,13 @@ class TestExtractSlugFromSubject:
 
 
 # ---------------------------------------------------------------------------
-# _load_events
+# read_events (centralized in persistence.py)
 # ---------------------------------------------------------------------------
 
 
-class TestLoadEvents:
+class TestReadEvents:
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
-        assert _load_events(str(tmp_path)) == []
+        assert read_events(str(tmp_path)) == []
 
     def test_reads_jsonl(self, tmp_path: Path) -> None:
         events_dir = tmp_path / ".dgov"
@@ -60,21 +60,36 @@ class TestLoadEvents:
             + json.dumps({"event": "pane_merged", "pane": "fix-bug"})
             + "\n"
         )
-        events = _load_events(str(tmp_path))
+        events = read_events(str(tmp_path))
         assert len(events) == 2
         assert events[0]["event"] == "pane_created"
         assert events[1]["event"] == "pane_merged"
 
-    def test_skips_malformed_lines(self, tmp_path: Path) -> None:
+    def test_warns_on_malformed_lines(self, tmp_path: Path, caplog) -> None:
         events_dir = tmp_path / ".dgov"
         events_dir.mkdir()
         events_file = events_dir / "events.jsonl"
         events_file.write_text(
             "not valid json\n" + json.dumps({"event": "pane_created", "pane": "ok"}) + "\n" + "\n"
         )
-        events = _load_events(str(tmp_path))
+        events = read_events(str(tmp_path))
         assert len(events) == 1
         assert events[0]["pane"] == "ok"
+        assert "Malformed JSON" in caplog.text
+
+    def test_filters_by_slug(self, tmp_path: Path) -> None:
+        events_dir = tmp_path / ".dgov"
+        events_dir.mkdir()
+        events_file = events_dir / "events.jsonl"
+        events_file.write_text(
+            json.dumps({"event": "pane_created", "pane": "a"})
+            + "\n"
+            + json.dumps({"event": "pane_created", "pane": "b"})
+            + "\n"
+        )
+        events = read_events(str(tmp_path), slug="a")
+        assert len(events) == 1
+        assert events[0]["pane"] == "a"
 
 
 # ---------------------------------------------------------------------------
