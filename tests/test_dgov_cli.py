@@ -105,6 +105,8 @@ class TestBareCli:
                 "dgov.cli.subprocess.run",
                 return_value=_cp(stdout="%11\n"),
             ),
+            patch("dgov.agents.get_governor_agent", return_value=("claude", "")),
+            patch("dgov.cli.os.execvp") as mock_execvp,
         ):
             result = runner.invoke(cli, [])
 
@@ -112,6 +114,7 @@ class TestBareCli:
         assert f"{tmp_path.name} \u2014 governor ready" in result.output
         mock_style_session.assert_called_once_with()
         mock_style_governor.assert_called_once_with("%11")
+        mock_execvp.assert_called_once()
 
     def test_outside_tmux_creates_session_and_attaches(
         self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -131,6 +134,7 @@ class TestBareCli:
             patch("dgov.cli.subprocess.run", side_effect=fake_run),
             patch("dgov.tmux.style_dgov_session") as mock_style_session,
             patch("dgov.cli.os.execvp") as mock_execvp,
+            patch("dgov.agents.get_governor_agent", return_value=("claude", "")),
         ):
             result = runner.invoke(cli, [])
 
