@@ -181,6 +181,15 @@ def _compute_freshness(project_root: str, pane_record: dict) -> dict:
 
     age_hours = (time.time() - created_at) / 3600 if created_at else 0
 
+    # Early exit: if worktree is gone, it's stale — skip all git calls
+    if wt and not Path(wt).exists():
+        return {
+            "freshness": "stale",
+            "commits_since_base": 0,
+            "overlapping_files": [],
+            "pane_age_hours": round(age_hours, 1),
+        }
+
     # Commits on main since base
     commits_since = 0
     if base_sha:
@@ -570,8 +579,18 @@ def close_worker_pane(
     return True
 
 
-def list_worker_panes(project_root: str, session_root: str | None = None) -> list[dict]:
-    """List worker panes with live status from tmux."""
+def list_worker_panes(
+    project_root: str,
+    session_root: str | None = None,
+    *,
+    include_freshness: bool = True,
+) -> list[dict]:
+    """List worker panes with live status from tmux.
+
+    When *include_freshness* is False, skip the per-pane git subprocess calls
+    that compute freshness (up to 3 git calls per pane). Use False in hot
+    paths like dashboard refresh and preflight checks that don't need it.
+    """
     session_root = os.path.abspath(session_root or project_root)
     panes = _all_panes(session_root)
     all_tmux = get_backend().bulk_info()
@@ -590,7 +609,15 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
                 updated = _get_pane(session_root, slug)
                 if updated:
                     state = updated.get("state", state)
-        freshness = _compute_freshness(project_root, p)
+        if include_freshness:
+            freshness = _compute_freshness(project_root, p)
+        else:
+            freshness = {
+                "freshness": "unknown",
+                "commits_since_base": 0,
+                "overlapping_files": [],
+                "pane_age_hours": 0,
+            }
         entry: dict = {
             "slug": slug,
             "agent": p.get("agent"),
