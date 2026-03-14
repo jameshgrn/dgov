@@ -1230,19 +1230,16 @@ def resume_worker_pane(
 
     # Update state: new pane_id, back to active
     conn = _get_db(session_root)
-    try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
-        if row:
-            d = _row_to_dict(row)
-            d["pane_id"] = pane_id
-            d["state"] = "active"
-            if agent:
-                d["agent"] = resume_agent
-            _insert_pane_dict(conn, d)
-            conn.commit()
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
+    if row:
+        d = _row_to_dict(row)
+        d["pane_id"] = pane_id
+        d["state"] = "active"
+        if agent:
+            d["agent"] = resume_agent
+        _insert_pane_dict(conn, d)
+        conn.commit()
 
     _emit_event(session_root, "pane_resumed", slug, agent=resume_agent)
 
