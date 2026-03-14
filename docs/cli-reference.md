@@ -43,6 +43,37 @@ Rebase the governor's branch onto its upstream. Stashes dirty changes, rebases, 
 |------|-------|------|---------|-------------|
 | `--onto` | | string | `None` | Explicit base branch (default: auto-detect upstream or main) |
 
+### dgov dashboard
+
+Launch a live terminal dashboard showing pane status, agents, and health. Refreshes at a configurable interval.
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--project-root` | `-r` | string | `.` | Project root |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
+| `--refresh` | | float | `2` | Refresh interval in seconds |
+
+---
+
+## OpenRouter integration
+
+### dgov openrouter status
+
+Show API key status, default model, and connectivity to OpenRouter. No arguments.
+
+### dgov openrouter models
+
+List available free models on OpenRouter. No arguments.
+
+### dgov openrouter test
+
+Send a test prompt to OpenRouter and show the response.
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--prompt` | `-p` | string | `Say hello in one word.` | Test prompt |
+| `--model` | `-m` | string | `None` | Model to use (default: account default) |
+
 ---
 
 ## Pane lifecycle
@@ -83,6 +114,12 @@ Wait for a single worker pane to finish. Three detection modes (first wins): don
 | `--poll` | `-i` | int | `3` | Poll interval in seconds |
 | `--stable` | `-s` | int | `15` | Seconds of stable output before declaring done |
 | `--auto-retry` | | bool | `True` | Auto-retry failed panes per agent retry policy |
+
+### dgov pane classify
+
+Classify a task and recommend an agent (OpenRouter or local Qwen 4B).
+
+**Arguments**: `PROMPT`
 
 ### dgov pane wait-all
 
@@ -141,31 +178,43 @@ Merge ALL done worker panes sequentially. Prints combined summary with merged/fa
 
 ## Pane recovery
 
-### dgov pane escalate
-
-Re-dispatch a pane's task to a different (stronger) agent.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--agent` | `-a` | string | `claude` | Agent to escalate to |
-| `--permission-mode`| `-m`| string | `acceptEdits` | Permission mode for the new agent |
-
 ### dgov pane retry
 
 Retry a failed pane with a new attempt. Creates a new pane with an attempt suffix; original is marked `superseded`.
 
+**Arguments**: `SLUG`
+
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--project-root` | `-r` | string | `.` | Project root |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--agent` | `-a` | string | `None` | Override agent for retry |
 | `--prompt` | `-p` | string | `None` | Override prompt for retry |
-| `--permission-mode`| `-m`| string | `acceptEdits` | Permission mode |
+| `--permission-mode` | `-m` | string | `acceptEdits` | Permission mode |
+
+### dgov pane escalate
+
+Re-dispatch a pane's task to a different (stronger) agent.
+
+**Arguments**: `SLUG`
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--project-root` | `-r` | string | `.` | Project root |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
+| `--agent` | `-a` | string | `claude` | Agent to escalate to |
+| `--permission-mode`| `-m`| string | `acceptEdits` | Permission mode for the new agent |
 
 ### dgov pane resume
 
 Re-launch an agent in an existing worktree (no new branch or worktree created).
 
+**Arguments**: `SLUG`
+
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--project-root` | `-r` | string | `.` | Project root |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--agent` | `-a` | string | `None` | Override agent |
 | `--prompt` | `-p` | string | `None` | Override prompt |
 | `--permission-mode`| `-m`| string | `acceptEdits` | Permission mode |
@@ -399,7 +448,7 @@ Run the review-then-fix pipeline: review targets, collect findings, optionally d
 
 ### dgov blame
 
-Show which agent/pane last touched a file. Resolves commits to agents via merge SHA lookup and subject line parsing.
+Show which agent/pane last touched a file. Resolves commits to agents via merge SHA lookup and subject line parsing. Supports line-level blame for inspecting specific line ranges.
 
 **Arguments**: `FILE_PATH`
 
@@ -409,6 +458,8 @@ Show which agent/pane last touched a file. Resolves commits to agents via merge 
 | `--session-root` | `-R` | string | `None` | Session root |
 | `--all` | `-a` | bool | `False` | Show full history (not just last touch) |
 | `--agent` | | string | `None` | Filter by agent name |
+| `--line-level` | | bool | `False` | Show line-level blame detail |
+| `--lines` | `-L` | string | `None` | Line range for line-level blame (e.g. `10-20` or `10`) |
 
 Note: `blame` uses `-R` for `--session-root`, not `-S`.
 
@@ -418,6 +469,8 @@ Run pre-flight checks before dispatch. Standalone version of the checks that run
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
+| `--project-root` | `-r` | string | `.` | Project root |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--agent` | `-a` | string | `claude` | Agent to validate for |
 | `--fix` | | bool | `False` | Auto-fix fixable failures |
 | `--touches` | `-t` | string | `None` | Files the task will touch (repeatable) |
