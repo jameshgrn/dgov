@@ -132,7 +132,9 @@ def fetch_panes(state: DashboardState) -> None:
     from dgov.panes import list_worker_panes
 
     try:
-        panes = list_worker_panes(state.project_root, session_root=state.session_root)
+        panes = list_worker_panes(
+            state.project_root, session_root=state.session_root, include_freshness=False
+        )
         branch = _get_branch(state.project_root)
         with state.lock:
             state.panes = panes

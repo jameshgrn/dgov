@@ -242,7 +242,7 @@ def check_stale_worktrees(project_root: str) -> CheckResult:
     # Check which worktrees have matching pane state
     from dgov.panes import list_worker_panes
 
-    panes = list_worker_panes(project_root)
+    panes = list_worker_panes(project_root, include_freshness=False)
     pane_worktrees = {p.get("worktree_path") for p in panes}
     stale = [wt for wt in worktrees if wt not in pane_worktrees]
 
@@ -276,7 +276,7 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
     from dgov.panes import list_worker_panes
 
     root = Path(project_root).resolve()
-    panes = list_worker_panes(project_root)
+    panes = list_worker_panes(project_root, include_freshness=False)
     conflicts: list[str] = []
 
     for pane in panes:
