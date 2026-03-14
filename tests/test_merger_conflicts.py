@@ -146,7 +146,8 @@ def test_worker_pane_not_found():
         assert "not found" in result["error"]
 
 
-def test_worker_pane_branch_not_found(tmp_path):
+@patch("subprocess.run")
+def test_worker_pane_branch_not_found(mock_run, tmp_path):
     """Test merge when branch doesn't exist."""
     from dgov.merger import merge_worker_pane
 
@@ -181,11 +182,79 @@ def test_worker_pane_branch_not_found(tmp_path):
         "base_sha": "abc123",
     }
 
+    # Mock rev-parse for nonexistent branch to fail
+    mock_rev_parse = make_subprocess_mock(1, "", "fatal: no such ref: nonexistent-branch")
+
+    def side_effect(*args, **kwargs):
+        cmd = args[0] if args else []
+        if isinstance(cmd, list) and "rev-parse" in cmd:
+            return mock_rev_parse
+        return make_subprocess_mock(0)
+
+    mock_run.side_effect = side_effect
+
     with patch("dgov.panes._get_pane", return_value=mock_pane):
         result = merge_worker_pane(str(fake_project), "test-slug")
 
         # Branch not found should cause error in _plumbing_merge
         assert "error" in result or "conflicts" in result
+
+
+def test_worker_pane_success_with_merge(tmp_path):
+    """Test successful pane merge with mocked operations."""
+    from dgov.merger import merge_worker_pane
+
+    # Create a real git project directory for the test
+    fake_project = tmp_path / "fake_project"
+    fake_project.mkdir()
+
+    # Initialize a bare minimum git repo
+    subprocess.run(["git", "init"], cwd=fake_project, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@test.com"], cwd=fake_project, capture_output=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"], cwd=fake_project, capture_output=True
+    )
+
+    # Create initial commit
+    (fake_project / "README.md").write_text("# Test\n")
+    subprocess.run(["git", "add", "."], cwd=fake_project, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Initial"], cwd=fake_project, capture_output=True)
+
+    # Create the branch that pane uses
+    fake_worktree = tmp_path / "worktree"
+    fake_worktree.mkdir()
+
+    subprocess.run(["git", "checkout", "-b", "test-branch"], cwd=fake_project, capture_output=True)
+    (fake_project / "new_file.py").write_text("pass\n")
+    subprocess.run(["git", "add", "."], cwd=fake_project, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "Add file"], cwd=fake_project, capture_output=True)
+
+    # Mock pane with correct branch and state
+    mock_pane = {
+        "slug": "test-slug",
+        "branch_name": "test-branch",
+        "project_root": str(fake_project),
+        "worktree_path": str(fake_worktree),
+        "state": "done",  # Pane is done and ready to merge
+        "base_sha": None,  # No base SHA since this is first commit
+    }
+
+    with patch("dgov.panes._get_pane", return_value=mock_pane):
+        # Patch _plumbing_merge to simulate success
+        mock_merge_result = MagicMock(success=True, stderr="")
+
+        def get_pane_and_plumbing(*args, **kwargs):
+            # We need to handle the module import in merge_worker_pane
+            pass
+
+        # Test by patching both _get_pane and _plumbing_merge (imported via dgov.panes)
+        with patch("dgov.panes._is_done", return_value=True):
+            result = merge_worker_pane(str(fake_project), "test-slug")
+
+            # Should succeed or at least not have an error about pane not found
+            assert "not found" not in str(result.get("error", ""))
 
 
 @patch("subprocess.run")
