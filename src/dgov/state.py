@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 
 from dgov.panes import list_worker_panes
 
@@ -11,33 +12,42 @@ _TUNNEL_PORTS = (8080, 8081, 8082, 8083)
 _HEALTH_TIMEOUT = 2
 
 
+def _check_single_port(port: int) -> tuple[int, str]:
+    """Check a single port and return (port, "up"|"down")."""
+    try:
+        result = subprocess.run(
+            [
+                "curl",
+                "-s",
+                "-o",
+                "/dev/null",
+                "-w",
+                "%{http_code}",
+                "--max-time",
+                str(_HEALTH_TIMEOUT),
+                f"http://localhost:{port}/health",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_HEALTH_TIMEOUT + 2,
+        )
+        return port, ("up" if result.stdout.strip() == "200" else "down")
+    except (subprocess.TimeoutExpired, OSError):
+        return port, "down"
+
+
 def _check_tunnel_health() -> dict:
-    """Check SSH tunnel health by probing each llama.cpp port.
+    """Check SSH tunnel health by probing each llama.cpp port in parallel.
 
     Returns {"ports": {8080: "up"|"down", ...}, "any_up": bool}.
     """
     ports: dict[int, str] = {}
-    for port in _TUNNEL_PORTS:
-        try:
-            result = subprocess.run(
-                [
-                    "curl",
-                    "-s",
-                    "-o",
-                    "/dev/null",
-                    "-w",
-                    "%{http_code}",
-                    "--max-time",
-                    str(_HEALTH_TIMEOUT),
-                    f"http://localhost:{port}/health",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=_HEALTH_TIMEOUT + 2,
-            )
-            ports[port] = "up" if result.stdout.strip() == "200" else "down"
-        except (subprocess.TimeoutExpired, OSError):
-            ports[port] = "down"
+    with ThreadPoolExecutor(max_workers=len(_TUNNEL_PORTS)) as executor:
+        results = list(executor.map(_check_single_port, _TUNNEL_PORTS))
+
+    for port, status in results:
+        ports[port] = status
+
     return {"ports": ports, "any_up": any(v == "up" for v in ports.values())}
 
 

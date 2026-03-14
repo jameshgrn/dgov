@@ -1865,6 +1865,10 @@ class TestEmitEvent:
         assert len(created) == 1
         assert created[0]["agent"] == "claude"
         assert created[0]["pane"] == "test-slug"
+        assert mock_backend.create_pane.call_args.kwargs["env"] == {
+            "DISABLE_AUTO_UPDATE": "true",
+            "DISABLE_UPDATE_PROMPT": "true",
+        }
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,13 @@ class TestFactory:
 
     def test_set_backend_overrides_default(self):
         class FakeBackend:
-            def create_pane(self, *, cwd: str, target: str | None = None) -> str:
+            def create_pane(
+                self,
+                *,
+                cwd: str,
+                target: str | None = None,
+                env: dict[str, str] | None = None,
+            ) -> str:
                 return "fake-id"
 
             def destroy(self, worker_id: str) -> None:
@@ -106,7 +112,13 @@ class TestFactory:
 
     def test_mock_backend_create_pane(self):
         class MockBackend:
-            def create_pane(self, *, cwd: str, target: str | None = None) -> str:
+            def create_pane(
+                self,
+                *,
+                cwd: str,
+                target: str | None = None,
+                env: dict[str, str] | None = None,
+            ) -> str:
                 return f"mock-{cwd}"
 
             def destroy(self, worker_id: str) -> None:

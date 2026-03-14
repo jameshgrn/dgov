@@ -515,6 +515,7 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "all ports up"),
+            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
             "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
@@ -525,16 +526,16 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "dgov.agents.load_registry",
         lambda pr: {
-            "claude": AgentDef(
-                id="claude",
-                name="Claude",
-                short_label="cc",
-                prompt_command="claude",
+            "pi": AgentDef(
+                id="pi",
+                name="pi CLI",
+                short_label="pi",
+                prompt_command="pi",
                 prompt_transport="positional",
             )
         },
     )
-    report = run_preflight("/tmp/repo", agent="claude")
+    report = run_preflight("/tmp/repo", agent="pi")
     assert report.passed is True
 
 
@@ -545,6 +546,8 @@ def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_agent_cli": CheckResult("agent_cli", False, True, "not found"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_tunnel": CheckResult("tunnel", True, True, "ok"),
+            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
             "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
@@ -554,16 +557,16 @@ def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "dgov.agents.load_registry",
         lambda pr: {
-            "claude": AgentDef(
-                id="claude",
-                name="Claude",
-                short_label="cc",
-                prompt_command="claude",
+            "pi": AgentDef(
+                id="pi",
+                name="pi CLI",
+                short_label="pi",
+                prompt_command="pi",
                 prompt_transport="positional",
             )
         },
     )
-    report = run_preflight("/tmp/repo", agent="claude")
+    report = run_preflight("/tmp/repo", agent="pi")
     assert report.passed is False
 
 
@@ -577,6 +580,8 @@ def test_run_preflight_includes_health_check_when_configured(
             "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_tunnel": CheckResult("tunnel", True, True, "ok"),
+            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
             "check_agent_health": CheckResult("agent_health", True, True, "ok"),
             "check_agent_concurrency": CheckResult("agent_concurrency", True, True, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
@@ -612,6 +617,7 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "ok"),
+            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
             "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
@@ -621,24 +627,24 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
     monkeypatch.setattr(
         "dgov.agents.load_registry",
         lambda pr: {
-            "claude": AgentDef(
-                id="claude",
-                name="Claude",
-                short_label="cc",
-                prompt_command="claude",
+            "pi": AgentDef(
+                id="pi",
+                name="pi CLI",
+                short_label="pi",
+                prompt_command="pi",
                 prompt_transport="positional",
             )
         },
     )
-    report = run_preflight("/tmp/repo", agent="claude")
+    report = run_preflight("/tmp/repo", agent="pi")
     names = {c.name for c in report.checks}
     assert "agent_health" not in names
 
 
-def test_run_preflight_always_includes_tunnel_check(
+def test_run_preflight_includes_tunnel_check_for_pi(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verify tunnel check runs unconditionally for any agent."""
+    """Verify tunnel check runs for pi agent."""
 
     _patch_all_checks(
         monkeypatch,
@@ -647,6 +653,42 @@ def test_run_preflight_always_includes_tunnel_check(
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_tunnel": CheckResult("tunnel", True, True, "all ports up"),
+            "check_kerberos": CheckResult("kerberos", True, True, "ok"),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
+            "check_deps": CheckResult("deps", True, False, "ok"),
+            "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
+            "check_file_locks": CheckResult("file_locks", True, True, "ok"),
+        },
+    )
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "pi": AgentDef(
+                id="pi",
+                name="pi",
+                short_label="pi",
+                prompt_command="pi",
+                prompt_transport="positional",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="pi")
+    names = {c.name for c in report.checks}
+    assert "tunnel" in names
+    assert "kerberos" in names
+
+
+def test_run_preflight_skips_tunnel_check_for_claude(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify tunnel check is skipped for non-pi agents."""
+
+    _patch_all_checks(
+        monkeypatch,
+        {
+            "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
+            "check_git_clean": CheckResult("git_clean", True, True, "ok"),
+            "check_git_branch": CheckResult("git_branch", True, False, "ok"),
             "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
@@ -667,7 +709,8 @@ def test_run_preflight_always_includes_tunnel_check(
     )
     report = run_preflight("/tmp/repo", agent="claude")
     names = {c.name for c in report.checks}
-    assert "tunnel" in names
+    assert "tunnel" not in names
+    assert "kerberos" not in names
 
 
 def test_run_preflight_tunnel_failure_blocks_execution(
@@ -693,16 +736,16 @@ def test_run_preflight_tunnel_failure_blocks_execution(
     monkeypatch.setattr(
         "dgov.agents.load_registry",
         lambda pr: {
-            "claude": AgentDef(
-                id="claude",
-                name="Claude",
-                short_label="cc",
-                prompt_command="claude",
+            "pi": AgentDef(
+                id="pi",
+                name="pi CLI",
+                short_label="pi",
+                prompt_command="pi",
                 prompt_transport="positional",
             )
         },
     )
-    report = run_preflight("/tmp/repo", agent="claude")
+    report = run_preflight("/tmp/repo", agent="pi")
     assert report.passed is False
     tunnel_check = next(c for c in report.checks if c.name == "tunnel")
     assert tunnel_check.passed is False

@@ -123,7 +123,14 @@ class TestPaneCommands:
 
         monkeypatch.setattr("dgov.tmux.subprocess.run", fake_run)
 
-        assert split_pane(cwd="/repo", target="%1") == "%5"
+        assert (
+            split_pane(
+                cwd="/repo",
+                target="%1",
+                env={"DISABLE_AUTO_UPDATE": "true", "DISABLE_UPDATE_PROMPT": "true"},
+            )
+            == "%5"
+        )
         send_command("%5", "ls -la")
         set_title("%5", "worker")
         assert capture_pane("%5", lines=2) == "line1\nline2"
@@ -139,6 +146,10 @@ class TestPaneCommands:
             "-P",
             "-F",
             "#{pane_id}",
+            "-e",
+            "DISABLE_AUTO_UPDATE=true",
+            "-e",
+            "DISABLE_UPDATE_PROMPT=true",
             "-t",
             "%1",
             "-c",

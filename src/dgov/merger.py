@@ -87,6 +87,22 @@ def _plumbing_merge(
     if current_branch.returncode != 0:
         return MergeResult(success=False, stderr="Detached HEAD — cannot advance ref")
 
+    # Stash uncommitted changes on main worktree before ref update and reset
+    status = subprocess.run(
+        ["git", "-C", project_root, "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    dirty = bool(status.stdout.strip())
+    stashed = False
+    if dirty:
+        stash = subprocess.run(
+            ["git", "-C", project_root, "stash", "push", "-m", "dgov-plumbing-merge-auto"],
+            capture_output=True,
+            text=True,
+        )
+        stashed = stash.returncode == 0
+
     branch_ref = f"refs/heads/{current_branch.stdout.strip()}"
     update = subprocess.run(
         ["git", "-C", project_root, "update-ref", branch_ref, new_commit],
@@ -94,6 +110,8 @@ def _plumbing_merge(
         text=True,
     )
     if update.returncode != 0:
+        if stashed:
+            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
         return MergeResult(success=False, stderr=update.stderr.strip())
 
     # Reset working tree to match new commit
@@ -103,7 +121,13 @@ def _plumbing_merge(
         text=True,
     )
     if reset.returncode != 0:
+        if stashed:
+            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
         return MergeResult(success=False, stderr="reset --hard failed after ref update")
+
+    # Pop stash if we stashed
+    if stashed:
+        subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
 
     return MergeResult(success=True)
 

@@ -559,8 +559,10 @@ def run_preflight(
     checks.append(check_git_clean(project_root))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
-    # Always check tunnel ports (critical infrastructure check)
-    checks.append(check_tunnel())
+    # Tunnel and Kerberos checks — only for 'pi' agent
+    if agent == "pi":
+        checks.append(check_tunnel())
+        checks.append(check_kerberos())
 
     # Config-driven health check for agents with custom health_check
     agent_def = registry.get(agent)

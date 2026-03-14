@@ -50,14 +50,23 @@ def ensure_session(name: str = "dgov") -> None:
     )
 
 
-def split_pane(*, cwd: str | None = None, target: str | None = None) -> str:
+def split_pane(
+    *,
+    cwd: str | None = None,
+    target: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
     """Split the current tmux window and return the new pane ID."""
     args = ["split-window", "-h", "-P", "-F", "#{pane_id}"]
+    if env:
+        for key, value in sorted(env.items()):
+            args.extend(["-e", f"{key}={value}"])
     if target:
         args.extend(["-t", target])
     if cwd:
         args.extend(["-c", cwd])
     return _run(args)
+
 
 
 def send_command(pane_id: str, command: str) -> None:

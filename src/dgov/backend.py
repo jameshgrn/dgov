@@ -16,7 +16,13 @@ logger = logging.getLogger(__name__)
 class WorkerBackend(Protocol):
     """Abstract interface for worker execution backends."""
 
-    def create_pane(self, *, cwd: str, target: str | None = None) -> str:
+    def create_pane(
+        self,
+        *,
+        cwd: str,
+        target: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
         """Create a new worker pane/container. Return a worker_id."""
         ...
 
@@ -84,10 +90,16 @@ class WorkerBackend(Protocol):
 class TmuxBackend:
     """tmux-based worker backend — wraps dgov.tmux functions."""
 
-    def create_pane(self, *, cwd: str, target: str | None = None) -> str:
+    def create_pane(
+        self,
+        *,
+        cwd: str,
+        target: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> str:
         from dgov import tmux
 
-        return tmux.split_pane(cwd=cwd, target=target)
+        return tmux.split_pane(cwd=cwd, target=target, env=env)
 
     def destroy(self, worker_id: str) -> None:
         from dgov import tmux

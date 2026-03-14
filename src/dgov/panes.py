@@ -410,9 +410,14 @@ def create_worker_pane(
                     f"Wait for one to finish or use a different agent."
                 )
 
+        startup_env = {
+            "DISABLE_AUTO_UPDATE": "true",
+            "DISABLE_UPDATE_PROMPT": "true",
+        }
+
         # 3. Split tmux pane
         get_backend().setup_pane_borders()
-        pane_id = get_backend().create_pane(cwd=worktree_path)
+        pane_id = get_backend().create_pane(cwd=worktree_path, env=startup_env)
 
         # Let the login shell finish startup before injecting commands.
         time.sleep(0.25)
@@ -1211,9 +1216,14 @@ def resume_worker_pane(
     # Rewrite paths
     rewritten_prompt = full_prompt.replace(project_root, worktree_path)
 
+    startup_env = {
+        "DISABLE_AUTO_UPDATE": "true",
+        "DISABLE_UPDATE_PROMPT": "true",
+    }
+
     # Create new tmux pane
     get_backend().setup_pane_borders()
-    pane_id = get_backend().create_pane(cwd=worktree_path)
+    pane_id = get_backend().create_pane(cwd=worktree_path, env=startup_env)
 
     # Let the login shell finish startup before injecting commands.
     time.sleep(0.25)
