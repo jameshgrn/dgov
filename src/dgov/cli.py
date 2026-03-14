@@ -621,6 +621,9 @@ def pane_list(project_root, session_root, as_json):
         click.echo(json.dumps(panes, indent=2))
         return
 
+    if not sys.stdout.isatty():
+        click.echo("hint: use --json for machine-readable output", err=True)
+
     if not panes:
         click.echo("No panes.")
         return
@@ -668,7 +671,7 @@ def pane_prune(project_root, session_root):
 @pane.command("classify")
 @click.argument("prompt")
 def pane_classify(prompt):
-    """Classify a task prompt and recommend pi or claude."""
+    """Classify a task and recommend an agent (requires local Qwen 4B)."""
     from dgov.panes import classify_task
 
     agent = classify_task(prompt)
@@ -1075,13 +1078,23 @@ def template_show(name, project_root, session_root):
 @template.command("create")
 @click.argument("name")
 def template_create(name):
-    """Print TOML format for creating a new template file."""
-    click.echo(f"# Save to .dgov/templates/{name}.toml")
-    click.echo(f'name = "{name}"')
-    click.echo('description = ""')
-    click.echo('template = "Do {{thing}} in {{file}}. Commit."')
-    click.echo('required_vars = ["thing", "file"]')
-    click.echo('default_agent = "pi"')
+    """Create a new template file in .dgov/templates/."""
+    session_root = os.path.abspath(".")
+    templates_dir = Path(session_root) / ".dgov" / "templates"
+    templates_dir.mkdir(parents=True, exist_ok=True)
+    out_path = templates_dir / f"{name}.toml"
+    if out_path.exists():
+        click.echo(f"Template already exists: {out_path}", err=True)
+        sys.exit(1)
+    content = (
+        f'name = "{name}"\n'
+        'description = ""\n'
+        'template = "Do {{thing}} in {{file}}. Commit."\n'
+        'required_vars = ["thing", "file"]\n'
+        'default_agent = "pi"\n'
+    )
+    out_path.write_text(content)
+    click.echo(json.dumps({"created": str(out_path)}))
 
 
 @cli.group()
@@ -1194,6 +1207,10 @@ def experiment_log(program, project_root, session_root):
 
     session_root_abs = os.path.abspath(session_root or project_root)
     log = ExperimentLog(session_root_abs, program)
+    if not log.path.exists():
+        click.echo(
+            json.dumps({"warning": f"No experiment log found for program: {program}"}), err=True
+        )
     entries = log.read_log()
     click.echo(json.dumps(entries, indent=2))
 
@@ -1209,6 +1226,10 @@ def experiment_summary(program, project_root, session_root, direction):
 
     session_root_abs = os.path.abspath(session_root or project_root)
     log = ExperimentLog(session_root_abs, program)
+    if not log.path.exists():
+        click.echo(
+            json.dumps({"warning": f"No experiment log found for program: {program}"}), err=True
+        )
     click.echo(json.dumps(log.summary(direction), indent=2))
 
 
