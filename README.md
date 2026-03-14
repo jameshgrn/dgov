@@ -2,15 +2,13 @@
 
 A meta harness for AI coding agents.
 
-dgov is not an AI coding agent. It's the layer that sits above them. It orchestrates any CLI-based agent — Claude Code, Codex, Gemini, Cursor, Copilot, Cline, and others — through a uniform lifecycle: dispatch a task, wait for completion, review the diff, merge the result. The agents do the coding. dgov manages the workflow.
+A test harness runs tests. A meta harness runs the things that write the code. dgov sits above any CLI-based coding agent — Claude Code, Codex, Gemini, Cursor, Copilot, Cline, and others — and manages what they cannot manage about themselves: isolation, lifecycle, and integration.
 
-## Why "meta harness"?
+The problem is simple. AI coding agents edit files. When two agents edit the same repo at the same time, they collide. When an agent runs unsupervised, it stalls at permission prompts, drifts off-task, or silently fails. When it finishes, its changes sit on a branch that nobody reviews. dgov solves each of these problems through one mechanism: git worktrees governed by a uniform lifecycle.
 
-A test harness runs tests. A meta harness runs the things that write the code.
+Each agent gets its own worktree. Each worktree gets its own branch. The governor — you, sitting on `main` — dispatches tasks, waits for completion, reviews diffs, and merges results. The agents write code. dgov tracks state, logs events, and attributes every change to the agent that made it.
 
-Each agent gets its own git worktree, so multiple agents can work on the same repo simultaneously without stepping on each other. The governor (you, on `main`) dispatches workers into isolated branches, reviews their output, and merges results back. dgov tracks state, logs events, and attributes changes to the agent that made them.
-
-The harness is agent-agnostic (9 agents built in, any CLI tool added via TOML), backend-agnostic (tmux today, Docker/SSH tomorrow via a `WorkerBackend` protocol), and workflow-agnostic (single tasks, batch DAGs, experiment loops, review-fix pipelines — all built on the same dispatch-wait-review-merge primitives).
+The harness is agent-agnostic (11 agents built in, any CLI tool added via TOML), backend-agnostic (tmux today, Docker and SSH tomorrow via a `WorkerBackend` protocol), and workflow-agnostic. Single tasks, batch DAGs, experiment loops, and review-fix pipelines all compose from four primitives: dispatch, wait, review, merge.
 
 ## Design
 
