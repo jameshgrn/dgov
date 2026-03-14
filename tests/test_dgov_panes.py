@@ -254,42 +254,24 @@ class TestClassifyTask:
 
 
 class TestGenerateSlug:
-    def test_fallback_strips_stopwords(self) -> None:
-        # Force fallback by making chat_completion raise
-        with patch("dgov.panes.chat_completion", side_effect=ConnectionError):
-            slug = _generate_slug("fix the broken test in scheduler")
+    def test_strips_stopwords(self) -> None:
+        slug = _generate_slug("fix the broken test in scheduler")
         assert "the" not in slug.split("-")
         assert "in" not in slug.split("-")
         assert len(slug) > 0
 
-    def test_fallback_limits_words(self) -> None:
-        with patch("dgov.panes.chat_completion", side_effect=ConnectionError):
-            slug = _generate_slug("a b c d e f g h", max_words=3)
+    def test_limits_words(self) -> None:
+        slug = _generate_slug("a b c d e f g h", max_words=3)
         assert len(slug.split("-")) <= 3
 
-    def test_llm_success(self) -> None:
-        with patch(
-            "dgov.panes.chat_completion",
-            return_value={"choices": [{"message": {"content": "fix-lint-errors"}}]},
-        ):
-            slug = _generate_slug("Fix all the lint errors")
-        assert slug == "fix-lint-errors"
-
-    def test_llm_returns_too_long_fallback(self) -> None:
-        with patch(
-            "dgov.panes.chat_completion",
-            return_value={"choices": [{"message": {"content": "a" * 60}}]},
-        ):
-            slug = _generate_slug("fix the bug")
-        # Should fall back to local extraction since slug > 50 chars
+    def test_max_length(self) -> None:
+        slug = _generate_slug("fix the bug")
         assert len(slug) <= 50
 
-    def test_fallback_with_absolute_path_and_numbered_steps(self) -> None:
+    def test_absolute_path_stripped(self) -> None:
         """Regression test: numbered prompt with absolute path should not generate garbage."""
         prompt = "1. Read /Users/jakegearon/projects/dgov/src/dgov/panes.py\n2. Fix the bug"
-        with patch("dgov.panes.chat_completion", side_effect=ConnectionError):
-            slug = _generate_slug(prompt)
-        # Should strip path segments and produce content words
+        slug = _generate_slug(prompt)
         assert not slug.startswith("1-")
         assert "users" not in slug
         assert len(slug) > 0
@@ -1429,23 +1411,16 @@ class TestQwen4bRequest:
         result = _qwen_4b_request([{"role": "user", "content": "test"}])
         assert result["choices"][0]["message"]["content"] == "ok"
 
-    def test_fallback_to_ssh_on_local_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_raises_on_local_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.panes import _qwen_4b_request
 
-        # Local urlopen fails, SSH succeeds
         monkeypatch.setattr(
             "urllib.request.urlopen",
             MagicMock(side_effect=ConnectionError("refused")),
         )
 
-        response = {"choices": [{"message": {"content": "ssh-result"}}]}
-        mock_run = MagicMock()
-        mock_run.returncode = 0
-        mock_run.stdout = json.dumps(response)
-        monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock_run)
-
-        result = _qwen_4b_request([{"role": "user", "content": "test"}])
-        assert result["choices"][0]["message"]["content"] == "ssh-result"
+        with pytest.raises(RuntimeError, match="not reachable"):
+            _qwen_4b_request([{"role": "user", "content": "test"}])
 
 
 # ---------------------------------------------------------------------------
@@ -1460,7 +1435,7 @@ class TestPaneConstants:
         assert _STATE_DIR == ".dgov"
 
     def test_qwen_4b_url(self) -> None:
-        from dgov.panes import _QWEN_4B_URL
+        from dgov.openrouter import _QWEN_4B_URL
 
         assert "8082" in _QWEN_4B_URL
 

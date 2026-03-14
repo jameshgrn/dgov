@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import time
 import tomllib
 import urllib.request
@@ -115,10 +114,10 @@ def _openrouter_request(
 
 
 def _qwen_4b_request(messages: list[dict], max_tokens: int = 20, temperature: float = 0) -> dict:
-    """Send a request to local Qwen 4B, trying localhost first then SSH tunnel.
+    """Send a request to local Qwen 4B on localhost.
 
     Returns the parsed JSON response dict.
-    Raises on failure (caller should catch).
+    Raises RuntimeError on failure.
     """
 
     body = json.dumps(
@@ -130,7 +129,6 @@ def _qwen_4b_request(messages: list[dict], max_tokens: int = 20, temperature: fl
         }
     ).encode()
 
-    # Try 1: direct localhost (tunnel is up locally)
     try:
         req = urllib.request.Request(
             _QWEN_4B_URL,
@@ -146,33 +144,8 @@ def _qwen_4b_request(messages: list[dict], max_tokens: int = 20, temperature: fl
         OSError,
         TimeoutError,
         json.JSONDecodeError,
-    ):
-        logger.debug("Qwen 4B direct request failed, trying SSH fallback")
-
-    # Try 2: SSH to river and curl from there
-    json_str = json.dumps(
-        {
-            "model": "qwen",
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-    )
-    curl_cmd = (
-        f"curl -s --max-time {_QWEN_4B_TIMEOUT} -X POST "
-        f"-H 'Content-Type: application/json' "
-        f"-d @- 'http://localhost:8082/v1/chat/completions' <<'__JSON__'\n{json_str}\n__JSON__"
-    )
-    script = f"ssh river 'bash -l' <<'HEREDOC'\n{curl_cmd}\nHEREDOC"
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=_QWEN_4B_TIMEOUT + 30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"SSH curl to river failed (exit {result.returncode})")
-    return json.loads(result.stdout)
+    ) as exc:
+        raise RuntimeError("Local Qwen 4B not reachable") from exc
 
 
 def chat_completion(
@@ -198,7 +171,7 @@ def chat_completion(
     # Try local Qwen 4B
     try:
         return _qwen_4b_request(messages, max_tokens=max_tokens, temperature=temperature)
-    except (RuntimeError, subprocess.TimeoutExpired, OSError):
+    except (RuntimeError, OSError):
         logger.debug("Qwen 4B fallback also failed")
 
     raise RuntimeError("All LLM providers failed (OpenRouter + Qwen 4B)")

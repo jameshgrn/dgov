@@ -83,28 +83,17 @@ class TestQwen4bRequest:
 
         assert result["choices"][0]["message"]["content"] == "ok"
 
-    def test_falls_back_to_ssh(self):
+    def test_raises_on_localhost_failure(self):
         import urllib.error
 
         from dgov.openrouter import _qwen_4b_request
 
-        ssh_response = json.dumps(
-            {"choices": [{"message": {"content": "ssh-ok"}}], "model": "qwen"}
-        )
-
-        with (
-            patch(
-                "dgov.openrouter.urllib.request.urlopen",
-                side_effect=urllib.error.URLError("refused"),
-            ),
-            patch(
-                "dgov.openrouter.subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=ssh_response),
-            ),
+        with patch(
+            "dgov.openrouter.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("refused"),
         ):
-            result = _qwen_4b_request([{"role": "user", "content": "test"}])
-
-        assert result["choices"][0]["message"]["content"] == "ssh-ok"
+            with pytest.raises(RuntimeError, match="not reachable"):
+                _qwen_4b_request([{"role": "user", "content": "test"}])
 
 
 class TestChatCompletion:
@@ -188,33 +177,24 @@ class TestClassifyTask:
 
 
 class TestGenerateSlug:
-    def test_slug_from_qwen4b(self):
-        """Slug gen uses local Qwen 4B, not OpenRouter (efficiency)."""
+    def test_word_extraction(self):
         from dgov.strategy import _generate_slug
 
-        with patch(
-            "dgov.panes._qwen_4b_request",
-            return_value={"choices": [{"message": {"content": "fix-login-bug"}}]},
-        ):
-            assert _generate_slug("Fix the login bug in auth.py") == "fix-login-bug"
+        slug = _generate_slug("fix login bug auth")
+        assert "fix" in slug or "login" in slug or "bug" in slug
 
-    def test_slug_word_extraction_fallback(self):
+    def test_strips_stopwords(self):
         from dgov.strategy import _generate_slug
 
-        with patch("dgov.panes._qwen_4b_request", side_effect=RuntimeError("fail")):
-            slug = _generate_slug("fix login bug auth")
-            assert "fix" in slug or "login" in slug or "bug" in slug
+        slug = _generate_slug("fix the broken test in scheduler")
+        assert "the" not in slug.split("-")
+        assert "in" not in slug.split("-")
 
-    def test_slug_invalid_llm_output_falls_back(self):
+    def test_limits_max_words(self):
         from dgov.strategy import _generate_slug
 
-        with patch(
-            "dgov.panes._qwen_4b_request",
-            return_value={"choices": [{"message": {"content": "Here is a slug: my-slug!"}}]},
-        ):
-            # The LLM returned something that doesn't pass validation after cleanup
-            slug = _generate_slug("some task")
-            assert slug  # should still produce a slug via word extraction
+        slug = _generate_slug("a b c d e f g h", max_words=3)
+        assert len(slug.split("-")) <= 3
 
 
 class TestConfig:

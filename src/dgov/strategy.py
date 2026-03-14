@@ -8,9 +8,6 @@ import time
 
 logger = logging.getLogger(__name__)
 
-# Re-export from openrouter for backward compatibility (panes.py imports these)
-from dgov.openrouter import _QWEN_4B_TIMEOUT, _QWEN_4B_URL, _qwen_4b_request  # noqa: F401, E402
-
 # -- Task routing --
 
 
@@ -153,36 +150,7 @@ def _validate_slug(slug: str) -> str:
 
 
 def _generate_slug(prompt: str, max_words: int = 4) -> str:
-    """Generate a descriptive kebab-case slug using local Qwen 4B.
-
-    Slug gen is trivial — use the local model, don't waste OpenRouter requests.
-    Fallback chain: Qwen 4B -> word extraction.
-    """
-    import dgov.panes as _p  # access through panes so test mocks propagate
-
-    try:
-        result = _p._qwen_4b_request(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Generate a short kebab-case slug (2-4 words, lowercase, "
-                        "hyphens only) that describes this task. "
-                        "Reply with ONLY the slug, nothing else."
-                    ),
-                },
-                {"role": "user", "content": prompt[:200]},
-            ],
-            max_tokens=20,
-            temperature=0.3,
-        )
-        raw = result["choices"][0]["message"]["content"].strip().lower()
-        slug = re.sub(r"[^a-z0-9-]", "", raw).strip("-")
-        if slug and _SLUG_RE.match(slug):
-            return slug
-    except RuntimeError:
-        logger.debug("LLM-based slug generation failed, using word extraction fallback")
-    # Fallback: local word extraction
+    """Generate a descriptive kebab-case slug from prompt words."""
     # Strip absolute path segments (e.g. /Users/jake/...) and keep only the tail
     prompt_tail = re.sub(r"/\S+/", " ", prompt)
     words = re.sub(r"[^a-z0-9\s]", " ", prompt_tail.lower()).split()

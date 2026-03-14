@@ -39,8 +39,6 @@ from dgov.merger import (  # noqa: F401
     merge_worker_pane_with_close,
 )
 from dgov.openrouter import (  # noqa: F401
-    _QWEN_4B_TIMEOUT,
-    _QWEN_4B_URL,
     _qwen_4b_request,
     chat_completion,
 )
