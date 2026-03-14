@@ -189,6 +189,24 @@ def run_review_fix_pipeline(
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
 
+    # Validate targets exist
+    missing = [
+        t for t in targets if not Path(t).exists() and not (Path(project_root) / t).exists()
+    ]
+    if missing:
+        _emit_event(
+            session_root,
+            "review_fix_started",
+            "pipeline",
+            targets=targets,
+            error=f"Target(s) not found: {', '.join(missing)}",
+        )
+        return {
+            "error": f"Target(s) not found: {', '.join(missing)}",
+            "phase": "validation",
+            "findings_count": 0,
+        }
+
     _emit_event(session_root, "review_fix_started", "pipeline", targets=targets)
 
     # -- PHASE 1: REVIEW --
