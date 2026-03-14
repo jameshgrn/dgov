@@ -8,7 +8,7 @@ These options apply to many commands.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--project-root`| `-r` | string | `.` | Git repository root |
+| `--project-root`| `-r` | string | `.` | Project root |
 | `--session-root`| `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 
 ---

@@ -21,7 +21,7 @@ dgov pane create -a auto -p "Refactor this module"
 |------|-------|------|---------|-------------|
 | `--agent` | `-a` | string | `None` | Agent CLI to launch (or `auto` to classify) |
 | `--prompt` | `-p` | string | `None` | Task prompt for the agent |
-| `--project-root`| `-r` | string | `.` | Git repo root for the worktree |
+| `--project-root`| `-r` | string | `.` | Project root |
 | `--session-root`| `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--permission-mode`| `-m`| string | `acceptEdits` | Mode: `plan`, `acceptEdits`, `bypassPermissions` |
 | `--slug` | `-s` | string | `None` | Override auto-generated slug |
