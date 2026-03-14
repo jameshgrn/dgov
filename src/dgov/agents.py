@@ -345,6 +345,70 @@ def _load_dgov_config() -> dict:
         return {}
 
 
+def _load_project_config(project_root: str) -> dict:
+    """Load [dgov] section from <project_root>/.dgov/config.toml."""
+    config_path = Path(project_root) / ".dgov" / "config.toml"
+    if not config_path.is_file():
+        return {}
+    try:
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+        return data.get("dgov", {})
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
+
+
+def get_governor_agent(project_root: str | None = None) -> tuple[str | None, str | None]:
+    """Return (governor_agent, governor_permissions) from config.
+
+    Priority: project-local .dgov/config.toml > user-global ~/.dgov/config.toml.
+    Returns (None, None) if not configured anywhere.
+    """
+    global_cfg = _load_dgov_config()
+    project_cfg = _load_project_config(project_root) if project_root else {}
+
+    agent = project_cfg.get("governor_agent") or global_cfg.get("governor_agent")
+    perms = project_cfg.get("governor_permissions") or global_cfg.get("governor_permissions", "")
+
+    if not agent:
+        return None, None
+    return agent, perms
+
+
+def write_project_config(project_root: str, key: str, value: str) -> None:
+    """Update a key in [dgov] section of <project_root>/.dgov/config.toml."""
+    config_path = Path(project_root) / ".dgov" / "config.toml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, dict] = {}
+    if config_path.is_file():
+        try:
+            with open(config_path, "rb") as f:
+                data = tomllib.load(f)
+        except (tomllib.TOMLDecodeError, OSError):
+            data = {}
+
+    dgov_section = dict(data.get("dgov", {}))
+    dgov_section[key] = value
+
+    # Rebuild file: preserve other top-level sections, rewrite [dgov]
+    lines: list[str] = []
+    for section_name, section_data in data.items():
+        if section_name == "dgov":
+            continue
+        lines.append(f"[{section_name}]")
+        for k, v in section_data.items():
+            lines.append(f'{k} = "{v}"')
+        lines.append("")
+
+    lines.append("[dgov]")
+    for k, v in dgov_section.items():
+        lines.append(f'{k} = "{v}"')
+    lines.append("")
+
+    config_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def get_default_agent(registry: dict[str, AgentDef] | None = None) -> str:
     """Return the default agent to use when none is specified.
 
