@@ -39,18 +39,35 @@ Global configuration lives in `~/.dgov/`.
 
 ## agents.toml
 
-Format for defining or overriding agents (see [Agent registry](agent-registry.md) for details).
+TOML format for defining or overriding agents (see [Agent registry](agent-registry.md) for full field reference). Files live at `~/.dgov/agents.toml` (global) or `.dgov/agents.toml` (project-level).
 
 ```toml
 [agents.myagent]
 name = "My Agent"
 command = "agent-cli"
 transport = "positional"
+default_flags = "--verbose"
+color = 45
 max_concurrent = 2
+health_check = "agent-cli --version"
+health_fix = "brew upgrade agent-cli"
+max_retries = 1
+retry_escalate_to = "claude"
 
 [agents.myagent.permissions]
 acceptEdits = "--auto-accept"
+bypassPermissions = "--yolo"
+
+[agents.myagent.resume]
+template = "agent-cli --continue{permissions}"
+
+[agents.myagent.env]
+MY_API_KEY = "sk-..."
 ```
+
+**Required fields:** `command` (the CLI executable) and `transport` (`positional`, `option`, `stdin`, or `send-keys`).
+
+**Priority:** built-in < user global (`~/.dgov/agents.toml`) < project local (`.dgov/agents.toml`). Each layer can override any field. For security, `health_check` and `health_fix` are ignored in project-level config.
 
 ## responses.toml
 
