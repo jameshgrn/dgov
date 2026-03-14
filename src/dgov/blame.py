@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import subprocess
 
 from dgov.persistence import read_events
+
+logger = logging.getLogger(__name__)
 
 
 def blame_file(

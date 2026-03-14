@@ -45,8 +45,8 @@ def _load_config() -> dict:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         return data.get("openrouter", {})
-    except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
-        logger.debug("Failed to load config.toml")
+    except (FileNotFoundError, tomllib.TOMLDecodeError, OSError) as exc:
+        logger.warning("Malformed TOML in %s: %s", config_path, exc)
         return {}
 
 

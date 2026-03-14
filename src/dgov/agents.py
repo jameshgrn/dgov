@@ -8,6 +8,7 @@ Users add custom agents via TOML config files.
 
 from __future__ import annotations
 
+import logging
 import random
 import shutil
 import string
@@ -15,6 +16,8 @@ import time
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -341,7 +344,8 @@ def _load_dgov_config() -> dict:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         return data.get("dgov", {})
-    except (tomllib.TOMLDecodeError, OSError):
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        logger.warning("Malformed TOML in %s: %s", config_path, exc)
         return {}
 
 
@@ -354,7 +358,8 @@ def _load_project_config(project_root: str) -> dict:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         return data.get("dgov", {})
-    except (tomllib.TOMLDecodeError, OSError):
+    except (tomllib.TOMLDecodeError, OSError) as exc:
+        logger.warning("Malformed TOML in %s: %s", config_path, exc)
         return {}
 
 
@@ -385,7 +390,8 @@ def write_project_config(project_root: str, key: str, value: str) -> None:
         try:
             with open(config_path, "rb") as f:
                 data = tomllib.load(f)
-        except (tomllib.TOMLDecodeError, OSError):
+        except (tomllib.TOMLDecodeError, OSError) as exc:
+            logger.warning("Malformed TOML in %s: %s", config_path, exc)
             data = {}
 
     dgov_section = dict(data.get("dgov", {}))
