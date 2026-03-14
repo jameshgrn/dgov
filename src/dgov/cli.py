@@ -256,7 +256,8 @@ def pane_create(
 ):
     """Create a worker pane: worktree + tmux + agent."""
     from dgov.agents import get_default_agent, load_registry
-    from dgov.panes import classify_task, create_worker_pane
+    from dgov.panes import create_worker_pane
+    from dgov.strategy import classify_task
 
     registry = load_registry(project_root)
     skip_auto_structure = False
@@ -411,7 +412,7 @@ def pane_merge(slug, project_root, session_root, close, resolve):
     Merge the worktree branch for the given pane. If --close is set,
     also close the worker pane after successful merge.
     """
-    from dgov.panes import merge_worker_pane, merge_worker_pane_with_close
+    from dgov.merger import merge_worker_pane, merge_worker_pane_with_close
 
     if close:
         result = merge_worker_pane_with_close(
@@ -451,7 +452,8 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     2. New commits on the worker branch beyond base_sha.
     3. Output stabilization (TUI agents that stay open).
     """
-    from dgov.panes import PaneTimeoutError, list_worker_panes, wait_worker_pane
+    from dgov.panes import list_worker_panes
+    from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     panes = list_worker_panes(project_root, session_root=session_root)
     if not any(p.get("slug") == slug for p in panes):
@@ -494,7 +496,8 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
 @click.option("--stable", "-s", default=15, help="Seconds of stable output before declaring done")
 def pane_wait_all(project_root, session_root, timeout, poll, stable):
     """Wait for ALL worker panes to finish. Prints each as it completes."""
-    from dgov.panes import PaneTimeoutError, list_worker_panes, wait_all_worker_panes
+    from dgov.panes import list_worker_panes
+    from dgov.waiter import PaneTimeoutError, wait_all_worker_panes
 
     session_root_abs = os.path.abspath(session_root or project_root)
     panes = list_worker_panes(project_root, session_root=session_root_abs)
@@ -547,7 +550,8 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 )
 def pane_merge_all(project_root, session_root, close, resolve):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
-    from dgov.panes import list_worker_panes, merge_worker_pane, merge_worker_pane_with_close
+    from dgov.merger import merge_worker_pane, merge_worker_pane_with_close
+    from dgov.panes import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
     done_panes = [p for p in panes if p["done"]]
@@ -677,7 +681,7 @@ def pane_prune(project_root, session_root):
 @click.argument("prompt")
 def pane_classify(prompt):
     """Classify a task and recommend an agent (OpenRouter or local Qwen 4B)."""
-    from dgov.panes import classify_task
+    from dgov.strategy import classify_task
 
     agent = classify_task(prompt)
     click.echo(json.dumps({"recommended_agent": agent, "prompt_preview": prompt[:80]}))
@@ -853,7 +857,7 @@ def pane_logs(slug, project_root, session_root, tail):
 @SESSION_ROOT_OPTION
 def pane_interact(slug, message, session_root):
     """Send a message to a worker pane via tmux send-keys."""
-    from dgov.panes import interact_with_pane
+    from dgov.waiter import interact_with_pane
 
     session_root = os.path.abspath(session_root or ".")
     if interact_with_pane(session_root, slug, message):
@@ -869,7 +873,7 @@ def pane_interact(slug, message, session_root):
 @SESSION_ROOT_OPTION
 def pane_respond(slug, message, session_root):
     """Send a response to a worker pane (alias for interact)."""
-    from dgov.panes import interact_with_pane
+    from dgov.waiter import interact_with_pane
 
     session_root = os.path.abspath(session_root or ".")
     if interact_with_pane(session_root, slug, message):
@@ -885,7 +889,7 @@ def pane_respond(slug, message, session_root):
 @click.option("--wait", "-w", default=10, help="Seconds to wait for response")
 def pane_nudge(slug, session_root, wait):
     """Nudge a worker: ask if done, parse YES/NO response."""
-    from dgov.panes import nudge_pane
+    from dgov.waiter import nudge_pane
 
     session_root = os.path.abspath(session_root or ".")
     result = nudge_pane(session_root, slug, wait_seconds=wait)
@@ -900,7 +904,7 @@ def pane_nudge(slug, session_root, wait):
 @SESSION_ROOT_OPTION
 def pane_signal(slug, signal_type, session_root):
     """Manually signal a pane as done or failed."""
-    from dgov.panes import signal_pane
+    from dgov.waiter import signal_pane
 
     session_root = os.path.abspath(session_root or ".")
     if signal_pane(session_root, slug, signal_type):
@@ -1169,7 +1173,7 @@ def checkpoint():
 @SESSION_ROOT_OPTION
 def checkpoint_create(name, project_root, session_root):
     """Create a named checkpoint of current state."""
-    from dgov.panes import create_checkpoint
+    from dgov.batch import create_checkpoint
 
     result = create_checkpoint(project_root, name, session_root=session_root)
     click.echo(json.dumps(result, indent=2))
@@ -1180,7 +1184,7 @@ def checkpoint_create(name, project_root, session_root):
 @SESSION_ROOT_OPTION
 def checkpoint_list(project_root, session_root):
     """List all checkpoints."""
-    from dgov.panes import list_checkpoints
+    from dgov.batch import list_checkpoints
 
     session_root = os.path.abspath(session_root or project_root)
     result = list_checkpoints(session_root)
@@ -1193,7 +1197,7 @@ def checkpoint_list(project_root, session_root):
 @click.option("--dry-run", is_flag=True, help="Show computed tiers without executing")
 def batch(spec_path, session_root, dry_run):
     """Execute a batch spec with DAG-ordered parallelism."""
-    from dgov.panes import run_batch
+    from dgov.batch import run_batch
 
     result = run_batch(spec_path, session_root=session_root, dry_run=dry_run)
     click.echo(json.dumps(result, indent=2))

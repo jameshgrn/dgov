@@ -311,7 +311,7 @@ class TestPipelineReviewOnly:
 class TestPipelineFull:
     @patch("subprocess.run")
     @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.merge_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
     @patch("dgov.panes._get_pane")
@@ -410,7 +410,7 @@ class TestPipelineFull:
 
     @patch("subprocess.run")
     @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.merge_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
     @patch("dgov.panes._get_pane")

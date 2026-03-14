@@ -185,6 +185,7 @@ def run_review_fix_pipeline(
     Returns summary dict with findings_count, fixed_count, etc.
     """
     import dgov.panes as _p
+    from dgov.merger import merge_worker_pane
 
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
@@ -341,7 +342,7 @@ def run_review_fix_pipeline(
     test_failures: list[str] = []
 
     for slug in fix_slugs:
-        merge_result = _p.merge_worker_pane(project_root, slug, session_root=session_root)
+        merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
         if "merged" in merge_result:
             merged_count += 1
             # Run tests after each merge

@@ -10,14 +10,15 @@ import pytest
 
 from dgov.backend import set_backend
 from dgov.models import ConflictDetails, MergeResult, TaskSpec
-from dgov.panes import (
+from dgov.panes import _build_pane_title
+from dgov.persistence import (
     WorkerPane,
-    _build_pane_title,
+    _all_panes,
     _emit_event,
+    _replace_all_panes,
     _update_pane_state,
     _validate_state,
 )
-from dgov.persistence import _all_panes, _replace_all_panes
 
 
 @pytest.fixture(autouse=True)

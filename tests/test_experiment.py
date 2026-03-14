@@ -178,8 +178,8 @@ class TestReadResultFile:
 class TestRunExperiment:
     @patch("dgov.experiment._read_result_file")
     @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.merge_worker_pane")
-    @patch("dgov.panes.wait_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
     @patch("dgov.experiment._emit_event")
     def test_accepted_on_improvement(
@@ -214,8 +214,8 @@ class TestRunExperiment:
 
     @patch("dgov.experiment._read_result_file")
     @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.merge_worker_pane")
-    @patch("dgov.panes.wait_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
     @patch("dgov.experiment._emit_event")
     def test_rejected_on_regression(
@@ -248,7 +248,7 @@ class TestRunExperiment:
 
     @patch("dgov.experiment._read_result_file")
     @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.wait_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
     @patch("dgov.experiment._emit_event")
     def test_error_on_missing_result_file(
@@ -273,7 +273,7 @@ class TestRunExperiment:
         mock_close.assert_called_once()
 
     @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.wait_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
     @patch("dgov.experiment._emit_event")
     def test_error_on_timeout(self, mock_emit, mock_create, mock_wait, mock_close, tmp_path):

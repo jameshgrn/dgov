@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from dgov.models import MergeResult
-from dgov.persistence import _PROTECTED_FILES
+from dgov.persistence import _PROTECTED_FILES, IllegalTransitionError
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +297,7 @@ def _resolve_conflicts_with_agent(
         f"then `git add` the file. Do NOT commit."
     )
 
-    agent = _p._pick_resolver_agent()
+    agent = _pick_resolver_agent()
     slug = f"resolve-{branch_name[:30]}"
 
     resolved = False
@@ -502,7 +502,7 @@ def merge_worker_pane(
     pane_project_root = target.get("project_root") or project_root
 
     # Auto-commit uncommitted changes in worktree
-    commit_result = _p._commit_worktree(target)
+    commit_result = _commit_worktree(target)
 
     # Pre-merge hook: restore protected files, etc.
     pre_merge_env = {
@@ -514,7 +514,7 @@ def merge_worker_pane(
         "DGOV_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
     }
     if not _p._trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
-        _p._restore_protected_files(pane_project_root, target)
+        _restore_protected_files(pane_project_root, target)
 
     # Capture diff stat before merge (for enriched return)
     base_sha = target.get("base_sha", "")
@@ -541,12 +541,12 @@ def merge_worker_pane(
                 merge_files_changed = len(changed_file_names)
 
     # Plumbing merge — zero working-tree side effects on failure
-    merge = _p._plumbing_merge(pane_project_root, branch_name)
+    merge = _plumbing_merge(pane_project_root, branch_name)
 
     if merge.success:
         try:
             _p._update_pane_state(session_root, slug, "merged")
-        except _p.IllegalTransitionError as e:
+        except IllegalTransitionError as e:
             if e.current == "abandoned":
                 logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
             else:
@@ -586,7 +586,7 @@ def merge_worker_pane(
                         damaged.append(fname)
                 if damaged:
                     logger.warning("Protected files changed after merge: %s", damaged)
-            lint_result = _p._lint_fix_merged_files(pane_project_root, changed_file_names)
+            lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
 
         result = {
             "merged": slug,
@@ -603,18 +603,18 @@ def merge_worker_pane(
         return result
 
     # Plumbing merge failed — detect conflicts for resolution
-    conflicts = _p._detect_conflicts(pane_project_root, branch_name)
+    conflicts = _detect_conflicts(pane_project_root, branch_name)
 
     if conflicts:
         _p._update_pane_state(session_root, slug, "merge_conflict")
         if resolve == "agent":
-            resolved = _p._resolve_conflicts_with_agent(
+            resolved = _resolve_conflicts_with_agent(
                 pane_project_root, branch_name, target, session_root
             )
             if resolved:
                 try:
                     _p._update_pane_state(session_root, slug, "merged")
-                except _p.IllegalTransitionError as e:
+                except IllegalTransitionError as e:
                     if e.current == "abandoned":
                         logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
                     else:
@@ -667,7 +667,7 @@ def merge_worker_pane_with_close(
     import dgov.panes as _p
 
     session_root = os.path.abspath(session_root or project_root)
-    result = _p.merge_worker_pane(project_root, slug, session_root, resolve=resolve)
+    result = merge_worker_pane(project_root, slug, session_root, resolve=resolve)
 
     if "error" in result:
         return result

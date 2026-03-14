@@ -135,7 +135,7 @@ def _is_done(
     branch_name = pane_record.get("branch_name", "")
     base_sha = pane_record.get("base_sha", "")
     if project_root and branch_name and base_sha:
-        has_commits = _p._has_new_commits(project_root, branch_name, base_sha)
+        has_commits = _has_new_commits(project_root, branch_name, base_sha)
         logger.debug("new_commits=%s slug=%s", has_commits, slug)
         if has_commits:
             current_state = pane_record.get("state", "")
@@ -169,7 +169,7 @@ def _is_done(
                 if stable_since is None:
                     _stable_state["stable_since"] = time.monotonic()
                 elif time.monotonic() - stable_since >= stable_seconds:
-                    if _p._agent_still_running(pane_id):
+                    if _agent_still_running(pane_id):
                         _stable_state["stable_since"] = None
                     else:
                         done_path.parent.mkdir(parents=True, exist_ok=True)

@@ -261,7 +261,7 @@ class TestPaneCreate:
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
         with (
-            patch("dgov.panes.classify_task", return_value="claude") as mock_classify,
+            patch("dgov.strategy.classify_task", return_value="claude") as mock_classify,
             patch("dgov.panes.create_worker_pane", return_value=_pane("auto-task", "claude")),
         ):
             result = runner.invoke(
@@ -348,13 +348,13 @@ class TestPaneCommands:
 
     def test_merge_uses_selected_strategy(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.merge_worker_pane_with_close",
+            "dgov.merger.merge_worker_pane_with_close",
             return_value={"merged": "task", "branch": "task"},
         ) as mock_merge_close:
             close_result = runner.invoke(cli, ["pane", "merge", "task"])
 
         with patch(
-            "dgov.panes.merge_worker_pane",
+            "dgov.merger.merge_worker_pane",
             return_value={"merged": "task", "branch": "task"},
         ) as mock_merge:
             open_result = runner.invoke(
@@ -369,7 +369,7 @@ class TestPaneCommands:
 
     def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.merge_worker_pane_with_close",
+            "dgov.merger.merge_worker_pane_with_close",
             return_value={"error": "conflicts"},
         ):
             result = runner.invoke(cli, ["pane", "merge", "task"])
@@ -380,7 +380,7 @@ class TestPaneCommands:
     def test_wait_success_and_timeout(self, runner: CliRunner) -> None:
         with (
             patch(
-                "dgov.panes.wait_worker_pane",
+                "dgov.waiter.wait_worker_pane",
                 return_value={"done": "task", "method": "stable"},
             ),
             patch(
@@ -390,13 +390,13 @@ class TestPaneCommands:
         ):
             ok = runner.invoke(cli, ["pane", "wait", "task"])
 
-        timeout = __import__("dgov.panes", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
+        timeout = __import__("dgov.waiter", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
             "task",
             30,
             "pi",
         )
         with (
-            patch("dgov.panes.wait_worker_pane", side_effect=timeout),
+            patch("dgov.waiter.wait_worker_pane", side_effect=timeout),
             patch(
                 "dgov.panes.list_worker_panes",
                 return_value=[{"slug": "task", "done": False}],
@@ -418,7 +418,7 @@ class TestPaneCommands:
         with patch("dgov.panes.list_worker_panes", return_value=[]):
             empty = runner.invoke(cli, ["pane", "wait-all"])
 
-        timeout = __import__("dgov.panes", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
+        timeout = __import__("dgov.waiter", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
             "a",
             10,
             "pi",
@@ -429,7 +429,7 @@ class TestPaneCommands:
                 "dgov.panes.list_worker_panes",
                 return_value=[{"slug": "a", "done": False}, {"slug": "b", "done": False}],
             ),
-            patch("dgov.panes.wait_all_worker_panes", side_effect=timeout),
+            patch("dgov.waiter.wait_all_worker_panes", side_effect=timeout),
         ):
             failed = runner.invoke(cli, ["pane", "wait-all"])
 
@@ -460,7 +460,7 @@ class TestPaneCommands:
         with (
             patch("dgov.panes.list_worker_panes", return_value=panes),
             patch(
-                "dgov.panes.merge_worker_pane_with_close",
+                "dgov.merger.merge_worker_pane_with_close",
                 side_effect=[
                     {"merged": "a", "files_changed": 2},
                     {"error": "conflict"},
@@ -485,7 +485,7 @@ class TestPaneCommands:
             listed = runner.invoke(cli, ["pane", "list", "--json"])
         with patch("dgov.panes.prune_stale_panes", return_value=["old-task"]):
             pruned = runner.invoke(cli, ["pane", "prune"])
-        with patch("dgov.panes.classify_task", return_value="claude"):
+        with patch("dgov.strategy.classify_task", return_value="claude"):
             classified = runner.invoke(cli, ["pane", "classify", "debug flaky test"])
         with patch("dgov.panes.capture_worker_output", return_value="line 1\nline 2"):
             captured = runner.invoke(cli, ["pane", "capture", "task", "--lines", "50"])
@@ -602,22 +602,22 @@ class TestTopLevelCommands:
         spec_path.write_text(json.dumps({"project_root": "/repo", "tasks": []}))
 
         with patch(
-            "dgov.panes.create_checkpoint",
+            "dgov.batch.create_checkpoint",
             return_value={"checkpoint": "wave-1", "main_sha": "abc", "pane_count": 1},
         ):
             created = runner.invoke(cli, ["checkpoint", "create", "wave-1"])
         with patch(
-            "dgov.panes.list_checkpoints",
+            "dgov.batch.list_checkpoints",
             return_value=[{"name": "wave-1", "pane_count": 1}],
         ) as mock_list_checkpoints:
             listed = runner.invoke(cli, ["checkpoint", "list", "--project-root", "/repo"])
         with patch(
-            "dgov.panes.run_batch",
+            "dgov.batch.run_batch",
             return_value={"dry_run": True, "tiers": [["a"]], "total_tasks": 1},
         ) as mock_run_batch:
             batch_ok = runner.invoke(cli, ["batch", str(spec_path), "--dry-run"])
         with patch(
-            "dgov.panes.run_batch",
+            "dgov.batch.run_batch",
             return_value={"failed": ["a"], "tiers": []},
         ):
             batch_fail = runner.invoke(cli, ["batch", str(spec_path)])
