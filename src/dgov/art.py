@@ -24,6 +24,6 @@ def print_banner() -> None:
 
     print()
     print(BANNER)
-    print(f"{_DIM}  distributed governance{_RESET}")
+    print(f"{_DIM}  Distributed Governance{_RESET}")
     print(f"{_DIM}  dispatch · wait · review · merge{_RESET}")
     print()
