@@ -296,3 +296,4 @@ Event types: `pane_created`, `pane_done`, `pane_timed_out`, `pane_merged`, `pane
 | `dgov preflight` | Run agent/git readiness checks standalone |
 | `dgov checkpoint create` | Snapshot current state and events |
 | `dgov checkpoint list` | List available snapshots |
+# Change by mutator
