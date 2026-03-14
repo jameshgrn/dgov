@@ -559,7 +559,10 @@ def run_preflight(
     checks.append(check_git_clean(project_root))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
-    # Config-driven health check (replaces hardcoded tunnel/kerberos checks)
+    # Always check tunnel ports (critical infrastructure check)
+    checks.append(check_tunnel())
+
+    # Config-driven health check for agents with custom health_check
     agent_def = registry.get(agent)
     if agent_def and agent_def.health_check:
         checks.append(check_agent_health(agent, registry=registry, project_root=project_root))
