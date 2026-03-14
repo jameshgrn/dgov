@@ -115,6 +115,7 @@ def _is_done(
     if done_path.exists():
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
+        logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
         _p._update_pane_state(session_root, slug, "done", force=force)
         return True
 
@@ -122,6 +123,7 @@ def _is_done(
     if exit_path.exists():
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
+        logger.debug("state=%s slug=%s reason=exit_signal", "failed", slug)
         _p._update_pane_state(session_root, slug, "failed", force=force)
         return True
 
