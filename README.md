@@ -60,10 +60,13 @@ State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
 | `dgov pane merge` | Merge a pane's branch into main |
 | `dgov pane close` | Close a pane and clean up worktree |
 | `dgov pane resume` | Re-launch agent in existing worktree |
-| `dgov pane preflight` | Run pre-dispatch checks |
-| `dgov pane edit` | Edit a pane's prompt while running |
+| `dgov pane retry` | Fresh attempt with new worktree |
+| `dgov pane escalate` | Re-dispatch to a stronger agent |
+| `dgov pane capture` | Capture recent pane output |
+| `dgov pane logs` | Persistent log (survives pane death) |
+| `dgov pane diff` | Raw diff for inspection |
+| `dgov pane lazygit` | Launch lazygit in a utility pane |
 | `dgov pane top` | Launch btop in a utility pane |
-| `dgov pane k9s` | Launch k9s in a utility pane |
 
 ### Automation
 
