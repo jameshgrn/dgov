@@ -17,7 +17,6 @@ def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str
     Uses OpenRouter (high-powered free models) for classification — this
     benefits from real intelligence. Falls back to Qwen 4B then "claude".
     """
-    import dgov.panes as _p  # access through panes so test mocks propagate
 
     agents = installed_agents or ["pi", "claude"]
     use_multi = len(agents) > 2
@@ -55,7 +54,9 @@ def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str
     ]
 
     try:
-        result = _p.chat_completion(messages, max_tokens=5, temperature=0)
+        from dgov.openrouter import chat_completion
+
+        result = chat_completion(messages, max_tokens=5, temperature=0)
         answer = result["choices"][0]["message"]["content"].strip().lower()
         # Match against known agents
         for agent in agents:

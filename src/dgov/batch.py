@@ -165,8 +165,8 @@ def run_batch(
     Tasks with disjoint `touches` run in parallel tiers.
     Overlapping touches are serialized.
     """
-    # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
+    from dgov.merger import merge_worker_pane
 
     with open(spec_path) as f:
         spec = json.load(f)
@@ -234,7 +234,7 @@ def run_batch(
                 results["failed"].append(slug)
                 continue
 
-            merge_result = _p.merge_worker_pane(project_root, slug, session_root=session_root)
+            merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
             if "merged" in merge_result:
                 results["merged"].append(slug)
                 tier_result["tasks"] = [

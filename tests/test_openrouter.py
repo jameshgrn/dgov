@@ -143,7 +143,7 @@ class TestClassifyTask:
         from dgov.strategy import classify_task
 
         with patch(
-            "dgov.panes.chat_completion",
+            "dgov.openrouter.chat_completion",
             return_value={"choices": [{"message": {"content": "pi"}}]},
         ):
             assert classify_task("rename variable x to y in main.py") == "pi"
@@ -152,7 +152,7 @@ class TestClassifyTask:
         from dgov.strategy import classify_task
 
         with patch(
-            "dgov.panes.chat_completion",
+            "dgov.openrouter.chat_completion",
             return_value={"choices": [{"message": {"content": "claude"}}]},
         ):
             assert classify_task("debug why tests are flaky") == "claude"
@@ -160,14 +160,14 @@ class TestClassifyTask:
     def test_classify_falls_back_to_claude_on_error(self):
         from dgov.strategy import classify_task
 
-        with patch("dgov.panes.chat_completion", side_effect=RuntimeError("all failed")):
+        with patch("dgov.openrouter.chat_completion", side_effect=RuntimeError("all failed")):
             assert classify_task("anything") == "claude"
 
     def test_classify_multi_agent(self):
         from dgov.strategy import classify_task
 
         with patch(
-            "dgov.panes.chat_completion",
+            "dgov.openrouter.chat_completion",
             return_value={"choices": [{"message": {"content": "codex"}}]},
         ):
             result = classify_task(

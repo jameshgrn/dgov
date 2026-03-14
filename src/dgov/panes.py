@@ -1,7 +1,7 @@
 """Core pane lifecycle: create, close, list, merge.
 
 Each worker pane = git worktree + tmux pane + agent CLI.
-State tracked in .dgov/state.json.
+State tracked in .dgov/state.db (SQLite).
 """
 
 from __future__ import annotations
@@ -16,41 +16,9 @@ from pathlib import Path
 
 from dgov.agents import build_launch_command, load_registry
 from dgov.backend import get_backend
-from dgov.batch import (  # noqa: F401
-    _compute_tiers,
-    create_checkpoint,
-    list_checkpoints,
-    run_batch,
-)
-from dgov.experiment import (  # noqa: F401
-    ExperimentLog,
-    run_experiment,
-    run_experiment_loop,
-)
-from dgov.merger import (  # noqa: F401
-    _commit_worktree,
-    _detect_conflicts,
-    _lint_fix_merged_files,
-    _pick_resolver_agent,
-    _plumbing_merge,
-    _resolve_conflicts_with_agent,
-    _restore_protected_files,
-    merge_worker_pane,
-    merge_worker_pane_with_close,
-)
-from dgov.openrouter import (  # noqa: F401
-    _qwen_4b_request,
-    chat_completion,
-)
-
-# -- Internal imports from split modules --
-from dgov.persistence import (  # noqa: F401
+from dgov.persistence import (
     _PROTECTED_FILES,
     _STATE_DIR,
-    PANE_STATES,
-    VALID_EVENTS,
-    VALID_TRANSITIONS,
-    IllegalTransitionError,
     WorkerPane,
     _add_pane,
     _all_panes,
@@ -62,59 +30,9 @@ from dgov.persistence import (  # noqa: F401
     _row_to_dict,
     _set_pane_metadata,
     _update_pane_state,
-    _validate_state,
 )
-from dgov.responder import (  # noqa: F401
-    BUILT_IN_RULES,
-    COOLDOWN_SECONDS,
-    ResponseRule,
-    auto_respond,
-    check_cooldown,
-    load_response_rules,
-    match_response,
-    record_cooldown,
-    reset_cooldowns,
-)
-from dgov.retry import (  # noqa: F401
-    RetryPolicy,
-    get_retry_policy,
-    maybe_auto_retry,
-    retry_context,
-)
-from dgov.review_fix import (  # noqa: F401
-    ReviewFinding,
-    parse_review_findings,
-    run_review_fix_pipeline,
-)
-from dgov.strategy import (  # noqa: F401
-    _SLUG_RE,
-    _generate_slug,
-    _structure_pi_prompt,
-    _validate_slug,
-    classify_task,
-)
-from dgov.templates import (  # noqa: F401
-    BUILT_IN_TEMPLATES,
-    PromptTemplate,
-    list_templates,
-    load_templates,
-    render_template,
-)
-from dgov.waiter import (  # noqa: F401
-    _AGENT_COMMANDS,
-    PaneTimeoutError,
-    _agent_still_running,
-    _detect_blocked,
-    _has_new_commits,
-    _is_done,
-    _poll_once,
-    _wrap_done_signal,
-    interact_with_pane,
-    nudge_pane,
-    signal_pane,
-    wait_all_worker_panes,
-    wait_worker_pane,
-)
+from dgov.strategy import _generate_slug, _structure_pi_prompt, _validate_slug
+from dgov.waiter import _is_done, _wrap_done_signal
 
 logger = logging.getLogger(__name__)
 

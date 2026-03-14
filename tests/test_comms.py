@@ -271,7 +271,7 @@ class TestUnifiedIsDone:
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes._agent_still_running", return_value=False),
+            patch("dgov.waiter._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
@@ -294,7 +294,7 @@ class TestUnifiedIsDone:
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes._agent_still_running", return_value=True),
+            patch("dgov.waiter._agent_still_running", return_value=True),
         ):
             result = _is_done(
                 session_root,

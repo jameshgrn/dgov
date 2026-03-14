@@ -138,6 +138,8 @@ def run_experiment(
     5. If metric regresses or missing: close without merge, log as rejected/error.
     """
     import dgov.panes as _p
+    from dgov.merger import merge_worker_pane
+    from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     session_root = os.path.abspath(session_root or project_root)
     exp_id = exp_id or f"exp-{uuid.uuid4().hex[:8]}"
@@ -173,13 +175,13 @@ def run_experiment(
 
     # Wait for worker
     try:
-        _p.wait_worker_pane(
+        wait_worker_pane(
             project_root,
             pane.slug,
             session_root=session_root,
             timeout=timeout,
         )
-    except _p.PaneTimeoutError:
+    except PaneTimeoutError:
         duration_s = time.monotonic() - start_time
         result = {
             "id": exp_id,
@@ -226,7 +228,7 @@ def run_experiment(
     improved = _metric_improved(metric_baseline, metric_after, direction)
 
     if improved:
-        merge_result = _p.merge_worker_pane(project_root, slug, session_root=session_root)
+        merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
         commit_sha = None
         if "merged" in merge_result:
             # Get the merge SHA

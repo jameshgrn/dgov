@@ -12,22 +12,22 @@ import pytest
 
 from dgov.backend import set_backend
 from dgov.panes import (
-    WorkerPane,
-    _add_pane,
-    _all_panes,
-    _generate_slug,
-    _get_pane,
-    _has_new_commits,
-    _is_done,
-    _remove_pane,
-    _structure_pi_prompt,
     _trigger_hook,
     capture_worker_output,
-    classify_task,
     list_worker_panes,
     prune_stale_panes,
 )
-from dgov.persistence import _replace_all_panes, _state_path
+from dgov.persistence import (
+    WorkerPane,
+    _add_pane,
+    _all_panes,
+    _get_pane,
+    _remove_pane,
+    _replace_all_panes,
+    _state_path,
+)
+from dgov.strategy import _generate_slug, _structure_pi_prompt, classify_task
+from dgov.waiter import _has_new_commits, _is_done
 
 pytestmark = pytest.mark.unit
 
@@ -233,21 +233,21 @@ class TestAllPanes:
 class TestClassifyTask:
     def test_fallback_to_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "dgov.panes.chat_completion",
+            "dgov.openrouter.chat_completion",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no llm")),
         )
         assert classify_task("fix the lint error") == "claude"
 
     def test_returns_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "dgov.panes.chat_completion",
+            "dgov.openrouter.chat_completion",
             lambda *a, **kw: {"choices": [{"message": {"content": "claude"}}]},
         )
         assert classify_task("debug flaky test") == "claude"
 
     def test_returns_pi_on_pi_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
-            "dgov.panes.chat_completion",
+            "dgov.openrouter.chat_completion",
             lambda *a, **kw: {"choices": [{"message": {"content": "pi"}}]},
         )
         assert classify_task("format the file") == "pi"
@@ -369,7 +369,7 @@ class TestIsDone:
             "pane_id": "%5",
         }
         with (
-            patch("dgov.panes._has_new_commits", return_value=True),
+            patch("dgov.waiter._has_new_commits", return_value=True),
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
 
@@ -382,7 +382,7 @@ class TestIsDone:
         }
         mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes._has_new_commits", return_value=False),
+            patch("dgov.waiter._has_new_commits", return_value=False),
             patch("dgov.panes._update_pane_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
@@ -405,7 +405,7 @@ class TestIsDone:
         }
         mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.panes._has_new_commits", return_value=False),
+            patch("dgov.waiter._has_new_commits", return_value=False),
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is False
 
@@ -438,7 +438,7 @@ class TestIsDone:
         )
 
         record = _get_pane(str(tmp_path), "stale")
-        with patch("dgov.panes._has_new_commits", return_value=True):
+        with patch("dgov.waiter._has_new_commits", return_value=True):
             assert _is_done(str(tmp_path), "stale", pane_record=record) is True
         assert _get_pane(str(tmp_path), "stale")["state"] == "done"
 
@@ -617,7 +617,7 @@ class TestListWorkerPanes:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """state must never be 'active' while done is True in the same entry."""
-        from dgov.panes import _update_pane_state
+        from dgov.persistence import _update_pane_state
 
         _replace_all_panes(
             str(tmp_path),
@@ -811,13 +811,13 @@ class TestCaptureWorkerOutput:
 
 class TestPickResolverAgent:
     def test_prefers_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _pick_resolver_agent
+        from dgov.merger import _pick_resolver_agent
 
         monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
         assert _pick_resolver_agent() == "claude"
 
     def test_falls_back_to_codex(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _pick_resolver_agent
+        from dgov.merger import _pick_resolver_agent
 
         def fake_which(name):
             return "/usr/bin/codex" if name == "codex" else None
@@ -826,7 +826,7 @@ class TestPickResolverAgent:
         assert _pick_resolver_agent() == "codex"
 
     def test_defaults_claude_when_nothing_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _pick_resolver_agent
+        from dgov.merger import _pick_resolver_agent
 
         monkeypatch.setattr("shutil.which", lambda name: None)
         assert _pick_resolver_agent() == "claude"
@@ -839,14 +839,14 @@ class TestPickResolverAgent:
 
 class TestProtectedFiles:
     def test_contains_expected_files(self) -> None:
-        from dgov.panes import _PROTECTED_FILES
+        from dgov.persistence import _PROTECTED_FILES
 
         assert "CLAUDE.md" in _PROTECTED_FILES
         assert "THEORY.md" in _PROTECTED_FILES
         assert ".napkin.md" in _PROTECTED_FILES
 
     def test_is_set(self) -> None:
-        from dgov.panes import _PROTECTED_FILES
+        from dgov.persistence import _PROTECTED_FILES
 
         assert isinstance(_PROTECTED_FILES, set)
 
@@ -1029,7 +1029,7 @@ class TestCloseWorkerPane:
 
 class TestDetectConflicts:
     def test_no_merge_base_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _detect_conflicts
+        from dgov.merger import _detect_conflicts
 
         mock = MagicMock()
         mock.returncode = 1
@@ -1037,7 +1037,7 @@ class TestDetectConflicts:
         assert _detect_conflicts("/repo", "branch") == []
 
     def test_detects_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _detect_conflicts
+        from dgov.merger import _detect_conflicts
 
         calls = []
 
@@ -1057,7 +1057,7 @@ class TestDetectConflicts:
         assert "'src/main.py'" in result or "src/main.py" in str(result)
 
     def test_no_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _detect_conflicts
+        from dgov.merger import _detect_conflicts
 
         def fake_run(cmd, **kw):
             m = MagicMock()
@@ -1076,19 +1076,19 @@ class TestDetectConflicts:
 
 class TestCommitWorktree:
     def test_no_worktree_path(self) -> None:
-        from dgov.panes import _commit_worktree
+        from dgov.merger import _commit_worktree
 
         result = _commit_worktree({})
         assert result == {"committed": False}
 
     def test_nonexistent_worktree(self, tmp_path: Path) -> None:
-        from dgov.panes import _commit_worktree
+        from dgov.merger import _commit_worktree
 
         result = _commit_worktree({"worktree_path": str(tmp_path / "nope")})
         assert result == {"committed": False}
 
     def test_no_changes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _commit_worktree
+        from dgov.merger import _commit_worktree
 
         # status --porcelain -z returns empty
         mock = MagicMock()
@@ -1219,21 +1219,21 @@ class TestFullCleanup:
 
 class TestMergeWorkerPaneWithClose:
     def test_error_passes_through(self, tmp_path: Path) -> None:
-        from dgov.panes import merge_worker_pane_with_close
+        from dgov.merger import merge_worker_pane_with_close
 
         with patch(
-            "dgov.panes.merge_worker_pane",
+            "dgov.merger.merge_worker_pane",
             return_value={"error": "Pane not found: nope"},
         ):
             result = merge_worker_pane_with_close(str(tmp_path), "nope")
         assert "error" in result
 
     def test_successful_merge_calls_close(self, tmp_path: Path) -> None:
-        from dgov.panes import merge_worker_pane_with_close
+        from dgov.merger import merge_worker_pane_with_close
 
         with (
             patch(
-                "dgov.panes.merge_worker_pane",
+                "dgov.merger.merge_worker_pane",
                 return_value={"merged": "test", "branch": "test-br"},
             ),
             patch("dgov.panes.close_worker_pane", return_value=True) as mock_close,
@@ -1264,7 +1264,8 @@ class TestEscalateWorkerPane:
         assert "error" in result
 
     def test_escalation_calls_close_and_create(self, tmp_path: Path) -> None:
-        from dgov.panes import WorkerPane, escalate_worker_pane
+        from dgov.panes import escalate_worker_pane
+        from dgov.persistence import WorkerPane
 
         _replace_all_panes(
             str(tmp_path),
@@ -1399,7 +1400,7 @@ class TestRebaseGovernor:
 
 class TestQwen4bRequest:
     def test_localhost_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _qwen_4b_request
+        from dgov.openrouter import _qwen_4b_request
 
         response = {"choices": [{"message": {"content": "ok"}}]}
         fake_resp = MagicMock()
@@ -1412,7 +1413,7 @@ class TestQwen4bRequest:
         assert result["choices"][0]["message"]["content"] == "ok"
 
     def test_raises_on_local_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.panes import _qwen_4b_request
+        from dgov.openrouter import _qwen_4b_request
 
         monkeypatch.setattr(
             "urllib.request.urlopen",
@@ -1430,7 +1431,7 @@ class TestQwen4bRequest:
 
 class TestPaneConstants:
     def test_state_dir(self) -> None:
-        from dgov.panes import _STATE_DIR
+        from dgov.persistence import _STATE_DIR
 
         assert _STATE_DIR == ".dgov"
 
@@ -1442,22 +1443,22 @@ class TestPaneConstants:
 
 class TestMergeWorkerPane:
     def test_pane_not_found(self, tmp_path: Path) -> None:
-        from dgov.panes import merge_worker_pane
+        from dgov.merger import merge_worker_pane
 
         result = merge_worker_pane(str(tmp_path), "nonexistent")
         assert "error" in result
         assert "not found" in result["error"]
 
     @patch("dgov.panes._full_cleanup")
-    @patch("dgov.panes._plumbing_merge")
-    @patch("dgov.panes._restore_protected_files")
-    @patch("dgov.panes._commit_worktree", return_value={"committed": False})
+    @patch("dgov.merger._plumbing_merge")
+    @patch("dgov.merger._restore_protected_files")
+    @patch("dgov.merger._commit_worktree", return_value={"committed": False})
     @patch("dgov.panes.subprocess.run")
     def test_successful_merge(
         self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
+        from dgov.merger import merge_worker_pane
         from dgov.models import MergeResult
-        from dgov.panes import merge_worker_pane
 
         mock_merge.return_value = MergeResult(success=True)
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
@@ -1478,15 +1479,16 @@ class TestMergeWorkerPane:
         assert result["branch"] == "feat"
 
     @patch("dgov.panes._full_cleanup")
-    @patch("dgov.panes._plumbing_merge")
-    @patch("dgov.panes._restore_protected_files")
-    @patch("dgov.panes._commit_worktree", return_value={"committed": False})
+    @patch("dgov.merger._plumbing_merge")
+    @patch("dgov.merger._restore_protected_files")
+    @patch("dgov.merger._commit_worktree", return_value={"committed": False})
     @patch("dgov.panes.subprocess.run")
     def test_successful_merge_ignores_stale_abandoned_state(
         self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
+        from dgov.merger import merge_worker_pane
         from dgov.models import MergeResult
-        from dgov.panes import IllegalTransitionError, merge_worker_pane
+        from dgov.persistence import IllegalTransitionError
 
         mock_merge.return_value = MergeResult(success=True)
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
@@ -1581,19 +1583,19 @@ class TestPruneStalePane:
 
 class TestRestoreProtectedFiles:
     def test_no_worktree(self) -> None:
-        from dgov.panes import _restore_protected_files
+        from dgov.merger import _restore_protected_files
 
         # Should not raise
         _restore_protected_files("/repo", {})
 
     def test_no_base_sha(self) -> None:
-        from dgov.panes import _restore_protected_files
+        from dgov.merger import _restore_protected_files
 
         _restore_protected_files("/repo", {"worktree_path": "/wt", "branch_name": "b"})
 
     @patch("dgov.panes.subprocess.run")
     def test_restores_changed_protected(self, mock_run, tmp_path: Path) -> None:
-        from dgov.panes import _restore_protected_files
+        from dgov.merger import _restore_protected_files
 
         def side_effect(*args, **kwargs):
             cmd = args[0]
@@ -1615,7 +1617,7 @@ class TestRestoreProtectedFiles:
 
     @patch("dgov.panes.subprocess.run")
     def test_no_protected_changed(self, mock_run, tmp_path: Path) -> None:
-        from dgov.panes import _restore_protected_files
+        from dgov.merger import _restore_protected_files
 
         mock_run.return_value = Mock(returncode=0, stdout="src/foo.py\nsrc/bar.py\n")
         record = {
@@ -1666,19 +1668,19 @@ class TestWorkerPaneDataclass:
 
 class TestValidateState:
     def test_accepts_all_valid_states(self) -> None:
-        from dgov.panes import PANE_STATES, _validate_state
+        from dgov.persistence import PANE_STATES, _validate_state
 
         for state in PANE_STATES:
             assert _validate_state(state) == state
 
     def test_rejects_unknown_state(self) -> None:
-        from dgov.panes import _validate_state
+        from dgov.persistence import _validate_state
 
         with pytest.raises(ValueError, match="Unknown pane state"):
             _validate_state("bogus")
 
     def test_rejects_empty_string(self) -> None:
-        from dgov.panes import _validate_state
+        from dgov.persistence import _validate_state
 
         with pytest.raises(ValueError):
             _validate_state("")
@@ -1691,7 +1693,7 @@ class TestValidateState:
 
 class TestUpdatePaneState:
     def test_updates_state_in_json(self, tmp_path: Path) -> None:
-        from dgov.panes import _update_pane_state
+        from dgov.persistence import _update_pane_state
 
         _replace_all_panes(
             str(tmp_path),
@@ -1702,14 +1704,14 @@ class TestUpdatePaneState:
         assert panes[0]["state"] == "done"
 
     def test_rejects_invalid_state(self, tmp_path: Path) -> None:
-        from dgov.panes import _update_pane_state
+        from dgov.persistence import _update_pane_state
 
         _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "state": "active"}]})
         with pytest.raises(ValueError, match="Unknown pane state"):
             _update_pane_state(str(tmp_path), "test", "invalid")
 
     def test_noop_for_missing_slug(self, tmp_path: Path) -> None:
-        from dgov.panes import _update_pane_state
+        from dgov.persistence import _update_pane_state
 
         _replace_all_panes(str(tmp_path), {"panes": [{"slug": "other", "state": "active"}]})
         _update_pane_state(str(tmp_path), "missing", "done")
@@ -1719,7 +1721,7 @@ class TestUpdatePaneState:
     def test_updates_pane_title_on_state_change(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        from dgov.panes import _update_pane_state
+        from dgov.persistence import _update_pane_state
 
         _replace_all_panes(
             str(tmp_path),
@@ -1781,7 +1783,7 @@ class TestWorkerPaneStateValidation:
 
 class TestEmitEvent:
     def test_creates_events_file_and_appends(self, tmp_path: Path) -> None:
-        from dgov.panes import _emit_event
+        from dgov.persistence import _emit_event
 
         _emit_event(str(tmp_path), "pane_created", "my-slug", agent="pi")
         events_path = tmp_path / ".dgov" / "events.jsonl"
@@ -1795,7 +1797,7 @@ class TestEmitEvent:
         assert "ts" in record
 
     def test_appends_multiple_events(self, tmp_path: Path) -> None:
-        from dgov.panes import _emit_event
+        from dgov.persistence import _emit_event
 
         _emit_event(str(tmp_path), "pane_created", "slug-1")
         _emit_event(str(tmp_path), "pane_done", "slug-1")
@@ -1806,7 +1808,7 @@ class TestEmitEvent:
         assert json.loads(lines[1])["event"] == "pane_done"
 
     def test_rejects_unknown_event(self, tmp_path: Path) -> None:
-        from dgov.panes import _emit_event
+        from dgov.persistence import _emit_event
 
         with pytest.raises(ValueError, match="Unknown event"):
             _emit_event(str(tmp_path), "bogus_event", "slug")
@@ -1951,7 +1953,7 @@ class TestComputeFreshness:
 
 class TestValidEvents:
     def test_contains_expected_events(self) -> None:
-        from dgov.panes import VALID_EVENTS
+        from dgov.persistence import VALID_EVENTS
 
         expected = {
             "pane_created",
@@ -2119,7 +2121,7 @@ class TestRetryWorkerPane:
 
 class TestCreateCheckpoint:
     def test_creates_checkpoint_file(self, tmp_path: Path) -> None:
-        from dgov.panes import create_checkpoint
+        from dgov.batch import create_checkpoint
 
         _replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
         with patch("dgov.panes.subprocess.run") as mock_run:
@@ -2137,7 +2139,7 @@ class TestCreateCheckpoint:
         assert len(data["panes"]) == 2
 
     def test_checkpoint_with_no_panes(self, tmp_path: Path) -> None:
-        from dgov.panes import create_checkpoint
+        from dgov.batch import create_checkpoint
 
         _replace_all_panes(str(tmp_path), {"panes": []})
         with patch("dgov.panes.subprocess.run") as mock_run:
@@ -2149,7 +2151,7 @@ class TestCreateCheckpoint:
         assert cp_path.exists()
 
     def test_emits_checkpoint_event(self, tmp_path: Path) -> None:
-        from dgov.panes import create_checkpoint
+        from dgov.batch import create_checkpoint
 
         _replace_all_panes(str(tmp_path), {"panes": []})
         with patch("dgov.panes.subprocess.run") as mock_run:
@@ -2167,13 +2169,13 @@ class TestCreateCheckpoint:
 
 class TestListCheckpoints:
     def test_empty_when_no_dir(self, tmp_path: Path) -> None:
-        from dgov.panes import list_checkpoints
+        from dgov.batch import list_checkpoints
 
         result = list_checkpoints(str(tmp_path))
         assert result == []
 
     def test_lists_checkpoints(self, tmp_path: Path) -> None:
-        from dgov.panes import list_checkpoints
+        from dgov.batch import list_checkpoints
 
         cp_dir = tmp_path / ".dgov" / "checkpoints"
         cp_dir.mkdir(parents=True)
@@ -2207,7 +2209,7 @@ class TestListCheckpoints:
         assert result[1]["pane_count"] == 2
 
     def test_skips_corrupt_files(self, tmp_path: Path) -> None:
-        from dgov.panes import list_checkpoints
+        from dgov.batch import list_checkpoints
 
         cp_dir = tmp_path / ".dgov" / "checkpoints"
         cp_dir.mkdir(parents=True)
@@ -2228,7 +2230,7 @@ class TestListCheckpoints:
 
 class TestComputeTiers:
     def test_disjoint_touches_single_tier(self) -> None:
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [
             {"id": "a", "touches": ["src/foo.py"]},
@@ -2240,7 +2242,7 @@ class TestComputeTiers:
         assert {t["id"] for t in tiers[0]} == {"a", "b", "c"}
 
     def test_overlapping_touches_multiple_tiers(self) -> None:
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [
             {"id": "a", "touches": ["src/foo.py"]},
@@ -2257,7 +2259,7 @@ class TestComputeTiers:
         assert "b" in tier1_ids
 
     def test_prefix_containment(self) -> None:
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [
             {"id": "a", "touches": ["src/"]},
@@ -2269,7 +2271,7 @@ class TestComputeTiers:
         assert tiers[1][0]["id"] == "b"
 
     def test_no_touches_same_tier(self) -> None:
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [
             {"id": "a", "touches": []},
@@ -2280,7 +2282,7 @@ class TestComputeTiers:
         assert len(tiers[0]) == 2
 
     def test_empty_tasks(self) -> None:
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         assert _compute_tiers([]) == []
 
@@ -2292,7 +2294,7 @@ class TestComputeTiers:
 
 class TestRunBatchDryRun:
     def test_dry_run_returns_tiers(self, tmp_path: Path) -> None:
-        from dgov.panes import run_batch
+        from dgov.batch import run_batch
 
         spec = {
             "project_root": "/tmp/repo",
@@ -2322,7 +2324,7 @@ class TestRunBatchDryRun:
 
 class TestWaitWorkerPane:
     def test_done_on_first_poll(self, tmp_path: Path) -> None:
-        from dgov.panes import wait_worker_pane
+        from dgov.waiter import wait_worker_pane
 
         with (
             patch("dgov.panes._get_pane", return_value={"slug": "s1", "agent": "claude"}),
@@ -2333,7 +2335,8 @@ class TestWaitWorkerPane:
 
     def test_stable_output_detection(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         """Stabilization is now handled inside _is_done via stable_seconds."""
-        from dgov.panes import _add_pane, _is_done
+        from dgov.persistence import _add_pane
+        from dgov.waiter import _is_done
 
         pane = WorkerPane(
             slug="s1",
@@ -2351,7 +2354,7 @@ class TestWaitWorkerPane:
         mock_backend.is_alive.return_value = True
         with (
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes._agent_still_running", return_value=False),
+            patch("dgov.waiter._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 str(tmp_path),
@@ -2363,7 +2366,7 @@ class TestWaitWorkerPane:
         assert result is True
 
     def test_timeout_raises(self, tmp_path: Path) -> None:
-        from dgov.panes import PaneTimeoutError, wait_worker_pane
+        from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
         with (
             patch("dgov.panes._get_pane", return_value={"slug": "s1", "agent": "pi"}),
@@ -2392,7 +2395,8 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When output is stable but agent process is still running, don't trigger done."""
-        from dgov.panes import _add_pane, _is_done
+        from dgov.persistence import _add_pane
+        from dgov.waiter import _is_done
 
         pane = WorkerPane(
             slug="s1",
@@ -2410,7 +2414,7 @@ class TestStableDetectionAgentCheck:
         mock_backend.is_alive.return_value = True
         with (
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes._agent_still_running", return_value=True),
+            patch("dgov.waiter._agent_still_running", return_value=True),
         ):
             result = _is_done(
                 str(tmp_path),
@@ -2426,7 +2430,8 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When output is stable and agent process has exited (shell prompt), trigger done."""
-        from dgov.panes import _add_pane, _is_done
+        from dgov.persistence import _add_pane
+        from dgov.waiter import _is_done
 
         pane = WorkerPane(
             slug="s1",
@@ -2444,7 +2449,7 @@ class TestStableDetectionAgentCheck:
         mock_backend.is_alive.return_value = True
         with (
             patch("dgov.panes.capture_worker_output", return_value="same output"),
-            patch("dgov.panes._agent_still_running", return_value=False),
+            patch("dgov.waiter._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 str(tmp_path),
@@ -2459,7 +2464,8 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """Without stable_seconds, _is_done does not perform output stabilization."""
-        from dgov.panes import _add_pane, _is_done
+        from dgov.persistence import _add_pane
+        from dgov.waiter import _is_done
 
         pane = WorkerPane(
             slug="s1",
@@ -2480,7 +2486,7 @@ class TestStableDetectionAgentCheck:
 
 class TestWaitAllWorkerPanes:
     def test_empty_pending(self, tmp_path: Path) -> None:
-        from dgov.panes import wait_all_worker_panes
+        from dgov.waiter import wait_all_worker_panes
 
         with patch(
             "dgov.panes.list_worker_panes",
@@ -2490,7 +2496,7 @@ class TestWaitAllWorkerPanes:
         assert results == []
 
     def test_yields_done_panes(self, tmp_path: Path) -> None:
-        from dgov.panes import wait_all_worker_panes
+        from dgov.waiter import wait_all_worker_panes
 
         with (
             patch(
@@ -2508,7 +2514,7 @@ class TestWaitAllWorkerPanes:
         assert all(r["method"] == "signal_or_commit" for r in results)
 
     def test_timeout_includes_all_pending(self, tmp_path: Path) -> None:
-        from dgov.panes import PaneTimeoutError, wait_all_worker_panes
+        from dgov.waiter import PaneTimeoutError, wait_all_worker_panes
 
         def fake_get_pane(session_root, slug):
             return {"slug": slug, "agent": "pi" if slug == "s1" else "claude"}
@@ -2537,7 +2543,7 @@ class TestWaitAllWorkerPanes:
 
 class TestPaneTimeoutError:
     def test_attributes(self) -> None:
-        from dgov.panes import PaneTimeoutError
+        from dgov.waiter import PaneTimeoutError
 
         err = PaneTimeoutError("s1", 30, "pi")
         assert err.slug == "s1"
@@ -2546,7 +2552,7 @@ class TestPaneTimeoutError:
         assert err.pending_panes == [{"slug": "s1", "agent": "pi"}]
 
     def test_pending_panes_override(self) -> None:
-        from dgov.panes import PaneTimeoutError
+        from dgov.waiter import PaneTimeoutError
 
         panes = [{"slug": "a", "agent": "pi"}, {"slug": "b", "agent": "claude"}]
         err = PaneTimeoutError("a", 60, "pi", pending_panes=panes)
@@ -3002,7 +3008,7 @@ class TestResumeWorkerPane:
 
 class TestPlumbingMerge:
     def test_successful_merge(self, tmp_path: Path) -> None:
-        from dgov.panes import _plumbing_merge
+        from dgov.merger import _plumbing_merge
 
         call_log = []
 
@@ -3048,7 +3054,7 @@ class TestPlumbingMerge:
         assert any("reset" in c for c in cmds)
 
     def test_detached_head(self, tmp_path: Path) -> None:
-        from dgov.panes import _plumbing_merge
+        from dgov.merger import _plumbing_merge
 
         call_count = {"n": 0}
 
@@ -3084,7 +3090,7 @@ class TestPlumbingMerge:
         assert "Detached HEAD" in result.stderr
 
     def test_reset_hard_failure(self, tmp_path: Path) -> None:
-        from dgov.panes import _plumbing_merge
+        from dgov.merger import _plumbing_merge
 
         def fake_run(cmd, **kw):
             m = MagicMock()
@@ -3123,7 +3129,7 @@ class TestPlumbingMerge:
         assert "reset" in result.stderr.lower()
 
     def test_merge_tree_conflict(self, tmp_path: Path) -> None:
-        from dgov.panes import _plumbing_merge
+        from dgov.merger import _plumbing_merge
 
         def fake_run(cmd, **kw):
             m = MagicMock()
@@ -3146,7 +3152,7 @@ class TestPlumbingMerge:
         assert result.success is False
 
     def test_head_resolve_failure(self, tmp_path: Path) -> None:
-        from dgov.panes import _plumbing_merge
+        from dgov.merger import _plumbing_merge
 
         mock_result = MagicMock(returncode=128, stdout="", stderr="not a git repo")
         with patch("dgov.merger.subprocess.run", return_value=mock_result):
@@ -3164,7 +3170,7 @@ class TestPlumbingMerge:
 class TestComputeTiersDeep:
     def test_four_level_chain(self) -> None:
         """A -> B -> C -> D: each touches the same file, so 4 tiers."""
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [
             {"id": "A", "touches": ["src/shared.py"]},
@@ -3178,7 +3184,7 @@ class TestComputeTiersDeep:
 
     def test_mixed_chain_and_parallel(self) -> None:
         """A touches x, B touches x, C touches y, D touches y+x."""
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [
             {"id": "A", "touches": ["x"]},
@@ -3196,7 +3202,7 @@ class TestComputeTiersDeep:
 
     def test_circular_deps_do_not_hang(self) -> None:
         """Tasks with identical touches serialize; no infinite loop."""
-        from dgov.panes import _compute_tiers
+        from dgov.batch import _compute_tiers
 
         tasks = [{"id": f"t{i}", "touches": ["shared"]} for i in range(5)]
         tiers = _compute_tiers(tasks)
@@ -3213,7 +3219,7 @@ class TestComputeTiersDeep:
 
 class TestRunBatchLiveWait:
     def test_batch_creates_waits_merges(self, tmp_path: Path) -> None:
-        from dgov.panes import run_batch
+        from dgov.batch import run_batch
 
         spec = {
             "project_root": str(tmp_path),
@@ -3250,7 +3256,7 @@ class TestRunBatchLiveWait:
             patch("dgov.panes._get_pane", side_effect=fake_get_pane),
             patch("dgov.panes._is_done", side_effect=fake_is_done),
             patch(
-                "dgov.panes.merge_worker_pane",
+                "dgov.merger.merge_worker_pane",
                 return_value={"merged": "t1", "branch": "t1"},
             ),
             patch("dgov.panes.time.sleep"),
@@ -3263,7 +3269,7 @@ class TestRunBatchLiveWait:
         assert result["failed"] == []
 
     def test_batch_aborts_on_merge_failure(self, tmp_path: Path) -> None:
-        from dgov.panes import run_batch
+        from dgov.batch import run_batch
 
         spec = {
             "project_root": str(tmp_path),
@@ -3290,7 +3296,7 @@ class TestRunBatchLiveWait:
             patch("dgov.panes.create_worker_pane", side_effect=fake_create),
             patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "done"}),
             patch("dgov.panes._is_done", return_value=True),
-            patch("dgov.panes.merge_worker_pane", return_value={"error": "conflict"}),
+            patch("dgov.merger.merge_worker_pane", return_value={"error": "conflict"}),
             patch("dgov.panes.time.sleep"),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
@@ -3299,7 +3305,7 @@ class TestRunBatchLiveWait:
         assert result.get("aborted_remaining") is True
 
     def test_batch_timeout_marks_failed(self, tmp_path: Path) -> None:
-        from dgov.panes import run_batch
+        from dgov.batch import run_batch
 
         spec = {
             "project_root": str(tmp_path),
@@ -3330,7 +3336,7 @@ class TestRunBatchLiveWait:
             patch("dgov.panes._is_done", side_effect=fake_is_done),
             patch("dgov.panes.time.sleep"),
             patch("dgov.panes.time.monotonic") as mock_mono,
-            patch("dgov.panes.merge_worker_pane", return_value={"error": "timed out"}),
+            patch("dgov.merger.merge_worker_pane", return_value={"error": "timed out"}),
         ):
             # First monotonic() = start, second = way past timeout
             mock_mono.side_effect = [0, 0, 999]
