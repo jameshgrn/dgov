@@ -2653,6 +2653,35 @@ class TestStructurePiPrompt:
         mock_structure.assert_called_once_with("Fix src/foo.py")
 
 
+def test_create_worker_pane_waits_for_shell_before_startup_commands(
+    tmp_path: Path, mock_backend: MagicMock
+) -> None:
+    from dgov.panes import create_worker_pane
+
+    mock_backend.create_pane.return_value = "%99"
+    events: list[tuple[str, object]] = []
+    mock_backend.send_input.side_effect = lambda pane_id, text: events.append(("send_input", text))
+
+    with (
+        patch("dgov.panes.subprocess.run") as mock_run,
+        patch("dgov.panes._trigger_hook", return_value=False),
+        patch("dgov.panes._generate_slug", return_value="delay-test"),
+        patch(
+            "dgov.panes.time.sleep", side_effect=lambda seconds: events.append(("sleep", seconds))
+        ),
+    ):
+        mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
+        create_worker_pane(
+            project_root=str(tmp_path),
+            prompt="Fix the thing",
+            agent="claude",
+            session_root=str(tmp_path),
+        )
+
+    assert events[0] == ("sleep", 0.25)
+    assert events[1] == ("send_input", "unset CLAUDECODE")
+
+
 # ---------------------------------------------------------------------------
 # resume_worker_pane
 # ---------------------------------------------------------------------------
@@ -2714,6 +2743,65 @@ class TestResumeWorkerPane:
         pane = next(p for p in state["panes"] if p["slug"] == "fix-it")
         assert pane["pane_id"] == "%10"
         assert pane["state"] == "active"
+
+    def test_resume_waits_for_shell_before_startup_commands(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.agents import AgentDef
+        from dgov.panes import resume_worker_pane
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "fix-delay"
+        wt_dir.mkdir(parents=True)
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "fix-delay",
+                        "agent": "claude",
+                        "prompt": "Fix the bug",
+                        "pane_id": "%5",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(wt_dir),
+                        "branch_name": "fix-delay",
+                        "state": "abandoned",
+                    }
+                ]
+            },
+        )
+
+        registry = {
+            "claude": AgentDef(
+                id="claude",
+                name="claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        }
+
+        events: list[tuple[str, object]] = []
+        mock_backend.is_alive.return_value = False
+        mock_backend.create_pane.return_value = "%10"
+        mock_backend.send_input.side_effect = lambda pane_id, text: events.append(
+            ("send_input", text)
+        )
+
+        with (
+            patch("dgov.panes.subprocess.run") as mock_run,
+            patch("dgov.panes._trigger_hook", return_value=False),
+            patch("dgov.panes.load_registry", return_value=registry),
+            patch(
+                "dgov.panes.time.sleep",
+                side_effect=lambda seconds: events.append(("sleep", seconds)),
+            ),
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
+            resume_worker_pane(str(tmp_path), "fix-delay", session_root=str(tmp_path))
+
+        assert events[0] == ("sleep", 0.25)
+        assert events[1] == ("send_input", "unset CLAUDECODE")
 
     def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef

@@ -414,6 +414,9 @@ def create_worker_pane(
         get_backend().setup_pane_borders()
         pane_id = get_backend().create_pane(cwd=worktree_path)
 
+        # Let the login shell finish startup before injecting commands.
+        time.sleep(0.25)
+
         # 4. Lock pane title (prevent agent/tmux from overwriting)
         get_backend().set_pane_option(pane_id, "allow-rename", "off")
         get_backend().set_pane_option(pane_id, "automatic-rename", "off")
@@ -1211,6 +1214,10 @@ def resume_worker_pane(
     # Create new tmux pane
     get_backend().setup_pane_borders()
     pane_id = get_backend().create_pane(cwd=worktree_path)
+
+    # Let the login shell finish startup before injecting commands.
+    time.sleep(0.25)
+
     get_backend().set_pane_option(pane_id, "allow-rename", "off")
     get_backend().set_pane_option(pane_id, "automatic-rename", "off")
     title = _build_pane_title(slug, project_root)
