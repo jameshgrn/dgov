@@ -656,6 +656,11 @@ def list_worker_panes(project_root: str, session_root: str | None = None) -> lis
         done = state != "active"
         if state == "active":
             done = _is_done(session_root, slug, pane_record=p)
+            if done:
+                # _is_done updated persistent state; reconcile local copy
+                updated = _get_pane(session_root, slug)
+                if updated:
+                    state = updated.get("state", state)
         freshness = _compute_freshness(project_root, p)
         entry: dict = {
             "slug": slug,

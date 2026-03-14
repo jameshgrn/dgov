@@ -371,27 +371,13 @@ class TestIsDone:
         (done_dir / "test-slug").touch()
         assert _is_done(str(tmp_path), "test-slug") is True
 
-    def test_done_signal_ignored_while_agent_still_running(self, tmp_path: Path) -> None:
+    def test_done_signal_honored_even_while_agent_command_visible(self, tmp_path: Path) -> None:
+        """Done file is authoritative — agent-like foreground command doesn't block it."""
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug").touch()
         record = {"pane_id": "%5"}
-        with (
-            patch("dgov.panes._agent_still_running", return_value=True),
-            patch("dgov.panes._update_pane_state") as mock_state,
-        ):
-            assert _is_done(str(tmp_path), "test-slug", pane_record=record) is False
-        mock_state.assert_not_called()
-
-    def test_done_signal_returns_true_after_agent_exits(self, tmp_path: Path) -> None:
-        done_dir = tmp_path / ".dgov" / "done"
-        done_dir.mkdir(parents=True)
-        (done_dir / "test-slug").touch()
-        record = {"pane_id": "%5"}
-        with (
-            patch("dgov.panes._agent_still_running", return_value=False),
-            patch("dgov.panes._update_pane_state") as mock_state,
-        ):
+        with patch("dgov.panes._update_pane_state") as mock_state:
             assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
         mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done", force=False)
 
@@ -649,6 +635,45 @@ class TestListWorkerPanes:
         superseded = next(pane for pane in result if pane["slug"] == "old-task")
         assert superseded["state"] == "superseded"
         assert superseded["done"] is True
+
+    def test_reconciles_state_when_is_done_transitions_active(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """state must never be 'active' while done is True in the same entry."""
+        from dgov.panes import _update_pane_state
+
+        _write_state(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "worker",
+                        "agent": "pi",
+                        "pane_id": "%3",
+                        "project_root": str(tmp_path),
+                        "worktree_path": "/wt",
+                        "branch_name": "worker",
+                        "prompt": "Do something",
+                        "state": "active",
+                    }
+                ]
+            },
+        )
+        mock_backend.bulk_info.return_value = {
+            "%3": {"title": "worker", "current_command": "node"}
+        }
+
+        def fake_is_done(session_root, slug, pane_record=None):
+            # Simulate what real _is_done does: update state, return True
+            _update_pane_state(session_root, slug, "done")
+            return True
+
+        with patch("dgov.panes._is_done", side_effect=fake_is_done):
+            result = list_worker_panes(str(tmp_path))
+
+        assert len(result) == 1
+        assert result[0]["done"] is True
+        assert result[0]["state"] == "done"
 
 
 # ---------------------------------------------------------------------------

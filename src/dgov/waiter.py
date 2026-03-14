@@ -102,11 +102,11 @@ def _is_done(
     exit_path = Path(session_root, _STATE_DIR, "done", slug + ".exit")
 
     # Signal 1a: done-signal file (clean exit)
+    # The done file is authoritative — it is only written after the agent
+    # command exits 0 (see _wrap_done_signal).  Do NOT gate on
+    # _agent_still_running; tmux can still report an agent-like foreground
+    # command (e.g. node) after the wrapper has already touched the file.
     if done_path.exists():
-        pane_id = pane_record.get("pane_id", "") if pane_record else ""
-        if pane_id and _p._agent_still_running(pane_id):
-            return False
-        # If we were abandoned, allow late discovery of done
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
         _p._update_pane_state(session_root, slug, "done", force=force)
