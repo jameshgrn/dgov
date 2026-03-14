@@ -28,6 +28,16 @@ Requires: Python 3.12+, git, tmux.
 
 ## Quick start
 
+Run `dgov` with no arguments to launch the governor agent:
+
+```bash
+dgov                          # first time: prompts for agent + permissions, then launches
+dgov                          # after that: auto-launches configured agent
+dgov --governor gemini        # override for one invocation
+```
+
+Or dispatch a worker directly:
+
 ```bash
 dgov pane create -a claude -p "Add retry logic to the HTTP client"
 dgov pane wait <slug>
@@ -98,7 +108,9 @@ State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
 | `cursor` | Cursor CLI | `cursor` |
 | `opencode` | OpenCode | `opencode` |
 | `cline` | Cline CLI | `cline` |
+| `qwen` | Qwen CLI | `qwen` |
 | `amp` | Amp CLI | `amp` |
+| `pi` | pi CLI | `pi` |
 | `copilot` | Copilot CLI | `copilot` |
 | `crush` | Crush CLI | `crush` |
 
@@ -106,6 +118,7 @@ User agents: `~/.dgov/agents.toml` (global) or `.dgov/agents.toml` (per-project)
 
 ## Configuration
 
+- `.dgov/config.toml` — per-repo settings (`governor_agent`, `governor_permissions`)
 - `.dgov/agents.toml` — custom agent definitions
 - `.dgov/templates/` — prompt templates
 - `.dgov/batch/` — batch spec files
