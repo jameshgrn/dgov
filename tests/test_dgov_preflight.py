@@ -935,7 +935,7 @@ class TestCheckGitBranchEdgeCases:
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
         r = check_git_branch("/tmp/repo", expected="main")
-        assert r.passed is True
+        assert r.passed is False
         assert r.critical is False
         assert "Could not determine" in r.message
 
@@ -945,7 +945,7 @@ class TestCheckGitBranchEdgeCases:
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
         r = check_git_branch("/tmp/repo")
-        assert r.passed is True
+        assert r.passed is False
         assert "Could not determine" in r.message
 
 

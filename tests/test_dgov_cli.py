@@ -378,9 +378,15 @@ class TestPaneCommands:
         assert json.loads(result.output)["error"] == "conflicts"
 
     def test_wait_success_and_timeout(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.panes.wait_worker_pane",
-            return_value={"done": "task", "method": "stable"},
+        with (
+            patch(
+                "dgov.panes.wait_worker_pane",
+                return_value={"done": "task", "method": "stable"},
+            ),
+            patch(
+                "dgov.panes.list_worker_panes",
+                return_value=[{"slug": "task", "done": False}],
+            ),
         ):
             ok = runner.invoke(cli, ["pane", "wait", "task"])
 
@@ -389,7 +395,13 @@ class TestPaneCommands:
             30,
             "pi",
         )
-        with patch("dgov.panes.wait_worker_pane", side_effect=timeout):
+        with (
+            patch("dgov.panes.wait_worker_pane", side_effect=timeout),
+            patch(
+                "dgov.panes.list_worker_panes",
+                return_value=[{"slug": "task", "done": False}],
+            ),
+        ):
             failed = runner.invoke(cli, ["pane", "wait", "task"])
 
         assert ok.exit_code == 0
