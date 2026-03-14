@@ -74,6 +74,7 @@ def cli(ctx):
         "checkpoint",
         "experiment",
         "template",
+        "dashboard",
     ):
         _check_governor_context()
 
@@ -1029,6 +1030,26 @@ def version_cmd():
 
     result = {"dgov": __version__}
     click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("dashboard")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    help="Project root",
+)
+@SESSION_ROOT_OPTION
+@click.option("--refresh", default=2, type=float, help="Refresh interval in seconds")
+def dashboard(project_root, session_root, refresh):
+    """Launch live terminal dashboard."""
+    from dgov.dashboard import run_dashboard
+
+    run_dashboard(
+        project_root=project_root,
+        session_root=session_root,
+        refresh_interval=refresh,
+    )
 
 
 @cli.group()
