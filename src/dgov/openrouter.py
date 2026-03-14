@@ -46,7 +46,7 @@ def _load_config() -> dict:
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         return data.get("openrouter", {})
-    except Exception:
+    except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
         logger.debug("Failed to load config.toml")
         return {}
 
@@ -106,7 +106,7 @@ def _openrouter_request(
     try:
         with urllib.request.urlopen(req, timeout=_OPENROUTER_TIMEOUT) as resp:
             return json.loads(resp.read())
-    except Exception as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
         # Handle 429 rate limit specifically
         if hasattr(exc, "code") and exc.code == 429:
             logger.warning("OpenRouter rate limited (429), falling back")
@@ -140,7 +140,13 @@ def _qwen_4b_request(messages: list[dict], max_tokens: int = 20, temperature: fl
         )
         with urllib.request.urlopen(req, timeout=_QWEN_4B_TIMEOUT) as resp:
             return json.loads(resp.read())
-    except Exception:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ):
         logger.debug("Qwen 4B direct request failed, trying SSH fallback")
 
     # Try 2: SSH to river and curl from there
@@ -186,13 +192,13 @@ def chat_completion(
         return _openrouter_request(
             messages, model=model, max_tokens=max_tokens, temperature=temperature
         )
-    except Exception:
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
         logger.debug("OpenRouter request failed, trying Qwen 4B fallback")
 
     # Try local Qwen 4B
     try:
         return _qwen_4b_request(messages, max_tokens=max_tokens, temperature=temperature)
-    except Exception:
+    except (RuntimeError, subprocess.TimeoutExpired, OSError):
         logger.debug("Qwen 4B fallback also failed")
 
     raise RuntimeError("All LLM providers failed (OpenRouter + Qwen 4B)")
@@ -265,7 +271,13 @@ def get_key_info() -> dict:
     try:
         with urllib.request.urlopen(req, timeout=_OPENROUTER_TIMEOUT) as resp:
             return json.loads(resp.read()).get("data", {})
-    except Exception as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as exc:
         return {"error": str(exc)}
 
 
@@ -301,7 +313,7 @@ def check_status() -> dict:
         with urllib.request.urlopen(req, timeout=_OPENROUTER_TIMEOUT) as resp:
             if resp.status == 200:
                 result["api_reachable"] = True
-    except Exception as exc:
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
         result["error"] = str(exc)
 
     # Fetch account/key info

@@ -205,9 +205,9 @@ def run_batch(
                 tier_result["tasks"].append(
                     {"id": task["id"], "slug": pane.slug, "status": "created"}
                 )
-            except Exception as e:
+            except (subprocess.TimeoutExpired, OSError, RuntimeError):
                 tier_result["tasks"].append(
-                    {"id": task["id"], "status": "failed", "error": str(e)}
+                    {"id": task["id"], "status": "failed", "error": "unknown error"}
                 )
                 results["failed"].append(task["id"])
 
