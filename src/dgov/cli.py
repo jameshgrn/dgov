@@ -90,6 +90,8 @@ def cli(ctx):
     session_name = f"dgov-{repo}"
 
     if os.environ.get("TMUX"):
+        from dgov.art import print_banner
+
         style_dgov_session()
         # Style the current pane as governor
         pane_id = subprocess.run(
@@ -99,6 +101,7 @@ def cli(ctx):
         ).stdout.strip()
         if pane_id:
             style_governor_pane(pane_id)
+        print_banner()
         click.echo(f"{repo} — governor ready")
     else:
         # Ensure the per-repo tmux session exists, then hand off
