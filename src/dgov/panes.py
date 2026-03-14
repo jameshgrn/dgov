@@ -37,6 +37,12 @@ from dgov.merger import (  # noqa: F401
     merge_worker_pane,
     merge_worker_pane_with_close,
 )
+from dgov.openrouter import (  # noqa: F401
+    _QWEN_4B_TIMEOUT,
+    _QWEN_4B_URL,
+    _qwen_4b_request,
+    chat_completion,
+)
 
 # -- Internal imports from split modules --
 from dgov.persistence import (  # noqa: F401
@@ -81,11 +87,8 @@ from dgov.review_fix import (  # noqa: F401
     run_review_fix_pipeline,
 )
 from dgov.strategy import (  # noqa: F401
-    _QWEN_4B_TIMEOUT,
-    _QWEN_4B_URL,
     _SLUG_RE,
     _generate_slug,
-    _qwen_4b_request,
     _structure_pi_prompt,
     _validate_slug,
     classify_task,
