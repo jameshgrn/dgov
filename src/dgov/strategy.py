@@ -65,7 +65,7 @@ def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str
             if agent in answer:
                 return agent
         return "claude"
-    except Exception:
+    except RuntimeError:
         return "claude"
 
 
@@ -180,7 +180,7 @@ def _generate_slug(prompt: str, max_words: int = 4) -> str:
         slug = re.sub(r"[^a-z0-9-]", "", raw).strip("-")
         if slug and _SLUG_RE.match(slug):
             return slug
-    except Exception:
+    except RuntimeError:
         logger.debug("LLM-based slug generation failed, using word extraction fallback")
     # Fallback: local word extraction
     # Strip absolute path segments (e.g. /Users/jake/...) and keep only the tail
