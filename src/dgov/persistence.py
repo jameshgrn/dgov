@@ -191,21 +191,6 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_TABLE_SQL)
     conn.commit()
 
-    # Migrate from JSON if state.json exists
-    json_path = db_path.parent / "state.json"
-    if json_path.exists():
-        try:
-            with open(json_path) as f:
-                old_state = json.load(f)
-            panes = old_state.get("panes", [])
-            for pane_dict in panes:
-                _insert_pane_dict(conn, pane_dict)
-            conn.commit()
-            json_path.unlink()
-            logger.info("Migrated %d panes from state.json to state.db", len(panes))
-        except (json.JSONDecodeError, OSError) as e:
-            logger.warning("Failed to migrate state.json: %s", e)
-
     return conn
 
 
@@ -244,27 +229,6 @@ def _insert_pane_dict(conn: sqlite3.Connection, pane_dict: dict) -> None:
         f"INSERT OR REPLACE INTO panes ({cols}) VALUES ({placeholders})",
         list(values.values()),
     )
-
-
-def _read_state(session_root: str) -> dict:
-    conn = _get_db(session_root)
-    try:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM panes").fetchall()
-        return {"panes": [_row_to_dict(row) for row in rows]}
-    finally:
-        conn.close()
-
-
-def _write_state(session_root: str, state: dict) -> None:
-    conn = _get_db(session_root)
-    try:
-        conn.execute("DELETE FROM panes")
-        for pane_dict in state.get("panes", []):
-            _insert_pane_dict(conn, pane_dict)
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _add_pane(session_root: str, pane: WorkerPane) -> None:
@@ -347,3 +311,44 @@ def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool
                 get_backend().set_title(pane_id, f"[{agent}] {slug} {icon}")
             except (RuntimeError, OSError):
                 pass  # pane may already be dead
+
+
+def _set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
+    """Update metadata fields on a specific pane.
+
+    Stores extra fields (like ``max_retries``, ``retried_from``, ``superseded_by``)
+    in the ``metadata`` JSON column.
+    """
+    conn = _get_db(session_root)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
+        if not row:
+            return
+        d = _row_to_dict(row)
+        # Merge new metadata fields
+        for k, v in kwargs.items():
+            d[k] = v
+        _insert_pane_dict(conn, d)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
+    """Replace all panes in the database with the given list.
+
+    Intended for test setup where you need to establish a known state.
+    Each dict should have at least a ``slug`` key.
+    Accepts either a list of dicts or a dict with a ``panes`` key.
+    """
+    if isinstance(panes, dict):
+        panes = panes.get("panes", [])
+    conn = _get_db(session_root)
+    try:
+        conn.execute("DELETE FROM panes")
+        for pane_dict in panes:
+            _insert_pane_dict(conn, pane_dict)
+        conn.commit()
+    finally:
+        conn.close()
