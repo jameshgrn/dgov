@@ -63,8 +63,11 @@ def _check_governor_context() -> None:
 
 
 @click.group(invoke_without_command=True)
+@click.option(
+    "--governor", "-g", default=None, help="Override governor agent (claude, codex, gemini)"
+)
 @click.pass_context
-def cli(ctx):
+def cli(ctx, governor):
     """dgov: governor + worker pane orchestration."""
     # Skip the guard for info-only commands and the bare invocation
     if ctx.invoked_subcommand not in (
@@ -84,10 +87,45 @@ def cli(ctx):
         return
 
     # Bare `dgov` — launch or announce the governor session
+    from dgov.agents import (
+        build_launch_command,
+        get_governor_agent,
+        load_registry,
+        write_project_config,
+    )
     from dgov.tmux import style_dgov_session, style_governor_pane
 
     repo = Path.cwd().name
     session_name = f"dgov-{repo}"
+    project_root = str(Path.cwd())
+
+    def _resolve_governor() -> tuple[str, str]:
+        """Return (agent_id, permission_mode), running first-time setup if needed."""
+        agent_id, perm = get_governor_agent(project_root)
+        if governor:
+            agent_id = governor
+        if agent_id:
+            return agent_id, perm or ""
+        # First-time setup
+        registry = load_registry(project_root)
+        installed = detect_installed_agents(registry)
+        if not installed:
+            click.echo("No agents found on PATH. Install claude, codex, or gemini first.")
+            raise SystemExit(1)
+        agent_id = click.prompt(
+            "Governor agent for this repo",
+            type=click.Choice(installed),
+            default=installed[0],
+        )
+        perm = click.prompt(
+            "Permission mode",
+            type=click.Choice(["", "plan", "acceptEdits", "bypassPermissions"]),
+            default="",
+        )
+        write_project_config(project_root, "governor_agent", agent_id)
+        if perm:
+            write_project_config(project_root, "governor_permissions", perm)
+        return agent_id, perm
 
     if os.environ.get("TMUX"):
         from dgov.art import print_banner
@@ -103,6 +141,12 @@ def cli(ctx):
             style_governor_pane(pane_id)
         print_banner()
         click.echo(f"{repo} — governor ready")
+
+        agent_id, perm = _resolve_governor()
+        registry = load_registry(project_root)
+        cmd = build_launch_command(agent_id, prompt=None, permission_mode=perm, registry=registry)
+        parts = cmd.split()
+        os.execvp(parts[0], parts)
     else:
         # Ensure the per-repo tmux session exists, then hand off
         exists = subprocess.run(
@@ -116,9 +160,14 @@ def cli(ctx):
                 check=True,
             )
         style_dgov_session(session_name)
-        # Run dgov inside the session so the banner triggers via the TMUX branch
+
+        agent_id, perm = _resolve_governor()
+        registry = load_registry(project_root)
+        launch_cmd = build_launch_command(
+            agent_id, prompt=None, permission_mode=perm, registry=registry
+        )
         subprocess.run(
-            ["tmux", "send-keys", "-t", session_name, "dgov", "Enter"],
+            ["tmux", "send-keys", "-t", session_name, launch_cmd, "Enter"],
             capture_output=True,
         )
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
