@@ -68,6 +68,31 @@ def _emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
         f.write(json.dumps(record, default=str) + "\n")
 
 
+def read_events(session_root: str, slug: str | None = None) -> list[dict]:
+    """Read events from the JSONL log, optionally filtered by slug.
+
+    Logs a warning for malformed lines instead of silently skipping.
+    """
+    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
+    if not events_path.exists():
+        return []
+    events = []
+    with open(events_path) as f:
+        for line_no, raw in enumerate(f, 1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                ev = json.loads(raw)
+            except json.JSONDecodeError:
+                logger.warning("Malformed JSON at %s:%d", events_path, line_no)
+                continue
+            if slug is not None and ev.get("pane") != slug:
+                continue
+            events.append(ev)
+    return events
+
+
 # -- Pane record --
 
 

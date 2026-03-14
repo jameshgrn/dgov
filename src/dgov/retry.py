@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.agents import load_registry
-from dgov.persistence import _STATE_DIR, _emit_event, _get_pane
+from dgov.persistence import _STATE_DIR, _emit_event, _get_pane, read_events
 
 logger = logging.getLogger(__name__)
 
@@ -19,23 +18,6 @@ class RetryPolicy:
     max_retries: int = 0
     escalate_to: str | None = None
     backoff_base: float = 5.0
-
-
-def _load_events(session_root: str) -> list[dict]:
-    """Read all events from the journal."""
-    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
-    if not events_path.exists():
-        return []
-    events = []
-    with open(events_path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return events
 
 
 def _slug_lineage(session_root: str, slug: str) -> list[str]:
@@ -56,10 +38,11 @@ def _slug_lineage(session_root: str, slug: str) -> list[str]:
     return chain
 
 
-def _count_retries(session_root: str, slug: str) -> int:
+def _count_retries(session_root: str, slug: str, events: list[dict] | None = None) -> int:
     """Count pane_auto_retried events for the slug lineage."""
     lineage = set(_slug_lineage(session_root, slug))
-    events = _load_events(session_root)
+    if events is None:
+        events = read_events(session_root)
     count = 0
     for ev in events:
         if ev.get("event") == "pane_auto_retried" and ev.get("pane") in lineage:
@@ -67,7 +50,7 @@ def _count_retries(session_root: str, slug: str) -> int:
     return count
 
 
-def retry_context(slug: str, session_root: str) -> str:
+def retry_context(slug: str, session_root: str, events: list[dict] | None = None) -> str:
     """Build a failure context string from the pane's last output and events."""
     rec = _get_pane(session_root, slug)
     if not rec:
@@ -96,7 +79,8 @@ def retry_context(slug: str, session_root: str) -> str:
             pass
 
     # Recent events for this slug
-    events = _load_events(session_root)
+    if events is None:
+        events = read_events(session_root)
     slug_events = [ev for ev in events if ev.get("pane") == slug]
     recent = slug_events[-5:] if len(slug_events) > 5 else slug_events
     if recent:

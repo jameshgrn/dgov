@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import subprocess
-from pathlib import Path
+
+from dgov.persistence import read_events
 
 
 def blame_file(
@@ -24,7 +24,7 @@ def blame_file(
     abs_file = os.path.abspath(file_path) if os.path.isabs(file_path) else file_path
     rel_file = os.path.relpath(abs_file, project_root) if os.path.isabs(abs_file) else file_path
 
-    events = _load_events(session_root)
+    events = read_events(session_root)
 
     slug_info: dict[str, dict] = {}
     for ev in events:
@@ -115,22 +115,6 @@ def blame_file(
     return {"file": rel_file, "history": history}
 
 
-def _load_events(session_root: str) -> list[dict]:
-    events_path = Path(session_root) / ".dgov" / "events.jsonl"
-    if not events_path.exists():
-        return []
-    events = []
-    with open(events_path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return events
-
-
 def blame_lines(
     project_root: str,
     file_path: str,
@@ -151,7 +135,7 @@ def blame_lines(
     if not os.path.isfile(full_path):
         return {"file": rel_file, "lines": [], "error": f"File not found: {rel_file}"}
 
-    events = _load_events(session_root)
+    events = read_events(session_root)
 
     slug_info: dict[str, dict] = {}
     for ev in events:
