@@ -15,6 +15,14 @@ dgov
 
 Create a worker pane to perform a task. Use `-a` for the agent and `-p` for the prompt.
 
+First, check which agents are available:
+
+```bash
+dgov agents
+```
+
+Then dispatch your task:
+
 ```bash
 # Add a simple health check
 dgov pane create -a claude -p "Add a health check endpoint to app.py" -r .
@@ -22,7 +30,15 @@ dgov pane create -a claude -p "Add a health check endpoint to app.py" -r .
 
 You'll see a JSON response with the **slug** (e.g., `add-health-check`), which identifies the task.
 
-## 3. Wait for completion
+## 3. Monitor in the dashboard
+
+Open the TUI dashboard to monitor all active panes:
+
+```bash
+dgov dashboard
+```
+
+## 4. Wait for completion
 
 dgov dispatches the task into a separate tmux pane and git worktree. Wait for the worker to finish:
 
@@ -31,7 +47,7 @@ dgov dispatches the task into a separate tmux pane and git worktree. Wait for th
 dgov pane wait add-health-check
 ```
 
-## 4. Review the diff
+## 5. Review the diff
 
 Before merging, see what the agent actually did:
 
@@ -43,7 +59,7 @@ dgov pane review add-health-check
 dgov pane diff add-health-check
 ```
 
-## 5. Merge and close
+## 6. Merge and close
 
 If the changes look good, merge the worker branch into `main` and clean up:
 
@@ -52,7 +68,7 @@ If the changes look good, merge the worker branch into `main` and clean up:
 dgov pane merge add-health-check
 ```
 
-## 6. Verify status
+## 7. Verify status
 
 See the current state of all panes:
 
@@ -69,8 +85,14 @@ dgov status
 # Start
 dgov
 
+# Check available agents
+dgov agents
+
 # Dispatch
 dgov pane create -a claude -p "Refactor parser.py to use match statement"
+
+# Monitor in dashboard
+dgov dashboard  # (optional, runs in background)
 
 # Wait
 dgov pane wait refactor-parser

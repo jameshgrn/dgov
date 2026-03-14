@@ -9,23 +9,15 @@ dgov v0.5.0 requires Python 3.12+ and a running `tmux` session.
 - **Tmux**: the default `TmuxBackend` requires a running tmux session.
 - **uv**: recommended for installation and dependency management.
 
-## Install from source
-
-If you are developing dgov or want the latest version:
-
-```bash
-git clone https://github.com/jameshgrn/dgov
-cd dgov
-uv pip install -e .
-```
-
 ## Install as a global tool
 
-For general use, install it globally using `uv`:
+For general use, install dgov globally using `uv`:
 
 ```bash
-uv tool install --force --python 3.12 -e /path/to/dgov
+uv tool install dgov
 ```
+
+This installs the `dgov` CLI to your PATH. The tool will automatically detect which agent CLIs are available on your system.
 
 ## Verify installation
 
@@ -55,3 +47,7 @@ set -g default-terminal "tmux-256color"
 dgov is an orchestrator; it does not include the agents themselves. You must install the CLI for each agent you plan to use (e.g., `claude`, `codex`, `gemini`).
 
 Run `dgov agents` to see which are currently detected on your `PATH`.
+
+## Custom agents
+
+To add custom or private agent configurations, create an `agents.toml` file in your home directory (`~/.dgov/agents.toml`) with your agent CLI paths and environment setup.
