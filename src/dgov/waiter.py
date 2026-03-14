@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
 import subprocess
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from dgov.backend import get_backend
 from dgov.persistence import _STATE_DIR
@@ -58,6 +61,7 @@ def _detect_blocked(output: str) -> str | None:
     Returns the matched text or None.
     """
     if not output:
+        logger.debug("blocked_check slug=N/A reason=no_output")
         return None
     # Only scan the last 10 lines to avoid false positives from old output
     lines = output.strip().splitlines()[-10:]
@@ -65,7 +69,9 @@ def _detect_blocked(output: str) -> str | None:
     for pattern in _BLOCKED_PATTERNS:
         m = pattern.search(tail)
         if m:
+            logger.debug("blocked slug matched_pattern=%s", m.pattern[:40])
             return m.group(0)
+    logger.debug("blocked_check slug=N/A reason=no_match")
     return None
 
 
@@ -127,7 +133,9 @@ def _is_done(
     branch_name = pane_record.get("branch_name", "")
     base_sha = pane_record.get("base_sha", "")
     if project_root and branch_name and base_sha:
-        if _p._has_new_commits(project_root, branch_name, base_sha):
+        has_commits = _p._has_new_commits(project_root, branch_name, base_sha)
+        logger.debug("new_commits=%s slug=%s", has_commits, slug)
+        if has_commits:
             current_state = pane_record.get("state", "")
             force = current_state == "abandoned"
             _p._update_pane_state(session_root, slug, "done", force=force)
@@ -139,10 +147,13 @@ def _is_done(
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     pane_id = pane_record.get("pane_id", "")
-    if pane_id and not get_backend().is_alive(pane_id):
-        _p._update_pane_state(session_root, slug, "abandoned")
-        _p._emit_event(session_root, "pane_done", slug)
-        return True
+    if pane_id:
+        alive = get_backend().is_alive(pane_id)
+        logger.debug("pane alive=%s slug=%s", alive, slug)
+        if not alive:
+            _p._update_pane_state(session_root, slug, "abandoned")
+            _p._emit_event(session_root, "pane_done", slug)
+            return True
 
     # Signal 4 (optional): output stabilization
     if stable_seconds is not None and _stable_state is not None and pane_id:
@@ -226,6 +237,8 @@ def _poll_once(
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
 
+    logger.debug("poll slug=%s", slug)
+
     # Build stabilization state dict for unified _is_done
     stable_state: dict = {"last_output": last_output, "stable_since": stable_since}
 
@@ -299,6 +312,7 @@ def wait_worker_pane(
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
 
+    logger.debug("wait_for_pane slug=%s timeout=%ds", slug, timeout)
     session_root = os.path.abspath(session_root or project_root)
     pane_record = _p._get_pane(session_root, slug)
     start = time.monotonic()
@@ -334,10 +348,13 @@ def wait_worker_pane(
                         stable_since = None
                         continue
 
+            elapsed = time.monotonic() - start
+            logger.debug("wait completed slug=%s state=%s duration=%.1fs", slug, method, elapsed)
             return {"done": slug, "method": method}
 
         elapsed = time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
+            logger.warning("wait timed out slug=%s after=%.1fs", slug, elapsed)
             _p._update_pane_state(session_root, slug, "timed_out")
             _p._emit_event(session_root, "pane_timed_out", slug)
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
