@@ -1,6 +1,25 @@
 # Pane lifecycle
 
-Managing worker panes is the primary function of the `dgov` CLI. This page documents every operation available under the `dgov pane` command group.
+Managing worker panes is the primary function of the `dgov` CLI. This page documents every operation available under the `dgov pane` command group, including state machine transitions and recovery operations.
+
+## State Machine
+
+Panels progress through a well-defined set of states:
+
+| State | Description |
+|-------|-------------|
+| `active` | Pane is running, agent is processing tasks |
+| `done` | Task completed successfully (signal file or no new commits) |
+| `failed` | Task failed with error condition |
+| `abandoned` | Task was explicitly abandoned by user |
+| `timed_out` | Pane exceeded max duration without progress |
+| `closed` | Worktree and agent process have been removed |
+| `escalated` | Task transferred to a stronger agent |
+| `superseded` | Pane replaced by a newer attempt (e.g., after retry) |
+| `merged` | Changes merged into main branch |
+| `reviewed` | Diff has been reviewed but not yet merged |
+
+**Important**: A pane in `timed_out` state requires an explicit force transition to `done` before operations like `review`, `merge`, or `close` can be performed. Use `dgov pane signal <slug> done --force` to override this restriction.
 
 ## Create
 
@@ -141,7 +160,7 @@ dgov pane escalate fix-parser -a claude
 
 ## Retry
 
-Re-dispatch a failed or timed-out task. Creates a new pane with a `-2` suffix.
+Re-dispatch a failed or timed-out task. Creates a new pane with a `-2` suffix and fresh worktree.
 
 ```bash
 dgov pane retry fix-parser
@@ -149,10 +168,18 @@ dgov pane retry fix-parser
 
 ## Resume
 
-Re-launch an agent process in an existing worktree. Useful if the agent crashed or was manually killed.
+Re-launch an agent process in an existing worktree. Useful if the agent crashed or was manually killed. The worktree and all changes are preserved.
 
 ```bash
 dgov pane resume fix-parser
+```
+
+## Logs
+
+View the persistent log file for a specific worker pane.
+
+```bash
+dgov pane logs fix-parser --tail 50
 ```
 
 ## Close
@@ -204,14 +231,6 @@ Manually override the state of a pane.
 ```bash
 dgov pane signal fix-parser done
 dgov pane signal fix-parser failed
-```
-
-## Logs
-
-View the persistent log file for a specific worker.
-
-```bash
-dgov pane logs fix-parser --tail 50
 ```
 
 ## Utility Panes

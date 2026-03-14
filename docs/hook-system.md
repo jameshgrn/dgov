@@ -6,8 +6,8 @@ dgov's hook system allows you to customize the lifecycle of worker panes. You ca
 
 dgov searches for executable files with specific names in the following directories, in priority order (first found wins):
 
-1. **`.dgov-hooks/`**: Version-controlled hooks for your team.
-2. **`.dgov/hooks/`**: Local, gitignored hooks for your specific workstation.
+1. **`.dgov/hooks/`**: Local, gitignored hooks for your specific workstation.
+2. **`.dgov-hooks/`**: Version-controlled hooks for your team.
 3. **`~/.dgov/hooks/`**: Global hooks that run for every project.
 
 ## Available hooks
@@ -30,22 +30,36 @@ Every hook receives the following context in its environment:
 
 ## Example: worktree_created
 
-Use this hook to write a custom `CLAUDE.md` to every worker's worktree. Save this as `.dgov-hooks/worktree_created` and make it executable (`chmod +x`).
+Use this hook to write agent-tailored `CLAUDE.md` instructions with per-agent sections. Save this as `.dgov/hooks/worktree_created` and make it executable (`chmod +x`). This also creates native instruction symlinks for tools that read their own config files:
+
+- **Gemini** → `GEMINI.md` (symlink to `CLAUDE.md`)
+- **Cursor** → `.cursorrules` (symlink to `CLAUDE.md`)
+- **Cline** → `.clinerules` (symlink to `CLAUDE.md`)
 
 ```bash
 #!/bin/bash
 set -euo pipefail
 
-# Add worker-specific instructions to CLAUDE.md
-cat <<EOF > "$DGOV_WORKTREE_PATH/CLAUDE.md"
-# Worker Context: $DGOV_SLUG
-- You are running as agent: $DGOV_AGENT
+WORKTREE="$DGOV_WORKTREE_PATH"
+
+# Append agent-tailored section to CLAUDE.md
+cat <<EOF >> "$WORKTREE/CLAUDE.md"
+
+## Agent: $DGOV_AGENT
+- Slug: $DGOV_SLUG
 - Task: $DGOV_PROMPT
-- Please focus ONLY on the files related to this task.
+- Focus ONLY on files related to this task.
+- Never push from a worktree branch.
+- Commit early and often with clear messages.
 EOF
 
+# Create native instruction symlinks for external tools
+ln -sf CLAUDE.md "$WORKTREE/GEMINI.md"  # Gemini agent
+ln -sf CLAUDE.md "$WORKTREE/.cursorrules"  # Cursor IDE
+ln -sf CLAUDE.md "$WORKTREE/.clinerules"   # Cline VSCode extension
+
 # Ensure dependencies are in sync for this specific worktree
-cd "$DGOV_WORKTREE_PATH"
+cd "$WORKTREE"
 uv sync --quiet
 ```
 
