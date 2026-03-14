@@ -509,18 +509,3 @@ def build_launch_command(
 
     # positional
     return f'{snippet}; {base} "$DGOV_PROMPT_CONTENT"'
-
-
-def build_resume_command(
-    agent_id: str,
-    permission_mode: str = "",
-    registry: dict[str, AgentDef] | None = None,
-) -> str | None:
-    """Build command to resume the last session for an agent."""
-    reg = registry or AGENT_REGISTRY
-    agent = reg[agent_id]
-    if not agent.resume_template:
-        return None
-    flags = _perm_flags(agent, permission_mode)
-    suffix = f" {flags}" if flags else ""
-    return agent.resume_template.replace("{permissions}", suffix)

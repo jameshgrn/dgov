@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.backend import set_backend
-from dgov.models import ConflictDetails, MergeResult, TaskSpec
+from dgov.models import MergeResult
 from dgov.panes import _build_pane_title
 from dgov.persistence import (
     WorkerPane,
@@ -36,28 +36,19 @@ pytestmark = pytest.mark.unit
 
 
 class TestModels:
-    def test_task_spec_defaults(self) -> None:
-        spec = TaskSpec(
-            id="task-1",
-            description="Fix the tests",
-            exports=["artifact.json"],
-            imports=["input.json"],
-            touches=["src/app.py"],
-            body="Do the work",
-        )
+    def test_merge_result_defaults(self) -> None:
+        result = MergeResult(success=True)
+        assert result.stdout == ""
+        assert result.stderr == ""
+        assert result.conflicts == []
 
-        assert spec.after == []
-        assert spec.expects_changes is False
-        assert spec.permission_mode == "acceptEdits"
-        assert spec.timeout is None
-
-    def test_merge_related_dataclasses(self) -> None:
-        conflict = ConflictDetails(
-            file_path="src/app.py",
-            base="base",
-            head="head",
-            branch="feature/test",
-        )
+    def test_merge_result_with_conflicts(self) -> None:
+        conflict = {
+            "file_path": "src/app.py",
+            "base": "base",
+            "head": "head",
+            "branch": "feature/test",
+        }
         result = MergeResult(success=False, stderr="boom", conflicts=[conflict])
 
         assert result.success is False

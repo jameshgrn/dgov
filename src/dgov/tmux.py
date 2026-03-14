@@ -20,36 +20,6 @@ def _run(args: list[str], *, silent: bool = False) -> str:
     return result.stdout.strip()
 
 
-def has_session() -> bool:
-    """Return True if a tmux server is running and has at least one session."""
-    result = subprocess.run(
-        ["tmux", "list-sessions"],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
-
-
-def ensure_session(name: str = "dgov") -> None:
-    """Start a tmux session if no server is running, then attach to it.
-
-    If already inside tmux ($TMUX is set), this is a no-op.
-    If no server is running, starts a detached session named *name*.
-    """
-    import os
-
-    if os.environ.get("TMUX"):
-        return
-    if has_session():
-        return
-    subprocess.run(
-        ["tmux", "new-session", "-d", "-s", name],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-
-
 def split_pane(
     *,
     cwd: str | None = None,
@@ -76,14 +46,6 @@ def send_command(pane_id: str, command: str) -> None:
 def set_title(pane_id: str, title: str) -> None:
     """Set the pane title (shown in pane border)."""
     _run(["select-pane", "-t", pane_id, "-T", title])
-
-
-def update_pane_status(pane_id: str, agent: str, slug: str, status: str) -> None:
-    """Update pane title to reflect current status (tolerates dead panes)."""
-    icon = {"active": "\u23f3", "done": "\u2713", "failed": "\u2717", "timed_out": "\u23f0"}.get(
-        status, "?"
-    )
-    _run(["select-pane", "-t", pane_id, "-T", f"[{agent}] {slug} {icon}"], silent=True)
 
 
 def set_pane_option(pane_id: str, option: str, value: str) -> None:
@@ -141,26 +103,6 @@ def current_command(pane_id: str) -> str:
 def kill_pane(pane_id: str) -> None:
     """Kill a tmux pane."""
     _run(["kill-pane", "-t", pane_id], silent=True)
-
-
-def list_panes() -> list[dict[str, str]]:
-    """List all panes in the current window."""
-    output = _run(["list-panes", "-F", "#{pane_id}|#{pane_title}|#{pane_width}|#{pane_height}"])
-    panes = []
-    for line in output.strip().split("\n"):
-        if not line:
-            continue
-        parts = line.split("|")
-        if len(parts) >= 4:
-            panes.append(
-                {
-                    "pane_id": parts[0],
-                    "title": parts[1],
-                    "width": parts[2],
-                    "height": parts[3],
-                }
-            )
-    return panes
 
 
 def setup_pane_borders(session_name: str | None = None) -> None:
@@ -247,11 +189,6 @@ def style_governor_pane(pane_id: str) -> None:
     """Style the governor pane: bright active bg, [gov] title."""
     _run(["select-pane", "-t", pane_id, "-P", "fg=default,bg=colour234"], silent=True)
     _run(["select-pane", "-t", pane_id, "-T", "[gov] main"], silent=True)
-
-
-def select_pane(pane_id: str) -> None:
-    """Focus the given tmux pane."""
-    _run(["select-pane", "-t", pane_id])
 
 
 def select_layout(layout: str = "tiled") -> None:
