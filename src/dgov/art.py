@@ -13,13 +13,14 @@ BANNER = """\
  ██║  ██║ ██║  ███╗██║   ██║██║   ██║
  ██║  ██║ ██║   ██║██║   ██║╚██╗ ██╔╝
  ██████╔╝ ╚██████╔╝╚██████╔╝ ╚████╔╝
- ╚═════╝   ╚═════╝  ╚═════╝   ╚═══╝"""
+ ╚═════╝   ╚═════╝  ╚═════╝   ╚═══╝
+  distributed governance"""
 
 
 def print_banner() -> None:
     """Print the dgov banner to the terminal."""
     if os.environ.get("TERM") in ("dumb", "emacs"):
-        print("dgov — governor ready")
+        print("dgov — distributed governance")
         return
 
     print()
