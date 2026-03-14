@@ -7,31 +7,43 @@ dgov is a Python-based CLI tool designed to orchestrate AI coding agents. This p
 | Module | Purpose |
 |--------|---------|
 | `cli.py` | Entry point. Defines the Click command tree and flags. |
-| `panes.py` | The main facade. Re-exports functions from specialized submodules. |
-| `persistence.py` | State management. SQLite database and event journal logic. |
+| `panes.py` | Pane lifecycle commands (create, wait, merge, close, etc.). Each module is imported directly — no barrel re-exports. |
+| `persistence.py` | State management. SQLite database (WAL mode) and event journal logic. |
+| `strategy.py` | Qwen 4B integration for task classification and slug generation. |
 | `waiter.py` | Poll/wait logic for workers. Done and blocked detection. |
 | `merger.py` | In-memory git merging, conflict resolution, and post-merge lint. |
 | `batch.py` | DAG tier computation and parallel task runner. |
-| `agents.py` | Agent registry. Command builder for launching agents. |
-| `templates.py` | Prompt template substitution system. |
+| `agents.py` | TOML-driven agent registry (built-in → user → project layers). Command builder for launching agents. |
+| `backend.py` | `WorkerBackend` protocol for environmental abstraction. `TmuxBackend` implementation. |
+| `tmux.py` | Low-level tmux command wrappers. |
+| `openrouter.py` | OpenRouter API client for model queries. |
+| `dashboard.py` | Live tmux dashboard with pane status display. |
 | `experiment.py` | Sequential hypothesis testing loops and metric tracking. |
-| `blame.py` | File-to-agent attribution using git log and event data. |
-| `strategy.py` | Qwen 4B integration for task classification and slug generation. |
-| `responder.py` | Auto-responder rules to unblock worker panes. |
 | `retry.py` | Auto-retry engine and retry policy logic. |
+| `responder.py` | Auto-responder rules to unblock worker panes. |
 | `review_fix.py` | Two-phase automated code review and fix pipeline. |
-| `preflight.py` | Pre-dispatch validation and auto-fix logic. |
-| `backend.py` | `WorkerBackend` protocol for environmental abstraction. |
-| `tmux.py` | `TmuxBackend` implementation. Command wrappers for tmux. |
-| `state.py` | Status aggregation (panes, tunnel, kerberos). |
+| `templates.py` | Prompt template substitution system. |
+| `blame.py` | File-to-agent attribution using git log and event data. |
 | `models.py` | Shared dataclasses (TaskSpec, MergeResult). |
+| `preflight.py` | Pre-dispatch validation and auto-fix logic. |
+| `state.py` | Status aggregation (panes, tunnel, kerberos). |
 
 ## Data flow
 
 1. **CLI**: The `cli.py` entry point parses user input and dispatches a command.
-2. **Facade**: Commands call functions in `panes.py`, which delegates to the appropriate specialized module.
-3. **Persistence**: Every action is recorded in `persistence.py`. This writes a record to `state.db` (for lifecycle tracking) and an event to `events.jsonl` (for auditing).
-4. **Backend**: Lifecycle operations (create, kill, capture) are handled by the `WorkerBackend` in `backend.py`. The default `TmuxBackend` translates these into tmux commands.
+2. **Routing**: Commands call functions in `panes.py`, which delegates to the appropriate specialized module.
+3. **Persistence**: Every action is recorded in `persistence.py`. This writes a record to `state.db` (SQLite with WAL mode for lifecycle tracking) and an event to `events.jsonl` (append-only, for auditing).
+4. **Backend**: Lifecycle operations (create, kill, capture) are handled by the `WorkerBackend` protocol in `backend.py`. The default `TmuxBackend` implementation translates these into tmux commands via `tmux.py`.
+
+## Agent registry
+
+The agent registry in `agents.py` is **TOML-driven** with a three-layer resolution system:
+
+1. **Built-in** — Ship defaults for public CLIs (claude, codex, gemini, pi, etc.).
+2. **User global** — `~/.dgov/agents.toml` for personal agent definitions and overrides.
+3. **Project-local** — `<project_root>/.dgov/agents.toml` for repository-specific agents.
+
+Each layer merges over the previous: new agent IDs are added, existing IDs get field-level overrides. Project-local config is a **security boundary** — it cannot define `health_check` or `health_fix` commands to prevent malicious repos from executing arbitrary shell code.
 
 ## WorkerBackend abstraction
 

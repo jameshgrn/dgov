@@ -1,10 +1,10 @@
 # State and events
 
-dgov maintains a robust record of all operations in a SQLite database and an append-only event journal. This data is used for state persistence, progress tracking, and auditing (blame).
+dgov maintains a robust record of all operations in a SQLite database and an append-only event journal. This data is used for state persistence, progress tracking, and auditing (blame). State is SQLite-only (no JSON files); events are JSONL append-only.
 
 ## State database
 
-The primary state store is a SQLite database located at `.dgov/state.db`. It uses **WAL (Write-Ahead Logging)** mode to allow concurrent access from multiple processes.
+The primary state store is a **SQLite-only** database located at `.dgov/state.db`. There is no JSON state file — JSONL was removed entirely. The database uses **WAL (Write-Ahead Logging)** mode to allow concurrent access from multiple processes.
 
 ### Table: `panes`
 
@@ -20,9 +20,24 @@ Each record represents a worker pane and its current lifecycle state.
 | `worktree_path`| TEXT | Path to the worker's isolated worktree. |
 | `branch_name` | TEXT | Name of the worker's git branch. |
 | `created_at` | REAL | Unix timestamp of creation. |
+| `owns_worktree`| INTEGER | Whether dgov owns this worktree (bool stored as 0/1). |
 | `base_sha` | TEXT | The git commit hash the worker started from. |
 | `state` | TEXT | Canonical state (see below). |
 | `metadata` | TEXT | JSON blob for extra fields (e.g., `max_retries`). |
+
+### CRUD functions
+
+State is managed through focused helper functions in `persistence.py` — there are no generic `_read_state`/`_write_state` functions:
+
+| Function | Purpose |
+|----------|---------|
+| `_get_pane(session_root, slug)` | Retrieve a single pane record by slug. |
+| `_all_panes(session_root)` | Return all pane records as a list of dicts. |
+| `_add_pane(session_root, pane)` | Insert a `WorkerPane` dataclass into the database. |
+| `_remove_pane(session_root, slug)` | Delete a pane record by slug. |
+| `_update_pane_state(session_root, slug, new_state, force=False)` | Update state with transition validation. |
+| `_set_pane_metadata(session_root, slug, **kwargs)` | Update metadata fields (e.g., `max_retries`, `retried_from`). |
+| `_replace_all_panes(session_root, panes)` | Replace all records (test setup helper). |
 
 ## Pane states
 
@@ -40,6 +55,12 @@ A pane can only be in one of these 12 canonical states:
 - `superseded`: Original pane replaced by a retry attempt.
 - `closed`: Resources (worktree, pane) cleaned up.
 - `abandoned`: Task discarded without merging.
+
+## State machine enforcement
+
+Every state change for a worker pane is validated against the `VALID_TRANSITIONS` table in `persistence.py`. This ensures that a pane cannot move, for example, from `merged` back to `active`, or from `closed` to `done`.
+
+Illegal transitions raise `IllegalTransitionError(ValueError)`, which includes the current state, target state, and slug for debugging. Same-state transitions are no-ops (no error). The `force=True` flag bypasses validation when needed (e.g., cleanup operations).
 
 ## Event journal
 
