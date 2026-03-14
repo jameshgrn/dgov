@@ -234,7 +234,7 @@ class TestClassifyTask:
     def test_fallback_to_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "dgov.panes.chat_completion",
-            lambda *a, **kw: (_ for _ in ()).throw(ConnectionError("no llm")),
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no llm")),
         )
         assert classify_task("fix the lint error") == "claude"
 
@@ -2159,7 +2159,7 @@ class TestCreateCheckpoint:
         assert cp_path.exists()
         data = json.loads(cp_path.read_text())
         assert data["name"] == "wave1"
-        assert len(data) == 2
+        assert len(data["panes"]) == 2
 
     def test_checkpoint_with_no_panes(self, tmp_path: Path) -> None:
         from dgov.panes import create_checkpoint
