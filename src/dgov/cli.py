@@ -650,14 +650,9 @@ def pane_merge_all(project_root, session_root, close, resolve):
 
 
 def _fmt_duration(seconds: int) -> str:
-    """Format duration in human-readable format."""
-    if seconds < 60:
-        return f"{seconds}s"
-    if seconds < 3600:
-        return f"{seconds // 60}m{seconds % 60}s"
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
-    return f"{h}h{m}m"
+    from dgov.dashboard import fmt_duration
+
+    return fmt_duration(seconds)
 
 
 @pane.command("list")
@@ -900,28 +895,12 @@ def pane_logs(slug, project_root, session_root, tail):
     click.echo("".join(lines), nl=False)
 
 
-@pane.command("interact")
-@click.argument("slug")
-@click.argument("message")
-@SESSION_ROOT_OPTION
-def pane_interact(slug, message, session_root):
-    """Send a message to a worker pane via tmux send-keys."""
-    from dgov.waiter import interact_with_pane
-
-    session_root = os.path.abspath(session_root or ".")
-    if interact_with_pane(session_root, slug, message):
-        click.echo(json.dumps({"sent": True, "slug": slug}))
-    else:
-        click.echo(json.dumps({"error": f"Pane not found or dead: {slug}"}), err=True)
-        sys.exit(1)
-
-
 @pane.command("respond")
 @click.argument("slug")
 @click.argument("message")
 @SESSION_ROOT_OPTION
 def pane_respond(slug, message, session_root):
-    """Send a response to a worker pane (alias for interact)."""
+    """Send a message to a worker pane via tmux send-keys."""
     from dgov.waiter import interact_with_pane
 
     session_root = os.path.abspath(session_root or ".")

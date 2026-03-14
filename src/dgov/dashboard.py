@@ -183,7 +183,7 @@ def fetch_detail(state: DashboardState, slug: str) -> None:
         review = review_worker_pane(state.project_root, slug, session_root=state.session_root)
         if "error" not in review:
             lines.append("== Diff Stat ==")
-            lines.append(review.get("diff_stat", "(no changes)"))
+            lines.append(review.get("stat", "(no changes)"))
             lines.append(f"Commits: {review.get('commit_count', 0)}")
             lines.append("")
         else:
