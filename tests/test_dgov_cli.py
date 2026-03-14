@@ -569,7 +569,7 @@ class TestTopLevelCommands:
             )
         with patch(
             "dgov.state.get_status",
-            return_value={"panes": [], "tunnel": {"any_up": False}},
+            return_value={"panes": [], "total": 0, "alive": 0},
         ):
             status = runner.invoke(cli, ["status"])
         with patch(
@@ -590,7 +590,7 @@ class TestTopLevelCommands:
             session_root="/session",
         )
         assert json.loads(preflight.output)["passed"] is True
-        assert json.loads(status.output)["tunnel"]["any_up"] is False
+        assert json.loads(status.output)["total"] == 0
         mock_rebase.assert_called_once_with("/repo", onto="develop")
         assert json.loads(rebase.output)["rebased"] is True
         agents_payload = json.loads(agents.output)
