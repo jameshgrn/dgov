@@ -242,7 +242,7 @@ class TestFetchDetail:
     @patch("dgov.panes.capture_worker_output", return_value="some output")
     @patch(
         "dgov.panes.review_worker_pane",
-        return_value={"diff_stat": "1 file", "commit_count": 1},
+        return_value={"stat": "1 file", "commit_count": 1},
     )
     def test_success(self, mock_review, mock_capture) -> None:
         state = DashboardState(project_root="/tmp/test")
