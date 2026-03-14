@@ -71,6 +71,7 @@ def cli(ctx):
         None,
         "version",
         "agents",
+        "blame",
         "checkpoint",
         "experiment",
         "template",
@@ -985,17 +986,45 @@ def rebase(project_root, onto):
 @click.option("--session-root", "-R", default=None, help="Session root")
 @click.option("--all", "-a", "show_all", is_flag=True, default=False, help="Show full history")
 @click.option("--agent", default=None, help="Filter by agent")
-def blame(file_path, project_root, session_root, show_all, agent):
+@click.option("--line-level", is_flag=True, default=False, help="Show line-level blame")
+@click.option("--lines", "-L", default=None, help="Line range for line-level blame (e.g. 10-20)")
+def blame(file_path, project_root, session_root, show_all, agent, line_level, lines):
     """Show which agent/pane last touched a file."""
-    from dgov.blame import blame_file
+    if lines or line_level:
+        from dgov.blame import blame_lines
 
-    result = blame_file(
-        project_root=project_root,
-        file_path=file_path,
-        session_root=session_root,
-        last_only=not show_all,
-        agent_filter=agent,
-    )
+        start_line = None
+        end_line = None
+        if lines:
+            parts = lines.split("-", 1)
+            try:
+                start_line = int(parts[0])
+                if len(parts) > 1:
+                    end_line = int(parts[1])
+                else:
+                    end_line = start_line
+            except ValueError:
+                click.echo(f"Invalid line range: {lines} (expected N or N-M)", err=True)
+                sys.exit(1)
+
+        result = blame_lines(
+            project_root=project_root,
+            file_path=file_path,
+            session_root=session_root,
+            start_line=start_line,
+            end_line=end_line,
+            agent_filter=agent,
+        )
+    else:
+        from dgov.blame import blame_file
+
+        result = blame_file(
+            project_root=project_root,
+            file_path=file_path,
+            session_root=session_root,
+            last_only=not show_all,
+            agent_filter=agent,
+        )
     click.echo(json.dumps(result, indent=2))
 
 
