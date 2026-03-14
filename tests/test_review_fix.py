@@ -252,6 +252,9 @@ class TestPipelineReviewOnly:
             ]
         )
 
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "foo.py").touch()
+
         result = run_review_fix_pipeline(
             project_root=str(tmp_path),
             targets=["src/foo.py"],
@@ -284,6 +287,9 @@ class TestPipelineReviewOnly:
         mock_is_done.return_value = True
         mock_get_pane.return_value = {"slug": "review-000-bar", "pane_id": "%1"}
         mock_capture.return_value = "[]"
+
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "bar.py").touch()
 
         result = run_review_fix_pipeline(
             project_root=str(tmp_path),
@@ -349,6 +355,9 @@ class TestPipelineFull:
         mock_merge.return_value = {"merged": "fix-foo", "branch": "fix-foo"}
         mock_subproc.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "foo.py").touch()
+
         result = run_review_fix_pipeline(
             project_root=str(tmp_path),
             targets=["src/foo.py"],
@@ -383,6 +392,9 @@ class TestPipelineFull:
         mock_is_done.return_value = True
         mock_get_pane.return_value = {"slug": "review-000-empty", "pane_id": "%1"}
         mock_capture.return_value = "[]"
+
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "clean.py").touch()
 
         result = run_review_fix_pipeline(
             project_root=str(tmp_path),
@@ -439,6 +451,9 @@ class TestPipelineFull:
             ]
         )
         mock_merge.return_value = {"error": "Merge failed"}
+
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "foo.py").touch()
 
         result = run_review_fix_pipeline(
             project_root=str(tmp_path),
