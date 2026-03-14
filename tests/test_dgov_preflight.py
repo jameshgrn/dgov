@@ -610,6 +610,7 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
             "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
             "check_git_clean": CheckResult("git_clean", True, True, "ok"),
             "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_tunnel": CheckResult("tunnel", True, True, "ok"),
             "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
             "check_deps": CheckResult("deps", True, False, "ok"),
             "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
@@ -631,6 +632,80 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
     report = run_preflight("/tmp/repo", agent="claude")
     names = {c.name for c in report.checks}
     assert "agent_health" not in names
+
+
+def test_run_preflight_always_includes_tunnel_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify tunnel check runs unconditionally for any agent."""
+
+    _patch_all_checks(
+        monkeypatch,
+        {
+            "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
+            "check_git_clean": CheckResult("git_clean", True, True, "ok"),
+            "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_tunnel": CheckResult("tunnel", True, True, "all ports up"),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
+            "check_deps": CheckResult("deps", True, False, "ok"),
+            "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
+            "check_file_locks": CheckResult("file_locks", True, True, "ok"),
+        },
+    )
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "claude": AgentDef(
+                id="claude",
+                name="Claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="claude")
+    names = {c.name for c in report.checks}
+    assert "tunnel" in names
+
+
+def test_run_preflight_tunnel_failure_blocks_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify that tunnel failure makes preflight fail (critical check)."""
+
+    _patch_all_checks(
+        monkeypatch,
+        {
+            "check_agent_cli": CheckResult("agent_cli", True, True, "ok"),
+            "check_git_clean": CheckResult("git_clean", True, True, "ok"),
+            "check_git_branch": CheckResult("git_branch", True, False, "ok"),
+            "check_tunnel": CheckResult(
+                "tunnel", False, True, "SSH tunnel: up=[] down=[8080, 8081, 8082]", fixable=True
+            ),
+            "check_agent_concurrency": CheckResult("agent_concurrency", True, False, "ok"),
+            "check_deps": CheckResult("deps", True, False, "ok"),
+            "check_stale_worktrees": CheckResult("stale_worktrees", True, False, "ok"),
+            "check_file_locks": CheckResult("file_locks", True, True, "ok"),
+        },
+    )
+    monkeypatch.setattr(
+        "dgov.agents.load_registry",
+        lambda pr: {
+            "claude": AgentDef(
+                id="claude",
+                name="Claude",
+                short_label="cc",
+                prompt_command="claude",
+                prompt_transport="positional",
+            )
+        },
+    )
+    report = run_preflight("/tmp/repo", agent="claude")
+    assert report.passed is False
+    tunnel_check = next(c for c in report.checks if c.name == "tunnel")
+    assert tunnel_check.passed is False
+    assert tunnel_check.critical is True
 
 
 # ---------------------------------------------------------------------------
