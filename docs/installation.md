@@ -14,7 +14,7 @@ dgov v0.5.0 requires Python 3.12+ and a running `tmux` session.
 If you are developing dgov or want the latest version:
 
 ```bash
-git clone https://github.com/jakegearon/dgov
+git clone https://github.com/jameshgrn/dgov
 cd dgov
 uv pip install -e .
 ```
