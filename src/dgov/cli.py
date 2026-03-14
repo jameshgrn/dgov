@@ -255,9 +255,10 @@ def pane_create(
     var,
 ):
     """Create a worker pane: worktree + tmux + agent."""
-    from dgov.agents import load_registry
+    from dgov.agents import get_default_agent, load_registry
     from dgov.panes import classify_task, create_worker_pane
 
+    registry = load_registry(project_root)
     skip_auto_structure = False
 
     if template:
@@ -287,7 +288,7 @@ def pane_create(
             sys.exit(1)
 
         if agent is None:
-            agent = tpl.default_agent or "claude"
+            agent = tpl.default_agent or get_default_agent(registry)
         skip_auto_structure = True
     elif prompt is None:
         click.echo("Either --prompt or --template is required.", err=True)
@@ -298,9 +299,7 @@ def pane_create(
         sys.exit(1)
 
     if agent is None:
-        agent = "claude"
-
-    registry = load_registry(project_root)
+        agent = get_default_agent(registry)
 
     if agent == "auto":
         agent = classify_task(prompt)
@@ -752,7 +751,7 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
     help="Project root",
 )
 @SESSION_ROOT_OPTION
-@click.option("--agent", "-a", default="claude", help="Agent to escalate to")
+@click.option("--agent", "-a", default=None, help="Agent to escalate to")
 @click.option(
     "--permission-mode",
     "-m",
@@ -761,7 +760,11 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
 )
 def pane_escalate(slug, project_root, session_root, agent, permission_mode):
     """Re-dispatch to a stronger agent."""
+    from dgov.agents import get_default_agent, load_registry
     from dgov.panes import escalate_worker_pane
+
+    if agent is None:
+        agent = get_default_agent(load_registry(project_root))
 
     result = escalate_worker_pane(
         project_root,
@@ -915,7 +918,7 @@ def pane_signal(slug, signal_type, session_root):
     help="Project root",
 )
 @SESSION_ROOT_OPTION
-@click.option("--agent", "-a", default="claude", help="Agent to validate for")
+@click.option("--agent", "-a", default=None, help="Agent to validate for")
 @click.option("--fix", is_flag=True, help="Auto-fix fixable failures")
 @click.option(
     "--touches",
@@ -926,6 +929,10 @@ def pane_signal(slug, signal_type, session_root):
 @click.option("--branch", "-b", default=None, help="Expected branch name")
 def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
     """Run pre-flight checks before dispatch."""
+    from dgov.agents import get_default_agent, load_registry
+
+    if agent is None:
+        agent = get_default_agent(load_registry(project_root))
     from dgov.preflight import fix_preflight, run_preflight
 
     report = run_preflight(
@@ -1205,7 +1212,7 @@ def experiment():
 )
 @click.option("--metric", "-m", required=True, help="Metric name to optimize")
 @click.option("--budget", "-b", default=5, help="Max experiments to run")
-@click.option("--agent", "-a", default="claude", help="Agent to use")
+@click.option("--agent", "-a", default=None, help="Agent to use")
 @click.option("--direction", "-d", type=click.Choice(["minimize", "maximize"]), default="minimize")
 @click.option("--project-root", "-r", default=".", help="Git repo root")
 @SESSION_ROOT_OPTION
@@ -1215,7 +1222,11 @@ def experiment_start(
     program, metric, budget, agent, direction, project_root, session_root, timeout, dry_run
 ):
     """Run an experiment loop."""
+    from dgov.agents import get_default_agent, load_registry
     from dgov.experiment import run_experiment_loop
+
+    if agent is None:
+        agent = get_default_agent(load_registry(project_root))
 
     session_root_abs = os.path.abspath(session_root or project_root)
 
@@ -1291,8 +1302,8 @@ def experiment_summary(program, project_root, session_root, direction):
 @click.option(
     "--targets", "-t", required=True, multiple=True, help="File/directory paths to review"
 )
-@click.option("--review-agent", default="claude", help="Agent for review phase")
-@click.option("--fix-agent", default="claude", help="Agent for fix phase")
+@click.option("--review-agent", default=None, help="Agent for review phase")
+@click.option("--fix-agent", default=None, help="Agent for fix phase")
 @click.option(
     "--auto-approve", is_flag=True, default=False, help="Proceed to fix phase automatically"
 )
@@ -1309,7 +1320,13 @@ def review_fix(
     targets, review_agent, fix_agent, auto_approve, severity, project_root, session_root, timeout
 ):
     """Run review-then-fix pipeline: review targets, collect findings, optionally fix."""
+    from dgov.agents import get_default_agent, load_registry
     from dgov.review_fix import run_review_fix_pipeline
+
+    if review_agent is None or fix_agent is None:
+        default = get_default_agent(load_registry(project_root))
+        review_agent = review_agent or default
+        fix_agent = fix_agent or default
 
     result = run_review_fix_pipeline(
         project_root=project_root,

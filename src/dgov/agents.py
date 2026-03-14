@@ -328,6 +328,50 @@ def detect_installed_agents(
     ]
 
 
+# Preferred fallback order when no default is configured.
+_DEFAULT_AGENT_CHAIN = ("claude", "codex", "gemini")
+
+
+def _load_dgov_config() -> dict:
+    """Load [dgov] section from ~/.dgov/config.toml."""
+    config_path = Path.home() / ".dgov" / "config.toml"
+    if not config_path.is_file():
+        return {}
+    try:
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+        return data.get("dgov", {})
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
+
+
+def get_default_agent(registry: dict[str, AgentDef] | None = None) -> str:
+    """Return the default agent to use when none is specified.
+
+    Priority:
+    1. User config: [dgov] default_agent in ~/.dgov/config.toml
+    2. First installed from: claude → codex → gemini
+    3. First installed agent in registry
+    4. "claude" (ultimate fallback)
+    """
+    config = _load_dgov_config()
+    configured = config.get("default_agent")
+    if configured:
+        return configured
+
+    reg = registry or AGENT_REGISTRY
+    installed = detect_installed_agents(reg)
+
+    for agent_id in _DEFAULT_AGENT_CHAIN:
+        if agent_id in installed:
+            return agent_id
+
+    if installed:
+        return installed[0]
+
+    return "claude"
+
+
 def _perm_flags(agent: AgentDef, mode: str) -> str:
     if not mode:
         return ""
