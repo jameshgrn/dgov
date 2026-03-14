@@ -8,11 +8,17 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# -- Connection cache (per db_path + thread) --
+
+_conn_cache: dict[tuple[str, int], sqlite3.Connection] = {}
+_conn_lock = threading.Lock()
 
 # -- Event log --
 
@@ -182,16 +188,64 @@ def _state_path(session_root: str) -> Path:
 
 
 def _get_db(session_root: str) -> sqlite3.Connection:
-    """Open a SQLite connection, creating/migrating the DB on first access."""
-    db_path = _state_path(session_root)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    """Return a cached SQLite connection for this (db_path, thread).
 
-    conn = sqlite3.connect(str(db_path))
+    First call per thread creates the connection, sets WAL mode,
+    busy_timeout, and runs CREATE TABLE.  Subsequent calls return
+    the cached connection.
+    """
+    db_path = str(_state_path(session_root))
+    key = (db_path, threading.get_ident())
+
+    with _conn_lock:
+        conn = _conn_cache.get(key)
+        if conn is not None:
+            return conn
+
+    # Outside the lock — only one thread will ever hit this for a given key.
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(_CREATE_TABLE_SQL)
     conn.commit()
 
+    with _conn_lock:
+        # Another racer may have inserted; prefer the first one.
+        existing = _conn_cache.get(key)
+        if existing is not None:
+            conn.close()
+            return existing
+        _conn_cache[key] = conn
     return conn
+
+
+def _close_cached_connections() -> None:
+    """Close and remove all cached connections. For test cleanup."""
+    with _conn_lock:
+        for conn in _conn_cache.values():
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+        _conn_cache.clear()
+
+
+_LOCK_RETRIES = 3
+_LOCK_BACKOFF_S = 0.1
+
+
+def _retry_on_lock(fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+    """Call *fn* with retries on 'database is locked' errors."""
+    for attempt in range(_LOCK_RETRIES):
+        try:
+            return fn(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc) or attempt == _LOCK_RETRIES - 1:
+                raise
+            logger.debug("database locked, retry %d/%d", attempt + 1, _LOCK_RETRIES)
+            time.sleep(_LOCK_BACKOFF_S * (attempt + 1))
+    return None  # unreachable, but keeps type checkers happy
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
@@ -232,41 +286,35 @@ def _insert_pane_dict(conn: sqlite3.Connection, pane_dict: dict) -> None:
 
 
 def _add_pane(session_root: str, pane: WorkerPane) -> None:
-    conn = _get_db(session_root)
-    try:
+    def _do() -> None:
+        conn = _get_db(session_root)
         _insert_pane_dict(conn, asdict(pane))
         conn.commit()
-    finally:
-        conn.close()
+
+    _retry_on_lock(_do)
 
 
 def _remove_pane(session_root: str, slug: str) -> None:
-    conn = _get_db(session_root)
-    try:
+    def _do() -> None:
+        conn = _get_db(session_root)
         conn.execute("DELETE FROM panes WHERE slug = ?", (slug,))
         conn.commit()
-    finally:
-        conn.close()
+
+    _retry_on_lock(_do)
 
 
 def _get_pane(session_root: str, slug: str) -> dict | None:
     conn = _get_db(session_root)
-    try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
-        return _row_to_dict(row) if row else None
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
+    return _row_to_dict(row) if row else None
 
 
 def _all_panes(session_root: str) -> list[dict]:
     conn = _get_db(session_root)
-    try:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM panes").fetchall()
-        return [_row_to_dict(row) for row in rows]
-    finally:
-        conn.close()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM panes").fetchall()
+    return [_row_to_dict(row) for row in rows]
 
 
 def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool = False) -> None:
@@ -274,26 +322,52 @@ def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool
 
     Enforces VALID_TRANSITIONS unless *force* is True.
     Same-state transitions are no-ops.
+    Uses an atomic UPDATE … WHERE to avoid read-check-write races.
     Raises IllegalTransitionError for disallowed transitions.
     """
     _validate_state(new_state)
-    conn = _get_db(session_root)
-    try:
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
-        if row is not None:
-            current_state = row["state"]
-            if current_state == new_state:
-                return
-            allowed = VALID_TRANSITIONS.get(current_state, frozenset())
-            if not force and new_state not in allowed:
-                raise IllegalTransitionError(current_state, new_state, slug)
-        conn.execute("UPDATE panes SET state = ? WHERE slug = ?", (new_state, slug))
-        conn.commit()
-    finally:
-        conn.close()
 
-    # Update pane title to reflect new status
+    def _do() -> None:
+        conn = _get_db(session_root)
+        conn.row_factory = sqlite3.Row
+
+        if force:
+            # Skip transition validation — unconditional update.
+            cur = conn.execute(
+                "UPDATE panes SET state = ? WHERE slug = ? AND state != ?",
+                (new_state, slug, new_state),
+            )
+        else:
+            # Build the set of states that are allowed to transition to new_state.
+            allowed_from = [
+                st for st, targets in VALID_TRANSITIONS.items() if new_state in targets
+            ]
+            if not allowed_from:
+                # No state can legally reach new_state.  Same-state is still a no-op.
+                row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
+                if row is not None and row["state"] != new_state:
+                    raise IllegalTransitionError(row["state"], new_state, slug)
+                return
+
+            placeholders = ", ".join("?" * len(allowed_from))
+            cur = conn.execute(
+                f"UPDATE panes SET state = ? WHERE slug = ? AND state IN ({placeholders})",
+                [new_state, slug, *allowed_from],
+            )
+
+            if cur.rowcount == 0:
+                # Either slug missing, already at new_state, or illegal transition.
+                row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
+                if row is not None and row["state"] != new_state:
+                    raise IllegalTransitionError(row["state"], new_state, slug)
+                # slug missing or already at new_state — no-op.
+                return
+
+        conn.commit()
+
+    _retry_on_lock(_do)
+
+    # Update pane title to reflect new status.
     pane = _get_pane(session_root, slug)
     if pane:
         pane_id = pane.get("pane_id", "")
@@ -319,20 +393,20 @@ def _set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
     Stores extra fields (like ``max_retries``, ``retried_from``, ``superseded_by``)
     in the ``metadata`` JSON column.
     """
-    conn = _get_db(session_root)
-    try:
+
+    def _do() -> None:
+        conn = _get_db(session_root)
         conn.row_factory = sqlite3.Row
         row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
         if not row:
             return
         d = _row_to_dict(row)
-        # Merge new metadata fields
         for k, v in kwargs.items():
             d[k] = v
         _insert_pane_dict(conn, d)
         conn.commit()
-    finally:
-        conn.close()
+
+    _retry_on_lock(_do)
 
 
 def _replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
@@ -344,11 +418,12 @@ def _replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
     """
     if isinstance(panes, dict):
         panes = panes.get("panes", [])
-    conn = _get_db(session_root)
-    try:
+
+    def _do() -> None:
+        conn = _get_db(session_root)
         conn.execute("DELETE FROM panes")
         for pane_dict in panes:
             _insert_pane_dict(conn, pane_dict)
         conn.commit()
-    finally:
-        conn.close()
+
+    _retry_on_lock(_do)
