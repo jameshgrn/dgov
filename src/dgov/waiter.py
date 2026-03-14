@@ -10,10 +10,10 @@ import subprocess
 import time
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from dgov.backend import get_backend
 from dgov.persistence import _STATE_DIR
+
+logger = logging.getLogger(__name__)
 
 # -- Done-signal wrapper --
 
@@ -69,7 +69,7 @@ def _detect_blocked(output: str) -> str | None:
     for pattern in _BLOCKED_PATTERNS:
         m = pattern.search(tail)
         if m:
-            logger.debug("blocked slug matched_pattern=%s", m.pattern[:40])
+            logger.debug("blocked slug matched_pattern=%s", m.re.pattern[:40])
             return m.group(0)
     logger.debug("blocked_check slug=N/A reason=no_match")
     return None
