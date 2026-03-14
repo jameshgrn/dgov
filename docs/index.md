@@ -1,6 +1,6 @@
 # dgov documentation
 
-Distributed governance for AI coding agents. Orchestrates any CLI agent across git worktrees — dispatch, wait, review, merge.
+Distributed governance for AI coding agents. A meta harness that orchestrates any CLI agent across git worktrees. Features include OpenRouter integration, line-level blame attribution, dashboard TUI, experiment loops, auto-retry on failure, prompt templates, and SQLite state management.
 
 ## Getting started
 - [Installation](installation.md)
