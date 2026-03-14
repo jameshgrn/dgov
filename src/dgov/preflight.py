@@ -179,7 +179,7 @@ def check_git_branch(project_root: str, expected: str | None = None) -> CheckRes
     except (subprocess.TimeoutExpired, OSError) as exc:
         return CheckResult(
             name="git_branch",
-            passed=True,
+            passed=False,
             critical=False,
             message=f"Could not determine branch: {exc}",
         )
@@ -194,7 +194,12 @@ def check_git_branch(project_root: str, expected: str | None = None) -> CheckRes
         name="git_branch",
         passed=True,
         critical=False,
-        message=f"On branch '{branch}'" + (" (matches expected)" if expected else ""),
+        message=f"On branch '{branch}'"
+        + (
+            " (matches expected)"
+            if expected
+            else (" (not main)" if branch not in ("main", "master", "HEAD") else "")
+        ),
     )
 
 
@@ -344,12 +349,15 @@ def check_stale_worktrees(project_root: str) -> CheckResult:
             timeout=10,
         )
         worktrees: list[str] = []
+        is_first = True
         for line in result.stdout.splitlines():
             if line.startswith("worktree "):
                 wt_path = line.split(" ", 1)[1]
-                # Skip the main worktree (resolve both to handle symlinks)
-                if str(Path(wt_path).resolve()) != str(root):
-                    worktrees.append(wt_path)
+                # First entry in porcelain output is always the main worktree
+                if is_first:
+                    is_first = False
+                    continue
+                worktrees.append(wt_path)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return CheckResult(
             name="stale_worktrees",
