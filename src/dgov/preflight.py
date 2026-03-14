@@ -420,8 +420,15 @@ def run_preflight(
     touches: list[str] | None = None,
     expected_branch: str | None = None,
     session_root: str | None = None,
+    *,
+    skip_deps: bool = True,
 ) -> PreflightReport:
-    """Run all pre-flight checks and return a structured report."""
+    """Run all pre-flight checks and return a structured report.
+
+    Args:
+        skip_deps: Skip the heavyweight ``uv sync --locked`` check (default True).
+            Run ``dgov preflight`` explicitly to include it.
+    """
     from dgov.agents import load_registry
 
     registry = load_registry(project_root)
@@ -438,7 +445,8 @@ def run_preflight(
 
     checks.append(check_agent_concurrency(project_root, agent, session_root, registry=registry))
 
-    checks.append(check_deps())
+    if not skip_deps:
+        checks.append(check_deps())
     checks.append(check_stale_worktrees(project_root))
     checks.append(check_file_locks(project_root, touches or []))
 
@@ -482,19 +490,39 @@ def _fix_stale_worktrees(project_root: str) -> bool:
 _FIXER_NAMES = {"deps", "stale_worktrees", "agent_health"}
 
 
-def _fix_agent_health(project_root: str) -> bool:
-    """Run the agent's health_fix command from the preflight context.
+def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
+    """Run the failing agent's health_fix command.
 
-    Finds the agent from the failed check context and runs its health_fix.
+    Args:
+        agent_id: The specific agent whose health_fix to run.  When *None*,
+            falls back to trying every agent with a health_fix (legacy).
     """
     from dgov.agents import load_registry
 
     registry = load_registry(project_root)
-    for agent_def in registry.values():
-        if agent_def.health_fix:
+
+    if agent_id is not None:
+        agent_def = registry.get(agent_id)
+        if not agent_def or not agent_def.health_fix:
+            return False
+        try:
+            result = subprocess.run(
+                agent_def.health_fix,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    # Fallback: no agent_id provided — try all (legacy path)
+    for defn in registry.values():
+        if defn.health_fix:
             try:
                 result = subprocess.run(
-                    agent_def.health_fix,
+                    defn.health_fix,
                     shell=True,
                     capture_output=True,
                     text=True,
