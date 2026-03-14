@@ -1013,9 +1013,15 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
 @SESSION_ROOT_OPTION
 def status(project_root, session_root):
     """Get full dgov status as JSON."""
-    from dgov.state import get_status
+    from dgov.panes import list_worker_panes
 
-    click.echo(json.dumps(get_status(project_root, session_root=session_root), indent=2))
+    panes = list_worker_panes(project_root, session_root=session_root)
+    click.echo(
+        json.dumps(
+            {"panes": panes, "total": len(panes), "alive": sum(1 for p in panes if p["alive"])},
+            indent=2,
+        )
+    )
 
 
 @cli.command("rebase")

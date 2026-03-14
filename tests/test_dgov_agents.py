@@ -13,7 +13,6 @@ from dgov.agents import (
     _prompt_read_and_delete_snippet,
     _write_prompt_file,
     build_launch_command,
-    build_resume_command,
     detect_installed_agents,
     load_registry,
 )
@@ -328,48 +327,6 @@ class TestBuildLaunchCommand:
 
 
 # ---------------------------------------------------------------------------
-# build_resume_command
-# ---------------------------------------------------------------------------
-
-
-class TestBuildResumeCommand:
-    def test_claude_resume(self) -> None:
-        cmd = build_resume_command("claude")
-        assert cmd is not None
-        assert "claude --continue" in cmd
-
-    def test_claude_resume_with_permissions(self) -> None:
-        cmd = build_resume_command("claude", "bypassPermissions")
-        assert cmd is not None
-        assert "--dangerously-skip-permissions" in cmd
-
-    def test_codex_resume(self) -> None:
-        cmd = build_resume_command("codex")
-        assert cmd is not None
-        assert "codex resume" in cmd
-
-    def test_gemini_resume(self) -> None:
-        cmd = build_resume_command("gemini")
-        assert cmd is not None
-        assert "--resume latest" in cmd
-
-    def test_with_custom_registry(self) -> None:
-        custom_reg = {
-            "pi": AgentDef(
-                id="pi",
-                name="pi",
-                short_label="pi",
-                prompt_command="pi",
-                prompt_transport="positional",
-                resume_template="pi --continue{permissions}",
-            )
-        }
-        cmd = build_resume_command("pi", registry=custom_reg)
-        assert cmd is not None
-        assert "pi --continue" in cmd
-
-
-# ---------------------------------------------------------------------------
 # detect_installed_agents
 # ---------------------------------------------------------------------------
 
@@ -632,11 +589,6 @@ class TestUnknownAgentName:
                 project_root="/tmp",
                 slug="task",
             )
-
-    def test_unknown_resume_agent_raises_keyerror(self) -> None:
-        assert "unknown-agent" not in AGENT_REGISTRY
-        with pytest.raises(KeyError):
-            build_resume_command("unknown-agent")
 
 
 class TestWritePromptFile:

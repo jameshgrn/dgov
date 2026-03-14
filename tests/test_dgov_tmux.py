@@ -11,13 +11,9 @@ from dgov.tmux import (
     capture_pane,
     create_utility_pane,
     current_command,
-    ensure_session,
-    has_session,
     kill_pane,
-    list_panes,
     pane_exists,
     select_layout,
-    select_pane,
     send_command,
     send_prompt_via_buffer,
     set_title,
@@ -26,7 +22,6 @@ from dgov.tmux import (
     style_dgov_session,
     style_governor_pane,
     style_worker_pane,
-    update_pane_status,
 )
 
 pytestmark = pytest.mark.unit
@@ -64,49 +59,6 @@ class TestRun:
         assert _run(["list-sessions"], silent=True) == ""
 
 
-class TestSessionHelpers:
-    def test_has_session_returns_boolean(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.tmux.subprocess.run", lambda *args, **kwargs: _cp(returncode=0))
-        assert has_session() is True
-        monkeypatch.setattr("dgov.tmux.subprocess.run", lambda *args, **kwargs: _cp(returncode=1))
-        assert has_session() is False
-
-    def test_ensure_session_noops_inside_tmux(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TMUX", "1")
-        calls: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            calls.append(cmd)
-            return _cp()
-
-        monkeypatch.setattr("dgov.tmux.subprocess.run", fake_run)
-        ensure_session("dgov-test")
-        assert calls == []
-
-    def test_ensure_session_noops_when_server_exists(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("TMUX", raising=False)
-        monkeypatch.setattr("dgov.tmux.has_session", lambda: True)
-        with patch("dgov.tmux.subprocess.run") as mock_run:
-            ensure_session("dgov-test")
-        mock_run.assert_not_called()
-
-    def test_ensure_session_creates_detached_session(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("TMUX", raising=False)
-        monkeypatch.setattr("dgov.tmux.has_session", lambda: False)
-        with patch("dgov.tmux.subprocess.run", return_value=_cp()) as mock_run:
-            ensure_session("dgov-test")
-        mock_run.assert_called_once_with(
-            ["tmux", "new-session", "-d", "-s", "dgov-test"],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-
 class TestPaneCommands:
     def test_split_send_set_title_capture_and_select(
         self, monkeypatch: pytest.MonkeyPatch
@@ -135,7 +87,6 @@ class TestPaneCommands:
         set_title("%5", "worker")
         assert capture_pane("%5", lines=2) == "line1\nline2"
         assert current_command("%5") == "zsh"
-        select_pane("%5")
         select_layout("tiled")
         kill_pane("%5")
 
@@ -157,7 +108,6 @@ class TestPaneCommands:
         ] in seen
         assert ["tmux", "send-keys", "-t", "%5", "ls -la", "Enter"] in seen
         assert ["tmux", "select-pane", "-t", "%5", "-T", "worker"] in seen
-        assert ["tmux", "select-pane", "-t", "%5"] in seen
         assert ["tmux", "select-layout", "tiled"] in seen
         assert ["tmux", "kill-pane", "-t", "%5"] in seen
 
@@ -200,28 +150,8 @@ class TestPaneCommands:
             "%2": {"title": "gov", "current_command": "zsh"},
         }
 
-    def test_list_panes_parses_and_skips_malformed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(
-            "dgov.tmux._run",
-            lambda args, silent=False: "%1|one|120|40\nbadline\n%2|two|80|30\n",
-        )
-        assert list_panes() == [
-            {"pane_id": "%1", "title": "one", "width": "120", "height": "40"},
-            {"pane_id": "%2", "title": "two", "width": "80", "height": "30"},
-        ]
-
 
 class TestStyling:
-    def test_update_pane_status_uses_expected_icons(self) -> None:
-        with patch("dgov.tmux._run") as mock_run:
-            update_pane_status("%9", "claude", "audit", "done")
-            update_pane_status("%9", "claude", "audit", "mystery")
-
-        assert mock_run.call_args_list == [
-            call(["select-pane", "-t", "%9", "-T", "[claude] audit ✓"], silent=True),
-            call(["select-pane", "-t", "%9", "-T", "[claude] audit ?"], silent=True),
-        ]
-
     def test_setup_pane_borders_applies_session_scope(self) -> None:
         with patch("dgov.tmux._run") as mock_run:
             setup_pane_borders("dgov-repo")

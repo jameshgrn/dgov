@@ -568,8 +568,8 @@ class TestTopLevelCommands:
                 ],
             )
         with patch(
-            "dgov.state.get_status",
-            return_value={"panes": [], "total": 0, "alive": 0},
+            "dgov.panes.list_worker_panes",
+            return_value=[],
         ):
             status = runner.invoke(cli, ["status"])
         with patch(
