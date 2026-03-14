@@ -28,11 +28,16 @@ uv tool install dgov
 
 Requires: Python 3.12+, git, tmux.
 
-## How it works
+## Quick start
 
-dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch, tmux pane, and agent CLI. A governor (usually Claude or pi) dispatches, reviews, and merges work.
+```bash
+dgov pane create -a claude -p "Add retry logic to the HTTP client"
+dgov pane wait <slug>
+dgov pane review <slug>
+dgov pane merge <slug>
+```
 
-State is stored in `.dgov/state.db` (SQLite WAL). Events are logged to `.dgov/events.jsonl`.
+State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
 
 ## Commands
 
