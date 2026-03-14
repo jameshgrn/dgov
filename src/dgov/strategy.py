@@ -2,115 +2,71 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import subprocess
 import time
 
 logger = logging.getLogger(__name__)
 
-# -- Qwen 4B helper (tunnel-aware) --
-
-_QWEN_4B_URL = "http://localhost:8082/v1/chat/completions"
-_QWEN_4B_TIMEOUT = 5
-
-
-def _qwen_4b_request(messages: list[dict], max_tokens: int = 20, temperature: float = 0) -> dict:
-    """Send a request to Qwen 4B, trying localhost first then SSH tunnel.
-
-    Returns the parsed JSON response dict.
-    Raises on failure (caller should catch).
-    """
-    import urllib.request
-
-    body = json.dumps(
-        {
-            "model": "qwen",
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-    ).encode()
-
-    # Try 1: direct localhost (tunnel is up locally)
-    try:
-        req = urllib.request.Request(
-            _QWEN_4B_URL,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=_QWEN_4B_TIMEOUT) as resp:
-            return json.loads(resp.read())
-    except Exception:
-        logger.debug("Qwen 4B direct request failed, trying SSH fallback")
-
-    # Try 2: SSH to river and curl from there
-    json_str = json.dumps(
-        {
-            "model": "qwen",
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }
-    )
-    curl_cmd = (
-        f"curl -s --max-time {_QWEN_4B_TIMEOUT} -X POST "
-        f"-H 'Content-Type: application/json' "
-        f"-d @- 'http://localhost:8082/v1/chat/completions' <<'__JSON__'\n{json_str}\n__JSON__"
-    )
-    script = f"ssh river 'bash -l' <<'HEREDOC'\n{curl_cmd}\nHEREDOC"
-    result = subprocess.run(
-        ["bash", "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=_QWEN_4B_TIMEOUT + 30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"SSH curl to river failed (exit {result.returncode})")
-    return json.loads(result.stdout)
-
+# Re-export from openrouter for backward compatibility (panes.py imports these)
+from dgov.openrouter import _QWEN_4B_TIMEOUT, _QWEN_4B_URL, _qwen_4b_request  # noqa: F401, E402
 
 # -- Task routing --
 
 
-def classify_task(prompt: str) -> str:
-    """Classify a task prompt and recommend an agent via Qwen 4B.
+def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str:
+    """Classify a task prompt and recommend an agent.
 
-    Returns "pi" for mechanical tasks (run commands, edit specific lines,
-    format files) and "claude" for analytical tasks (debug flaky tests,
-    refactor architecture, multi-step reasoning).
+    Uses OpenRouter (with Qwen 4B fallback) to classify.
+    When installed_agents is provided and OpenRouter is available,
+    classifies across all installed agents (not just pi/claude).
 
-    Falls back to "claude" if the model is unreachable.
+    Falls back to "claude" if all LLM providers are unreachable.
     """
     import dgov.panes as _p  # access through panes so test mocks propagate
 
-    try:
-        result = _p._qwen_4b_request(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Classify this task as either 'pi' or 'claude'.\n"
-                        "pi = mechanical: run a command, edit a specific line, "
-                        "add a comment, format files, simple find-and-replace.\n"
-                        "claude = analytical: debug why something fails, read and "
-                        "understand complex code, refactor architecture, fix flaky "
-                        "tests, multi-file reasoning, rework/redesign a system, "
-                        "add a new feature with multiple moving parts, "
-                        "anything involving scheduler.py or panes.py.\n"
-                        "Reply with ONLY 'pi' or 'claude', nothing else."
-                    ),
-                },
-                {"role": "user", "content": prompt[:300]},
-            ],
-            max_tokens=5,
-            temperature=0,
+    agents = installed_agents or ["pi", "claude"]
+    use_multi = len(agents) > 2
+
+    if use_multi:
+        agent_list = ", ".join(f"'{a}'" for a in agents)
+        system_msg = (
+            f"Classify this task to one of these agents: {agent_list}.\n"
+            "pi = mechanical: run a command, edit a specific line, "
+            "add a comment, format files, simple find-and-replace.\n"
+            "claude = analytical: debug why something fails, read and "
+            "understand complex code, refactor architecture, fix flaky "
+            "tests, multi-file reasoning, rework/redesign a system.\n"
+            "codex = batch code changes, large-scale refactors, "
+            "tasks that benefit from parallel execution.\n"
+            "gemini = research, summarization, documentation tasks.\n"
+            f"Reply with ONLY one of: {agent_list}. Nothing else."
         )
+    else:
+        system_msg = (
+            "Classify this task as either 'pi' or 'claude'.\n"
+            "pi = mechanical: run a command, edit a specific line, "
+            "add a comment, format files, simple find-and-replace.\n"
+            "claude = analytical: debug why something fails, read and "
+            "understand complex code, refactor architecture, fix flaky "
+            "tests, multi-file reasoning, rework/redesign a system, "
+            "add a new feature with multiple moving parts, "
+            "anything involving scheduler.py or panes.py.\n"
+            "Reply with ONLY 'pi' or 'claude', nothing else."
+        )
+
+    messages = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": prompt[:300]},
+    ]
+
+    try:
+        result = _p.chat_completion(messages, max_tokens=5, temperature=0)
         answer = result["choices"][0]["message"]["content"].strip().lower()
-        if "pi" in answer:
-            return "pi"
+        # Match against known agents
+        for agent in agents:
+            if agent in answer:
+                return agent
         return "claude"
     except Exception:
         return "claude"
@@ -200,11 +156,11 @@ def _validate_slug(slug: str) -> str:
 
 
 def _generate_slug(prompt: str, max_words: int = 4) -> str:
-    """Generate a descriptive kebab-case slug using Qwen 4B, with local fallback."""
+    """Generate a descriptive kebab-case slug, with local fallback."""
     import dgov.panes as _p  # access through panes so test mocks propagate
 
     try:
-        result = _p._qwen_4b_request(
+        result = _p.chat_completion(
             messages=[
                 {
                     "role": "system",
