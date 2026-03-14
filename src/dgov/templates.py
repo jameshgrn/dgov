@@ -29,7 +29,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "Run tests with: uv run pytest {test_file} -q. "
             'git add {file} && git commit -m "Fix: {description}"'
         ),
-        required_vars=["file", "description"],
+        required_vars=["file", "description", "test_file"],
         default_agent="pi",
         description="Fix a bug in a single file with targeted tests",
     ),
@@ -41,7 +41,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "Run: uv run ruff check {file} && uv run pytest {test_file} -q. "
             'git add -A && git commit -m "Add: {description}"'
         ),
-        required_vars=["file", "description"],
+        required_vars=["file", "description", "test_file"],
         default_agent="claude",
         description="Add a new feature with tests",
     ),
@@ -52,7 +52,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "Run full test suite for the module: uv run pytest {test_file} -q. "
             'git add {file} && git commit -m "Refactor: {description}"'
         ),
-        required_vars=["file", "description"],
+        required_vars=["file", "description", "test_file"],
         default_agent="pi",
         description="Refactor code while preserving behavior",
     ),
@@ -64,7 +64,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "in the repo. Run: uv run pytest {test_file} -q. "
             'git add {test_file} && git commit -m "Add tests for {file}"'
         ),
-        required_vars=["file"],
+        required_vars=["file", "test_file"],
         default_agent="pi",
         description="Write tests for an existing file",
     ),
