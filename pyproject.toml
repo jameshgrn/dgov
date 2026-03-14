@@ -12,6 +12,9 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4",
 ]
+docs = [
+    "mkdocs-material>=9.0",
+]
 
 [project.scripts]
 dgov = "dgov.cli:cli"

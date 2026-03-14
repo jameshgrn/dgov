@@ -1,0 +1,61 @@
+site_name: dgov
+site_description: A meta harness for AI coding agents
+site_url: https://jameshgrn.github.io/dgov/
+repo_url: https://github.com/jameshgrn/dgov
+repo_name: jameshgrn/dgov
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.expand
+    - search.highlight
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+    - Installation: installation.md
+    - Quick start: quick-start.md
+    - Core concepts: core-concepts.md
+  - Usage:
+    - Pane lifecycle: pane-lifecycle.md
+    - Agent registry: agent-registry.md
+    - Prompt templates: prompt-templates.md
+    - Batch execution: batch-execution.md
+    - Experiment tracking: experiment-tracking.md
+    - Review-fix pipeline: review-fix-pipeline.md
+    - Hook system: hook-system.md
+    - Preflight checks: preflight-checks.md
+  - Reference:
+    - CLI reference: cli-reference.md
+    - State and events: state-and-events.md
+    - Configuration files: configuration-files.md
+  - Advanced:
+    - Conflict resolution: conflict-resolution.md
+    - Troubleshooting: troubleshooting.md
+    - Architecture: architecture.md
