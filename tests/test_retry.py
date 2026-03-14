@@ -375,8 +375,9 @@ class TestWaitWithAutoRetry:
 
 
 class TestCLINoAutoRetry:
+    @patch("dgov.panes.list_worker_panes", return_value=[{"slug": "w1"}])
     @patch("dgov.panes.wait_worker_pane")
-    def test_no_auto_retry_passed(self, mock_wait, runner: CliRunner) -> None:
+    def test_no_auto_retry_passed(self, mock_wait, mock_list, runner: CliRunner) -> None:
         mock_wait.return_value = {"done": "w1", "method": "signal_or_commit"}
 
         result = runner.invoke(
@@ -390,8 +391,9 @@ class TestCLINoAutoRetry:
             len(call_kwargs.args) > 6 and call_kwargs.args[6] is False
         )
 
+    @patch("dgov.panes.list_worker_panes", return_value=[{"slug": "w1"}])
     @patch("dgov.panes.wait_worker_pane")
-    def test_auto_retry_default_on(self, mock_wait, runner: CliRunner) -> None:
+    def test_auto_retry_default_on(self, mock_wait, mock_list, runner: CliRunner) -> None:
         mock_wait.return_value = {"done": "w1", "method": "signal_or_commit"}
 
         result = runner.invoke(cli, ["pane", "wait", "w1", "-r", "/fake"])

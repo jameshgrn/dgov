@@ -373,7 +373,10 @@ class TestExperimentCLI:
             env={"DGOV_SKIP_GOVERNOR_CHECK": "1"},
         )
         assert result.exit_code == 0
-        assert json.loads(result.output) == []
+        # Warning line may be mixed in from stderr; extract the JSON array
+        output = result.output.strip()
+        idx = output.index("[")
+        assert json.loads(output[idx:]) == []
 
     def test_summary_empty(self, tmp_path: Path) -> None:
         from click.testing import CliRunner
@@ -394,6 +397,10 @@ class TestExperimentCLI:
             env={"DGOV_SKIP_GOVERNOR_CHECK": "1"},
         )
         assert result.exit_code == 0
-        data = json.loads(result.output)
+        # Warning line may be mixed in from stderr; find the summary JSON (second '{')
+        output = result.output.strip()
+        first = output.index("{")
+        second = output.index("{", first + 1)
+        data = json.loads(output[second:])
         assert data["total"] == 0
         assert data["best"] is None

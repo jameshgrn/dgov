@@ -161,7 +161,10 @@ class TestTemplateCliList:
         assert result.exit_code == 1
         assert "Unknown template" in result.output
 
-    def test_template_create_prints_toml(self, runner: CliRunner) -> None:
+    def test_template_create_prints_toml(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
         result = runner.invoke(cli, ["template", "create", "my-tpl"])
         assert result.exit_code == 0
         assert "my-tpl" in result.output
