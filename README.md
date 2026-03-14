@@ -22,7 +22,7 @@ State is stored in `.dgov/state.db` (SQLite WAL). Events are logged to `.dgov/ev
 
 | Command | Description |
 |---------|-------------|
-| `dgov status` | Show session state, pane health, tunnel and Kerberos status |
+| `dgov status` | Show session state and pane health |
 | `dgov agents` | List all registered agents and install status |
 | `dgov dashboard` | Live TUI showing pane status, events, and metrics |
 
@@ -36,7 +36,7 @@ State is stored in `.dgov/state.db` (SQLite WAL). Events are logged to `.dgov/ev
 | `dgov pane review` | Inspect a pane's diff and verdict |
 | `dgov pane merge` | Merge a pane's branch into main |
 | `dgov pane close` | Close a pane and clean up worktree |
-| `dgov pane resume` | Reattach to a running pane's tmux session |
+| `dgov pane resume` | Re-launch agent in existing worktree |
 | `dgov pane preflight` | Run pre-dispatch checks |
 | `dgov pane edit` | Edit a pane's prompt while running |
 | `dgov pane top` | Launch btop in a utility pane |
@@ -78,11 +78,11 @@ State is stored in `.dgov/state.db` (SQLite WAL). Events are logged to `.dgov/ev
 | `copilot` | Copilot CLI | `copilot` |
 | `crush` | Crush CLI | `crush` |
 
-User-defined agents can be added to `.dgov/agents.json`.
+User agents: `~/.dgov/agents.toml` (global) or `.dgov/agents.toml` (per-project). See `dgov agents` for what's installed.
 
 ## Configuration
 
-- `.dgov/agents.json` — custom agent definitions
+- `.dgov/agents.toml` — custom agent definitions
 - `.dgov/templates/` — prompt templates
 - `.dgov/batch/` — batch spec files
 - `.dgov/state.db` — SQLite state (auto-created)
