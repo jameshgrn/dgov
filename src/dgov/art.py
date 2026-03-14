@@ -12,6 +12,7 @@ import os
 COLOR_TOP = "\033[38;5;220m"
 COLOR_MID = "\033[38;5;214m"
 COLOR_BOT = "\033[38;5;208m"
+COLOR_TAG = "\033[38;5;240m"
 RESET = "\033[0m"
 BOLD = "\033[1m"
 
@@ -35,4 +36,5 @@ def print_banner() -> None:
     print()
     for color, line in BANNER_LINES:
         print(f"{BOLD}{color}{line}{RESET}")
+    print(f"{COLOR_TAG}  dispatch · wait · review · merge{RESET}")
     print()
