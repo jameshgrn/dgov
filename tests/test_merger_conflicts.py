@@ -242,15 +242,11 @@ def test_worker_pane_success_with_merge(tmp_path):
     }
 
     with patch("dgov.panes._get_pane", return_value=mock_pane):
-        # Patch _plumbing_merge to simulate success
-        mock_merge_result = MagicMock(success=True, stderr="")
-
-        def get_pane_and_plumbing(*args, **kwargs):
-            # We need to handle the module import in merge_worker_pane
-            pass
-
-        # Test by patching both _get_pane and _plumbing_merge (imported via dgov.panes)
-        with patch("dgov.panes._is_done", return_value=True):
+        # Test by patching _is_done and _trigger_hook (hooks need env vars we don't have)
+        with (
+            patch("dgov.panes._is_done", return_value=True),
+            patch("dgov.panes._trigger_hook", return_value=True),
+        ):
             result = merge_worker_pane(str(fake_project), "test-slug")
 
             # Should succeed or at least not have an error about pane not found
