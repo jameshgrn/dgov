@@ -312,8 +312,8 @@ class TestUnifiedIsDone:
 # ---------------------------------------------------------------------------
 
 
-class TestInteractCLI:
-    def test_interact_cli(self, runner: CliRunner, tmp_path: Path) -> None:
+class TestRespondCLI:
+    def test_respond_cli(self, runner: CliRunner, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
@@ -321,16 +321,16 @@ class TestInteractCLI:
         ):
             result = runner.invoke(
                 cli,
-                ["pane", "interact", "test-worker", "hello", "-S", session_root],
+                ["pane", "respond", "test-worker", "hello", "-S", session_root],
             )
             assert result.exit_code == 0
             data = json.loads(result.output)
             assert data["sent"] is True
 
-    def test_interact_cli_missing(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_respond_cli_missing(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(
             cli,
-            ["pane", "interact", "nope", "hello", "-S", str(tmp_path)],
+            ["pane", "respond", "nope", "hello", "-S", str(tmp_path)],
         )
         assert result.exit_code == 1
 
