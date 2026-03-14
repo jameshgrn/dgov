@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def blame_file(
@@ -127,6 +130,7 @@ def _load_events(session_root: str) -> list[dict]:
                 try:
                     events.append(json.loads(line))
                 except json.JSONDecodeError:
+                    logger.warning("Corrupt event journal line: %.100s", line)
                     continue
     return events
 
