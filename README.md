@@ -1,6 +1,8 @@
 # dgov
 
-Distributed governance for AI coding agents. Orchestrates any CLI agent across git worktrees with tmux.
+A meta harness for AI coding agents.
+
+dgov is not an AI coding agent. It's the layer that sits above them. It orchestrates any CLI-based agent — Claude Code, Codex, Gemini, Cursor, Copilot, Cline, and others — through a uniform lifecycle: dispatch a task, wait for completion, review the diff, merge the result. The agents do the coding. dgov manages the workflow.
 
 ## Install
 
