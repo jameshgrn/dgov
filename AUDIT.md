@@ -1,6 +1,6 @@
 # dgov Design Efficiency Audit
 
-Last updated: 2026-03-15. 22 of 30 findings resolved. Remaining items tracked below.
+Last updated: 2026-03-15. 24 of 30 findings resolved. Remaining items tracked below.
 
 Scope: `src/dgov/` only. This is a static design audit; I did not modify source files or run the full test suite.
 
@@ -23,7 +23,7 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 | `src/dgov/preflight.py:322`, `src/dgov/preflight.py:361`, `src/dgov/panes.py:313`, `src/dgov/panes.py:1103` | medium | Agent health checks and concurrency guards are implemented twice: once in preflight and again in pane creation/resume. | Move health/concurrency validation into reusable helpers called by both preflight and pane launch paths. |
 | `src/dgov/batch.py:214`, `src/dgov/review_fix.py:231`, `src/dgov/review_fix.py:328` | medium | Batch and review-fix reimplement polling loops instead of reusing `waiter.wait_worker_pane()` / `wait_all_worker_panes()`. | Reuse waiter APIs and let them be the single place that defines "done". |
 | **FIXED** ~~`src/dgov/blame.py:118`, `src/dgov/retry.py:24`, `src/dgov/panes.py:150`~~ | low | ~~Event-journal parsing duplicated in three modules.~~ | Centralized in `persistence.py` via `read_events()`. |
-| `src/dgov/review_fix.py:245`, `src/dgov/review_fix.py:251` | low | Review output is parsed twice for every worker: once to collect findings and again to emit finding events. | Parse once, reuse the parsed list. |
+| **FIXED** ~~`src/dgov/review_fix.py:245`, `src/dgov/review_fix.py:251`~~ | low | ~~Review output is parsed twice for every worker: once to collect findings and again to emit finding events.~~ | Parsed once, reused list for event emission. |
 | **FIXED** ~~`src/dgov/cli.py:652`, `src/dgov/dashboard.py:50`~~ | low | ~~Duration formatting duplicated in CLI and dashboard.~~ | Unified. |
 
 ## 3. Over-engineering
@@ -33,7 +33,7 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 | `src/dgov/backend.py:15` | medium | `WorkerBackend`/`TmuxBackend` add an abstraction layer for alternate runtimes that do not exist. Production only ever uses tmux. | Collapse to a concrete tmux service until a second backend actually exists. |
 | **FIXED** ~~`src/dgov/state.py:9`~~ | low | ~~`state.py` is a one-function wrapper over `list_worker_panes()` plus two counts.~~ | Deleted; `get_status()` inlined into CLI. |
 | `src/dgov/strategy.py:14` | medium | Task routing uses an LLM call for a binary decision. | Use a cheap local heuristic first; only call the model when the prompt is ambiguous. |
-| `src/dgov/merger.py:648` | low | `merge_worker_pane_with_close()` is a wrapper around `merge_worker_pane()` that usually does nothing extra. | Delete the wrapper and let CLI choose plain `merge_worker_pane()`. |
+| **FIXED** ~~`src/dgov/merger.py:648`~~ | low | ~~`merge_worker_pane_with_close()` is a wrapper around `merge_worker_pane()` that usually does nothing extra.~~ | Wrapper deleted; callers use `merge_worker_pane()` directly. |
 
 ## 4. Module boundaries
 
