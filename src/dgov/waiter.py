@@ -9,9 +9,13 @@ import shlex
 import subprocess
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
 from dgov.persistence import STATE_DIR
+
+if TYPE_CHECKING:
+    from dgov.agents import DoneStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,22 @@ def _detect_blocked(output: str) -> str | None:
 # -- Done detection --
 
 
+def _resolve_strategy(
+    done_strategy: DoneStrategy | None,
+    stable_seconds: int | None,
+) -> tuple[str, int]:
+    """Return (strategy_type, effective_stable_seconds) from arguments.
+
+    If an explicit DoneStrategy is provided it takes precedence.
+    Otherwise fall back to the legacy stable_seconds parameter (type="signal").
+    """
+    if done_strategy is not None:
+        stype = done_strategy.type
+        ss = done_strategy.stable_seconds if stype == "stable" else (stable_seconds or 15)
+        return stype, ss
+    return "signal", stable_seconds or 0
+
+
 def _is_done(
     session_root: str,
     slug: str,
@@ -85,32 +105,29 @@ def _is_done(
     *,
     stable_seconds: int | None = None,
     _stable_state: dict | None = None,
+    done_strategy: DoneStrategy | None = None,
 ) -> bool:
     """Check if a worker is done via any of four signals.
 
-    1a. Done-signal file exists (agent exited cleanly) → state "done".
-    1b. Exit-code file exists (agent exited nonzero) → state "failed".
-    2.  Branch has new commits beyond base_sha → state "done".
-    3.  Pane is no longer alive with no done file and no commits → state "abandoned".
+    The *done_strategy* controls which signals are primary vs fallback:
 
-    If *stable_seconds* is set, also checks for output stabilization:
-    4.  Output unchanged for *stable_seconds* while agent is not running → state "done".
+    - **signal** (default): done file → exit file → commits → liveness → stabilization.
+    - **exit**: done file → exit file → liveness (skip commit check).
+    - **commit**: done file → exit file → commits → liveness (skip stabilization).
+    - **stable**: done file → exit file → liveness → stabilization (skip commit check).
 
-    *_stable_state* is a mutable dict used to track stabilization across calls.
-    Callers should pass the same dict each time (keys: last_output, stable_since).
+    All strategies always check the done/exit files first (they're authoritative).
 
     Returns True when the worker is no longer running (regardless of outcome).
     """
     import dgov.persistence as _persist
 
+    stype, eff_stable = _resolve_strategy(done_strategy, stable_seconds)
+
     done_path = Path(session_root, STATE_DIR, "done", slug)
     exit_path = Path(session_root, STATE_DIR, "done", slug + ".exit")
 
-    # Signal 1a: done-signal file (clean exit)
-    # The done file is authoritative — it is only written after the agent
-    # command exits 0 (see _wrap_done_signal).  Do NOT gate on
-    # _agent_still_running; tmux can still report an agent-like foreground
-    # command (e.g. node) after the wrapper has already touched the file.
+    # Signal 1a: done-signal file (clean exit) — always checked
     if done_path.exists():
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
@@ -118,7 +135,7 @@ def _is_done(
         _persist.update_pane_state(session_root, slug, "done", force=force)
         return True
 
-    # Signal 1b: exit-code file (agent crashed / nonzero exit)
+    # Signal 1b: exit-code file (agent crashed / nonzero exit) — always checked
     if exit_path.exists():
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
@@ -131,25 +148,26 @@ def _is_done(
 
     pane_id = pane_record.get("pane_id", "")
 
-    # Signal 2: new commits on the branch
-    project_root = pane_record.get("project_root", "")
-    branch_name = pane_record.get("branch_name", "")
-    base_sha = pane_record.get("base_sha", "")
-    if project_root and branch_name and base_sha:
-        has_commits = _has_new_commits(project_root, branch_name, base_sha)
-        logger.debug("new_commits=%s slug=%s", has_commits, slug)
-        if has_commits:
-            if pane_id and _agent_still_running(pane_id):
-                logger.debug("new_commits slug=%s but agent still running", slug)
-                return False
-            current_state = pane_record.get("state", "")
-            force = current_state == "abandoned"
-            _persist.update_pane_state(session_root, slug, "done", force=force)
-            _persist.emit_event(session_root, "pane_done", slug)
-            # Touch done-signal so we don't re-emit
-            done_path.parent.mkdir(parents=True, exist_ok=True)
-            done_path.touch()
-            return True
+    # Signal 2: new commits on the branch — skipped for "exit" and "stable" strategies
+    if stype not in ("exit", "stable"):
+        project_root = pane_record.get("project_root", "")
+        branch_name = pane_record.get("branch_name", "")
+        base_sha = pane_record.get("base_sha", "")
+        if project_root and branch_name and base_sha:
+            has_commits = _has_new_commits(project_root, branch_name, base_sha)
+            logger.debug("new_commits=%s slug=%s", has_commits, slug)
+            if has_commits:
+                if pane_id and _agent_still_running(pane_id):
+                    logger.debug("new_commits slug=%s but agent still running", slug)
+                    return False
+                current_state = pane_record.get("state", "")
+                force = current_state == "abandoned"
+                _persist.update_pane_state(session_root, slug, "done", force=force)
+                _persist.emit_event(session_root, "pane_done", slug)
+                # Touch done-signal so we don't re-emit
+                done_path.parent.mkdir(parents=True, exist_ok=True)
+                done_path.touch()
+                return True
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     if pane_id:
@@ -174,10 +192,12 @@ def _is_done(
             # Pane came back alive — reset dead tracking
             _stable_state.pop("dead_since", None)
 
-    # Signal 4 (optional): output stabilization
-    if stable_seconds is not None and _stable_state is not None and pane_id:
+    # Signal 4 (optional): output stabilization — skipped for "commit" strategy
+    use_stable = stype == "stable" or (stype == "signal" and eff_stable > 0)
+    if use_stable and stype != "commit" and _stable_state is not None and pane_id:
         from dgov.status import capture_worker_output
 
+        project_root = pane_record.get("project_root", "")
         current_output = capture_worker_output(
             project_root, slug, lines=20, session_root=session_root
         )
@@ -187,7 +207,7 @@ def _is_done(
             if current_output == last_output:
                 if stable_since is None:
                     _stable_state["stable_since"] = time.monotonic()
-                elif time.monotonic() - stable_since >= stable_seconds:
+                elif time.monotonic() - stable_since >= eff_stable:
                     if _agent_still_running(pane_id):
                         _stable_state["stable_since"] = None
                     else:
@@ -217,6 +237,24 @@ def _agent_still_running(pane_id: str) -> bool:
         return cmd.strip().lower() in _AGENT_COMMANDS
     except (RuntimeError, OSError):
         return False
+
+
+def _strategy_for_pane(pane_record: dict | None) -> DoneStrategy | None:
+    """Look up the DoneStrategy for a pane's agent, if any."""
+    if pane_record is None:
+        return None
+    agent_id = pane_record.get("agent")
+    if not agent_id:
+        return None
+    from dgov.agents import AGENT_REGISTRY, load_registry
+
+    registry = AGENT_REGISTRY
+    agent_def = registry.get(agent_id)
+    if agent_def is None:
+        # Might be a TOML-defined agent — try loading the full registry
+        registry = load_registry(pane_record.get("project_root"))
+        agent_def = registry.get(agent_id)
+    return agent_def.done_strategy if agent_def else None
 
 
 # -- Timeout error --
@@ -251,6 +289,7 @@ def _poll_once(
     stable_since: float | None,
     stable: int,
     last_blocked: str | None = None,
+    done_strategy: DoneStrategy | None = None,
 ) -> tuple[bool, str, str | None, float | None, str | None]:
     """Single poll cycle shared by wait_worker_pane and wait_all_worker_panes.
 
@@ -273,6 +312,7 @@ def _poll_once(
         pane_record=pane_record,
         stable_seconds=stable,
         _stable_state=stable_state,
+        done_strategy=done_strategy,
     ):
         # Determine method: check if done file existed before we called _is_done
         done_path = Path(session_root, STATE_DIR, "done", slug)
@@ -341,15 +381,19 @@ def wait_for_slugs(
     start = time.monotonic()
     pending = set(slugs)
     stable_states: dict[str, dict] = {s: {} for s in slugs}
+    strategies: dict[str, DoneStrategy | None] = {}
     while pending and (time.monotonic() - start < timeout):
         for slug in list(pending):
             rec = _persist.get_pane(session_root, slug)
+            if slug not in strategies:
+                strategies[slug] = _strategy_for_pane(rec)
             if _is_done(
                 session_root,
                 slug,
                 pane_record=rec,
                 stable_seconds=stable_seconds,
                 _stable_state=stable_states[slug],
+                done_strategy=strategies[slug],
             ):
                 pending.discard(slug)
         if pending:
@@ -380,6 +424,7 @@ def wait_worker_pane(
     logger.debug("wait_for_pane slug=%s timeout=%ds", slug, timeout)
     session_root = os.path.abspath(session_root or project_root)
     pane_record = _persist.get_pane(session_root, slug)
+    strategy = _strategy_for_pane(pane_record)
     start = time.monotonic()
     last_output: str | None = None
     stable_since: float | None = None
@@ -395,6 +440,7 @@ def wait_worker_pane(
             stable_since,
             stable,
             last_blocked,
+            done_strategy=strategy,
         )
         if done:
             # Check if it failed and we should auto-retry
@@ -411,6 +457,7 @@ def wait_worker_pane(
                         # Continue waiting on the new pane
                         slug = new_slug
                         pane_record = _persist.get_pane(session_root, slug)
+                        strategy = _strategy_for_pane(pane_record)
                         last_output = None
                         stable_since = None
                         last_blocked = None
@@ -455,10 +502,13 @@ def wait_all_worker_panes(
     stable_trackers: dict[str, tuple[str | None, float | None, str | None]] = {
         s: (None, None, None) for s in pending
     }
+    strategies: dict[str, DoneStrategy | None] = {}
 
     while pending:
         for slug in list(pending):
             rec = _persist.get_pane(session_root, slug)
+            if slug not in strategies:
+                strategies[slug] = _strategy_for_pane(rec)
             last, since, blocked = stable_trackers.get(slug, (None, None, None))
             done, method, last, since, blocked = _poll_once(
                 session_root,
@@ -469,6 +519,7 @@ def wait_all_worker_panes(
                 since,
                 stable,
                 blocked,
+                done_strategy=strategies[slug],
             )
             stable_trackers[slug] = (last, since, blocked)
             if done:
