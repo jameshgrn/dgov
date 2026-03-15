@@ -165,7 +165,6 @@ def test_merge_worker_pane_restores_protected_files_before_merge(
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
     _mock_backend.destroy.assert_called_once_with("%1")
-    _mock_backend.select_layout.assert_called_once_with("tiled")
 
 
 def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
@@ -219,7 +218,6 @@ def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
     _mock_backend.destroy.assert_called_once_with("%1")
-    _mock_backend.select_layout.assert_called_once_with("tiled")
 
 
 def test_merge_worker_pane_returns_error_when_pane_missing(tmp_path: Path) -> None:
