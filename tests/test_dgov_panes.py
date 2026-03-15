@@ -857,11 +857,11 @@ class TestProtectedFiles:
 
 
 class TestCloseWorkerPane:
-    def test_not_found_returns_false(self, tmp_path: Path) -> None:
+    def test_not_found_returns_true_idempotent(self, tmp_path: Path) -> None:
         from dgov.panes import close_worker_pane
 
         _replace_all_panes(str(tmp_path), {"panes": []})
-        assert close_worker_pane(str(tmp_path), "nonexistent") is False
+        assert close_worker_pane(str(tmp_path), "nonexistent") is True
 
     def test_found_calls_cleanup(self, tmp_path: Path) -> None:
         from dgov.panes import close_worker_pane
