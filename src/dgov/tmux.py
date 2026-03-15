@@ -247,12 +247,16 @@ def setup_governor_workspace(project_root: str) -> list[str]:
         dash_id = split_pane()
         send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
         set_title(dash_id, "[gov] dashboard")
+        set_pane_option(dash_id, "pane-border-style", "fg=colour39")
+        set_pane_option(dash_id, "pane-active-border-style", "fg=colour39,bold")
         panes.append(dash_id)
 
     if "[gov] lazygit" not in existing:
         lg_id = split_pane()
         send_command(lg_id, "lazygit")
         set_title(lg_id, "[gov] lazygit")
+        set_pane_option(lg_id, "pane-border-style", "fg=colour214")
+        set_pane_option(lg_id, "pane-active-border-style", "fg=colour214,bold")
         panes.append(lg_id)
 
     if panes:
