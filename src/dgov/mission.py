@@ -149,6 +149,14 @@ def run_mission(
                 close_worker_pane(project_root, slug_s, session_root=session_root)
                 return _fail(f"Worker timed out after {policy.timeout}s (retries exhausted)")
 
+    # Check if worker failed (exit file written, nonzero exit code)
+    from dgov.persistence import get_pane
+
+    pane_state = get_pane(session_root, slug_s)
+    if pane_state and pane_state.get("state") == "failed":
+        close_worker_pane(project_root, slug_s, session_root=session_root, force=True)
+        return _fail("Worker exited with an error (check logs with: dgov pane logs)")
+
     # -- REVIEWING: review the diff --
     emit_event(session_root, "mission_reviewing", slug_s)
     review = review_worker_pane(project_root, slug_s, session_root=session_root)
