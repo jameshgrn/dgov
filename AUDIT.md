@@ -1,6 +1,6 @@
 # dgov Design Efficiency Audit
 
-Last updated: 2026-03-15. 25 of 30 findings resolved. Remaining items tracked below.
+Last updated: 2026-03-15. 28 of 30 findings resolved. Remaining items tracked below.
 
 Scope: `src/dgov/` only. This is a static design audit; I did not modify source files or run the full test suite.
 
@@ -21,7 +21,7 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 |---|---|---|---|
 | `src/dgov/panes.py:254`, `src/dgov/panes.py:1063` | medium | `create_worker_pane()` and `resume_worker_pane()` duplicate the same launch pipeline: health checks, concurrency checks, tmux setup, logging, hook invocation, protected-file warning, done-signal creation, and agent launch. | Extract one shared launch helper that takes "new worktree" vs "existing worktree" as the only branch point. |
 | `src/dgov/preflight.py:322`, `src/dgov/preflight.py:361`, `src/dgov/panes.py:313`, `src/dgov/panes.py:1103` | medium | Agent health checks and concurrency guards are implemented twice: once in preflight and again in pane creation/resume. | Move health/concurrency validation into reusable helpers called by both preflight and pane launch paths. |
-| `src/dgov/batch.py:214`, `src/dgov/review_fix.py:231`, `src/dgov/review_fix.py:328` | medium | Batch and review-fix reimplement polling loops instead of reusing `waiter.wait_worker_pane()` / `wait_all_worker_panes()`. | Reuse waiter APIs and let them be the single place that defines "done". |
+| **FIXED** ~~`src/dgov/batch.py:214`, `src/dgov/review_fix.py:231`, `src/dgov/review_fix.py:328`~~ | medium | ~~Batch and review-fix reimplement polling loops instead of reusing waiter.~~ | Extracted `wait_for_slugs()` in waiter.py; batch and review_fix both use it. |
 | **FIXED** ~~`src/dgov/blame.py:118`, `src/dgov/retry.py:24`, `src/dgov/panes.py:150`~~ | low | ~~Event-journal parsing duplicated in three modules.~~ | Centralized in `persistence.py` via `read_events()`. |
 | **FIXED** ~~`src/dgov/review_fix.py:245`, `src/dgov/review_fix.py:251`~~ | low | ~~Review output is parsed twice for every worker: once to collect findings and again to emit finding events.~~ | Parsed once, reused list for event emission. |
 | **FIXED** ~~`src/dgov/cli.py:652`, `src/dgov/dashboard.py:50`~~ | low | ~~Duration formatting duplicated in CLI and dashboard.~~ | Unified. |
@@ -82,5 +82,5 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 |---|---|---|---|
 | **FIXED** ~~`src/dgov/persistence.py:184`~~ | high | ~~SQLite opened with default settings only — no `busy_timeout`, no retry, no write coordination beyond WAL.~~ | Connection cache with busy_timeout=5000 and WAL mode. |
 | **FIXED** ~~`src/dgov/persistence.py:272`~~ | medium | ~~`_update_pane_state()` does read-check-write without transactional guard.~~ | Uses UPDATE with expected current state in WHERE clause. |
-| `src/dgov/persistence.py:47`, `src/dgov/panes.py:454`, `src/dgov/panes.py:456`, `src/dgov/panes.py:562`, `src/dgov/panes.py:1041` | medium | State DB writes and event-journal writes are separate operations with no transaction tying them together. | Move events into SQLite or wrap state transition + event append in one durable unit. |
-| `src/dgov/persistence.py:61`, `src/dgov/retry.py:24`, `src/dgov/blame.py:118` | medium | The JSONL event log has no locking or validation strategy, and readers silently skip malformed lines. | Add append locking or move events into SQLite. |
+| **FIXED** ~~`src/dgov/persistence.py:47`, `src/dgov/panes.py:454`, `src/dgov/panes.py:456`, `src/dgov/panes.py:562`, `src/dgov/panes.py:1041`~~ | medium | ~~State DB writes and event-journal writes are separate operations with no transaction tying them together.~~ | Events migrated to SQLite `events` table in same state.db; writes are now transactional. |
+| **FIXED** ~~`src/dgov/persistence.py:61`, `src/dgov/retry.py:24`, `src/dgov/blame.py:118`~~ | medium | ~~The JSONL event log has no locking or validation strategy, and readers silently skip malformed lines.~~ | Events now in SQLite — locking handled by WAL mode + busy_timeout. |

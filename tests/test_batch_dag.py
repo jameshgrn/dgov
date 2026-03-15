@@ -266,7 +266,7 @@ def test_dry_run_via_run_batch(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-@patch("dgov.batch.time")
+@patch("dgov.waiter.time")
 @patch("dgov.merger.merge_worker_pane")
 @patch("dgov.panes.create_worker_pane")
 @patch("dgov.panes._is_done", return_value=True)
