@@ -12,7 +12,7 @@ from click.testing import CliRunner
 
 from dgov.backend import set_backend
 from dgov.cli import cli
-from dgov.persistence import _STATE_DIR, VALID_EVENTS, WorkerPane, _add_pane
+from dgov.persistence import _STATE_DIR, VALID_EVENTS, WorkerPane, _add_pane, read_events
 from dgov.responder import (
     BUILT_IN_RULES,
     COOLDOWN_SECONDS,
@@ -341,9 +341,7 @@ class TestAutoRespond:
             patch("dgov.tmux.send_command"),
         ):
             auto_respond(session_root, "test-worker", "proceed?", rules)
-        events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
-        assert events_path.exists()
-        events = [json.loads(ln) for ln in events_path.read_text().splitlines() if ln.strip()]
+        events = read_events(session_root)
         auto_events = [e for e in events if e["event"] == "pane_auto_responded"]
         assert len(auto_events) == 1
         assert auto_events[0]["pane"] == "test-worker"
@@ -357,8 +355,7 @@ class TestAutoRespond:
             patch("dgov.tmux.send_command"),
         ):
             auto_respond(session_root, "test-worker", pw_prompt, rules)
-        events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
-        events = [json.loads(ln) for ln in events_path.read_text().splitlines() if ln.strip()]
+        events = read_events(session_root)
         blocked_events = [e for e in events if e["event"] == "pane_blocked"]
         assert len(blocked_events) == 1
 

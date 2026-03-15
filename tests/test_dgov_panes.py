@@ -1751,30 +1751,26 @@ class TestWorkerPaneStateValidation:
 
 
 class TestEmitEvent:
-    def test_creates_events_file_and_appends(self, tmp_path: Path) -> None:
-        from dgov.persistence import _emit_event
+    def test_creates_events_record(self, tmp_path: Path) -> None:
+        from dgov.persistence import _emit_event, read_events
 
         _emit_event(str(tmp_path), "pane_created", "my-slug", agent="pi")
-        events_path = tmp_path / ".dgov" / "events.jsonl"
-        assert events_path.exists()
-        lines = events_path.read_text().strip().splitlines()
-        assert len(lines) == 1
-        record = json.loads(lines[0])
-        assert record["event"] == "pane_created"
-        assert record["pane"] == "my-slug"
-        assert record["agent"] == "pi"
-        assert "ts" in record
+        events = read_events(str(tmp_path))
+        assert len(events) == 1
+        assert events[0]["event"] == "pane_created"
+        assert events[0]["pane"] == "my-slug"
+        assert events[0]["agent"] == "pi"
+        assert "ts" in events[0]
 
     def test_appends_multiple_events(self, tmp_path: Path) -> None:
-        from dgov.persistence import _emit_event
+        from dgov.persistence import _emit_event, read_events
 
         _emit_event(str(tmp_path), "pane_created", "slug-1")
         _emit_event(str(tmp_path), "pane_done", "slug-1")
-        events_path = tmp_path / ".dgov" / "events.jsonl"
-        lines = events_path.read_text().strip().splitlines()
-        assert len(lines) == 2
-        assert json.loads(lines[0])["event"] == "pane_created"
-        assert json.loads(lines[1])["event"] == "pane_done"
+        events = read_events(str(tmp_path))
+        assert len(events) == 2
+        assert events[0]["event"] == "pane_created"
+        assert events[1]["event"] == "pane_done"
 
     def test_rejects_unknown_event(self, tmp_path: Path) -> None:
         from dgov.persistence import _emit_event
@@ -1784,6 +1780,7 @@ class TestEmitEvent:
 
     def test_create_worker_pane_emits_event(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import create_worker_pane
+        from dgov.persistence import read_events
 
         mock_backend.create_pane.return_value = "%99"
         with (
@@ -1798,11 +1795,8 @@ class TestEmitEvent:
                 agent="claude",
                 session_root=str(tmp_path),
             )
-        events_path = tmp_path / ".dgov" / "events.jsonl"
-        assert events_path.exists()
-        lines = events_path.read_text().strip().splitlines()
-        records = [json.loads(ln) for ln in lines]
-        created = [r for r in records if r["event"] == "pane_created"]
+        events = read_events(str(tmp_path))
+        created = [r for r in events if r["event"] == "pane_created"]
         assert len(created) == 1
         assert created[0]["agent"] == "claude"
         assert created[0]["pane"] == "test-slug"
@@ -2121,17 +2115,15 @@ class TestCreateCheckpoint:
 
     def test_emits_checkpoint_event(self, tmp_path: Path) -> None:
         from dgov.batch import create_checkpoint
+        from dgov.persistence import read_events
 
         _replace_all_panes(str(tmp_path), {"panes": []})
         with patch("dgov.panes.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="abc\n")
             create_checkpoint(str(tmp_path), "ev-test", session_root=str(tmp_path))
 
-        events_path = tmp_path / ".dgov" / "events.jsonl"
-        assert events_path.exists()
-        lines = events_path.read_text().strip().splitlines()
-        records = [json.loads(ln) for ln in lines]
-        cp_events = [r for r in records if r["event"] == "checkpoint_created"]
+        events = read_events(str(tmp_path))
+        cp_events = [r for r in events if r["event"] == "checkpoint_created"]
         assert len(cp_events) == 1
         assert cp_events[0]["pane"] == "checkpoint/ev-test"
 
