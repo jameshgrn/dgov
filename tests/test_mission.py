@@ -297,3 +297,44 @@ class TestBlockingFindings:
     @pytest.mark.unit
     def test_empty_does_not_block(self):
         assert _has_blocking_findings([], "medium") is False
+
+
+@pytest.mark.unit
+class TestMissionCLI:
+    """Smoke tests for the mission CLI command."""
+
+    def test_mission_cmd_happy_path(self, monkeypatch, tmp_path):
+        """Mission CLI outputs JSON and colored summary."""
+        from click.testing import CliRunner
+
+        from dgov.cli.mission_cmd import mission_cmd
+        from dgov.mission import MissionResult
+
+        fake_result = MissionResult(state="completed", slug="test-slug", duration_s=42.5)
+
+        # Patch at the source where it's imported (dgov.mission)
+        monkeypatch.setattr("dgov.mission.run_mission", lambda *a, **kw: fake_result)
+
+        runner = CliRunner()
+        result = runner.invoke(mission_cmd, ["test prompt", "-r", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "test-slug" in result.output
+        assert "completed" in result.output
+
+    def test_mission_cmd_failed(self, monkeypatch, tmp_path):
+        """Mission CLI shows red error on failure."""
+        from click.testing import CliRunner
+
+        from dgov.cli.mission_cmd import mission_cmd
+        from dgov.mission import MissionResult
+
+        fake_result = MissionResult(state="failed", slug="fail-slug", error="boom")
+
+        # Patch at the source where it's imported (dgov.mission)
+        monkeypatch.setattr("dgov.mission.run_mission", lambda *a, **kw: fake_result)
+
+        runner = CliRunner()
+        result = runner.invoke(mission_cmd, ["test prompt", "-r", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "fail-slug" in result.output
+        assert "boom" in result.output
