@@ -36,4 +36,5 @@ select = ["E", "F", "I", "W"]
 testpaths = ["tests"]
 markers = [
     "unit: Unit tests (no external deps)",
+    "integration: End-to-end lifecycle tests with real git repos",
 ]
