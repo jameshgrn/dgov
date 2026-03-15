@@ -1,6 +1,6 @@
 # dgov Design Efficiency Audit
 
-Last updated: 2026-03-15. 24 of 30 findings resolved. Remaining items tracked below.
+Last updated: 2026-03-15. 25 of 30 findings resolved. Remaining items tracked below.
 
 Scope: `src/dgov/` only. This is a static design audit; I did not modify source files or run the full test suite.
 
@@ -71,7 +71,7 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 | File:line | Severity | Issue | Suggested fix |
 |---|---|---|---|
 | **FIXED** ~~`src/dgov/batch.py:208`~~ | medium | ~~Batch pane creation collapses all launch failures into `"unknown error"`.~~ | Real exception message plus task id and operation context now returned. |
-| `src/dgov/dashboard.py:190`, `src/dgov/dashboard.py:204`, `src/dgov/dashboard.py:637`, `src/dgov/dashboard.py:644` | medium | The dashboard swallows exceptions in detail rendering and action execution. | Surface exception text in UI state and keep an error banner. |
+| **FIXED** ~~`src/dgov/dashboard.py:190`, `src/dgov/dashboard.py:204`, `src/dgov/dashboard.py:637`, `src/dgov/dashboard.py:644`~~ | medium | ~~The dashboard swallows exceptions in detail rendering and action execution.~~ | Exceptions now logged via `logger.exception()`/`logger.debug()` and surfaced in `state.detail_text`. |
 | **FIXED** ~~`src/dgov/persistence.py:204`, `src/dgov/retry.py:34`, `src/dgov/blame.py:127`~~ | medium | ~~Corrupt JSON in pane metadata or event journal silently ignored.~~ | Now logged with context. |
 | **FIXED** ~~`src/dgov/agents.py:344`, `src/dgov/agents.py:357`, `src/dgov/openrouter.py:44`~~ | low | ~~Invalid TOML config silently swallowed.~~ | Now logs warning with offending path. |
 | **FIXED** ~~`src/dgov/preflight.py:485`~~ | medium | ~~`_fix_agent_health()` runs the first health-fix for any agent, not the one that failed.~~ | Now threads the specific agent_id. |

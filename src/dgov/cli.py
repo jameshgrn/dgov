@@ -587,9 +587,6 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 )
 @SESSION_ROOT_OPTION
 @click.option(
-    "--close/--no-close", default=True, help="Close worker panes after merge (default: on)"
-)
-@click.option(
     "--resolve",
     type=click.Choice(["agent", "manual"]),
     default="agent",
