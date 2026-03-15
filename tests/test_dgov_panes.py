@@ -1782,7 +1782,7 @@ class TestUpdatePaneState:
             {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
         )
         update_pane_state(str(tmp_path), "fix", "done")
-        mock_backend.set_title.assert_called_once_with("%5", "[pi] fix \u2713")
+        mock_backend.set_title.assert_called_once_with("%5", "[pi] fix ok")
 
 
 # ---------------------------------------------------------------------------
