@@ -449,7 +449,7 @@ def close_worker_pane(
     target = _get_pane(session_root, slug)
 
     if not target:
-        return False
+        return True  # already cleaned up (e.g. by merge)
 
     _update_pane_state(session_root, slug, "closed")
     _emit_event(session_root, "pane_closed", slug)
