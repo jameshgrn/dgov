@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from dgov.backend import get_backend
+from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
     all_panes,
@@ -236,8 +237,6 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
     have no matching pane entry in state (e.g. left behind after ``pane close``
     skipped a dirty worktree).
     """
-    from dgov.lifecycle import _remove_worktree
-
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
     panes = all_panes(session_root)

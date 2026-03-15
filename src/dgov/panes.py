@@ -4,6 +4,7 @@ Split into lifecycle, status, inspection, recovery.
 All public symbols re-exported here for backward compatibility.
 """
 
+from dgov.gitops import _remove_worktree  # noqa: F401
 from dgov.inspection import (  # noqa: F401
     diff_worker_pane,
     rebase_governor,
@@ -13,7 +14,6 @@ from dgov.lifecycle import (  # noqa: F401
     _build_pane_title,
     _create_worktree,
     _full_cleanup,
-    _remove_worktree,
     _trigger_hook,
     close_worker_pane,
     create_worker_pane,

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from dgov.agents import build_launch_command, load_registry
 from dgov.backend import get_backend
+from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     PROTECTED_FILES,
     STATE_DIR,
@@ -72,15 +73,6 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
             f"Failed to create worktree for branch {branch_name!r} "
             f"at path {worktree_path!r}: {e.stderr.strip()}"
         ) from e
-
-
-def _remove_worktree(project_root: str, worktree_path: str, branch_name: str) -> None:
-    subprocess.run(
-        ["git", "-C", project_root, "worktree", "remove", "--force", worktree_path],
-        capture_output=True,
-    )
-    subprocess.run(["git", "-C", project_root, "branch", "-D", branch_name], capture_output=True)
-    subprocess.run(["git", "-C", project_root, "worktree", "prune"], capture_output=True)
 
 
 # -- Hook trigger --

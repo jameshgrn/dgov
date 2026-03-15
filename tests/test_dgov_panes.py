@@ -722,7 +722,7 @@ class TestPruneStale:
         replace_all_panes(str(tmp_path), {"panes": []})
         mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.lifecycle._remove_worktree") as mock_rm,
+            patch("dgov.status._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert "orphan:orphan-task" in pruned
@@ -748,7 +748,7 @@ class TestPruneStale:
         )
         mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.lifecycle._remove_worktree") as mock_rm,
+            patch("dgov.status._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
@@ -774,7 +774,7 @@ class TestPruneStale:
         )
         mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.lifecycle._remove_worktree") as mock_rm,
+            patch("dgov.status._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert "stale-entry" in pruned
