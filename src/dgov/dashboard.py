@@ -6,6 +6,7 @@ Curses-based TUI that auto-refreshes pane status. Zero external dependencies.
 from __future__ import annotations
 
 import curses
+import logging
 import os
 import subprocess
 import threading
@@ -13,6 +14,8 @@ import time
 from dataclasses import dataclass, field
 
 from dgov import __version__
+
+logger = logging.getLogger(__name__)
 
 # State → curses color pair index
 STATE_COLORS: dict[str, int] = {
@@ -190,6 +193,7 @@ def fetch_detail(state: DashboardState, slug: str) -> None:
             lines.append(f"== Diff Stat == (error: {review['error']})")
             lines.append("")
     except Exception:  # noqa: BLE001
+        logger.debug("Failed to fetch diff stat for %s", slug, exc_info=True)
         lines.append("== Diff Stat == (unavailable)")
         lines.append("")
 
@@ -204,6 +208,7 @@ def fetch_detail(state: DashboardState, slug: str) -> None:
         else:
             lines.append("== Recent Output == (pane dead or not found)")
     except Exception:  # noqa: BLE001
+        logger.debug("Failed to capture output for %s", slug, exc_info=True)
         lines.append("== Recent Output == (unavailable)")
 
     with state.lock:
@@ -637,11 +642,15 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
         try:
             merge_worker_pane(state.project_root, slug, session_root=state.session_root)
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("Dashboard merge failed for %s", slug)
+            with state.lock:
+                state.detail_text = f"Merge failed for {slug} — check logs"
     elif action == "close":
         from dgov.panes import close_worker_pane
 
         try:
             close_worker_pane(state.project_root, slug, session_root=state.session_root)
         except Exception:  # noqa: BLE001
-            pass
+            logger.exception("Dashboard close failed for %s", slug)
+            with state.lock:
+                state.detail_text = f"Close failed for {slug} — check logs"
