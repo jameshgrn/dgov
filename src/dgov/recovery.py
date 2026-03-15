@@ -13,6 +13,7 @@ from dgov.persistence import (
     set_pane_metadata,
     update_pane_state,
 )
+from dgov.retry import retry_context
 
 
 def escalate_worker_pane(
@@ -38,6 +39,17 @@ def escalate_worker_pane(
         return {"error": f"No prompt recorded for {slug}"}
 
     original_agent = target.get("agent", "unknown")
+
+    # Build failure context from the old pane (log tail, exit code, events)
+    context = retry_context(slug, session_root)
+    if context:
+        original_prompt = (
+            original_prompt
+            + "\n\n--- Prior attempt failed (agent: "
+            + original_agent
+            + ") ---\n"
+            + context
+        )
 
     # Create the new pane first, then close the old one
     # Compute escalation slug with collision avoidance
