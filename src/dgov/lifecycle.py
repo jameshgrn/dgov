@@ -10,7 +10,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from dgov.agents import build_launch_command, load_registry
+from dgov.agents import AgentDef, build_launch_command, load_registry
 from dgov.backend import get_backend
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
@@ -130,6 +130,141 @@ def _build_pane_title(slug: str, project_root: str) -> str:
     return f"{slug}@{project_name}-{hash_prefix}"
 
 
+# -- Shared launch pipeline --
+
+
+def _setup_and_launch_agent(
+    *,
+    pane_id: str,
+    slug: str,
+    project_root: str,
+    session_root: str,
+    worktree_path: str,
+    branch_name: str,
+    agent_id: str,
+    agent_def: AgentDef,
+    registry: dict,
+    permission_mode: str,
+    prompt: str,
+    hook_prompt: str,
+    all_env: dict[str, str],
+    extra_flags: str = "",
+    owns_worktree: bool = True,
+    base_sha: str = "",
+    skip_auto_structure: bool = False,
+    clear_done_signal: bool = False,
+) -> None:
+    """Lock pane, inject env, trigger hook, rewrite prompt, launch agent."""
+    backend = get_backend()
+
+    # 1. Lock pane title (prevent agent/tmux from overwriting)
+    backend.set_pane_option(pane_id, "allow-rename", "off")
+    backend.set_pane_option(pane_id, "automatic-rename", "off")
+    title = _build_pane_title(slug, project_root)
+    backend.set_title(pane_id, title)
+    backend.style(pane_id, agent_id, color=agent_def.color)
+    backend.set_pane_option(pane_id, "allow-set-title", "off")
+
+    # 2. Tidy layout
+    backend.select_layout("tiled")
+
+    # 3. Scrub env vars that cause worker auth issues
+    for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
+        backend.send_input(pane_id, f"unset {var}")
+
+    # 4. Start persistent logging
+    logs_dir = Path(session_root) / STATE_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    log_file = str(logs_dir / f"{slug}.log")
+    backend.start_logging(pane_id, log_file)
+
+    # 5. Inject env vars
+    for key, val in all_env.items():
+        backend.send_input(pane_id, f"export {key}={val!r}")
+
+    # 6. Export dgov state vars
+    dgov_env = {
+        "DGOV_ROOT": project_root,
+        "DGOV_SESSION_ROOT": session_root,
+        "DGOV_SLUG": slug,
+        "DGOV_AGENT": agent_id,
+        "DGOV_BRANCH": branch_name,
+        "DGOV_BASE_SHA": base_sha,
+        "DGOV_WORKTREE_PATH": worktree_path,
+    }
+    for key, val in dgov_env.items():
+        backend.send_input(pane_id, f"export {key}={val!r}")
+
+    # 7. Trigger worktree_created hook
+    hook_env = {
+        "DGOV_ROOT": project_root,
+        "DGOV_PANE_ID": pane_id,
+        "DGOV_SLUG": slug,
+        "DGOV_PROMPT": hook_prompt,
+        "DGOV_AGENT": agent_id,
+        "DGOV_WORKTREE_PATH": worktree_path,
+        "DGOV_BRANCH": branch_name,
+        "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
+    }
+    hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
+
+    # 8. Auto-structure pi prompts
+    if agent_id == "pi" and not skip_auto_structure:
+        prompt = _structure_pi_prompt(prompt)
+
+    # 9. Rewrite absolute paths so agent edits worktree, not main repo
+    rewritten_prompt = re.sub(
+        re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, prompt
+    )
+
+    # 10. Fallback protected-file warning if hook didn't write CLAUDE.md
+    if not hook_ran:
+        protected_warning = (
+            "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
+            + ", ".join(sorted(PROTECTED_FILES))
+            + ". Do NOT create new documentation files."
+        )
+        if protected_warning.strip() not in rewritten_prompt:
+            rewritten_prompt += protected_warning
+
+    # 11. Build done-signal path
+    done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
+    Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
+    if clear_done_signal:
+        Path(done_signal).unlink(missing_ok=True)
+
+    # 12. Launch agent (with done-signal wrapper)
+    if agent_def.prompt_transport == "send-keys":
+        base_cmd = build_launch_command(
+            agent_id,
+            None,
+            permission_mode,
+            project_root=worktree_path,
+            slug=slug,
+            extra_flags=extra_flags,
+            registry=registry,
+        )
+        wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
+        backend.send_input(pane_id, wrapped_cmd)
+        if agent_def.send_keys_ready_delay_ms > 0:
+            time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
+        for key in agent_def.send_keys_pre_prompt:
+            backend.send_keys(pane_id, [key])
+        backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
+    else:
+        launch_cmd = build_launch_command(
+            agent_id,
+            rewritten_prompt,
+            permission_mode,
+            project_root=worktree_path,
+            slug=slug,
+            extra_flags=extra_flags,
+            registry=registry,
+        )
+        wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
+        backend.send_input(pane_id, wrapped_cmd)
+
+
 # -- Public API --
 
 
@@ -173,8 +308,7 @@ def create_worker_pane(
     agent_def = registry.get(agent)
     if agent_def is None:
         raise ValueError(f"Unknown agent {agent!r}. Available: {sorted(registry)}")
-    if agent_def:
-        all_env.update(agent_def.env)
+    all_env.update(agent_def.env)
     if env_vars:
         all_env.update(env_vars)
     for key in all_env:
@@ -197,7 +331,7 @@ def create_worker_pane(
             _create_worktree(project_root, worktree_path, branch_name)
 
         # 2b. Generic health check (config-driven)
-        if agent_def and agent_def.health_check:
+        if agent_def.health_check:
             hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
             if hc.returncode != 0 and agent_def.health_fix:
                 subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
@@ -208,7 +342,7 @@ def create_worker_pane(
                 raise RuntimeError(f"Health check failed for {agent}: {agent_def.health_check}")
 
         # 2c. Generic concurrency guard (config-driven)
-        if agent_def and agent_def.max_concurrent is not None:
+        if agent_def.max_concurrent is not None:
             active = _count_active_agent_workers(session_root, agent)
             if active >= agent_def.max_concurrent:
                 raise RuntimeError(
@@ -217,132 +351,37 @@ def create_worker_pane(
                     f"Wait for one to finish or use a different agent."
                 )
 
+        # 3. Split tmux pane
         startup_env = {
             "DISABLE_AUTO_UPDATE": "true",
             "DISABLE_UPDATE_PROMPT": "true",
         }
-
-        # 3. Split tmux pane
         get_backend().setup_pane_borders()
         pane_id = get_backend().create_pane(cwd=worktree_path, env=startup_env)
-
-        # Let the login shell finish startup before injecting commands.
         time.sleep(0.25)
 
-        # 4. Lock pane title (prevent agent/tmux from overwriting)
-        get_backend().set_pane_option(pane_id, "allow-rename", "off")
-        get_backend().set_pane_option(pane_id, "automatic-rename", "off")
-        title = _build_pane_title(slug, project_root)
-        get_backend().set_title(pane_id, title)
-        agent_color = agent_def.color if agent_def else None
-        get_backend().style(pane_id, agent, color=agent_color)
-        get_backend().set_pane_option(pane_id, "allow-set-title", "off")
-
-        # 5. Tidy layout
-        get_backend().select_layout("tiled")
-
-        # 6. Scrub env vars that cause worker auth issues
-        for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
-            get_backend().send_input(pane_id, f"unset {var}")
-
-        # 6a. Start persistent logging via tmux pipe-pane
-        logs_dir = Path(session_root) / STATE_DIR / "logs"
-        logs_dir.mkdir(parents=True, exist_ok=True)
-        log_file = str(logs_dir / f"{slug}.log")
-        get_backend().start_logging(pane_id, log_file)
-
-        # 6b. Inject env vars
-        for key, val in all_env.items():
-            get_backend().send_input(pane_id, f"export {key}={val!r}")
-
-        # 6c. Export dgov state vars so worker processes can inspect them
-        dgov_env = {
-            "DGOV_ROOT": project_root,
-            "DGOV_SESSION_ROOT": session_root,
-            "DGOV_SLUG": slug,
-            "DGOV_AGENT": agent,
-            "DGOV_BRANCH": branch_name,
-            "DGOV_BASE_SHA": base_sha,
-            "DGOV_WORKTREE_PATH": worktree_path,
-        }
-        for key, val in dgov_env.items():
-            get_backend().send_input(pane_id, f"export {key}={val!r}")
-
-        # 7. Trigger worktree_created hook
-        hook_env = {
-            "DGOV_ROOT": project_root,
-            "DGOV_PANE_ID": pane_id,
-            "DGOV_SLUG": slug,
-            "DGOV_PROMPT": prompt,
-            "DGOV_AGENT": agent,
-            "DGOV_WORKTREE_PATH": worktree_path,
-            "DGOV_BRANCH": branch_name,
-            "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
-        }
-        hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
-
-        if agent == "pi" and not skip_auto_structure:
-            prompt = _structure_pi_prompt(prompt)
-
-        # 8. Rewrite absolute paths in prompt so agent edits worktree, not main repo
-        # Only replace project_root when not already inside a worktree path
-        rewritten_prompt = re.sub(
-            re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, prompt
+        # 4. Setup and launch agent
+        _setup_and_launch_agent(
+            pane_id=pane_id,
+            slug=slug,
+            project_root=project_root,
+            session_root=session_root,
+            worktree_path=worktree_path,
+            branch_name=branch_name,
+            agent_id=agent,
+            agent_def=agent_def,
+            registry=registry,
+            permission_mode=permission_mode,
+            prompt=prompt,
+            hook_prompt=prompt,
+            all_env=all_env,
+            extra_flags=extra_flags,
+            owns_worktree=owns_worktree,
+            base_sha=base_sha,
+            skip_auto_structure=skip_auto_structure,
         )
 
-        # 8b. Fallback protected-file warning if hook didn't write CLAUDE.md
-        if not hook_ran:
-            protected_warning = (
-                "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
-                + ", ".join(sorted(PROTECTED_FILES))
-                + ". Do NOT create new documentation files."
-            )
-            if protected_warning.strip() not in rewritten_prompt:
-                rewritten_prompt += protected_warning
-
-        # 9. Build done-signal path
-        done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
-        Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
-
-        # 10. Launch agent (with done-signal wrapper)
-        if agent_def:
-            if agent_def.prompt_transport == "send-keys":
-                base_cmd = build_launch_command(
-                    agent,
-                    None,
-                    permission_mode,
-                    project_root=worktree_path,
-                    slug=slug,
-                    extra_flags=extra_flags,
-                    registry=registry,
-                )
-                wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
-                get_backend().send_input(pane_id, wrapped_cmd)
-                if agent_def.send_keys_ready_delay_ms > 0:
-                    time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
-                for key in agent_def.send_keys_pre_prompt:
-                    get_backend().send_keys(pane_id, [key])
-                get_backend().send_prompt_via_buffer(pane_id, rewritten_prompt)
-            else:
-                launch_cmd = build_launch_command(
-                    agent,
-                    rewritten_prompt,
-                    permission_mode,
-                    project_root=worktree_path,
-                    slug=slug,
-                    extra_flags=extra_flags,
-                    registry=registry,
-                )
-                wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
-                get_backend().send_input(pane_id, wrapped_cmd)
-
-        # 10b. Set tmux pane title
-        title = _build_pane_title(slug, project_root)
-        get_backend().set_title(pane_id, title)
-        get_backend().style(pane_id, agent, color=agent_color)
-        get_backend().set_pane_option(pane_id, "allow-set-title", "off")
-
-        # 11. Build pane record and save to state
+        # 5. Build pane record and save to state
         pane = WorkerPane(
             slug=slug,
             prompt=prompt,
@@ -543,7 +582,7 @@ def resume_worker_pane(
         return {"error": f"Unknown agent {resume_agent!r}. Available: {sorted(registry)}"}
 
     # Health check (config-driven)
-    if agent_def and agent_def.health_check:
+    if agent_def.health_check:
         hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
         if hc.returncode != 0 and agent_def.health_fix:
             subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
@@ -552,7 +591,7 @@ def resume_worker_pane(
             return {"error": f"Health check failed for {resume_agent}: {agent_def.health_check}"}
 
     # Concurrency guard (config-driven)
-    if agent_def and agent_def.max_concurrent is not None:
+    if agent_def.max_concurrent is not None:
         active = _count_active_agent_workers(session_root, resume_agent)
         if active >= agent_def.max_concurrent:
             return {
@@ -560,6 +599,7 @@ def resume_worker_pane(
                 f"running (max {agent_def.max_concurrent})"
             }
 
+    # Build resume prompt
     resume_context = (
         "\n\nYou are RESUMING a previous session in this worktree. "
         "Run 'git status' and 'git log --oneline -5' first to see what has "
@@ -568,123 +608,40 @@ def resume_worker_pane(
     )
     full_prompt = original_prompt + resume_context
 
-    if resume_agent == "pi":
-        full_prompt = _structure_pi_prompt(full_prompt)
+    # Build all_env from agent config (filtering invalid names)
+    all_env: dict[str, str] = {}
+    if agent_def.env:
+        for key, val in agent_def.env.items():
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                all_env[key] = val
 
-    # Rewrite paths — only replace project_root when not already inside a worktree path
-    rewritten_prompt = re.sub(
-        re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, full_prompt
-    )
-
+    # Create new tmux pane
     startup_env = {
         "DISABLE_AUTO_UPDATE": "true",
         "DISABLE_UPDATE_PROMPT": "true",
     }
-
-    # Create new tmux pane
     get_backend().setup_pane_borders()
     pane_id = get_backend().create_pane(cwd=worktree_path, env=startup_env)
-
-    # Let the login shell finish startup before injecting commands.
     time.sleep(0.25)
 
-    get_backend().set_pane_option(pane_id, "allow-rename", "off")
-    get_backend().set_pane_option(pane_id, "automatic-rename", "off")
-    title = _build_pane_title(slug, project_root)
-    get_backend().set_title(pane_id, title)
-    agent_color = agent_def.color if agent_def else None
-    get_backend().style(pane_id, resume_agent, color=agent_color)
-    get_backend().set_pane_option(pane_id, "allow-set-title", "off")
-    get_backend().select_layout("tiled")
-
-    # Scrub env vars that cause worker auth issues
-    for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
-        get_backend().send_input(pane_id, f"unset {var}")
-
-    # Inject agent config env vars
-    if agent_def and agent_def.env:
-        for key, val in agent_def.env.items():
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-                get_backend().send_input(pane_id, f"export {key}={val!r}")
-
-    # Export dgov state vars so worker processes can inspect them
-    dgov_env = {
-        "DGOV_ROOT": project_root,
-        "DGOV_SESSION_ROOT": session_root,
-        "DGOV_SLUG": slug,
-        "DGOV_AGENT": resume_agent,
-        "DGOV_BRANCH": branch_name,
-        "DGOV_BASE_SHA": target.get("base_sha", ""),
-        "DGOV_WORKTREE_PATH": worktree_path,
-    }
-    for key, val in dgov_env.items():
-        get_backend().send_input(pane_id, f"export {key}={val!r}")
-
-    # Start persistent logging via tmux pipe-pane
-    logs_dir = Path(session_root) / STATE_DIR / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
-    log_file = str(logs_dir / f"{slug}.log")
-    get_backend().start_logging(pane_id, log_file)
-
-    # Trigger worktree_created hook
-    hook_env = {
-        "DGOV_ROOT": project_root,
-        "DGOV_PANE_ID": pane_id,
-        "DGOV_SLUG": slug,
-        "DGOV_PROMPT": original_prompt,
-        "DGOV_AGENT": resume_agent,
-        "DGOV_WORKTREE_PATH": worktree_path,
-        "DGOV_BRANCH": branch_name,
-        "DGOV_OWNS_WORKTREE": "1",
-    }
-    hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
-
-    if not hook_ran:
-        protected_warning = (
-            "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
-            + ", ".join(sorted(PROTECTED_FILES))
-            + ". Do NOT create new documentation files."
-        )
-        if protected_warning.strip() not in rewritten_prompt:
-            rewritten_prompt += protected_warning
-
-    # Build done signal
-    done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
-    Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
-    # Clear old done signal if it exists
-    Path(done_signal).unlink(missing_ok=True)
-
-    # Launch agent
-    if agent_def:
-        if agent_def.prompt_transport == "send-keys":
-            base_cmd = build_launch_command(
-                resume_agent,
-                None,
-                permission_mode,
-                project_root=worktree_path,
-                slug=slug,
-                extra_flags="",
-                registry=registry,
-            )
-            wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
-            get_backend().send_input(pane_id, wrapped_cmd)
-            if agent_def.send_keys_ready_delay_ms > 0:
-                time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
-            for key in agent_def.send_keys_pre_prompt:
-                get_backend().send_keys(pane_id, [key])
-            get_backend().send_prompt_via_buffer(pane_id, rewritten_prompt)
-        else:
-            launch_cmd = build_launch_command(
-                resume_agent,
-                rewritten_prompt,
-                permission_mode,
-                project_root=worktree_path,
-                slug=slug,
-                extra_flags="",
-                registry=registry,
-            )
-            wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
-            get_backend().send_input(pane_id, wrapped_cmd)
+    _setup_and_launch_agent(
+        pane_id=pane_id,
+        slug=slug,
+        project_root=project_root,
+        session_root=session_root,
+        worktree_path=worktree_path,
+        branch_name=branch_name,
+        agent_id=resume_agent,
+        agent_def=agent_def,
+        registry=registry,
+        permission_mode=permission_mode,
+        prompt=full_prompt,
+        hook_prompt=original_prompt,
+        all_env=all_env,
+        owns_worktree=True,
+        base_sha=target.get("base_sha", ""),
+        clear_done_signal=True,
+    )
 
     # Update state: new pane_id, back to active
     conn = _get_db(session_root)
