@@ -1,6 +1,6 @@
 """State file management and event journal.
 
-Manages .dgov/state.db (pane records via SQLite WAL) and .dgov/events.jsonl (event log).
+Manages .dgov/state.db (pane records and event log via SQLite WAL).
 """
 
 from __future__ import annotations
@@ -51,45 +51,39 @@ VALID_EVENTS = frozenset(
 
 
 def _emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
-    """Append a structured event to .dgov/events.jsonl."""
+    """Write a structured event to the events table in state.db."""
     from datetime import datetime, timezone
 
     if event not in VALID_EVENTS:
         raise ValueError(f"Unknown event: {event!r}. Valid: {sorted(VALID_EVENTS)}")
-    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
-    events_path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "event": event,
-        "pane": pane,
-        **kwargs,
-    }
-    with open(events_path, "a") as f:
-        f.write(json.dumps(record, default=str) + "\n")
+    conn = _get_db(session_root)
+    ts = datetime.now(timezone.utc).isoformat()
+    data = json.dumps(kwargs, default=str) if kwargs else "{}"
+    conn.execute(
+        "INSERT INTO events (ts, event, pane, data) VALUES (?, ?, ?, ?)",
+        (ts, event, pane, data),
+    )
+    conn.commit()
 
 
 def read_events(session_root: str, slug: str | None = None) -> list[dict]:
-    """Read events from the JSONL log, optionally filtered by slug.
-
-    Logs a warning for malformed lines instead of silently skipping.
-    """
-    events_path = Path(session_root) / _STATE_DIR / "events.jsonl"
-    if not events_path.exists():
-        return []
+    """Read events from the SQLite events table, optionally filtered by slug."""
+    conn = _get_db(session_root)
+    if slug is not None:
+        rows = conn.execute(
+            "SELECT ts, event, pane, data FROM events WHERE pane = ? ORDER BY id",
+            (slug,),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT ts, event, pane, data FROM events ORDER BY id").fetchall()
     events = []
-    with open(events_path) as f:
-        for line_no, raw in enumerate(f, 1):
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                ev = json.loads(raw)
-            except json.JSONDecodeError:
-                logger.warning("Malformed JSON at %s:%d", events_path, line_no)
-                continue
-            if slug is not None and ev.get("pane") != slug:
-                continue
-            events.append(ev)
+    for ts, event, pane, data_str in rows:
+        ev = {"ts": ts, "event": event, "pane": pane}
+        try:
+            ev.update(json.loads(data_str))
+        except (json.JSONDecodeError, TypeError):
+            pass
+        events.append(ev)
     return events
 
 
@@ -207,6 +201,15 @@ CREATE TABLE IF NOT EXISTS panes (
     metadata TEXT
 )"""
 
+_CREATE_EVENTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event TEXT NOT NULL,
+    pane TEXT NOT NULL,
+    data TEXT NOT NULL DEFAULT '{}')
+"""
+
 
 def _state_path(session_root: str) -> Path:
     return Path(session_root) / _STATE_DIR / _STATE_FILE
@@ -233,6 +236,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(_CREATE_TABLE_SQL)
+    conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.commit()
 
     with _conn_lock:
