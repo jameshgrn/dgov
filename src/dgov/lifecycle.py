@@ -171,6 +171,8 @@ def create_worker_pane(
     all_env: dict[str, str] = {}
     registry = load_registry(project_root)
     agent_def = registry.get(agent)
+    if agent_def is None:
+        raise ValueError(f"Unknown agent {agent!r}. Available: {sorted(registry)}")
     if agent_def:
         all_env.update(agent_def.env)
     if env_vars:
@@ -537,6 +539,8 @@ def resume_worker_pane(
     # Load registry for agent config
     registry = load_registry(project_root)
     agent_def = registry.get(resume_agent)
+    if agent_def is None:
+        return {"error": f"Unknown agent {resume_agent!r}. Available: {sorted(registry)}"}
 
     # Health check (config-driven)
     if agent_def and agent_def.health_check:
