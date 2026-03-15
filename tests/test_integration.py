@@ -14,9 +14,9 @@ from dgov.merger import merge_worker_pane
 from dgov.persistence import (
     WorkerPane,
     _close_cached_connections,
-    _get_pane,
-    _update_pane_state,
+    get_pane,
     read_events,
+    update_pane_state,
 )
 from dgov.recovery import retry_worker_pane
 
@@ -90,7 +90,7 @@ class TestHappyPath:
         assert pane.branch_name == "add-hello"
 
         # Verify pane stored in state
-        record = _get_pane(session_root, "add-hello")
+        record = get_pane(session_root, "add-hello")
         assert record is not None
         assert record["state"] == "active"
 
@@ -101,8 +101,8 @@ class TestHappyPath:
         _git(wt, "commit", "-m", "Add hello.txt")
 
         # 3. Mark pane as done
-        _update_pane_state(session_root, "add-hello", "done")
-        record = _get_pane(session_root, "add-hello")
+        update_pane_state(session_root, "add-hello", "done")
+        record = get_pane(session_root, "add-hello")
         assert record["state"] == "done"
 
         # 4. Review — should see our commit
@@ -155,8 +155,8 @@ class TestRetryPath:
         assert pane.slug == "fix-bug"
 
         # 2. Mark as timed_out
-        _update_pane_state(session_root, "fix-bug", "timed_out")
-        record = _get_pane(session_root, "fix-bug")
+        update_pane_state(session_root, "fix-bug", "timed_out")
+        record = get_pane(session_root, "fix-bug")
         assert record["state"] == "timed_out"
 
         # 3. Retry — creates new pane linked to original
@@ -171,11 +171,11 @@ class TestRetryPath:
         assert new_slug.startswith("fix-bug-")
 
         # Original should be superseded
-        old_record = _get_pane(session_root, "fix-bug")
+        old_record = get_pane(session_root, "fix-bug")
         assert old_record["state"] == "superseded"
 
         # 4. Simulate work in retry pane
-        new_record = _get_pane(session_root, new_slug)
+        new_record = get_pane(session_root, new_slug)
         assert new_record is not None
         new_wt = new_record["worktree_path"]
         (Path(new_wt) / "fix.py").write_text("# fixed\n")
@@ -183,7 +183,7 @@ class TestRetryPath:
         _git(new_wt, "commit", "-m", "Fix the bug")
 
         # 5. Mark retry pane done
-        _update_pane_state(session_root, new_slug, "done")
+        update_pane_state(session_root, new_slug, "done")
 
         # 6. Merge retry pane
         merge_result = merge_worker_pane(repo_dir, new_slug, session_root=session_root)

@@ -139,7 +139,7 @@ def test_worker_pane_not_found():
     from dgov.merger import merge_worker_pane
 
     # Import and mock panes inline since _p is defined inside the function
-    with patch("dgov.panes._get_pane", return_value=None):
+    with patch("dgov.persistence.get_pane", return_value=None):
         result = merge_worker_pane("/fake/project", "nonexistent-slug")
 
         assert "error" in result
@@ -193,7 +193,7 @@ def test_worker_pane_branch_not_found(mock_run, tmp_path):
 
     mock_run.side_effect = side_effect
 
-    with patch("dgov.panes._get_pane", return_value=mock_pane):
+    with patch("dgov.persistence.get_pane", return_value=mock_pane):
         result = merge_worker_pane(str(fake_project), "test-slug")
 
         # Branch not found should cause error in _plumbing_merge
@@ -241,7 +241,7 @@ def test_worker_pane_success_with_merge(tmp_path):
         "base_sha": None,  # No base SHA since this is first commit
     }
 
-    with patch("dgov.panes._get_pane", return_value=mock_pane):
+    with patch("dgov.persistence.get_pane", return_value=mock_pane):
         # Test by patching _is_done and _trigger_hook (hooks need env vars we don't have)
         with (
             patch("dgov.panes._is_done", return_value=True),

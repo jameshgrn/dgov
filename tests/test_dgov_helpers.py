@@ -12,12 +12,12 @@ from dgov.models import MergeResult
 from dgov.panes import _build_pane_title
 from dgov.persistence import (
     WorkerPane,
-    _all_panes,
-    _emit_event,
-    _replace_all_panes,
-    _update_pane_state,
     _validate_state,
+    all_panes,
+    emit_event,
     read_events,
+    replace_all_panes,
+    update_pane_state,
 )
 
 
@@ -57,8 +57,8 @@ class TestModels:
 
 
 class TestPaneHelpers:
-    def test_emit_event_appends_record(self, tmp_path: Path) -> None:
-        _emit_event(str(tmp_path), "pane_created", "task-1", agent="claude")
+    def testemit_event_appends_record(self, tmp_path: Path) -> None:
+        emit_event(str(tmp_path), "pane_created", "task-1", agent="claude")
 
         events = read_events(str(tmp_path))
         assert len(events) == 1
@@ -67,9 +67,9 @@ class TestPaneHelpers:
         assert events[0]["agent"] == "claude"
         assert "ts" in events[0]
 
-    def test_emit_event_rejects_unknown_event(self, tmp_path: Path) -> None:
+    def testemit_event_rejects_unknown_event(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Unknown event"):
-            _emit_event(str(tmp_path), "dmux_spawned", "task-1")
+            emit_event(str(tmp_path), "dmux_spawned", "task-1")
 
     def test_validate_state_and_worker_pane_post_init(self) -> None:
         assert _validate_state("active") == "active"
@@ -96,10 +96,10 @@ class TestPaneHelpers:
         assert title_a.startswith("audit@project-")
         assert title_a != title_c
 
-    def test_update_pane_state_writes_state_and_updates_tmux(
+    def testupdate_pane_state_writes_state_and_updates_tmux(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -113,9 +113,9 @@ class TestPaneHelpers:
             },
         )
 
-        _update_pane_state(str(tmp_path), "task-1", "done")
+        update_pane_state(str(tmp_path), "task-1", "done")
 
-        panes = _all_panes(str(tmp_path))
+        panes = all_panes(str(tmp_path))
         assert panes[0]["state"] == "done"
         mock_backend.set_title.assert_called_once_with("%2", "[claude] task-1 \u2713")
 
@@ -124,7 +124,7 @@ class TestPaneHelpers:
     ) -> None:
         from dgov.panes import _count_active_agent_workers
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
