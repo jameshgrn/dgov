@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from dgov.persistence import _emit_event
+from dgov.waiter import wait_for_slugs
 
 logger = logging.getLogger(__name__)
 
@@ -229,15 +229,7 @@ def run_review_fix_pipeline(
             logger.warning("Failed to create review worker for %s: %s", target, e)
 
     # Wait for all review workers
-    start = time.monotonic()
-    pending = set(review_slugs)
-    while pending and (time.monotonic() - start < timeout):
-        for slug in list(pending):
-            rec = _p._get_pane(session_root, slug)
-            if _p._is_done(session_root, slug, pane_record=rec):
-                pending.discard(slug)
-        if pending:
-            time.sleep(3)
+    wait_for_slugs(session_root, review_slugs, timeout=timeout)
 
     # Capture output and parse findings
     all_findings: list[ReviewFinding] = []
@@ -325,15 +317,7 @@ def run_review_fix_pipeline(
             logger.warning("Failed to create fix worker for %s: %s", file_path, e)
 
     # Wait for all fix workers
-    start = time.monotonic()
-    pending = set(fix_slugs)
-    while pending and (time.monotonic() - start < timeout):
-        for slug in list(pending):
-            rec = _p._get_pane(session_root, slug)
-            if _p._is_done(session_root, slug, pane_record=rec):
-                pending.discard(slug)
-        if pending:
-            time.sleep(3)
+    wait_for_slugs(session_root, fix_slugs, timeout=timeout)
 
     # -- PHASE 3: VALIDATE (merge + test) --
     merged_count = 0

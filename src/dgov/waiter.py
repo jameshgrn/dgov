@@ -293,6 +293,27 @@ def _poll_once(
 # -- Public wait API --
 
 
+def wait_for_slugs(
+    session_root: str,
+    slugs: list[str],
+    timeout: int = 600,
+    poll: int = 3,
+) -> set[str]:
+    """Wait for a set of slugs to finish. Returns the set of slugs still pending at timeout."""
+    import dgov.panes as _p
+
+    start = time.monotonic()
+    pending = set(slugs)
+    while pending and (time.monotonic() - start < timeout):
+        for slug in list(pending):
+            rec = _p._get_pane(session_root, slug)
+            if _p._is_done(session_root, slug, pane_record=rec):
+                pending.discard(slug)
+        if pending:
+            time.sleep(poll)
+    return pending
+
+
 def wait_worker_pane(
     project_root: str,
     slug: str,
