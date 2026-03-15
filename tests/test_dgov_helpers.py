@@ -89,14 +89,12 @@ class TestPaneHelpers:
 
     def test_build_pane_title_is_deterministic(self) -> None:
         title_a = _build_pane_title("claude", "audit", "/tmp/project")
-        title_b = _build_pane_title("claude", "audit", "/tmp/project")
-        title_c = _build_pane_title("claude", "audit", "/tmp/other-project")
-        title_d = _build_pane_title("pi", "audit", "/tmp/project")
+        title_b = _build_pane_title("claude", "audit", "/tmp/other-project")
+        title_c = _build_pane_title("pi", "audit", "/tmp/project")
 
-        assert title_a == title_b
+        assert title_a == title_b  # project_root no longer affects title
         assert title_a.startswith("[claude] audit")
-        assert title_a != title_c
-        assert title_a != title_d  # different agent produces different title
+        assert title_a != title_c  # different agent produces different title
 
     def testupdate_pane_state_writes_state_and_updates_tmux(
         self, tmp_path: Path, mock_backend: MagicMock

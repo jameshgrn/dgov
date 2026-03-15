@@ -117,17 +117,12 @@ def _trigger_hook(
 # -- Pane title --
 
 
-def _build_pane_title(slug: str, project_root: str) -> str:
+def _build_pane_title(agent: str, slug: str, project_root: str) -> str:
     """Build pane title for tmux pane border display.
 
-    Format: ``slug@project_name-hash`` where *hash* is the first 4 hex
-    chars of the MD5 digest of *project_root*.
+    Format: ``[agent] slug`` where *agent* is the agent name and *slug* is the task slug.
     """
-    import hashlib
-
-    project_name = os.path.basename(project_root)
-    hash_prefix = hashlib.md5(project_root.encode()).hexdigest()[:4]
-    return f"{slug}@{project_name}-{hash_prefix}"
+    return f"[{agent}] {slug}"
 
 
 # -- Shared launch pipeline --
@@ -160,7 +155,7 @@ def _setup_and_launch_agent(
     # 1. Lock pane title (prevent agent/tmux from overwriting)
     backend.set_pane_option(pane_id, "allow-rename", "off")
     backend.set_pane_option(pane_id, "automatic-rename", "off")
-    title = _build_pane_title(slug, project_root)
+    title = _build_pane_title(agent_id, slug, project_root)
     backend.set_title(pane_id, title)
     backend.style(pane_id, agent_id, color=agent_def.color)
     backend.set_pane_option(pane_id, "allow-set-title", "off")
