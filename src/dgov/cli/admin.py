@@ -210,7 +210,7 @@ def stats(project_root, session_root):
     help="Project root",
 )
 @SESSION_ROOT_OPTION
-@click.option("--refresh", default=2, type=float, help="Refresh interval in seconds")
+@click.option("--refresh", default=1, type=float, help="Refresh interval in seconds")
 def dashboard(project_root, session_root, refresh):
     """Launch live terminal dashboard."""
     from dgov.dashboard import run_dashboard

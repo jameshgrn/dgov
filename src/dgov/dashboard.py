@@ -8,6 +8,7 @@ from __future__ import annotations
 import curses
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -16,6 +17,15 @@ from dataclasses import dataclass, field
 from dgov import __version__
 
 logger = logging.getLogger(__name__)
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
+
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
 
 # State → curses color pair index
 STATE_COLORS: dict[str, int] = {
@@ -69,9 +79,7 @@ def format_row(pane: dict, col_widths: dict[str, int]) -> dict[str, str]:
         "slug": truncate(pane.get("slug", ""), col_widths["slug"]),
         "agent": truncate(pane.get("agent", "?"), col_widths["agent"]),
         "state": truncate(pane.get("state", "active"), col_widths["state"]),
-        "alive": "\u2713" if pane.get("alive") else "\u2717",
-        "done": "\u2713" if pane.get("done") else "\u2717",
-        "freshness": truncate(pane.get("freshness", "?"), col_widths["freshness"]),
+        "activity": truncate(pane.get("activity", ""), col_widths["activity"]),
         "duration": fmt_duration(int(pane.get("duration_s", 0))),
         "prompt": truncate(pane.get("prompt", ""), col_widths["prompt"]),
     }
@@ -81,11 +89,9 @@ COLUMNS = [
     ("slug", 20),
     ("agent", 10),
     ("state", 12),
-    ("alive", 5),
-    ("done", 5),
-    ("freshness", 10),
+    ("activity", 40),
     ("duration", 10),
-    ("prompt", 40),
+    ("prompt", 30),
 ]
 
 
@@ -111,6 +117,9 @@ class DashboardState:
     stop_event: threading.Event = field(default_factory=threading.Event)
     force_refresh: threading.Event = field(default_factory=threading.Event)
 
+    # Render state
+    frame: int = 0
+
     # Detail view cache
     detail_slug: str = ""
     detail_text: str = ""
@@ -135,6 +144,7 @@ def _get_branch(project_root: str) -> str:
 
 def fetch_panes(state: DashboardState) -> None:
     """Fetch pane data from dgov and update shared state."""
+    from dgov.backend import get_backend
     from dgov.status import list_worker_panes
 
     try:
@@ -142,6 +152,21 @@ def fetch_panes(state: DashboardState) -> None:
             state.project_root, session_root=state.session_root, include_freshness=False
         )
         branch = _get_branch(state.project_root)
+        backend = get_backend()
+        for p in panes:
+            pane_id = p.get("pane_id", "")
+            if pane_id and p.get("alive"):
+                try:
+                    raw = backend.capture_output(pane_id, lines=2)
+                    if raw:
+                        lines = [
+                            ln.strip()
+                            for ln in _strip_ansi(raw).strip().splitlines()
+                            if ln.strip()
+                        ]
+                        p["activity"] = lines[-1] if lines else ""
+                except (RuntimeError, OSError):
+                    pass
         with state.lock:
             state.panes = panes
             state.branch = branch
@@ -253,8 +278,12 @@ def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> in
 
     project = os.path.basename(os.path.abspath(state.project_root))
     ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
+    spinner = _SPINNER[state.frame % len(_SPINNER)]
 
-    header = f" dgov v{__version__}  |  {project}  |  {branch}  |  {ts}  |  {pane_count} panes"
+    header = (
+        f" {spinner} dgov v{__version__}  |  {project}"
+        f"  |  {branch}  |  {ts}  |  {pane_count} panes"
+    )
     try:
         stdscr.addnstr(row, 0, header, max_x - 1, curses.A_BOLD)
     except curses.error:
@@ -286,9 +315,7 @@ def _draw_table_header(
         "slug": "SLUG",
         "agent": "AGENT",
         "state": "STATE",
-        "alive": "LIVE",
-        "done": "DONE",
-        "freshness": "FRESH",
+        "activity": "ACTIVITY",
         "duration": "DURATION",
         "prompt": "PROMPT",
     }
@@ -412,7 +439,7 @@ def _draw_confirmation(stdscr: curses.window, message: str, max_y: int, max_x: i
 def run_dashboard(
     project_root: str = ".",
     session_root: str | None = None,
-    refresh_interval: float = 2.0,
+    refresh_interval: float = 1.0,
 ) -> None:
     """Launch the curses dashboard. Blocks until user quits."""
     attach_pane: str = curses.wrapper(
@@ -435,7 +462,7 @@ def _curses_main(
     """Main curses loop. Returns pane_id to attach to, or empty string."""
     _init_colors()
     curses.curs_set(0)  # hide cursor
-    stdscr.timeout(200)  # 200ms for key polling
+    stdscr.timeout(150)  # 150ms for key polling
 
     state = DashboardState(
         project_root=os.path.abspath(project_root),
@@ -516,6 +543,7 @@ def _curses_main(
                     msg = f" {confirm_action.upper()} '{slug}'? y/n "
                     _draw_confirmation(stdscr, msg, max_y, max_x)
 
+            state.frame += 1
             stdscr.refresh()
 
             key = stdscr.getch()
