@@ -117,12 +117,25 @@ def _trigger_hook(
 # -- Pane title --
 
 
-def _build_pane_title(agent: str, slug: str, project_root: str) -> str:
+def _state_icon(state: str) -> str:
+    """Return the pane-title icon for a worker state."""
+    return {
+        "active": "~",
+        "done": "ok",
+        "merged": "+",
+        "timed_out": "!",
+        "failed": "X",
+    }.get(state, "")
+
+
+def _build_pane_title(agent: str, slug: str, project_root: str, *, state: str = "") -> str:
     """Build pane title for tmux pane border display.
 
-    Format: ``[agent] slug`` where *agent* is the agent name and *slug* is the task slug.
+    Format: ``[agent] slug`` or ``[agent] slug icon`` when *state* has a title icon.
     """
-    return f"[{agent}] {slug}"
+    title = f"[{agent}] {slug}"
+    icon = _state_icon(state)
+    return f"{title} {icon}" if icon else title
 
 
 # -- Shared launch pipeline --
@@ -155,7 +168,7 @@ def _setup_and_launch_agent(
     # 1. Lock pane title (prevent agent/tmux from overwriting)
     backend.set_pane_option(pane_id, "allow-rename", "off")
     backend.set_pane_option(pane_id, "automatic-rename", "off")
-    title = _build_pane_title(agent_id, slug, project_root)
+    title = _build_pane_title(agent_id, slug, project_root, state="active")
     backend.set_title(pane_id, title)
     backend.style(pane_id, agent_id, color=agent_def.color)
     backend.set_pane_option(pane_id, "allow-set-title", "off")

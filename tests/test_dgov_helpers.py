@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.backend import set_backend
-from dgov.lifecycle import _build_pane_title
+from dgov.lifecycle import _build_pane_title, _state_icon
 from dgov.models import MergeResult
 from dgov.persistence import (
     WorkerPane,
@@ -91,10 +91,20 @@ class TestPaneHelpers:
         title_a = _build_pane_title("claude", "audit", "/tmp/project")
         title_b = _build_pane_title("claude", "audit", "/tmp/other-project")
         title_c = _build_pane_title("pi", "audit", "/tmp/project")
+        title_done = _build_pane_title("claude", "audit", "/tmp/project", state="done")
 
         assert title_a == title_b  # project_root no longer affects title
-        assert title_a.startswith("[claude] audit")
+        assert title_a == "[claude] audit"
         assert title_a != title_c  # different agent produces different title
+        assert title_done == "[claude] audit ok"
+
+    def test_state_icon_maps_expected_states(self) -> None:
+        assert _state_icon("active") == "~"
+        assert _state_icon("done") == "ok"
+        assert _state_icon("merged") == "+"
+        assert _state_icon("timed_out") == "!"
+        assert _state_icon("failed") == "X"
+        assert _state_icon("reviewed_pass") == ""
 
     def testupdate_pane_state_writes_state_and_updates_tmux(
         self, tmp_path: Path, mock_backend: MagicMock
@@ -117,7 +127,7 @@ class TestPaneHelpers:
 
         panes = all_panes(str(tmp_path))
         assert panes[0]["state"] == "done"
-        mock_backend.set_title.assert_called_once_with("%2", "[claude] task-1 \u2713")
+        mock_backend.set_title.assert_called_once_with("%2", "[claude] task-1 ok")
 
     def test_count_active_agent_workers_only_counts_live_panes(
         self, tmp_path: Path, mock_backend: MagicMock

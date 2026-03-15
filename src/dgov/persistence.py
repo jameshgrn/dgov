@@ -13,6 +13,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from dgov.backend import get_backend
+
 logger = logging.getLogger(__name__)
 
 # -- Connection cache (per db_path + thread) --
@@ -409,22 +411,20 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
 
     _retry_on_lock(_do)
 
-    # Update pane title to reflect new status.
+    # Update the pane title after the persisted state changes.
     pane = get_pane(session_root, slug)
     if pane:
         pane_id = pane.get("pane_id", "")
         agent = pane.get("agent", "")
+        project_root = pane.get("project_root", "")
         if pane_id:
-            from dgov.backend import get_backend
+            from dgov.lifecycle import _build_pane_title
 
-            icon = {
-                "active": "\u23f3",
-                "done": "\u2713",
-                "failed": "\u2717",
-                "timed_out": "\u23f0",
-            }.get(new_state, "?")
             try:
-                get_backend().set_title(pane_id, f"[{agent}] {slug} {icon}")
+                title = _build_pane_title(
+                    agent, slug, project_root, state=pane.get("state", new_state)
+                )
+                get_backend().set_title(pane_id, title)
             except (RuntimeError, OSError):
                 pass  # pane may already be dead
 
