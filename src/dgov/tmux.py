@@ -233,20 +233,30 @@ def create_utility_pane(command: str, title: str, cwd: str | None = None) -> str
 def setup_governor_workspace(project_root: str) -> list[str]:
     """Split dashboard + lazygit into the current window as companion panes.
 
+    Idempotent: skips panes that already exist (by title).
     Returns list of created pane_ids.
     """
+    existing = _run(
+        ["list-panes", "-F", "#{pane_title}"],
+        silent=True,
+    ).splitlines()
+
     panes: list[str] = []
-    # Dashboard in a bottom split
-    dash_id = split_pane()
-    send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
-    set_title(dash_id, "[gov] dashboard")
-    panes.append(dash_id)
-    # Lazygit in a right split of the main pane
-    lg_id = split_pane()
-    send_command(lg_id, "lazygit")
-    set_title(lg_id, "[gov] lazygit")
-    panes.append(lg_id)
-    select_layout("main-vertical")
+
+    if "[gov] dashboard" not in existing:
+        dash_id = split_pane()
+        send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
+        set_title(dash_id, "[gov] dashboard")
+        panes.append(dash_id)
+
+    if "[gov] lazygit" not in existing:
+        lg_id = split_pane()
+        send_command(lg_id, "lazygit")
+        set_title(lg_id, "[gov] lazygit")
+        panes.append(lg_id)
+
+    if panes:
+        select_layout("main-vertical")
     return panes
 
 
