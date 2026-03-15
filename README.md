@@ -81,7 +81,7 @@ State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
 
 | Command | Description |
 |---------|-------------|
-| `dgov batch <spec>` | Execute a batch spec with DAG-ordered parallelism |
+| `dgov batch <spec>` | Execute a batch spec (TOML or JSON) with DAG-ordered parallelism. Tasks declare `depends_on` for explicit ordering and `touches` for file-overlap serialization. `--dry-run` renders the tier plan. |
 | `dgov experiment` | Run iterative experiments with accept/reject loop |
 | `dgov review-fix` | Review-then-fix pipeline with severity filtering |
 

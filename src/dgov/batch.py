@@ -104,26 +104,123 @@ def list_checkpoints(session_root: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Batch execution
+# Batch spec parsing
 # ---------------------------------------------------------------------------
 
 
-def _compute_tiers(tasks: list[dict]) -> list[list[dict]]:
-    """Group tasks into parallel tiers based on file touches.
+def _parse_spec(spec_path: str) -> tuple[str, dict[str, dict]]:
+    """Parse a batch spec file (TOML or legacy JSON).
 
-    Tasks with disjoint `touches` go into the same tier.
-    Tasks with overlapping touches are serialized into subsequent tiers.
+    Returns (project_root, tasks_dict) where tasks_dict maps task ID to task fields.
     """
+    import tomllib
+
+    from dgov.agents import get_default_agent
+
+    path = Path(spec_path)
+    suffix = path.suffix.lower()
+
+    if suffix == ".toml":
+        with open(path, "rb") as f:
+            spec = tomllib.load(f)
+        project_root = spec.get("project_root", ".")
+        raw_tasks = spec.get("tasks", {})
+        default_agent = get_default_agent()
+        tasks: dict[str, dict] = {}
+        for task_id, fields in raw_tasks.items():
+            if "prompt" not in fields:
+                raise ValueError(f"Task '{task_id}' missing required field 'prompt'")
+            tasks[task_id] = {
+                "id": task_id,
+                "prompt": fields["prompt"],
+                "agent": fields.get("agent", default_agent),
+                "touches": fields.get("touches", []),
+                "depends_on": fields.get("depends_on", []),
+                "timeout": fields.get("timeout", 600),
+                "permission_mode": fields.get("permission_mode", "acceptEdits"),
+            }
+    else:
+        with open(path) as f:
+            spec = json.load(f)
+        project_root = spec["project_root"]
+        tasks = {}
+        for t in spec["tasks"]:
+            task_id = t["id"]
+            tasks[task_id] = {
+                "id": task_id,
+                "prompt": t["prompt"],
+                "agent": t.get("agent", "claude"),
+                "touches": t.get("touches", []),
+                "depends_on": t.get("depends_on", []),
+                "timeout": t.get("timeout", 600),
+                "permission_mode": t.get("permission_mode", "acceptEdits"),
+            }
+
+    return project_root, tasks
+
+
+# ---------------------------------------------------------------------------
+# DAG validation and tier computation
+# ---------------------------------------------------------------------------
+
+
+def _validate_dag(tasks: dict[str, dict]) -> None:
+    """Validate that depends_on references exist and there are no cycles."""
+    task_ids = set(tasks)
+
+    for task_id, task in tasks.items():
+        for dep in task["depends_on"]:
+            if dep not in task_ids:
+                raise ValueError(f"Task '{task_id}' depends on '{dep}' which does not exist")
+
+    # Topological sort to detect cycles
+    visited: set[str] = set()
+    path: set[str] = set()
+
+    def _visit(node: str) -> None:
+        if node in path:
+            cycle = [node]
+            raise ValueError(f"Dependency cycle detected: {' -> '.join(cycle)}")
+        if node in visited:
+            return
+        path.add(node)
+        for dep in tasks[node]["depends_on"]:
+            _visit(dep)
+        path.discard(node)
+        visited.add(node)
+
+    for tid in tasks:
+        _visit(tid)
+
+
+def _compute_tiers(tasks: dict[str, dict]) -> list[list[dict]]:
+    """Group tasks into parallel tiers respecting depends_on and touch overlap.
+
+    A task is ready for a tier when:
+    1. All its depends_on are in earlier tiers
+    2. Its touches don't overlap with any task in the same tier
+    """
+    _validate_dag(tasks)
+
+    placed: dict[str, int] = {}  # task_id -> tier_index
     tiers: list[list[dict]] = []
-    remaining = list(tasks)
+    remaining = set(tasks)
 
     while remaining:
         tier: list[dict] = []
         tier_touches: set[str] = set()
-        next_remaining: list[dict] = []
+        placed_this_round: list[str] = []
 
-        for task in remaining:
-            task_touches = set(task.get("touches", []))
+        for task_id in sorted(remaining):
+            task = tasks[task_id]
+            deps = task["depends_on"]
+
+            # All deps must be placed in earlier tiers
+            if not all(d in placed for d in deps):
+                continue
+
+            # Check touch overlap with tasks already in this tier
+            task_touches = task.get("touches", [])
             has_overlap = False
             for tt in task_touches:
                 for et in tier_touches:
@@ -133,17 +230,54 @@ def _compute_tiers(tasks: list[dict]) -> list[list[dict]]:
                 if has_overlap:
                     break
 
-            if not has_overlap:
-                tier.append(task)
-                tier_touches.update(task_touches)
-            else:
-                next_remaining.append(task)
+            if has_overlap:
+                continue
 
-        if tier:
-            tiers.append(tier)
-        remaining = next_remaining
+            tier.append(task)
+            tier_touches.update(task_touches)
+            placed_this_round.append(task_id)
+
+        if not placed_this_round:
+            # Should not happen after validation, but guard against infinite loop
+            raise ValueError(f"Cannot schedule remaining tasks: {remaining}")
+
+        tier_idx = len(tiers)
+        for tid in placed_this_round:
+            placed[tid] = tier_idx
+            remaining.discard(tid)
+        tiers.append(tier)
 
     return tiers
+
+
+def _transitive_dependents(tasks: dict[str, dict], failed_ids: set[str]) -> set[str]:
+    """Return all task IDs that transitively depend on any of the failed_ids."""
+    dependents: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for tid, task in tasks.items():
+            if tid in dependents or tid in failed_ids:
+                continue
+            if any(d in failed_ids or d in dependents for d in task["depends_on"]):
+                dependents.add(tid)
+                changed = True
+    return dependents
+
+
+def _render_dry_run(tiers: list[list[dict]], tasks: dict[str, dict]) -> str:
+    """Render a tier listing with box-drawing characters."""
+    total = sum(len(t) for t in tiers)
+    lines = [f"DAG ({total} tasks, {len(tiers)} tiers):", ""]
+    for i, tier in enumerate(tiers):
+        ids = ", ".join(t["id"] for t in tier)
+        lines.append(f"  Tier {i}: {ids}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Batch execution
+# ---------------------------------------------------------------------------
 
 
 def run_batch(
@@ -153,45 +287,42 @@ def run_batch(
 ) -> dict:
     """Execute a batch spec: create panes, wait, merge in tier order.
 
-    Spec format (JSON file):
-    {
-        "project_root": "/path/to/repo",
-        "tasks": [
-            {"id": "task-1", "prompt": "...", "agent": "pi", "touches": ["src/foo.py"]},
-            {"id": "task-2", "prompt": "...", "agent": "claude", "touches": ["tests/"]}
-        ]
-    }
-
-    Tasks with disjoint `touches` run in parallel tiers.
-    Overlapping touches are serialized.
+    Supports TOML (.toml) and legacy JSON (.json) spec formats.
+    Tasks are ordered by explicit depends_on and implicit touch overlap.
+    On failure, transitive dependents are skipped; unrelated branches continue.
     """
     import dgov.panes as _p
     from dgov.merger import merge_worker_pane
 
-    with open(spec_path) as f:
-        spec = json.load(f)
-
-    project_root = spec["project_root"]
-    tasks = spec["tasks"]
+    project_root, tasks = _parse_spec(spec_path)
     session_root = os.path.abspath(session_root or project_root)
 
     tiers = _compute_tiers(tasks)
 
     if dry_run:
+        ascii_dag = _render_dry_run(tiers, tasks)
         return {
             "dry_run": True,
             "tiers": [[t["id"] for t in tier] for tier in tiers],
             "total_tasks": len(tasks),
+            "ascii_dag": ascii_dag,
         }
 
-    results: dict = {"tiers": [], "merged": [], "failed": []}
+    failed_ids: set[str] = set()
+    skipped_ids: set[str] = set()
+    results: dict = {"tiers": [], "merged": [], "failed": [], "skipped": []}
 
     for tier_idx, tier in enumerate(tiers):
         tier_result: dict = {"tier": tier_idx, "tasks": []}
 
-        # Create all panes in this tier
+        # Create all panes in this tier (skip tasks whose deps failed)
         slugs = []
         for task in tier:
+            if task["id"] in skipped_ids:
+                tier_result["tasks"].append({"id": task["id"], "status": "skipped"})
+                results["skipped"].append(task["id"])
+                continue
+
             try:
                 pane = _p.create_worker_pane(
                     project_root=project_root,
@@ -207,9 +338,16 @@ def run_batch(
                 )
             except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
                 tier_result["tasks"].append(
-                    {"id": task["id"], "status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+                    {
+                        "id": task["id"],
+                        "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
                 )
+                failed_ids.add(task["id"])
                 results["failed"].append(task["id"])
+                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
+                skipped_ids.update(new_skips)
 
         # Wait for all panes in tier
         timeout = max(t.get("timeout", 600) for t in tier) if tier else 600
@@ -231,7 +369,10 @@ def run_batch(
                     {**t, "status": "timed_out"} if t.get("slug") == slug else t
                     for t in tier_result["tasks"]
                 ]
+                failed_ids.add(slug)
                 results["failed"].append(slug)
+                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
+                skipped_ids.update(new_skips)
                 continue
 
             merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
@@ -242,7 +383,10 @@ def run_batch(
                     for t in tier_result["tasks"]
                 ]
             else:
+                failed_ids.add(slug)
                 results["failed"].append(slug)
+                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
+                skipped_ids.update(new_skips)
                 tier_result["tasks"] = [
                     {**t, "status": "merge_failed"} if t.get("slug") == slug else t
                     for t in tier_result["tasks"]
@@ -250,9 +394,5 @@ def run_batch(
 
         results["tiers"].append(tier_result)
 
-        # Abort remaining tiers if any failure
-        if results["failed"]:
-            results["aborted_remaining"] = True
-            break
-
+    results["skipped"] = list(skipped_ids)
     return results
