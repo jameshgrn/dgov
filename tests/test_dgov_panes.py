@@ -1160,6 +1160,32 @@ class TestFullCleanup:
         wt_remove_cmds = [c for c in calls if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmds) == 0
 
+    def test_cleanup_deletes_log_file(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        from dgov.lifecycle import _full_cleanup
+
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        logs_dir = tmp_path / ".dgov" / "logs"
+        logs_dir.mkdir(parents=True)
+        log_file = logs_dir / "test.log"
+        log_file.write_text("some log output")
+
+        pane_record = {"pane_id": "%5", "owns_worktree": False}
+        mock_backend.is_alive.return_value = False
+        _full_cleanup(str(tmp_path), str(tmp_path), "test", pane_record)
+
+        assert not log_file.exists()
+
+    def test_cleanup_no_error_when_log_missing(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.lifecycle import _full_cleanup
+
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        pane_record = {"pane_id": "%5", "owns_worktree": False}
+        mock_backend.is_alive.return_value = False
+        result = _full_cleanup(str(tmp_path), str(tmp_path), "test", pane_record)
+        assert result["cleaned"] is True
+
     def test_no_checkout_before_worktree_remove(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:

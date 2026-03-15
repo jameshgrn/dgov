@@ -438,9 +438,11 @@ def _full_cleanup(
 
     Returns {"cleaned": True, "skipped_worktree": bool}.
     """
-    # 1. Delete done signal
+    # 1. Delete done signal and log file
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.unlink(missing_ok=True)
+    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
+    log_path.unlink(missing_ok=True)
 
     # 2. Kill tmux pane
     pane_id = pane_record.get("pane_id")
