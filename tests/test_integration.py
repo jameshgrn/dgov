@@ -200,3 +200,54 @@ class TestRetryPath:
         assert "pane_superseded" in event_types
         assert "pane_retry_spawned" in event_types
         assert "pane_merged" in event_types
+
+
+class TestConflictDetection:
+    """Conflict detection: overlapping edits on main and worker branch."""
+
+    def test_conflict_detected_on_overlapping_edits(self, repo):
+        repo_dir = repo["repo_dir"]
+        session_root = repo["session_root"]
+
+        # 1. Create worker pane
+        pane = create_worker_pane(
+            project_root=repo_dir,
+            prompt="Edit README",
+            agent="claude",
+            slug="conflict-test",
+            session_root=session_root,
+        )
+        assert pane.slug == "conflict-test"
+
+        # 2. In the worktree, modify README.md and commit
+        wt = pane.worktree_path
+        (Path(wt) / "README.md").write_text("worker change\n")
+        _git(wt, "add", "README.md")
+        _git(wt, "commit", "-m", "Worker edits README")
+
+        # 3. On main, modify README.md differently and commit
+        (Path(repo_dir) / "README.md").write_text("main change\n")
+        _git(repo_dir, "add", "README.md")
+        _git(repo_dir, "commit", "-m", "Main edits README")
+
+        # 4. Mark worker pane as done
+        update_pane_state(session_root, "conflict-test", "done")
+
+        # 5. Attempt merge — should detect conflict
+        result = merge_worker_pane(
+            repo_dir, "conflict-test", session_root=session_root, resolve="manual"
+        )
+        assert "conflicts" in result
+        assert result["conflicts"]
+
+        # 6. Verify pane state is merge_conflict
+        record = get_pane(session_root, "conflict-test")
+        assert record["state"] == "merge_conflict"
+
+        # 7. Clean up: abort the merge left by resolve="manual", reset main
+        subprocess.run(
+            ["git", "-C", repo_dir, "merge", "--abort"],
+            capture_output=True,
+        )
+        _git(repo_dir, "reset", "--hard", "HEAD~1")
+        close_worker_pane(repo_dir, "conflict-test", session_root=session_root)
