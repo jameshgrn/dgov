@@ -181,7 +181,7 @@ class TestRunExperiment:
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.experiment._emit_event")
+    @patch("dgov.experiment.emit_event")
     def test_accepted_on_improvement(
         self, mock_emit, mock_create, mock_wait, mock_merge, mock_close, mock_read_result, tmp_path
     ):
@@ -217,7 +217,7 @@ class TestRunExperiment:
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.experiment._emit_event")
+    @patch("dgov.experiment.emit_event")
     def test_rejected_on_regression(
         self, mock_emit, mock_create, mock_wait, mock_merge, mock_close, mock_read_result, tmp_path
     ):
@@ -250,7 +250,7 @@ class TestRunExperiment:
     @patch("dgov.panes.close_worker_pane")
     @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.experiment._emit_event")
+    @patch("dgov.experiment.emit_event")
     def test_error_on_missing_result_file(
         self, mock_emit, mock_create, mock_wait, mock_close, mock_read_result, tmp_path
     ):
@@ -275,7 +275,7 @@ class TestRunExperiment:
     @patch("dgov.panes.close_worker_pane")
     @patch("dgov.waiter.wait_worker_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.experiment._emit_event")
+    @patch("dgov.experiment.emit_event")
     def test_error_on_timeout(self, mock_emit, mock_create, mock_wait, mock_close, tmp_path):
         from dgov.waiter import PaneTimeoutError
 

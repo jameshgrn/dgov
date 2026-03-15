@@ -11,7 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
-from dgov.persistence import _STATE_DIR, VALID_EVENTS
+from dgov.persistence import STATE_DIR, VALID_EVENTS
 from dgov.waiter import (
     _detect_blocked,
     _is_done,
@@ -35,7 +35,7 @@ def skip_governor_check(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _setup_pane(tmp_path: Path, slug: str = "test-worker", state: str = "active") -> str:
     """Create a pane record in the state DB and return session_root."""
-    from dgov.persistence import WorkerPane, _add_pane
+    from dgov.persistence import WorkerPane, add_pane
 
     session_root = str(tmp_path)
     pane = WorkerPane(
@@ -48,7 +48,7 @@ def _setup_pane(tmp_path: Path, slug: str = "test-worker", state: str = "active"
         branch_name=slug,
         state=state,
     )
-    _add_pane(session_root, pane)
+    add_pane(session_root, pane)
     return session_root
 
 
@@ -144,7 +144,7 @@ class TestNudge:
             result = nudge_pane(session_root, "test-worker", wait_seconds=1)
             assert result["response"] == "YES"
             # Verify done-signal file was touched
-            done_path = Path(session_root) / _STATE_DIR / "done" / "test-worker"
+            done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
             assert done_path.exists()
 
     def test_parses_no_response(self, tmp_path: Path) -> None:
@@ -157,7 +157,7 @@ class TestNudge:
         ):
             result = nudge_pane(session_root, "test-worker", wait_seconds=1)
             assert result["response"] == "NO"
-            done_path = Path(session_root) / _STATE_DIR / "done" / "test-worker"
+            done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
             assert not done_path.exists()
 
     def test_unclear_when_no_match(self, tmp_path: Path) -> None:
@@ -187,14 +187,14 @@ class TestSignal:
         session_root = _setup_pane(tmp_path)
         result = signal_pane(session_root, "test-worker", "done")
         assert result is True
-        done_path = Path(session_root) / _STATE_DIR / "done" / "test-worker"
+        done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
         assert done_path.exists()
 
     def test_signal_failed(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
         result = signal_pane(session_root, "test-worker", "failed")
         assert result is True
-        exit_path = Path(session_root) / _STATE_DIR / "done" / "test-worker.exit"
+        exit_path = Path(session_root) / STATE_DIR / "done" / "test-worker.exit"
         assert exit_path.exists()
         assert exit_path.read_text() == "manual"
 
@@ -229,7 +229,7 @@ class TestUnifiedIsDone:
         session_root = str(tmp_path)
         slug = "test-done"
         _setup_pane(tmp_path, slug=slug)
-        done_dir = Path(session_root) / _STATE_DIR / "done"
+        done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         (done_dir / slug).touch()
         assert _is_done(session_root, slug) is True
@@ -238,7 +238,7 @@ class TestUnifiedIsDone:
         session_root = str(tmp_path)
         slug = "test-fail"
         _setup_pane(tmp_path, slug=slug)
-        done_dir = Path(session_root) / _STATE_DIR / "done"
+        done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         (done_dir / f"{slug}.exit").write_text("1")
         assert _is_done(session_root, slug) is True

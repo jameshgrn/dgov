@@ -19,12 +19,12 @@ from dgov.panes import (
 )
 from dgov.persistence import (
     WorkerPane,
-    _add_pane,
-    _all_panes,
-    _get_pane,
-    _remove_pane,
-    _replace_all_panes,
-    _state_path,
+    add_pane,
+    all_panes,
+    get_pane,
+    remove_pane,
+    replace_all_panes,
+    state_path,
 )
 from dgov.strategy import _generate_slug, _structure_pi_prompt, classify_task
 from dgov.waiter import _has_new_commits, _is_done
@@ -81,34 +81,34 @@ class TestWorkerPane:
 
 class TestStatePath:
     def test_returns_correct_path(self) -> None:
-        result = _state_path("/tmp/session")
+        result = state_path("/tmp/session")
         assert result == Path("/tmp/session/.dgov/state.db")
 
 
 class TestReadState:
     def test_missing_file_returns_default(self, tmp_path: Path) -> None:
-        panes = _all_panes(str(tmp_path))
+        panes = all_panes(str(tmp_path))
         assert panes == []
 
     def test_reads_existing_file(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test"}]})
-        panes = _all_panes(str(tmp_path))
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test"}]})
+        panes = all_panes(str(tmp_path))
         assert len(panes) == 1
         assert panes[0]["slug"] == "test"
 
 
 class TestWriteState:
     def test_creates_dirs_and_writes(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}]})
         db_path = tmp_path / ".dgov" / "state.db"
         assert db_path.exists()
-        panes = _all_panes(str(tmp_path))
+        panes = all_panes(str(tmp_path))
         assert panes[0]["slug"] == "a"
 
     def test_overwrites_existing(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "old"}]})
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "new"}]})
-        panes = _all_panes(str(tmp_path))
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "old"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "new"}]})
+        panes = all_panes(str(tmp_path))
         assert len(panes) == 1
         assert panes[0]["slug"] == "new"
 
@@ -124,8 +124,8 @@ class TestAddPane:
             worktree_path="/wt",
             branch_name="br",
         )
-        _add_pane(str(tmp_path), wp)
-        panes = _all_panes(str(tmp_path))
+        add_pane(str(tmp_path), wp)
+        panes = all_panes(str(tmp_path))
         assert len(panes) == 1
         assert panes[0]["slug"] == "test"
 
@@ -148,9 +148,9 @@ class TestAddPane:
             worktree_path="/w2",
             branch_name="b",
         )
-        _add_pane(str(tmp_path), wp1)
-        _add_pane(str(tmp_path), wp2)
-        panes = _all_panes(str(tmp_path))
+        add_pane(str(tmp_path), wp1)
+        add_pane(str(tmp_path), wp2)
+        panes = all_panes(str(tmp_path))
         assert len(panes) == 2
 
     def test_upserts_duplicate_slug(self, tmp_path: Path) -> None:
@@ -173,9 +173,9 @@ class TestAddPane:
             worktree_path="/w2",
             branch_name="gov",
         )
-        _add_pane(str(tmp_path), wp1)
-        _add_pane(str(tmp_path), wp2)
-        panes = _all_panes(str(tmp_path))
+        add_pane(str(tmp_path), wp1)
+        add_pane(str(tmp_path), wp2)
+        panes = all_panes(str(tmp_path))
         assert len(panes) == 1
         assert panes[0]["pane_id"] == "%2"
         assert panes[0]["prompt"] == "New"
@@ -183,7 +183,7 @@ class TestAddPane:
 
 class TestRemovePane:
     def test_removes_by_slug(self, tmp_path: Path) -> None:
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -192,37 +192,37 @@ class TestRemovePane:
                 ]
             },
         )
-        _remove_pane(str(tmp_path), "remove")
-        panes = _all_panes(str(tmp_path))
+        remove_pane(str(tmp_path), "remove")
+        panes = all_panes(str(tmp_path))
         assert len(panes) == 1
         assert panes[0]["slug"] == "keep"
 
     def test_remove_nonexistent_noop(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "keep"}]})
-        _remove_pane(str(tmp_path), "nope")
-        assert len(_all_panes(str(tmp_path))) == 1
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "keep"}]})
+        remove_pane(str(tmp_path), "nope")
+        assert len(all_panes(str(tmp_path))) == 1
 
 
 class TestGetPane:
     def test_found(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "target", "agent": "pi"}]})
-        result = _get_pane(str(tmp_path), "target")
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "target", "agent": "pi"}]})
+        result = get_pane(str(tmp_path), "target")
         assert result is not None
         assert result["agent"] == "pi"
 
     def test_not_found(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": []})
-        assert _get_pane(str(tmp_path), "nope") is None
+        replace_all_panes(str(tmp_path), {"panes": []})
+        assert get_pane(str(tmp_path), "nope") is None
 
 
 class TestAllPanes:
     def test_returns_all(self, tmp_path: Path) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
-        result = _all_panes(str(tmp_path))
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
+        result = all_panes(str(tmp_path))
         assert len(result) == 2
 
     def test_empty(self, tmp_path: Path) -> None:
-        assert _all_panes(str(tmp_path)) == []
+        assert all_panes(str(tmp_path)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ class TestIsDone:
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug").touch()
         record = {"pane_id": "%5"}
-        with patch("dgov.panes._update_pane_state") as mock_state:
+        with patch("dgov.persistence.update_pane_state") as mock_state:
             assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
         mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done", force=False)
 
@@ -383,7 +383,7 @@ class TestIsDone:
         mock_backend.is_alive.return_value = False
         with (
             patch("dgov.waiter._has_new_commits", return_value=False),
-            patch("dgov.panes._update_pane_state") as mock_state,
+            patch("dgov.persistence.update_pane_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
             mock_state.assert_called_once_with(str(tmp_path), "slug", "abandoned")
@@ -392,7 +392,7 @@ class TestIsDone:
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug.exit").write_text("1")
-        with patch("dgov.panes._update_pane_state") as mock_state:
+        with patch("dgov.persistence.update_pane_state") as mock_state:
             assert _is_done(str(tmp_path), "test-slug") is True
             mock_state.assert_called_once_with(str(tmp_path), "test-slug", "failed", force=False)
 
@@ -411,18 +411,18 @@ class TestIsDone:
 
     def test_done_signal_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
         """Verify abandoned -> done transition works when a done signal is found."""
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "stale", "state": "abandoned"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "stale", "state": "abandoned"}]})
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "stale").touch()
 
-        record = _get_pane(str(tmp_path), "stale")
+        record = get_pane(str(tmp_path), "stale")
         assert _is_done(str(tmp_path), "stale", pane_record=record) is True
-        assert _get_pane(str(tmp_path), "stale")["state"] == "done"
+        assert get_pane(str(tmp_path), "stale")["state"] == "done"
 
     def test_new_commits_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
         """Verify abandoned -> done transition works when new commits are found."""
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -437,10 +437,10 @@ class TestIsDone:
             },
         )
 
-        record = _get_pane(str(tmp_path), "stale")
+        record = get_pane(str(tmp_path), "stale")
         with patch("dgov.waiter._has_new_commits", return_value=True):
             assert _is_done(str(tmp_path), "stale", pane_record=record) is True
-        assert _get_pane(str(tmp_path), "stale")["state"] == "done"
+        assert get_pane(str(tmp_path), "stale")["state"] == "done"
 
 
 # ---------------------------------------------------------------------------
@@ -505,7 +505,7 @@ class TestListWorkerPanes:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When state has duplicate slugs, list should return one entry preferring alive."""
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -542,7 +542,7 @@ class TestListWorkerPanes:
         assert result[0]["alive"] is True
 
     def test_enriches_with_alive_status(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -571,7 +571,7 @@ class TestListWorkerPanes:
         assert result[0]["done"] is False
 
     def test_skips_is_done_for_superseded_pane(self, tmp_path: Path) -> None:
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -617,9 +617,9 @@ class TestListWorkerPanes:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """state must never be 'active' while done is True in the same entry."""
-        from dgov.persistence import _update_pane_state
+        from dgov.persistence import update_pane_state
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -642,7 +642,7 @@ class TestListWorkerPanes:
 
         def fake_is_done(session_root, slug, pane_record=None):
             # Simulate what real _is_done does: update state, return True
-            _update_pane_state(session_root, slug, "done")
+            update_pane_state(session_root, slug, "done")
             return True
 
         with patch("dgov.status._is_done", side_effect=fake_is_done):
@@ -660,7 +660,7 @@ class TestListWorkerPanes:
 
 class TestPruneStale:
     def test_prunes_dead_pane_no_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -675,10 +675,10 @@ class TestPruneStale:
         mock_backend.is_alive.return_value = False
         pruned = prune_stale_panes(str(tmp_path))
         assert "stale" in pruned
-        assert _all_panes(str(tmp_path)) == []
+        assert all_panes(str(tmp_path)) == []
 
     def test_keeps_alive_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -693,12 +693,12 @@ class TestPruneStale:
         mock_backend.is_alive.return_value = True
         pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
-        assert len(_all_panes(str(tmp_path))) == 1
+        assert len(all_panes(str(tmp_path))) == 1
 
     def test_keeps_pane_with_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         wt_dir = tmp_path / "wt"
         wt_dir.mkdir()
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -719,7 +719,7 @@ class TestPruneStale:
         orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-task"
         orphan_dir.mkdir(parents=True)
         # Empty state — no pane entries at all
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         mock_backend.is_alive.return_value = False
         with (
             patch("dgov.lifecycle._remove_worktree") as mock_rm,
@@ -734,7 +734,7 @@ class TestPruneStale:
         """Worktree dir that IS referenced by a pane entry should not be pruned."""
         wt_dir = tmp_path / ".dgov" / "worktrees" / "active-task"
         wt_dir.mkdir(parents=True)
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -760,7 +760,7 @@ class TestPruneStale:
         """Both a stale pane entry AND an orphaned dir get pruned in one call."""
         orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-slug"
         orphan_dir.mkdir(parents=True)
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -792,12 +792,12 @@ class TestCaptureWorkerOutput:
         assert capture_worker_output(str(tmp_path), "nonexistent") is None
 
     def test_dead_pane_returns_none(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         mock_backend.is_alive.return_value = False
         assert capture_worker_output(str(tmp_path), "test") is None
 
     def test_captures_output(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         mock_backend.is_alive.return_value = True
         mock_backend.capture_output.return_value = "output here"
         result = capture_worker_output(str(tmp_path), "test")
@@ -833,22 +833,22 @@ class TestPickResolverAgent:
 
 
 # ---------------------------------------------------------------------------
-# _PROTECTED_FILES
+# PROTECTED_FILES
 # ---------------------------------------------------------------------------
 
 
 class TestProtectedFiles:
     def test_contains_expected_files(self) -> None:
-        from dgov.persistence import _PROTECTED_FILES
+        from dgov.persistence import PROTECTED_FILES
 
-        assert "CLAUDE.md" in _PROTECTED_FILES
-        assert "THEORY.md" in _PROTECTED_FILES
-        assert ".napkin.md" in _PROTECTED_FILES
+        assert "CLAUDE.md" in PROTECTED_FILES
+        assert "THEORY.md" in PROTECTED_FILES
+        assert ".napkin.md" in PROTECTED_FILES
 
     def test_is_set(self) -> None:
-        from dgov.persistence import _PROTECTED_FILES
+        from dgov.persistence import PROTECTED_FILES
 
-        assert isinstance(_PROTECTED_FILES, set)
+        assert isinstance(PROTECTED_FILES, set)
 
 
 # ---------------------------------------------------------------------------
@@ -860,13 +860,13 @@ class TestCloseWorkerPane:
     def test_not_found_returns_true_idempotent(self, tmp_path: Path) -> None:
         from dgov.panes import close_worker_pane
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         assert close_worker_pane(str(tmp_path), "nonexistent") is True
 
     def test_found_calls_cleanup(self, tmp_path: Path) -> None:
         from dgov.panes import close_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -882,7 +882,7 @@ class TestCloseWorkerPane:
     def test_force_removes_dirty_worktree(self, tmp_path: Path) -> None:
         from dgov.panes import close_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -902,7 +902,7 @@ class TestCloseWorkerPane:
 
         wt = tmp_path / "wt"
         wt.mkdir()
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -952,7 +952,7 @@ class TestCloseWorkerPane:
 
         wt = tmp_path / "wt"
         wt.mkdir()
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -982,7 +982,7 @@ class TestCloseWorkerPane:
             close_worker_pane(str(tmp_path), "dirty-task", force=False)
 
         # Record should still be in state
-        assert _get_pane(str(tmp_path), "dirty-task") is not None
+        assert get_pane(str(tmp_path), "dirty-task") is not None
 
     def test_close_dirty_pane_with_force_removes_record(
         self, tmp_path: Path, mock_backend: MagicMock
@@ -992,7 +992,7 @@ class TestCloseWorkerPane:
 
         wt = tmp_path / "wt"
         wt.mkdir()
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -1019,7 +1019,7 @@ class TestCloseWorkerPane:
             close_worker_pane(str(tmp_path), "dirty-task", force=True)
 
         # Record should be removed
-        assert _get_pane(str(tmp_path), "dirty-task") is None
+        assert get_pane(str(tmp_path), "dirty-task") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1107,7 +1107,7 @@ class TestFullCleanup:
     def test_removes_state_and_cleanup(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import _full_cleanup
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         # Create done signal
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
@@ -1120,12 +1120,12 @@ class TestFullCleanup:
 
         assert result["cleaned"] is True
         assert not (done_dir / "test").exists()
-        assert _get_pane(str(tmp_path), "test") is None
+        assert get_pane(str(tmp_path), "test") is None
 
     def test_skips_worktree_if_dirty(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import _full_cleanup
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         wt = tmp_path / "wt"
         wt.mkdir()
 
@@ -1168,7 +1168,7 @@ class TestFullCleanup:
         """Verify git checkout . is called before worktree remove --force."""
         from dgov.panes import _full_cleanup
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         wt = tmp_path / "wt"
         wt.mkdir()
 
@@ -1221,14 +1221,14 @@ class TestEscalateWorkerPane:
     def test_not_found_returns_error(self, tmp_path: Path) -> None:
         from dgov.panes import escalate_worker_pane
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         result = escalate_worker_pane(str(tmp_path), "nope")
         assert "error" in result
 
     def test_no_prompt_returns_error(self, tmp_path: Path) -> None:
         from dgov.panes import escalate_worker_pane
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "prompt": ""}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "prompt": ""}]})
         result = escalate_worker_pane(str(tmp_path), "test")
         assert "error" in result
 
@@ -1236,7 +1236,7 @@ class TestEscalateWorkerPane:
         from dgov.panes import escalate_worker_pane
         from dgov.persistence import WorkerPane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -1272,14 +1272,14 @@ class TestReviewWorkerPane:
     def test_not_found_returns_error(self, tmp_path: Path) -> None:
         from dgov.panes import review_worker_pane
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         result = review_worker_pane(str(tmp_path), "nope")
         assert "error" in result
 
     def test_no_worktree_returns_error(self, tmp_path: Path) -> None:
         from dgov.panes import review_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -1300,7 +1300,7 @@ class TestReviewWorkerPane:
 
         wt = tmp_path / "wt"
         wt.mkdir()
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -1400,9 +1400,9 @@ class TestQwen4bRequest:
 
 class TestPaneConstants:
     def test_state_dir(self) -> None:
-        from dgov.persistence import _STATE_DIR
+        from dgov.persistence import STATE_DIR
 
-        assert _STATE_DIR == ".dgov"
+        assert STATE_DIR == ".dgov"
 
     def test_qwen_4b_url(self) -> None:
         from dgov.openrouter import _QWEN_4B_URL
@@ -1442,7 +1442,7 @@ class TestMergeWorkerPane:
             branch_name="feat",
             base_sha="abc",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         result = merge_worker_pane(str(tmp_path), "mergeable")
         assert result["merged"] == "mergeable"
         assert result["branch"] == "feat"
@@ -1472,9 +1472,9 @@ class TestMergeWorkerPane:
             branch_name="feat",
             base_sha="abc",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
 
-        with patch("dgov.panes._update_pane_state") as mock_state:
+        with patch("dgov.persistence.update_pane_state") as mock_state:
             mock_state.side_effect = IllegalTransitionError("abandoned", "merged", "mergeable")
             result = merge_worker_pane(str(tmp_path), "mergeable")
 
@@ -1502,10 +1502,10 @@ class TestPruneStalePane:
             worktree_path=str(tmp_path / "nonexistent-wt"),
             branch_name="b",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pruned = prune_stale_panes(str(tmp_path))
         assert "stale" in pruned
-        assert _get_pane(str(tmp_path), "stale") is None
+        assert get_pane(str(tmp_path), "stale") is None
 
     def test_keeps_alive_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import prune_stale_panes
@@ -1520,10 +1520,10 @@ class TestPruneStalePane:
             worktree_path=str(tmp_path / "nonexistent"),
             branch_name="b",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
-        assert _get_pane(str(tmp_path), "alive") is not None
+        assert get_pane(str(tmp_path), "alive") is not None
 
     def test_keeps_pane_with_worktree(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import prune_stale_panes
@@ -1540,7 +1540,7 @@ class TestPruneStalePane:
             worktree_path=str(wt),
             branch_name="b",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
 
@@ -1656,47 +1656,47 @@ class TestValidateState:
 
 
 # ---------------------------------------------------------------------------
-# _update_pane_state
+# update_pane_state
 # ---------------------------------------------------------------------------
 
 
 class TestUpdatePaneState:
     def test_updates_state_in_json(self, tmp_path: Path) -> None:
-        from dgov.persistence import _update_pane_state
+        from dgov.persistence import update_pane_state
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {"panes": [{"slug": "test", "state": "active"}]},
         )
-        _update_pane_state(str(tmp_path), "test", "done")
-        panes = _all_panes(str(tmp_path))
+        update_pane_state(str(tmp_path), "test", "done")
+        panes = all_panes(str(tmp_path))
         assert panes[0]["state"] == "done"
 
     def test_rejects_invalid_state(self, tmp_path: Path) -> None:
-        from dgov.persistence import _update_pane_state
+        from dgov.persistence import update_pane_state
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "state": "active"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "state": "active"}]})
         with pytest.raises(ValueError, match="Unknown pane state"):
-            _update_pane_state(str(tmp_path), "test", "invalid")
+            update_pane_state(str(tmp_path), "test", "invalid")
 
     def test_noop_for_missing_slug(self, tmp_path: Path) -> None:
-        from dgov.persistence import _update_pane_state
+        from dgov.persistence import update_pane_state
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "other", "state": "active"}]})
-        _update_pane_state(str(tmp_path), "missing", "done")
-        panes = _all_panes(str(tmp_path))
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "other", "state": "active"}]})
+        update_pane_state(str(tmp_path), "missing", "done")
+        panes = all_panes(str(tmp_path))
         assert panes[0]["state"] == "active"
 
     def test_updates_pane_title_on_state_change(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        from dgov.persistence import _update_pane_state
+        from dgov.persistence import update_pane_state
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
         )
-        _update_pane_state(str(tmp_path), "fix", "done")
+        update_pane_state(str(tmp_path), "fix", "done")
         mock_backend.set_title.assert_called_once_with("%5", "[pi] fix \u2713")
 
 
@@ -1746,15 +1746,15 @@ class TestWorkerPaneStateValidation:
 
 
 # ---------------------------------------------------------------------------
-# _emit_event
+# emit_event
 # ---------------------------------------------------------------------------
 
 
 class TestEmitEvent:
     def test_creates_events_record(self, tmp_path: Path) -> None:
-        from dgov.persistence import _emit_event, read_events
+        from dgov.persistence import emit_event, read_events
 
-        _emit_event(str(tmp_path), "pane_created", "my-slug", agent="pi")
+        emit_event(str(tmp_path), "pane_created", "my-slug", agent="pi")
         events = read_events(str(tmp_path))
         assert len(events) == 1
         assert events[0]["event"] == "pane_created"
@@ -1763,20 +1763,20 @@ class TestEmitEvent:
         assert "ts" in events[0]
 
     def test_appends_multiple_events(self, tmp_path: Path) -> None:
-        from dgov.persistence import _emit_event, read_events
+        from dgov.persistence import emit_event, read_events
 
-        _emit_event(str(tmp_path), "pane_created", "slug-1")
-        _emit_event(str(tmp_path), "pane_done", "slug-1")
+        emit_event(str(tmp_path), "pane_created", "slug-1")
+        emit_event(str(tmp_path), "pane_done", "slug-1")
         events = read_events(str(tmp_path))
         assert len(events) == 2
         assert events[0]["event"] == "pane_created"
         assert events[1]["event"] == "pane_done"
 
     def test_rejects_unknown_event(self, tmp_path: Path) -> None:
-        from dgov.persistence import _emit_event
+        from dgov.persistence import emit_event
 
         with pytest.raises(ValueError, match="Unknown event"):
-            _emit_event(str(tmp_path), "bogus_event", "slug")
+            emit_event(str(tmp_path), "bogus_event", "slug")
 
     def test_create_worker_pane_emits_event(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.panes import create_worker_pane
@@ -1954,14 +1954,14 @@ class TestRetryWorkerPane:
     def test_not_found_returns_error(self, tmp_path: Path) -> None:
         from dgov.panes import retry_worker_pane
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         result = retry_worker_pane(str(tmp_path), "nope", session_root=str(tmp_path))
         assert "error" in result
 
     def test_retry_creates_new_pane_and_links(self, tmp_path: Path) -> None:
         from dgov.panes import retry_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -1986,7 +1986,7 @@ class TestRetryWorkerPane:
         )
 
         def fake_create(**kwargs):
-            _add_pane(str(tmp_path), new_pane)
+            add_pane(str(tmp_path), new_pane)
             return new_pane
 
         with patch("dgov.recovery.create_worker_pane", side_effect=fake_create):
@@ -1998,7 +1998,7 @@ class TestRetryWorkerPane:
         assert result["original_slug"] == "fix-bug"
 
         # Check that old pane is superseded
-        panes = _all_panes(str(tmp_path))
+        panes = all_panes(str(tmp_path))
         old = next(p for p in panes if p["slug"] == "fix-bug")
         assert old["state"] == "superseded"
         assert old["superseded_by"] == "fix-bug-2"
@@ -2010,7 +2010,7 @@ class TestRetryWorkerPane:
     def test_attempt_increments_past_existing(self, tmp_path: Path) -> None:
         from dgov.panes import retry_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2044,7 +2044,7 @@ class TestRetryWorkerPane:
     def test_create_failure_returns_error(self, tmp_path: Path) -> None:
         from dgov.panes import retry_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {"panes": [{"slug": "fail", "prompt": "x", "agent": "pi", "state": "timed_out"}]},
         )
@@ -2056,7 +2056,7 @@ class TestRetryWorkerPane:
     def test_agent_override(self, tmp_path: Path) -> None:
         from dgov.panes import retry_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {"panes": [{"slug": "orig", "prompt": "task", "agent": "pi", "state": "timed_out"}]},
         )
@@ -2086,7 +2086,7 @@ class TestCreateCheckpoint:
     def test_creates_checkpoint_file(self, tmp_path: Path) -> None:
         from dgov.batch import create_checkpoint
 
-        _replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
+        replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
         with patch("dgov.batch.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="deadbeef\n")
             result = create_checkpoint(str(tmp_path), "wave1", session_root=str(tmp_path))
@@ -2104,7 +2104,7 @@ class TestCreateCheckpoint:
     def test_checkpoint_with_no_panes(self, tmp_path: Path) -> None:
         from dgov.batch import create_checkpoint
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         with patch("dgov.batch.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n")
             result = create_checkpoint(str(tmp_path), "empty", session_root=str(tmp_path))
@@ -2117,7 +2117,7 @@ class TestCreateCheckpoint:
         from dgov.batch import create_checkpoint
         from dgov.persistence import read_events
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         with patch("dgov.batch.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="abc\n")
             create_checkpoint(str(tmp_path), "ev-test", session_root=str(tmp_path))
@@ -2299,7 +2299,7 @@ class TestWaitWorkerPane:
         from dgov.waiter import wait_worker_pane
 
         with (
-            patch("dgov.panes._get_pane", return_value={"slug": "s1", "agent": "claude"}),
+            patch("dgov.persistence.get_pane", return_value={"slug": "s1", "agent": "claude"}),
             patch("dgov.panes._is_done", return_value=True),
         ):
             result = wait_worker_pane(str(tmp_path), "s1", timeout=5, poll=0)
@@ -2307,7 +2307,7 @@ class TestWaitWorkerPane:
 
     def test_stable_output_detection(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         """Stabilization is now handled inside _is_done via stable_seconds."""
-        from dgov.persistence import _add_pane
+        from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
         pane = WorkerPane(
@@ -2319,7 +2319,7 @@ class TestWaitWorkerPane:
             worktree_path=str(tmp_path / "wt"),
             branch_name="s1",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
@@ -2341,11 +2341,11 @@ class TestWaitWorkerPane:
         from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
         with (
-            patch("dgov.panes._get_pane", return_value={"slug": "s1", "agent": "pi"}),
+            patch("dgov.persistence.get_pane", return_value={"slug": "s1", "agent": "pi"}),
             patch("dgov.panes._is_done", return_value=False),
             patch("dgov.panes.capture_worker_output", return_value=None),
-            patch("dgov.panes._update_pane_state"),
-            patch("dgov.panes._emit_event"),
+            patch("dgov.persistence.update_pane_state"),
+            patch("dgov.persistence.emit_event"),
             patch("dgov.waiter.time.sleep"),
             patch("dgov.waiter.time.monotonic") as mock_mono,
         ):
@@ -2367,7 +2367,7 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When output is stable but agent process is still running, don't trigger done."""
-        from dgov.persistence import _add_pane
+        from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
         pane = WorkerPane(
@@ -2379,7 +2379,7 @@ class TestStableDetectionAgentCheck:
             worktree_path=str(tmp_path / "wt"),
             branch_name="s1",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
@@ -2402,7 +2402,7 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When output is stable and agent process has exited (shell prompt), trigger done."""
-        from dgov.persistence import _add_pane
+        from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
         pane = WorkerPane(
@@ -2414,7 +2414,7 @@ class TestStableDetectionAgentCheck:
             worktree_path=str(tmp_path / "wt"),
             branch_name="s1",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
@@ -2436,7 +2436,7 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """Without stable_seconds, _is_done does not perform output stabilization."""
-        from dgov.persistence import _add_pane
+        from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
         pane = WorkerPane(
@@ -2448,7 +2448,7 @@ class TestStableDetectionAgentCheck:
             worktree_path=str(tmp_path / "wt"),
             branch_name="s1",
         )
-        _add_pane(str(tmp_path), pane)
+        add_pane(str(tmp_path), pane)
         pane_record = {"pane_id": "%5", "project_root": "", "branch_name": "", "base_sha": ""}
 
         mock_backend.is_alive.return_value = True
@@ -2478,7 +2478,7 @@ class TestWaitAllWorkerPanes:
                     {"slug": "s2", "done": False},
                 ],
             ),
-            patch("dgov.panes._get_pane", return_value={"slug": "s1"}),
+            patch("dgov.persistence.get_pane", return_value={"slug": "s1"}),
             patch("dgov.panes._is_done", return_value=True),
         ):
             results = list(wait_all_worker_panes(str(tmp_path), timeout=5, poll=0))
@@ -2499,7 +2499,7 @@ class TestWaitAllWorkerPanes:
                     {"slug": "s2", "done": False},
                 ],
             ),
-            patch("dgov.panes._get_pane", side_effect=fake_get_pane),
+            patch("dgov.persistence.get_pane", side_effect=fake_get_pane),
             patch("dgov.panes._is_done", return_value=False),
             patch("dgov.panes.capture_worker_output", return_value=None),
             patch("dgov.waiter.time.sleep"),
@@ -2648,7 +2648,7 @@ class TestResumeWorkerPane:
         wt_dir = tmp_path / ".dgov" / "worktrees" / "fix-it"
         wt_dir.mkdir(parents=True)
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2692,7 +2692,7 @@ class TestResumeWorkerPane:
         assert result["pane_id"] == "%10"
 
         # State should be updated
-        panes = _all_panes(str(tmp_path))
+        panes = all_panes(str(tmp_path))
         pane = next(p for p in panes if p["slug"] == "fix-it")
         assert pane["pane_id"] == "%10"
         assert pane["state"] == "active"
@@ -2706,7 +2706,7 @@ class TestResumeWorkerPane:
         wt_dir = tmp_path / ".dgov" / "worktrees" / "fix-delay"
         wt_dir.mkdir(parents=True)
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2763,7 +2763,7 @@ class TestResumeWorkerPane:
         wt_dir = tmp_path / ".dgov" / "worktrees" / "task-x"
         wt_dir.mkdir(parents=True)
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2804,7 +2804,7 @@ class TestResumeWorkerPane:
             )
 
         assert result["agent"] == "claude"
-        panes = _all_panes(str(tmp_path))
+        panes = all_panes(str(tmp_path))
         pane = next(p for p in panes if p["slug"] == "task-x")
         assert pane["agent"] == "claude"
 
@@ -2815,7 +2815,7 @@ class TestResumeWorkerPane:
         wt_dir = tmp_path / ".dgov" / "worktrees" / "task-y"
         wt_dir.mkdir(parents=True)
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2870,7 +2870,7 @@ class TestResumeWorkerPane:
     def test_resume_nonexistent_slug(self, tmp_path: Path) -> None:
         from dgov.panes import resume_worker_pane
 
-        _replace_all_panes(str(tmp_path), {"panes": []})
+        replace_all_panes(str(tmp_path), {"panes": []})
         result = resume_worker_pane(str(tmp_path), "no-such-pane", session_root=str(tmp_path))
         assert "error" in result
         assert "not found" in result["error"].lower()
@@ -2878,7 +2878,7 @@ class TestResumeWorkerPane:
     def test_resume_missing_worktree(self, tmp_path: Path) -> None:
         from dgov.panes import resume_worker_pane
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2904,7 +2904,7 @@ class TestResumeWorkerPane:
         wt_dir = tmp_path / ".dgov" / "worktrees" / "dead-branch"
         wt_dir.mkdir(parents=True)
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -2935,7 +2935,7 @@ class TestResumeWorkerPane:
         wt_dir = tmp_path / ".dgov" / "worktrees" / "stale-pane"
         wt_dir.mkdir(parents=True)
 
-        _replace_all_panes(
+        replace_all_panes(
             str(tmp_path),
             {
                 "panes": [
@@ -3234,7 +3234,7 @@ class TestRunBatchLiveWait:
 
         with (
             patch("dgov.panes.create_worker_pane", side_effect=fake_create),
-            patch("dgov.panes._get_pane", side_effect=fake_get_pane),
+            patch("dgov.persistence.get_pane", side_effect=fake_get_pane),
             patch("dgov.panes._is_done", side_effect=fake_is_done),
             patch(
                 "dgov.merger.merge_worker_pane",
@@ -3275,7 +3275,7 @@ class TestRunBatchLiveWait:
 
         with (
             patch("dgov.panes.create_worker_pane", side_effect=fake_create),
-            patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "done"}),
+            patch("dgov.persistence.get_pane", return_value={"slug": "t1", "state": "done"}),
             patch("dgov.panes._is_done", return_value=True),
             patch("dgov.merger.merge_worker_pane", return_value={"error": "conflict"}),
             patch("dgov.waiter.time.sleep"),
@@ -3314,7 +3314,7 @@ class TestRunBatchLiveWait:
 
         with (
             patch("dgov.panes.create_worker_pane", side_effect=fake_create),
-            patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "active"}),
+            patch("dgov.persistence.get_pane", return_value={"slug": "t1", "state": "active"}),
             patch("dgov.panes._is_done", side_effect=fake_is_done),
             patch("dgov.waiter.time.sleep"),
             patch("dgov.waiter.time.monotonic") as mock_mono,

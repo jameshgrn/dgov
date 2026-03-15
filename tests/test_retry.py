@@ -10,11 +10,11 @@ from click.testing import CliRunner
 
 from dgov.cli import cli
 from dgov.persistence import (
-    _STATE_DIR,
+    STATE_DIR,
     WorkerPane,
-    _add_pane,
-    _emit_event,
-    _set_pane_metadata,
+    add_pane,
+    emit_event,
+    set_pane_metadata,
 )
 from dgov.retry import (
     RetryPolicy,
@@ -55,7 +55,7 @@ def _setup_pane(
         branch_name=slug,
         state=state,
     )
-    _add_pane(session_root, pane)
+    add_pane(session_root, pane)
     return session_root
 
 
@@ -89,7 +89,7 @@ class TestRetryContext:
         slug = "test-worker"
 
         # Create a fake log file
-        log_dir = tmp_path / _STATE_DIR / "logs"
+        log_dir = tmp_path / STATE_DIR / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / f"{slug}.log"
         lines = [f"line {i}" for i in range(30)]
@@ -107,7 +107,7 @@ class TestRetryContext:
         session_root = _setup_pane(tmp_path)
         slug = "test-worker"
 
-        done_dir = tmp_path / _STATE_DIR / "done"
+        done_dir = tmp_path / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         (done_dir / f"{slug}.exit").write_text("1")
 
@@ -118,8 +118,8 @@ class TestRetryContext:
         session_root = _setup_pane(tmp_path)
         slug = "test-worker"
 
-        _emit_event(session_root, "pane_created", slug, agent="claude")
-        _emit_event(session_root, "pane_done", slug)
+        emit_event(session_root, "pane_created", slug, agent="claude")
+        emit_event(session_root, "pane_done", slug)
 
         ctx = retry_context(slug, session_root)
         assert "Recent events:" in ctx
@@ -144,10 +144,10 @@ class TestCountRetries:
         session_root = _setup_pane(tmp_path)
         slug = "test-worker"
 
-        _emit_event(session_root, "pane_auto_retried", slug, attempt=1)
-        _emit_event(session_root, "pane_auto_retried", slug, attempt=2)
+        emit_event(session_root, "pane_auto_retried", slug, attempt=1)
+        emit_event(session_root, "pane_auto_retried", slug, attempt=2)
         # Different slug — should not count
-        _emit_event(session_root, "pane_auto_retried", "other-worker", attempt=1)
+        emit_event(session_root, "pane_auto_retried", "other-worker", attempt=1)
 
         assert _count_retries(session_root, slug) == 2
 
@@ -186,7 +186,7 @@ class TestGetRetryPolicy:
         session_root = _setup_pane(tmp_path, agent="test-agent")
 
         # Set per-pane override via SQLite metadata
-        _set_pane_metadata(session_root, "test-worker", max_retries=5)
+        set_pane_metadata(session_root, "test-worker", max_retries=5)
 
         agent_def = MagicMock()
         agent_def.max_retries = 2
@@ -252,7 +252,7 @@ class TestMaybeAutoRetry:
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
         # Pre-fill retry events to exhaust retries
-        _emit_event(session_root, "pane_auto_retried", "test-worker", attempt=1)
+        emit_event(session_root, "pane_auto_retried", "test-worker", attempt=1)
 
         agent_def = MagicMock()
         agent_def.max_retries = 1
@@ -275,7 +275,7 @@ class TestMaybeAutoRetry:
     ) -> None:
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
-        _emit_event(session_root, "pane_auto_retried", "test-worker", attempt=1)
+        emit_event(session_root, "pane_auto_retried", "test-worker", attempt=1)
 
         agent_def = MagicMock()
         agent_def.max_retries = 1
@@ -294,8 +294,8 @@ class TestMaybeAutoRetry:
 class TestWaitWithAutoRetry:
     @patch("dgov.retry.maybe_auto_retry")
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
-    @patch("dgov.panes._update_pane_state")
+    @patch("dgov.persistence.get_pane")
+    @patch("dgov.persistence.update_pane_state")
     def test_auto_retry_on_failure(
         self,
         mock_update,
@@ -340,8 +340,8 @@ class TestWaitWithAutoRetry:
         mock_maybe_retry.assert_called_once()
 
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
-    @patch("dgov.panes._update_pane_state")
+    @patch("dgov.persistence.get_pane")
+    @patch("dgov.persistence.update_pane_state")
     def test_no_auto_retry_flag(
         self, mock_update, mock_get_pane, mock_is_done, tmp_path: Path
     ) -> None:

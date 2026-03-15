@@ -12,7 +12,7 @@ from click.testing import CliRunner
 
 from dgov.backend import set_backend
 from dgov.cli import cli
-from dgov.persistence import _STATE_DIR, VALID_EVENTS, WorkerPane, _add_pane, read_events
+from dgov.persistence import STATE_DIR, VALID_EVENTS, WorkerPane, add_pane, read_events
 from dgov.responder import (
     BUILT_IN_RULES,
     COOLDOWN_SECONDS,
@@ -73,7 +73,7 @@ def _setup_pane(tmp_path: Path, slug: str = "test-worker") -> str:
         worktree_path=str(tmp_path / "wt" / slug),
         branch_name=slug,
     )
-    _add_pane(session_root, pane)
+    add_pane(session_root, pane)
     return session_root
 
 
@@ -320,7 +320,7 @@ class TestAutoRespond:
         result = auto_respond(session_root, "test-worker", "all done", rules)
         assert result is not None
         assert result.action == "signal_done"
-        done_path = Path(session_root) / _STATE_DIR / "done" / "test-worker"
+        done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
         assert done_path.exists()
 
     def test_signal_failed_touches_exit_file(self, tmp_path: Path) -> None:
@@ -329,7 +329,7 @@ class TestAutoRespond:
         result = auto_respond(session_root, "test-worker", "fatal error occurred", rules)
         assert result is not None
         assert result.action == "signal_failed"
-        exit_path = Path(session_root) / _STATE_DIR / "done" / "test-worker.exit"
+        exit_path = Path(session_root) / STATE_DIR / "done" / "test-worker.exit"
         assert exit_path.exists()
         assert exit_path.read_text() == "auto_respond"
 

@@ -223,9 +223,9 @@ class TestPipelineReviewOnly:
     @patch("dgov.panes.close_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
+    @patch("dgov.persistence.get_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.review_fix._emit_event")
+    @patch("dgov.review_fix.emit_event")
     def test_review_only_returns_findings(
         self,
         mock_emit,
@@ -270,9 +270,9 @@ class TestPipelineReviewOnly:
     @patch("dgov.panes.close_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
+    @patch("dgov.persistence.get_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.review_fix._emit_event")
+    @patch("dgov.review_fix.emit_event")
     def test_review_only_no_findings(
         self,
         mock_emit,
@@ -314,9 +314,9 @@ class TestPipelineFull:
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
+    @patch("dgov.persistence.get_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.review_fix._emit_event")
+    @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_merges(
         self,
         mock_emit,
@@ -375,9 +375,9 @@ class TestPipelineFull:
     @patch("dgov.panes.close_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
+    @patch("dgov.persistence.get_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.review_fix._emit_event")
+    @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_no_findings_skips_fix(
         self,
         mock_emit,
@@ -413,9 +413,9 @@ class TestPipelineFull:
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.panes.capture_worker_output")
     @patch("dgov.panes._is_done")
-    @patch("dgov.panes._get_pane")
+    @patch("dgov.persistence.get_pane")
     @patch("dgov.panes.create_worker_pane")
-    @patch("dgov.review_fix._emit_event")
+    @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_merge_failure(
         self,
         mock_emit,
