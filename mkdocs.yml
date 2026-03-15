@@ -45,6 +45,7 @@ nav:
   - Usage:
     - Pane lifecycle: pane-lifecycle.md
     - Agent registry: agent-registry.md
+    - Adding custom agents: agent-authoring.md
     - Prompt templates: prompt-templates.md
     - Batch execution: batch-execution.md
     - Experiment tracking: experiment-tracking.md
