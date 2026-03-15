@@ -363,7 +363,7 @@ class TestPaneCommands:
         ) as mock_merge:
             open_result = runner.invoke(
                 cli,
-                ["pane", "merge", "task", "--no-close", "--resolve", "manual"],
+                ["pane", "merge", "task", "--resolve", "manual"],
             )
 
         assert close_result.exit_code == 0
@@ -483,7 +483,6 @@ class TestPaneCommands:
             "failed_count": 1,
             "total_files_changed": 2,
             "merged": ["a"],
-            "closed": ["a"],
             "failed": ["b"],
             "warnings": ["b: conflict"],
         }

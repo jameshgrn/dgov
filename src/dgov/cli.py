@@ -447,9 +447,6 @@ def pane_close(slug, project_root, session_root, force):
 )
 @SESSION_ROOT_OPTION
 @click.option(
-    "--close/--no-close", default=True, help="Close worker pane after merge (default: on)"
-)
-@click.option(
     "--resolve",
     type=click.Choice(["agent", "manual"]),
     default="agent",
@@ -460,11 +457,10 @@ def pane_close(slug, project_root, session_root, force):
     default=True,
     help="Squash worker commits into one (default: squash)",
 )
-def pane_merge(slug, project_root, session_root, close, resolve, squash):
+def pane_merge(slug, project_root, session_root, resolve, squash):
     """Merge a branch into main with configurable conflict resolution.
 
-    Merge the worktree branch for the given pane. If --close is set,
-    also close the worker pane after successful merge.
+    Merge the worktree branch for the given pane.
     """
     from dgov.merger import merge_worker_pane
 
@@ -604,7 +600,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
     default=True,
     help="Squash worker commits into one (default: squash)",
 )
-def pane_merge_all(project_root, session_root, close, resolve, squash):
+def pane_merge_all(project_root, session_root, resolve, squash):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
     from dgov.merger import merge_worker_pane
     from dgov.panes import list_worker_panes
@@ -618,7 +614,6 @@ def pane_merge_all(project_root, session_root, close, resolve, squash):
     merge_fn = merge_worker_pane
 
     merged_slugs = []
-    closed_slugs = []
     failed_slugs = []
     total_files = 0
     warnings = []
@@ -630,8 +625,6 @@ def pane_merge_all(project_root, session_root, close, resolve, squash):
         )
         if "merged" in result:
             merged_slugs.append(slug)
-            if close:
-                closed_slugs.append(slug)
             total_files += result.get("files_changed", 0)
             if result.get("warning"):
                 warnings.append(f"{slug}: {result['warning']}")
@@ -646,8 +639,6 @@ def pane_merge_all(project_root, session_root, close, resolve, squash):
         "total_files_changed": total_files,
         "merged": merged_slugs,
     }
-    if closed_slugs:
-        summary["closed"] = closed_slugs
     if failed_slugs:
         summary["failed"] = failed_slugs
     if warnings:
