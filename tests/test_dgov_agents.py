@@ -157,7 +157,7 @@ class TestLoadRegistry:
         assert registry["pi"].source == "project"
         # Unsafe fields stripped — command and default_flags unchanged from builtin
         assert registry["pi"].prompt_command == "pi"
-        assert registry["pi"].default_flags == ""
+        assert registry["pi"].default_flags == "-p"
 
     def test_project_config_overrides_builtin(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".dgov"

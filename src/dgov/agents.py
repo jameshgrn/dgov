@@ -165,6 +165,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="pi",
         prompt_command="pi",
         prompt_transport="positional",
+        default_flags="-p",  # non-interactive: process prompt and exit
         permission_flags={
             "plan": "--tools read,grep,find,ls",
         },
