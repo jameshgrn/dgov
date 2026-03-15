@@ -16,13 +16,36 @@ from dgov.cli import SESSION_ROOT_OPTION
 @click.option("--auto-merge", is_flag=True, default=False, help="Merge on review pass")
 @click.option("--slug", "-s", default=None, help="Custom slug")
 @click.option("--timeout", "-t", default=600, type=int, help="Timeout per phase (seconds)")
+@click.option(
+    "--permission-mode", "-m", default="bypassPermissions", help="Permission mode for worker"
+)
+@click.option("--max-retries", default=1, type=int, help="Max retry attempts on timeout")
+@click.option("--escalate-to", default=None, help="Agent to escalate to on timeout")
 @click.option("--project-root", "-r", default=".", help="Project root")
 @SESSION_ROOT_OPTION
-def mission_cmd(prompt, agent, auto_merge, slug, timeout, project_root, session_root):
+def mission_cmd(
+    prompt,
+    agent,
+    auto_merge,
+    slug,
+    timeout,
+    permission_mode,
+    max_retries,
+    escalate_to,
+    project_root,
+    session_root,
+):
     """Run a single mission: dispatch, wait, review, merge."""
     from dgov.mission import MissionPolicy, run_mission
 
-    policy = MissionPolicy(agent=agent, auto_merge=auto_merge, timeout=timeout)
+    policy = MissionPolicy(
+        agent=agent,
+        auto_merge=auto_merge,
+        timeout=timeout,
+        permission_mode=permission_mode,
+        max_retries=max_retries,
+        escalate_to=escalate_to,
+    )
     result = run_mission(project_root, prompt, policy, session_root, slug)
     click.echo(json.dumps(asdict(result), default=str))
 
