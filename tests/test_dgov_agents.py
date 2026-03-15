@@ -83,7 +83,7 @@ class TestAgentRegistry:
 
     def test_gemini_transport(self) -> None:
         assert AGENT_REGISTRY["gemini"].prompt_transport == "option"
-        assert AGENT_REGISTRY["gemini"].prompt_option == "--prompt-interactive"
+        assert AGENT_REGISTRY["gemini"].prompt_option == "--prompt"
 
     def test_builtin_colors(self) -> None:
         assert AGENT_REGISTRY["claude"].color == 39
@@ -314,7 +314,7 @@ class TestBuildLaunchCommand:
 
     def test_option_transport(self, tmp_path: Path) -> None:
         cmd = build_launch_command("gemini", "Do stuff", project_root=str(tmp_path), slug="gem")
-        assert "--prompt-interactive" in cmd
+        assert "--prompt" in cmd
         assert "DGOV_PROMPT_CONTENT" in cmd
 
     def test_with_custom_registry(self, tmp_path: Path) -> None:
@@ -405,7 +405,7 @@ class TestBuildLaunchCommandOption:
     def test_build_launch_command_option(self, tmp_path: Path) -> None:
         agent = AGENT_REGISTRY["gemini"]
         assert agent.prompt_transport == "option"
-        assert agent.prompt_option == "--prompt-interactive"
+        assert agent.prompt_option == "--prompt"
 
         cmd = build_launch_command(
             agent_id="gemini",
@@ -416,7 +416,7 @@ class TestBuildLaunchCommandOption:
         )
 
         assert "gemini" in cmd
-        assert "--prompt-interactive" in cmd
+        assert "--prompt" in cmd
         assert "$DGOV_PROMPT_CONTENT" in cmd
 
 
