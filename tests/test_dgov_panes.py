@@ -1932,6 +1932,13 @@ class TestValidEvents:
             "review_fix_finding",
             "review_fix_completed",
             "pane_auto_responded",
+            "mission_pending",
+            "mission_running",
+            "mission_waiting",
+            "mission_reviewing",
+            "mission_merging",
+            "mission_completed",
+            "mission_failed",
         }
         assert expected == VALID_EVENTS
 

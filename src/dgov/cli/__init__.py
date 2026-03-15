@@ -206,6 +206,7 @@ from dgov.cli.admin import (  # noqa: E402
 )
 from dgov.cli.batch_cmd import batch, checkpoint  # noqa: E402
 from dgov.cli.experiment import experiment  # noqa: E402
+from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
 from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
@@ -228,6 +229,7 @@ cli.add_command(review_fix)
 cli.add_command(openrouter)
 cli.add_command(init_cmd)
 cli.add_command(doctor_cmd)
+cli.add_command(mission_cmd)
 
 
 if __name__ == "__main__":

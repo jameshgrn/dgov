@@ -46,6 +46,13 @@ VALID_EVENTS = frozenset(
         "review_fix_started",
         "review_fix_finding",
         "review_fix_completed",
+        "mission_pending",
+        "mission_running",
+        "mission_waiting",
+        "mission_reviewing",
+        "mission_merging",
+        "mission_completed",
+        "mission_failed",
     }
 )
 
