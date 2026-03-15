@@ -26,6 +26,15 @@ class WorkerBackend(Protocol):
         """Create a new worker pane/container. Return a worker_id."""
         ...
 
+    def create_worker_pane(
+        self,
+        *,
+        cwd: str,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        """Create a background worker pane/container. Return a worker_id."""
+        ...
+
     def destroy(self, worker_id: str) -> None:
         """Kill/remove the worker."""
         ...
