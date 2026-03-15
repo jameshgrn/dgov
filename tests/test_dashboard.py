@@ -237,12 +237,12 @@ class TestFetchDetail:
         fetch_detail(state, "nonexistent")
         assert "not found" in state.detail_text.lower()
 
-    @patch("dgov.status.capture_worker_output", return_value="some output")
+    @patch("dgov.status.tail_worker_log", return_value="some output")
     @patch(
         "dgov.inspection.review_worker_pane",
         return_value={"stat": "1 file", "commit_count": 1},
     )
-    def test_success(self, mock_review, mock_capture) -> None:
+    def test_success(self, mock_review, mock_tail) -> None:
         state = DashboardState(project_root="/tmp/test")
         state.panes = [
             {
@@ -265,9 +265,9 @@ class TestFetchDetail:
         assert "1 file" in state.detail_text
         assert "some output" in state.detail_text
 
-    @patch("dgov.status.capture_worker_output", return_value=None)
+    @patch("dgov.status.tail_worker_log", return_value=None)
     @patch("dgov.inspection.review_worker_pane", side_effect=Exception("git error"))
-    def test_graceful_on_errors(self, mock_review, mock_capture) -> None:
+    def test_graceful_on_errors(self, mock_review, mock_tail) -> None:
         state = DashboardState(project_root="/tmp/test")
         state.panes = [
             {

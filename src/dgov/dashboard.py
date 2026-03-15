@@ -146,16 +146,16 @@ def _get_branch(project_root: str) -> str:
 
 def fetch_panes(state: DashboardState) -> None:
     """Fetch pane data from dgov and update shared state."""
-    from dgov.backend import get_backend
-    from dgov.status import list_worker_panes
+    from dgov.status import list_worker_panes, tail_worker_log
 
     try:
         panes = list_worker_panes(
             state.project_root, session_root=state.session_root, include_freshness=False
         )
         branch = _get_branch(state.project_root)
-        # Check for progress files first (faster than tmux capture)
-        progress_dir = Path(state.session_root or state.project_root) / ".dgov" / "progress"
+        session_root = state.session_root or state.project_root
+        # Check for progress files first (faster than log tail)
+        progress_dir = Path(session_root) / ".dgov" / "progress"
         for p in panes:
             slug = p.get("slug", "")
             progress_file = progress_dir / f"{slug}.json"
@@ -168,21 +168,14 @@ def fetch_panes(state: DashboardState) -> None:
                     p["activity"] = f"[T{turn}] {msg}" if msg else status
                 except (ValueError, OSError):
                     pass
-        backend = get_backend()
+        # Fallback: tail the log file for panes without progress activity
         for p in panes:
-            pane_id = p.get("pane_id", "")
-            if pane_id and p.get("alive") and not p.get("activity"):
-                try:
-                    raw = backend.capture_output(pane_id, lines=2)
-                    if raw:
-                        lines = [
-                            ln.strip()
-                            for ln in _strip_ansi(raw).strip().splitlines()
-                            if ln.strip()
-                        ]
-                        p["activity"] = lines[-1] if lines else ""
-                except (RuntimeError, OSError):
-                    pass
+            if not p.get("activity"):
+                slug = p.get("slug", "")
+                log_tail = tail_worker_log(session_root, slug, lines=2)
+                if log_tail:
+                    lines = [ln.strip() for ln in log_tail.splitlines() if ln.strip()]
+                    p["activity"] = lines[-1] if lines else ""
         with state.lock:
             state.panes = panes
             state.branch = branch
@@ -197,7 +190,7 @@ def fetch_panes(state: DashboardState) -> None:
 def fetch_detail(state: DashboardState, slug: str) -> None:
     """Fetch detail info for a single pane."""
     from dgov.inspection import review_worker_pane
-    from dgov.status import capture_worker_output
+    from dgov.status import tail_worker_log
 
     lines: list[str] = []
 
@@ -242,18 +235,17 @@ def fetch_detail(state: DashboardState, slug: str) -> None:
         lines.append("== Diff Stat == (unavailable)")
         lines.append("")
 
-    # Capture last 20 lines
+    # Tail log file for recent output (works even for dead panes)
     try:
-        output = capture_worker_output(
-            state.project_root, slug, lines=20, session_root=state.session_root
-        )
+        session_root = state.session_root or state.project_root
+        output = tail_worker_log(session_root, slug, lines=20)
         if output:
             lines.append("== Recent Output ==")
             lines.append(output)
         else:
-            lines.append("== Recent Output == (pane dead or not found)")
+            lines.append("== Recent Output == (no log file)")
     except Exception:  # noqa: BLE001
-        logger.debug("Failed to capture output for %s", slug, exc_info=True)
+        logger.debug("Failed to read log for %s", slug, exc_info=True)
         lines.append("== Recent Output == (unavailable)")
 
     with state.lock:
