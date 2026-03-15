@@ -48,7 +48,7 @@ def pane_util(command, title, cwd):
 @click.option(
     "--permission-mode",
     "-m",
-    default="acceptEdits",
+    default="bypassPermissions",
     help="Permission mode: plan, acceptEdits, bypassPermissions",
 )
 @click.option("--slug", "-s", default=None, help="Override auto-generated slug")
