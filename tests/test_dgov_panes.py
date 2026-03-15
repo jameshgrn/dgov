@@ -2229,14 +2229,20 @@ class TestListCheckpoints:
 
 
 class TestComputeTiers:
+    def _to_dict(self, tasks: list[dict]) -> dict[str, dict]:
+        """Convert list-of-dicts to dict-of-dicts for _compute_tiers."""
+        return {t["id"]: {**t, "depends_on": t.get("depends_on", [])} for t in tasks}
+
     def test_disjoint_touches_single_tier(self) -> None:
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "a", "touches": ["src/foo.py"]},
-            {"id": "b", "touches": ["tests/test_bar.py"]},
-            {"id": "c", "touches": ["docs/readme.md"]},
-        ]
+        tasks = self._to_dict(
+            [
+                {"id": "a", "touches": ["src/foo.py"]},
+                {"id": "b", "touches": ["tests/test_bar.py"]},
+                {"id": "c", "touches": ["docs/readme.md"]},
+            ]
+        )
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 1
         assert {t["id"] for t in tiers[0]} == {"a", "b", "c"}
@@ -2244,14 +2250,15 @@ class TestComputeTiers:
     def test_overlapping_touches_multiple_tiers(self) -> None:
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "a", "touches": ["src/foo.py"]},
-            {"id": "b", "touches": ["src/foo.py"]},
-            {"id": "c", "touches": ["tests/bar.py"]},
-        ]
+        tasks = self._to_dict(
+            [
+                {"id": "a", "touches": ["src/foo.py"]},
+                {"id": "b", "touches": ["src/foo.py"]},
+                {"id": "c", "touches": ["tests/bar.py"]},
+            ]
+        )
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 2
-        # First tier: a and c (disjoint), second tier: b
         tier0_ids = {t["id"] for t in tiers[0]}
         tier1_ids = {t["id"] for t in tiers[1]}
         assert "a" in tier0_ids
@@ -2261,10 +2268,12 @@ class TestComputeTiers:
     def test_prefix_containment(self) -> None:
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "a", "touches": ["src/"]},
-            {"id": "b", "touches": ["src/foo.py"]},
-        ]
+        tasks = self._to_dict(
+            [
+                {"id": "a", "touches": ["src/"]},
+                {"id": "b", "touches": ["src/foo.py"]},
+            ]
+        )
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 2
         assert tiers[0][0]["id"] == "a"
@@ -2273,10 +2282,12 @@ class TestComputeTiers:
     def test_no_touches_same_tier(self) -> None:
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "a", "touches": []},
-            {"id": "b", "touches": []},
-        ]
+        tasks = self._to_dict(
+            [
+                {"id": "a", "touches": []},
+                {"id": "b", "touches": []},
+            ]
+        )
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 1
         assert len(tiers[0]) == 2
@@ -2284,7 +2295,7 @@ class TestComputeTiers:
     def test_empty_tasks(self) -> None:
         from dgov.batch import _compute_tiers
 
-        assert _compute_tiers([]) == []
+        assert _compute_tiers({}) == []
 
 
 # ---------------------------------------------------------------------------
@@ -3168,16 +3179,21 @@ class TestPlumbingMerge:
 
 
 class TestComputeTiersDeep:
+    def _to_dict(self, tasks: list[dict]) -> dict[str, dict]:
+        return {t["id"]: {**t, "depends_on": t.get("depends_on", [])} for t in tasks}
+
     def test_four_level_chain(self) -> None:
         """A -> B -> C -> D: each touches the same file, so 4 tiers."""
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "A", "touches": ["src/shared.py"]},
-            {"id": "B", "touches": ["src/shared.py"]},
-            {"id": "C", "touches": ["src/shared.py"]},
-            {"id": "D", "touches": ["src/shared.py"]},
-        ]
+        tasks = self._to_dict(
+            [
+                {"id": "A", "touches": ["src/shared.py"]},
+                {"id": "B", "touches": ["src/shared.py"]},
+                {"id": "C", "touches": ["src/shared.py"]},
+                {"id": "D", "touches": ["src/shared.py"]},
+            ]
+        )
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 4
         assert [tiers[i][0]["id"] for i in range(4)] == ["A", "B", "C", "D"]
@@ -3186,12 +3202,14 @@ class TestComputeTiersDeep:
         """A touches x, B touches x, C touches y, D touches y+x."""
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "A", "touches": ["x"]},
-            {"id": "B", "touches": ["x"]},
-            {"id": "C", "touches": ["y"]},
-            {"id": "D", "touches": ["x", "y"]},
-        ]
+        tasks = self._to_dict(
+            [
+                {"id": "A", "touches": ["x"]},
+                {"id": "B", "touches": ["x"]},
+                {"id": "C", "touches": ["y"]},
+                {"id": "D", "touches": ["x", "y"]},
+            ]
+        )
         tiers = _compute_tiers(tasks)
         # Tier 0: A, C (disjoint)
         # Tier 1: B (overlaps A on x), D cannot go here because overlaps C on y
@@ -3204,10 +3222,9 @@ class TestComputeTiersDeep:
         """Tasks with identical touches serialize; no infinite loop."""
         from dgov.batch import _compute_tiers
 
-        tasks = [{"id": f"t{i}", "touches": ["shared"]} for i in range(5)]
+        tasks = self._to_dict([{"id": f"t{i}", "touches": ["shared"]} for i in range(5)])
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 5
-        # Each tier has exactly one task
         for tier in tiers:
             assert len(tier) == 1
 
@@ -3259,7 +3276,7 @@ class TestRunBatchLiveWait:
                 "dgov.merger.merge_worker_pane",
                 return_value={"merged": "t1", "branch": "t1"},
             ),
-            patch("dgov.panes.time.sleep"),
+            patch("dgov.batch.time.sleep"),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
@@ -3297,12 +3314,13 @@ class TestRunBatchLiveWait:
             patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "done"}),
             patch("dgov.panes._is_done", return_value=True),
             patch("dgov.merger.merge_worker_pane", return_value={"error": "conflict"}),
-            patch("dgov.panes.time.sleep"),
+            patch("dgov.batch.time.sleep"),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
-        assert len(result["failed"]) > 0
-        assert result.get("aborted_remaining") is True
+        # t1 merge fails; t2 is in a later tier (touch overlap) but has no
+        # depends_on, so it still runs and also fails merge.  Both end up failed.
+        assert "t1" in result["failed"]
 
     def test_batch_timeout_marks_failed(self, tmp_path: Path) -> None:
         from dgov.batch import run_batch
@@ -3334,8 +3352,8 @@ class TestRunBatchLiveWait:
             patch("dgov.panes.create_worker_pane", side_effect=fake_create),
             patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "active"}),
             patch("dgov.panes._is_done", side_effect=fake_is_done),
-            patch("dgov.panes.time.sleep"),
-            patch("dgov.panes.time.monotonic") as mock_mono,
+            patch("dgov.batch.time.sleep"),
+            patch("dgov.batch.time.monotonic") as mock_mono,
             patch("dgov.merger.merge_worker_pane", return_value={"error": "timed out"}),
         ):
             # First monotonic() = start, second = way past timeout

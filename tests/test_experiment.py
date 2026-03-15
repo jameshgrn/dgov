@@ -308,10 +308,10 @@ class TestExperimentSequential:
     def test_overlapping_tasks_serialize(self) -> None:
         from dgov.batch import _compute_tiers
 
-        tasks = [
-            {"id": "exp-1", "touches": ["src/model.py"]},
-            {"id": "exp-2", "touches": ["src/model.py"]},
-        ]
+        tasks = {
+            "exp-1": {"id": "exp-1", "touches": ["src/model.py"], "depends_on": []},
+            "exp-2": {"id": "exp-2", "touches": ["src/model.py"], "depends_on": []},
+        }
         tiers = _compute_tiers(tasks)
         assert len(tiers) == 2
         assert tiers[0][0]["id"] == "exp-1"
