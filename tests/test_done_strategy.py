@@ -248,7 +248,9 @@ class TestResolveStrategy:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestIsDoneWithStrategy:
+    @pytest.mark.unit
     def test_signal_strategy_works_as_before(self, tmp_path: Path) -> None:
         """Signal strategy: done file → done."""
         session_root = str(tmp_path)
@@ -259,6 +261,7 @@ class TestIsDoneWithStrategy:
         (done_dir / slug).touch()
         assert _is_done(session_root, slug, done_strategy=DoneStrategy(type="signal")) is True
 
+    @pytest.mark.unit
     def test_exit_strategy_skips_commit_check(self, tmp_path: Path) -> None:
         """Exit strategy: new commits on branch should NOT trigger done."""
         session_root = str(tmp_path)
@@ -281,6 +284,7 @@ class TestIsDoneWithStrategy:
             # With exit strategy, commit check is skipped — pane is still alive → not done
             assert result is False
 
+    @pytest.mark.unit
     def test_exit_strategy_still_checks_done_file(self, tmp_path: Path) -> None:
         """Exit strategy still honors done-signal file."""
         session_root = str(tmp_path)
@@ -291,6 +295,7 @@ class TestIsDoneWithStrategy:
         (done_dir / slug).touch()
         assert _is_done(session_root, slug, done_strategy=DoneStrategy(type="exit")) is True
 
+    @pytest.mark.unit
     def test_commit_strategy_skips_stabilization(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
@@ -322,6 +327,7 @@ class TestIsDoneWithStrategy:
             # With commit strategy, stabilization is skipped
             assert result is False
 
+    @pytest.mark.unit
     def test_stable_strategy_uses_custom_seconds(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
@@ -383,6 +389,7 @@ class TestIsDoneWithStrategy:
             )
             assert result is True
 
+    @pytest.mark.unit
     def test_stable_strategy_skips_commit_check(self, tmp_path: Path) -> None:
         """Stable strategy should skip commit check."""
         session_root = str(tmp_path)
@@ -405,6 +412,7 @@ class TestIsDoneWithStrategy:
             )
             mock_commits.assert_not_called()
 
+    @pytest.mark.unit
     def test_none_strategy_uses_all_signals(self, tmp_path: Path) -> None:
         """None strategy (default) uses all signals including commit check."""
         session_root = str(tmp_path)

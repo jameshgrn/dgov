@@ -114,6 +114,7 @@ class TestHappyPath:
         assert "mission_completed" in event_calls
 
 
+@pytest.mark.unit
 class TestReviewPending:
     def test_review_issues_no_auto_merge(self, monkeypatch, tmp_path):
         review_with_issues = MagicMock(
@@ -147,6 +148,7 @@ class TestReviewPending:
         mocks["merge_worker_pane"].assert_called_once()
 
 
+@pytest.mark.unit
 class TestTimeout:
     def test_timeout_with_retry(self, monkeypatch, tmp_path):
         call_count = {"n": 0}
@@ -219,6 +221,7 @@ class TestTimeout:
         mocks["close_worker_pane"].assert_called()
 
 
+@pytest.mark.unit
 class TestMergeConflict:
     def test_merge_conflict_returns_failed(self, monkeypatch, tmp_path):
         mocks = _apply_patches(
@@ -239,6 +242,7 @@ class TestMergeConflict:
         mocks["close_worker_pane"].assert_called()
 
 
+@pytest.mark.unit
 class TestCustomSlug:
     def test_custom_slug_used(self, monkeypatch, tmp_path):
         mocks = _apply_patches(monkeypatch)
@@ -272,18 +276,24 @@ class TestPreflightFails:
         mocks["create_worker_pane"].assert_not_called()
 
 
+@pytest.mark.unit
 class TestBlockingFindings:
+    @pytest.mark.unit
     def test_critical_blocks(self):
         findings = [{"severity": "critical", "description": "bug"}]
         assert _has_blocking_findings(findings, "medium") is True
 
+    @pytest.mark.unit
     def test_medium_blocks_at_medium(self):
         findings = [{"severity": "medium", "description": "style"}]
         assert _has_blocking_findings(findings, "medium") is True
 
+    @pytest.mark.unit
+    @pytest.mark.unit
     def test_low_does_not_block_at_medium(self):
         findings = [{"severity": "low", "description": "nit"}]
         assert _has_blocking_findings(findings, "medium") is False
 
+    @pytest.mark.unit
     def test_empty_does_not_block(self):
         assert _has_blocking_findings([], "medium") is False
