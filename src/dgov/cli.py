@@ -80,6 +80,8 @@ def cli(ctx, governor):
         "template",
         "openrouter",
         "dashboard",
+        "init",
+        "doctor",
     ):
         _check_governor_context()
 
@@ -1452,6 +1454,211 @@ def openrouter_test(prompt, model):
     except Exception as exc:
         click.echo(json.dumps({"error": str(exc)}), err=True)
         sys.exit(1)
+
+
+@cli.command("init")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    help="Project root (where .dgov/ will be created).",
+)
+def init_cmd(project_root):
+    """Initialize a new dgov project: scaffold .dgov/ and write config."""
+    root = Path(project_root).resolve()
+    config_path = root / ".dgov" / "config.toml"
+
+    if config_path.is_file():
+        click.echo("Already initialized.")
+        return
+
+    # Interactive prompts
+    governor = click.prompt("Governor agent", default="claude", type=str)
+    permissions = click.prompt("Permission mode", default="acceptEdits", type=str)
+
+    # Create directories
+    dirs = [
+        root / ".dgov" / "hooks",
+        root / ".dgov" / "templates",
+        root / ".dgov" / "batch",
+    ]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+
+    # Write config
+    config_path.write_text(
+        f'[dgov]\ngovernor_agent = "{governor}"\ngovernor_permissions = "{permissions}"\n',
+        encoding="utf-8",
+    )
+
+    # Add .dgov/ to .gitignore if not already there
+    gitignore = root / ".gitignore"
+    marker = ".dgov/"
+    if gitignore.is_file():
+        content = gitignore.read_text(encoding="utf-8")
+        if marker not in content.splitlines():
+            with open(gitignore, "a", encoding="utf-8") as f:
+                if not content.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{marker}\n")
+    else:
+        gitignore.write_text(f"{marker}\n", encoding="utf-8")
+
+    click.echo("Initialized dgov project:")
+    click.echo(f"  {config_path}")
+    for d in dirs:
+        click.echo(f"  {d}/")
+
+
+@cli.command("doctor")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    help="Project root to diagnose.",
+)
+def doctor_cmd(project_root):
+    """Run diagnostics on the dgov environment."""
+    import platform
+    import shutil
+
+    from dgov.agents import detect_installed_agents, load_registry
+    from dgov.persistence import all_panes, state_path
+
+    root = Path(project_root).resolve()
+    ok = True
+
+    def _check(label, passed, detail=""):
+        nonlocal ok
+        icon = "[ok]" if passed else "[FAIL]"
+        if not passed:
+            ok = False
+        msg = f"  {icon} {label}"
+        if detail:
+            msg += f" -- {detail}"
+        click.echo(msg)
+
+    click.echo("dgov doctor\n")
+
+    # 1. tmux installed
+    tmux_path = shutil.which("tmux")
+    _check("tmux installed", tmux_path is not None)
+
+    # tmux server running
+    if tmux_path:
+        tmux_running = (
+            subprocess.run(
+                ["tmux", "list-sessions"],
+                capture_output=True,
+                timeout=5,
+            ).returncode
+            == 0
+        )
+        _check("tmux server running", tmux_running)
+    else:
+        _check("tmux server running", False, "tmux not installed")
+
+    # 2. git installed
+    git_path = shutil.which("git")
+    _check("git installed", git_path is not None)
+
+    # 3. Python >= 3.12
+    py_ver = platform.python_version_tuple()
+    py_ok = (int(py_ver[0]), int(py_ver[1])) >= (3, 12)
+    _check(
+        "Python >= 3.12",
+        py_ok,
+        f"found {platform.python_version()}",
+    )
+
+    # 4. state.db readable
+    db = state_path(str(root))
+    if db.is_file():
+        try:
+            all_panes(str(root))
+            _check("state.db readable", True)
+        except Exception as exc:
+            _check("state.db readable", False, str(exc))
+    else:
+        _check("state.db exists", True, "no state.db yet (first run)")
+
+    # 5. Installed agents
+    registry = load_registry(str(root))
+    installed = detect_installed_agents(registry)
+    _check(
+        "agents installed",
+        len(installed) > 0,
+        ", ".join(installed) if installed else "none found",
+    )
+
+    # 6. Hooks directory
+    hooks_dir = root / ".dgov" / "hooks"
+    if hooks_dir.is_dir():
+        scripts = list(hooks_dir.iterdir())
+        non_exec = [s.name for s in scripts if s.is_file() and not os.access(s, os.X_OK)]
+        if non_exec:
+            _check("hooks executable", False, f"not executable: {', '.join(non_exec)}")
+        else:
+            _check("hooks directory", True, f"{len(scripts)} script(s)")
+    else:
+        _check("hooks directory", True, "no .dgov/hooks/ (optional)")
+
+    # 7. Orphaned worktrees
+    try:
+        wt_result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        git_worktrees = []
+        first = True
+        for line in wt_result.stdout.splitlines():
+            if line.startswith("worktree "):
+                if first:
+                    first = False
+                    continue
+                git_worktrees.append(line.split(" ", 1)[1])
+
+        if db.is_file():
+            panes = all_panes(str(root))
+            tracked = {p.get("worktree_path") for p in panes}
+            orphaned = [wt for wt in git_worktrees if wt not in tracked]
+            _check(
+                "no orphaned worktrees",
+                len(orphaned) == 0,
+                f"{len(orphaned)} orphaned" if orphaned else f"{len(git_worktrees)} tracked",
+            )
+        else:
+            _check("no orphaned worktrees", True, "no state.db to compare")
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        _check("worktree check", False, str(exc))
+
+    # 8. Stale panes (pane in state.db whose tmux pane is dead)
+    if db.is_file():
+        from dgov.backend import get_backend
+
+        backend = get_backend()
+        panes = all_panes(str(root))
+        active_panes = [p for p in panes if p.get("state") == "active"]
+        stale = [
+            p["slug"]
+            for p in active_panes
+            if p.get("pane_id") and not backend.is_alive(p["pane_id"])
+        ]
+        _check(
+            "no stale panes",
+            len(stale) == 0,
+            f"stale: {', '.join(stale)}" if stale else f"{len(active_panes)} active",
+        )
+
+    click.echo()
+    if ok:
+        click.echo("All checks passed.")
+    else:
+        click.echo("Some checks failed.")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":
