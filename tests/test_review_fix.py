@@ -10,6 +10,7 @@ import pytest
 
 from dgov.review_fix import (
     ReviewFinding,
+    ReviewParseError,
     _deduplicate,
     _filter_by_severity,
     _group_by_file,
@@ -82,8 +83,13 @@ class TestParseReviewFindings:
         # Technically str, but test edge
         assert parse_review_findings("") == []
 
-    def test_malformed_json(self) -> None:
-        assert parse_review_findings("not json at all{{{") == []
+    def test_malformed_json_raises(self) -> None:
+        with pytest.raises(ReviewParseError, match="No JSON array found"):
+            parse_review_findings("not json at all{{{")
+
+    def test_invalid_json_array_raises(self) -> None:
+        with pytest.raises(ReviewParseError, match="Failed to parse JSON"):
+            parse_review_findings("[invalid json content]")
 
     def test_json_with_markdown_fences(self) -> None:
         finding = {
@@ -121,9 +127,11 @@ class TestParseReviewFindings:
         assert findings[0].severity == "low"
         assert findings[0].category == ""
 
-    def test_non_array_json(self) -> None:
+    def test_non_array_json_raises(self) -> None:
+        # A dict without brackets hits "No JSON array found"
         output = json.dumps({"not": "an array"})
-        assert parse_review_findings(output) == []
+        with pytest.raises(ReviewParseError, match="No JSON array found"):
+            parse_review_findings(output)
 
     def test_array_with_non_dict_items(self) -> None:
         output = json.dumps(["string", 42, None])
@@ -301,6 +309,53 @@ class TestPipelineReviewOnly:
         assert result["phase"] == "review_only"
         assert result["findings_count"] == 0
         assert result["findings"] == []
+
+
+# ---------------------------------------------------------------------------
+# run_review_fix_pipeline — parse error handling
+# ---------------------------------------------------------------------------
+
+
+class TestPipelineParseError:
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
+    @patch("dgov.persistence.get_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.review_fix.emit_event")
+    def test_malformed_output_skipped_not_treated_as_clean(
+        self,
+        mock_emit,
+        mock_create,
+        mock_get_pane,
+        mock_is_done,
+        mock_capture,
+        mock_close,
+        tmp_path: Path,
+    ):
+        mock_create.return_value = MagicMock(slug="review-000-bad")
+        mock_is_done.return_value = True
+        mock_get_pane.return_value = {"slug": "review-000-bad", "pane_id": "%1"}
+        mock_capture.return_value = "I couldn't complete the review, sorry!"
+
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "bad.py").touch()
+
+        result = run_review_fix_pipeline(
+            project_root=str(tmp_path),
+            targets=["src/bad.py"],
+            session_root=str(tmp_path),
+            auto_approve=False,
+        )
+
+        assert result["phase"] == "review_only"
+        assert result["findings_count"] == 0
+        assert result["findings"] == []
+        # Verify parse error event was emitted
+        parse_error_calls = [
+            c for c in mock_emit.call_args_list if c[0][1] == "review_fix_parse_error"
+        ]
+        assert len(parse_error_calls) == 1
 
 
 # ---------------------------------------------------------------------------
