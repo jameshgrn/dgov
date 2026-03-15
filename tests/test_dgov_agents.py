@@ -87,7 +87,7 @@ class TestAgentRegistry:
 
     def test_gemini_transport(self) -> None:
         assert AGENT_REGISTRY["gemini"].prompt_transport == "option"
-        assert AGENT_REGISTRY["gemini"].prompt_option == "--prompt"
+        assert AGENT_REGISTRY["gemini"].prompt_option == "--prompt-interactive"
 
     def test_builtin_colors(self) -> None:
         assert AGENT_REGISTRY["claude"].color == 39
@@ -409,7 +409,7 @@ class TestBuildLaunchCommandOption:
     def test_build_launch_command_option(self, tmp_path: Path) -> None:
         agent = AGENT_REGISTRY["gemini"]
         assert agent.prompt_transport == "option"
-        assert agent.prompt_option == "--prompt"
+        assert agent.prompt_option == "--prompt-interactive"
 
         cmd = build_launch_command(
             agent_id="gemini",

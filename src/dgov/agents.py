@@ -100,7 +100,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="gm",
         prompt_command="gemini",
         prompt_transport="option",
-        prompt_option="--prompt",
+        prompt_option="--prompt-interactive",
         permission_flags={
             "plan": "--approval-mode plan",
             "acceptEdits": "--approval-mode auto_edit",
