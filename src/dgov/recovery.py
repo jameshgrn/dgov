@@ -40,7 +40,15 @@ def escalate_worker_pane(
     original_agent = target.get("agent", "unknown")
 
     # Create the new pane first, then close the old one
-    new_slug = f"{slug}-esc"
+    # Compute escalation slug with collision avoidance
+    base_slug = re.sub(r"-esc(-\d+)?$", "", slug)  # strip existing -esc or -esc-N
+    esc_num = 1
+    existing = all_panes(session_root)
+    for p in existing:
+        m = re.match(rf"^{re.escape(base_slug)}-esc-(\d+)$", p.get("slug", ""))
+        if m:
+            esc_num = max(esc_num, int(m.group(1)) + 1)
+    new_slug = f"{base_slug}-esc-{esc_num}"
     try:
         new_pane = create_worker_pane(
             project_root=project_root,
