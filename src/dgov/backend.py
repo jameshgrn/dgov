@@ -31,6 +31,7 @@ class WorkerBackend(Protocol):
         *,
         cwd: str,
         env: dict[str, str] | None = None,
+        name: str | None = None,
     ) -> str:
         """Create a background worker pane/container. Return a worker_id."""
         ...
@@ -115,10 +116,11 @@ class TmuxBackend:
         *,
         cwd: str,
         env: dict[str, str] | None = None,
+        name: str | None = None,
     ) -> str:
         from dgov import tmux
 
-        return tmux.create_background_pane(cwd=cwd, env=env)
+        return tmux.create_background_pane(cwd=cwd, env=env, name=name)
 
     def destroy(self, worker_id: str) -> None:
         from dgov import tmux

@@ -354,7 +354,7 @@ def create_worker_pane(
             "DISABLE_UPDATE_PROMPT": "true",
         }
         get_backend().setup_pane_borders()
-        pane_id = get_backend().create_worker_pane(cwd=worktree_path, env=startup_env)
+        pane_id = get_backend().create_worker_pane(cwd=worktree_path, env=startup_env, name=slug)
         time.sleep(0.25)
 
         # 4. Setup and launch agent
@@ -610,7 +610,7 @@ def resume_worker_pane(
         "DISABLE_UPDATE_PROMPT": "true",
     }
     get_backend().setup_pane_borders()
-    pane_id = get_backend().create_worker_pane(cwd=worktree_path, env=startup_env)
+    pane_id = get_backend().create_worker_pane(cwd=worktree_path, env=startup_env, name=slug)
     time.sleep(0.25)
 
     _setup_and_launch_agent(
