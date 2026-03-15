@@ -340,15 +340,15 @@ def run_review_fix_pipeline(
                 text=True,
             )
             changed_files = (
-                [f for f in changed_r.stdout.strip().splitlines() if f]
+                [ln for ln in changed_r.stdout.strip().splitlines() if ln]
                 if changed_r.returncode == 0
                 else []
             )
 
             # Map changed source files to their test counterparts
             test_files: list[str] = []
-            for f in changed_files:
-                p = Path(f)
+            for cf in changed_files:
+                p = Path(cf)
                 if not p.parts or p.parts[0] != "src":
                     continue
                 # src/dgov/foo.py -> tests/test_foo.py, tests/test_dgov_foo.py
