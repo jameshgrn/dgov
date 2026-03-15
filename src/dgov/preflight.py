@@ -160,11 +160,12 @@ def check_git_branch(project_root: str, expected: str | None = None) -> CheckRes
     )
 
 
-def check_deps() -> CheckResult:
+def check_deps(project_root: str) -> CheckResult:
     """Verify installed deps match pyproject.toml via uv."""
     try:
         result = subprocess.run(
             ["uv", "sync", "--locked"],
+            cwd=project_root,
             capture_output=True,
             text=True,
             timeout=30,
@@ -446,7 +447,7 @@ def run_preflight(
     checks.append(check_agent_concurrency(project_root, agent, session_root, registry=registry))
 
     if not skip_deps:
-        checks.append(check_deps())
+        checks.append(check_deps(project_root))
     checks.append(check_stale_worktrees(project_root))
     checks.append(check_file_locks(project_root, touches or []))
 
@@ -458,11 +459,12 @@ def run_preflight(
 # ---------------------------------------------------------------------------
 
 
-def _fix_deps() -> bool:
+def _fix_deps(project_root: str) -> bool:
     """Run uv sync to fix dependency mismatches."""
     try:
         result = subprocess.run(
             ["uv", "sync"],
+            cwd=project_root,
             capture_output=True,
             text=True,
             timeout=120,
@@ -544,7 +546,7 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
                 if _fix_stale_worktrees(project_root):
                     recheck.append(check.name)
             elif check.name == "deps":
-                if _fix_deps():
+                if _fix_deps(project_root):
                     recheck.append(check.name)
             elif check.name == "agent_health":
                 if _fix_agent_health(project_root):
@@ -558,7 +560,7 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
     for check in report.checks:
         if check.name in recheck:
             if check.name == "deps":
-                new_checks.append(check_deps())
+                new_checks.append(check_deps(project_root))
             elif check.name == "stale_worktrees":
                 new_checks.append(check_stale_worktrees(project_root))
             elif check.name == "agent_health":
