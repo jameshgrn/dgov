@@ -219,6 +219,7 @@ class TestLoadRegistryWithDone:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestResolveStrategy:
     def test_none_strategy_defaults_to_signal(self) -> None:
         stype, ss = _resolve_strategy(None, None)
