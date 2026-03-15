@@ -21,6 +21,21 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
+class DoneStrategy:
+    """How to detect when an agent has finished its task.
+
+    Strategy types:
+    - "signal": Wait for done-signal file (default, current behavior).
+    - "exit": Agent process exits — rely on done file + pane liveness, skip commit check.
+    - "commit": Wait for new commits on branch — skip output stabilization.
+    - "stable": Wait for output to stabilize for stable_seconds.
+    """
+
+    type: str  # "signal" | "exit" | "commit" | "stable"
+    stable_seconds: int = 15  # only used when type="stable"
+
+
+@dataclass(frozen=True)
 class AgentDef:
     id: str
     name: str
@@ -43,6 +58,7 @@ class AgentDef:
     retry_escalate_to: str | None = None
     color: int | None = None
     env: dict[str, str] = field(default_factory=dict)
+    done_strategy: DoneStrategy | None = None
     source: str = "built-in"
 
 
@@ -74,6 +90,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="codex resume --last{permissions}",
         color=214,
+        done_strategy=DoneStrategy(type="signal"),
     ),
     "gemini": AgentDef(
         id="gemini",
@@ -89,6 +106,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
+        done_strategy=DoneStrategy(type="signal"),
     ),
     "opencode": AgentDef(
         id="opencode",
@@ -113,6 +131,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--act --yolo",
         },
         color=196,
+        done_strategy=DoneStrategy(type="stable", stable_seconds=30),
     ),
     "qwen": AgentDef(
         id="qwen",
@@ -151,6 +170,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="pi --continue{permissions}",
         color=34,
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "cursor": AgentDef(
         id="cursor",
@@ -189,6 +209,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--yolo",
         },
         color=219,
+        done_strategy=DoneStrategy(type="stable", stable_seconds=30),
     ),
 }
 
@@ -196,11 +217,23 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
 AGENT_REGISTRY: dict[str, AgentDef] = dict(_BUILTIN_AGENTS)
 
 
+def _done_strategy_from_toml(table: dict) -> DoneStrategy | None:
+    """Parse an optional [agents.X.done] section into a DoneStrategy."""
+    done_section = table.pop("done", None)
+    if not done_section:
+        return None
+    return DoneStrategy(
+        type=done_section["type"],
+        stable_seconds=done_section.get("stable_seconds", 15),
+    )
+
+
 def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     """Build an AgentDef from a TOML [agents.X] table."""
     permissions = table.pop("permissions", {})
     resume_section = table.pop("resume", {})
     env_section = table.pop("env", {})
+    done_strategy = _done_strategy_from_toml(table)
     return AgentDef(
         id=agent_id,
         name=table.get("name", agent_id),
@@ -223,6 +256,7 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
         retry_escalate_to=table.get("retry_escalate_to"),
         color=table.get("color"),
         env=dict(env_section),
+        done_strategy=done_strategy,
         source=source,
     )
 
@@ -232,6 +266,7 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
     permissions = overrides.pop("permissions", None)
     resume_section = overrides.pop("resume", None)
     env_section = overrides.pop("env", None)
+    done_strategy = _done_strategy_from_toml(overrides)
 
     kwargs: dict = {}
     for f in AgentDef.__dataclass_fields__:
@@ -256,6 +291,9 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
                 kwargs[f] = merged_env
             else:
                 kwargs[f] = base.env
+            continue
+        if f == "done_strategy":
+            kwargs[f] = done_strategy if done_strategy is not None else base.done_strategy
             continue
         # Map TOML key names to dataclass field names
         toml_key = {
