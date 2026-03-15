@@ -122,7 +122,7 @@ VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "reviewed_fail": frozenset({"closed", "superseded", "escalated"}),
     "merged": frozenset({"closed"}),
     "merge_conflict": frozenset({"merged", "closed", "escalated"}),
-    "timed_out": frozenset({"closed", "superseded", "escalated"}),
+    "timed_out": frozenset({"done", "merged", "closed", "superseded", "escalated"}),
     "escalated": frozenset({"closed"}),
     "superseded": frozenset({"closed"}),
     "closed": frozenset(),
