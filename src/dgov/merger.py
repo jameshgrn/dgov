@@ -18,13 +18,22 @@ logger = logging.getLogger(__name__)
 
 
 def _plumbing_merge(
-    project_root: str, branch_name: str, message: str | None = None
+    project_root: str,
+    branch_name: str,
+    message: str | None = None,
+    squash: bool = True,
 ) -> MergeResult:
     """Merge branch into HEAD using git plumbing (zero side effects on failure).
 
-    Uses git merge-tree for in-memory merge computation. If the merge fails,
-    no working tree changes occur — safer than porcelain git merge.
+    When squash=True (default): uses git merge-tree for in-memory merge
+    computation, creating a single squash-style merge commit.
+
+    When squash=False: uses ``git merge --no-ff`` to create a merge commit
+    that preserves the worker's individual commit history.
     """
+    if not squash:
+        return _no_squash_merge(project_root, branch_name, message)
+
     head = subprocess.run(
         ["git", "-C", project_root, "rev-parse", "HEAD"],
         capture_output=True,
@@ -126,6 +135,70 @@ def _plumbing_merge(
         return MergeResult(success=False, stderr="reset --hard failed after ref update")
 
     # Pop stash if we stashed
+    if stashed:
+        subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+
+    return MergeResult(success=True)
+
+
+def _no_squash_merge(
+    project_root: str, branch_name: str, message: str | None = None
+) -> MergeResult:
+    """Merge branch with --no-ff to preserve worker commit history."""
+    # Count commits on the worker branch relative to merge-base
+    base_r = subprocess.run(
+        ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    commit_count = 0
+    if base_r.returncode == 0:
+        count_r = subprocess.run(
+            [
+                "git",
+                "-C",
+                project_root,
+                "rev-list",
+                "--count",
+                f"{base_r.stdout.strip()}..{branch_name}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if count_r.returncode == 0:
+            commit_count = int(count_r.stdout.strip())
+
+    # Extract slug from branch name (dgov-<slug>)
+    slug = branch_name.removeprefix("dgov-") if branch_name.startswith("dgov-") else branch_name
+    msg = message or f"Merge {slug} ({commit_count} commit{'s' if commit_count != 1 else ''})"
+
+    # Stash uncommitted changes before merge
+    status = subprocess.run(
+        ["git", "-C", project_root, "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    dirty = bool(status.stdout.strip())
+    stashed = False
+    if dirty:
+        stash = subprocess.run(
+            ["git", "-C", project_root, "stash", "push", "-m", "dgov-no-squash-merge-auto"],
+            capture_output=True,
+            text=True,
+        )
+        stashed = stash.returncode == 0
+
+    result = subprocess.run(
+        ["git", "-C", project_root, "merge", "--no-ff", "-m", msg, branch_name],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        if stashed:
+            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+        return MergeResult(success=False, stderr=result.stderr.strip())
+
     if stashed:
         subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
 
@@ -476,6 +549,7 @@ def merge_worker_pane(
     slug: str,
     session_root: str | None = None,
     resolve: str = "agent",
+    squash: bool = True,
 ) -> dict:
     """Merge a worker pane's branch with configurable conflict resolution.
 
@@ -541,7 +615,7 @@ def merge_worker_pane(
                 merge_files_changed = len(changed_file_names)
 
     # Plumbing merge — zero working-tree side effects on failure
-    merge = _plumbing_merge(pane_project_root, branch_name)
+    merge = _plumbing_merge(pane_project_root, branch_name, squash=squash)
 
     if merge.success:
         try:
@@ -650,6 +724,7 @@ def merge_worker_pane_with_close(
     slug: str,
     session_root: str | None = None,
     resolve: str = "agent",
+    squash: bool = True,
 ) -> dict:
     """Merge the branch and then close the worker pane.
 
@@ -658,6 +733,7 @@ def merge_worker_pane_with_close(
         slug: Pane slug to merge.
         session_root: Where .dgov/state.json lives. Defaults to project_root.
         resolve: Conflict resolution mode ("agent", "manual").
+        squash: Squash worker commits into one merge commit.
 
     Returns:
         {"merged": slug, "branch": branch_name} after successful merge and close.
@@ -667,7 +743,7 @@ def merge_worker_pane_with_close(
     import dgov.panes as _p
 
     session_root = os.path.abspath(session_root or project_root)
-    result = merge_worker_pane(project_root, slug, session_root, resolve=resolve)
+    result = merge_worker_pane(project_root, slug, session_root, resolve=resolve, squash=squash)
 
     if "error" in result:
         return result
