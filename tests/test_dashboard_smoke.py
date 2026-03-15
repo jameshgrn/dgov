@@ -88,7 +88,7 @@ def _run_dashboard_loop(stdscr: MagicMock, state: DashboardState) -> None:
     ) -> None:
         assert project_root == "/tmp/project"
         assert session_root == "/tmp/session"
-        assert refresh_interval == 2.0
+        assert refresh_interval == 1.0
         func(
             stdscr,
             project_root=project_root,
