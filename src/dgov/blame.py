@@ -165,12 +165,15 @@ def blame_lines(
         raw_lines = [e for e in raw_lines if lo <= e["line_no"] <= hi]
 
     # Annotate each line with agent attribution
+    _slug_cache: dict[str, str | None] = {}
     for entry in raw_lines:
         sha = entry["commit"]
         slug = sha_to_slug.get(sha) or sha_to_slug.get(sha[:7]) or None
         # Try subject-based fallback: look up full commit message for this SHA
         if slug is None:
-            slug = _slug_from_sha_subject(project_root, sha, sha_to_slug)
+            if sha not in _slug_cache:
+                _slug_cache[sha] = _slug_from_sha_subject(project_root, sha, sha_to_slug)
+            slug = _slug_cache[sha]
         info = slug_info.get(slug, {}) if slug else {}
         entry["slug"] = slug or ""
         entry["agent"] = info.get("agent", "")
