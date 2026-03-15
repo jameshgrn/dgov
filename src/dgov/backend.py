@@ -101,6 +101,16 @@ class TmuxBackend:
 
         return tmux.split_pane(cwd=cwd, target=target, env=env)
 
+    def create_worker_pane(
+        self,
+        *,
+        cwd: str,
+        env: dict[str, str] | None = None,
+    ) -> str:
+        from dgov import tmux
+
+        return tmux.create_background_pane(cwd=cwd, env=env)
+
     def destroy(self, worker_id: str) -> None:
         from dgov import tmux
 
