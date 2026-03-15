@@ -268,8 +268,8 @@ def test_dry_run_via_run_batch(tmp_path: Path):
 
 @patch("dgov.waiter.time")
 @patch("dgov.merger.merge_worker_pane")
-@patch("dgov.panes.create_worker_pane")
-@patch("dgov.panes._is_done", return_value=True)
+@patch("dgov.lifecycle.create_worker_pane")
+@patch("dgov.waiter._is_done", return_value=True)
 @patch("dgov.persistence.get_pane", return_value={})
 def test_failure_skips_dependents(
     mock_get_pane,

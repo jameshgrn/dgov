@@ -193,7 +193,7 @@ class TestUtilityPanes:
 class TestPaneCreate:
     def test_create_success_passes_env_vars(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.create_worker_pane",
+            "dgov.lifecycle.create_worker_pane",
             return_value=_pane("lint-fix", "claude"),
         ) as mock_create:
             result = runner.invoke(
@@ -242,7 +242,7 @@ class TestPaneCreate:
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
         with (
             patch("dgov.strategy.classify_task", return_value="claude") as mock_classify,
-            patch("dgov.panes.create_worker_pane", return_value=_pane("auto-task", "claude")),
+            patch("dgov.lifecycle.create_worker_pane", return_value=_pane("auto-task", "claude")),
         ):
             result = runner.invoke(
                 cli,
@@ -303,7 +303,7 @@ class TestPaneCreate:
         with (
             patch("dgov.preflight.run_preflight", return_value=failing),
             patch("dgov.preflight.fix_preflight", return_value=fixed) as mock_fix,
-            patch("dgov.panes.create_worker_pane", return_value=_pane("fixed-task")),
+            patch("dgov.lifecycle.create_worker_pane", return_value=_pane("fixed-task")),
         ):
             result = runner.invoke(
                 cli,
@@ -316,9 +316,9 @@ class TestPaneCreate:
 
 class TestPaneCommands:
     def test_close_success_and_not_found(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.close_worker_pane", return_value=True):
+        with patch("dgov.lifecycle.close_worker_pane", return_value=True):
             ok = runner.invoke(cli, ["pane", "close", "task"])
-        with patch("dgov.panes.close_worker_pane", return_value=False):
+        with patch("dgov.lifecycle.close_worker_pane", return_value=False):
             missing = runner.invoke(cli, ["pane", "close", "missing"])
 
         assert ok.exit_code == 0
@@ -381,7 +381,7 @@ class TestPaneCommands:
                 return_value={"done": "task", "method": "stable"},
             ),
             patch(
-                "dgov.panes.list_worker_panes",
+                "dgov.status.list_worker_panes",
                 return_value=[{"slug": "task", "done": False}],
             ),
         ):
@@ -395,7 +395,7 @@ class TestPaneCommands:
         with (
             patch("dgov.waiter.wait_worker_pane", side_effect=timeout),
             patch(
-                "dgov.panes.list_worker_panes",
+                "dgov.status.list_worker_panes",
                 return_value=[{"slug": "task", "done": False}],
             ),
         ):
@@ -412,7 +412,7 @@ class TestPaneCommands:
         }
 
     def test_wait_all_handles_empty_and_timeout(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.list_worker_panes", return_value=[]):
+        with patch("dgov.status.list_worker_panes", return_value=[]):
             empty = runner.invoke(cli, ["pane", "wait-all"])
 
         timeout = __import__("dgov.waiter", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
@@ -423,7 +423,7 @@ class TestPaneCommands:
         )
         with (
             patch(
-                "dgov.panes.list_worker_panes",
+                "dgov.status.list_worker_panes",
                 return_value=[{"slug": "a", "done": False}, {"slug": "b", "done": False}],
             ),
             patch("dgov.waiter.wait_all_worker_panes", side_effect=timeout),
@@ -455,7 +455,7 @@ class TestPaneCommands:
             {"slug": "c", "done": False},
         ]
         with (
-            patch("dgov.panes.list_worker_panes", return_value=panes),
+            patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
                 "dgov.merger.merge_worker_pane",
                 side_effect=[
@@ -480,7 +480,7 @@ class TestPaneCommands:
         panes = [{"slug": "a", "done": True}]
 
         with (
-            patch("dgov.panes.list_worker_panes", return_value=panes),
+            patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
                 "dgov.merger.merge_worker_pane",
                 return_value={"merged": "a", "branch": "a"},
@@ -494,13 +494,13 @@ class TestPaneCommands:
         )
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.list_worker_panes", return_value=[{"slug": "task"}]):
+        with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
             listed = runner.invoke(cli, ["pane", "list", "--json"])
-        with patch("dgov.panes.prune_stale_panes", return_value=["old-task"]):
+        with patch("dgov.status.prune_stale_panes", return_value=["old-task"]):
             pruned = runner.invoke(cli, ["pane", "prune"])
         with patch("dgov.strategy.classify_task", return_value="claude"):
             classified = runner.invoke(cli, ["pane", "classify", "debug flaky test"])
-        with patch("dgov.panes.capture_worker_output", return_value="line 1\nline 2"):
+        with patch("dgov.status.capture_worker_output", return_value="line 1\nline 2"):
             captured = runner.invoke(cli, ["pane", "capture", "task", "--lines", "50"])
 
         assert json.loads(listed.output) == [{"slug": "task"}]
@@ -513,7 +513,7 @@ class TestPaneCommands:
         assert captured.output == "line 1\nline 2\n"
 
     def test_capture_missing_exits(self, runner: CliRunner) -> None:
-        with patch("dgov.panes.capture_worker_output", return_value=None):
+        with patch("dgov.status.capture_worker_output", return_value=None):
             result = runner.invoke(cli, ["pane", "capture", "missing"])
 
         assert result.exit_code == 1
@@ -521,17 +521,17 @@ class TestPaneCommands:
 
     def test_review_diff_escalate_and_retry(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.review_worker_pane",
+            "dgov.inspection.review_worker_pane",
             return_value={"slug": "task", "verdict": "safe"},
         ):
             review = runner.invoke(cli, ["pane", "review", "task", "--full"])
         with patch(
-            "dgov.panes.diff_worker_pane",
+            "dgov.inspection.diff_worker_pane",
             return_value={"slug": "task", "diff": "patch"},
         ):
             diff = runner.invoke(cli, ["pane", "diff", "task", "--name-only"])
         with patch(
-            "dgov.panes.escalate_worker_pane",
+            "dgov.recovery.escalate_worker_pane",
             return_value={"escalated": True, "agent": "claude"},
         ):
             escalate = runner.invoke(
@@ -539,7 +539,7 @@ class TestPaneCommands:
                 ["pane", "escalate", "task", "--agent", "claude", "--permission-mode", "plan"],
             )
         with patch(
-            "dgov.panes.retry_worker_pane",
+            "dgov.recovery.retry_worker_pane",
             return_value={"retried": True, "new_slug": "task-2"},
         ):
             retry = runner.invoke(
@@ -581,12 +581,12 @@ class TestTopLevelCommands:
                 ],
             )
         with patch(
-            "dgov.panes.list_worker_panes",
+            "dgov.status.list_worker_panes",
             return_value=[],
         ):
             status = runner.invoke(cli, ["status"])
         with patch(
-            "dgov.panes.rebase_governor",
+            "dgov.inspection.rebase_governor",
             return_value={"rebased": True, "base": "main"},
         ) as mock_rebase:
             rebase = runner.invoke(cli, ["rebase", "--project-root", "/repo", "--onto", "develop"])

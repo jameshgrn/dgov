@@ -137,7 +137,7 @@ def maybe_auto_retry(
         {"escalated": slug, "to": agent} on escalation
         None if retries exhausted or no policy
     """
-    import dgov.panes as _p
+    from dgov.recovery import escalate_worker_pane, retry_worker_pane
 
     rec = get_pane(session_root, slug)
     if not rec:
@@ -177,7 +177,7 @@ def maybe_auto_retry(
             max_retries=policy.max_retries,
         )
 
-        result = _p.retry_worker_pane(
+        result = retry_worker_pane(
             project_root,
             slug,
             session_root=session_root,
@@ -204,7 +204,7 @@ def maybe_auto_retry(
             escalated_to=policy.escalate_to,
         )
 
-        result = _p.escalate_worker_pane(
+        result = escalate_worker_pane(
             project_root,
             slug,
             target_agent=policy.escalate_to,

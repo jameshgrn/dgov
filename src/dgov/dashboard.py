@@ -132,7 +132,7 @@ def _get_branch(project_root: str) -> str:
 
 def fetch_panes(state: DashboardState) -> None:
     """Fetch pane data from dgov and update shared state."""
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
 
     try:
         panes = list_worker_panes(
@@ -152,7 +152,8 @@ def fetch_panes(state: DashboardState) -> None:
 
 def fetch_detail(state: DashboardState, slug: str) -> None:
     """Fetch detail info for a single pane."""
-    from dgov.panes import capture_worker_output, review_worker_pane
+    from dgov.inspection import review_worker_pane
+    from dgov.status import capture_worker_output
 
     lines: list[str] = []
 
@@ -593,7 +594,7 @@ def _curses_main(
 
 def _show_diff(state: DashboardState, slug: str) -> None:
     """Fetch diff stat and show in detail view."""
-    from dgov.panes import diff_worker_pane
+    from dgov.inspection import diff_worker_pane
 
     try:
         result = diff_worker_pane(
@@ -616,7 +617,7 @@ def _show_diff(state: DashboardState, slug: str) -> None:
 
 def _show_capture(state: DashboardState, slug: str) -> None:
     """Fetch pane capture output and show in detail view."""
-    from dgov.panes import capture_worker_output
+    from dgov.status import capture_worker_output
 
     try:
         output = capture_worker_output(
@@ -646,7 +647,7 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
             with state.lock:
                 state.detail_text = f"Merge failed for {slug} — check logs"
     elif action == "close":
-        from dgov.panes import close_worker_pane
+        from dgov.lifecycle import close_worker_pane
 
         try:
             close_worker_pane(state.project_root, slug, session_root=state.session_root)
