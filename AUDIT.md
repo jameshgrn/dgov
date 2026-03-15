@@ -1,6 +1,6 @@
 # dgov Design Efficiency Audit
 
-Last updated: 2026-03-14. 19 of 30 findings resolved. Remaining items tracked below.
+Last updated: 2026-03-15. 21 of 30 findings resolved. Remaining items tracked below.
 
 Scope: `src/dgov/` only. This is a static design audit; I did not modify source files or run the full test suite.
 
@@ -49,13 +49,13 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 | File:line | Severity | Issue | Suggested fix |
 |---|---|---|---|
 | **FIXED** ~~`src/dgov/panes.py:172`, `src/dgov/panes.py:573`~~ | high | ~~`list_worker_panes()` computes freshness per pane unconditionally, triggering ~150 git calls at 50 panes.~~ | Freshness is now opt-in via `include_freshness=False`. |
-| `src/dgov/dashboard.py:130`, `src/dgov/dashboard.py:212` | high | The dashboard refresh thread calls `list_worker_panes()` every 2 seconds, multiplying subprocess load. | Decouple dashboard refresh from freshness computation. |
+| **FIXED** ~~`src/dgov/dashboard.py:130`, `src/dgov/dashboard.py:212`~~ | high | ~~The dashboard refresh thread calls `list_worker_panes()` every 2 seconds, multiplying subprocess load.~~ | Dashboard now passes `include_freshness=False`, decoupling from subprocess-heavy freshness computation. |
 | **FIXED** ~~`src/dgov/preflight.py:163`, `src/dgov/preflight.py:441`, `src/dgov/cli.py:362`~~ | high | ~~`pane create` runs `check_deps()` by default, executing `uv sync --locked` in the hot path.~~ | `check_deps()` now skipped by default; opt-in via `skip_deps=False`. |
 | `src/dgov/blame.py:181`, `src/dgov/blame.py:306` | medium | `blame_lines()` can call `_slug_from_sha_subject()` once per line, creating O(n) subprocesses. | Memoize SHA resolution for the blame run. |
 | `src/dgov/preflight.py:245`, `src/dgov/preflight.py:279` | medium | `check_stale_worktrees()` and `check_file_locks()` call full `list_worker_panes()` when they only need stored metadata. | Use a cheap persistence-level query instead. |
 | `src/dgov/review_fix.py:351` | medium | Review-fix runs full test suite after every merged fix pane. | Run only targeted tests derived from affected files. |
 | **FIXED** ~~`src/dgov/persistence.py:184`~~ | medium | ~~Every persistence operation opens a new SQLite connection, reasserts WAL mode, reruns `CREATE TABLE`.~~ | Connection cache per (db_path, thread) with busy_timeout=5000. |
-| `src/dgov/panes.py:777`, `src/dgov/panes.py:780`, `src/dgov/retry.py:59`, `src/dgov/panes.py:150` | low | `review_worker_pane()` triggers two full event-log scans on every review call. | Read the journal once per review and derive both counters from one pass. |
+| **FIXED** ~~`src/dgov/panes.py:777`, `src/dgov/panes.py:780`, `src/dgov/retry.py:59`, `src/dgov/panes.py:150`~~ | low | ~~`review_worker_pane()` triggers two full event-log scans on every review call.~~ | Events read once at panes.py:828; both retry_count and auto_respond_count derived from single pass. |
 
 ## 6. API surface
 
