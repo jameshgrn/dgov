@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.backend import set_backend
+from dgov.lifecycle import _build_pane_title
 from dgov.models import MergeResult
-from dgov.panes import _build_pane_title
 from dgov.persistence import (
     WorkerPane,
     _validate_state,
@@ -122,7 +122,7 @@ class TestPaneHelpers:
     def test_count_active_agent_workers_only_counts_live_panes(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        from dgov.panes import _count_active_agent_workers
+        from dgov.status import _count_active_agent_workers
 
         replace_all_panes(
             str(tmp_path),

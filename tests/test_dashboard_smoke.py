@@ -111,7 +111,7 @@ def _run_dashboard_loop(stdscr: MagicMock, state: DashboardState) -> None:
         patch("dgov.dashboard.curses.A_BOLD", 2),
         patch("dgov.dashboard.curses.A_REVERSE", 4),
         patch("dgov.dashboard.curses.color_pair", side_effect=lambda idx: idx),
-        patch("dgov.panes.list_worker_panes", return_value=list(state.panes)),
+        patch("dgov.status.list_worker_panes", return_value=list(state.panes)),
     ):
         run_dashboard(project_root="/tmp/project", session_root="/tmp/session")
 
@@ -312,20 +312,20 @@ class TestDrawConfirmation:
 
 
 class TestShowDiff:
-    @patch("dgov.panes.diff_worker_pane", return_value={"diff": "+added line"})
+    @patch("dgov.inspection.diff_worker_pane", return_value={"diff": "+added line"})
     def test_success(self, mock_diff: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project", session_root="/tmp/session")
         _show_diff(state, "fix-lint")
         assert state.detail_slug == "fix-lint"
         assert "+added line" in state.detail_text
 
-    @patch("dgov.panes.diff_worker_pane", return_value={"error": "no worktree"})
+    @patch("dgov.inspection.diff_worker_pane", return_value={"error": "no worktree"})
     def test_error_result(self, mock_diff: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project")
         _show_diff(state, "fix-lint")
         assert "no worktree" in state.detail_text.lower()
 
-    @patch("dgov.panes.diff_worker_pane", side_effect=RuntimeError("git died"))
+    @patch("dgov.inspection.diff_worker_pane", side_effect=RuntimeError("git died"))
     def test_exception(self, mock_diff: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project")
         _show_diff(state, "fix-lint")
@@ -333,20 +333,20 @@ class TestShowDiff:
 
 
 class TestShowCapture:
-    @patch("dgov.panes.capture_worker_output", return_value="some output text")
+    @patch("dgov.status.capture_worker_output", return_value="some output text")
     def test_success(self, mock_capture: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project", session_root="/tmp/session")
         _show_capture(state, "fix-lint")
         assert state.detail_slug == "fix-lint"
         assert "some output text" in state.detail_text
 
-    @patch("dgov.panes.capture_worker_output", return_value=None)
+    @patch("dgov.status.capture_worker_output", return_value=None)
     def test_no_output(self, mock_capture: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project")
         _show_capture(state, "fix-lint")
         assert "not found" in state.detail_text.lower() or "dead" in state.detail_text.lower()
 
-    @patch("dgov.panes.capture_worker_output", side_effect=RuntimeError("pane gone"))
+    @patch("dgov.status.capture_worker_output", side_effect=RuntimeError("pane gone"))
     def test_exception(self, mock_capture: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project")
         _show_capture(state, "fix-lint")
@@ -371,13 +371,13 @@ class TestExecuteAction:
         _execute_action(state, "merge", "fix-lint")
         assert "failed" in state.detail_text.lower()
 
-    @patch("dgov.panes.close_worker_pane")
+    @patch("dgov.lifecycle.close_worker_pane")
     def test_close(self, mock_close: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project", session_root="/tmp/session")
         _execute_action(state, "close", "fix-lint")
         mock_close.assert_called_once_with("/tmp/project", "fix-lint", session_root="/tmp/session")
 
-    @patch("dgov.panes.close_worker_pane", side_effect=RuntimeError("tmux error"))
+    @patch("dgov.lifecycle.close_worker_pane", side_effect=RuntimeError("tmux error"))
     def test_close_failure(self, mock_close: MagicMock) -> None:
         state = DashboardState(project_root="/tmp/project")
         _execute_action(state, "close", "fix-lint")

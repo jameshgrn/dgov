@@ -272,7 +272,7 @@ def pane_create(
 ):
     """Create a worker pane: worktree + tmux + agent."""
     from dgov.agents import get_default_agent, load_registry
-    from dgov.panes import create_worker_pane
+    from dgov.lifecycle import create_worker_pane
     from dgov.strategy import classify_task
 
     registry = load_registry(project_root)
@@ -395,7 +395,7 @@ def pane_create(
 @click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
 def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
-    from dgov.panes import close_worker_pane
+    from dgov.lifecycle import close_worker_pane
 
     if close_worker_pane(project_root, slug, session_root=session_root, force=force):
         click.echo(json.dumps({"closed": slug}))
@@ -466,7 +466,7 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     2. New commits on the worker branch beyond base_sha.
     3. Output stabilization (TUI agents that stay open).
     """
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     panes = list_worker_panes(project_root, session_root=session_root)
@@ -510,7 +510,7 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
 @click.option("--stable", "-s", default=15, help="Seconds of stable output before declaring done")
 def pane_wait_all(project_root, session_root, timeout, poll, stable):
     """Wait for ALL worker panes to finish. Prints each as it completes."""
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
     from dgov.waiter import PaneTimeoutError, wait_all_worker_panes
 
     session_root_abs = os.path.abspath(session_root or project_root)
@@ -567,7 +567,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 def pane_merge_all(project_root, session_root, resolve, squash):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
     from dgov.merger import merge_worker_pane
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
     done_panes = [p for p in panes if p["done"]]
@@ -631,7 +631,7 @@ def _fmt_duration(seconds: int) -> str:
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show last output line")
 def pane_list(project_root, session_root, as_json, verbose):
     """List all worker panes with live status."""
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
 
@@ -676,7 +676,7 @@ def pane_list(project_root, session_root, as_json, verbose):
 @SESSION_ROOT_OPTION
 def pane_prune(project_root, session_root):
     """Remove stale pane entries (dead pane + no worktree)."""
-    from dgov.panes import prune_stale_panes
+    from dgov.status import prune_stale_panes
 
     pruned = prune_stale_panes(project_root, session_root=session_root)
     click.echo(json.dumps({"pruned": pruned}))
@@ -704,7 +704,7 @@ def pane_classify(prompt):
 @click.option("--lines", "-n", default=30, help="Number of lines to capture")
 def pane_capture(slug, project_root, session_root, lines):
     """Capture the last N lines of a worker pane's output."""
-    from dgov.panes import capture_worker_output
+    from dgov.status import capture_worker_output
 
     output = capture_worker_output(project_root, slug, lines, session_root=session_root)
     if output is None:
@@ -725,7 +725,7 @@ def pane_capture(slug, project_root, session_root, lines):
 @click.option("--full", is_flag=True, help="Show complete diff (not just stat)")
 def pane_review(slug, project_root, session_root, full):
     """Preview a worker pane's changes before merging."""
-    from dgov.panes import review_worker_pane
+    from dgov.inspection import review_worker_pane
 
     result = review_worker_pane(project_root, slug, session_root=session_root, full=full)
     click.echo(json.dumps(result, indent=2))
@@ -741,7 +741,7 @@ def pane_review(slug, project_root, session_root, full):
 @click.option("--name-only", is_flag=True, help="Show changed file names only")
 def pane_diff(slug, project_root, session_root, stat, name_only):
     """Show diff for a worker pane's branch vs base."""
-    from dgov.panes import diff_worker_pane
+    from dgov.inspection import diff_worker_pane
 
     result = diff_worker_pane(
         project_root, slug, session_root=session_root, stat=stat, name_only=name_only
@@ -770,7 +770,7 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
 def pane_escalate(slug, project_root, session_root, agent, permission_mode):
     """Re-dispatch to a stronger agent."""
     from dgov.agents import get_default_agent, load_registry
-    from dgov.panes import escalate_worker_pane
+    from dgov.recovery import escalate_worker_pane
 
     if agent is None:
         agent = get_default_agent(load_registry(project_root))
@@ -796,7 +796,7 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
 @click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
 def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode):
     """Retry a failed pane with a new attempt."""
-    from dgov.panes import retry_worker_pane
+    from dgov.recovery import retry_worker_pane
 
     result = retry_worker_pane(
         project_root,
@@ -820,7 +820,7 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
 @click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
 def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode):
     """Re-launch agent in an existing worktree."""
-    from dgov.panes import resume_worker_pane
+    from dgov.lifecycle import resume_worker_pane
 
     result = resume_worker_pane(
         project_root=project_root,
@@ -976,7 +976,7 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
 @SESSION_ROOT_OPTION
 def status(project_root, session_root):
     """Get full dgov status as JSON."""
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
     click.echo(
@@ -1005,7 +1005,7 @@ def rebase(project_root, onto):
     Stashes dirty changes, rebases onto upstream (or main), and pops stash.
     On conflict: aborts rebase and restores working tree.
     """
-    from dgov.panes import rebase_governor
+    from dgov.inspection import rebase_governor
 
     result = rebase_governor(project_root, onto=onto)
     click.echo(json.dumps(result, indent=2))

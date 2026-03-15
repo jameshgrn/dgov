@@ -221,7 +221,7 @@ class TestMaybeAutoRetry:
         result = maybe_auto_retry(str(tmp_path), "nonexistent", "/fake/project")
         assert result is None
 
-    @patch("dgov.panes.retry_worker_pane")
+    @patch("dgov.recovery.retry_worker_pane")
     @patch("dgov.retry.load_registry")
     @patch("dgov.retry.time.sleep")
     def test_retries_under_max(
@@ -243,7 +243,7 @@ class TestMaybeAutoRetry:
         assert result["attempt"] == 1
         mock_sleep.assert_called_once()
 
-    @patch("dgov.panes.escalate_worker_pane")
+    @patch("dgov.recovery.escalate_worker_pane")
     @patch("dgov.retry.load_registry")
     @patch("dgov.retry.time.sleep")
     def test_escalates_when_exhausted(
@@ -293,7 +293,7 @@ class TestMaybeAutoRetry:
 
 class TestWaitWithAutoRetry:
     @patch("dgov.retry.maybe_auto_retry")
-    @patch("dgov.panes._is_done")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
     @patch("dgov.persistence.update_pane_state")
     def test_auto_retry_on_failure(
@@ -339,7 +339,7 @@ class TestWaitWithAutoRetry:
         assert result["done"] == "w1-2"
         mock_maybe_retry.assert_called_once()
 
-    @patch("dgov.panes._is_done")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
     @patch("dgov.persistence.update_pane_state")
     def test_no_auto_retry_flag(
@@ -375,7 +375,7 @@ class TestWaitWithAutoRetry:
 
 
 class TestCLINoAutoRetry:
-    @patch("dgov.panes.list_worker_panes", return_value=[{"slug": "w1"}])
+    @patch("dgov.status.list_worker_panes", return_value=[{"slug": "w1"}])
     @patch("dgov.waiter.wait_worker_pane")
     def test_no_auto_retry_passed(self, mock_wait, mock_list, runner: CliRunner) -> None:
         mock_wait.return_value = {"done": "w1", "method": "signal_or_commit"}
@@ -391,7 +391,7 @@ class TestCLINoAutoRetry:
             len(call_kwargs.args) > 6 and call_kwargs.args[6] is False
         )
 
-    @patch("dgov.panes.list_worker_panes", return_value=[{"slug": "w1"}])
+    @patch("dgov.status.list_worker_panes", return_value=[{"slug": "w1"}])
     @patch("dgov.waiter.wait_worker_pane")
     def test_auto_retry_default_on(self, mock_wait, mock_list, runner: CliRunner) -> None:
         mock_wait.return_value = {"done": "w1", "method": "signal_or_commit"}

@@ -138,7 +138,7 @@ def run_experiment(
     4. If metric improves: merge, log as accepted.
     5. If metric regresses or missing: close without merge, log as rejected/error.
     """
-    import dgov.panes as _p
+    from dgov.lifecycle import close_worker_pane, create_worker_pane
     from dgov.merger import merge_worker_pane
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
@@ -165,7 +165,7 @@ def run_experiment(
     start_time = time.monotonic()
 
     # Dispatch worker
-    pane = _p.create_worker_pane(
+    pane = create_worker_pane(
         project_root=project_root,
         prompt=full_prompt,
         agent=agent,
@@ -197,7 +197,7 @@ def run_experiment(
             "follow_ups": [],
             "commit_sha": None,
         }
-        _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
+        close_worker_pane(project_root, slug, session_root=session_root, force=True)
         return result
 
     duration_s = time.monotonic() - start_time
@@ -219,7 +219,7 @@ def run_experiment(
             "follow_ups": [],
             "commit_sha": None,
         }
-        _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
+        close_worker_pane(project_root, slug, session_root=session_root, force=True)
         return result
 
     metric_after = worker_result.get("metric_value")
@@ -245,12 +245,12 @@ def run_experiment(
             emit_event(session_root, "experiment_accepted", slug, metric_after=metric_after)
         else:
             status = "error"
-            _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
+            close_worker_pane(project_root, slug, session_root=session_root, force=True)
     else:
         status = "rejected"
         commit_sha = None
         emit_event(session_root, "experiment_rejected", slug, metric_after=metric_after)
-        _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
+        close_worker_pane(project_root, slug, session_root=session_root, force=True)
 
     return {
         "id": exp_id,

@@ -184,8 +184,9 @@ def run_review_fix_pipeline(
 
     Returns summary dict with findings_count, fixed_count, etc.
     """
-    import dgov.panes as _p
+    from dgov.lifecycle import close_worker_pane, create_worker_pane
     from dgov.merger import merge_worker_pane
+    from dgov.status import capture_worker_output
 
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
@@ -216,7 +217,7 @@ def run_review_fix_pipeline(
         slug = f"review-{i:03d}-{Path(target).stem}"[:50]
         prompt = REVIEW_PROMPT_TEMPLATE.format(targets=target)
         try:
-            pane = _p.create_worker_pane(
+            pane = create_worker_pane(
                 project_root=project_root,
                 prompt=prompt,
                 agent=review_agent,
@@ -234,7 +235,7 @@ def run_review_fix_pipeline(
     # Capture output and parse findings
     all_findings: list[ReviewFinding] = []
     for slug in review_slugs:
-        output = _p.capture_worker_output(project_root, slug, lines=200, session_root=session_root)
+        output = capture_worker_output(project_root, slug, lines=200, session_root=session_root)
         findings = parse_review_findings(output or "")
         all_findings.extend(findings)
 
@@ -252,7 +253,7 @@ def run_review_fix_pipeline(
 
     # Close review workers
     for slug in review_slugs:
-        _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
+        close_worker_pane(project_root, slug, session_root=session_root, force=True)
 
     # Deduplicate and filter
     all_findings = _deduplicate(all_findings)
@@ -304,7 +305,7 @@ def run_review_fix_pipeline(
         )
         prompt = FIX_PROMPT_TEMPLATE.format(file_path=file_path, findings_text=findings_text)
         try:
-            pane = _p.create_worker_pane(
+            pane = create_worker_pane(
                 project_root=project_root,
                 prompt=prompt,
                 agent=fix_agent,
@@ -378,7 +379,7 @@ def run_review_fix_pipeline(
             failed_count += 1
 
         # Close fix worker
-        _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
+        close_worker_pane(project_root, slug, session_root=session_root, force=True)
 
     test_status = "pass" if not test_failures else f"failures:{','.join(test_failures)}"
 

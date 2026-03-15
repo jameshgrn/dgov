@@ -326,8 +326,9 @@ def _resolve_conflicts_with_agent(
     3. Wait for completion (done signal or output stabilization)
     4. If all resolved, commit. Otherwise abort and return False.
     """
-    # Access functions through dgov.panes so test mocks propagate
-    import dgov.panes as _p
+    from dgov.lifecycle import close_worker_pane, create_worker_pane
+    from dgov.status import capture_worker_output
+    from dgov.waiter import _is_done
 
     # Start the merge — puts conflict markers in the working tree
     merge_result = subprocess.run(
@@ -376,7 +377,7 @@ def _resolve_conflicts_with_agent(
     resolved = False
     resolver = None
     try:
-        resolver = _p.create_worker_pane(
+        resolver = create_worker_pane(
             project_root=project_root,
             prompt=resolver_prompt,
             agent=agent,
@@ -394,10 +395,10 @@ def _resolve_conflicts_with_agent(
         stable_threshold = 15
 
         while time.monotonic() - start < timeout:
-            if _p._is_done(session_root, resolver.slug):
+            if _is_done(session_root, resolver.slug):
                 break
             # Also check output stabilization
-            output = _p.capture_worker_output(
+            output = capture_worker_output(
                 project_root, resolver.slug, lines=20, session_root=session_root
             )
             if output is not None:
@@ -427,7 +428,7 @@ def _resolve_conflicts_with_agent(
             resolved = True
     finally:
         if resolver is not None:
-            _p.close_worker_pane(project_root, resolver.slug, session_root=session_root)
+            close_worker_pane(project_root, resolver.slug, session_root=session_root)
         if not resolved:
             merge_head = Path(project_root) / ".git" / "MERGE_HEAD"
             if merge_head.exists():
@@ -564,9 +565,8 @@ def merge_worker_pane(
         {"conflicts": [...], ...} when conflicts need external resolution.
         {"error": ...} on failure.
     """
-    # Access functions through dgov.panes so test mocks propagate
-    import dgov.panes as _p
     import dgov.persistence as _persist
+    from dgov.lifecycle import _full_cleanup, _trigger_hook
 
     session_root = os.path.abspath(session_root or project_root)
     target = _persist.get_pane(session_root, slug)
@@ -591,7 +591,7 @@ def merge_worker_pane(
         "DGOV_SLUG": slug,
         "DGOVPROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
     }
-    if not _p._trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
+    if not _trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
         _restore_protected_files(pane_project_root, target)
 
     # Capture diff stat before merge (for enriched return)
@@ -628,7 +628,7 @@ def merge_worker_pane(
             text=True,
         )
         merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
-        _p._full_cleanup(pane_project_root, session_root, slug, target)
+        _full_cleanup(pane_project_root, session_root, slug, target)
         try:
             _persist.update_pane_state(session_root, slug, "merged")
         except IllegalTransitionError as e:
@@ -649,7 +649,7 @@ def merge_worker_pane(
             "DGOV_CHANGED_FILES": "\n".join(changed_file_names),
             "DGOVPROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
         }
-        hook_ran = _p._trigger_hook("post_merge", pane_project_root, post_merge_env, timeout=30)
+        hook_ran = _trigger_hook("post_merge", pane_project_root, post_merge_env, timeout=30)
 
         # Fallback: inline lint + verification if no hook
         damaged: list[str] = []

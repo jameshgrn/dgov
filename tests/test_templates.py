@@ -174,7 +174,7 @@ class TestTemplateCliList:
 class TestPaneCreateWithTemplate:
     def test_template_renders_and_creates_pane(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.create_worker_pane",
+            "dgov.lifecycle.create_worker_pane",
             return_value=_pane("fix-null", "pi"),
         ) as mock_create:
             result = runner.invoke(
@@ -203,7 +203,7 @@ class TestPaneCreateWithTemplate:
 
     def test_template_uses_default_agent(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.create_worker_pane",
+            "dgov.lifecycle.create_worker_pane",
             return_value=_pane("add-feat", "claude"),
         ) as mock_create:
             result = runner.invoke(
@@ -228,7 +228,7 @@ class TestPaneCreateWithTemplate:
 
     def test_template_agent_override(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.panes.create_worker_pane",
+            "dgov.lifecycle.create_worker_pane",
             return_value=_pane("fix-bug", "claude"),
         ) as mock_create:
             result = runner.invoke(

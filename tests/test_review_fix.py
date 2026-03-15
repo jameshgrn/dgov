@@ -220,11 +220,11 @@ class TestGroupByFile:
 
 
 class TestPipelineReviewOnly:
-    @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.capture_worker_output")
-    @patch("dgov.panes._is_done")
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.panes.create_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
     @patch("dgov.review_fix.emit_event")
     def test_review_only_returns_findings(
         self,
@@ -267,11 +267,11 @@ class TestPipelineReviewOnly:
         assert len(result["findings"]) == 1
         assert result["findings"][0]["file"] == "src/foo.py"
 
-    @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.capture_worker_output")
-    @patch("dgov.panes._is_done")
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.panes.create_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
     @patch("dgov.review_fix.emit_event")
     def test_review_only_no_findings(
         self,
@@ -310,12 +310,12 @@ class TestPipelineReviewOnly:
 
 class TestPipelineFull:
     @patch("subprocess.run")
-    @patch("dgov.panes.close_worker_pane")
+    @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.merger.merge_worker_pane")
-    @patch("dgov.panes.capture_worker_output")
-    @patch("dgov.panes._is_done")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.panes.create_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_merges(
         self,
@@ -372,11 +372,11 @@ class TestPipelineFull:
         assert result["failed_count"] == 0
         assert result["test_status"] == "pass"
 
-    @patch("dgov.panes.close_worker_pane")
-    @patch("dgov.panes.capture_worker_output")
-    @patch("dgov.panes._is_done")
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.panes.create_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_no_findings_skips_fix(
         self,
@@ -409,12 +409,12 @@ class TestPipelineFull:
         assert result["test_status"] == "skipped"
 
     @patch("subprocess.run")
-    @patch("dgov.panes.close_worker_pane")
+    @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.merger.merge_worker_pane")
-    @patch("dgov.panes.capture_worker_output")
-    @patch("dgov.panes._is_done")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.panes.create_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_merge_failure(
         self,

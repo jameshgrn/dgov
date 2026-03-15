@@ -101,8 +101,6 @@ def _is_done(
 
     Returns True when the worker is no longer running (regardless of outcome).
     """
-    # Access functions through dgov.panes so test mocks propagate
-    import dgov.panes as _p
     import dgov.persistence as _persist
 
     done_path = Path(session_root, STATE_DIR, "done", slug)
@@ -178,7 +176,9 @@ def _is_done(
 
     # Signal 4 (optional): output stabilization
     if stable_seconds is not None and _stable_state is not None and pane_id:
-        current_output = _p.capture_worker_output(
+        from dgov.status import capture_worker_output
+
+        current_output = capture_worker_output(
             project_root, slug, lines=20, session_root=session_root
         )
         if current_output is not None:
@@ -256,8 +256,6 @@ def _poll_once(
 
     Returns (is_done, method, last_output, stable_since, last_blocked).
     """
-    # Access functions through dgov.panes so test mocks propagate
-    import dgov.panes as _p
     import dgov.persistence as _persist
 
     logger.debug("poll slug=%s", slug)
@@ -269,7 +267,7 @@ def _poll_once(
         "last_blocked": last_blocked,
     }
 
-    if _p._is_done(
+    if _is_done(
         session_root,
         slug,
         pane_record=pane_record,
@@ -338,7 +336,6 @@ def wait_for_slugs(
     stable_seconds: int | None = None,
 ) -> set[str]:
     """Wait for a set of slugs to finish. Returns the set of slugs still pending at timeout."""
-    import dgov.panes as _p
     import dgov.persistence as _persist
 
     start = time.monotonic()
@@ -347,7 +344,7 @@ def wait_for_slugs(
     while pending and (time.monotonic() - start < timeout):
         for slug in list(pending):
             rec = _persist.get_pane(session_root, slug)
-            if _p._is_done(
+            if _is_done(
                 session_root,
                 slug,
                 pane_record=rec,
@@ -445,12 +442,11 @@ def wait_all_worker_panes(
     Yields ``{"done": slug, "method": ...}`` as each pane completes.
     Raises ``PaneTimeoutError`` (with the first timed-out slug) on timeout.
     """
-    # Access functions through dgov.panes so test mocks propagate
-    import dgov.panes as _p
     import dgov.persistence as _persist
+    from dgov.status import list_worker_panes
 
     session_root = os.path.abspath(session_root or project_root)
-    panes = _p.list_worker_panes(project_root, session_root=session_root)
+    panes = list_worker_panes(project_root, session_root=session_root)
     pending = {p["slug"] for p in panes if not p["done"]}
     if not pending:
         return

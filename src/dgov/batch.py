@@ -291,7 +291,7 @@ def run_batch(
     Tasks are ordered by explicit depends_on and implicit touch overlap.
     On failure, transitive dependents are skipped; unrelated branches continue.
     """
-    import dgov.panes as _p
+    from dgov.lifecycle import create_worker_pane
     from dgov.merger import merge_worker_pane
 
     project_root, tasks = _parse_spec(spec_path)
@@ -324,7 +324,7 @@ def run_batch(
                 continue
 
             try:
-                pane = _p.create_worker_pane(
+                pane = create_worker_pane(
                     project_root=project_root,
                     prompt=task["prompt"],
                     agent=task.get("agent", "claude"),

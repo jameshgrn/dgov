@@ -240,7 +240,7 @@ def check_stale_worktrees(project_root: str) -> CheckResult:
         )
 
     # Check which worktrees have matching pane state
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, include_freshness=False)
     pane_worktrees = {p.get("worktree_path") for p in panes}
@@ -273,7 +273,7 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
             message="No file touches declared",
         )
 
-    from dgov.panes import list_worker_panes
+    from dgov.status import list_worker_panes
 
     root = Path(project_root).resolve()
     panes = list_worker_panes(project_root, include_freshness=False)
@@ -338,7 +338,7 @@ def check_agent_concurrency(
             critical=False,
             message=f"No concurrency limit for {agent}",
         )
-    from dgov.panes import _count_active_agent_workers
+    from dgov.status import _count_active_agent_workers
 
     session_root_resolved = os.path.abspath(session_root or project_root)
     active = _count_active_agent_workers(session_root_resolved, agent)

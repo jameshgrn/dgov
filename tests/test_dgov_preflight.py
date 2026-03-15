@@ -208,7 +208,7 @@ def test_check_stale_worktrees_found(monkeypatch: pytest.MonkeyPatch, tmp_path) 
         return mock
 
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-    monkeypatch.setattr("dgov.panes.list_worker_panes", lambda *a, **kw: [])
+    monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
     r = check_stale_worktrees(str(tmp_path))
     assert r.passed is False
     assert "stale" in r.message.lower()
@@ -220,7 +220,7 @@ def test_check_stale_worktrees_found(monkeypatch: pytest.MonkeyPatch, tmp_path) 
 
 
 def test_check_file_locks_clean(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    monkeypatch.setattr("dgov.panes.list_worker_panes", lambda *a, **kw: [])
+    monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
     r = check_file_locks(str(tmp_path), ["src/foo.py"])
     assert r.passed is True
 
@@ -238,7 +238,7 @@ def test_check_file_locks_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
         mock.returncode = 0
         return mock
 
-    monkeypatch.setattr("dgov.panes.list_worker_panes", fake_panes)
+    monkeypatch.setattr("dgov.status.list_worker_panes", fake_panes)
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
     r = check_file_locks(str(tmp_path), ["src/foo.py"])
     assert r.passed is False
@@ -283,7 +283,7 @@ def test_check_agent_concurrency_blocks_when_limit_reached(
             max_concurrent=2,
         )
     }
-    monkeypatch.setattr("dgov.panes._count_active_agent_workers", lambda sr, agent: 2)
+    monkeypatch.setattr("dgov.status._count_active_agent_workers", lambda sr, agent: 2)
     r = check_agent_concurrency("/tmp/repo", "pi", session_root="/tmp/session", registry=registry)
     assert r.passed is False
     assert "max 2" in r.message
@@ -302,7 +302,7 @@ def test_check_agent_concurrency_passes_under_limit(
             max_concurrent=2,
         )
     }
-    monkeypatch.setattr("dgov.panes._count_active_agent_workers", lambda sr, agent: 1)
+    monkeypatch.setattr("dgov.status._count_active_agent_workers", lambda sr, agent: 1)
     r = check_agent_concurrency("/tmp/repo", "pi", session_root="/tmp/session", registry=registry)
     assert r.passed is True
 
@@ -723,7 +723,7 @@ class TestCheckStaleWorktreesEdgeCases:
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
         monkeypatch.setattr(
-            "dgov.panes.list_worker_panes",
+            "dgov.status.list_worker_panes",
             lambda *a, **kw: [{"worktree_path": wt}],
         )
         r = check_stale_worktrees(str(tmp_path))
@@ -738,7 +738,7 @@ class TestCheckStaleWorktreesEdgeCases:
 
 class TestCheckFileLocksEdgeCases:
     def test_lock_file_on_disk(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-        monkeypatch.setattr("dgov.panes.list_worker_panes", lambda *a, **kw: [])
+        monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
         lock = tmp_path / "src" / "foo.py.lock"
         lock.parent.mkdir(parents=True)
         lock.touch()
@@ -748,7 +748,7 @@ class TestCheckFileLocksEdgeCases:
 
     def test_pane_worktree_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         monkeypatch.setattr(
-            "dgov.panes.list_worker_panes",
+            "dgov.status.list_worker_panes",
             lambda *a, **kw: [{"slug": "t1", "worktree_path": "/nonexistent/path"}],
         )
         r = check_file_locks(str(tmp_path), ["src/foo.py"])
@@ -756,7 +756,7 @@ class TestCheckFileLocksEdgeCases:
 
     def test_pane_no_worktree_key(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         monkeypatch.setattr(
-            "dgov.panes.list_worker_panes",
+            "dgov.status.list_worker_panes",
             lambda *a, **kw: [{"slug": "t1"}],
         )
         r = check_file_locks(str(tmp_path), ["src/foo.py"])
@@ -768,7 +768,7 @@ class TestCheckFileLocksEdgeCases:
         wt = tmp_path / "wt"
         wt.mkdir()
         monkeypatch.setattr(
-            "dgov.panes.list_worker_panes",
+            "dgov.status.list_worker_panes",
             lambda *a, **kw: [{"slug": "t1", "worktree_path": str(wt)}],
         )
         monkeypatch.setattr(
