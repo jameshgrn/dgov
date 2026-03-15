@@ -91,9 +91,9 @@ COLUMNS = [
     ("slug", 20),
     ("agent", 10),
     ("state", 12),
-    ("activity", 40),
+    ("activity", 25),
     ("duration", 10),
-    ("prompt", 30),
+    ("prompt", 40),
 ]
 
 
