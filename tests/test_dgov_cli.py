@@ -590,7 +590,7 @@ class TestTopLevelCommands:
             return_value={"rebased": True, "base": "main"},
         ) as mock_rebase:
             rebase = runner.invoke(cli, ["rebase", "--project-root", "/repo", "--onto", "develop"])
-        with patch("dgov.cli.detect_installed_agents", return_value=["claude"]):
+        with patch("dgov.cli.admin.detect_installed_agents", return_value=["claude"]):
             agents = runner.invoke(cli, ["agents"])
         version = runner.invoke(cli, ["version"])
 
