@@ -292,7 +292,7 @@ class TestBuildLaunchCommand:
 
     def test_no_prompt_returns_base(self) -> None:
         cmd = build_launch_command("claude", None)
-        assert cmd == "claude"
+        assert cmd == "claude -p"
 
     def test_no_prompt_uses_no_prompt_command(self) -> None:
         cmd = build_launch_command("claude", None)
