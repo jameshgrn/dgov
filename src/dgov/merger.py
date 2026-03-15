@@ -548,13 +548,14 @@ def merge_worker_pane(
     project_root: str,
     slug: str,
     session_root: str | None = None,
-    resolve: str = "agent",
+    resolve: str = "skip",
     squash: bool = True,
 ) -> dict:
     """Merge a worker pane's branch with configurable conflict resolution.
 
     Fast path: git merge --ff-only (clean, no conflicts possible).
     Conflict path depends on ``resolve``:
+        - "skip": return an error with conflict details and leave the worktree untouched
         - "agent": spawn AI agent to auto-resolve, fall back to manual on failure
         - "manual": leave conflict markers, user resolves
 
@@ -705,7 +706,7 @@ def merge_worker_pane(
                 "conflicts": conflicts,
                 "hint": "Agent resolution failed. Resolve conflicts manually.",
             }
-        else:
+        if resolve == "manual":
             subprocess.run(
                 ["git", "-C", pane_project_root, "merge", "--no-commit", branch_name],
                 capture_output=True,
@@ -718,6 +719,15 @@ def merge_worker_pane(
                 "resolve": "manual",
                 "hint": "Conflict markers left in working tree. Resolve manually.",
             }
+        if resolve == "skip":
+            return {
+                "error": f"Merge conflict in {branch_name}",
+                "slug": slug,
+                "branch": branch_name,
+                "conflicts": conflicts,
+                "hint": "Re-run with --resolve agent or --resolve manual.",
+            }
+        return {"error": f"Unknown resolve strategy: {resolve}"}
 
     error_msg = merge.stderr.strip() if merge.stderr else f"Merge failed for {branch_name}"
     _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)

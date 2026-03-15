@@ -253,6 +253,40 @@ def test_worker_pane_success_with_merge(tmp_path):
             assert "not found" not in str(result.get("error", ""))
 
 
+def test_worker_pane_skip_returns_conflict_error():
+    """Test skip strategy returns conflict details without starting manual resolution."""
+    from dgov.merger import MergeResult, merge_worker_pane
+
+    mock_pane = {
+        "slug": "test-slug",
+        "branch_name": "test-branch",
+        "project_root": "/fake/project",
+        "worktree_path": "",
+        "state": "done",
+        "base_sha": "",
+    }
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=mock_pane),
+        patch("dgov.merger._commit_worktree", return_value={}),
+        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.merger._plumbing_merge", return_value=MergeResult(False, "conflict")),
+        patch("dgov.merger._detect_conflicts", return_value=["test.py"]),
+        patch("dgov.persistence.update_pane_state"),
+        patch("subprocess.run") as mock_run,
+    ):
+        result = merge_worker_pane("/fake/project", "test-slug", resolve="skip")
+
+    assert result == {
+        "error": "Merge conflict in test-branch",
+        "slug": "test-slug",
+        "branch": "test-branch",
+        "conflicts": ["test.py"],
+        "hint": "Re-run with --resolve agent or --resolve manual.",
+    }
+    mock_run.assert_not_called()
+
+
 @patch("subprocess.run")
 def test_lint_fix_calls_ruff(mock_subprocess, tmp_path):
     """Test that linting uses ruff when available."""

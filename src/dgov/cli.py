@@ -452,9 +452,9 @@ def pane_close(slug, project_root, session_root, force):
 @SESSION_ROOT_OPTION
 @click.option(
     "--resolve",
-    type=click.Choice(["agent", "manual"]),
-    default="agent",
-    help="Conflict resolution: agent (auto-resolve), manual (markers)",
+    type=click.Choice(["skip", "agent", "manual"]),
+    default="skip",
+    help="Conflict resolution: skip (error), agent (auto-resolve), manual (markers)",
 )
 @click.option(
     "--squash/--no-squash",
@@ -592,8 +592,8 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 @SESSION_ROOT_OPTION
 @click.option(
     "--resolve",
-    type=click.Choice(["agent", "manual"]),
-    default="agent",
+    type=click.Choice(["skip", "agent", "manual"]),
+    default="skip",
     help="Conflict resolution strategy",
 )
 @click.option(
