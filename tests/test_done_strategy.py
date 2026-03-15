@@ -80,8 +80,10 @@ class TestDoneStrategy:
 
 
 class TestBuiltinStrategies:
-    def test_claude_has_no_strategy(self) -> None:
-        assert AGENT_REGISTRY["claude"].done_strategy is None
+    def test_claude_commit_strategy(self) -> None:
+        ds = AGENT_REGISTRY["claude"].done_strategy
+        assert ds is not None
+        assert ds.type == "commit"
 
     def test_codex_exit_strategy(self) -> None:
         ds = AGENT_REGISTRY["codex"].done_strategy
