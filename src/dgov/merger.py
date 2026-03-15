@@ -228,7 +228,7 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
 
     # ruff check --fix
     check = subprocess.run(
-        ["ruff", "check", "--fix", "--quiet", *abs_files],
+        ["uv", "run", "ruff", "check", "--fix", "--quiet", *abs_files],
         capture_output=True,
         text=True,
         cwd=project_root,
@@ -238,7 +238,7 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
 
     # ruff format
     subprocess.run(
-        ["ruff", "format", "--quiet", *abs_files],
+        ["uv", "run", "ruff", "format", "--quiet", *abs_files],
         capture_output=True,
         text=True,
         cwd=project_root,
