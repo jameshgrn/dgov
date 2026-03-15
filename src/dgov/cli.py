@@ -131,6 +131,17 @@ def cli(ctx, governor):
             write_project_config(project_root, "governor_permissions", perm)
         return agent_id, perm
 
+    governor_prompt = (
+        "You are the dgov governor for this repo. "
+        "Use dgov CLI commands to orchestrate work:\n"
+        '  dgov pane create -a <agent> -p "<task>" -r .   # dispatch a worker\n'
+        "  dgov pane wait <slug>                            # wait for completion\n"
+        "  dgov pane review <slug>                          # inspect the diff\n"
+        "  dgov pane merge <slug>                           # merge to main\n"
+        "  dgov pane close <slug>                           # cleanup\n"
+        "Never edit source files directly. Dispatch workers instead."
+    )
+
     if os.environ.get("TMUX"):
         from dgov.art import print_banner
 
@@ -148,7 +159,9 @@ def cli(ctx, governor):
 
         agent_id, perm = _resolve_governor()
         registry = load_registry(project_root)
-        cmd = build_launch_command(agent_id, prompt=None, permission_mode=perm, registry=registry)
+        cmd = build_launch_command(
+            agent_id, prompt=governor_prompt, permission_mode=perm, registry=registry
+        )
         parts = cmd.split()
         os.execvp(parts[0], parts)
     else:
@@ -168,7 +181,7 @@ def cli(ctx, governor):
         agent_id, perm = _resolve_governor()
         registry = load_registry(project_root)
         launch_cmd = build_launch_command(
-            agent_id, prompt=None, permission_mode=perm, registry=registry
+            agent_id, prompt=governor_prompt, permission_mode=perm, registry=registry
         )
         subprocess.run(
             ["tmux", "send-keys", "-t", session_name, launch_cmd, "Enter"],
