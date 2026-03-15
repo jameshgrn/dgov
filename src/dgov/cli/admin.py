@@ -69,7 +69,14 @@ def status(project_root, session_root):
     panes = list_worker_panes(project_root, session_root=session_root)
     click.echo(
         json.dumps(
-            {"panes": panes, "total": len(panes), "alive": sum(1 for p in panes if p["alive"])},
+            {
+                "panes": panes,
+                "total": len(panes),
+                "alive": sum(1 for p in panes if p["alive"]),
+                "done": sum(1 for p in panes if p.get("state") == "done"),
+                "merged": sum(1 for p in panes if p.get("state") == "merged"),
+                "failed": sum(1 for p in panes if p.get("state") == "failed"),
+            },
             indent=2,
         )
     )
