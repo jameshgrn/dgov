@@ -668,12 +668,9 @@ def pane_list(project_root, session_root, as_json, verbose):
 
     panes = list_worker_panes(project_root, session_root=session_root)
 
-    if as_json:
+    if as_json or os.environ.get("DGOV_JSON"):
         click.echo(json.dumps(panes, indent=2))
         return
-
-    if not sys.stdout.isatty():
-        click.echo("hint: use --json for machine-readable output", err=True)
 
     if not panes:
         click.echo("No panes.")
