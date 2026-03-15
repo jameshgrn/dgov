@@ -11,6 +11,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Generator
 from pathlib import Path
 
 from dgov.persistence import STATE_DIR, emit_event
@@ -183,7 +184,7 @@ def run_experiment(
         )
     except PaneTimeoutError:
         duration_s = time.monotonic() - start_time
-        result = {
+        result: dict[str, object] = {
             "id": exp_id,
             "hypothesis": program_text[:200],
             "metric_name": metric_name,
@@ -279,7 +280,7 @@ def run_experiment_loop(
     direction: str = "minimize",
     session_root: str | None = None,
     timeout: int = 600,
-) -> dict:
+) -> Generator[dict, None, dict]:
     """Run an experiment loop up to *budget* times.
 
     After each experiment, reads follow_ups from the log to pick the next
