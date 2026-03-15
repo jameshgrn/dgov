@@ -6,12 +6,13 @@ import os
 import shlex
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import click
 
 from dgov.agents import detect_installed_agents
 
-SESSION_ROOT_OPTION = click.option(
+SESSION_ROOT_OPTION: Any = click.option(
     "--session-root",
     "-S",
     default=None,
