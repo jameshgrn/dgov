@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -300,3 +301,49 @@ def capture_worker_output(
         return None
 
     return get_backend().capture_output(pane_id, lines)
+
+
+# -- ANSI stripping (lightweight, no curses dependency) --
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None:
+    """Read the last *lines* lines from ``.dgov/logs/<slug>.log``.
+
+    Seeks from the end of the file so large logs aren't fully loaded.
+    Returns ``None`` if the log file doesn't exist.
+    ANSI escape codes are stripped and the text is decoded with
+    ``errors='replace'``.
+    """
+    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
+    if not log_path.exists():
+        return None
+
+    try:
+        size = log_path.stat().st_size
+        if size == 0:
+            return ""
+
+        # Read a chunk from the end; 512 bytes per line is a generous estimate.
+        chunk_size = min(size, lines * 512)
+        with open(log_path, "rb") as f:
+            f.seek(max(0, size - chunk_size))
+            raw = f.read()
+
+        text = raw.decode("utf-8", errors="replace")
+
+        # If we didn't read from the start, drop the first (likely partial) line
+        if chunk_size < size:
+            first_nl = text.find("\n")
+            if first_nl != -1:
+                text = text[first_nl + 1 :]
+
+        tail_lines = text.splitlines()[-lines:]
+        return _strip_ansi("\n".join(tail_lines))
+    except OSError:
+        return None
