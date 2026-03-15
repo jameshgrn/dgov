@@ -463,10 +463,6 @@ def _full_cleanup(
 
         if not skipped_worktree and wt:
             subprocess.run(
-                ["git", "-C", wt, "checkout", "."],
-                capture_output=True,
-            )
-            subprocess.run(
                 ["git", "-C", project_root, "worktree", "remove", "--force", wt],
                 capture_output=True,
             )
@@ -492,10 +488,6 @@ def _full_cleanup(
 
     get_backend().select_layout("tiled")
 
-    # 4. Remove from dgov state (after tmux kill and worktree removal)
-    if not skipped_worktree:
-        remove_pane(session_root, slug)
-
     return {"cleaned": True, "skipped_worktree": skipped_worktree, "branch_kept": branch_kept}
 
 
@@ -517,8 +509,10 @@ def close_worker_pane(
         target,
         skip_worktree_if_dirty=not force,
     )
-    update_pane_state(session_root, slug, "closed")
-    emit_event(session_root, "pane_closed", slug)
+    if not result.get("skipped_worktree"):
+        update_pane_state(session_root, slug, "closed")
+        emit_event(session_root, "pane_closed", slug)
+        remove_pane(session_root, slug)
     if result.get("branch_kept"):
         logger.info(
             "Branch %s was kept because it has unmerged commits. "

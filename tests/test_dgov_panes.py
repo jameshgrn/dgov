@@ -1116,7 +1116,8 @@ class TestFullCleanup:
 
         assert result["cleaned"] is True
         assert not (done_dir / "test").exists()
-        assert get_pane(str(tmp_path), "test") is None
+        # _full_cleanup no longer removes pane state — callers handle that
+        assert get_pane(str(tmp_path), "test") is not None
 
     def test_skips_worktree_if_dirty(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.lifecycle import _full_cleanup
@@ -1158,10 +1159,10 @@ class TestFullCleanup:
         wt_remove_cmds = [c for c in calls if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmds) == 0
 
-    def test_checkout_before_worktree_remove_on_clean(
+    def test_no_checkout_before_worktree_remove(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        """Verify git checkout . is called before worktree remove --force."""
+        """Verify git checkout . is NOT called — worktree remove --force suffices."""
         from dgov.lifecycle import _full_cleanup
 
         replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
@@ -1192,20 +1193,14 @@ class TestFullCleanup:
                 str(tmp_path), str(tmp_path), "test", pane_record, skip_worktree_if_dirty=False
             )
 
-        # Verify git checkout . is called first (on worktree path)
+        # git checkout . should NOT be called (data loss risk)
         checkout_cmd = [c for c in calls if "checkout" in c]
-        assert len(checkout_cmd) == 1
-        assert checkout_cmd[0] == ["git", "-C", str(wt), "checkout", "."]
+        assert len(checkout_cmd) == 0
 
-        # Verify worktree remove is called second
+        # worktree remove --force should still be called
         wt_remove_cmd = [c for c in calls if "worktree" in c and "remove" in c]
         assert len(wt_remove_cmd) == 1
         assert wt_remove_cmd[0][-1] == str(wt)
-
-        # checkout should come before worktree remove
-        checkout_idx = next(i for i, c in enumerate(calls) if "checkout" in c)
-        remove_idx = next(i for i, c in enumerate(calls) if "worktree" in c and "remove" in c)
-        assert checkout_idx < remove_idx
 
 
 # ---------------------------------------------------------------------------
