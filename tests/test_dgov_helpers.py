@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -18,6 +17,7 @@ from dgov.persistence import (
     _replace_all_panes,
     _update_pane_state,
     _validate_state,
+    read_events,
 )
 
 
@@ -57,16 +57,15 @@ class TestModels:
 
 
 class TestPaneHelpers:
-    def test_emit_event_appends_jsonl_record(self, tmp_path: Path) -> None:
+    def test_emit_event_appends_record(self, tmp_path: Path) -> None:
         _emit_event(str(tmp_path), "pane_created", "task-1", agent="claude")
 
-        events_path = tmp_path / ".dgov" / "events.jsonl"
-        record = json.loads(events_path.read_text().strip())
-
-        assert record["event"] == "pane_created"
-        assert record["pane"] == "task-1"
-        assert record["agent"] == "claude"
-        assert "ts" in record
+        events = read_events(str(tmp_path))
+        assert len(events) == 1
+        assert events[0]["event"] == "pane_created"
+        assert events[0]["pane"] == "task-1"
+        assert events[0]["agent"] == "claude"
+        assert "ts" in events[0]
 
     def test_emit_event_rejects_unknown_event(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Unknown event"):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,33 @@ from dgov.blame import (
 from dgov.persistence import read_events
 
 pytestmark = pytest.mark.unit
+
+
+def _insert_events(session_root: str, events: list[dict]) -> None:
+    """Insert events into SQLite state.db for testing."""
+    db_path = Path(session_root) / ".dgov" / "state.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        event TEXT NOT NULL,
+        pane TEXT NOT NULL,
+        data TEXT NOT NULL DEFAULT '{}')
+        """
+    )
+    for ev in events:
+        ts = ev.get("ts", "2026-01-01T00:00:00Z")
+        event = ev["event"]
+        pane = ev["pane"]
+        data = {k: v for k, v in ev.items() if k not in ("ts", "event", "pane")}
+        conn.execute(
+            "INSERT INTO events (ts, event, pane, data) VALUES (?, ?, ?, ?)",
+            (ts, event, pane, json.dumps(data)),
+        )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -50,42 +78,50 @@ class TestReadEvents:
     def test_missing_file_returns_empty(self, tmp_path: Path) -> None:
         assert read_events(str(tmp_path)) == []
 
-    def test_reads_jsonl(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir()
-        events_file = events_dir / "events.jsonl"
-        events_file.write_text(
-            json.dumps({"event": "pane_created", "pane": "fix-bug"})
-            + "\n"
-            + json.dumps({"event": "pane_merged", "pane": "fix-bug"})
-            + "\n"
+    def test_reads_events(self, tmp_path: Path) -> None:
+        _insert_events(
+            str(tmp_path),
+            [
+                {"event": "pane_created", "pane": "fix-bug"},
+                {"event": "pane_merged", "pane": "fix-bug"},
+            ],
         )
         events = read_events(str(tmp_path))
         assert len(events) == 2
         assert events[0]["event"] == "pane_created"
         assert events[1]["event"] == "pane_merged"
 
-    def test_warns_on_malformed_lines(self, tmp_path: Path, caplog) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir()
-        events_file = events_dir / "events.jsonl"
-        events_file.write_text(
-            "not valid json\n" + json.dumps({"event": "pane_created", "pane": "ok"}) + "\n" + "\n"
+    def test_skips_malformed_data(self, tmp_path: Path) -> None:
+        """Events with invalid JSON in data column still return core fields."""
+        db_path = tmp_path / ".dgov" / "state.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            event TEXT NOT NULL,
+            pane TEXT NOT NULL,
+            data TEXT NOT NULL DEFAULT '{}')
+            """
         )
+        conn.execute(
+            "INSERT INTO events (ts, event, pane, data) VALUES (?, ?, ?, ?)",
+            ("2026-01-01T00:00:00Z", "pane_created", "ok", "not valid json"),
+        )
+        conn.commit()
+        conn.close()
         events = read_events(str(tmp_path))
         assert len(events) == 1
         assert events[0]["pane"] == "ok"
-        assert "Malformed JSON" in caplog.text
 
     def test_filters_by_slug(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir()
-        events_file = events_dir / "events.jsonl"
-        events_file.write_text(
-            json.dumps({"event": "pane_created", "pane": "a"})
-            + "\n"
-            + json.dumps({"event": "pane_created", "pane": "b"})
-            + "\n"
+        _insert_events(
+            str(tmp_path),
+            [
+                {"event": "pane_created", "pane": "a"},
+                {"event": "pane_created", "pane": "b"},
+            ],
         )
         events = read_events(str(tmp_path), slug="a")
         assert len(events) == 1
@@ -99,8 +135,6 @@ class TestReadEvents:
 
 class TestBlameFileShaResolution:
     def _make_events(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
         events = [
             {
                 "event": "pane_created",
@@ -129,8 +163,7 @@ class TestBlameFileShaResolution:
                 "ts": "2026-01-02T01:00:00Z",
             },
         ]
-        events_file = events_dir / "events.jsonl"
-        events_file.write_text("".join(json.dumps(e) + "\n" for e in events))
+        _insert_events(str(tmp_path), events)
 
     def test_sha_matches_full_hash(self, tmp_path: Path) -> None:
         self._make_events(tmp_path)
@@ -168,10 +201,6 @@ class TestBlameFileShaResolution:
 class TestBlameFileSubjectFallback:
     def test_merge_branch_subject_extracts_slug(self, tmp_path: Path) -> None:
         # No events — fallback to subject parsing
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
-
         git_output = "COMMIT:deadbeef1234567 Merge branch 'fix-typo'\nsrc/bar.py\n"
         mock_result = MagicMock(returncode=0, stdout=git_output, stderr="")
 
@@ -185,10 +214,6 @@ class TestBlameFileSubjectFallback:
         assert result["history"][0]["prompt"] == ""
 
     def test_no_slug_from_subject(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
-
         git_output = "COMMIT:1111111 Initial commit\nREADME.md\n"
         mock_result = MagicMock(returncode=0, stdout=git_output, stderr="")
 
@@ -207,15 +232,13 @@ class TestBlameFileSubjectFallback:
 
 class TestBlameFileAgentFilter:
     def _setup(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
         events = [
             {"event": "pane_created", "pane": "pi-task", "agent": "pi", "prompt": "P1"},
             {"event": "pane_merged", "pane": "pi-task", "merge_sha": "aaaa111"},
             {"event": "pane_created", "pane": "claude-task", "agent": "claude", "prompt": "C1"},
             {"event": "pane_merged", "pane": "claude-task", "merge_sha": "bbbb222"},
         ]
-        (events_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        _insert_events(str(tmp_path), events)
 
     def test_filters_to_matching_agent(self, tmp_path: Path) -> None:
         self._setup(tmp_path)
@@ -262,15 +285,13 @@ class TestBlameFileAgentFilter:
 
 class TestBlameFileLastOnly:
     def test_last_only_true_returns_one(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
         events = [
             {"event": "pane_created", "pane": "t1", "agent": "pi", "prompt": "P1"},
             {"event": "pane_merged", "pane": "t1", "merge_sha": "aaa1111"},
             {"event": "pane_created", "pane": "t2", "agent": "claude", "prompt": "C1"},
             {"event": "pane_merged", "pane": "t2", "merge_sha": "bbb2222"},
         ]
-        (events_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        _insert_events(str(tmp_path), events)
 
         git_output = (
             "COMMIT:aaa1111 First change\nsrc/x.py\nCOMMIT:bbb2222 Second change\nsrc/x.py\n"
@@ -284,15 +305,13 @@ class TestBlameFileLastOnly:
         assert result["history"][0]["commit"] == "aaa1111"
 
     def test_last_only_false_returns_all(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
         events = [
             {"event": "pane_created", "pane": "t1", "agent": "pi", "prompt": "P1"},
             {"event": "pane_merged", "pane": "t1", "merge_sha": "aaa1111"},
             {"event": "pane_created", "pane": "t2", "agent": "claude", "prompt": "C1"},
             {"event": "pane_merged", "pane": "t2", "merge_sha": "bbb2222"},
         ]
-        (events_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        _insert_events(str(tmp_path), events)
 
         git_output = (
             "COMMIT:aaa1111 First change\nsrc/x.py\nCOMMIT:bbb2222 Second change\nsrc/x.py\n"
@@ -312,10 +331,6 @@ class TestBlameFileLastOnly:
 
 class TestBlameFileEmpty:
     def test_git_log_failure_returns_error(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
-
         mock_result = MagicMock(
             returncode=128,
             stdout="",
@@ -330,10 +345,6 @@ class TestBlameFileEmpty:
         assert "not a git repository" in result["error"]
 
     def test_no_commits_touching_file(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
-
         mock_result = MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("dgov.blame.subprocess.run", return_value=mock_result):
@@ -350,10 +361,6 @@ class TestBlameFileEmpty:
 
 class TestBlameFileFilesInChange:
     def test_counts_files_per_commit(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
-
         git_output = "COMMIT:aaa1111 Big refactor\nsrc/a.py\nsrc/b.py\nsrc/c.py\n"
         mock_result = MagicMock(returncode=0, stdout=git_output, stderr="")
 
@@ -372,13 +379,11 @@ class TestBlameFileFilesInChange:
 class TestBlameFileMixedResolution:
     def test_sha_resolution_then_subject_fallback(self, tmp_path: Path) -> None:
         """First commit resolved via SHA lookup, second via subject line."""
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
         events = [
             {"event": "pane_created", "pane": "known-slug", "agent": "pi", "prompt": "Fix it"},
             {"event": "pane_merged", "pane": "known-slug", "merge_sha": "sha1234"},
         ]
-        (events_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        _insert_events(str(tmp_path), events)
 
         git_output = (
             "COMMIT:sha1234 Fix something\nsrc/f.py\n"
@@ -578,8 +583,6 @@ class TestGroupBlameLines:
 
 class TestBlameLines:
     def _make_events(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
         events = [
             {"event": "pane_created", "pane": "fix-lint", "agent": "pi", "prompt": "Fix lint"},
             {
@@ -588,7 +591,7 @@ class TestBlameLines:
                 "merge_sha": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
             },
         ]
-        (events_dir / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+        _insert_events(str(tmp_path), events)
 
     def test_attributes_lines_to_agent(self, tmp_path: Path) -> None:
         self._make_events(tmp_path)
@@ -608,10 +611,6 @@ class TestBlameLines:
         assert first["agent"] == "pi"
 
     def test_file_not_found(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
-
         result = blame_lines(str(tmp_path), "nope.py", str(tmp_path))
         assert "error" in result
         assert result["lines"] == []
@@ -659,9 +658,6 @@ class TestBlameLines:
 
     def test_fallback_to_author(self, tmp_path: Path) -> None:
         """Lines with no agent attribution should show git author."""
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
         (tmp_path / "src").mkdir(exist_ok=True)
         (tmp_path / "src" / "foo.py").write_text("a\nb\n")
 
@@ -680,9 +676,6 @@ class TestBlameLines:
             assert group["agent"] == ""
 
     def test_git_blame_failure(self, tmp_path: Path) -> None:
-        events_dir = tmp_path / ".dgov"
-        events_dir.mkdir(parents=True, exist_ok=True)
-        (events_dir / "events.jsonl").write_text("")
         (tmp_path / "bad.py").write_text("")
 
         blame_mock = MagicMock(returncode=128, stdout="", stderr="fatal: not a git repository")
