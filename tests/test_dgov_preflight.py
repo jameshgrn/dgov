@@ -160,7 +160,7 @@ def test_check_deps_ok(monkeypatch: pytest.MonkeyPatch) -> None:
         return mock
 
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-    r = check_deps()
+    r = check_deps("/tmp/project")
     assert r.passed is True
 
 
@@ -173,7 +173,7 @@ def test_check_deps_missing(monkeypatch: pytest.MonkeyPatch) -> None:
         return mock
 
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-    r = check_deps()
+    r = check_deps("/tmp/project")
     assert r.passed is False
     assert r.fixable is True
 
@@ -515,7 +515,7 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
 
 
 def test_fix_preflight_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("dgov.preflight._fix_deps", lambda: True)
+    monkeypatch.setattr("dgov.preflight._fix_deps", lambda pr: True)
     monkeypatch.setattr(
         "dgov.preflight.check_deps",
         lambda *a, **kw: CheckResult("deps", True, False, "synced"),
@@ -654,7 +654,7 @@ class TestCheckDepsEdgeCases:
             raise FileNotFoundError("uv")
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-        r = check_deps()
+        r = check_deps("/tmp/project")
         assert r.passed is False
         assert "uv not found" in r.message
 
@@ -665,7 +665,7 @@ class TestCheckDepsEdgeCases:
             raise sp.TimeoutExpired(cmd, 30)
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-        r = check_deps()
+        r = check_deps("/tmp/project")
         assert r.passed is False
         assert "timed out" in r.message
 
@@ -677,7 +677,7 @@ class TestCheckDepsEdgeCases:
             return mock
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-        r = check_deps()
+        r = check_deps("/tmp/project")
         assert r.passed is False
         assert "Resolution" in r.message
 
@@ -690,7 +690,7 @@ class TestCheckDepsEdgeCases:
             return mock
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-        r = check_deps()
+        r = check_deps("/tmp/project")
         assert r.passed is False
 
 
@@ -792,7 +792,7 @@ class TestFixHelpers:
             return mock
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-        assert _fix_deps() is True
+        assert _fix_deps("/tmp/repo") is True
 
     def test_fix_deps_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import subprocess as sp
@@ -801,7 +801,7 @@ class TestFixHelpers:
             "dgov.preflight.subprocess.run",
             lambda cmd, **kw: (_ for _ in ()).throw(sp.TimeoutExpired(cmd, 120)),
         )
-        assert _fix_deps() is False
+        assert _fix_deps("/tmp/repo") is False
 
     def test_fix_stale_worktrees_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_run(cmd, **kwargs):
@@ -829,7 +829,7 @@ class TestFixHelpers:
 
 class TestFixPreflightEdgeCases:
     def test_fix_deps(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.preflight._fix_deps", lambda: True)
+        monkeypatch.setattr("dgov.preflight._fix_deps", lambda pr: True)
         monkeypatch.setattr(
             "dgov.preflight.check_deps",
             lambda *a, **kw: CheckResult("deps", True, False, "synced"),
@@ -855,7 +855,7 @@ class TestFixPreflightEdgeCases:
         assert wt.passed is True
 
     def test_fix_fails_no_recheck(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.preflight._fix_deps", lambda: False)
+        monkeypatch.setattr("dgov.preflight._fix_deps", lambda pr: False)
         report = PreflightReport(
             checks=[CheckResult("deps", False, False, "out of sync", fixable=True)]
         )
