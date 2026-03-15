@@ -98,7 +98,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="gm",
         prompt_command="gemini",
         prompt_transport="option",
-        prompt_option="--prompt-interactive",
+        prompt_option="--prompt",
         permission_flags={
             "plan": "--approval-mode plan",
             "acceptEdits": "--approval-mode auto_edit",
@@ -106,7 +106,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
-        done_strategy=DoneStrategy(type="signal"),
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "opencode": AgentDef(
         id="opencode",
