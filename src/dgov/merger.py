@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from dgov.models import MergeResult
-from dgov.persistence import _PROTECTED_FILES, IllegalTransitionError
+from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
 
 logger = logging.getLogger(__name__)
 
@@ -454,7 +454,7 @@ def _commit_worktree(pane_record: dict) -> dict:
     if not status.stdout.strip(b"\x00"):
         return {"committed": False}
 
-    skip = _PROTECTED_FILES
+    skip = PROTECTED_FILES
     files_to_add = []
     entries = status.stdout.split(b"\x00")
     i = 0
@@ -520,7 +520,7 @@ def _restore_protected_files(project_root: str, pane_record: dict) -> None:
         return
 
     changed = set(diff_result.stdout.strip().splitlines())
-    to_restore = changed & _PROTECTED_FILES
+    to_restore = changed & PROTECTED_FILES
     if not to_restore:
         return
 
@@ -565,9 +565,10 @@ def merge_worker_pane(
     """
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
+    import dgov.persistence as _persist
 
     session_root = os.path.abspath(session_root or project_root)
-    target = _p._get_pane(session_root, slug)
+    target = _persist.get_pane(session_root, slug)
 
     if not target:
         return {"error": f"Pane not found: {slug}"}
@@ -585,7 +586,7 @@ def merge_worker_pane(
         "DGOV_BRANCH": branch_name or "",
         "DGOV_BASE_SHA": target.get("base_sha", ""),
         "DGOV_SLUG": slug,
-        "DGOV_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
+        "DGOVPROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
     }
     if not _p._trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
         _restore_protected_files(pane_project_root, target)
@@ -619,7 +620,7 @@ def merge_worker_pane(
 
     if merge.success:
         try:
-            _p._update_pane_state(session_root, slug, "merged")
+            _persist.update_pane_state(session_root, slug, "merged")
         except IllegalTransitionError as e:
             if e.current == "abandoned":
                 logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
@@ -631,7 +632,9 @@ def merge_worker_pane(
             text=True,
         )
         merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
-        _p._emit_event(session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name)
+        _persist.emit_event(
+            session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
+        )
         _p._full_cleanup(pane_project_root, session_root, slug, target)
 
         # Post-merge hook: lint, verify protected files, etc.
@@ -641,7 +644,7 @@ def merge_worker_pane(
             "DGOV_SLUG": slug,
             "DGOV_BRANCH": branch_name or "",
             "DGOV_CHANGED_FILES": "\n".join(changed_file_names),
-            "DGOV_PROTECTED_FILES": " ".join(sorted(_PROTECTED_FILES)),
+            "DGOVPROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
         }
         hook_ran = _p._trigger_hook("post_merge", pane_project_root, post_merge_env, timeout=30)
 
@@ -651,7 +654,7 @@ def merge_worker_pane(
         if not hook_ran:
             base_sha = target.get("base_sha", "")
             if base_sha:
-                for fname in _PROTECTED_FILES:
+                for fname in PROTECTED_FILES:
                     check = subprocess.run(
                         ["git", "-C", pane_project_root, "diff", base_sha, "HEAD", "--", fname],
                         capture_output=True,
@@ -680,14 +683,14 @@ def merge_worker_pane(
     conflicts = _detect_conflicts(pane_project_root, branch_name)
 
     if conflicts:
-        _p._update_pane_state(session_root, slug, "merge_conflict")
+        _persist.update_pane_state(session_root, slug, "merge_conflict")
         if resolve == "agent":
             resolved = _resolve_conflicts_with_agent(
                 pane_project_root, branch_name, target, session_root
             )
             if resolved:
                 try:
-                    _p._update_pane_state(session_root, slug, "merged")
+                    _persist.update_pane_state(session_root, slug, "merged")
                 except IllegalTransitionError as e:
                     if e.current == "abandoned":
                         logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
@@ -715,5 +718,5 @@ def merge_worker_pane(
             }
 
     error_msg = merge.stderr.strip() if merge.stderr else f"Merge failed for {branch_name}"
-    _p._emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
+    _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
     return {"error": error_msg}

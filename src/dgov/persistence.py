@@ -50,7 +50,7 @@ VALID_EVENTS = frozenset(
 )
 
 
-def _emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
+def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
     """Write a structured event to the events table in state.db."""
     from datetime import datetime, timezone
 
@@ -109,7 +109,7 @@ PANE_STATES = frozenset(
 )
 
 
-# Transition table: 12 states, enforced in _update_pane_state
+# Transition table: 12 states, enforced in update_pane_state
 VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "active": frozenset(
         {"done", "failed", "abandoned", "timed_out", "closed", "escalated", "superseded"}
@@ -165,8 +165,8 @@ class WorkerPane:
 
 # -- State DB helpers --
 
-_STATE_DIR = ".dgov"
-_PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
+STATE_DIR = ".dgov"
+PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
 _STATE_FILE = "state.db"
 
 _PANE_COLUMNS = frozenset(
@@ -211,8 +211,8 @@ CREATE TABLE IF NOT EXISTS events (
 """
 
 
-def _state_path(session_root: str) -> Path:
-    return Path(session_root) / _STATE_DIR / _STATE_FILE
+def state_path(session_root: str) -> Path:
+    return Path(session_root) / STATE_DIR / _STATE_FILE
 
 
 def _get_db(session_root: str) -> sqlite3.Connection:
@@ -222,7 +222,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     busy_timeout, and runs CREATE TABLE.  Subsequent calls return
     the cached connection.
     """
-    db_path = str(_state_path(session_root))
+    db_path = str(state_path(session_root))
     key = (db_path, threading.get_ident())
 
     with _conn_lock:
@@ -316,7 +316,7 @@ def _insert_pane_dict(conn: sqlite3.Connection, pane_dict: dict) -> None:
     )
 
 
-def _add_pane(session_root: str, pane: WorkerPane) -> None:
+def add_pane(session_root: str, pane: WorkerPane) -> None:
     def _do() -> None:
         conn = _get_db(session_root)
         _insert_pane_dict(conn, asdict(pane))
@@ -325,7 +325,7 @@ def _add_pane(session_root: str, pane: WorkerPane) -> None:
     _retry_on_lock(_do)
 
 
-def _remove_pane(session_root: str, slug: str) -> None:
+def remove_pane(session_root: str, slug: str) -> None:
     def _do() -> None:
         conn = _get_db(session_root)
         conn.execute("DELETE FROM panes WHERE slug = ?", (slug,))
@@ -334,21 +334,21 @@ def _remove_pane(session_root: str, slug: str) -> None:
     _retry_on_lock(_do)
 
 
-def _get_pane(session_root: str, slug: str) -> dict | None:
+def get_pane(session_root: str, slug: str) -> dict | None:
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def _all_panes(session_root: str) -> list[dict]:
+def all_panes(session_root: str) -> list[dict]:
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM panes").fetchall()
     return [_row_to_dict(row) for row in rows]
 
 
-def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool = False) -> None:
+def update_pane_state(session_root: str, slug: str, new_state: str, force: bool = False) -> None:
     """Update the state field of a pane record.
 
     Enforces VALID_TRANSITIONS unless *force* is True.
@@ -399,7 +399,7 @@ def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool
     _retry_on_lock(_do)
 
     # Update pane title to reflect new status.
-    pane = _get_pane(session_root, slug)
+    pane = get_pane(session_root, slug)
     if pane:
         pane_id = pane.get("pane_id", "")
         agent = pane.get("agent", "")
@@ -418,7 +418,7 @@ def _update_pane_state(session_root: str, slug: str, new_state: str, force: bool
                 pass  # pane may already be dead
 
 
-def _set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
+def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
     """Update metadata fields on a specific pane.
 
     Stores extra fields (like ``max_retries``, ``retried_from``, ``superseded_by``)
@@ -440,7 +440,7 @@ def _set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
     _retry_on_lock(_do)
 
 
-def _replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
+def replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
     """Replace all panes in the database with the given list.
 
     Intended for test setup where you need to establish a known state.

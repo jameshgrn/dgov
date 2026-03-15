@@ -10,10 +10,10 @@ from pathlib import Path
 
 from dgov.backend import get_backend
 from dgov.persistence import (
-    _STATE_DIR,
-    _all_panes,
-    _get_pane,
-    _remove_pane,
+    STATE_DIR,
+    all_panes,
+    get_pane,
+    remove_pane,
 )
 from dgov.waiter import _is_done
 
@@ -100,7 +100,7 @@ def _compute_freshness(project_root: str, pane_record: dict) -> dict:
 
 def _count_active_agent_workers(session_root: str, agent: str) -> int:
     """Count how many workers for *agent* are currently alive."""
-    panes = _all_panes(session_root)
+    panes = all_panes(session_root)
     all_tmux = get_backend().bulk_info()
     count = 0
     for p in panes:
@@ -127,7 +127,7 @@ def list_worker_panes(
     paths like dashboard refresh and preflight checks that don't need it.
     """
     session_root = os.path.abspath(session_root or project_root)
-    panes = _all_panes(session_root)
+    panes = all_panes(session_root)
     all_tmux = get_backend().bulk_info()
     result = []
     for p in panes:
@@ -141,7 +141,7 @@ def list_worker_panes(
             done = _is_done(session_root, slug, pane_record=p)
             if done:
                 # _is_done updated persistent state; reconcile local copy
-                updated = _get_pane(session_root, slug)
+                updated = get_pane(session_root, slug)
                 if updated:
                     state = updated.get("state", state)
         if include_freshness:
@@ -240,7 +240,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
 
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
-    panes = _all_panes(session_root)
+    panes = all_panes(session_root)
     pruned = []
 
     # Pass 1: prune stale state entries (existing behaviour)
@@ -251,16 +251,16 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
         wt = p.get("worktree_path", "")
         wt_exists = bool(wt) and Path(wt).exists()
         if not alive and not wt_exists:
-            _remove_pane(session_root, slug)
-            done_path = Path(session_root) / _STATE_DIR / "done" / slug
+            remove_pane(session_root, slug)
+            done_path = Path(session_root) / STATE_DIR / "done" / slug
             done_path.unlink(missing_ok=True)
             pruned.append(slug)
 
     # Pass 2: remove orphaned worktree dirs with no matching pane entry
-    worktrees_dir = Path(project_root) / _STATE_DIR / "worktrees"
+    worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
     if worktrees_dir.is_dir():
         # Re-read state after pass 1 removals
-        remaining_panes = _all_panes(session_root)
+        remaining_panes = all_panes(session_root)
         known_worktrees = {p.get("worktree_path") for p in remaining_panes}
         for entry in worktrees_dir.iterdir():
             if not entry.is_dir():
@@ -282,7 +282,7 @@ def capture_worker_output(
 ) -> str | None:
     """Capture the last N lines of a worker pane's output."""
     session_root = os.path.abspath(session_root or project_root)
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
 
     if not target or not target.get("pane_id"):
         return None

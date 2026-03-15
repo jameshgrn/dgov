@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from dgov.backend import get_backend
-from dgov.persistence import _STATE_DIR
+from dgov.persistence import STATE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +103,10 @@ def _is_done(
     """
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
+    import dgov.persistence as _persist
 
-    done_path = Path(session_root, _STATE_DIR, "done", slug)
-    exit_path = Path(session_root, _STATE_DIR, "done", slug + ".exit")
+    done_path = Path(session_root, STATE_DIR, "done", slug)
+    exit_path = Path(session_root, STATE_DIR, "done", slug + ".exit")
 
     # Signal 1a: done-signal file (clean exit)
     # The done file is authoritative — it is only written after the agent
@@ -116,7 +117,7 @@ def _is_done(
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
-        _p._update_pane_state(session_root, slug, "done", force=force)
+        _persist.update_pane_state(session_root, slug, "done", force=force)
         return True
 
     # Signal 1b: exit-code file (agent crashed / nonzero exit)
@@ -124,7 +125,7 @@ def _is_done(
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=exit_signal", "failed", slug)
-        _p._update_pane_state(session_root, slug, "failed", force=force)
+        _persist.update_pane_state(session_root, slug, "failed", force=force)
         return True
 
     if pane_record is None:
@@ -140,8 +141,8 @@ def _is_done(
         if has_commits:
             current_state = pane_record.get("state", "")
             force = current_state == "abandoned"
-            _p._update_pane_state(session_root, slug, "done", force=force)
-            _p._emit_event(session_root, "pane_done", slug)
+            _persist.update_pane_state(session_root, slug, "done", force=force)
+            _persist.emit_event(session_root, "pane_done", slug)
             # Touch done-signal so we don't re-emit
             done_path.parent.mkdir(parents=True, exist_ok=True)
             done_path.touch()
@@ -153,8 +154,8 @@ def _is_done(
         alive = get_backend().is_alive(pane_id)
         logger.debug("pane alive=%s slug=%s", alive, slug)
         if not alive:
-            _p._update_pane_state(session_root, slug, "abandoned")
-            _p._emit_event(session_root, "pane_done", slug)
+            _persist.update_pane_state(session_root, slug, "abandoned")
+            _persist.emit_event(session_root, "pane_done", slug)
             return True
 
     # Signal 4 (optional): output stabilization
@@ -174,7 +175,7 @@ def _is_done(
                     else:
                         done_path.parent.mkdir(parents=True, exist_ok=True)
                         done_path.touch()
-                        _p._update_pane_state(session_root, slug, "done")
+                        _persist.update_pane_state(session_root, slug, "done")
                         return True
             else:
                 _stable_state["last_output"] = current_output
@@ -238,6 +239,7 @@ def _poll_once(
     """
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
+    import dgov.persistence as _persist
 
     logger.debug("poll slug=%s", slug)
 
@@ -252,7 +254,7 @@ def _poll_once(
         _stable_state=stable_state,
     ):
         # Determine method: check if done file existed before we called _is_done
-        done_path = Path(session_root, _STATE_DIR, "done", slug)
+        done_path = Path(session_root, STATE_DIR, "done", slug)
         if done_path.exists():
             # Could be signal, commit, or stable — check stable_state to distinguish
             if stable_state.get("stable_since") is not None:
@@ -285,7 +287,7 @@ def _poll_once(
             rule = auto_respond(session_root, slug, current_output)
             if rule is None:
                 # No matching rule or cooldown — emit generic blocked event
-                _p._emit_event(session_root, "pane_blocked", slug, question=blocked_match)
+                _persist.emit_event(session_root, "pane_blocked", slug, question=blocked_match)
 
     return False, "", stable_state.get("last_output"), stable_state.get("stable_since")
 
@@ -301,12 +303,13 @@ def wait_for_slugs(
 ) -> set[str]:
     """Wait for a set of slugs to finish. Returns the set of slugs still pending at timeout."""
     import dgov.panes as _p
+    import dgov.persistence as _persist
 
     start = time.monotonic()
     pending = set(slugs)
     while pending and (time.monotonic() - start < timeout):
         for slug in list(pending):
-            rec = _p._get_pane(session_root, slug)
+            rec = _persist.get_pane(session_root, slug)
             if _p._is_done(session_root, slug, pane_record=rec):
                 pending.discard(slug)
         if pending:
@@ -332,12 +335,11 @@ def wait_worker_pane(
     state, consults the agent's retry policy and may automatically retry
     or escalate.
     """
-    # Access functions through dgov.panes so test mocks propagate
-    import dgov.panes as _p
+    import dgov.persistence as _persist
 
     logger.debug("wait_for_pane slug=%s timeout=%ds", slug, timeout)
     session_root = os.path.abspath(session_root or project_root)
-    pane_record = _p._get_pane(session_root, slug)
+    pane_record = _persist.get_pane(session_root, slug)
     start = time.monotonic()
     last_output: str | None = None
     stable_since: float | None = None
@@ -354,7 +356,7 @@ def wait_worker_pane(
         )
         if done:
             # Check if it failed and we should auto-retry
-            rec = _p._get_pane(session_root, slug)
+            rec = _persist.get_pane(session_root, slug)
             current_state = rec.get("state", "") if rec else ""
 
             if auto_retry and current_state in ("failed", "abandoned"):
@@ -366,7 +368,7 @@ def wait_worker_pane(
                     if new_slug:
                         # Continue waiting on the new pane
                         slug = new_slug
-                        pane_record = _p._get_pane(session_root, slug)
+                        pane_record = _persist.get_pane(session_root, slug)
                         last_output = None
                         stable_since = None
                         continue
@@ -378,8 +380,8 @@ def wait_worker_pane(
         elapsed = time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
             logger.warning("wait timed out slug=%s after=%.1fs", slug, elapsed)
-            _p._update_pane_state(session_root, slug, "timed_out")
-            _p._emit_event(session_root, "pane_timed_out", slug)
+            _persist.update_pane_state(session_root, slug, "timed_out")
+            _persist.emit_event(session_root, "pane_timed_out", slug)
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
             raise PaneTimeoutError(slug, timeout, agent)
         time.sleep(poll)
@@ -399,6 +401,7 @@ def wait_all_worker_panes(
     """
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
+    import dgov.persistence as _persist
 
     session_root = os.path.abspath(session_root or project_root)
     panes = _p.list_worker_panes(project_root, session_root=session_root)
@@ -413,7 +416,7 @@ def wait_all_worker_panes(
 
     while pending:
         for slug in list(pending):
-            rec = _p._get_pane(session_root, slug)
+            rec = _persist.get_pane(session_root, slug)
             last, since = stable_trackers.get(slug, (None, None))
             done, method, last, since = _poll_once(
                 session_root,
@@ -433,7 +436,7 @@ def wait_all_worker_panes(
         if timeout > 0 and elapsed >= timeout:
             pending_info = []
             for s in sorted(pending):
-                rec = _p._get_pane(session_root, s)
+                rec = _persist.get_pane(session_root, s)
                 pending_info.append(
                     {
                         "slug": s,
@@ -459,9 +462,9 @@ def interact_with_pane(session_root: str, slug: str, message: str) -> bool:
 
     Returns True if the message was sent, False if the pane wasn't found or dead.
     """
-    import dgov.panes as _p
+    import dgov.persistence as _persist
 
-    target = _p._get_pane(session_root, slug)
+    target = _persist.get_pane(session_root, slug)
     if not target:
         return False
 
@@ -481,9 +484,9 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
 
     Returns {"response": "YES"|"NO"|"unclear", "output": str}.
     """
-    import dgov.panes as _p
+    import dgov.persistence as _persist
 
-    target = _p._get_pane(session_root, slug)
+    target = _persist.get_pane(session_root, slug)
     if not target:
         return {"response": "error", "output": "Pane not found"}
 
@@ -512,10 +515,10 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
                 break
 
     if response == "YES":
-        done_path = Path(session_root) / _STATE_DIR / "done" / slug
+        done_path = Path(session_root) / STATE_DIR / "done" / slug
         done_path.parent.mkdir(parents=True, exist_ok=True)
         done_path.touch()
-        _p._update_pane_state(session_root, slug, "done")
+        _persist.update_pane_state(session_root, slug, "done")
 
     return {"response": response, "output": captured or ""}
 
@@ -526,21 +529,21 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
     Touches the appropriate signal file and updates state.
     Returns True on success, False if pane not found.
     """
-    import dgov.panes as _p
+    import dgov.persistence as _persist
 
-    target = _p._get_pane(session_root, slug)
+    target = _persist.get_pane(session_root, slug)
     if not target:
         return False
 
-    done_dir = Path(session_root) / _STATE_DIR / "done"
+    done_dir = Path(session_root) / STATE_DIR / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
 
     if signal == "done":
         (done_dir / slug).touch()
-        _p._update_pane_state(session_root, slug, "done")
+        _persist.update_pane_state(session_root, slug, "done")
     elif signal == "failed":
         (done_dir / f"{slug}.exit").write_text("manual")
-        _p._update_pane_state(session_root, slug, "failed")
+        _persist.update_pane_state(session_root, slug, "failed")
     else:
         raise ValueError(f"Unknown signal: {signal!r}. Must be 'done' or 'failed'.")
 

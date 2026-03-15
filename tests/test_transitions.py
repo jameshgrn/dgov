@@ -9,9 +9,6 @@ from dgov.persistence import (
     VALID_TRANSITIONS,
     IllegalTransitionError,
     WorkerPane,
-    _add_pane,
-    _get_pane,
-    _update_pane_state,
 )
 
 pytestmark = pytest.mark.unit

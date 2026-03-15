@@ -122,7 +122,7 @@ def auto_respond(
     Does NOT send for 'escalate' actions — the caller should handle those.
     """
     from dgov.backend import get_backend
-    from dgov.persistence import _STATE_DIR, _emit_event, _get_pane
+    from dgov.persistence import STATE_DIR, emit_event, get_pane
 
     if rules is None:
         rules = load_response_rules(session_root)
@@ -135,20 +135,20 @@ def auto_respond(
     if check_cooldown(slug, rule.pattern):
         return None
 
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
     if not target:
         return None
     pane_id = target.get("pane_id", "")
 
     if rule.action == "escalate":
-        _emit_event(session_root, "pane_blocked", slug, question=rule.pattern)
+        emit_event(session_root, "pane_blocked", slug, question=rule.pattern)
         record_cooldown(slug, rule.pattern)
         return rule
 
     if rule.action == "send":
         if pane_id and get_backend().is_alive(pane_id):
             get_backend().send_input(pane_id, rule.response)
-            _emit_event(
+            emit_event(
                 session_root,
                 "pane_auto_responded",
                 slug,
@@ -159,13 +159,13 @@ def auto_respond(
             return rule
 
     if rule.action in ("signal_done", "signal_failed"):
-        done_dir = Path(session_root) / _STATE_DIR / "done"
+        done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         if rule.action == "signal_done":
             (done_dir / slug).touch()
         else:
             (done_dir / f"{slug}.exit").write_text("auto_respond")
-        _emit_event(
+        emit_event(
             session_root,
             "pane_auto_responded",
             slug,

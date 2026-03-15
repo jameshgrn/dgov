@@ -399,10 +399,10 @@ def pane_create(
 
     # Store per-pane max_retries override in metadata
     if max_retries is not None:
-        from dgov.persistence import _set_pane_metadata
+        from dgov.persistence import set_pane_metadata
 
         session_root_abs = os.path.abspath(session_root or project_root)
-        _set_pane_metadata(session_root_abs, pane_obj.slug, max_retries=max_retries)
+        set_pane_metadata(session_root_abs, pane_obj.slug, max_retries=max_retries)
 
     result = {
         "slug": pane_obj.slug,
@@ -913,10 +913,10 @@ def pane_respond(slug, message, session_root):
 def pane_message(slug, text, project_root, session_root):
     """Send a message to a running worker pane."""
     from dgov.backend import get_backend
-    from dgov.persistence import _get_pane
+    from dgov.persistence import get_pane
 
     session_root = os.path.abspath(session_root or project_root)
-    pane = _get_pane(session_root, slug)
+    pane = get_pane(session_root, slug)
     if not pane:
         click.echo(json.dumps({"error": f"Pane not found: {slug}"}))
         sys.exit(1)
