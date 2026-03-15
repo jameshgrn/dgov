@@ -253,6 +253,19 @@ def create_worker_pane(
         for key, val in all_env.items():
             get_backend().send_input(pane_id, f"export {key}={val!r}")
 
+        # 6c. Export dgov state vars so worker processes can inspect them
+        dgov_env = {
+            "DGOV_ROOT": project_root,
+            "DGOV_SESSION_ROOT": session_root,
+            "DGOV_SLUG": slug,
+            "DGOV_AGENT": agent,
+            "DGOV_BRANCH": branch_name,
+            "DGOV_BASE_SHA": base_sha,
+            "DGOV_WORKTREE_PATH": worktree_path,
+        }
+        for key, val in dgov_env.items():
+            get_backend().send_input(pane_id, f"export {key}={val!r}")
+
         # 7. Trigger worktree_created hook
         hook_env = {
             "DGOV_ROOT": project_root,
@@ -589,6 +602,19 @@ def resume_worker_pane(
         for key, val in agent_def.env.items():
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
                 get_backend().send_input(pane_id, f"export {key}={val!r}")
+
+    # Export dgov state vars so worker processes can inspect them
+    dgov_env = {
+        "DGOV_ROOT": project_root,
+        "DGOV_SESSION_ROOT": session_root,
+        "DGOV_SLUG": slug,
+        "DGOV_AGENT": resume_agent,
+        "DGOV_BRANCH": branch_name,
+        "DGOV_BASE_SHA": target.get("base_sha", ""),
+        "DGOV_WORKTREE_PATH": worktree_path,
+    }
+    for key, val in dgov_env.items():
+        get_backend().send_input(pane_id, f"export {key}={val!r}")
 
     # Start persistent logging via tmux pipe-pane
     logs_dir = Path(session_root) / STATE_DIR / "logs"
