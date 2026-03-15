@@ -3,6 +3,7 @@
 
 Built-in agents: claude, codex, gemini, opencode, cline, qwen, amp,
 pi, cursor, copilot, crush.
+Pi-routed variants: pi-claude, pi-codex, pi-gemini, pi-openrouter.
 Users add custom agents via TOML config files.
 """
 
@@ -210,6 +211,46 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         color=219,
         done_strategy=DoneStrategy(type="stable", stable_seconds=30),
+    ),
+    "pi-claude": AgentDef(
+        id="pi-claude",
+        name="pi → Claude",
+        short_label="pc",
+        prompt_command="pi",
+        prompt_transport="positional",
+        default_flags="-p --provider anthropic --model claude-sonnet-4-20250514",
+        color=39,
+        done_strategy=DoneStrategy(type="exit"),
+    ),
+    "pi-codex": AgentDef(
+        id="pi-codex",
+        name="pi → OpenAI",
+        short_label="po",
+        prompt_command="pi",
+        prompt_transport="positional",
+        default_flags="-p --provider openai --model o3",
+        color=214,
+        done_strategy=DoneStrategy(type="exit"),
+    ),
+    "pi-gemini": AgentDef(
+        id="pi-gemini",
+        name="pi → Gemini",
+        short_label="pg",
+        prompt_command="pi",
+        prompt_transport="positional",
+        default_flags="-p --provider google --model gemini-2.5-pro",
+        color=135,
+        done_strategy=DoneStrategy(type="exit"),
+    ),
+    "pi-openrouter": AgentDef(
+        id="pi-openrouter",
+        name="pi → OpenRouter",
+        short_label="pr",
+        prompt_command="pi",
+        prompt_transport="positional",
+        default_flags="-p --provider openrouter",
+        color=208,
+        done_strategy=DoneStrategy(type="exit"),
     ),
 }
 
