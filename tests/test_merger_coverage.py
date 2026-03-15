@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from dgov.backend import set_backend
-from dgov.merger import _no_squash_merge, merge_worker_pane
+from dgov.merger import (
+    _lint_fix_merged_files,
+    _no_squash_merge,
+    _pick_resolver_agent,
+    _resolve_conflicts_with_agent,
+    _restore_protected_files,
+    merge_worker_pane,
+)
+from dgov.models import MergeResult
 from dgov.persistence import IllegalTransitionError, _close_cached_connections
 
 pytestmark = pytest.mark.unit
@@ -321,3 +330,395 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
     mock_emit_event.assert_not_called()
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
+
+
+def test_restore_protected_files_restores_claude_from_base_commit(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, "restore-direct")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-restore-direct")
+
+    (worktree / "CLAUDE.md").write_text("worker override\n")
+    (worktree / "worker.txt").write_text("keep this change\n")
+    _git(worktree, "add", "CLAUDE.md", "worker.txt")
+    _git(worktree, "commit", "-m", "worker clobbers protected file")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="restore-direct",
+        branch_name="dgov-restore-direct",
+        base_sha=base_sha,
+    )
+
+    _restore_protected_files(str(repo), pane)
+
+    assert (worktree / "CLAUDE.md").read_text() == "trusted instructions\n"
+    assert _git(worktree, "show", "HEAD:CLAUDE.md").stdout == "trusted instructions\n"
+    assert _git(worktree, "show", "HEAD:worker.txt").stdout == "keep this change\n"
+    assert _git(worktree, "diff", "--name-only", f"{base_sha}..HEAD").stdout.splitlines() == [
+        "worker.txt"
+    ]
+
+
+def test_merge_worker_pane_returns_error_when_branch_name_missing(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, "missing-branch")
+    pane = {
+        "slug": "missing-branch",
+        "pane_id": "%1",
+        "project_root": str(repo),
+        "worktree_path": str(repo),
+        "base_sha": _git(repo, "rev-parse", "HEAD").stdout.strip(),
+        "state": "done",
+    }
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane) as mock_get_pane,
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+    ):
+        result = merge_worker_pane(str(repo), "missing-branch", session_root=str(repo))
+
+    assert result == {"error": "Pane missing-branch is missing branch_name"}
+    mock_get_pane.assert_called_once_with(str(repo), "missing-branch")
+    mock_update_state.assert_not_called()
+    mock_emit_event.assert_not_called()
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_auto_commits_pending_worktree_changes(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    repo = _init_repo(tmp_path, "auto-commit")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-auto-commit")
+
+    (worktree / "worker.txt").write_text("committed by merge\n")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="auto-commit",
+        branch_name="dgov-auto-commit",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.panes._trigger_hook", return_value=True),
+    ):
+        result = merge_worker_pane(str(repo), "auto-commit", session_root=str(repo))
+
+    merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert result["merged"] == "auto-commit"
+    assert result["branch"] == "dgov-auto-commit"
+    assert result["files_changed"] == 1
+    assert result["auto_committed"] == ["worker.txt"]
+    assert (repo / "worker.txt").read_text() == "committed by merge\n"
+    mock_update_state.assert_called_once_with(str(repo), "auto-commit", "merged")
+    mock_emit_event.assert_called_once_with(
+        str(repo),
+        "pane_merged",
+        "auto-commit",
+        merge_sha=merge_sha,
+        branch="dgov-auto-commit",
+    )
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_allows_abandoned_transition_after_success(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    repo = _init_repo(tmp_path, "abandoned-pane")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-abandoned")
+
+    (worktree / "worker.txt").write_text("merged anyway\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "worker changes")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="abandoned-pane",
+        branch_name="dgov-abandoned",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch(
+            "dgov.persistence.update_pane_state",
+            side_effect=IllegalTransitionError("abandoned", "merged", "abandoned-pane"),
+        ) as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.panes._trigger_hook", return_value=True),
+    ):
+        result = merge_worker_pane(str(repo), "abandoned-pane", session_root=str(repo))
+
+    merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert result["merged"] == "abandoned-pane"
+    assert result["branch"] == "dgov-abandoned"
+    assert (repo / "worker.txt").read_text() == "merged anyway\n"
+    mock_update_state.assert_called_once_with(str(repo), "abandoned-pane", "merged")
+    mock_emit_event.assert_called_once_with(
+        str(repo),
+        "pane_merged",
+        "abandoned-pane",
+        merge_sha=merge_sha,
+        branch="dgov-abandoned",
+    )
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path, "manual-conflict")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-manual")
+
+    (worktree / "README.md").write_text("worker change\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "worker readme change")
+
+    (repo / "README.md").write_text("main change\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "main readme change")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="manual-pane",
+        branch_name="dgov-manual",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.panes._trigger_hook", return_value=True),
+    ):
+        result = merge_worker_pane(
+            str(repo), "manual-pane", session_root=str(repo), resolve="manual"
+        )
+
+    assert result["slug"] == "manual-pane"
+    assert result["branch"] == "dgov-manual"
+    assert result["resolve"] == "manual"
+    assert result["conflicts"]
+    assert "Resolve manually" in result["hint"]
+    assert (repo / ".git" / "MERGE_HEAD").exists()
+    assert "<<<<<<<" in (repo / "README.md").read_text()
+    mock_update_state.assert_called_once_with(str(repo), "manual-pane", "merge_conflict")
+    mock_emit_event.assert_not_called()
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_returns_unknown_resolve_error_for_conflict(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path, "unknown-resolve")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-unknown")
+
+    (worktree / "README.md").write_text("worker change\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "worker readme change")
+
+    (repo / "README.md").write_text("main change\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "main readme change")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="unknown-pane",
+        branch_name="dgov-unknown",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.panes._trigger_hook", return_value=True),
+    ):
+        result = merge_worker_pane(
+            str(repo), "unknown-pane", session_root=str(repo), resolve="bogus"
+        )
+
+    assert result == {"error": "Unknown resolve strategy: bogus"}
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    mock_update_state.assert_called_once_with(str(repo), "unknown-pane", "merge_conflict")
+    mock_emit_event.assert_not_called()
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_emits_failure_when_merge_fails_without_conflicts(
+    tmp_path: Path,
+) -> None:
+    repo = _init_repo(tmp_path, "merge-error")
+    pane = _pane_record(
+        repo,
+        repo,
+        slug="merge-error",
+        branch_name="dgov-missing",
+        base_sha=_git(repo, "rev-parse", "HEAD").stdout.strip(),
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch(
+            "dgov.merger._plumbing_merge", return_value=MergeResult(success=False, stderr="boom")
+        ),
+        patch("dgov.merger._detect_conflicts", return_value=[]),
+        patch("dgov.panes._trigger_hook", return_value=True),
+    ):
+        result = merge_worker_pane(str(repo), "merge-error", session_root=str(repo))
+
+    assert result == {"error": "boom"}
+    mock_update_state.assert_not_called()
+    mock_emit_event.assert_called_once_with(
+        str(repo), "pane_merge_failed", "merge-error", error="boom"
+    )
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_reports_protected_damage_and_lint_results(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    repo = _init_repo(tmp_path, "post-merge-fallback")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-post-merge")
+
+    (worktree / "CLAUDE.md").write_text("worker override\n")
+    (worktree / "worker.py").write_text("def worker( ):\n  return 1\n")
+    _git(worktree, "add", "CLAUDE.md", "worker.py")
+    _git(worktree, "commit", "-m", "worker changes")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="post-merge",
+        branch_name="dgov-post-merge",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": ["worker.py"]}),
+        patch("dgov.panes._trigger_hook", side_effect=[True, False]),
+    ):
+        result = merge_worker_pane(str(repo), "post-merge", session_root=str(repo))
+
+    merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert result["merged"] == "post-merge"
+    assert result["warning"] == "protected files changed: ['CLAUDE.md']"
+    assert result["lint_fixed"] == ["worker.py"]
+    assert (repo / "CLAUDE.md").read_text() == "worker override\n"
+    mock_update_state.assert_called_once_with(str(repo), "post-merge", "merged")
+    mock_emit_event.assert_called_once_with(
+        str(repo),
+        "pane_merged",
+        "post-merge",
+        merge_sha=merge_sha,
+        branch="dgov-post-merge",
+    )
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_resolve_conflicts_with_agent_commits_resolved_merge(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, "agent-resolve")
+    worktree = _add_worktree(repo, tmp_path, "dgov-agent")
+
+    (worktree / "README.md").write_text("worker change\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "worker readme change")
+
+    (repo / "README.md").write_text("main change\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "main readme change")
+
+    def _resolve_and_stage(**kwargs: str) -> SimpleNamespace:
+        (repo / "README.md").write_text("resolved change\n")
+        _git(repo, "add", "README.md")
+        return SimpleNamespace(slug=kwargs["slug"])
+
+    with (
+        patch("dgov.panes.create_worker_pane", side_effect=_resolve_and_stage),
+        patch("dgov.panes._is_done", return_value=True),
+        patch("dgov.panes.capture_worker_output", return_value=None),
+        patch("dgov.panes.close_worker_pane") as mock_close_worker_pane,
+    ):
+        resolved = _resolve_conflicts_with_agent(
+            str(repo), "dgov-agent", {"slug": "agent-pane"}, str(repo), timeout=1
+        )
+
+    assert resolved is True
+    assert (repo / "README.md").read_text() == "resolved change\n"
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
+    assert _git(repo, "log", "-1", "--pretty=%s").stdout.strip() == "Merge branch 'dgov-agent'"
+    mock_close_worker_pane.assert_called_once_with(
+        str(repo), "resolve-dgov-agent", session_root=str(repo)
+    )
+
+
+def test_pick_resolver_agent_prefers_available_binary() -> None:
+    def _fake_which(cmd: str) -> str | None:
+        if cmd == "codex":
+            return "/usr/bin/codex"
+        return None
+
+    with patch("shutil.which", side_effect=_fake_which):
+        assert _pick_resolver_agent() == "codex"
+
+
+def test_lint_fix_merged_files_formats_python_and_amends_commit(tmp_path: Path) -> None:
+    repo = _init_repo(tmp_path, "lint-fix")
+
+    (repo / "worker.py").write_text("def worker( ):\n  return 1\n")
+    _git(repo, "add", "worker.py")
+    _git(repo, "commit", "-m", "add worker module")
+
+    result = _lint_fix_merged_files(str(repo), ["worker.py"])
+
+    assert result == {"lint_fixed": ["worker.py"]}
+    assert (repo / "worker.py").read_text() == "def worker():\n    return 1\n"
+    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
