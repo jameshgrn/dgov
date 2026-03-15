@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -164,8 +163,7 @@ def cli(ctx, governor):
         cmd = build_launch_command(
             agent_id, prompt=governor_prompt, permission_mode=perm, registry=registry
         )
-        parts = shlex.split(cmd)
-        os.execvp(parts[0], parts)
+        os.execvp("sh", ["sh", "-c", cmd])
     else:
         # Ensure the per-repo tmux session exists, then hand off
         exists = subprocess.run(
