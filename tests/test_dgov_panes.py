@@ -3229,7 +3229,7 @@ class TestRunBatchLiveWait:
         def fake_get_pane(sr, slug):
             return {"slug": slug, "state": "done"}
 
-        def fake_is_done(sr, slug, pane_record=None):
+        def fake_is_done(sr, slug, pane_record=None, **_kw):
             return True
 
         with (
@@ -3309,7 +3309,7 @@ class TestRunBatchLiveWait:
                 branch_name=kw["slug"],
             )
 
-        def fake_is_done(sr, slug, pane_record=None):
+        def fake_is_done(sr, slug, pane_record=None, **_kw):
             return False
 
         with (

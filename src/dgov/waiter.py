@@ -131,6 +131,8 @@ def _is_done(
     if pane_record is None:
         return False
 
+    pane_id = pane_record.get("pane_id", "")
+
     # Signal 2: new commits on the branch
     project_root = pane_record.get("project_root", "")
     branch_name = pane_record.get("branch_name", "")
@@ -139,6 +141,9 @@ def _is_done(
         has_commits = _has_new_commits(project_root, branch_name, base_sha)
         logger.debug("new_commits=%s slug=%s", has_commits, slug)
         if has_commits:
+            if pane_id and _agent_still_running(pane_id):
+                logger.debug("new_commits slug=%s but agent still running", slug)
+                return False
             current_state = pane_record.get("state", "")
             force = current_state == "abandoned"
             _persist.update_pane_state(session_root, slug, "done", force=force)
@@ -149,14 +154,27 @@ def _is_done(
             return True
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
-    pane_id = pane_record.get("pane_id", "")
     if pane_id:
         alive = get_backend().is_alive(pane_id)
         logger.debug("pane alive=%s slug=%s", alive, slug)
         if not alive:
-            _persist.update_pane_state(session_root, slug, "abandoned")
-            _persist.emit_event(session_root, "pane_done", slug)
-            return True
+            # Grace period: only declare abandoned after 10s dead
+            if _stable_state is not None:
+                dead_since = _stable_state.get("dead_since")
+                if dead_since is None:
+                    _stable_state["dead_since"] = time.monotonic()
+                    logger.debug("pane first seen dead slug=%s", slug)
+                elif time.monotonic() - dead_since >= 10:
+                    _persist.update_pane_state(session_root, slug, "abandoned")
+                    _persist.emit_event(session_root, "pane_done", slug)
+                    return True
+            else:
+                _persist.update_pane_state(session_root, slug, "abandoned")
+                _persist.emit_event(session_root, "pane_done", slug)
+                return True
+        elif _stable_state is not None:
+            # Pane came back alive — reset dead tracking
+            _stable_state.pop("dead_since", None)
 
     # Signal 4 (optional): output stabilization
     if stable_seconds is not None and _stable_state is not None and pane_id:
@@ -232,10 +250,11 @@ def _poll_once(
     last_output: str | None,
     stable_since: float | None,
     stable: int,
-) -> tuple[bool, str, str | None, float | None]:
+    last_blocked: str | None = None,
+) -> tuple[bool, str, str | None, float | None, str | None]:
     """Single poll cycle shared by wait_worker_pane and wait_all_worker_panes.
 
-    Returns (is_done, method, last_output, stable_since).
+    Returns (is_done, method, last_output, stable_since, last_blocked).
     """
     # Access functions through dgov.panes so test mocks propagate
     import dgov.panes as _p
@@ -244,7 +263,11 @@ def _poll_once(
     logger.debug("poll slug=%s", slug)
 
     # Build stabilization state dict for unified _is_done
-    stable_state: dict = {"last_output": last_output, "stable_since": stable_since}
+    stable_state: dict = {
+        "last_output": last_output,
+        "stable_since": stable_since,
+        "last_blocked": last_blocked,
+    }
 
     if _p._is_done(
         session_root,
@@ -263,18 +286,21 @@ def _poll_once(
                     "stable",
                     stable_state.get("last_output"),
                     stable_state.get("stable_since"),
+                    stable_state.get("last_blocked"),
                 )
             return (
                 True,
                 "signal_or_commit",
                 stable_state.get("last_output"),
                 stable_state.get("stable_since"),
+                stable_state.get("last_blocked"),
             )
         return (
             True,
             "signal_or_commit",
             stable_state.get("last_output"),
             stable_state.get("stable_since"),
+            stable_state.get("last_blocked"),
         )
 
     # Check for blocked state and auto-respond if possible
@@ -286,10 +312,19 @@ def _poll_once(
 
             rule = auto_respond(session_root, slug, current_output)
             if rule is None:
-                # No matching rule or cooldown — emit generic blocked event
-                _persist.emit_event(session_root, "pane_blocked", slug, question=blocked_match)
+                # Only emit if this is a new blocked match
+                last_blocked = stable_state.get("last_blocked")
+                if blocked_match != last_blocked:
+                    stable_state["last_blocked"] = blocked_match
+                    _persist.emit_event(session_root, "pane_blocked", slug, question=blocked_match)
 
-    return False, "", stable_state.get("last_output"), stable_state.get("stable_since")
+    return (
+        False,
+        "",
+        stable_state.get("last_output"),
+        stable_state.get("stable_since"),
+        stable_state.get("last_blocked"),
+    )
 
 
 # -- Public wait API --
@@ -300,6 +335,7 @@ def wait_for_slugs(
     slugs: list[str],
     timeout: int = 600,
     poll: int = 3,
+    stable_seconds: int | None = None,
 ) -> set[str]:
     """Wait for a set of slugs to finish. Returns the set of slugs still pending at timeout."""
     import dgov.panes as _p
@@ -307,10 +343,17 @@ def wait_for_slugs(
 
     start = time.monotonic()
     pending = set(slugs)
+    stable_states: dict[str, dict] = {s: {} for s in slugs}
     while pending and (time.monotonic() - start < timeout):
         for slug in list(pending):
             rec = _persist.get_pane(session_root, slug)
-            if _p._is_done(session_root, slug, pane_record=rec):
+            if _p._is_done(
+                session_root,
+                slug,
+                pane_record=rec,
+                stable_seconds=stable_seconds,
+                _stable_state=stable_states[slug],
+            ):
                 pending.discard(slug)
         if pending:
             time.sleep(poll)
@@ -343,9 +386,10 @@ def wait_worker_pane(
     start = time.monotonic()
     last_output: str | None = None
     stable_since: float | None = None
+    last_blocked: str | None = None
 
     while True:
-        done, method, last_output, stable_since = _poll_once(
+        done, method, last_output, stable_since, last_blocked = _poll_once(
             session_root,
             project_root,
             slug,
@@ -353,6 +397,7 @@ def wait_worker_pane(
             last_output,
             stable_since,
             stable,
+            last_blocked,
         )
         if done:
             # Check if it failed and we should auto-retry
@@ -371,6 +416,7 @@ def wait_worker_pane(
                         pane_record = _persist.get_pane(session_root, slug)
                         last_output = None
                         stable_since = None
+                        last_blocked = None
                         continue
 
             elapsed = time.monotonic() - start
@@ -410,15 +456,15 @@ def wait_all_worker_panes(
         return
 
     start = time.monotonic()
-    stable_trackers: dict[str, tuple[str | None, float | None]] = {
-        s: (None, None) for s in pending
+    stable_trackers: dict[str, tuple[str | None, float | None, str | None]] = {
+        s: (None, None, None) for s in pending
     }
 
     while pending:
         for slug in list(pending):
             rec = _persist.get_pane(session_root, slug)
-            last, since = stable_trackers.get(slug, (None, None))
-            done, method, last, since = _poll_once(
+            last, since, blocked = stable_trackers.get(slug, (None, None, None))
+            done, method, last, since, blocked = _poll_once(
                 session_root,
                 project_root,
                 slug,
@@ -426,8 +472,9 @@ def wait_all_worker_panes(
                 last,
                 since,
                 stable,
+                blocked,
             )
-            stable_trackers[slug] = (last, since)
+            stable_trackers[slug] = (last, since, blocked)
             if done:
                 pending.discard(slug)
                 yield {"done": slug, "method": method}
