@@ -1265,13 +1265,20 @@ def checkpoint_list(project_root, session_root):
 @cli.command("batch")
 @click.argument("spec_path", type=click.Path(exists=True))
 @SESSION_ROOT_OPTION
-@click.option("--dry-run", is_flag=True, help="Show computed tiers without executing")
+@click.option("--dry-run", is_flag=True, help="Show DAG tiers without executing")
 def batch(spec_path, session_root, dry_run):
-    """Execute a batch spec with DAG-ordered parallelism."""
+    """Execute a batch spec (TOML or JSON) with DAG-ordered parallelism.
+
+    Tasks declare depends_on for explicit ordering and touches for implicit
+    file-overlap serialization. On failure, transitive dependents are skipped.
+    """
     from dgov.batch import run_batch
 
     result = run_batch(spec_path, session_root=session_root, dry_run=dry_run)
-    click.echo(json.dumps(result, indent=2))
+    if dry_run and result.get("ascii_dag"):
+        click.echo(result["ascii_dag"])
+    else:
+        click.echo(json.dumps(result, indent=2))
     if result.get("failed"):
         sys.exit(1)
 
