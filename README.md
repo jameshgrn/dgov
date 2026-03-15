@@ -45,7 +45,7 @@ dgov pane review <slug>
 dgov pane merge <slug>
 ```
 
-State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
+State and events live in `.dgov/state.db` (SQLite).
 
 ## Commands
 
@@ -123,8 +123,7 @@ User agents: `~/.dgov/agents.toml` (global) or `.dgov/agents.toml` (per-project)
 - `.dgov/agents.toml` — custom agent definitions
 - `.dgov/templates/` — prompt templates
 - `.dgov/batch/` — batch spec files
-- `.dgov/state.db` — SQLite state (auto-created)
-- `.dgov/events.jsonl` — event log
+- `.dgov/state.db` — SQLite state and events (auto-created)
 
 ## License
 

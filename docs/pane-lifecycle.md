@@ -19,7 +19,7 @@ Panels progress through a well-defined set of states:
 | `merged` | Changes merged into main branch |
 | `reviewed` | Diff has been reviewed but not yet merged |
 
-**Important**: A pane in `timed_out` state requires an explicit force transition to `done` before operations like `review`, `merge`, or `close` can be performed. Use `dgov pane signal <slug> done --force` to override this restriction.
+**Important**: A pane in `timed_out` state can transition to `done` or `merged` (e.g., if a late commit arrives). Every state change for a worker pane is validated against the `VALID_TRANSITIONS` table in `persistence.py`. This ensures that a pane cannot move, for example, from `merged` back to `active`. Illegal transitions raise `IllegalTransitionError`. Use `dgov pane signal <slug> done --force` to override if needed.
 
 ## Create
 

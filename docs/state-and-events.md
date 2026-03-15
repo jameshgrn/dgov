@@ -1,10 +1,10 @@
 # State and events
 
-dgov maintains a robust record of all operations in a SQLite database and an append-only event journal. This data is used for state persistence, progress tracking, and auditing (blame). State is SQLite-only (no JSON files); events are JSONL append-only.
+dgov maintains a robust record of all operations in a SQLite database. This data is used for state persistence, progress tracking, and auditing (blame). Both state and events are stored in `.dgov/state.db`.
 
 ## State database
 
-The primary state store is a **SQLite-only** database located at `.dgov/state.db`. There is no JSON state file — JSONL was removed entirely. The database uses **WAL (Write-Ahead Logging)** mode to allow concurrent access from multiple processes.
+The primary state store is a **SQLite-only** database located at `.dgov/state.db`. The database uses **WAL (Write-Ahead Logging)** mode to allow concurrent access from multiple processes.
 
 ### Table: `panes`
 
@@ -64,16 +64,16 @@ Illegal transitions raise `IllegalTransitionError(ValueError)`, which includes t
 
 ## Event journal
 
-The event journal is an append-only JSONL file at `.dgov/events.jsonl`. Every significant state change writes a structured event.
+The event journal is a dedicated `events` table in `.dgov/state.db`. Every significant state change writes a structured event.
 
-```json
-{
-  "ts": "2026-03-12T18:22:10.123456+00:00",
-  "event": "pane_created",
-  "pane": "fix-parser-1",
-  "agent": "claude"
-}
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Primary key. |
+| `ts` | TEXT | ISO 8601 timestamp. |
+| `event` | TEXT | Event type (e.g., `pane_created`). |
+| `pane` | TEXT | Slug of the associated pane. |
+| `agent` | TEXT | Agent ID. |
+| `data` | TEXT | JSON blob for event-specific metadata. |
 
 **Common event types:**
 - `pane_created`, `pane_done`, `pane_merged`, `pane_timed_out`.
@@ -83,7 +83,7 @@ The event journal is an append-only JSONL file at `.dgov/events.jsonl`. Every si
 
 ## Blame
 
-The `dgov blame` command uses the event journal and git history to attribute changes back to specific agents and tasks.
+The `dgov blame` command uses the event table and git history to attribute changes back to specific agents and tasks.
 
 ```bash
 dgov blame src/parser.py
@@ -92,11 +92,11 @@ dgov blame src/parser.py
 dgov resolves attribution by:
 1. Finding the last git commit that touched the file.
 2. Checking if the commit subject matches a merge pattern (`Merge branch '...'`).
-3. Mapping the branch name or commit hash back to a slug in the event journal.
+3. Mapping the branch name or commit hash back to a slug in the event table.
 
 ## Checkpoints
 
-A checkpoint is a snapshot of both the `state.db` and `events.jsonl`. Checkpoints are stored in `.dgov/checkpoints/<name>/`.
+A checkpoint is a snapshot of the `state.db` file. Checkpoints are stored in `.dgov/checkpoints/<name>/`.
 
 ```bash
 # Create a snapshot
