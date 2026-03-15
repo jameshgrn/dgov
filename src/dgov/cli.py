@@ -195,56 +195,6 @@ def pane_util(command, title, cwd):
     click.echo(json.dumps({"pane_id": pane_id, "command": command, "title": title}))
 
 
-@pane.command("lazygit")
-@click.option("--cwd", "-c", default=".", help="Working directory")
-def pane_lazygit(cwd):
-    """Launch lazygit in a utility pane."""
-    from dgov.tmux import create_utility_pane
-
-    pane_id = create_utility_pane("lazygit", "[util] lazygit", cwd=cwd)
-    click.echo(json.dumps({"pane_id": pane_id, "command": "lazygit", "title": "lazygit"}))
-
-
-@pane.command("yazi")
-@click.option("--cwd", "-c", default=".", help="Working directory")
-def pane_yazi(cwd):
-    """Launch yazi in a utility pane."""
-    from dgov.tmux import create_utility_pane
-
-    pane_id = create_utility_pane("yazi", "[util] yazi", cwd=cwd)
-    click.echo(json.dumps({"pane_id": pane_id, "command": "yazi", "title": "yazi"}))
-
-
-@pane.command("htop")
-@click.option("--cwd", "-c", default=".", help="Working directory")
-def pane_htop(cwd):
-    """Launch htop in a utility pane."""
-    from dgov.tmux import create_utility_pane
-
-    pane_id = create_utility_pane("htop", "[util] htop", cwd=cwd)
-    click.echo(json.dumps({"pane_id": pane_id, "command": "htop", "title": "htop"}))
-
-
-@pane.command("k9s")
-@click.option("--cwd", "-c", default=".", help="Working directory")
-def pane_k9s(cwd):
-    """Launch k9s in a utility pane."""
-    from dgov.tmux import create_utility_pane
-
-    pane_id = create_utility_pane("k9s", "[util] k9s", cwd=cwd)
-    click.echo(json.dumps({"pane_id": pane_id, "command": "k9s", "title": "k9s"}))
-
-
-@pane.command("top")
-@click.option("--cwd", "-c", default=".", help="Working directory")
-def pane_top(cwd):
-    """Launch btop in a utility pane."""
-    from dgov.tmux import create_utility_pane
-
-    pane_id = create_utility_pane("btop", "[util] btop", cwd=cwd)
-    click.echo(json.dumps({"pane_id": pane_id, "command": "btop", "title": "btop"}))
-
-
 @pane.command("create")
 @click.option("--agent", "-a", default=None, help="Agent CLI to launch (use 'auto' to classify)")
 @click.option("--prompt", "-p", default=None, help="Task prompt for the agent")

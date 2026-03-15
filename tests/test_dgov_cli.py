@@ -174,30 +174,6 @@ class TestPaneHelp:
 
 
 class TestUtilityPanes:
-    @pytest.mark.parametrize(
-        ("argv", "command", "title"),
-        [
-            (["pane", "lazygit"], "lazygit", "lazygit"),
-            (["pane", "yazi"], "yazi", "yazi"),
-            (["pane", "htop"], "htop", "htop"),
-            (["pane", "k9s"], "k9s", "k9s"),
-            (["pane", "top"], "btop", "btop"),
-        ],
-    )
-    def test_shortcuts_launch_utility_pane(
-        self, runner: CliRunner, argv: list[str], command: str, title: str
-    ) -> None:
-        with patch("dgov.tmux.create_utility_pane", return_value="%22") as mock_create:
-            result = runner.invoke(cli, argv)
-
-        assert result.exit_code == 0
-        mock_create.assert_called_once_with(command, f"[util] {title}", cwd=".")
-        assert json.loads(result.output) == {
-            "pane_id": "%22",
-            "command": command,
-            "title": title,
-        }
-
     def test_util_allows_custom_title_and_cwd(self, runner: CliRunner) -> None:
         with patch("dgov.tmux.create_utility_pane", return_value="%30") as mock_create:
             result = runner.invoke(
