@@ -1,6 +1,6 @@
 # Installation
 
-dgov v0.5.0 requires Python 3.12+ and a running `tmux` session.
+dgov requires Python 3.12+ and a running `tmux` session.
 
 ## Prerequisites
 
@@ -22,8 +22,8 @@ This installs the `dgov` CLI to your PATH. The tool will automatically detect wh
 ## Verify installation
 
 ```bash
-# Should print dgov v0.5.0
-dgov version
+# Verify dgov is installed
+dgov --help
 
 # List available agents and their install status
 dgov agents
