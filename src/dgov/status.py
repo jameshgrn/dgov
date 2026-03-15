@@ -101,11 +101,20 @@ def _compute_freshness(project_root: str, pane_record: dict) -> dict:
 
 def _count_active_agent_workers(session_root: str, agent: str) -> int:
     """Count how many workers for *agent* are currently alive."""
+    _TERMINAL_STATES = {
+        "done",
+        "failed",
+        "superseded",
+        "merged",
+        "closed",
+        "escalated",
+        "timed_out",
+    }
     panes = all_panes(session_root)
     all_tmux = get_backend().bulk_info()
     count = 0
     for p in panes:
-        if p.get("agent") == agent:
+        if p.get("agent") == agent and p.get("state") not in _TERMINAL_STATES:
             pane_id = p.get("pane_id", "")
             if pane_id and pane_id in all_tmux:
                 count += 1
