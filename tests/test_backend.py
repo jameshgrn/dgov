@@ -19,6 +19,7 @@ class TestProtocolConformance:
     def test_all_protocol_methods_exist_on_tmux_backend(self):
         expected = {
             "create_pane",
+            "create_worker_pane",
             "destroy",
             "is_alive",
             "send_input",
@@ -111,6 +112,14 @@ class TestFactory:
             def select_layout(self, layout: str = "tiled") -> None:
                 pass
 
+            def create_worker_pane(
+                self,
+                *,
+                cwd: str,
+                env: dict[str, str] | None = None,
+            ) -> str:
+                return "fake-worker"
+
         fake = FakeBackend()
         set_backend(fake)
         assert get_backend() is fake
@@ -171,6 +180,14 @@ class TestFactory:
 
             def select_layout(self, layout: str = "tiled") -> None:
                 pass
+
+            def create_worker_pane(
+                self,
+                *,
+                cwd: str,
+                env: dict[str, str] | None = None,
+            ) -> str:
+                return f"mock-worker-{cwd}"
 
         mock = MockBackend()
         set_backend(mock)
