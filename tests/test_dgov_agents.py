@@ -177,7 +177,11 @@ class TestLoadRegistry:
         assert registry["aider"].source == "user"
         assert registry["aider"].health_check == "aider --version"
 
-    def test_env_and_permissions_from_toml(self, tmp_path: Path) -> None:
+    def test_env_and_permissions_from_toml(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # User-global config (not project-local) can define commands and env
+        monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path)
         config_dir = tmp_path / ".dgov"
         config_dir.mkdir()
         (config_dir / "agents.toml").write_text(
@@ -194,7 +198,7 @@ class TestLoadRegistry:
             "[agents.custom.resume]\n"
             'template = "custom-cli --resume{permissions}"\n'
         )
-        registry = load_registry(str(tmp_path))
+        registry = load_registry(None)
         agent = registry["custom"]
         assert agent.permission_flags == {"plan": "--read-only"}
         assert agent.env == {"CUDA_VISIBLE_DEVICES": "0,1"}
