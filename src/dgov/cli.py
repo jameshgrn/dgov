@@ -81,6 +81,7 @@ def cli(ctx, governor):
         "template",
         "openrouter",
         "dashboard",
+        "stats",
         "init",
         "doctor",
     ):
@@ -1093,6 +1094,19 @@ def version_cmd():
 
     result = {"dgov": __version__}
     click.echo(json.dumps(result, indent=2))
+
+
+@cli.command("stats")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+def stats(project_root, session_root):
+    """Show pane and agent statistics."""
+    from dgov.metrics import compute_stats
+
+    project_root = os.path.abspath(project_root)
+    session_root = os.path.abspath(session_root) if session_root else project_root
+    data = compute_stats(session_root)
+    click.echo(json.dumps(data, indent=2))
 
 
 @cli.command("dashboard")
