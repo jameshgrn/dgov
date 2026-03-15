@@ -234,18 +234,6 @@ def send_prompt_via_buffer(pane_id: str, prompt: str) -> None:
     _run(["delete-buffer", "-b", buf_name], silent=True)
 
 
-def create_background_pane(
-    *,
-    cwd: str | None = None,
-    env: dict[str, str] | None = None,
-) -> str:
-    """Create a detached background window and return its pane ID."""
-    args = ["new-window", "-d", "-P", "-F", "#{pane_id}"]
-    if cwd:
-        args.extend(["-c", cwd])
-    return _run(args)
-
-
 def start_logging(pane_id: str, log_file: str) -> None:
     """Start logging pane output to a file via pipe-pane."""
     _run(["pipe-pane", "-t", pane_id, "-o", f"cat >> {shlex.quote(log_file)}"])
