@@ -96,7 +96,7 @@ def cli(ctx, governor):
         load_registry,
         write_project_config,
     )
-    from dgov.tmux import style_dgov_session, style_governor_pane
+    from dgov.tmux import setup_governor_workspace, style_dgov_session, style_governor_pane
 
     repo = Path.cwd().name
     session_name = f"dgov-{repo}"
@@ -157,6 +157,7 @@ def cli(ctx, governor):
             style_governor_pane(pane_id)
         print_banner()
         click.echo(f"{repo} — governor ready")
+        setup_governor_workspace(project_root)
 
         agent_id, perm = _resolve_governor()
         registry = load_registry(project_root)
