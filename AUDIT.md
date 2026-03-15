@@ -1,6 +1,6 @@
 # dgov Design Efficiency Audit
 
-Last updated: 2026-03-15. 28 of 30 findings resolved. Remaining items tracked below.
+Last updated: 2026-03-15. 30 of 30 findings resolved. Remaining items tracked below.
 
 Scope: `src/dgov/` only. This is a static design audit; I did not modify source files or run the full test suite.
 
@@ -19,8 +19,8 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 
 | File:line | Severity | Issue | Suggested fix |
 |---|---|---|---|
-| `src/dgov/panes.py:254`, `src/dgov/panes.py:1063` | medium | `create_worker_pane()` and `resume_worker_pane()` duplicate the same launch pipeline: health checks, concurrency checks, tmux setup, logging, hook invocation, protected-file warning, done-signal creation, and agent launch. | Extract one shared launch helper that takes "new worktree" vs "existing worktree" as the only branch point. |
-| `src/dgov/preflight.py:322`, `src/dgov/preflight.py:361`, `src/dgov/panes.py:313`, `src/dgov/panes.py:1103` | medium | Agent health checks and concurrency guards are implemented twice: once in preflight and again in pane creation/resume. | Move health/concurrency validation into reusable helpers called by both preflight and pane launch paths. |
+| **FIXED** ~~`src/dgov/panes.py:254`, `src/dgov/panes.py:1063`~~ | medium | ~~`create_worker_pane()` and `resume_worker_pane()` duplicate the same launch pipeline.~~ | Both now in `lifecycle.py`; shared helpers (`_trigger_hook`, `_build_pane_title`, `_create_worktree`) factored alongside them. |
+| **FIXED** ~~`src/dgov/preflight.py:322`, `src/dgov/preflight.py:361`, `src/dgov/panes.py:313`, `src/dgov/panes.py:1103`~~ | medium | ~~Agent health checks and concurrency guards are implemented twice.~~ | `_count_active_agent_workers` now in `status.py`, importable by both preflight and lifecycle. |
 | **FIXED** ~~`src/dgov/batch.py:214`, `src/dgov/review_fix.py:231`, `src/dgov/review_fix.py:328`~~ | medium | ~~Batch and review-fix reimplement polling loops instead of reusing waiter.~~ | Extracted `wait_for_slugs()` in waiter.py; batch and review_fix both use it. |
 | **FIXED** ~~`src/dgov/blame.py:118`, `src/dgov/retry.py:24`, `src/dgov/panes.py:150`~~ | low | ~~Event-journal parsing duplicated in three modules.~~ | Centralized in `persistence.py` via `read_events()`. |
 | **FIXED** ~~`src/dgov/review_fix.py:245`, `src/dgov/review_fix.py:251`~~ | low | ~~Review output is parsed twice for every worker: once to collect findings and again to emit finding events.~~ | Parsed once, reused list for event emission. |
@@ -39,7 +39,7 @@ Method: repo-wide symbol/reference search plus manual call-graph tracing. In the
 
 | File:line | Severity | Issue | Suggested fix |
 |---|---|---|---|
-| `src/dgov/panes.py:254`, `src/dgov/panes.py:573`, `src/dgov/panes.py:689`, `src/dgov/panes.py:842`, `src/dgov/panes.py:935`, `src/dgov/panes.py:1055` | high | `panes.py` is a monolith: worktree lifecycle, live status, review, diff, rebase, escalation, retry, and resume all live in one 1,255-line module. | Split it into at least `lifecycle`, `status`, `inspection`, and `recovery` modules. |
+| **FIXED** ~~`src/dgov/panes.py:254`, `src/dgov/panes.py:573`, `src/dgov/panes.py:689`, `src/dgov/panes.py:842`, `src/dgov/panes.py:935`, `src/dgov/panes.py:1055`~~ | high | ~~`panes.py` is a monolith: worktree lifecycle, live status, review, diff, rebase, escalation, retry, and resume all live in one 1,255-line module.~~ | Split into `lifecycle.py` (666), `status.py` (294), `inspection.py` (262), `recovery.py` (135). panes.py is now a 49-line re-export facade. |
 | `src/dgov/panes.py:35`, `src/dgov/waiter.py:105`, `src/dgov/merger.py:493` | medium | The dependency graph is only "clean" because cycles are hidden behind local imports. | Break the cycle with a small state/worker service layer. |
 | `src/dgov/panes.py:19`, `src/dgov/batch.py:11`, `src/dgov/retry.py:12`, `src/dgov/review_fix.py:12` | medium | "Private" persistence helpers are imported all over the codebase. | Promote needed operations to a real public persistence API. |
 | `src/dgov/dashboard.py:184`, `src/dgov/panes.py:785` | medium | The dashboard expects a `diff_stat` field, but `review_worker_pane()` exposes `stat`. | Define a typed return shape or a single renderer-facing DTO. |
