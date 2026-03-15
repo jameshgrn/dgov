@@ -74,12 +74,12 @@ def review_worker_pane(
         capture_output=True,
         text=True,
     )
-    # Filter out CLAUDE.md files — always modified by worktree hook, not by worker
-    porcelain_lines = [
-        ln
-        for ln in porcelain.stdout.strip().splitlines()
-        if not ln.lstrip(" MAD??").lstrip().startswith("CLAUDE.md")
-    ]
+    # Filter out protected files — modified by worktree hook, not by worker
+    porcelain_lines = []
+    for ln in porcelain.stdout.strip().splitlines():
+        filename = ln.lstrip(" MAD??").lstrip()
+        if not any(filename.startswith(pf) for pf in PROTECTED_FILES):
+            porcelain_lines.append(ln)
     uncommitted = bool(porcelain_lines)
 
     # Verdict
