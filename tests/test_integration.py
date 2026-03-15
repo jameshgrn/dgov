@@ -52,6 +52,7 @@ def repo(tmp_path: Path):
 
     mock_backend = MagicMock()
     mock_backend.create_pane.return_value = "%mock-1"
+    mock_backend.create_worker_pane.return_value = "%mock-1"
     mock_backend.is_alive.return_value = False
     mock_backend.bulk_info.return_value = {}
 
