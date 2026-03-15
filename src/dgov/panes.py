@@ -598,6 +598,48 @@ def list_worker_panes(
                 "overlapping_files": [],
                 "pane_age_hours": 0,
             }
+        # Determine worker activity
+        activity = "unknown"
+        if not alive:
+            activity = "exited"
+        elif done:
+            activity = "done"
+        else:
+            cmd_lower = cmd.strip().lower()
+            agent_cmds = {
+                "claude",
+                "codex",
+                "gemini",
+                "opencode",
+                "cline",
+                "qwen",
+                "amp",
+                "pi",
+                "cursor-agent",
+                "copilot",
+                "crush",
+                "node",
+                "python",
+                "python3",
+            }
+            if cmd_lower in agent_cmds:
+                activity = "working"
+            elif cmd_lower in ("zsh", "bash", "sh", "fish"):
+                activity = "idle"
+            elif cmd_lower:
+                activity = cmd_lower[:15]
+
+        # Capture last output line for visibility
+        last_output = ""
+        if alive and pane_id:
+            try:
+                output = get_backend().capture_output(pane_id, lines=3)
+                if output:
+                    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
+                    last_output = lines[-1][:60] if lines else ""
+            except (RuntimeError, OSError):
+                pass
+
         entry: dict = {
             "slug": slug,
             "agent": p.get("agent"),
@@ -605,6 +647,8 @@ def list_worker_panes(
             "alive": alive,
             "done": done,
             "state": state,
+            "activity": activity,
+            "last_output": last_output,
             "current_command": cmd,
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),

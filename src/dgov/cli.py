@@ -678,7 +678,8 @@ def _fmt_duration(seconds: int) -> str:
 )
 @SESSION_ROOT_OPTION
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
-def pane_list(project_root, session_root, as_json):
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Show last output line")
+def pane_list(project_root, session_root, as_json, verbose):
     """List all worker panes with live status."""
     from dgov.panes import list_worker_panes
 
@@ -697,8 +698,8 @@ def pane_list(project_root, session_root, as_json):
 
     # Format as table
     header = (
-        f"{'Slug':<20} {'Agent':<10} {'State':<10} {'Alive':<6} "
-        f"{'Done':<5} {'Freshness':<8} {'Duration':<12} {'Prompt'}"
+        f"{'Slug':<20} {'Agent':<10} {'State':<10} {'Activity':<12} "
+        f"{'Duration':<12} {'Prompt/Status'}"
     )
     click.echo(header)
     click.echo("-" * len(header))
@@ -706,17 +707,16 @@ def pane_list(project_root, session_root, as_json):
         slug = (p.get("slug", "") or "")[:19]
         agent = p.get("agent", "unknown") or "unknown"
         state = p.get("state", "active") or "active"
-        alive = "✓" if p.get("alive") else "✗"
-        done = "✓" if p.get("done") else "✗"
-        freshness = p.get("freshness", "unknown") or "unknown"
+        activity = p.get("activity", "unknown") or "unknown"
         duration_s = int(p.get("duration_s", 0))
         duration = _fmt_duration(duration_s)
+        last_output = (p.get("last_output", "") or "").strip()
         prompt = (p.get("prompt", "") or "")[:40]
-        row = (
-            f"{slug:<20} {agent:<10} {state:<10} {alive:<6} "
-            f"{done:<5} {freshness:<8} {duration:<12} {prompt}"
-        )
+        status_col = last_output if last_output else prompt
+        row = f"{slug:<20} {agent:<10} {state:<10} {activity:<12} {duration:<12} {status_col}"
         click.echo(row)
+        if verbose and last_output:
+            click.echo(f"  └ {last_output}")
 
 
 @pane.command("prune")
