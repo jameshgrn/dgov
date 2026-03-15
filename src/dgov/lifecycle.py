@@ -398,6 +398,7 @@ def _full_cleanup(
 
     # 3. Remove worktree + branch
     skipped_worktree = False
+    branch_kept = False
     if remove_worktree and pane_record.get("owns_worktree", True):
         wt = pane_record.get("worktree_path")
         branch = pane_record.get("branch_name")
@@ -424,10 +425,19 @@ def _full_cleanup(
                 capture_output=True,
             )
             if branch:
-                subprocess.run(
+                br_result = subprocess.run(
                     ["git", "-C", project_root, "branch", "-d", branch],
                     capture_output=True,
+                    text=True,
                 )
+                if br_result.returncode != 0:
+                    logger.warning(
+                        "Branch %s not deleted (has unmerged commits). "
+                        "Use git branch -D %s to force.",
+                        branch,
+                        branch,
+                    )
+                    branch_kept = True
         if not skipped_worktree:
             subprocess.run(
                 ["git", "-C", project_root, "worktree", "prune"],
@@ -440,7 +450,7 @@ def _full_cleanup(
     if not skipped_worktree:
         remove_pane(session_root, slug)
 
-    return {"cleaned": True, "skipped_worktree": skipped_worktree}
+    return {"cleaned": True, "skipped_worktree": skipped_worktree, "branch_kept": branch_kept}
 
 
 def close_worker_pane(
@@ -456,13 +466,20 @@ def close_worker_pane(
 
     update_pane_state(session_root, slug, "closed")
     emit_event(session_root, "pane_closed", slug)
-    _full_cleanup(
+    result = _full_cleanup(
         project_root,
         session_root,
         slug,
         target,
         skip_worktree_if_dirty=not force,
     )
+    if result.get("branch_kept"):
+        logger.info(
+            "Branch %s was kept because it has unmerged commits. "
+            "Merge or cherry-pick its changes, then delete with: git branch -D %s",
+            target.get("branch_name", "?"),
+            target.get("branch_name", "?"),
+        )
     return True
 
 
