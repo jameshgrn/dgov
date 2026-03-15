@@ -321,3 +321,31 @@ def test_failure_skips_dependents(
     assert "c" in skipped
     assert "d" not in skipped
     assert "d" in result["merged"]
+
+
+# ---------------------------------------------------------------------------
+# Dry-run tier output tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestDryRunOutput:
+    def test_dry_run_shows_tiers(self, tmp_path):
+        spec = tmp_path / "spec.toml"
+        spec.write_text("""
+project_root = "."
+[tasks.a]
+prompt = "do a"
+[tasks.b]
+prompt = "do b"
+depends_on = ["a"]
+""")
+        from dgov.batch import run_batch
+
+        result = run_batch(str(spec), session_root=str(tmp_path), dry_run=True)
+        assert result["dry_run"] is True
+        assert result["total_tasks"] == 2
+        assert len(result["tiers"]) == 2
+        assert result["tiers"][0] == ["a"]
+        assert result["tiers"][1] == ["b"]
+        assert "DAG" in result["ascii_dag"]
