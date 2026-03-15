@@ -628,7 +628,6 @@ def merge_worker_pane(
             text=True,
         )
         merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
-        _full_cleanup(pane_project_root, session_root, slug, target)
         try:
             _persist.update_pane_state(session_root, slug, "merged")
         except IllegalTransitionError as e:
@@ -636,6 +635,7 @@ def merge_worker_pane(
                 logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
             else:
                 raise
+        _full_cleanup(pane_project_root, session_root, slug, target)
         _persist.emit_event(
             session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
         )

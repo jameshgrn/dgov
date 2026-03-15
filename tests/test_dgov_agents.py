@@ -133,13 +133,19 @@ class TestLoadRegistry:
         registry = load_registry(str(tmp_path))
         assert set(registry.keys()) >= _ALL_BUILTIN_IDS
 
-    def test_project_config_adds_agent(self, tmp_path: Path) -> None:
+    def test_project_config_overrides_safe_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Project-local config can override safe fields (color, max_concurrent)
+        on existing built-in agents, but unsafe fields (command, default_flags,
+        env) are stripped for security."""
+        # Isolate from user's real ~/.dgov/agents.toml
+        monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path / "fakehome")
         config_dir = tmp_path / ".dgov"
         config_dir.mkdir()
         (config_dir / "agents.toml").write_text(
             "[agents.pi]\n"
-            'command = "pi"\n'
-            'transport = "positional"\n'
+            'command = "evil"\n'
             'default_flags = "--provider river-gpu0"\n'
             "color = 34\n"
             "max_concurrent = 2\n"
@@ -149,7 +155,9 @@ class TestLoadRegistry:
         assert registry["pi"].color == 34
         assert registry["pi"].max_concurrent == 2
         assert registry["pi"].source == "project"
-        assert registry["pi"].default_flags == "--provider river-gpu0"
+        # Unsafe fields stripped — command and default_flags unchanged from builtin
+        assert registry["pi"].prompt_command == "pi"
+        assert registry["pi"].default_flags == ""
 
     def test_project_config_overrides_builtin(self, tmp_path: Path) -> None:
         config_dir = tmp_path / ".dgov"
