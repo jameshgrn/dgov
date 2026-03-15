@@ -354,24 +354,37 @@ class TestPaneCommands:
         with patch(
             "dgov.merger.merge_worker_pane",
             return_value={"merged": "task", "branch": "task"},
-        ) as mock_merge_close:
-            close_result = runner.invoke(cli, ["pane", "merge", "task"])
+        ) as mock_merge_skip:
+            skip_result = runner.invoke(cli, ["pane", "merge", "task"])
 
         with patch(
             "dgov.merger.merge_worker_pane",
             return_value={"merged": "task", "branch": "task"},
-        ) as mock_merge:
-            open_result = runner.invoke(
+        ) as mock_merge_agent:
+            agent_result = runner.invoke(
+                cli,
+                ["pane", "merge", "task", "--resolve", "agent"],
+            )
+
+        with patch(
+            "dgov.merger.merge_worker_pane",
+            return_value={"merged": "task", "branch": "task"},
+        ) as mock_merge_manual:
+            manual_result = runner.invoke(
                 cli,
                 ["pane", "merge", "task", "--resolve", "manual"],
             )
 
-        assert close_result.exit_code == 0
-        assert open_result.exit_code == 0
-        mock_merge_close.assert_called_once_with(
+        assert skip_result.exit_code == 0
+        assert agent_result.exit_code == 0
+        assert manual_result.exit_code == 0
+        mock_merge_skip.assert_called_once_with(
+            ".", "task", session_root=None, resolve="skip", squash=True
+        )
+        mock_merge_agent.assert_called_once_with(
             ".", "task", session_root=None, resolve="agent", squash=True
         )
-        mock_merge.assert_called_once_with(
+        mock_merge_manual.assert_called_once_with(
             ".", "task", session_root=None, resolve="manual", squash=True
         )
 
@@ -486,6 +499,23 @@ class TestPaneCommands:
             "failed": ["b"],
             "warnings": ["b: conflict"],
         }
+
+    def test_merge_all_passes_selected_strategy(self, runner: CliRunner) -> None:
+        panes = [{"slug": "a", "done": True}]
+
+        with (
+            patch("dgov.panes.list_worker_panes", return_value=panes),
+            patch(
+                "dgov.merger.merge_worker_pane",
+                return_value={"merged": "a", "branch": "a"},
+            ) as mock_merge,
+        ):
+            result = runner.invoke(cli, ["pane", "merge-all", "--resolve", "manual"])
+
+        assert result.exit_code == 0
+        mock_merge.assert_called_once_with(
+            ".", "a", session_root=None, resolve="manual", squash=True
+        )
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
         with patch("dgov.panes.list_worker_panes", return_value=[{"slug": "task"}]):
