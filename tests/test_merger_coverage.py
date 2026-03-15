@@ -139,7 +139,7 @@ def test_merge_worker_pane_restores_protected_files_before_merge(
         patch("dgov.backend.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", side_effect=[False, True]),
+        patch("dgov.lifecycle._trigger_hook", side_effect=[False, True]),
     ):
         result = merge_worker_pane(str(repo), "protected", session_root=str(repo))
 
@@ -195,7 +195,7 @@ def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
         patch("dgov.backend.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(str(repo), "success", session_root=str(repo))
 
@@ -270,7 +270,7 @@ def test_merge_worker_pane_raises_for_illegal_transition_from_active_state(
         patch("dgov.persistence.emit_event") as mock_emit_event,
         patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         with pytest.raises(IllegalTransitionError, match="active -> merged"):
             merge_worker_pane(str(repo), "active-pane", session_root=str(repo))
@@ -313,7 +313,7 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
         patch("dgov.persistence.emit_event") as mock_emit_event,
         patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(str(repo), "conflict-pane", session_root=str(repo))
 
@@ -414,7 +414,7 @@ def test_merge_worker_pane_auto_commits_pending_worktree_changes(
         patch("dgov.backend.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(str(repo), "auto-commit", session_root=str(repo))
 
@@ -467,7 +467,7 @@ def test_merge_worker_pane_allows_abandoned_transition_after_success(
         patch("dgov.backend.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(str(repo), "abandoned-pane", session_root=str(repo))
 
@@ -516,7 +516,7 @@ def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
         patch("dgov.persistence.emit_event") as mock_emit_event,
         patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(
             str(repo), "manual-pane", session_root=str(repo), resolve="manual"
@@ -564,7 +564,7 @@ def test_merge_worker_pane_returns_unknown_resolve_error_for_conflict(
         patch("dgov.persistence.emit_event") as mock_emit_event,
         patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(
             str(repo), "unknown-pane", session_root=str(repo), resolve="bogus"
@@ -600,7 +600,7 @@ def test_merge_worker_pane_emits_failure_when_merge_fails_without_conflicts(
             "dgov.merger._plumbing_merge", return_value=MergeResult(success=False, stderr="boom")
         ),
         patch("dgov.merger._detect_conflicts", return_value=[]),
-        patch("dgov.panes._trigger_hook", return_value=True),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
     ):
         result = merge_worker_pane(str(repo), "merge-error", session_root=str(repo))
 
@@ -643,7 +643,7 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
         patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": ["worker.py"]}),
-        patch("dgov.panes._trigger_hook", side_effect=[True, False]),
+        patch("dgov.lifecycle._trigger_hook", side_effect=[True, False]),
     ):
         result = merge_worker_pane(str(repo), "post-merge", session_root=str(repo))
 
@@ -682,10 +682,10 @@ def test_resolve_conflicts_with_agent_commits_resolved_merge(tmp_path: Path) -> 
         return SimpleNamespace(slug=kwargs["slug"])
 
     with (
-        patch("dgov.panes.create_worker_pane", side_effect=_resolve_and_stage),
-        patch("dgov.panes._is_done", return_value=True),
-        patch("dgov.panes.capture_worker_output", return_value=None),
-        patch("dgov.panes.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.lifecycle.create_worker_pane", side_effect=_resolve_and_stage),
+        patch("dgov.waiter._is_done", return_value=True),
+        patch("dgov.status.capture_worker_output", return_value=None),
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
     ):
         resolved = _resolve_conflicts_with_agent(
             str(repo), "dgov-agent", {"slug": "agent-pane"}, str(repo), timeout=1

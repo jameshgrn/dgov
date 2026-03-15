@@ -205,7 +205,7 @@ class TestDashboardState:
 
 
 class TestFetchPanes:
-    @patch("dgov.panes.list_worker_panes")
+    @patch("dgov.status.list_worker_panes")
     @patch("dgov.dashboard._get_branch", return_value="main")
     def test_success(self, mock_branch, mock_list) -> None:
         mock_list.return_value = [
@@ -219,7 +219,7 @@ class TestFetchPanes:
         assert state.error == ""
         assert state.last_refresh > 0
 
-    @patch("dgov.panes.list_worker_panes", side_effect=RuntimeError("boom"))
+    @patch("dgov.status.list_worker_panes", side_effect=RuntimeError("boom"))
     def test_error_handling(self, mock_list) -> None:
         state = DashboardState(project_root="/tmp/test")
         fetch_panes(state)
@@ -239,9 +239,9 @@ class TestFetchDetail:
         fetch_detail(state, "nonexistent")
         assert "not found" in state.detail_text.lower()
 
-    @patch("dgov.panes.capture_worker_output", return_value="some output")
+    @patch("dgov.status.capture_worker_output", return_value="some output")
     @patch(
-        "dgov.panes.review_worker_pane",
+        "dgov.inspection.review_worker_pane",
         return_value={"stat": "1 file", "commit_count": 1},
     )
     def test_success(self, mock_review, mock_capture) -> None:
@@ -267,8 +267,8 @@ class TestFetchDetail:
         assert "1 file" in state.detail_text
         assert "some output" in state.detail_text
 
-    @patch("dgov.panes.capture_worker_output", return_value=None)
-    @patch("dgov.panes.review_worker_pane", side_effect=Exception("git error"))
+    @patch("dgov.status.capture_worker_output", return_value=None)
+    @patch("dgov.inspection.review_worker_pane", side_effect=Exception("git error"))
     def test_graceful_on_errors(self, mock_review, mock_capture) -> None:
         state = DashboardState(project_root="/tmp/test")
         state.panes = [
