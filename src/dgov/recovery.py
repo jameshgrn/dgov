@@ -7,11 +7,11 @@ import re
 
 from dgov.lifecycle import close_worker_pane, create_worker_pane
 from dgov.persistence import (
-    _all_panes,
-    _emit_event,
-    _get_pane,
-    _set_pane_metadata,
-    _update_pane_state,
+    all_panes,
+    emit_event,
+    get_pane,
+    set_pane_metadata,
+    update_pane_state,
 )
 
 
@@ -28,7 +28,7 @@ def escalate_worker_pane(
     using the same prompt. Returns the new pane info.
     """
     session_root = os.path.abspath(session_root or project_root)
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
 
     if not target:
         return {"error": f"Pane not found: {slug}"}
@@ -54,8 +54,8 @@ def escalate_worker_pane(
         return {"error": str(e)}
 
     # Mark old pane as escalated then close
-    _update_pane_state(session_root, slug, "escalated")
-    _emit_event(session_root, "pane_escalated", slug, new_slug=new_slug, target_agent=target_agent)
+    update_pane_state(session_root, slug, "escalated")
+    emit_event(session_root, "pane_escalated", slug, new_slug=new_slug, target_agent=target_agent)
     close_worker_pane(project_root, slug, session_root=session_root)
 
     return {
@@ -84,7 +84,7 @@ def retry_worker_pane(
     pane via the normal create path, then cross-links the old and new records.
     """
     session_root = os.path.abspath(session_root or project_root)
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
     if not target:
         return {"error": f"Pane not found: {slug}"}
 
@@ -94,7 +94,7 @@ def retry_worker_pane(
     # Compute attempt number from slug pattern
     base_slug = re.sub(r"-\d+$", "", slug)  # strip trailing -N
     attempt = 1
-    existing = _all_panes(session_root)
+    existing = all_panes(session_root)
     for p in existing:
         m = re.match(rf"^{re.escape(base_slug)}-(\d+)$", p.get("slug", ""))
         if m:
@@ -116,14 +116,14 @@ def retry_worker_pane(
         return {"error": str(e)}
 
     # Link records via SQLite metadata
-    _set_pane_metadata(session_root, new_slug, retried_from=slug)
-    _set_pane_metadata(session_root, slug, superseded_by=new_slug)
-    _update_pane_state(session_root, slug, "superseded", force=True)
+    set_pane_metadata(session_root, new_slug, retried_from=slug)
+    set_pane_metadata(session_root, slug, superseded_by=new_slug)
+    update_pane_state(session_root, slug, "superseded", force=True)
 
     # Emit events
-    _emit_event(session_root, "pane_retry_spawned", slug, new_slug=new_slug, attempt=attempt)
-    _emit_event(session_root, "pane_retry_spawned", new_slug, retried_from=slug, attempt=attempt)
-    _emit_event(session_root, "pane_superseded", slug, superseded_by=new_slug)
+    emit_event(session_root, "pane_retry_spawned", slug, new_slug=new_slug, attempt=attempt)
+    emit_event(session_root, "pane_retry_spawned", new_slug, retried_from=slug, attempt=attempt)
+    emit_event(session_root, "pane_superseded", slug, superseded_by=new_slug)
 
     return {
         "retried": True,

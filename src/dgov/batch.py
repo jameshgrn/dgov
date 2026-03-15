@@ -8,9 +8,9 @@ import subprocess
 from pathlib import Path
 
 from dgov.persistence import (
-    _STATE_DIR,
-    _all_panes,
-    _emit_event,
+    STATE_DIR,
+    all_panes,
+    emit_event,
 )
 from dgov.waiter import wait_for_slugs
 
@@ -34,7 +34,7 @@ def create_checkpoint(
     main_sha = main_sha_result.stdout.strip() if main_sha_result.returncode == 0 else ""
 
     # Get all pane records
-    panes = _all_panes(session_root)
+    panes = all_panes(session_root)
 
     # Get branch heads for each pane
     branch_heads = {}
@@ -59,7 +59,7 @@ def create_checkpoint(
     }
 
     # Write to .dgov/checkpoints/<name>.json
-    checkpoint_dir = Path(session_root) / _STATE_DIR / "checkpoints"
+    checkpoint_dir = Path(session_root) / STATE_DIR / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = checkpoint_dir / f"{name}.json"
 
@@ -72,7 +72,7 @@ def create_checkpoint(
         json.dump(checkpoint, f, indent=2, default=str)
         f.write("\n")
 
-    _emit_event(session_root, "checkpoint_created", f"checkpoint/{name}", main_sha=main_sha)
+    emit_event(session_root, "checkpoint_created", f"checkpoint/{name}", main_sha=main_sha)
 
     result = {"checkpoint": name, "main_sha": main_sha, "pane_count": len(panes)}
     if overwrote:
@@ -82,7 +82,7 @@ def create_checkpoint(
 
 def list_checkpoints(session_root: str) -> list[dict]:
     """List all checkpoints."""
-    checkpoint_dir = Path(session_root) / _STATE_DIR / "checkpoints"
+    checkpoint_dir = Path(session_root) / STATE_DIR / "checkpoints"
     if not checkpoint_dir.exists():
         return []
 

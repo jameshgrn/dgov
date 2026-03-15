@@ -13,17 +13,17 @@ from pathlib import Path
 from dgov.agents import build_launch_command, load_registry
 from dgov.backend import get_backend
 from dgov.persistence import (
-    _PROTECTED_FILES,
-    _STATE_DIR,
+    PROTECTED_FILES,
+    STATE_DIR,
     WorkerPane,
-    _add_pane,
-    _emit_event,
     _get_db,
-    _get_pane,
     _insert_pane_dict,
-    _remove_pane,
     _row_to_dict,
-    _update_pane_state,
+    add_pane,
+    emit_event,
+    get_pane,
+    remove_pane,
+    update_pane_state,
 )
 from dgov.strategy import _generate_slug, _structure_pi_prompt, _validate_slug
 from dgov.waiter import _wrap_done_signal
@@ -252,7 +252,7 @@ def create_worker_pane(
             get_backend().send_input(pane_id, f"unset {var}")
 
         # 6a. Start persistent logging via tmux pipe-pane
-        logs_dir = Path(session_root) / _STATE_DIR / "logs"
+        logs_dir = Path(session_root) / STATE_DIR / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         log_file = str(logs_dir / f"{slug}.log")
         get_backend().start_logging(pane_id, log_file)
@@ -284,14 +284,14 @@ def create_worker_pane(
         if not hook_ran:
             protected_warning = (
                 "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
-                + ", ".join(sorted(_PROTECTED_FILES))
+                + ", ".join(sorted(PROTECTED_FILES))
                 + ". Do NOT create new documentation files."
             )
             if protected_warning.strip() not in rewritten_prompt:
                 rewritten_prompt += protected_warning
 
         # 9. Build done-signal path
-        done_signal = str(Path(session_root) / _STATE_DIR / "done" / slug)
+        done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
         Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
 
         # 10. Launch agent (with done-signal wrapper)
@@ -344,9 +344,9 @@ def create_worker_pane(
             owns_worktree=owns_worktree,
             base_sha=base_sha,
         )
-        _add_pane(session_root, pane)
+        add_pane(session_root, pane)
 
-        _emit_event(
+        emit_event(
             session_root,
             "pane_created",
             slug,
@@ -382,7 +382,7 @@ def _full_cleanup(
     Returns {"cleaned": True, "skipped_worktree": bool}.
     """
     # 1. Delete done signal
-    done_path = Path(session_root) / _STATE_DIR / "done" / slug
+    done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.unlink(missing_ok=True)
 
     # 2. Kill tmux pane
@@ -435,7 +435,7 @@ def _full_cleanup(
 
     # 4. Remove from dgov state (after tmux kill and worktree removal)
     if not skipped_worktree:
-        _remove_pane(session_root, slug)
+        remove_pane(session_root, slug)
 
     return {"cleaned": True, "skipped_worktree": skipped_worktree}
 
@@ -446,13 +446,13 @@ def close_worker_pane(
     """Close a worker pane: kill tmux pane, remove worktree, update state."""
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
 
     if not target:
         return True  # already cleaned up (e.g. by merge)
 
-    _update_pane_state(session_root, slug, "closed")
-    _emit_event(session_root, "pane_closed", slug)
+    update_pane_state(session_root, slug, "closed")
+    emit_event(session_root, "pane_closed", slug)
     _full_cleanup(
         project_root,
         session_root,
@@ -479,7 +479,7 @@ def resume_worker_pane(
     from dgov.status import _count_active_agent_workers
 
     session_root = os.path.abspath(session_root or project_root)
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
 
     if not target:
         return {"error": f"Pane not found: {slug}"}
@@ -577,7 +577,7 @@ def resume_worker_pane(
                 get_backend().send_input(pane_id, f"export {key}={val!r}")
 
     # Start persistent logging via tmux pipe-pane
-    logs_dir = Path(session_root) / _STATE_DIR / "logs"
+    logs_dir = Path(session_root) / STATE_DIR / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = str(logs_dir / f"{slug}.log")
     get_backend().start_logging(pane_id, log_file)
@@ -598,14 +598,14 @@ def resume_worker_pane(
     if not hook_ran:
         protected_warning = (
             "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
-            + ", ".join(sorted(_PROTECTED_FILES))
+            + ", ".join(sorted(PROTECTED_FILES))
             + ". Do NOT create new documentation files."
         )
         if protected_warning.strip() not in rewritten_prompt:
             rewritten_prompt += protected_warning
 
     # Build done signal
-    done_signal = str(Path(session_root) / _STATE_DIR / "done" / slug)
+    done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
     Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
     # Clear old done signal if it exists
     Path(done_signal).unlink(missing_ok=True)
@@ -655,7 +655,7 @@ def resume_worker_pane(
         _insert_pane_dict(conn, d)
         conn.commit()
 
-    _emit_event(session_root, "pane_resumed", slug, agent=resume_agent)
+    emit_event(session_root, "pane_resumed", slug, agent=resume_agent)
 
     return {
         "resumed": True,

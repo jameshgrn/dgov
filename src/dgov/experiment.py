@@ -13,7 +13,7 @@ import time
 import uuid
 from pathlib import Path
 
-from dgov.persistence import _STATE_DIR, _emit_event
+from dgov.persistence import STATE_DIR, emit_event
 
 # ---------------------------------------------------------------------------
 # Experiment log
@@ -29,7 +29,7 @@ class ExperimentLog:
     def __init__(self, session_root: str, program_name: str) -> None:
         self.session_root = session_root
         self.program_name = program_name
-        self._dir = Path(session_root) / _STATE_DIR / _EXPERIMENTS_DIR
+        self._dir = Path(session_root) / STATE_DIR / _EXPERIMENTS_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
         self._path = self._dir / f"{program_name}.jsonl"
 
@@ -83,7 +83,7 @@ class ExperimentLog:
 
 
 def _results_dir(session_root: str) -> Path:
-    d = Path(session_root) / _STATE_DIR / _EXPERIMENTS_DIR / _RESULTS_DIR
+    d = Path(session_root) / STATE_DIR / _EXPERIMENTS_DIR / _RESULTS_DIR
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -159,7 +159,7 @@ def run_experiment(
     )
     full_prompt = program_text + baseline_info + result_instructions
 
-    _emit_event(session_root, "experiment_started", slug, metric_name=metric_name)
+    emit_event(session_root, "experiment_started", slug, metric_name=metric_name)
 
     start_time = time.monotonic()
 
@@ -241,14 +241,14 @@ def run_experiment(
             )
             commit_sha = sha_r.stdout.strip() if sha_r.returncode == 0 else None
             status = "accepted"
-            _emit_event(session_root, "experiment_accepted", slug, metric_after=metric_after)
+            emit_event(session_root, "experiment_accepted", slug, metric_after=metric_after)
         else:
             status = "error"
             _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
     else:
         status = "rejected"
         commit_sha = None
-        _emit_event(session_root, "experiment_rejected", slug, metric_after=metric_after)
+        emit_event(session_root, "experiment_rejected", slug, metric_after=metric_after)
         _p.close_worker_pane(project_root, slug, session_root=session_root, force=True)
 
     return {

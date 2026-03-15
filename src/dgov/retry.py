@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.agents import load_registry
-from dgov.persistence import _STATE_DIR, _emit_event, _get_pane, read_events
+from dgov.persistence import STATE_DIR, emit_event, get_pane, read_events
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def _slug_lineage(session_root: str, slug: str) -> list[str]:
     visited: set[str] = {slug}
     current = slug
     while True:
-        rec = _get_pane(session_root, current)
+        rec = get_pane(session_root, current)
         if not rec:
             break
         parent = rec.get("retried_from")
@@ -52,14 +52,14 @@ def _count_retries(session_root: str, slug: str, events: list[dict] | None = Non
 
 def retry_context(slug: str, session_root: str, events: list[dict] | None = None) -> str:
     """Build a failure context string from the pane's last output and events."""
-    rec = _get_pane(session_root, slug)
+    rec = get_pane(session_root, slug)
     if not rec:
         return ""
 
     parts: list[str] = []
 
     # Try to read the pane log
-    log_path = Path(session_root) / _STATE_DIR / "logs" / f"{slug}.log"
+    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     if log_path.exists():
         try:
             lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -70,7 +70,7 @@ def retry_context(slug: str, session_root: str, events: list[dict] | None = None
             pass
 
     # Check for exit code
-    exit_path = Path(session_root) / _STATE_DIR / "done" / f"{slug}.exit"
+    exit_path = Path(session_root) / STATE_DIR / "done" / f"{slug}.exit"
     if exit_path.exists():
         try:
             code = exit_path.read_text().strip()
@@ -96,7 +96,7 @@ def get_retry_policy(session_root: str, slug: str) -> RetryPolicy | None:
     Per-pane ``max_retries`` override (set via CLI ``--max-retries``) takes
     priority over the agent's default. Returns None if no retries configured.
     """
-    rec = _get_pane(session_root, slug)
+    rec = get_pane(session_root, slug)
     if not rec:
         return None
 
@@ -139,7 +139,7 @@ def maybe_auto_retry(
     """
     import dgov.panes as _p
 
-    rec = _get_pane(session_root, slug)
+    rec = get_pane(session_root, slug)
     if not rec:
         return None
 
@@ -169,7 +169,7 @@ def maybe_auto_retry(
         else:
             enhanced += "\n\nPrevious attempt failed. Avoid the same failure."
 
-        _emit_event(
+        emit_event(
             session_root,
             "pane_auto_retried",
             slug,
@@ -196,7 +196,7 @@ def maybe_auto_retry(
 
     # Exhausted retries — try escalation
     if policy.escalate_to:
-        _emit_event(
+        emit_event(
             session_root,
             "pane_auto_retried",
             slug,

@@ -7,9 +7,9 @@ import subprocess
 from pathlib import Path
 
 from dgov.persistence import (
-    _PROTECTED_FILES,
-    _emit_event,
-    _get_pane,
+    PROTECTED_FILES,
+    emit_event,
+    get_pane,
     read_events,
 )
 from dgov.status import _compute_freshness
@@ -27,7 +27,7 @@ def review_worker_pane(
     With ``full=True``, includes the complete diff.
     """
     session_root = os.path.abspath(session_root or project_root)
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
     if not target:
         return {"error": f"Pane not found: {slug}"}
 
@@ -57,7 +57,7 @@ def review_worker_pane(
     changed_files = (
         set(names_result.stdout.strip().splitlines()) if names_result.returncode == 0 else set()
     )
-    protected_touched = sorted(changed_files & _PROTECTED_FILES)
+    protected_touched = sorted(changed_files & PROTECTED_FILES)
 
     # Commit log
     log_result = subprocess.run(
@@ -94,9 +94,9 @@ def review_worker_pane(
     verdict = "safe" if not issues else "review"
 
     if verdict == "safe":
-        _emit_event(session_root, "review_pass", slug)
+        emit_event(session_root, "review_pass", slug)
     else:
-        _emit_event(session_root, "review_fail", slug, issues=issues)
+        emit_event(session_root, "review_fail", slug, issues=issues)
 
     freshness = _compute_freshness(project_root, target)
 
@@ -145,7 +145,7 @@ def diff_worker_pane(
 ) -> dict:
     """Get the diff for a worker pane's branch vs its base_sha."""
     session_root = os.path.abspath(session_root or project_root)
-    target = _get_pane(session_root, slug)
+    target = get_pane(session_root, slug)
     if not target:
         return {"error": f"Pane not found: {slug}"}
 

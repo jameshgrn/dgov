@@ -8,7 +8,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from dgov.persistence import _emit_event
+from dgov.persistence import emit_event
 from dgov.waiter import wait_for_slugs
 
 logger = logging.getLogger(__name__)
@@ -195,7 +195,7 @@ def run_review_fix_pipeline(
         t for t in targets if not Path(t).exists() and not (Path(project_root) / t).exists()
     ]
     if missing:
-        _emit_event(
+        emit_event(
             session_root,
             "review_fix_started",
             "pipeline",
@@ -208,7 +208,7 @@ def run_review_fix_pipeline(
             "findings_count": 0,
         }
 
-    _emit_event(session_root, "review_fix_started", "pipeline", targets=targets)
+    emit_event(session_root, "review_fix_started", "pipeline", targets=targets)
 
     # -- PHASE 1: REVIEW --
     review_slugs: list[str] = []
@@ -240,7 +240,7 @@ def run_review_fix_pipeline(
 
         # Emit per-finding events
         for f in findings:
-            _emit_event(
+            emit_event(
                 session_root,
                 "review_fix_finding",
                 slug,
@@ -259,7 +259,7 @@ def run_review_fix_pipeline(
     filtered = _filter_by_severity(all_findings, severity_threshold)
 
     if not auto_approve:
-        _emit_event(
+        emit_event(
             session_root,
             "review_fix_completed",
             "pipeline",
@@ -275,7 +275,7 @@ def run_review_fix_pipeline(
         }
 
     if not filtered:
-        _emit_event(
+        emit_event(
             session_root,
             "review_fix_completed",
             "pipeline",
@@ -348,7 +348,7 @@ def run_review_fix_pipeline(
 
     test_status = "pass" if not test_failures else f"failures:{','.join(test_failures)}"
 
-    _emit_event(
+    emit_event(
         session_root,
         "review_fix_completed",
         "pipeline",
