@@ -7,17 +7,20 @@ dgov is a Python-based CLI tool designed to orchestrate AI coding agents. This p
 | Module | Purpose |
 |--------|---------|
 | `cli.py` | Entry point. Defines the Click command tree and flags. |
-| `panes.py` | Pane lifecycle commands (create, wait, merge, close, etc.). Each module is imported directly — no barrel re-exports. |
-| `persistence.py` | State management. SQLite database (WAL mode) and event journal logic. |
+| `lifecycle.py` | Core pane operations (create, close, merge, etc.). |
+| `status.py` | Status aggregation and list views. |
+| `inspection.py`| Inspecting pane state, diffs, and verdicts (review, diff, capture). |
+| `recovery.py` | Error recovery and state correction (retry, resume, prune). |
+| `persistence.py`| State management. Public API for SQLite state and events. |
 | `strategy.py` | Qwen 4B integration for task classification and slug generation. |
 | `waiter.py` | Poll/wait logic for workers. Done and blocked detection. |
 | `merger.py` | In-memory git merging, conflict resolution, and post-merge lint. |
 | `batch.py` | DAG tier computation and parallel task runner. |
-| `agents.py` | TOML-driven agent registry (built-in → user → project layers). Command builder for launching agents. |
-| `backend.py` | `WorkerBackend` protocol for environmental abstraction. `TmuxBackend` implementation. |
+| `agents.py` | TOML-driven agent registry. Command builder for launching agents. |
+| `backend.py` | `WorkerBackend` protocol for environmental abstraction. |
 | `tmux.py` | Low-level tmux command wrappers. |
 | `openrouter.py` | OpenRouter API client for model queries. |
-| `dashboard.py` | Live tmux dashboard with pane status display. |
+| `dashboard.py` | Live TUI showing pane status, events, and metrics. |
 | `experiment.py` | Sequential hypothesis testing loops and metric tracking. |
 | `retry.py` | Auto-retry engine and retry policy logic. |
 | `responder.py` | Auto-responder rules to unblock worker panes. |
@@ -31,8 +34,8 @@ dgov is a Python-based CLI tool designed to orchestrate AI coding agents. This p
 ## Data flow
 
 1. **CLI**: The `cli.py` entry point parses user input and dispatches a command.
-2. **Routing**: Commands call functions in `panes.py`, which delegates to the appropriate specialized module.
-3. **Persistence**: Every action is recorded in `persistence.py`. This writes a record to `state.db` (SQLite with WAL mode for lifecycle tracking) and an event to `events.jsonl` (append-only, for auditing).
+2. **Routing**: Commands call functions in the appropriate specialized module (`lifecycle.py`, `status.py`, `inspection.py`, or `recovery.py`).
+3. **Persistence**: Every action is recorded in `persistence.py`. This writes a record to `state.db` (SQLite with WAL mode) for both lifecycle tracking (`panes` table) and auditing (`events` table).
 4. **Backend**: Lifecycle operations (create, kill, capture) are handled by the `WorkerBackend` protocol in `backend.py`. The default `TmuxBackend` implementation translates these into tmux commands via `tmux.py`.
 
 ## Agent registry

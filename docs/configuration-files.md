@@ -8,8 +8,7 @@ All project-specific data lives in the `.dgov/` directory at your repository roo
 
 ```
 .dgov/
-├── state.db          # SQLite state database (WAL mode)
-├── events.jsonl      # Append-only event journal
+├── state.db          # SQLite state and events (WAL mode)
 ├── worktrees/        # Git worktrees for each worker
 │   └── <slug>/
 ├── logs/             # Persistent stdout/stderr from workers
@@ -130,3 +129,4 @@ The environment variable `$DGOV_TDD_STATUS_FILE` provides a path where agents wr
 | `DGOV_BRANCH` | Name of the worker's git branch. |
 | `DGOV_TDD_STATUS_FILE`| Path for agents to write TDD progress. |
 | `DGOV_SKIP_GOVERNOR_CHECK` | Set to `1` to bypass main-branch enforcement. |
+| `DGOV_JSON` | Set to `1` for machine-readable pane list output. |
