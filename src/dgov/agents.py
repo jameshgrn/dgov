@@ -163,8 +163,8 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
     ),
     "pi": AgentDef(
         id="pi",
-        name="pi CLI",
-        short_label="pi",
+        name="Qwen 35B (River)",
+        short_label="qw",
         prompt_command="pi",
         prompt_transport="positional",
         default_flags="-p",  # non-interactive: process prompt and exit

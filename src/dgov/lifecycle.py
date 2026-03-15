@@ -265,6 +265,19 @@ def _setup_and_launch_agent(
 # -- Public API --
 
 
+def _pi_extension_flags(project_root: str) -> str:
+    """Return --extension flags for dgov pi extensions if they exist."""
+    import importlib.resources
+
+    ext_dir = Path(importlib.resources.files("dgov") / "pi-extensions")
+    if not ext_dir.is_dir():
+        return ""
+    flags = []
+    for ext_file in sorted(ext_dir.glob("*.ts")):
+        flags.append(f"--extension {ext_file}")
+    return " ".join(flags)
+
+
 def create_worker_pane(
     project_root: str,
     prompt: str,
@@ -358,6 +371,9 @@ def create_worker_pane(
         time.sleep(0.25)
 
         # 4. Setup and launch agent
+        pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
+        if pi_ext:
+            extra_flags = f"{extra_flags} {pi_ext}".strip()
         _setup_and_launch_agent(
             pane_id=pane_id,
             slug=slug,
