@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from unittest.mock import MagicMock
 
+import pytest
+
 from dgov.mission import MissionPolicy, _has_blocking_findings, run_mission
 from dgov.waiter import PaneTimeoutError
 
@@ -84,6 +86,7 @@ def _apply_patches(monkeypatch, overrides=None):
     return mocks
 
 
+@pytest.mark.unit
 class TestHappyPath:
     def test_create_wait_review_merge_complete(self, monkeypatch, tmp_path):
         mocks = _apply_patches(monkeypatch)
@@ -245,6 +248,7 @@ class TestCustomSlug:
         assert create_call.kwargs.get("slug") == "my-custom-slug"
 
 
+@pytest.mark.unit
 class TestDefaultPolicy:
     def test_default_policy_works(self, monkeypatch, tmp_path):
         _apply_patches(monkeypatch)
@@ -254,6 +258,7 @@ class TestDefaultPolicy:
         assert result.duration_s >= 0
 
 
+@pytest.mark.unit
 class TestPreflightFails:
     def test_preflight_failure_returns_failed(self, monkeypatch, tmp_path):
         mocks = _apply_patches(
