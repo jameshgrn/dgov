@@ -25,3 +25,13 @@ def mission_cmd(prompt, agent, auto_merge, slug, timeout, project_root, session_
     policy = MissionPolicy(agent=agent, auto_merge=auto_merge, timeout=timeout)
     result = run_mission(project_root, prompt, policy, session_root, slug)
     click.echo(json.dumps(asdict(result), default=str))
+
+    if result.state == "completed":
+        click.secho(f"Mission {result.slug} completed in {result.duration_s:.1f}s", fg="green")
+    elif result.state == "failed":
+        click.secho(f"Mission {result.slug} failed: {result.error}", fg="red")
+    elif result.state == "review_pending":
+        click.secho(
+            f"Mission {result.slug} needs review ({len(result.findings or [])} findings)",
+            fg="yellow",
+        )
