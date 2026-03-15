@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -40,6 +41,79 @@ SAMPLE_PANE = {
     "worktree_path": "/tmp/wt",
     "pane_id": "%5",
 }
+
+SAMPLE_PANES = [
+    SAMPLE_PANE,
+    {
+        **SAMPLE_PANE,
+        "slug": "add-tests",
+        "branch": "add-tests",
+        "pane_id": "%6",
+    },
+    {
+        **SAMPLE_PANE,
+        "slug": "ship-release",
+        "branch": "ship-release",
+        "pane_id": "%7",
+    },
+]
+
+TEST_KEY_DOWN = 258
+TEST_KEY_UP = 259
+TEST_KEY_ENTER = 343
+TEST_KEY_RESIZE = 410
+
+
+class _NoopThread:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+
+def _make_dashboard_state(panes: list[dict] | None = None) -> DashboardState:
+    state = DashboardState(project_root="/tmp/project", session_root="/tmp/session")
+    state.panes = list(panes or [])
+    return state
+
+
+def _run_dashboard_loop(stdscr: MagicMock, state: DashboardState) -> None:
+    def _wrapper(
+        func: Callable[..., None],
+        *,
+        project_root: str,
+        session_root: str | None,
+        refresh_interval: float,
+    ) -> None:
+        assert project_root == "/tmp/project"
+        assert session_root == "/tmp/session"
+        assert refresh_interval == 2.0
+        func(
+            stdscr,
+            project_root=project_root,
+            session_root=session_root,
+            refresh_interval=refresh_interval,
+        )
+
+    with (
+        patch("dgov.dashboard.curses.wrapper", side_effect=_wrapper),
+        patch("dgov.dashboard.DashboardState", return_value=state),
+        patch("dgov.dashboard._init_colors"),
+        patch("dgov.dashboard.data_thread"),
+        patch("dgov.dashboard.threading.Thread", _NoopThread),
+        patch("dgov.dashboard.curses.curs_set"),
+        patch("dgov.dashboard.curses.KEY_DOWN", TEST_KEY_DOWN),
+        patch("dgov.dashboard.curses.KEY_UP", TEST_KEY_UP),
+        patch("dgov.dashboard.curses.KEY_ENTER", TEST_KEY_ENTER),
+        patch("dgov.dashboard.curses.KEY_RESIZE", TEST_KEY_RESIZE),
+        patch("dgov.dashboard.curses.A_DIM", 1),
+        patch("dgov.dashboard.curses.A_BOLD", 2),
+        patch("dgov.dashboard.curses.A_REVERSE", 4),
+        patch("dgov.dashboard.curses.color_pair", side_effect=lambda idx: idx),
+        patch("dgov.panes.list_worker_panes", return_value=list(state.panes)),
+    ):
+        run_dashboard(project_root="/tmp/project", session_root="/tmp/session")
 
 
 def _make_stdscr(max_y: int = 40, max_x: int = 120) -> MagicMock:
@@ -328,3 +402,102 @@ class TestRunDashboard:
         args, kwargs = mock_wrapper.call_args
         assert kwargs["project_root"] == "/tmp/project"
         assert kwargs["session_root"] == "/tmp/session"
+
+
+class TestRunDashboardLoop:
+    def test_empty_panes_shows_empty_state(self) -> None:
+        stdscr = _make_stdscr()
+        stdscr.getch.side_effect = [ord("q")]
+
+        _run_dashboard_loop(stdscr, _make_dashboard_state([]))
+
+        assert any(call.args[2] == "No panes." for call in stdscr.addnstr.call_args_list)
+
+    def test_navigation_updates_selected_row(self) -> None:
+        stdscr = _make_stdscr()
+        stdscr.getch.side_effect = [
+            TEST_KEY_DOWN,
+            TEST_KEY_DOWN,
+            TEST_KEY_UP,
+            ord("q"),
+        ]
+        state = _make_dashboard_state(SAMPLE_PANES)
+        selected_slugs: list[str] = []
+
+        def _record_selected(
+            _stdscr: MagicMock,
+            _row: int,
+            pane: dict,
+            _col_widths: dict[str, int],
+            *,
+            selected: bool,
+            max_x: int,
+        ) -> None:
+            assert max_x == 120
+            if selected:
+                selected_slugs.append(pane["slug"])
+
+        with patch("dgov.dashboard._draw_pane_row", side_effect=_record_selected):
+            _run_dashboard_loop(stdscr, state)
+
+        assert selected_slugs == [
+            "fix-lint",
+            "add-tests",
+            "ship-release",
+            "add-tests",
+        ]
+
+    def test_detail_view_enters_and_returns_to_list(self) -> None:
+        stdscr = _make_stdscr()
+        stdscr.getch.side_effect = [TEST_KEY_ENTER, ord("q"), ord("q")]
+        state = _make_dashboard_state([SAMPLE_PANE])
+
+        def _populate_detail(current_state: DashboardState, slug: str) -> None:
+            current_state.detail_slug = slug
+            current_state.detail_text = "detail text"
+
+        with (
+            patch("dgov.dashboard.fetch_detail", side_effect=_populate_detail) as mock_detail,
+            patch("dgov.dashboard._draw_detail") as mock_draw_detail,
+            patch("dgov.dashboard._draw_pane_row") as mock_draw_row,
+        ):
+            _run_dashboard_loop(stdscr, state)
+
+        mock_detail.assert_called_once_with(state, "fix-lint")
+        assert mock_draw_detail.call_count == 1
+        assert mock_draw_row.call_count == 2
+
+    def test_refresh_sets_force_refresh_event(self) -> None:
+        stdscr = _make_stdscr()
+        stdscr.getch.side_effect = [ord("r"), ord("q")]
+        state = _make_dashboard_state([SAMPLE_PANE])
+        state.force_refresh = MagicMock()
+
+        _run_dashboard_loop(stdscr, state)
+
+        state.force_refresh.set.assert_called_once_with()
+
+    def test_terminal_too_small_shows_message(self) -> None:
+        stdscr = _make_stdscr(max_y=3, max_x=30)
+        stdscr.getch.side_effect = [ord("q")]
+
+        _run_dashboard_loop(stdscr, _make_dashboard_state([SAMPLE_PANE]))
+
+        assert any(
+            call.args[:3] == (0, 0, "Terminal too small") for call in stdscr.addnstr.call_args_list
+        )
+
+    def test_merge_confirmation_can_be_canceled(self) -> None:
+        stdscr = _make_stdscr()
+        stdscr.getch.side_effect = [ord("m"), ord("n"), ord("q")]
+        state = _make_dashboard_state([SAMPLE_PANE])
+
+        with (
+            patch("dgov.dashboard._draw_confirmation") as mock_confirmation,
+            patch("dgov.dashboard._execute_action") as mock_execute,
+        ):
+            _run_dashboard_loop(stdscr, state)
+
+        mock_confirmation.assert_called_once()
+        assert mock_confirmation.call_args.args[1] == " MERGE 'fix-lint'? y/n "
+        mock_execute.assert_not_called()
