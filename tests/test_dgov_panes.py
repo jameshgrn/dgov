@@ -3245,7 +3245,7 @@ class TestRunBatchLiveWait:
                 "dgov.merger.merge_worker_pane",
                 return_value={"merged": "t1", "branch": "t1"},
             ),
-            patch("dgov.batch.time.sleep"),
+            patch("dgov.waiter.time.sleep"),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
@@ -3283,7 +3283,7 @@ class TestRunBatchLiveWait:
             patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "done"}),
             patch("dgov.panes._is_done", return_value=True),
             patch("dgov.merger.merge_worker_pane", return_value={"error": "conflict"}),
-            patch("dgov.batch.time.sleep"),
+            patch("dgov.waiter.time.sleep"),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
@@ -3321,8 +3321,8 @@ class TestRunBatchLiveWait:
             patch("dgov.panes.create_worker_pane", side_effect=fake_create),
             patch("dgov.panes._get_pane", return_value={"slug": "t1", "state": "active"}),
             patch("dgov.panes._is_done", side_effect=fake_is_done),
-            patch("dgov.batch.time.sleep"),
-            patch("dgov.batch.time.monotonic") as mock_mono,
+            patch("dgov.waiter.time.sleep"),
+            patch("dgov.waiter.time.monotonic") as mock_mono,
             patch("dgov.merger.merge_worker_pane", return_value={"error": "timed out"}),
         ):
             # First monotonic() = start, second = way past timeout

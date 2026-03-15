@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import time
 from pathlib import Path
 
 from dgov.persistence import (
@@ -13,6 +12,7 @@ from dgov.persistence import (
     _all_panes,
     _emit_event,
 )
+from dgov.waiter import wait_for_slugs
 
 
 def create_checkpoint(
@@ -351,16 +351,7 @@ def run_batch(
 
         # Wait for all panes in tier
         timeout = max(t.get("timeout", 600) for t in tier) if tier else 600
-        start = time.monotonic()
-        pending = set(slugs)
-
-        while pending and (time.monotonic() - start < timeout):
-            for slug in list(pending):
-                rec = _p._get_pane(session_root, slug)
-                if _p._is_done(session_root, slug, pane_record=rec):
-                    pending.discard(slug)
-            if pending:
-                time.sleep(3)
+        pending = wait_for_slugs(session_root, slugs, timeout=timeout)
 
         # Merge completed panes
         for slug in slugs:
