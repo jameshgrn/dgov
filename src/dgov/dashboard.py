@@ -6,6 +6,7 @@ Curses-based TUI that auto-refreshes pane status. Zero external dependencies.
 from __future__ import annotations
 
 import curses
+import json as _json
 import logging
 import os
 import re
@@ -13,6 +14,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from dgov import __version__
 
@@ -152,10 +154,24 @@ def fetch_panes(state: DashboardState) -> None:
             state.project_root, session_root=state.session_root, include_freshness=False
         )
         branch = _get_branch(state.project_root)
+        # Check for progress files first (faster than tmux capture)
+        progress_dir = Path(state.session_root or state.project_root) / ".dgov" / "progress"
+        for p in panes:
+            slug = p.get("slug", "")
+            progress_file = progress_dir / f"{slug}.json"
+            if progress_file.is_file():
+                try:
+                    data = _json.loads(progress_file.read_text())
+                    msg = data.get("message", "")
+                    status = data.get("status", "")
+                    turn = data.get("turn", 0)
+                    p["activity"] = f"[T{turn}] {msg}" if msg else status
+                except (ValueError, OSError):
+                    pass
         backend = get_backend()
         for p in panes:
             pane_id = p.get("pane_id", "")
-            if pane_id and p.get("alive"):
+            if pane_id and p.get("alive") and not p.get("activity"):
                 try:
                     raw = backend.capture_output(pane_id, lines=2)
                     if raw:
