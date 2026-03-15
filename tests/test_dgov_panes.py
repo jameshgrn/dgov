@@ -33,6 +33,7 @@ def mock_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = MagicMock()
     # Default return values for common methods
     mock.create_pane.return_value = "%1"
+    mock.create_worker_pane.return_value = "%1"
     mock.is_alive.return_value = True
     mock.bulk_info.return_value = {}
     set_backend(mock)
@@ -1774,6 +1775,7 @@ class TestEmitEvent:
         from dgov.persistence import read_events
 
         mock_backend.create_pane.return_value = "%99"
+        mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
@@ -1791,7 +1793,7 @@ class TestEmitEvent:
         assert len(created) == 1
         assert created[0]["agent"] == "claude"
         assert created[0]["pane"] == "test-slug"
-        assert mock_backend.create_pane.call_args.kwargs["env"] == {
+        assert mock_backend.create_worker_pane.call_args.kwargs["env"] == {
             "DISABLE_AUTO_UPDATE": "true",
             "DISABLE_UPDATE_PROMPT": "true",
         }
@@ -1809,6 +1811,7 @@ class TestBlockTitleOverride:
         from dgov.lifecycle import create_worker_pane
 
         mock_backend.create_pane.return_value = "%99"
+        mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
@@ -2581,6 +2584,7 @@ class TestStructurePiPrompt:
         }
 
         mock_backend.create_pane.return_value = "%99"
+        mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
@@ -2609,6 +2613,7 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
     from dgov.lifecycle import create_worker_pane
 
     mock_backend.create_pane.return_value = "%99"
+    mock_backend.create_worker_pane.return_value = "%99"
     events: list[tuple[str, object]] = []
     mock_backend.send_input.side_effect = lambda pane_id, text: events.append(("send_input", text))
 
@@ -2676,6 +2681,7 @@ class TestResumeWorkerPane:
 
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%10"
+        mock_backend.create_worker_pane.return_value = "%10"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
@@ -2735,6 +2741,7 @@ class TestResumeWorkerPane:
         events: list[tuple[str, object]] = []
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%10"
+        mock_backend.create_worker_pane.return_value = "%10"
         mock_backend.send_input.side_effect = lambda pane_id, text: events.append(
             ("send_input", text)
         )
@@ -2791,6 +2798,7 @@ class TestResumeWorkerPane:
 
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%20"
+        mock_backend.create_worker_pane.return_value = "%20"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
@@ -2843,6 +2851,7 @@ class TestResumeWorkerPane:
 
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%30"
+        mock_backend.create_worker_pane.return_value = "%30"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
@@ -2963,6 +2972,7 @@ class TestResumeWorkerPane:
 
         mock_backend.is_alive.return_value = True
         mock_backend.create_pane.return_value = "%new"
+        mock_backend.create_worker_pane.return_value = "%new"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._trigger_hook", return_value=False),
