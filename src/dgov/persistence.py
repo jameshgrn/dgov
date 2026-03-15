@@ -56,14 +56,18 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
 
     if event not in VALID_EVENTS:
         raise ValueError(f"Unknown event: {event!r}. Valid: {sorted(VALID_EVENTS)}")
-    conn = _get_db(session_root)
-    ts = datetime.now(timezone.utc).isoformat()
-    data = json.dumps(kwargs, default=str) if kwargs else "{}"
-    conn.execute(
-        "INSERT INTO events (ts, event, pane, data) VALUES (?, ?, ?, ?)",
-        (ts, event, pane, data),
-    )
-    conn.commit()
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        ts = datetime.now(timezone.utc).isoformat()
+        data = json.dumps(kwargs, default=str) if kwargs else "{}"
+        conn.execute(
+            "INSERT INTO events (ts, event, pane, data) VALUES (?, ?, ?, ?)",
+            (ts, event, pane, data),
+        )
+        conn.commit()
+
+    _retry_on_lock(_do)
 
 
 def read_events(session_root: str, slug: str | None = None) -> list[dict]:
