@@ -632,10 +632,10 @@ def _show_capture(state: DashboardState, slug: str) -> None:
 def _execute_action(state: DashboardState, action: str, slug: str) -> None:
     """Execute a merge or close action."""
     if action == "merge":
-        from dgov.merger import merge_worker_pane_with_close
+        from dgov.merger import merge_worker_pane
 
         try:
-            merge_worker_pane_with_close(state.project_root, slug, session_root=state.session_root)
+            merge_worker_pane(state.project_root, slug, session_root=state.session_root)
         except Exception:  # noqa: BLE001
             pass
     elif action == "close":

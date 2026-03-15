@@ -1213,37 +1213,6 @@ class TestFullCleanup:
 
 
 # ---------------------------------------------------------------------------
-# merge_worker_pane_with_close
-# ---------------------------------------------------------------------------
-
-
-class TestMergeWorkerPaneWithClose:
-    def test_error_passes_through(self, tmp_path: Path) -> None:
-        from dgov.merger import merge_worker_pane_with_close
-
-        with patch(
-            "dgov.merger.merge_worker_pane",
-            return_value={"error": "Pane not found: nope"},
-        ):
-            result = merge_worker_pane_with_close(str(tmp_path), "nope")
-        assert "error" in result
-
-    def test_successful_merge_calls_close(self, tmp_path: Path) -> None:
-        from dgov.merger import merge_worker_pane_with_close
-
-        with (
-            patch(
-                "dgov.merger.merge_worker_pane",
-                return_value={"merged": "test", "branch": "test-br"},
-            ),
-            patch("dgov.panes.close_worker_pane", return_value=True) as mock_close,
-        ):
-            result = merge_worker_pane_with_close(str(tmp_path), "test")
-        assert result["merged"] == "test"
-        mock_close.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
 # escalate_worker_pane
 # ---------------------------------------------------------------------------
 

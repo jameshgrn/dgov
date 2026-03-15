@@ -466,16 +466,11 @@ def pane_merge(slug, project_root, session_root, close, resolve, squash):
     Merge the worktree branch for the given pane. If --close is set,
     also close the worker pane after successful merge.
     """
-    from dgov.merger import merge_worker_pane, merge_worker_pane_with_close
+    from dgov.merger import merge_worker_pane
 
-    if close:
-        result = merge_worker_pane_with_close(
-            project_root, slug, session_root=session_root, resolve=resolve, squash=squash
-        )
-    else:
-        result = merge_worker_pane(
-            project_root, slug, session_root=session_root, resolve=resolve, squash=squash
-        )
+    result = merge_worker_pane(
+        project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+    )
 
     click.echo(json.dumps(result, indent=2))
 
@@ -611,7 +606,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 )
 def pane_merge_all(project_root, session_root, close, resolve, squash):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
-    from dgov.merger import merge_worker_pane, merge_worker_pane_with_close
+    from dgov.merger import merge_worker_pane
     from dgov.panes import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
@@ -620,7 +615,7 @@ def pane_merge_all(project_root, session_root, close, resolve, squash):
         click.echo(json.dumps({"merged": [], "skipped": "no done panes"}))
         return
 
-    merge_fn = merge_worker_pane_with_close if close else merge_worker_pane
+    merge_fn = merge_worker_pane
 
     merged_slugs = []
     closed_slugs = []
