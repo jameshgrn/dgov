@@ -575,6 +575,8 @@ def merge_worker_pane(
 
     branch_name = target.get("branch_name")
     pane_project_root = target.get("project_root") or project_root
+    if not branch_name:
+        return {"error": f"Pane {slug} is missing branch_name"}
 
     # Auto-commit uncommitted changes in worktree
     commit_result = _commit_worktree(target)

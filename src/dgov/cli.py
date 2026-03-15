@@ -102,9 +102,9 @@ def cli(ctx, governor):
     def _resolve_governor() -> tuple[str, str]:
         """Return (agent_id, permission_mode), running first-time setup if needed."""
         agent_id, perm = get_governor_agent(project_root)
-        if governor:
+        if governor is not None:
             agent_id = governor
-        if agent_id:
+        if agent_id is not None:
             return agent_id, perm or ""
         # First-time setup
         registry = load_registry(project_root)
@@ -122,6 +122,8 @@ def cli(ctx, governor):
             type=click.Choice(["", "plan", "acceptEdits", "bypassPermissions"]),
             default="",
         )
+        assert agent_id is not None
+        assert perm is not None
         write_project_config(project_root, "governor_agent", agent_id)
         if perm:
             write_project_config(project_root, "governor_permissions", perm)
