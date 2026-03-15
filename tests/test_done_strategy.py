@@ -88,10 +88,10 @@ class TestBuiltinStrategies:
         assert ds is not None
         assert ds.type == "signal"
 
-    def test_gemini_signal_strategy(self) -> None:
+    def test_gemini_exit_strategy(self) -> None:
         ds = AGENT_REGISTRY["gemini"].done_strategy
         assert ds is not None
-        assert ds.type == "signal"
+        assert ds.type == "exit"
 
     def test_pi_exit_strategy(self) -> None:
         ds = AGENT_REGISTRY["pi"].done_strategy
