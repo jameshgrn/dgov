@@ -456,8 +456,6 @@ def close_worker_pane(
     if not target:
         return True  # already cleaned up (e.g. by merge)
 
-    update_pane_state(session_root, slug, "closed")
-    emit_event(session_root, "pane_closed", slug)
     result = _full_cleanup(
         project_root,
         session_root,
@@ -465,6 +463,8 @@ def close_worker_pane(
         target,
         skip_worktree_if_dirty=not force,
     )
+    update_pane_state(session_root, slug, "closed")
+    emit_event(session_root, "pane_closed", slug)
     if result.get("branch_kept"):
         logger.info(
             "Branch %s was kept because it has unmerged commits. "

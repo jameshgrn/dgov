@@ -622,6 +622,13 @@ def merge_worker_pane(
     merge = _plumbing_merge(pane_project_root, branch_name, squash=squash)
 
     if merge.success:
+        merge_sha_r = subprocess.run(
+            ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
+        _p._full_cleanup(pane_project_root, session_root, slug, target)
         try:
             _persist.update_pane_state(session_root, slug, "merged")
         except IllegalTransitionError as e:
@@ -629,16 +636,9 @@ def merge_worker_pane(
                 logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
             else:
                 raise
-        merge_sha_r = subprocess.run(
-            ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
         _persist.emit_event(
             session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
         )
-        _p._full_cleanup(pane_project_root, session_root, slug, target)
 
         # Post-merge hook: lint, verify protected files, etc.
         post_merge_env = {
