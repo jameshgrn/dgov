@@ -39,6 +39,25 @@ def split_pane(
     return _run(args)
 
 
+def create_background_pane(
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+) -> str:
+    """Create a worker in a new background tmux window. Returns pane ID.
+
+    Uses new-window -d so the window is created without switching focus.
+    Each worker gets its own full-size TTY in an invisible window.
+    """
+    args = ["new-window", "-d", "-P", "-F", "#{pane_id}"]
+    if env:
+        for key, value in sorted(env.items()):
+            args.extend(["-e", f"{key}={value}"])
+    if cwd:
+        args.extend(["-c", cwd])
+    return _run(args)
+
+
 def send_command(pane_id: str, command: str) -> None:
     """Send a shell command to a pane and press Enter."""
     _run(["send-keys", "-t", pane_id, command, "Enter"])
