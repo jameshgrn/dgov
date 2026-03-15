@@ -636,6 +636,7 @@ def merge_worker_pane(
             else:
                 raise
         _full_cleanup(pane_project_root, session_root, slug, target)
+        _persist.remove_pane(session_root, slug)
         _persist.emit_event(
             session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
         )
