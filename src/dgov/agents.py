@@ -71,6 +71,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="cc",
         prompt_command="claude",
         prompt_transport="positional",
+        default_flags="-p",
         permission_flags={
             "plan": "--permission-mode plan",
             "acceptEdits": "--permission-mode acceptEdits",
@@ -78,7 +79,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="claude --continue{permissions}",
         color=39,
-        done_strategy=DoneStrategy(type="commit"),
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "codex": AgentDef(
         id="codex",
