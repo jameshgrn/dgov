@@ -278,7 +278,10 @@ def create_worker_pane(
             prompt = _structure_pi_prompt(prompt)
 
         # 8. Rewrite absolute paths in prompt so agent edits worktree, not main repo
-        rewritten_prompt = prompt.replace(project_root, worktree_path)
+        # Only replace project_root when not already inside a worktree path
+        rewritten_prompt = re.sub(
+            re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, prompt
+        )
 
         # 8b. Fallback protected-file warning if hook didn't write CLAUDE.md
         if not hook_ran:
@@ -422,7 +425,7 @@ def _full_cleanup(
             )
             if branch:
                 subprocess.run(
-                    ["git", "-C", project_root, "branch", "-D", branch],
+                    ["git", "-C", project_root, "branch", "-d", branch],
                     capture_output=True,
                 )
         if not skipped_worktree:
@@ -542,8 +545,10 @@ def resume_worker_pane(
     if resume_agent == "pi":
         full_prompt = _structure_pi_prompt(full_prompt)
 
-    # Rewrite paths
-    rewritten_prompt = full_prompt.replace(project_root, worktree_path)
+    # Rewrite paths — only replace project_root when not already inside a worktree path
+    rewritten_prompt = re.sub(
+        re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, full_prompt
+    )
 
     startup_env = {
         "DISABLE_AUTO_UPDATE": "true",
