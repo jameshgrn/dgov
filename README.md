@@ -65,7 +65,7 @@ State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
 | `dgov pane list` | List all panes |
 | `dgov pane wait` | Block until a pane finishes |
 | `dgov pane review` | Inspect a pane's diff and verdict |
-| `dgov pane merge` | Merge a pane's branch into main |
+| `dgov pane merge` | Merge a pane's branch into main (`--no-squash` preserves commit history) |
 | `dgov pane close` | Close a pane and clean up worktree |
 | `dgov pane resume` | Re-launch agent in existing worktree |
 | `dgov pane retry` | Fresh attempt with new worktree |

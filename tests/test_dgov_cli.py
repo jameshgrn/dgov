@@ -368,8 +368,12 @@ class TestPaneCommands:
 
         assert close_result.exit_code == 0
         assert open_result.exit_code == 0
-        mock_merge_close.assert_called_once_with(".", "task", session_root=None, resolve="agent")
-        mock_merge.assert_called_once_with(".", "task", session_root=None, resolve="manual")
+        mock_merge_close.assert_called_once_with(
+            ".", "task", session_root=None, resolve="agent", squash=True
+        )
+        mock_merge.assert_called_once_with(
+            ".", "task", session_root=None, resolve="manual", squash=True
+        )
 
     def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(

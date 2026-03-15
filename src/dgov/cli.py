@@ -455,7 +455,12 @@ def pane_close(slug, project_root, session_root, force):
     default="agent",
     help="Conflict resolution: agent (auto-resolve), manual (markers)",
 )
-def pane_merge(slug, project_root, session_root, close, resolve):
+@click.option(
+    "--squash/--no-squash",
+    default=True,
+    help="Squash worker commits into one (default: squash)",
+)
+def pane_merge(slug, project_root, session_root, close, resolve, squash):
     """Merge a branch into main with configurable conflict resolution.
 
     Merge the worktree branch for the given pane. If --close is set,
@@ -465,10 +470,12 @@ def pane_merge(slug, project_root, session_root, close, resolve):
 
     if close:
         result = merge_worker_pane_with_close(
-            project_root, slug, session_root=session_root, resolve=resolve
+            project_root, slug, session_root=session_root, resolve=resolve, squash=squash
         )
     else:
-        result = merge_worker_pane(project_root, slug, session_root=session_root, resolve=resolve)
+        result = merge_worker_pane(
+            project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+        )
 
     click.echo(json.dumps(result, indent=2))
 
@@ -597,7 +604,12 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
     default="agent",
     help="Conflict resolution strategy",
 )
-def pane_merge_all(project_root, session_root, close, resolve):
+@click.option(
+    "--squash/--no-squash",
+    default=True,
+    help="Squash worker commits into one (default: squash)",
+)
+def pane_merge_all(project_root, session_root, close, resolve, squash):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
     from dgov.merger import merge_worker_pane, merge_worker_pane_with_close
     from dgov.panes import list_worker_panes
@@ -618,7 +630,9 @@ def pane_merge_all(project_root, session_root, close, resolve):
 
     for p in done_panes:
         slug = p["slug"]
-        result = merge_fn(project_root, slug, session_root=session_root, resolve=resolve)
+        result = merge_fn(
+            project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+        )
         if "merged" in result:
             merged_slugs.append(slug)
             if close:
