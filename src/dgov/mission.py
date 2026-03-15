@@ -85,6 +85,7 @@ def run_mission(
 
     # -- PENDING: preflight --
     emit_event(session_root, "mission_pending", slug_s, agent=policy.agent)
+    logger.info("Mission %s: preflight (%s)", slug_s, policy.agent)
     report = run_preflight(project_root, agent=policy.agent, session_root=session_root)
     if not report.passed:
         failed_checks = [c.message for c in report.checks if not c.passed and c.critical]
@@ -92,6 +93,7 @@ def run_mission(
 
     # -- RUNNING: create worker pane --
     emit_event(session_root, "mission_running", slug_s, agent=policy.agent)
+    logger.info("Mission %s: dispatching worker", slug_s)
     try:
         pane = create_worker_pane(
             project_root=project_root,
@@ -107,6 +109,7 @@ def run_mission(
 
     # -- WAITING: wait for worker to finish --
     emit_event(session_root, "mission_waiting", slug_s)
+    logger.info("Mission %s: waiting for worker (timeout=%ds)", slug_s, policy.timeout)
     retries_left = policy.max_retries
     while True:
         try:
@@ -159,6 +162,7 @@ def run_mission(
 
     # -- REVIEWING: review the diff --
     emit_event(session_root, "mission_reviewing", slug_s)
+    logger.info("Mission %s: reviewing diff", slug_s)
     review = review_worker_pane(project_root, slug_s, session_root=session_root)
     if review.get("error"):
         close_worker_pane(project_root, slug_s, session_root=session_root)
@@ -179,6 +183,7 @@ def run_mission(
 
     # -- MERGING --
     emit_event(session_root, "mission_merging", slug_s)
+    logger.info("Mission %s: merging", slug_s)
     merge = merge_worker_pane(project_root, slug_s, session_root=session_root)
     if merge.get("error"):
         close_worker_pane(project_root, slug_s, session_root=session_root)
@@ -186,6 +191,7 @@ def run_mission(
 
     # -- COMPLETED --
     emit_event(session_root, "mission_completed", slug_s)
+    logger.info("Mission %s: completed in %.1fs", slug_s, _elapsed())
     return MissionResult(
         state="completed",
         slug=slug_s,
