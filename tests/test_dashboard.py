@@ -151,8 +151,7 @@ class TestFormatRow:
         row = format_row(pane, widths)
         assert row["slug"] == "fix-lint"
         assert row["agent"] == "claude"
-        assert row["alive"] == "\u2713"
-        assert row["done"] == "\u2717"
+        assert "activity" in row
         assert row["duration"] == "2m5s"
 
     def test_missing_fields(self) -> None:
@@ -161,8 +160,7 @@ class TestFormatRow:
         row = format_row(pane, widths)
         assert row["slug"] == ""
         assert row["agent"] == "?"
-        assert row["alive"] == "\u2717"
-        assert row["done"] == "\u2717"
+        assert row["activity"] == ""
 
     def test_long_slug_truncated(self) -> None:
         pane = {
