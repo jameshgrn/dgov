@@ -243,12 +243,11 @@ def run_review_fix_pipeline(
     all_findings: list[ReviewFinding] = []
     for slug in review_slugs:
         output = _p.capture_worker_output(project_root, slug, lines=200, session_root=session_root)
-        if output:
-            findings = parse_review_findings(output)
-            all_findings.extend(findings)
+        findings = parse_review_findings(output or "")
+        all_findings.extend(findings)
 
         # Emit per-finding events
-        for f in parse_review_findings(output or ""):
+        for f in findings:
             _emit_event(
                 session_root,
                 "review_fix_finding",
