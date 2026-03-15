@@ -420,7 +420,7 @@ def detect_installed_agents(
 
 
 # Preferred fallback order when no default is configured.
-_DEFAULT_AGENT_CHAIN = ("claude", "codex", "gemini")
+_DEFAULT_AGENT_CHAIN = ("pi", "claude", "codex", "gemini")
 
 
 def _load_dgov_config() -> dict:
