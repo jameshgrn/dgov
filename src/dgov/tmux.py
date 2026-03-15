@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 import time
 
@@ -216,7 +217,7 @@ def send_prompt_via_buffer(pane_id: str, prompt: str) -> None:
 
 def start_logging(pane_id: str, log_file: str) -> None:
     """Start logging pane output to a file via pipe-pane."""
-    _run(["pipe-pane", "-t", pane_id, "-o", f"cat >> {log_file}"])
+    _run(["pipe-pane", "-t", pane_id, "-o", f"cat >> {shlex.quote(log_file)}"])
 
 
 def stop_logging(pane_id: str) -> None:
