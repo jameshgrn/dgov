@@ -352,7 +352,7 @@ class TestPaneCommands:
 
     def test_merge_uses_selected_strategy(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.merger.merge_worker_pane_with_close",
+            "dgov.merger.merge_worker_pane",
             return_value={"merged": "task", "branch": "task"},
         ) as mock_merge_close:
             close_result = runner.invoke(cli, ["pane", "merge", "task"])
@@ -377,7 +377,7 @@ class TestPaneCommands:
 
     def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.merger.merge_worker_pane_with_close",
+            "dgov.merger.merge_worker_pane",
             return_value={"error": "conflicts"},
         ):
             result = runner.invoke(cli, ["pane", "merge", "task"])
@@ -468,7 +468,7 @@ class TestPaneCommands:
         with (
             patch("dgov.panes.list_worker_panes", return_value=panes),
             patch(
-                "dgov.merger.merge_worker_pane_with_close",
+                "dgov.merger.merge_worker_pane",
                 side_effect=[
                     {"merged": "a", "files_changed": 2},
                     {"error": "conflict"},
