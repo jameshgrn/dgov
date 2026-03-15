@@ -44,6 +44,7 @@ def create_background_pane(
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     name: str | None = None,
+    agent: str | None = None,
 ) -> str:
     """Create a worker in a new background tmux window. Returns pane ID.
 
@@ -52,7 +53,8 @@ def create_background_pane(
     """
     args = ["new-window", "-d", "-P", "-F", "#{pane_id}"]
     if name:
-        args.extend(["-n", f"[dgov] {name}"])
+        prefix = agent if agent else "dgov"
+        args.extend(["-n", f"[{prefix}] {name}"])
     if env:
         for key, value in sorted(env.items()):
             args.extend(["-e", f"{key}={value}"])
