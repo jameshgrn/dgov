@@ -13,6 +13,7 @@ import pytest
 from dgov.backend import set_backend
 from dgov.lifecycle import _trigger_hook
 from dgov.persistence import (
+    STATE_DIR,
     WorkerPane,
     add_pane,
     all_panes,
@@ -648,6 +649,72 @@ class TestListWorkerPanes:
         assert len(result) == 1
         assert result[0]["done"] is True
         assert result[0]["state"] == "done"
+
+    def test_reads_last_output_from_log_file(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        replace_all_panes(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "worker",
+                        "agent": "pi",
+                        "pane_id": "%3",
+                        "project_root": str(tmp_path),
+                        "worktree_path": "/wt",
+                        "branch_name": "worker",
+                        "prompt": "Do something",
+                        "state": "active",
+                    }
+                ]
+            },
+        )
+        mock_backend.bulk_info.return_value = {
+            "%3": {"title": "worker", "current_command": "node"}
+        }
+        log_dir = tmp_path / STATE_DIR / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "worker.log").write_text(
+            "line 1\n\x1b[31mline 2\x1b[0m\nline 3\nline 4\n",
+            encoding="utf-8",
+        )
+
+        with patch("dgov.status._is_done", return_value=False):
+            result = list_worker_panes(str(tmp_path))
+
+        assert result[0]["last_output"] == "line 2\nline 3\nline 4"
+        mock_backend.capture_output.assert_not_called()
+
+    def test_missing_log_file_keeps_last_output_empty(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        replace_all_panes(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "worker",
+                        "agent": "pi",
+                        "pane_id": "%3",
+                        "project_root": str(tmp_path),
+                        "worktree_path": "/wt",
+                        "branch_name": "worker",
+                        "prompt": "Do something",
+                        "state": "active",
+                    }
+                ]
+            },
+        )
+        mock_backend.bulk_info.return_value = {
+            "%3": {"title": "worker", "current_command": "node"}
+        }
+
+        with patch("dgov.status._is_done", return_value=False):
+            result = list_worker_panes(str(tmp_path))
+
+        assert result[0]["last_output"] == ""
+        mock_backend.capture_output.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

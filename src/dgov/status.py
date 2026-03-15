@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 
 from dgov.backend import get_backend
@@ -20,6 +21,28 @@ from dgov.persistence import (
 from dgov.waiter import _is_done
 
 logger = logging.getLogger(__name__)
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _read_last_output_from_log(session_root: str, slug: str) -> str:
+    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
+    if not log_path.exists():
+        return ""
+
+    try:
+        with log_path.open(encoding="utf-8", errors="replace") as handle:
+            lines: deque[str] = deque(maxlen=3)
+            for line in handle:
+                lines.append(_strip_ansi(line.rstrip("\r\n")))
+    except OSError:
+        return ""
+
+    return "\n".join(lines)
 
 
 # -- Freshness --
@@ -195,16 +218,7 @@ def list_worker_panes(
             elif cmd_lower:
                 activity = cmd_lower[:15]
 
-        # Capture last output line for visibility
-        last_output = ""
-        if alive and pane_id:
-            try:
-                output = get_backend().capture_output(pane_id, lines=3)
-                if output:
-                    lines = [ln.strip() for ln in output.strip().splitlines() if ln.strip()]
-                    last_output = lines[-1][:60] if lines else ""
-            except (RuntimeError, OSError):
-                pass
+        last_output = _read_last_output_from_log(session_root, slug)
 
         entry: dict = {
             "slug": slug,
