@@ -13,6 +13,11 @@ from dgov.waiter import wait_for_slugs
 
 logger = logging.getLogger(__name__)
 
+
+class ReviewParseError(ValueError):
+    """Raised when review output cannot be parsed into findings."""
+
+
 # -- Severity ordering --
 
 _SEVERITY_LEVELS = {"critical": 0, "medium": 1, "low": 2}
@@ -71,7 +76,10 @@ def parse_review_findings(output: str) -> list[ReviewFinding]:
     """Parse structured JSON findings from review agent output.
 
     Expects agent to output a JSON array of finding objects.
-    Gracefully handles malformed output by returning an empty list.
+
+    Raises ``ReviewParseError`` when the output is present but cannot be
+    parsed (no JSON array, invalid JSON, or non-array JSON).  Empty /
+    whitespace-only input returns ``[]`` (agent had nothing to review).
     """
     if not output or not output.strip():
         return []
@@ -98,19 +106,17 @@ def parse_review_findings(output: str) -> list[ReviewFinding]:
     start = text.find("[")
     end = text.rfind("]")
     if start == -1 or end == -1 or end <= start:
-        logger.warning("No JSON array found in review output")
-        return []
+        raise ReviewParseError(f"No JSON array found in review output: {text[:200]}")
 
     json_text = text[start : end + 1]
 
     try:
         raw = json.loads(json_text)
-    except json.JSONDecodeError:
-        logger.warning("Failed to parse JSON from review output")
-        return []
+    except json.JSONDecodeError as exc:
+        raise ReviewParseError(f"Failed to parse JSON: {text[:200]}") from exc
 
     if not isinstance(raw, list):
-        return []
+        raise ReviewParseError(f"Expected JSON array, got {type(raw).__name__}")
 
     findings = []
     for item in raw:
@@ -236,7 +242,12 @@ def run_review_fix_pipeline(
     all_findings: list[ReviewFinding] = []
     for slug in review_slugs:
         output = capture_worker_output(project_root, slug, lines=200, session_root=session_root)
-        findings = parse_review_findings(output or "")
+        try:
+            findings = parse_review_findings(output or "")
+        except ReviewParseError as e:
+            logger.warning("Review worker %s produced unparseable output: %s", slug, e)
+            emit_event(session_root, "review_fix_parse_error", slug, error=str(e))
+            continue
         all_findings.extend(findings)
 
         # Emit per-finding events
