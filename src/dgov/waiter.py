@@ -44,6 +44,20 @@ def _has_new_commits(project_root: str, branch_name: str, base_sha: str) -> bool
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
+def _count_commits(project_root: str, branch: str, base_sha: str) -> int:
+    """Count new commits on branch since base_sha."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", project_root, "rev-list", "--count", f"{base_sha}..{branch}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return int(result.stdout.strip()) if result.returncode == 0 else 0
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return 0
+
+
 # -- Blocked / question detection --
 
 _BLOCKED_PATTERNS = [
@@ -158,8 +172,36 @@ def _is_done(
             logger.debug("new_commits=%s slug=%s", has_commits, slug)
             if has_commits:
                 if pane_id and _agent_still_running(pane_id):
-                    logger.debug("new_commits slug=%s but agent still running", slug)
-                    return False
+                    # Agent committed but is still running — grace period
+                    if _stable_state is not None:
+                        commit_count = _count_commits(project_root, branch_name, base_sha)
+                        prev_count = _stable_state.get("commit_count")
+                        if prev_count is None or commit_count != prev_count:
+                            # New commits — reset grace timer
+                            _stable_state["commit_count"] = commit_count
+                            _stable_state["commit_seen_at"] = time.monotonic()
+                            logger.debug(
+                                "new_commits slug=%s count=%d agent still running, starting grace",
+                                slug,
+                                commit_count,
+                            )
+                            return False
+                        commit_seen = _stable_state.get("commit_seen_at", 0)
+                        elapsed = time.monotonic() - commit_seen
+                        if elapsed < 30:
+                            logger.debug(
+                                "new_commits slug=%s grace period %.0fs/30s", slug, elapsed
+                            )
+                            return False
+                        logger.debug(
+                            "new_commits slug=%s grace period elapsed, declaring done", slug
+                        )
+                        # Fall through to done
+                    else:
+                        logger.debug(
+                            "new_commits slug=%s but agent still running (no stable_state)", slug
+                        )
+                        return False
                 current_state = pane_record.get("state", "")
                 force = current_state == "abandoned"
                 _persist.update_pane_state(session_root, slug, "done", force=force)
