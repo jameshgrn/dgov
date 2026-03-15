@@ -82,15 +82,14 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         id="codex",
         name="Codex",
         short_label="cx",
-        prompt_command="codex",
+        prompt_command="codex exec",
         prompt_transport="positional",
         permission_flags={
             "acceptEdits": "--full-auto",
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
         },
-        resume_template="codex resume --last{permissions}",
         color=214,
-        done_strategy=DoneStrategy(type="signal"),
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "gemini": AgentDef(
         id="gemini",
