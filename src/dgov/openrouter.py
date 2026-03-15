@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import tomllib
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -262,7 +263,7 @@ def check_status() -> dict:
     """
 
     api_key = _get_api_key()
-    result = {
+    result: dict[str, object] = {
         "api_key_set": bool(api_key),
         "default_model": _get_default_model(),
         "api_reachable": False,

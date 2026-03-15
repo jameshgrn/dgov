@@ -285,7 +285,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     metadata = d.pop("metadata", None)
     if metadata:
         try:
-            d.update(json.loads(metadata))
+            d.update(json.loads(str(metadata)))
         except (json.JSONDecodeError, TypeError):
             logger.warning(
                 "Corrupt pane metadata for slug=%s: %.100s", d.get("slug", "?"), metadata
