@@ -71,6 +71,10 @@ _ALL_BUILTIN_IDS = {
     "cursor",
     "copilot",
     "crush",
+    "pi-claude",
+    "pi-codex",
+    "pi-gemini",
+    "pi-openrouter",
 }
 
 
