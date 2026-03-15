@@ -343,8 +343,9 @@ def create_worker_pane(
         # 5. Tidy layout
         get_backend().select_layout("tiled")
 
-        # 6. Clear CLAUDECODE recursion guard (inherited from parent claude session)
-        get_backend().send_input(pane_id, "unset CLAUDECODE")
+        # 6. Scrub env vars that cause worker auth issues
+        for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
+            get_backend().send_input(pane_id, f"unset {var}")
 
         # 6a. Start persistent logging via tmux pipe-pane
         logs_dir = Path(session_root) / _STATE_DIR / "logs"
@@ -1160,8 +1161,9 @@ def resume_worker_pane(
     get_backend().set_pane_option(pane_id, "allow-set-title", "off")
     get_backend().select_layout("tiled")
 
-    # Clear recursion guard + inject env
-    get_backend().send_input(pane_id, "unset CLAUDECODE")
+    # Scrub env vars that cause worker auth issues
+    for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
+        get_backend().send_input(pane_id, f"unset {var}")
 
     # Inject agent config env vars
     if agent_def and agent_def.env:
