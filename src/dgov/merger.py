@@ -130,15 +130,41 @@ def _plumbing_merge(
         text=True,
     )
     if reset.returncode != 0:
+        logger.error(
+            "reset --hard failed after update-ref advanced %s to %s. "
+            "Working tree is out of sync. Run: git reset --hard HEAD",
+            branch_ref,
+            new_commit,
+        )
         if stashed:
             subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
-        return MergeResult(success=False, stderr="reset --hard failed after ref update")
+        return MergeResult(
+            success=False,
+            stderr=(
+                f"reset --hard failed after update-ref advanced {branch_ref} to {new_commit}. "
+                f"Working tree is out of sync. Run: git reset --hard HEAD"
+            ),
+        )
 
     # Pop stash if we stashed
+    warnings: list[str] = []
     if stashed:
-        subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+        pop = subprocess.run(
+            ["git", "-C", project_root, "stash", "pop"],
+            capture_output=True,
+            text=True,
+        )
+        if pop.returncode != 0:
+            logger.warning(
+                "Merge succeeded but stash pop failed — uncommitted changes "
+                "are preserved in stash. Recover with: git stash show && git stash pop"
+            )
+            warnings.append(
+                "Stash pop failed after merge. Your uncommitted changes are safe in "
+                "the stash. Recover with: git stash show && git stash pop"
+            )
 
-    return MergeResult(success=True)
+    return MergeResult(success=True, warnings=warnings)
 
 
 def _no_squash_merge(
@@ -199,10 +225,24 @@ def _no_squash_merge(
             subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
         return MergeResult(success=False, stderr=result.stderr.strip())
 
+    warnings: list[str] = []
     if stashed:
-        subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+        pop = subprocess.run(
+            ["git", "-C", project_root, "stash", "pop"],
+            capture_output=True,
+            text=True,
+        )
+        if pop.returncode != 0:
+            logger.warning(
+                "Merge succeeded but stash pop failed — uncommitted changes "
+                "are preserved in stash. Recover with: git stash show && git stash pop"
+            )
+            warnings.append(
+                "Stash pop failed after merge. Your uncommitted changes are safe in "
+                "the stash. Recover with: git stash show && git stash pop"
+            )
 
-    return MergeResult(success=True)
+    return MergeResult(success=True, warnings=warnings)
 
 
 # -- Post-merge lint fix --
@@ -679,6 +719,8 @@ def merge_worker_pane(
             result["auto_committed"] = commit_result["files"]
         if damaged:
             result["warning"] = f"protected files changed: {damaged}"
+        if merge.warnings:
+            result["stash_warnings"] = merge.warnings
         if lint_result:
             result.update(lint_result)
         return result

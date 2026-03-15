@@ -11,3 +11,4 @@ class MergeResult:
     stdout: str = ""
     stderr: str = ""
     conflicts: list[dict[str, str]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)

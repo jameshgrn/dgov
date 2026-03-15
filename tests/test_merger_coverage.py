@@ -12,6 +12,7 @@ from dgov.merger import (
     _lint_fix_merged_files,
     _no_squash_merge,
     _pick_resolver_agent,
+    _plumbing_merge,
     _resolve_conflicts_with_agent,
     _restore_protected_files,
     merge_worker_pane,
@@ -722,3 +723,138 @@ def test_lint_fix_merged_files_formats_python_and_amends_commit(tmp_path: Path) 
     assert result == {"lint_fixed": ["worker.py"]}
     assert (repo / "worker.py").read_text() == "def worker():\n    return 1\n"
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+
+
+def test_plumbing_merge_stash_pop_failure_returns_success_with_warning(
+    tmp_path: Path,
+) -> None:
+    """When stash pop fails after merge, result is success=True with a warning."""
+    repo = _init_repo(tmp_path, "stash-pop-fail")
+    worktree = _add_worktree(repo, tmp_path, "dgov-stash-pop")
+
+    (worktree / "worker.txt").write_text("worker content\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "add worker file")
+
+    _git(repo, "checkout", "main")
+
+    # Make the worktree dirty so stash push triggers
+    (repo / "README.md").write_text("dirty main\n")
+
+    # Patch subprocess.run to intercept stash pop and make it fail
+    original_run = subprocess.run
+
+    def _intercept_stash_pop(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        if isinstance(cmd, list) and "stash" in cmd and "pop" in cmd:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="conflict")
+        return original_run(*args, **kwargs)
+
+    with patch("dgov.merger.subprocess.run", side_effect=_intercept_stash_pop):
+        result = _plumbing_merge(str(repo), "dgov-stash-pop")
+
+    assert result.success is True
+    assert len(result.warnings) == 1
+    assert "stash" in result.warnings[0].lower()
+    assert (repo / "worker.txt").read_text() == "worker content\n"
+
+
+def test_plumbing_merge_reset_hard_failure_gives_actionable_error(
+    tmp_path: Path,
+) -> None:
+    """When reset --hard fails after update-ref, error message includes recovery steps."""
+    repo = _init_repo(tmp_path, "reset-fail")
+    worktree = _add_worktree(repo, tmp_path, "dgov-reset-fail")
+
+    (worktree / "worker.txt").write_text("worker content\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "add worker file")
+
+    _git(repo, "checkout", "main")
+
+    original_run = subprocess.run
+
+    def _intercept_reset(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        if isinstance(cmd, list) and "reset" in cmd and "--hard" in cmd:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="reset error")
+        return original_run(*args, **kwargs)
+
+    with patch("dgov.merger.subprocess.run", side_effect=_intercept_reset):
+        result = _plumbing_merge(str(repo), "dgov-reset-fail")
+
+    assert result.success is False
+    assert "update-ref advanced" in result.stderr
+    assert "git reset --hard HEAD" in result.stderr
+
+
+def test_no_squash_merge_stash_pop_failure_returns_success_with_warning(
+    tmp_path: Path,
+) -> None:
+    """When stash pop fails after no-squash merge, result is success=True with a warning."""
+    repo = _init_repo(tmp_path, "no-squash-stash")
+
+    _git(repo, "checkout", "-b", "dgov-ns-stash")
+    (repo / "worker.txt").write_text("worker content\n")
+    _git(repo, "add", "worker.txt")
+    _git(repo, "commit", "-m", "add worker file")
+    _git(repo, "checkout", "main")
+
+    # Make the worktree dirty so stash push triggers
+    (repo / "README.md").write_text("dirty main\n")
+
+    original_run = subprocess.run
+
+    def _intercept_stash_pop(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("args", [])
+        if isinstance(cmd, list) and "stash" in cmd and "pop" in cmd:
+            return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="conflict")
+        return original_run(*args, **kwargs)
+
+    with patch("dgov.merger.subprocess.run", side_effect=_intercept_stash_pop):
+        result = _no_squash_merge(str(repo), "dgov-ns-stash")
+
+    assert result.success is True
+    assert len(result.warnings) == 1
+    assert "stash" in result.warnings[0].lower()
+    assert (repo / "worker.txt").read_text() == "worker content\n"
+
+
+def test_merge_worker_pane_surfaces_stash_warnings(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """MergeResult.warnings are surfaced as stash_warnings in the return dict."""
+    repo = _init_repo(tmp_path, "surface-warnings")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-surface-warn")
+
+    (worktree / "worker.txt").write_text("worker content\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "add worker file")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="surface-warn",
+        branch_name="dgov-surface-warn",
+        base_sha=base_sha,
+    )
+
+    fake_merge = MergeResult(success=True, warnings=["stash pop conflict"])
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state"),
+        patch("dgov.persistence.emit_event"),
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane"),
+        patch("dgov.lifecycle._trigger_hook", return_value=True),
+        patch("dgov.merger._plumbing_merge", return_value=fake_merge),
+    ):
+        result = merge_worker_pane(str(repo), "surface-warn", session_root=str(repo))
+
+    assert result["merged"] == "surface-warn"
+    assert result["stash_warnings"] == ["stash pop conflict"]
