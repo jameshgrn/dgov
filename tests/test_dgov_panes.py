@@ -533,7 +533,7 @@ class TestListWorkerPanes:
 
         mock_backend.bulk_info.return_value = {"%2": {"title": "gov", "current_command": "claude"}}
         with (
-            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.status._is_done", return_value=False),
         ):
             result = list_worker_panes(str(tmp_path))
         assert len(result) == 1
@@ -562,7 +562,7 @@ class TestListWorkerPanes:
             "%5": {"title": "test", "current_command": "claude"}
         }
         with (
-            patch("dgov.panes._is_done", return_value=False),
+            patch("dgov.status._is_done", return_value=False),
         ):
             result = list_worker_panes(str(tmp_path))
         assert len(result) == 1
@@ -605,7 +605,7 @@ class TestListWorkerPanes:
             checked.append(slug)
             return False
 
-        with patch("dgov.panes._is_done", side_effect=fake_is_done):
+        with patch("dgov.status._is_done", side_effect=fake_is_done):
             result = list_worker_panes(str(tmp_path))
 
         assert checked == ["active-task"]
@@ -645,7 +645,7 @@ class TestListWorkerPanes:
             _update_pane_state(session_root, slug, "done")
             return True
 
-        with patch("dgov.panes._is_done", side_effect=fake_is_done):
+        with patch("dgov.status._is_done", side_effect=fake_is_done):
             result = list_worker_panes(str(tmp_path))
 
         assert len(result) == 1
@@ -722,7 +722,7 @@ class TestPruneStale:
         _replace_all_panes(str(tmp_path), {"panes": []})
         mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes._remove_worktree") as mock_rm,
+            patch("dgov.lifecycle._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert "orphan:orphan-task" in pruned
@@ -748,7 +748,7 @@ class TestPruneStale:
         )
         mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.panes._remove_worktree") as mock_rm,
+            patch("dgov.lifecycle._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
@@ -774,7 +774,7 @@ class TestPruneStale:
         )
         mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.panes._remove_worktree") as mock_rm,
+            patch("dgov.lifecycle._remove_worktree") as mock_rm,
         ):
             pruned = prune_stale_panes(str(tmp_path))
         assert "stale-entry" in pruned
@@ -874,7 +874,7 @@ class TestCloseWorkerPane:
                 ]
             },
         )
-        with patch("dgov.panes._full_cleanup") as mock_cleanup:
+        with patch("dgov.lifecycle._full_cleanup") as mock_cleanup:
             result = close_worker_pane(str(tmp_path), "test")
         assert result is True
         mock_cleanup.assert_called_once()
@@ -890,7 +890,7 @@ class TestCloseWorkerPane:
                 ]
             },
         )
-        with patch("dgov.panes._full_cleanup") as mock_cleanup:
+        with patch("dgov.lifecycle._full_cleanup") as mock_cleanup:
             close_worker_pane(str(tmp_path), "test", force=True)
         _, kwargs = mock_cleanup.call_args
         assert kwargs["skip_worktree_if_dirty"] is False
@@ -1254,8 +1254,8 @@ class TestEscalateWorkerPane:
             branch_name="old-esc",
         )
         with (
-            patch("dgov.panes.close_worker_pane"),
-            patch("dgov.panes.create_worker_pane", return_value=new_pane),
+            patch("dgov.recovery.close_worker_pane"),
+            patch("dgov.recovery.create_worker_pane", return_value=new_pane),
         ):
             result = escalate_worker_pane(str(tmp_path), "old", target_agent="claude")
         assert result["escalated"] is True
@@ -1422,7 +1422,7 @@ class TestMergeWorkerPane:
     @patch("dgov.merger._plumbing_merge")
     @patch("dgov.merger._restore_protected_files")
     @patch("dgov.merger._commit_worktree", return_value={"committed": False})
-    @patch("dgov.panes.subprocess.run")
+    @patch("dgov.merger.subprocess.run")
     def test_successful_merge(
         self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
@@ -1451,7 +1451,7 @@ class TestMergeWorkerPane:
     @patch("dgov.merger._plumbing_merge")
     @patch("dgov.merger._restore_protected_files")
     @patch("dgov.merger._commit_worktree", return_value={"committed": False})
-    @patch("dgov.panes.subprocess.run")
+    @patch("dgov.merger.subprocess.run")
     def test_successful_merge_ignores_stale_abandoned_state(
         self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
@@ -1562,7 +1562,7 @@ class TestRestoreProtectedFiles:
 
         _restore_protected_files("/repo", {"worktree_path": "/wt", "branch_name": "b"})
 
-    @patch("dgov.panes.subprocess.run")
+    @patch("dgov.merger.subprocess.run")
     def test_restores_changed_protected(self, mock_run, tmp_path: Path) -> None:
         from dgov.merger import _restore_protected_files
 
@@ -1584,7 +1584,7 @@ class TestRestoreProtectedFiles:
         assert any("checkout" in c for c in cmds)
         assert any("--amend" in c for c in cmds)
 
-    @patch("dgov.panes.subprocess.run")
+    @patch("dgov.merger.subprocess.run")
     def test_no_protected_changed(self, mock_run, tmp_path: Path) -> None:
         from dgov.merger import _restore_protected_files
 
@@ -1784,9 +1784,9 @@ class TestEmitEvent:
 
         mock_backend.create_pane.return_value = "%99"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes._generate_slug", return_value="test-slug"),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle._generate_slug", return_value="test-slug"),
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
             create_worker_pane(
@@ -1819,9 +1819,9 @@ class TestBlockTitleOverride:
 
         mock_backend.create_pane.return_value = "%99"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes._generate_slug", return_value="title-test"),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle._generate_slug", return_value="title-test"),
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
             create_worker_pane(
@@ -1854,7 +1854,7 @@ class TestComputeFreshness:
             m.stdout = ""
             return m
 
-        with patch("dgov.panes.subprocess.run", fake_run):
+        with patch("dgov.status.subprocess.run", fake_run):
             result = _compute_freshness(str(tmp_path), record)
         assert result["freshness"] == "fresh"
         assert result["commits_since_base"] == 0
@@ -1876,7 +1876,7 @@ class TestComputeFreshness:
             m.stdout = ""
             return m
 
-        with patch("dgov.panes.subprocess.run", fake_run):
+        with patch("dgov.status.subprocess.run", fake_run):
             result = _compute_freshness(str(tmp_path), record)
         assert result["freshness"] == "warn"
         assert result["pane_age_hours"] > 4
@@ -1902,7 +1902,7 @@ class TestComputeFreshness:
                 m.stdout = ""
             return m
 
-        with patch("dgov.panes.subprocess.run", fake_run):
+        with patch("dgov.status.subprocess.run", fake_run):
             result = _compute_freshness(str(tmp_path), record)
         assert result["freshness"] == "stale"
         assert result["commits_since_base"] == 8
@@ -1989,7 +1989,7 @@ class TestRetryWorkerPane:
             _add_pane(str(tmp_path), new_pane)
             return new_pane
 
-        with patch("dgov.panes.create_worker_pane", side_effect=fake_create):
+        with patch("dgov.recovery.create_worker_pane", side_effect=fake_create):
             result = retry_worker_pane(str(tmp_path), "fix-bug", session_root=str(tmp_path))
 
         assert result["retried"] is True
@@ -2035,7 +2035,7 @@ class TestRetryWorkerPane:
             worktree_path="/wt",
             branch_name="task-4",
         )
-        with patch("dgov.panes.create_worker_pane", return_value=new_pane):
+        with patch("dgov.recovery.create_worker_pane", return_value=new_pane):
             result = retry_worker_pane(str(tmp_path), "task-3", session_root=str(tmp_path))
 
         assert result["attempt"] == 4
@@ -2048,7 +2048,7 @@ class TestRetryWorkerPane:
             str(tmp_path),
             {"panes": [{"slug": "fail", "prompt": "x", "agent": "pi", "state": "timed_out"}]},
         )
-        with patch("dgov.panes.create_worker_pane", side_effect=RuntimeError("tunnel down")):
+        with patch("dgov.recovery.create_worker_pane", side_effect=RuntimeError("tunnel down")):
             result = retry_worker_pane(str(tmp_path), "fail", session_root=str(tmp_path))
         assert "error" in result
         assert "tunnel down" in result["error"]
@@ -2069,7 +2069,7 @@ class TestRetryWorkerPane:
             worktree_path="/wt",
             branch_name="orig-2",
         )
-        with patch("dgov.panes.create_worker_pane", return_value=new_pane) as mock_create:
+        with patch("dgov.recovery.create_worker_pane", return_value=new_pane) as mock_create:
             result = retry_worker_pane(
                 str(tmp_path), "orig", session_root=str(tmp_path), agent="claude"
             )
@@ -2087,7 +2087,7 @@ class TestCreateCheckpoint:
         from dgov.batch import create_checkpoint
 
         _replace_all_panes(str(tmp_path), {"panes": [{"slug": "a"}, {"slug": "b"}]})
-        with patch("dgov.panes.subprocess.run") as mock_run:
+        with patch("dgov.batch.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="deadbeef\n")
             result = create_checkpoint(str(tmp_path), "wave1", session_root=str(tmp_path))
 
@@ -2105,7 +2105,7 @@ class TestCreateCheckpoint:
         from dgov.batch import create_checkpoint
 
         _replace_all_panes(str(tmp_path), {"panes": []})
-        with patch("dgov.panes.subprocess.run") as mock_run:
+        with patch("dgov.batch.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n")
             result = create_checkpoint(str(tmp_path), "empty", session_root=str(tmp_path))
 
@@ -2118,7 +2118,7 @@ class TestCreateCheckpoint:
         from dgov.persistence import read_events
 
         _replace_all_panes(str(tmp_path), {"panes": []})
-        with patch("dgov.panes.subprocess.run") as mock_run:
+        with patch("dgov.batch.subprocess.run") as mock_run:
             mock_run.return_value = Mock(returncode=0, stdout="abc\n")
             create_checkpoint(str(tmp_path), "ev-test", session_root=str(tmp_path))
 
@@ -2346,8 +2346,8 @@ class TestWaitWorkerPane:
             patch("dgov.panes.capture_worker_output", return_value=None),
             patch("dgov.panes._update_pane_state"),
             patch("dgov.panes._emit_event"),
-            patch("dgov.panes.time.sleep"),
-            patch("dgov.panes.time.monotonic") as mock_mono,
+            patch("dgov.waiter.time.sleep"),
+            patch("dgov.waiter.time.monotonic") as mock_mono,
         ):
             mock_mono.side_effect = [0, 100]
             with pytest.raises(PaneTimeoutError) as exc_info:
@@ -2502,8 +2502,8 @@ class TestWaitAllWorkerPanes:
             patch("dgov.panes._get_pane", side_effect=fake_get_pane),
             patch("dgov.panes._is_done", return_value=False),
             patch("dgov.panes.capture_worker_output", return_value=None),
-            patch("dgov.panes.time.sleep"),
-            patch("dgov.panes.time.monotonic") as mock_mono,
+            patch("dgov.waiter.time.sleep"),
+            patch("dgov.waiter.time.monotonic") as mock_mono,
         ):
             mock_mono.side_effect = [0, 100]
             with pytest.raises(PaneTimeoutError) as exc_info:
@@ -2563,7 +2563,7 @@ class TestStructurePiPrompt:
         assert "Read" not in structured
         assert "git add" not in structured
 
-    @patch("dgov.panes._structure_pi_prompt", wraps=_structure_pi_prompt)
+    @patch("dgov.lifecycle._structure_pi_prompt", wraps=_structure_pi_prompt)
     def test_create_worker_pane_calls_structure_for_pi(
         self, mock_structure: Mock, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
@@ -2584,10 +2584,10 @@ class TestStructurePiPrompt:
 
         mock_backend.create_pane.return_value = "%99"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes._generate_slug", return_value="pi-test"),
-            patch("dgov.panes.load_registry", return_value=pi_registry),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle._generate_slug", return_value="pi-test"),
+            patch("dgov.lifecycle.load_registry", return_value=pi_registry),
         ):
 
             def _fake_run(cmd, **kwargs):
@@ -2615,11 +2615,12 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
     mock_backend.send_input.side_effect = lambda pane_id, text: events.append(("send_input", text))
 
     with (
-        patch("dgov.panes.subprocess.run") as mock_run,
-        patch("dgov.panes._trigger_hook", return_value=False),
-        patch("dgov.panes._generate_slug", return_value="delay-test"),
+        patch("dgov.lifecycle.subprocess.run") as mock_run,
+        patch("dgov.lifecycle._trigger_hook", return_value=False),
+        patch("dgov.lifecycle._generate_slug", return_value="delay-test"),
         patch(
-            "dgov.panes.time.sleep", side_effect=lambda seconds: events.append(("sleep", seconds))
+            "dgov.lifecycle.time.sleep",
+            side_effect=lambda seconds: events.append(("sleep", seconds)),
         ),
     ):
         mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
@@ -2678,9 +2679,9 @@ class TestResumeWorkerPane:
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%10"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes.load_registry", return_value=registry),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             result = resume_worker_pane(str(tmp_path), "fix-it", session_root=str(tmp_path))
@@ -2741,11 +2742,11 @@ class TestResumeWorkerPane:
         )
 
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes.load_registry", return_value=registry),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle.load_registry", return_value=registry),
             patch(
-                "dgov.panes.time.sleep",
+                "dgov.lifecycle.time.sleep",
                 side_effect=lambda seconds: events.append(("sleep", seconds)),
             ),
         ):
@@ -2793,9 +2794,9 @@ class TestResumeWorkerPane:
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%20"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes.load_registry", return_value=registry),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             result = resume_worker_pane(
@@ -2845,10 +2846,12 @@ class TestResumeWorkerPane:
         mock_backend.is_alive.return_value = False
         mock_backend.create_pane.return_value = "%30"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes.load_registry", return_value=registry),
-            patch("dgov.panes.build_launch_command", return_value="claude 'prompt'") as mock_blc,
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle.load_registry", return_value=registry),
+            patch(
+                "dgov.lifecycle.build_launch_command", return_value="claude 'prompt'"
+            ) as mock_blc,
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             result = resume_worker_pane(
@@ -2918,7 +2921,7 @@ class TestResumeWorkerPane:
             },
         )
 
-        with patch("dgov.panes.subprocess.run") as mock_run:
+        with patch("dgov.lifecycle.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=128, stdout="", stderr="not found")
             result = resume_worker_pane(str(tmp_path), "dead-branch", session_root=str(tmp_path))
 
@@ -2963,9 +2966,9 @@ class TestResumeWorkerPane:
         mock_backend.is_alive.return_value = True
         mock_backend.create_pane.return_value = "%new"
         with (
-            patch("dgov.panes.subprocess.run") as mock_run,
-            patch("dgov.panes._trigger_hook", return_value=False),
-            patch("dgov.panes.load_registry", return_value=registry),
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle._trigger_hook", return_value=False),
+            patch("dgov.lifecycle.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             resume_worker_pane(str(tmp_path), "stale-pane", session_root=str(tmp_path))
