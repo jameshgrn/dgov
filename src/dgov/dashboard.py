@@ -115,6 +115,9 @@ class DashboardState:
     detail_slug: str = ""
     detail_text: str = ""
 
+    # Deferred action to run after curses exits
+    post_exit_attach: str = ""  # pane_id to tmux select-window into
+
 
 def _get_branch(project_root: str) -> str:
     """Get current git branch name."""
@@ -341,7 +344,7 @@ def _draw_footer(stdscr: curses.window, row: int, max_x: int, mode: str = "list"
     if mode == "list":
         keys = (
             "q:quit  r:refresh  j/k:\u2191\u2193  Enter:detail"
-            "  d:diff  c:capture  m:merge  x:close"
+            "  d:diff  c:capture  m:merge  x:close  a:attach  s:send"
         )
     else:
         keys = "q/Esc:back  j/k:\u2191\u2193 scroll"
@@ -412,12 +415,14 @@ def run_dashboard(
     refresh_interval: float = 2.0,
 ) -> None:
     """Launch the curses dashboard. Blocks until user quits."""
-    curses.wrapper(
+    attach_pane: str = curses.wrapper(
         _curses_main,
         project_root=project_root,
         session_root=session_root,
         refresh_interval=refresh_interval,
     )
+    if attach_pane:
+        subprocess.run(["tmux", "select-window", "-t", attach_pane], check=False)
 
 
 def _curses_main(
@@ -426,8 +431,8 @@ def _curses_main(
     project_root: str,
     session_root: str | None,
     refresh_interval: float,
-) -> None:
-    """Main curses loop."""
+) -> str:
+    """Main curses loop. Returns pane_id to attach to, or empty string."""
     _init_colors()
     curses.curs_set(0)  # hide cursor
     stdscr.timeout(200)  # 200ms for key polling
@@ -588,8 +593,69 @@ def _curses_main(
                     panes_snap = list(state.panes)
                 if panes_snap:
                     confirm_action = "close"
+            elif key == ord("a"):
+                with state.lock:
+                    panes_snap = list(state.panes)
+                if panes_snap and 0 <= selected < len(panes_snap):
+                    pane_id = panes_snap[selected].get("pane_id", "")
+                    if pane_id:
+                        state.post_exit_attach = pane_id
+                        break
+            elif key == ord("s"):
+                with state.lock:
+                    panes_snap = list(state.panes)
+                if panes_snap and 0 <= selected < len(panes_snap):
+                    slug = panes_snap[selected]["slug"]
+                    msg = _prompt_input(stdscr, f"Send to {slug}: ", max_y, max_x)
+                    if msg:
+                        _send_to_pane(state, slug, msg)
+                        state.force_refresh.set()
     finally:
         state.stop_event.set()
+
+    return state.post_exit_attach
+
+
+def _prompt_input(stdscr: curses.window, prompt: str, max_y: int, max_x: int) -> str:
+    """Show a prompt at the bottom of the screen and read a line of input.
+
+    Returns the entered string, or empty string if cancelled (Esc).
+    """
+    row = max_y - 3
+    try:
+        stdscr.addnstr(row, 0, " " * (max_x - 1), max_x - 1, curses.color_pair(1))
+        stdscr.addnstr(row, 1, prompt, max_x - 2, curses.color_pair(1) | curses.A_BOLD)
+    except curses.error:
+        pass
+    stdscr.refresh()
+
+    curses.echo()
+    curses.curs_set(1)
+    try:
+        stdscr.move(row, min(1 + len(prompt), max_x - 2))
+        raw = stdscr.getstr(row, min(1 + len(prompt), max_x - 2), max_x - len(prompt) - 3)
+        return raw.decode("utf-8", errors="replace").strip() if raw else ""
+    except (curses.error, UnicodeDecodeError):
+        return ""
+    finally:
+        curses.noecho()
+        curses.curs_set(0)
+
+
+def _send_to_pane(state: DashboardState, slug: str, message: str) -> None:
+    """Send a message to a worker pane via interact_with_pane."""
+    from dgov.waiter import interact_with_pane
+
+    session_root = state.session_root or state.project_root
+    try:
+        ok = interact_with_pane(session_root, slug, message)
+        if not ok:
+            with state.lock:
+                state.error = f"Send failed: pane '{slug}' not found or dead"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Dashboard send failed for %s", slug)
+        with state.lock:
+            state.error = f"Send failed for {slug}: {exc}"
 
 
 def _show_diff(state: DashboardState, slug: str) -> None:
