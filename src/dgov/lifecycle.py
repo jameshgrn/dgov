@@ -165,10 +165,7 @@ def _setup_and_launch_agent(
     backend.style(pane_id, agent_id, color=agent_def.color)
     backend.set_pane_option(pane_id, "allow-set-title", "off")
 
-    # 2. Tidy layout
-    backend.select_layout("tiled")
-
-    # 3. Scrub env vars that cause worker auth issues
+    # 2. Scrub env vars that cause worker auth issues
     for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
         backend.send_input(pane_id, f"unset {var}")
 
@@ -351,13 +348,13 @@ def create_worker_pane(
                     f"Wait for one to finish or use a different agent."
                 )
 
-        # 3. Split tmux pane
+        # 3. Create background worker pane
         startup_env = {
             "DISABLE_AUTO_UPDATE": "true",
             "DISABLE_UPDATE_PROMPT": "true",
         }
         get_backend().setup_pane_borders()
-        pane_id = get_backend().create_pane(cwd=worktree_path, env=startup_env)
+        pane_id = get_backend().create_worker_pane(cwd=worktree_path, env=startup_env)
         time.sleep(0.25)
 
         # 4. Setup and launch agent
@@ -486,8 +483,6 @@ def _full_cleanup(
                 capture_output=True,
             )
 
-    get_backend().select_layout("tiled")
-
     return {"cleaned": True, "skipped_worktree": skipped_worktree, "branch_kept": branch_kept}
 
 
@@ -609,13 +604,13 @@ def resume_worker_pane(
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
                 all_env[key] = val
 
-    # Create new tmux pane
+    # Create background worker pane
     startup_env = {
         "DISABLE_AUTO_UPDATE": "true",
         "DISABLE_UPDATE_PROMPT": "true",
     }
     get_backend().setup_pane_borders()
-    pane_id = get_backend().create_pane(cwd=worktree_path, env=startup_env)
+    pane_id = get_backend().create_worker_pane(cwd=worktree_path, env=startup_env)
     time.sleep(0.25)
 
     _setup_and_launch_agent(
