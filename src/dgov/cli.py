@@ -911,6 +911,29 @@ def pane_respond(slug, message, session_root):
         sys.exit(1)
 
 
+@pane.command("message")
+@click.argument("slug")
+@click.argument("text")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+def pane_message(slug, text, project_root, session_root):
+    """Send a message to a running worker pane."""
+    from dgov.backend import get_backend
+    from dgov.persistence import _get_pane
+
+    session_root = os.path.abspath(session_root or project_root)
+    pane = _get_pane(session_root, slug)
+    if not pane:
+        click.echo(json.dumps({"error": f"Pane not found: {slug}"}))
+        sys.exit(1)
+    pane_id = pane.get("pane_id")
+    if not pane_id or not get_backend().is_alive(pane_id):
+        click.echo(json.dumps({"error": f"Pane {slug} is not running"}))
+        sys.exit(1)
+    get_backend().send_input(pane_id, text)
+    click.echo(json.dumps({"sent": True, "slug": slug, "message": text[:100]}))
+
+
 @pane.command("nudge")
 @click.argument("slug")
 @SESSION_ROOT_OPTION

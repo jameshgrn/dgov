@@ -73,6 +73,7 @@ State lives in `.dgov/state.db` (SQLite). Events append to `.dgov/events.jsonl`.
 | `dgov pane capture` | Capture recent pane output |
 | `dgov pane logs` | Persistent log (survives pane death) |
 | `dgov pane diff` | Raw diff for inspection |
+| `dgov pane message` | Send a message to a running worker pane |
 | `dgov pane lazygit` | Launch lazygit in a utility pane |
 | `dgov pane top` | Launch btop in a utility pane |
 
