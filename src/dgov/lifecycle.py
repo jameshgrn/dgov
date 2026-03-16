@@ -537,6 +537,10 @@ def close_worker_pane(
     if not target:
         return True  # already cleaned up (e.g. by merge)
 
+    # Auto-enable force for merged/closed panes
+    if target.get("state") in ("merged", "closed"):
+        force = True
+
     result = _full_cleanup(
         project_root,
         session_root,
