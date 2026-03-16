@@ -1,8 +1,8 @@
 """Conflict test file."""
 
 # Version marker
-VERSION = "alpha"
+VERSION = "beta"
 
 
 def hello():
-    return "hello from alpha"
+    return "hello from beta"
