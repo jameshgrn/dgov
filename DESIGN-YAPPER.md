@@ -39,35 +39,51 @@ User input (text)
 Single LLM call via existing `openrouter.chat_completion()`. System prompt:
 
 ```
-Classify user input into exactly one category:
+Classify the user input below the --- separator into exactly one category:
 - COMMAND: user wants work done (fix, add, refactor, test, deploy, merge)
 - IDEA: user is brainstorming, speculating, or deferring ("what if", "maybe later", "idea:")
 - QUESTION: user wants info about state, code, or process ("what's the status", "which file")
 - CHATTER: greeting, thanks, acknowledgment, thinking out loud
 
 Also extract:
-- agent_hint: if user names an agent ("have claude do it"), extract it
-- files: any file paths mentioned
+- agent_hint: if user names an agent (claude, codex, gemini, pi), else null
+- files: any file paths mentioned, else []
 - urgency: "now" or "later"
+- summary: one-line imperative task description (strip conversational filler like "please", "could you")
 
-Reply as JSON: {"category": "COMMAND", "agent_hint": null, "files": [], "urgency": "now", "summary": "one-line task description"}
+Reply as JSON only: {"category": "...", "agent_hint": null, "files": [], "urgency": "now", "summary": "..."}
 ```
 
+User text is passed after a `---` delimiter to reduce prompt injection surface.
+
 Model: OpenRouter (hunter-alpha or whatever's free) → Qwen 4B fallback.
-Max tokens: 100. Temperature: 0.
+Max tokens: 150. Temperature: 0.
+
+### Post-classification validation (P0)
+
+1. **category** must be in `{"COMMAND", "IDEA", "QUESTION", "CHATTER"}` — unknown → CHATTER
+2. **agent_hint** must be in agent registry or null — unknown → null
+3. **files** validated against `^[a-zA-Z0-9_./-]+$` regex — invalid entries stripped
+4. **Fail-closed default**: on classifier failure (JSON parse error, LLM outage),
+   default to CHATTER (no side effects), NOT COMMAND. Notify user: "Classification
+   failed; treating as acknowledgment."
 
 ## Handlers
 
 ### COMMAND handler
 1. Extract summary from classification
 2. Route to `classify_task()` (strategy.py) for agent selection (unless agent_hint provided)
-3. If agent is pi, run `_structure_pi_prompt()` to format the prompt
+3. Do NOT call `_structure_pi_prompt()` — lifecycle.py auto-structures pi prompts
+   (pass raw summary, let lifecycle handle it to avoid double-wrapping)
 4. Call `create_worker_pane()` (lifecycle.py) directly — no subprocess
-5. Return `{"action": "dispatched", "slug": slug, "agent": agent, "summary": summary}`
+5. Emit `yap_received` event with category, summary, agent
+6. Return `{"action": "dispatched", "slug": slug, "agent": agent, "summary": summary}`
+7. On `create_worker_pane` failure: catch exception, return error YapperResult
 
 ### IDEA handler
-1. Append to `.dgov/ideas.jsonl` with timestamp and raw text
-2. Return `{"action": "noted", "idea": summary}`
+1. Append to `.dgov/ideas.jsonl` with timestamp and raw text (O_APPEND for safety)
+2. Emit `yap_received` event with category=IDEA
+3. Return `{"action": "noted", "idea": summary}`
 
 ### QUESTION handler
 1. For state questions ("what panes are running"): call `list_worker_panes()` and format
@@ -86,6 +102,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,7 +121,10 @@ class YapperResult:
     raw_classification: dict | None = None
 
 
-_CLASSIFY_SYSTEM = """Classify user input into exactly one category:
+_VALID_CATEGORIES = {"COMMAND", "IDEA", "QUESTION", "CHATTER"}
+_SAFE_FILE_RE = re.compile(r"^[a-zA-Z0-9_./-]+$")
+
+_CLASSIFY_SYSTEM = """Classify the user input below the --- separator into exactly one category:
 - COMMAND: user wants work done (fix, add, refactor, test, deploy, review, merge, rename)
 - IDEA: brainstorming or deferring ("what if", "maybe later", "idea:", "we could")
 - QUESTION: wants info about state, code, or process ("status", "which file", "how does")
@@ -114,18 +134,36 @@ Extract from the input:
 - agent_hint: if user names a specific agent (claude, codex, gemini, pi), else null
 - files: file paths mentioned (src/..., tests/..., *.py), else []
 - urgency: "now" (default) or "later" (if user says "eventually", "low priority", "when you get to it")
-- summary: one-line imperative task description (for COMMAND) or short note (for others)
+- summary: one-line imperative task description, strip filler ("please", "could you")
 
 Reply as JSON only: {"category": "COMMAND", "agent_hint": null, "files": [], "urgency": "now", "summary": "..."}"""
 
 
-def classify(text: str) -> dict:
-    """Classify user input via LLM. Returns parsed JSON dict."""
+def _validate_classification(raw: dict, agent_registry: dict | None = None) -> dict:
+    """Sanitize classifier output against allowlists."""
+    cat = str(raw.get("category", "")).upper()
+    if cat not in _VALID_CATEGORIES:
+        cat = "CHATTER"
+    agent_hint = raw.get("agent_hint")
+    if agent_hint and agent_registry and agent_hint not in agent_registry:
+        agent_hint = None
+    files = [f for f in raw.get("files", []) if isinstance(f, str) and _SAFE_FILE_RE.match(f)]
+    return {
+        "category": cat,
+        "agent_hint": agent_hint,
+        "files": files,
+        "urgency": raw.get("urgency", "now"),
+        "summary": str(raw.get("summary", ""))[:200],
+    }
+
+
+def classify(text: str, agent_registry: dict | None = None) -> dict:
+    """Classify user input via LLM. Returns validated JSON dict."""
     from dgov.openrouter import chat_completion
 
     messages = [
         {"role": "system", "content": _CLASSIFY_SYSTEM},
-        {"role": "user", "content": text[:500]},
+        {"role": "user", "content": f"---\n{text[:500]}"},
     ]
     try:
         resp = chat_completion(messages, max_tokens=150, temperature=0)
@@ -133,16 +171,18 @@ def classify(text: str) -> dict:
         # Strip markdown fences if present
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0]
-        return json.loads(content)
+        raw = json.loads(content)
+        return _validate_classification(raw, agent_registry)
     except (json.JSONDecodeError, KeyError, RuntimeError) as exc:
         logger.warning("Classification failed: %s", exc)
-        # Fallback: treat as command
+        # Fail closed: CHATTER (no side effects), not COMMAND
         return {
-            "category": "COMMAND",
+            "category": "CHATTER",
             "agent_hint": None,
             "files": [],
             "urgency": "now",
             "summary": text[:100],
+            "_fallback": True,
         }
 
 
@@ -156,27 +196,37 @@ def _handle_command(
     """Dispatch a worker for a COMMAND."""
     from dgov.agents import load_registry
     from dgov.lifecycle import create_worker_pane
-    from dgov.strategy import _structure_pi_prompt, classify_task
+    from dgov.persistence import emit_event
+    from dgov.strategy import classify_task
 
     summary = classification.get("summary", text[:100])
-    files = classification.get("files", [])
     agent_hint = classification.get("agent_hint")
 
     registry = load_registry(project_root)
     agent = agent_hint or classify_task(summary, list(registry.keys()))
 
-    # Structure prompt for pi-class agents
-    prompt = summary
-    if agent == "pi":
-        prompt = _structure_pi_prompt(summary, files or None)
+    # Do NOT call _structure_pi_prompt here — lifecycle.py auto-structures
+    # pi prompts (skip_auto_structure defaults to False). Avoids double-wrapping.
+    try:
+        pane = create_worker_pane(
+            project_root=project_root,
+            prompt=summary,
+            agent=agent,
+            permission_mode=permission_mode,
+            session_root=session_root,
+        )
+    except Exception as exc:
+        logger.error("Worker dispatch failed: %s", exc)
+        return YapperResult(
+            category="COMMAND",
+            action="error",
+            summary=summary,
+            reply=f"Dispatch failed: {exc}",
+            raw_classification=classification,
+        )
 
-    pane = create_worker_pane(
-        project_root=project_root,
-        prompt=prompt,
-        agent=agent,
-        permission_mode=permission_mode,
-        session_root=session_root,
-    )
+    emit_event(session_root, "yap_received", pane.slug,
+               category="COMMAND", summary=summary, agent=agent)
     return YapperResult(
         category="COMMAND",
         action="dispatched",
@@ -194,16 +244,27 @@ def _handle_idea(
     session_root: str,
 ) -> YapperResult:
     """Append idea to .dgov/ideas.jsonl."""
+    import os as _os
+
+    from dgov.persistence import emit_event
+
     ideas_path = Path(session_root) / ".dgov" / "ideas.jsonl"
     ideas_path.parent.mkdir(parents=True, exist_ok=True)
+    summary = classification.get("summary", text[:100])
     entry = {
         "ts": time.time(),
         "text": text,
-        "summary": classification.get("summary", text[:100]),
+        "summary": summary,
     }
-    with open(ideas_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
-    summary = classification.get("summary", text[:100])
+    # O_APPEND for atomic-ish concurrent writes
+    fd = _os.open(str(ideas_path), _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o644)
+    try:
+        _os.write(fd, (json.dumps(entry) + "\n").encode())
+    finally:
+        _os.close(fd)
+
+    emit_event(session_root, "yap_received", "",
+               category="IDEA", summary=summary)
     return YapperResult(
         category="IDEA",
         action="noted",
@@ -289,8 +350,18 @@ def yap(
 ) -> YapperResult:
     """Main entry point: classify input and route to handler."""
     session_root = session_root or project_root
-    classification = classify(text)
-    category = classification.get("category", "COMMAND").upper()
+
+    from dgov.agents import load_registry
+
+    registry = load_registry(project_root)
+    classification = classify(text, agent_registry=registry)
+    category = classification.get("category", "CHATTER").upper()
+
+    # Notify on fallback classification
+    if classification.get("_fallback"):
+        result = _handle_chatter(text, classification)
+        result.reply = f"(classification failed) {result.reply}"
+        return result
 
     if category == "COMMAND":
         return _handle_command(text, classification, project_root, session_root, permission_mode)
@@ -314,9 +385,12 @@ def yap(
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def yap_cmd(text, project_root, session_root, as_json):
     """Talk to dgov in natural language."""
+    from dgov.cli import _check_governor_context
     from dgov.yapper import yap
+
+    _check_governor_context()
     full_text = " ".join(text)
-    result = yap(full_text, project_root, session_root)
+    result = yap(full_text, os.path.abspath(project_root), session_root)
     if as_json:
         click.echo(json.dumps(asdict(result), default=str))
     else:
@@ -380,9 +454,35 @@ Not in v1. v1 is single-shot CLI only.
 ## Testing Strategy
 
 - Unit test `classify()` with mocked LLM responses
+- Unit test `_validate_classification()` with edge cases (unknown category, bad agent, unsafe files)
 - Unit test each handler independently
 - Integration test `yap()` end-to-end with mocked backend
-- Test classification fallback (malformed JSON → defaults to COMMAND)
+- Test classification fallback (malformed JSON → defaults to CHATTER, not COMMAND)
+- Test `_fallback` notification appears in reply
+- Test `create_worker_pane` failure → error result (not traceback)
+- Test `yap_received` events emitted for COMMAND and IDEA categories
+
+## Review Fixes Applied
+
+Codex (adversarial) + Gemini (architectural) reviewed this design. Fixes:
+
+| Issue | Source | Fix |
+|-------|--------|-----|
+| Fail-open default on classifier failure | Codex #2 | Fail closed → CHATTER, notify user |
+| Raw LLM output trusted as control data | Codex #1 | `_validate_classification()` — allowlist category, agent, file paths |
+| Double pi prompt structuring | Codex #4 | Removed `_structure_pi_prompt` from yapper; lifecycle handles it |
+| ideas.jsonl concurrent append race | Codex #5 | `O_APPEND` flag on file descriptor |
+| No error path on dispatch failure | Codex #7 | try/except around `create_worker_pane`, return error result |
+| Prompt injection surface | Codex #1 | `---` delimiter between system prompt and user text |
+| Missing event emission | Gemini #3 | `yap_received` event for COMMAND and IDEA |
+| Missing governor context check | Gemini #4 | `_check_governor_context()` in CLI command |
+| Conversational filler in summary | Gemini #6 | System prompt instructs to strip filler |
+
+Deferred to v2:
+- Slug collision defense (transactional reserve) — Codex #6
+- Shell injection hardening in pi prompts — Codex #3
+- `dgov ideas` list command — Gemini #5
+- Handler plugin registry — Gemini #4
 
 ## Open Questions
 
