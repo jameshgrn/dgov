@@ -275,7 +275,7 @@ def _init_colors() -> None:
     curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)  # selected row
 
 
-_MINI_BANNER = " ▄▀▄ ▄▀▀ ▄▀▄ █ █"
+_MINI_BANNER = "dgov"
 
 
 def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> int:
