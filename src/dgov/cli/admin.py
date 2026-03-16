@@ -30,7 +30,8 @@ def _scaffold_dgov_dirs(root: Path) -> None:
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Agent to validate for")
@@ -70,7 +71,8 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 def status(project_root, session_root):
@@ -98,7 +100,8 @@ def status(project_root, session_root):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @click.option(
     "--onto",
@@ -121,7 +124,13 @@ def rebase(project_root, onto):
 
 @click.command("blame")
 @click.argument("file_path")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @click.option("--session-root", "-R", default=None, help="Session root")
 @click.option("--all", "-a", "show_all", is_flag=True, default=False, help="Show full history")
 @click.option("--agent", default=None, help="Filter by agent")
@@ -168,7 +177,13 @@ def blame(file_path, project_root, session_root, show_all, agent, line_level, li
 
 
 @click.command("agents")
-@click.option("--project-root", "-r", default=".", help="Project root for registry loading")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root for registry loading ($DGOV_PROJECT_ROOT or cwd)",
+)
 def list_agents(project_root):
     """List available agents and which are installed."""
     from dgov.agents import load_registry
@@ -201,7 +216,13 @@ def version_cmd():
 
 
 @click.command("stats")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 def stats(project_root, session_root):
     """Show pane and agent statistics."""
@@ -218,7 +239,8 @@ def stats(project_root, session_root):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--refresh", default=1, type=float, help="Refresh interval in seconds")
@@ -257,7 +279,8 @@ def dashboard(project_root, session_root, refresh, pane):
     "--project-root",
     "-r",
     default=".",
-    help="Project root (where .dgov/ will be created).",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd, where .dgov/ will be created)",
 )
 def init_cmd(project_root):
     """Initialize a new dgov project: scaffold .dgov/ and write config."""
@@ -297,7 +320,8 @@ def init_cmd(project_root):
     "--project-root",
     "-r",
     default=".",
-    help="Project root to diagnose.",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root to diagnose ($DGOV_PROJECT_ROOT or cwd)",
 )
 def doctor_cmd(project_root):
     """Run diagnostics on the dgov environment."""

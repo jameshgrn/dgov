@@ -42,7 +42,8 @@ def pane_util(command, title, cwd):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option(
@@ -216,7 +217,8 @@ def pane_create(
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
@@ -237,7 +239,8 @@ def pane_close(slug, project_root, session_root, force):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option(
@@ -285,7 +288,13 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
 
 @pane.command("land")
 @click.argument("slug")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option(
     "--resolve",
@@ -347,7 +356,8 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--timeout", "-t", default=600, help="Max seconds to wait (0=forever)")
@@ -409,7 +419,8 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--timeout", "-t", default=600, help="Max seconds to wait (0=forever)")
@@ -457,7 +468,8 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option(
@@ -540,7 +552,8 @@ def pane_merge_all(project_root, session_root, resolve, squash, rebase):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
@@ -587,7 +600,8 @@ def pane_list(project_root, session_root, as_json, verbose):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 def pane_prune(project_root, session_root):
@@ -614,7 +628,8 @@ def pane_classify(prompt):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--lines", "-n", default=30, help="Number of lines to capture")
@@ -635,7 +650,8 @@ def pane_capture(slug, project_root, session_root, lines):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--full", is_flag=True, help="Show complete diff (not just stat)")
@@ -651,7 +667,13 @@ def pane_review(slug, project_root, session_root, full):
 
 @pane.command("diff")
 @click.argument("slug")
-@click.option("--project-root", "-r", default=".", help="Git repo root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Git repo root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option("--stat", is_flag=True, help="Show diffstat only")
 @click.option("--name-only", is_flag=True, help="Show changed file names only")
@@ -673,7 +695,8 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
     "--project-root",
     "-r",
     default=".",
-    help="Project root",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Agent to escalate to")
@@ -705,7 +728,13 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
 
 @pane.command("retry")
 @click.argument("slug")
-@click.option("--project-root", "-r", default=".", help="Git repo root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Git repo root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Override agent for retry")
 @click.option("--prompt", "-p", default=None, help="Override prompt for retry")
@@ -729,7 +758,13 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
 
 @pane.command("resume")
 @click.argument("slug")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Override agent")
 @click.option("--prompt", "-p", default=None, help="Override prompt")
@@ -753,7 +788,13 @@ def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode
 
 @pane.command("logs")
 @click.argument("slug")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option("--tail", "-n", default=None, type=int, help="Show last N lines")
 def pane_logs(slug, project_root, session_root, tail):
@@ -772,7 +813,13 @@ def pane_logs(slug, project_root, session_root, tail):
 
 @pane.command("output")
 @click.argument("slug")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option("--tail", "-n", default=50, help="Number of lines from end")
 def pane_output(slug, project_root, session_root, tail):
@@ -810,7 +857,13 @@ def pane_respond(slug, message, session_root):
 @pane.command("message")
 @click.argument("slug")
 @click.argument("text")
-@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 def pane_message(slug, text, project_root, session_root):
     """Send a message to a running worker pane."""
