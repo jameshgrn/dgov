@@ -306,6 +306,12 @@ For each tier:
 
 The runner only advances to the next tier after every task in the current tier is terminal.
 
+Additional rules:
+
+1. Only review panes in `done` state. Skip review for panes in `failed`, `timed_out`, or `abandoned` — those go directly to the retry/escalation path.
+2. Pass `timeout=task_spec.timeout_s` to `wait_worker_pane()`.
+3. Do NOT call `maybe_auto_retry` from `retry.py`. The DAG runner implements its own attempt loop. You may reuse `retry_context` from `retry.py` for prompt augmentation.
+
 ### Attempt State Machine
 
 Per task, the DAG runner owns a stable task slug and a mutable pane slug.
@@ -360,6 +366,23 @@ Recommended policy:
 3. `failed` or `abandoned`: retry on the same agent once, then escalate.
 
 That is the only coherent way to use both `retry_worker_pane()` and `escalate_worker_pane()` without making the task layer lie about attempts.
+
+### Prompt Augmentation on Retry
+
+When retrying or escalating a task, `_augment_prompt_with_review()` prepends review feedback to the original prompt:
+
+1. If `review_result` exists and has `issues`, format them as bullet points.
+2. Append the log tail from `retry_context()` (from `retry.py`) for runtime context.
+3. Prefix with: `"The previous attempt failed. Issues found:\n"` followed by the bullets and log tail.
+
+This gives the next attempt actionable feedback without the DAG runner inventing its own log-reading logic.
+
+### `commit_message` Field
+
+The `commit_message` field in the task spec is advisory/metadata only. It is not passed to any API call. Workers receive their prompt, which should contain the commit intent. The field exists for:
+
+1. Operator readability in the DAG file.
+2. Post-hoc validation: a future enhancement could check the actual commit message against the spec.
 
 ### 0-Commit Detection
 
@@ -458,12 +481,28 @@ Suggested implementation: `src/dgov/cli/dag_cmd.py`, then `cli.add_command(dag)`
 3. `--skip <slug>`
    - Mark the task skipped before scheduling
    - Transitively skip its dependents
+   - If a skipped task's pane is already dispatched (e.g., parallel sibling in same tier), close it before skipping
 4. `--max-retries N`
    - Overrides `dag.default_max_retries`
 5. `--no-auto-merge`
    - Run through wait and review
    - Leave `reviewed_pass` panes open and unmerged
    - Persist the DAG run as `awaiting_merge` instead of `completed`
+
+### Deferred Merge Command
+
+```text
+dgov dag merge <dagfile>
+```
+
+When a run was completed with `--no-auto-merge` (status `awaiting_merge`):
+
+1. Load the persisted run for the given DAG file.
+2. Validate the DAG file hash still matches.
+3. Read `dag_tasks` rows with status `reviewed_pass`.
+4. Merge them in canonical topological order using `merge_worker_pane()`.
+5. On success, update the run status to `completed`.
+6. On merge conflict, stop immediately and report partial progress (same as `run`).
 
 ### Resume Behavior
 
@@ -472,11 +511,36 @@ There is no separate `resume` command in this first pass.
 Instead:
 
 1. `dgov dag run <dagfile>` checks for an unfinished DAG run for the same absolute DAG path.
-2. If found, it validates that the DAG file hash matches the stored hash.
+2. If found, it validates that the DAG file hash matches the stored hash. Hash algorithm: SHA-256 of the raw file bytes, computed before parsing.
 3. If the hash matches, it resumes from SQLite state.
 4. If the hash differs, it refuses to resume and asks for operator intervention.
 
 That prevents duplicate concurrent runs of the same DAG and avoids resuming against a modified spec.
+
+### Orphan Pane Reconciliation on Resume
+
+Governor death can leave orphan panes that have no corresponding `dag_tasks` row. Scenario:
+
+1. Governor dispatches T1 via `create_worker_pane()` — this writes to `state.db` panes table via `add_pane`.
+2. Governor dies before the DAG runner writes the `dag_tasks` row.
+3. On restart, the DAG runner sees T1 as `pending` and dispatches again.
+4. Now two panes exist for T1.
+
+On resume, the DAG runner must reconcile before dispatching:
+
+1. Load all `dag_tasks` rows for the current run. Build a set of known pane slugs.
+2. Scan the `panes` table for any pane whose slug matches a DAG task slug pattern (task slug itself, or `<task_slug>-esc-N`, `<task_slug>-retry-N`).
+3. For each orphan pane (exists in `panes` but not in `dag_tasks`):
+   - If the pane is still alive (tmux pane exists), adopt it: create the missing `dag_tasks` row with the pane's current state.
+   - If the pane is dead, close it via `close_worker_pane(force=True)` before re-dispatching.
+4. For each `dag_tasks` row with a `pane_slug` that no longer exists in the `panes` table:
+   - If the task was `dispatched` or `waiting`, mark it `failed` with error "pane lost during governor restart" and let the retry/escalation logic handle it.
+
+This ensures exactly one active pane per task at any point.
+
+### State Source of Truth
+
+`dag_tasks.status` is the source of truth for per-task state, not `state_json`. Use `state_json` only for computed/cached values (tiers, options, hash, topological order). On resume, reconstruct the run's progress from `dag_tasks` rows, not from the `completed`/`failed`/`skipped` lists in `state_json`.
 
 ## 4. Governor Integration
 
@@ -500,15 +564,18 @@ It calls internal Python functions directly. No shelling out. No subprocess recu
 3. If retries are exhausted, escalate
 4. If the chain is exhausted, mark the task `failed`
 
-### Merge Conflict
+### Merge Error
 
-1. `merge_worker_pane(..., resolve="skip")` returns `{"error": ..., "conflicts": ...}`
-2. Emit `dag_failed`
-3. Mark the DAG run `failed`
-4. Stop immediately
-5. Report which tasks merged and which did not
+If `merge_worker_pane()` returns a dict with an `error` key (conflict, missing pane, no base_sha, etc.):
 
-This is the right stopping point. Conflict auto-resolution is a different workflow and should not be hidden inside the first DAG runner.
+1. Emit `dag_failed`
+2. Mark the DAG run `failed`
+3. Stop immediately
+4. Report which tasks merged and which did not
+
+This covers both conflicts (`{"error": ..., "conflicts": ...}`) and non-conflict errors (`{"error": "Pane not found: ..."}`, `{"error": "No base_sha recorded"}`).
+
+Conflict auto-resolution is a different workflow and should not be hidden inside the first DAG runner.
 
 ### Agent Health Check Fails
 

@@ -25,29 +25,31 @@ TIER 1
   └─ T7: Dashboard DAG fixture in TOML              (depends on T0)
 
 TIER 2
-  └─ T2: Execution engine core                      (depends on T1, T5, T6)
+  └─ T2a: Single-tier execution loop                (depends on T1, T5, T6)
 
 TIER 3
-  └─ T3: Escalation + retry logic                   (depends on T2)
+  ├─ T2b: Multi-tier orchestration + options         (depends on T2a)
+  └─ T3: Escalation + retry logic                   (depends on T2a)
 
 TIER 4
-  └─ T4: CLI command                                (depends on T2, T3)
+  └─ T4: CLI command (run + merge)                   (depends on T2b, T3)
 
 TIER 5
-  └─ T8: Integration tests                          (depends on T2, T3, T4, T5, T6, T7)
+  └─ T8: Integration tests                          (depends on T2a, T2b, T3, T4, T5, T6, T7)
 ```
 
 ## Merge Order
 
 ```text
-T0 -> T5 -> T1 -> T6 -> T7 -> T2 -> T3 -> T4 -> T8
+T0 -> T5 -> T1 -> T6 -> T7 -> T2a -> T2b -> T3 -> T4 -> T8
 ```
 
 Reasoning:
 
-1. `T0`, `T1`, `T2`, and `T3` all touch `src/dgov/dag.py`, so they must merge in strict order.
+1. `T0`, `T1`, `T2a`, `T2b`, and `T3` all touch `src/dgov/dag.py`, so they must merge in strict order.
 2. `T5` and `T6` both touch `src/dgov/persistence.py`, so they must merge in strict order.
-3. `T8` comes last because it needs the real runner surface, the CLI, and the fixture.
+3. `T2b` and `T3` can run in parallel (same tier) because T2b touches only the multi-tier entry point while T3 touches only the escalation helpers — but both edit `dag.py`, so they merge sequentially.
+4. `T8` comes last because it needs the real runner surface, the CLI, and the fixture.
 
 ## Task Specifications
 
@@ -121,7 +123,7 @@ Reasoning:
      - `uv run ruff format src/dgov/dag.py src/dgov/batch.py tests/test_dag.py tests/test_batch_dag.py`
 - Commit: `Share DAG ordering helpers`
 
-### T2: Execution engine core
+### T2a: Single-tier execution loop
 
 - Agent: `hunter`
 - Escalation: `gemini`, `claude`
@@ -130,41 +132,82 @@ Reasoning:
   - `tests/test_dag.py`
 - Depends on: `T1`, `T5`, `T6`
 - Spec:
-  1. Implement the runner entry point:
-     - `run_dag(dag_file: str, *, dry_run: bool = False, tier_limit: int | None = None, skip: set[str] | None = None, max_retries: int = 1, auto_merge: bool = True) -> DagRunSummary`
-  2. Implement execution helpers:
-     - `_start_or_resume_run(...) -> tuple[int, DagDefinition, DagRunOptions, dict]`
-     - `_dispatch_task(...) -> dict`
-     - `_wait_for_tier(...) -> dict[str, dict]`
-     - `_review_passed_task(...) -> dict`
-     - `_merge_tasks_in_order(...) -> list[str]`
-     - `_finalize_run(...) -> DagRunSummary`
-  3. Use the governor-side Python APIs directly:
+  1. Implement single-tier helpers:
+     - `_dispatch_task(dag: DagDefinition, task: DagTaskSpec, run_id: int, session_root: str) -> dict`
+     - `_wait_for_tier(dag: DagDefinition, active_panes: dict, session_root: str) -> dict[str, dict]`
+     - `_review_task(dag: DagDefinition, task_slug: str, pane_slug: str, session_root: str) -> dict`
+     - `_merge_tasks_in_order(dag: DagDefinition, ready: list[str], pane_slugs: dict, session_root: str) -> list[str]`
+     - `_run_single_tier(dag: DagDefinition, tier: list[str], run_id: int, task_states: dict, options: DagRunOptions, session_root: str) -> dict`
+  2. Use the governor-side Python APIs directly:
      - `create_worker_pane`
-     - `wait_worker_pane(..., auto_retry=False)`
+     - `wait_worker_pane(..., auto_retry=False, timeout=task_spec.timeout_s)`
      - `review_worker_pane`
      - `merge_worker_pane`
-  4. For each tier:
+  3. `_run_single_tier` orchestrates one tier:
      - dispatch all ready tasks
-     - wait for all active panes in the tier
-     - review every finished pane
+     - wait for all active panes
+     - only review panes in `done` state (skip `failed`/`timed_out`/`abandoned`)
      - merge reviewed-pass tasks in canonical topological order if `auto_merge=True`
-  5. Update pane state explicitly with `update_pane_state()`:
+  4. Update pane state explicitly with `update_pane_state()`:
      - `reviewed_pass`
      - `reviewed_fail`
-  6. On successful merge, do not call `close_worker_pane()` again. `merge_worker_pane()` already removes the pane and worktree on success.
-  7. If `merge_worker_pane()` returns an error or conflicts, stop the DAG immediately and return a partial summary.
+  5. On successful merge, do NOT call `close_worker_pane()` again. `merge_worker_pane()` already removes the pane and worktree on success.
+  6. If `merge_worker_pane()` returns a dict with an `error` key (conflict or otherwise), stop the tier immediately and return partial results.
+  7. Add tests for:
+     - successful single-tier dispatch+wait+review+merge
+     - merge error stops tier
+     - review skipped for failed/timed_out panes
+  8. Run:
+     - `uv run pytest tests/test_dag.py -q -m unit`
+     - `uv run ruff check src/dgov/dag.py tests/test_dag.py`
+     - `uv run ruff format src/dgov/dag.py tests/test_dag.py`
+- Commit: `Add single-tier DAG execution`
+
+### T2b: Multi-tier orchestration + options
+
+- Agent: `hunter`
+- Escalation: `gemini`, `claude`
+- Files:
+  - `src/dgov/dag.py`
+  - `tests/test_dag.py`
+- Depends on: `T2a`
+- Spec:
+  1. Implement the public entry point:
+     - `run_dag(dag_file: str, *, dry_run: bool = False, tier_limit: int | None = None, skip: set[str] | None = None, max_retries: int = 1, auto_merge: bool = True) -> DagRunSummary`
+  2. Implement orchestration helpers:
+     - `_start_or_resume_run(dag_file: str, options: DagRunOptions, session_root: str) -> tuple[int, DagDefinition, dict]`
+     - `_reconcile_orphan_panes(dag: DagDefinition, run_id: int, session_root: str) -> None`
+     - `_finalize_run(run_id: int, dag: DagDefinition, task_states: dict, session_root: str) -> DagRunSummary`
+     - `merge_dag(dag_file: str) -> DagRunSummary`
+  3. `_start_or_resume_run`:
+     - Check for existing open run (same absolute DAG path)
+     - Validate DAG file hash (SHA-256 of raw bytes before parsing)
+     - If resuming, call `_reconcile_orphan_panes` before continuing
+     - Reconstruct progress from `dag_tasks` rows, not `state_json`
+  4. `_reconcile_orphan_panes`:
+     - Scan `panes` table for slugs matching DAG task patterns
+     - Adopt alive orphans, close dead orphans before re-dispatch
+  5. `run_dag` drives tiers 0..N:
+     - Apply `--skip` with transitive dependent propagation (close already-dispatched panes for newly-skipped tasks)
+     - Apply `--tier` limit
+     - Call `_run_single_tier` per tier
+     - If `--no-auto-merge`, set run status to `awaiting_merge`
+  6. `merge_dag`:
+     - Load `awaiting_merge` run for the DAG file
+     - Merge `reviewed_pass` tasks in canonical topological order
+     - Update run status to `completed` on success
+  7. Dry-run renders the execution plan via `render_dry_run()` without creating panes or DB rows.
   8. Add tests for:
      - dry-run output
-     - successful single-tier run
      - multi-tier merge order
      - `--tier` limiting
-     - `--no-auto-merge` leaving reviewed-pass panes unmerged
+     - `--no-auto-merge` leaving panes unmerged + `merge_dag` completing them
+     - resume with orphan pane reconciliation
   9. Run:
      - `uv run pytest tests/test_dag.py -q -m unit`
      - `uv run ruff check src/dgov/dag.py tests/test_dag.py`
      - `uv run ruff format src/dgov/dag.py tests/test_dag.py`
-- Commit: `Add DAG execution loop`
+- Commit: `Add multi-tier DAG orchestration`
 
 ### T3: Escalation + retry logic
 
@@ -173,49 +216,56 @@ Reasoning:
 - Files:
   - `src/dgov/dag.py`
   - `tests/test_dag.py`
-- Depends on: `T2`
+- Depends on: `T2a`
 - Spec:
   1. Implement attempt control helpers:
      - `_run_task_until_terminal(...) -> dict`
      - `_retry_same_agent(...) -> dict | None`
      - `_escalate_to_next_agent(...) -> dict | None`
-     - `_augment_prompt_with_review(...) -> str`
+     - `_augment_prompt_with_review(original_prompt: str, review_result: dict | None, pane_slug: str, session_root: str) -> str`
      - `_task_failure_reason(wait_result: dict | Exception | None, review_result: dict | None) -> str`
-  2. Handle these rules explicitly:
+  2. Do NOT call `maybe_auto_retry` from `retry.py`. The DAG runner implements its own attempt loop. You may reuse `retry_context` from `retry.py` for prompt augmentation.
+  3. `_augment_prompt_with_review` format:
+     - Prefix: `"The previous attempt failed. Issues found:\n"`
+     - If `review_result` has `issues`, format each as a bullet point
+     - Append log tail from `retry_context()` (from `retry.py`)
+     - Append the original prompt after a separator
+  4. Handle these rules explicitly:
      - create/health-check failure -> next agent in escalation chain
      - timeout -> next agent in escalation chain
      - `commit_count == 0` -> next agent in escalation chain
      - `verdict != "safe"` -> retry same agent up to `max_retries`, then escalate
      - pane ends `failed` or `abandoned` -> retry same agent up to `max_retries`, then escalate
-  3. Use:
+  5. Use:
      - `retry_worker_pane(...)`
      - `escalate_worker_pane(...)`
-  4. Persist on every transition:
+  6. Persist on every transition:
      - current agent
      - current attempt
      - current pane slug
      - last error
-  5. Emit escalation events with reason codes:
+  7. Emit escalation events with reason codes:
      - `health_check_failed`
      - `timeout`
      - `zero_commit`
      - `review_failed`
      - `runtime_failed`
-  6. Mark the task `failed` only after the whole escalation chain is exhausted.
-  7. Add tests for:
+  8. Mark the task `failed` only after the whole escalation chain is exhausted.
+  9. Add tests for:
      - review fail then retry success
      - review fail then escalate
      - zero-commit immediate escalation
      - timeout escalation
      - health-check failure skipping the first agent
      - exhausted chain causing transitive dependent skip
-  8. Run:
-     - `uv run pytest tests/test_dag.py -q -m unit`
-     - `uv run ruff check src/dgov/dag.py tests/test_dag.py`
-     - `uv run ruff format src/dgov/dag.py tests/test_dag.py`
+     - prompt augmentation output format
+  10. Run:
+      - `uv run pytest tests/test_dag.py -q -m unit`
+      - `uv run ruff check src/dgov/dag.py tests/test_dag.py`
+      - `uv run ruff format src/dgov/dag.py tests/test_dag.py`
 - Commit: `Add DAG retry and escalation`
 
-### T4: CLI command
+### T4: CLI command (run + merge)
 
 - Agent: `hunter`
 - Escalation: `gemini`, `claude`
@@ -223,30 +273,36 @@ Reasoning:
   - `src/dgov/cli/dag_cmd.py` (new)
   - `src/dgov/cli/__init__.py`
   - `tests/test_dgov_cli.py`
-- Depends on: `T2`, `T3`
+- Depends on: `T2b`, `T3`
 - Spec:
-  1. Create a Click group `dag` with subcommand `run`.
-  2. Implement:
+  1. Create a Click group `dag` with subcommands `run` and `merge`.
+  2. Implement `dgov dag run`:
      - `dgov dag run <dagfile> --dry-run`
      - `dgov dag run <dagfile> --tier N`
      - `dgov dag run <dagfile> --skip <slug>` repeatable
      - `dgov dag run <dagfile> --max-retries N`
      - `dgov dag run <dagfile> --auto-merge/--no-auto-merge`
-  3. `--tier` is zero-based and inclusive.
-  4. Pass the options straight into `run_dag(...)`.
-  5. For dry-run, print the rendered execution plan.
-  6. For non-dry-run, print the JSON summary and return non-zero if `summary.failed` is non-empty or if the run stopped on merge conflict.
-  7. Register the new command in `src/dgov/cli/__init__.py`.
-  8. Add CLI tests for:
+  3. Implement `dgov dag merge`:
+     - `dgov dag merge <dagfile>`
+     - Calls `merge_dag(dag_file)` from `dag.py`
+     - Prints JSON summary
+     - Returns non-zero on merge conflict
+  4. `--tier` is zero-based and inclusive.
+  5. Pass the options straight into `run_dag(...)` / `merge_dag(...)`.
+  6. For dry-run, print the rendered execution plan.
+  7. For non-dry-run, print the JSON summary and return non-zero if `summary.failed` is non-empty or if the run stopped on merge conflict.
+  8. Register the new command in `src/dgov/cli/__init__.py`.
+  9. Add CLI tests for:
      - argument parsing
      - repeated `--skip`
      - dry-run output path
      - exit code on failed DAG summary
-  9. Run:
-     - `uv run pytest tests/test_dgov_cli.py -q -m unit`
-     - `uv run ruff check src/dgov/cli/dag_cmd.py src/dgov/cli/__init__.py tests/test_dgov_cli.py`
-     - `uv run ruff format src/dgov/cli/dag_cmd.py src/dgov/cli/__init__.py tests/test_dgov_cli.py`
-- Commit: `Add dag run CLI command`
+     - `merge` subcommand invocation
+  10. Run:
+      - `uv run pytest tests/test_dgov_cli.py -q -m unit`
+      - `uv run ruff check src/dgov/cli/dag_cmd.py src/dgov/cli/__init__.py tests/test_dgov_cli.py`
+      - `uv run ruff format src/dgov/cli/dag_cmd.py src/dgov/cli/__init__.py tests/test_dgov_cli.py`
+- Commit: `Add dag run and merge CLI commands`
 
 ### T5: DAG state persistence
 
@@ -319,7 +375,7 @@ Reasoning:
 - Files:
   - `tests/fixtures/dashboard_dag.toml` (new)
   - `tests/test_dag.py`
-- Depends on: `T0`, `T1`
+- Depends on: `T0`
 - Spec:
   1. Encode the revised dashboard DAG as TOML, not prose.
   2. Preserve:
@@ -348,7 +404,7 @@ Reasoning:
 - Files:
   - `tests/test_dag.py`
   - `tests/test_dgov_cli.py`
-- Depends on: `T2`, `T3`, `T4`, `T5`, `T6`, `T7`
+- Depends on: `T2a`, `T2b`, `T3`, `T4`, `T5`, `T6`, `T7`
 - Spec:
   1. Add runner-level tests using mocks only at system boundaries:
      - `create_worker_pane`
@@ -388,7 +444,9 @@ Reasoning:
 ## Definition of Done
 
 1. `dgov dag run <dagfile>` executes a TOML DAG through create, wait, review, retry/escalate, merge, and summary.
-2. All DAG state required for resume lives in `state.db`.
-3. DAG events appear in the existing event feed.
-4. The dashboard DAG fixture parses and tiers correctly.
-5. Targeted unit tests pass. No full-suite run.
+2. `dgov dag merge <dagfile>` merges `awaiting_merge` runs in topological order.
+3. Resume after governor death reconciles orphan panes before re-dispatching.
+4. All DAG state required for resume lives in `state.db`. `dag_tasks.status` is the source of truth.
+5. DAG events appear in the existing event feed.
+6. The dashboard DAG fixture parses and tiers correctly.
+7. Targeted unit tests pass. No full-suite run.
