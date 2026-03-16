@@ -607,7 +607,6 @@ class TestRunDag:
         summary = run_dag(path, dry_run=True)
         assert summary.status == "dry_run"
         assert summary.run_id == 0
-        # No panes should be created
         mock_create.assert_not_called()
 
     @patch("dgov.merger.merge_worker_pane")
@@ -652,7 +651,6 @@ class TestRunDag:
 
         path = self._write_dag(tmp_path)
         summary = run_dag(path, tier_limit=0)
-        # Only T0 should have been dispatched (tier 0)
         assert "T0" in summary.merged
         assert "T1" not in summary.merged
 
@@ -677,3 +675,161 @@ class TestRunDag:
         assert summary.status == "awaiting_merge"
         assert summary.merged == []
         mock_merge.assert_not_called()
+
+
+class TestEscalation:
+    """Tests for retry and escalation logic."""
+
+    def _task(self, escalation=("gemini",)):
+        return DagTaskSpec(
+            slug="T0",
+            summary="Test",
+            prompt="Do it",
+            commit_message="c",
+            agent="hunter",
+            escalation=tuple(escalation),
+            depends_on=(),
+            files=DagFileSpec(create=("a.py",)),
+            permission_mode="acceptEdits",
+            timeout_s=900,
+        )
+
+    def _dag(self, task=None):
+        t = task or self._task()
+        return DagDefinition(
+            name="test",
+            dag_file="/tmp/test.toml",
+            project_root="/tmp/proj",
+            session_root="/tmp/proj",
+            default_max_retries=1,
+            merge_resolve="skip",
+            merge_squash=True,
+            tasks={"T0": t},
+        )
+
+    def test_augment_prompt(self):
+        from dgov.dag import _augment_prompt_with_review
+
+        result = _augment_prompt_with_review(
+            "Original prompt",
+            {"issues": ["Bad code", "Missing test"]},
+            "T0",
+            "/tmp",
+        )
+        assert "Bad code" in result
+        assert "Missing test" in result
+        assert "Original prompt" in result
+
+    def test_failure_reason_timeout(self):
+        from dgov.dag import _task_failure_reason
+
+        class FakeTimeout(Exception):
+            pass
+
+        FakeTimeout.__name__ = "PaneTimeoutError"
+        assert _task_failure_reason(FakeTimeout(), None) == "timeout"
+
+    def test_failure_reason_zero_commit(self):
+        from dgov.dag import _task_failure_reason
+
+        assert _task_failure_reason(None, {"commit_count": 0}) == "zero_commit"
+
+    def test_failure_reason_review_failed(self):
+        from dgov.dag import _task_failure_reason
+
+        assert _task_failure_reason(None, {"commit_count": 1, "passed": False}) == "review_failed"
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.emit_event")
+    @patch("dgov.persistence.upsert_dag_task")
+    @patch("dgov.persistence.get_pane")
+    def test_review_pass_returns_success(
+        self,
+        mock_get_pane,
+        mock_upsert,
+        mock_emit,
+        mock_create,
+        mock_wait,
+        mock_review,
+        mock_update,
+        mock_merge,
+    ):
+        from dgov.dag import run_task_until_terminal
+
+        mock_create.return_value = _FakePane("T0")
+        mock_wait.return_value = {"done": "T0", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1, "passed": True}
+
+        result = run_task_until_terminal(self._dag(), self._task(), 1, 1, "/tmp/proj")
+        assert result["status"] == "reviewed_pass"
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.emit_event")
+    @patch("dgov.persistence.upsert_dag_task")
+    @patch("dgov.persistence.get_pane")
+    def test_zero_commit_escalates(
+        self,
+        mock_get_pane,
+        mock_upsert,
+        mock_emit,
+        mock_create,
+        mock_wait,
+        mock_review,
+        mock_update,
+        mock_merge,
+    ):
+        from dgov.dag import run_task_until_terminal
+
+        call_count = [0]
+
+        def fake_create(**kw):
+            call_count[0] += 1
+            return _FakePane(f"T0-{call_count[0]}")
+
+        mock_create.side_effect = fake_create
+        mock_wait.return_value = {"done": "T0", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 0, "passed": False}
+
+        result = run_task_until_terminal(
+            self._dag(), self._task(escalation=["gemini"]), 1, 1, "/tmp/proj"
+        )
+        assert result["status"] == "failed"
+        assert mock_create.call_count >= 2
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.emit_event")
+    @patch("dgov.persistence.upsert_dag_task")
+    @patch("dgov.persistence.get_pane")
+    def test_exhausted_chain_fails(
+        self,
+        mock_get_pane,
+        mock_upsert,
+        mock_emit,
+        mock_create,
+        mock_wait,
+        mock_review,
+        mock_update,
+        mock_merge,
+    ):
+        from dgov.dag import run_task_until_terminal
+
+        mock_create.side_effect = RuntimeError("health check failed")
+
+        result = run_task_until_terminal(
+            self._dag(), self._task(escalation=["gemini"]), 1, 0, "/tmp/proj"
+        )
+        assert result["status"] == "failed"
