@@ -257,6 +257,9 @@ def setup_governor_workspace(project_root: str) -> list[str]:
         set_title(lg_id, "[gov] lazygit")
         set_pane_option(lg_id, "pane-border-style", "fg=colour214")
         set_pane_option(lg_id, "pane-active-border-style", "fg=colour214,bold")
+        # Focus lazygit on Commits panel (panel 4)
+        time.sleep(0.5)
+        _run(["send-keys", "-t", lg_id, "4"], silent=True)
         panes.append(lg_id)
 
     if panes:
