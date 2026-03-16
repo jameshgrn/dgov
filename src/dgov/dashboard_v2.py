@@ -33,6 +33,8 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_STARTUP_TIME = time.time()
+
 
 def phase_dots(state: str, activity: str) -> str:
     if state == "active" and "working" in activity:
@@ -176,6 +178,16 @@ def fetch_panes(state: DashboardState) -> None:
 def data_thread(state: DashboardState, interval: float) -> None:
     while not state.stop_event.is_set():
         fetch_panes(state)
+        # Detect stale binary
+        try:
+            import dgov as _pkg
+
+            _mod_file = getattr(_pkg, "__file__", "")
+            if _mod_file and os.path.getmtime(_mod_file) > _STARTUP_TIME:
+                with state.lock:
+                    state.error = "dgov reinstalled — restart dashboard (q then dgov resume)"
+        except (OSError, AttributeError):
+            pass
         state.force_refresh.wait(timeout=interval)
         state.force_refresh.clear()
 
