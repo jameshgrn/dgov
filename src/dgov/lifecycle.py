@@ -480,7 +480,7 @@ def _full_cleanup(
     # 3. Remove worktree + branch
     skipped_worktree = False
     branch_kept = False
-    if remove_worktree and pane_record.get("owns_worktree", True):
+    if remove_worktree and pane_record.get("owns_worktree", False):
         wt = pane_record.get("worktree_path")
         branch = pane_record.get("branch_name")
 
