@@ -11,6 +11,7 @@ from collections import deque
 from pathlib import Path
 
 from dgov.backend import get_backend
+from dgov.done import _is_done
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
@@ -18,7 +19,6 @@ from dgov.persistence import (
     get_pane,
     remove_pane,
 )
-from dgov.waiter import _is_done
 
 logger = logging.getLogger(__name__)
 
