@@ -275,12 +275,6 @@ def _init_colors() -> None:
     curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)  # selected row
 
 
-_BANNER_LINES = [
-    "▐▀▄ ▄▀▀ ▄▀▄ ▌▐",
-    "▐▄▀ ▀▄▀ ▀▄▀  ▀",
-]
-
-
 def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> int:
     """Draw the header. Returns the next row to draw on."""
     row = 0
@@ -293,16 +287,15 @@ def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> in
     project = os.path.basename(os.path.abspath(state.project_root))
     ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
     spinner = _SPINNER[state.frame % len(_SPINNER)]
-    status = f"  {spinner} v{__version__}  {project}  {branch}  {ts}  {pane_count} panes"
 
-    for i, line in enumerate(_BANNER_LINES):
-        try:
-            stdscr.addnstr(row, 1, line, max_x - 2, curses.color_pair(1) | curses.A_BOLD)
-            if i == 0:
-                stdscr.addnstr(row, len(line) + 1, status, max_x - len(line) - 2)
-        except curses.error:
-            pass
-        row += 1
+    title = " DGOV "
+    status = f" {spinner} v{__version__} │ {project} │ {branch} │ {ts} │ {pane_count} panes"
+    try:
+        stdscr.addnstr(row, 0, title, max_x - 1, curses.color_pair(1) | curses.A_BOLD)
+        stdscr.addnstr(row, len(title), status, max_x - len(title) - 1)
+    except curses.error:
+        pass
+    row += 1
 
     if error:
         try:
