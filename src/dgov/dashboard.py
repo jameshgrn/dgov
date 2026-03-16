@@ -486,18 +486,34 @@ def _draw_prompt_preview(
         footer_height = 2
         available = max_y - row - footer_height
         if available > 1:
-            # Dim separator
+            # Dim separator with label
+            label = " output "
+            sep_width = max_x - 1
             try:
-                stdscr.addnstr(row, 0, "\u2504" * (max_x - 1), max_x - 1, curses.A_DIM)
+                left = (sep_width - len(label)) // 2
+                sep = "\u2504" * left + label + "\u2504" * (sep_width - left - len(label))
+                stdscr.addnstr(row, 0, sep, sep_width, curses.A_DIM)
             except curses.error:
                 pass
             row += 1
             available -= 1
 
-            tail_lines = [ln for ln in log_tail.splitlines() if ln.strip()]
+            # Filter out bootstrap noise (env exports, source commands, prompts)
+            _NOISE = {"unset", "export", "source", "DGOV_", "if DGOV", "➜", "kunset"}
+            cleaned = []
+            for ln in log_tail.splitlines():
+                stripped = _strip_ansi(ln).strip()
+                if not stripped:
+                    continue
+                if any(stripped.startswith(n) for n in _NOISE):
+                    continue
+                # Skip lines that are just control chars or very short fragments
+                if len(stripped) < 3:
+                    continue
+                cleaned.append(stripped)
             # Show the last N lines that fit
-            tail_lines = tail_lines[-available:]
-            for tl in tail_lines:
+            cleaned = cleaned[-available:]
+            for tl in cleaned:
                 try:
                     stdscr.addnstr(row, 2, truncate(tl, max_x - 3), max_x - 3, curses.A_DIM)
                 except curses.error:
