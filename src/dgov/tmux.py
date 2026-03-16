@@ -280,6 +280,10 @@ def setup_governor_workspace(project_root: str) -> list[str]:
         _run(["send-keys", "-t", lg_id, "4"], silent=True)
         panes.append(lg_id)
 
+    # White border lines (window-level), colored labels (per-pane)
+    _run(["set-option", "-w", "pane-border-style", "fg=colour250"], silent=True)
+    _run(["set-option", "-w", "pane-active-border-style", "fg=colour255,bold"], silent=True)
+
     if panes:
         select_layout("main-vertical")
     return panes
