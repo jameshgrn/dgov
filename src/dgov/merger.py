@@ -366,9 +366,9 @@ def _resolve_conflicts_with_agent(
     3. Wait for completion (done signal or output stabilization)
     4. If all resolved, commit. Otherwise abort and return False.
     """
+    from dgov.done import _is_done
     from dgov.lifecycle import close_worker_pane, create_worker_pane
     from dgov.status import capture_worker_output
-    from dgov.waiter import _is_done
 
     # Start the merge — puts conflict markers in the working tree
     merge_result = subprocess.run(

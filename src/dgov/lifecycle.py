@@ -13,6 +13,7 @@ from pathlib import Path
 
 from dgov.agents import AgentDef, build_launch_command, load_registry
 from dgov.backend import get_backend
+from dgov.done import _wrap_done_signal
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     PROTECTED_FILES,
@@ -28,7 +29,6 @@ from dgov.persistence import (
     update_pane_state,
 )
 from dgov.strategy import _generate_slug, _structure_pi_prompt, _validate_slug
-from dgov.waiter import _wrap_done_signal
 
 logger = logging.getLogger(__name__)
 
