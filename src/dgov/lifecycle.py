@@ -337,6 +337,8 @@ def create_worker_pane(
     session_root: str | None = None,
     existing_worktree: str | None = None,
     skip_auto_structure: bool = False,
+    role: str = "worker",
+    parent_slug: str = "",
 ) -> WorkerPane:
     """Create a worker pane: worktree + tmux split + agent launch.
 
@@ -455,6 +457,8 @@ def create_worker_pane(
             branch_name=branch_name,
             owns_worktree=owns_worktree,
             base_sha=base_sha,
+            role=role,
+            parent_slug=parent_slug,
         )
         add_pane(session_root, pane)
 

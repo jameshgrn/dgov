@@ -83,6 +83,8 @@ def pane_util(command, title, cwd):
     multiple=True,
     help="Template variable as key=value (repeatable)",
 )
+@click.option("--role", default="worker", help="Pane role: worker or lt-gov")
+@click.option("--parent", default=None, help="Parent pane slug (for LT-GOV-created workers)")
 def pane_create(
     agent,
     prompt,
@@ -97,6 +99,8 @@ def pane_create(
     max_retries,
     template,
     var,
+    role,
+    parent,
 ):
     """Create a worker pane: worktree + tmux + agent."""
     from dgov.agents import get_default_agent, load_registry
@@ -176,6 +180,10 @@ def pane_create(
         k, v = item.split("=", 1)
         env_vars[k] = v
 
+    if role == "lt-gov":
+        env_vars["DGOV_SKIP_GOVERNOR_CHECK"] = "1"
+        env_vars["DGOV_PROJECT_ROOT"] = os.path.abspath(project_root)
+
     try:
         pane_obj = create_worker_pane(
             project_root=project_root,
@@ -187,6 +195,8 @@ def pane_create(
             extra_flags=extra_flags,
             session_root=session_root,
             skip_auto_structure=skip_auto_structure,
+            role=role,
+            parent_slug=parent or "",
         )
     except (ValueError, RuntimeError) as exc:
         click.echo(str(exc), err=True)

@@ -237,6 +237,8 @@ class TestPaneCreate:
             "extra_flags": "--verbose",
             "session_root": "/session",
             "skip_auto_structure": False,
+            "role": "worker",
+            "parent_slug": "",
         }
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
