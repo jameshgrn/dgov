@@ -556,3 +556,124 @@ class TestRunSingleTier:
 
         assert "T0" in result["failed"]
         assert result["reviewed_pass"] == []
+
+
+class TestRunDag:
+    """Tests for multi-tier orchestration."""
+
+    TOML_2TIER = textwrap.dedent("""\
+        [dag]
+        version = 1
+        name = "two-tier"
+        project_root = "."
+        session_root = "{session}"
+
+        [tasks.T0]
+        summary = "First"
+        agent = "hunter"
+        prompt = "Do T0"
+        commit_message = "T0"
+        [tasks.T0.files]
+        create = ["a.py"]
+
+        [tasks.T1]
+        summary = "Second"
+        agent = "hunter"
+        depends_on = ["T0"]
+        prompt = "Do T1"
+        commit_message = "T1"
+        [tasks.T1.files]
+        create = ["b.py"]
+    """)
+
+    def _write_dag(self, tmp_path, session_root=None):
+        session = session_root or str(tmp_path)
+        p = tmp_path / "dag.toml"
+        p.write_text(self.TOML_2TIER.format(session=session))
+        return str(p)
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_dry_run(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path, dry_run=True)
+        assert summary.status == "dry_run"
+        assert summary.run_id == 0
+        # No panes should be created
+        mock_create.assert_not_called()
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_two_tier_success(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+        mock_merge.return_value = {"merged": "x", "branch": "x"}
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path)
+        assert summary.status == "completed"
+        assert "T0" in summary.merged
+        assert "T1" in summary.merged
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_tier_limit(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+        mock_merge.return_value = {"merged": "x", "branch": "x"}
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path, tier_limit=0)
+        # Only T0 should have been dispatched (tier 0)
+        assert "T0" in summary.merged
+        assert "T1" not in summary.merged
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_no_auto_merge(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path, auto_merge=False)
+        assert summary.status == "awaiting_merge"
+        assert summary.merged == []
+        mock_merge.assert_not_called()
