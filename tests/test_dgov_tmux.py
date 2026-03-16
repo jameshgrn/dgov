@@ -275,10 +275,22 @@ class TestStyling:
         with patch("dgov.tmux._run") as mock_run:
             style_governor_pane("%1")
 
-        assert mock_run.call_args_list == [
-            call(["select-pane", "-t", "%1", "-P", "fg=default,bg=colour234"], silent=True),
-            call(["select-pane", "-t", "%1", "-T", "[gov] main"], silent=True),
-        ]
+        mock_run.assert_called_once_with(
+            [
+                "select-pane",
+                "-t",
+                "%1",
+                "-P",
+                "fg=default,bg=colour234",
+                ";",
+                "select-pane",
+                "-t",
+                "%1",
+                "-T",
+                "[gov] main",
+            ],
+            silent=True,
+        )
 
     def test_style_worker_pane_explicit_color(self) -> None:
         with (

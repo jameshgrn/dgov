@@ -113,7 +113,13 @@ class TestFactory:
                 pass
 
             def configure_worker_pane(
-                self, worker_id: str, title: str, agent: str, *, color: int | None = None
+                self,
+                worker_id: str,
+                title: str,
+                agent: str,
+                *,
+                color: int | None = None,
+                log_file: str | None = None,
             ) -> None:
                 pass
 
@@ -187,7 +193,13 @@ class TestFactory:
                 pass
 
             def configure_worker_pane(
-                self, worker_id: str, title: str, agent: str, *, color: int | None = None
+                self,
+                worker_id: str,
+                title: str,
+                agent: str,
+                *,
+                color: int | None = None,
+                log_file: str | None = None,
             ) -> None:
                 pass
 

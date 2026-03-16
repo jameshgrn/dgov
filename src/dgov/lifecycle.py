@@ -180,15 +180,14 @@ def _setup_and_launch_agent(
 
     backend = get_backend()
 
-    # 1. Lock pane title, apply colour, disable renaming (single tmux call)
+    # 1. Lock pane title, apply colour, disable renaming, start logging (single tmux call)
     title = _build_pane_title(agent_id, slug, project_root, state="active")
-    backend.configure_worker_pane(pane_id, title, agent_id, color=agent_def.color)
-
-    # 2. Start persistent logging
     logs_dir = Path(session_root) / STATE_DIR / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = str(logs_dir / f"{slug}.log")
-    backend.start_logging(pane_id, log_file)
+    backend.configure_worker_pane(
+        pane_id, title, agent_id, color=agent_def.color, log_file=log_file
+    )
 
     # 3. Build and send all env setup as a single compound shell command
     env_lines: list[str] = []

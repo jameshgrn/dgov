@@ -255,13 +255,18 @@ def style_worker_pane(pane_id: str, agent: str, *, color: int | None = None) -> 
 
 
 def configure_worker_pane(
-    pane_id: str, title: str, agent: str, *, color: int | None = None
+    pane_id: str,
+    title: str,
+    agent: str,
+    *,
+    color: int | None = None,
+    log_file: str | None = None,
 ) -> None:
-    """Lock pane title, apply agent colour, and disable renaming in one tmux call.
+    """Lock pane title, apply agent colour, disable renaming, optionally start logging.
 
-    Replaces 7 individual subprocess calls (allow-rename, automatic-rename,
-    select-pane -T, pane-border-style, pane-active-border-style,
-    pane-border-format, allow-set-title) with a single compound command.
+    Combines up to 8 tmux operations into a single compound command.
+    If *log_file* is provided, ``pipe-pane`` is appended to the same call,
+    saving an extra fork.
     """
     colour = color if color is not None else _AGENT_COLORS.get(agent, _DEFAULT_AGENT_COLOR)
     border_fmt = (
@@ -280,14 +285,30 @@ def configure_worker_pane(
         "set-option", "-p", "-t", pane_id, "pane-border-format", border_fmt, ";",
         "set-option", "-p", "-t", pane_id, "allow-set-title", "off",
     ]
+    if log_file:
+        args.extend([";", "pipe-pane", "-t", pane_id, "-o", f"cat >> {shlex.quote(log_file)}"])
     # fmt: on
     _run(args)
 
 
 def style_governor_pane(pane_id: str) -> None:
     """Style the governor pane: bright active bg, [gov] title."""
-    _run(["select-pane", "-t", pane_id, "-P", "fg=default,bg=colour234"], silent=True)
-    _run(["select-pane", "-t", pane_id, "-T", "[gov] main"], silent=True)
+    _run(
+        [
+            "select-pane",
+            "-t",
+            pane_id,
+            "-P",
+            "fg=default,bg=colour234",
+            ";",
+            "select-pane",
+            "-t",
+            pane_id,
+            "-T",
+            "[gov] main",
+        ],
+        silent=True,
+    )
 
 
 def select_layout(layout: str = "tiled") -> None:
