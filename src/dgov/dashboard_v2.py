@@ -279,7 +279,7 @@ def _build_layout(state: DashboardState) -> Layout:
 
     # Footer
     footer = Text(
-        " q:quit  j/k:\u2191\u2193  Enter:detail  r:refresh  m:merge  x:close  a:attach",
+        " q:quit  j/k:\u2191\u2193  Enter:attach  r:refresh  m:merge  x:close",
         style="dim",
     )
 
@@ -414,33 +414,15 @@ def run_dashboard_v2(
                 elif ch == "r":
                     state.force_refresh.set()
                 elif ch == "\r" or ch == "\n":
-                    # Detail view — show review for selected pane
+                    # Attach to selected worker's tmux window
                     with state.lock:
                         panes = list(state.panes)
                         sel = state.selected
                     if panes and 0 <= sel < len(panes):
-                        slug = panes[sel]["slug"]
-                        # Temporarily restore terminal for detail output
-                        if old_settings:
-                            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                        live.stop()
-                        try:
-                            from dgov.inspection import review_worker_pane
-
-                            review = review_worker_pane(
-                                project_root, slug, session_root=session_root
-                            )
-                            console.print_json(data=review)
-                            console.print("\nPress any key to return...", style="dim")
-                            if is_tty:
-                                tty.setraw(sys.stdin.fileno())
-                                sys.stdin.read(1)
-                                if old_settings:
-                                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                                    tty.setraw(sys.stdin.fileno())
-                        except Exception as exc:
-                            console.print(f"Error: {exc}", style="red")
-                        live.start()
+                        pane_id = panes[sel].get("pane_id", "")
+                        if pane_id:
+                            state.post_exit_attach = pane_id
+                            break
                 elif ch == "m":
                     with state.lock:
                         panes = list(state.panes)
@@ -488,6 +470,7 @@ def run_dashboard_v2(
                             state.force_refresh.set()
                         live.start()
                 elif ch == "a":
+                    # Alias for Enter — attach to worker window
                     with state.lock:
                         panes = list(state.panes)
                         sel = state.selected
