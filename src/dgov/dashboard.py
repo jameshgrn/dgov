@@ -108,17 +108,17 @@ def format_row(pane: dict, col_widths: dict[str, int], frame: int = 0) -> dict[s
     # Phase dots indicator
     pane_activity = pane.get("activity", "")
     if pane_state == "active" and "working" in str(pane_activity):
-        dots = "\u2b24\u2b24\u2b24\u25cb\u25cb"
+        dots = "\u2022\u2022\u2022\u25e6\u25e6"
     elif pane_state == "active":
         dots = "\u2022\u25e6\u25e6\u25e6\u25e6"
     elif pane_state in ("done", "merged"):
-        dots = "\u2b24\u2b24\u2b24\u2b24\u2b24"
+        dots = "\u2022\u2022\u2022\u2022\u2022"
     elif pane_state in ("failed", "abandoned", "timed_out"):
         dots = "\u2717\u2717\u2717\u2717\u2717"
     elif pane_state == "escalated":
-        dots = "\u2b24\u2b24\u25cb\u25cb\u25cb"
+        dots = "\u2022\u2022\u25e6\u25e6\u25e6"
     else:
-        dots = "\u25cb\u25cb\u25cb\u25cb\u25cb"
+        dots = "\u25e6\u25e6\u25e6\u25e6\u25e6"
 
     return {
         "slug": truncate(pane.get("slug", ""), col_widths["slug"]),
