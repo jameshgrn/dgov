@@ -502,8 +502,10 @@ def _full_cleanup(
                 capture_output=True,
             )
             if branch:
+                pane_state = pane_record.get("state", "")
+                delete_flag = "-D" if pane_state == "merged" else "-d"
                 br_result = subprocess.run(
-                    ["git", "-C", project_root, "branch", "-d", branch],
+                    ["git", "-C", project_root, "branch", delete_flag, branch],
                     capture_output=True,
                     text=True,
                 )
