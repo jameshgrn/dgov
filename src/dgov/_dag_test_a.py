@@ -24,3 +24,8 @@ def power(base: int, exp: int) -> int:
 def negate(x: int) -> int:
     """Return -x."""
     return -x
+
+
+def absolute(x: int) -> int:
+    """Return abs(x)."""
+    return abs(x)
