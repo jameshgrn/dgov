@@ -133,7 +133,7 @@ def format_row(pane: dict, col_widths: dict[str, int], frame: int = 0) -> dict[s
 COLUMNS = [
     ("slug", 20),
     ("agent", 10),
-    ("state", 20),
+    ("state", 16),
     ("activity", 25),
     ("duration", 10),
     ("prompt", 30),

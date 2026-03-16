@@ -36,16 +36,16 @@ logger = logging.getLogger(__name__)
 
 def phase_dots(state: str, activity: str) -> str:
     if state == "active" and "working" in activity:
-        return "\u2b24\u2b24\u2b24\u25cb\u25cb"
+        return "\u2022\u2022\u2022\u25e6\u25e6"
     if state == "active":
-        return "\u2b24\u25cb\u25cb\u25cb\u25cb"
+        return "\u2022\u25e6\u25e6\u25e6\u25e6"
     if state in ("done", "merged"):
-        return "\u2b24\u2b24\u2b24\u2b24\u2b24"
+        return "\u2022\u2022\u2022\u2022\u2022"
     if state in ("failed", "abandoned", "timed_out"):
         return "\u2717\u2717\u2717\u2717\u2717"
     if state == "escalated":
-        return "\u2b24\u2b24\u25cb\u25cb\u25cb"
-    return "\u25cb\u25cb\u25cb\u25cb\u25cb"
+        return "\u2022\u2022\u25e6\u25e6\u25e6"
+    return "\u25e6\u25e6\u25e6\u25e6\u25e6"
 
 
 def state_color(state: str) -> str:
