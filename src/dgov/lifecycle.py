@@ -179,6 +179,7 @@ def _setup_and_launch_agent(
     clear_done_signal: bool = False,
 ) -> None:
     """Lock pane, inject env, trigger hook, rewrite prompt, launch agent."""
+
     backend = get_backend()
 
     # 1. Lock pane title, apply colour, disable renaming (single tmux call)
