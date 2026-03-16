@@ -71,6 +71,7 @@ def _pane_record(
         "branch_name": branch_name,
         "base_sha": base_sha,
         "state": state,
+        "owns_worktree": True,
     }
 
 
