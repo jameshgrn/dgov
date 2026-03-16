@@ -71,6 +71,7 @@ def cli(ctx, governor):
     # Skip the guard for info-only commands and the bare invocation
     if ctx.invoked_subcommand not in (
         None,
+        "resume",
         "version",
         "agents",
         "blame",
@@ -124,15 +125,16 @@ def cli(ctx, governor):
         if not installed:
             click.echo("No agents found on PATH. Install claude, codex, or gemini first.")
             raise SystemExit(1)
+        default_agent = "claude" if "claude" in installed else installed[0]
         agent_id = click.prompt(
             "Governor agent for this repo",
             type=click.Choice(installed),
-            default=installed[0],
+            default=default_agent,
         )
         perm = click.prompt(
             "Permission mode",
             type=click.Choice(["", "plan", "acceptEdits", "bypassPermissions"]),
-            default="",
+            default="bypassPermissions",
         )
         assert agent_id is not None
         assert perm is not None
@@ -195,6 +197,46 @@ def cli(ctx, governor):
         )
         subprocess.run(
             ["tmux", "send-keys", "-t", session_name, launch_cmd, "Enter"],
+            capture_output=True,
+        )
+        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
+
+
+@cli.command("resume")
+@click.pass_context
+def resume_cmd(ctx):
+    """Resume an existing dgov governor session."""
+    from dgov.tmux import setup_governor_workspace
+
+    repo = Path.cwd().name
+    session_name = f"dgov-{repo}"
+    project_root = str(Path.cwd())
+
+    # Check if session exists
+    exists = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+    )
+    if exists.returncode != 0:
+        click.echo(f"No dgov session found for '{repo}'. Run `dgov` to start one.")
+        raise SystemExit(1)
+
+    if os.environ.get("TMUX"):
+        # Already in tmux — just ensure workspace panes are alive
+        setup_governor_workspace(project_root)
+        click.echo(f"{repo} — governor resumed (dashboard + lazygit refreshed)")
+    else:
+        # Outside tmux — attach to existing session, then ensure workspace
+        # Send workspace setup command to the session before attaching
+        subprocess.run(
+            [
+                "tmux",
+                "send-keys",
+                "-t",
+                session_name,
+                f"dgov resume -r {project_root} 2>/dev/null || true",
+                "",
+            ],
             capture_output=True,
         )
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
