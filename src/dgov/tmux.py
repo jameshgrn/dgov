@@ -64,8 +64,23 @@ def create_background_pane(
 
 
 def send_command(pane_id: str, command: str) -> None:
-    """Send a shell command to a pane and press Enter."""
-    _run(["send-keys", "-t", pane_id, command, "Enter"])
+    """Send a shell command to a pane and press Enter.
+
+    For commands over 200 chars, writes to a temp script and sources it
+    to avoid tmux send-keys/paste-buffer truncation with zsh.
+    """
+    if len(command) <= 200:
+        _run(["send-keys", "-t", pane_id, command, "Enter"])
+    else:
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", prefix="dgov-cmd-", suffix=".sh", delete=False
+        ) as f:
+            f.write(command)
+            f.write("\n")
+            script_path = f.name
+        _run(["send-keys", "-t", pane_id, f"source {script_path} && rm -f {script_path}", "Enter"])
 
 
 def set_title(pane_id: str, title: str) -> None:
