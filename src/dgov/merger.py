@@ -744,6 +744,10 @@ def merge_worker_pane(
                         logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
                     else:
                         raise
+                target["state"] = "merged"
+                _full_cleanup(pane_project_root, session_root, slug, target)
+                _persist.remove_pane(session_root, slug)
+                _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
                 return {"merged": slug, "branch": branch_name, "resolved_by": "agent"}
             return {
                 "slug": slug,
