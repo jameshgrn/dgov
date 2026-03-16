@@ -24,6 +24,13 @@ from rich.text import Text
 
 from dgov import __version__
 
+try:
+    from dgov.terrain import ErosionModel, render_terrain
+
+    _HAS_TERRAIN = True
+except ImportError:
+    _HAS_TERRAIN = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +88,8 @@ class DashboardState:
     force_refresh: threading.Event = field(default_factory=threading.Event)
     selected: int = 0
     terrain_text: Text | None = None
+    terrain_model: object | None = None  # ErosionModel instance
+    terrain_tick: int = 0
     post_exit_attach: str = ""
 
 
@@ -143,6 +152,21 @@ def fetch_panes(state: DashboardState) -> None:
             state.branch = branch
             state.last_refresh = time.time()
             state.error = ""
+
+        # Step terrain model every 3rd refresh
+        with state.lock:
+            model = state.terrain_model
+            tick = state.terrain_tick
+        if model is not None and tick % 3 == 0:
+            try:
+                model.step()
+                rendered = render_terrain(model)
+                with state.lock:
+                    state.terrain_text = rendered
+            except Exception:
+                logger.debug("Terrain step failed", exc_info=True)
+        with state.lock:
+            state.terrain_tick += 1
     except Exception as exc:
         with state.lock:
             state.error = str(exc)
@@ -258,7 +282,12 @@ def _build_layout(state: DashboardState) -> Layout:
         border_style="blue",
     )
 
-    if terrain is not None:
+    # Hide terrain on narrow terminals
+    try:
+        term_width = os.get_terminal_size().columns
+    except OSError:
+        term_width = 80
+    if terrain is not None and term_width >= 100:
         body.split_row(
             Layout(worker_panel, name="workers", ratio=3),
             Layout(
@@ -310,6 +339,12 @@ def run_dashboard_v2(
         project_root=project_root,
         session_root=session_root,
     )
+
+    if _HAS_TERRAIN:
+        try:
+            state.terrain_model = ErosionModel(width=25, height=30)
+        except Exception:
+            logger.debug("Failed to initialize terrain model", exc_info=True)
 
     thread = threading.Thread(target=data_thread, args=(state, refresh_interval), daemon=True)
     thread.start()
