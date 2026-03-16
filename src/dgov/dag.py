@@ -387,6 +387,7 @@ def _merge_tasks_in_order(
     ready: list[str],
     pane_slugs: dict[str, str],
     session_root: str,
+    run_id: int,
 ) -> tuple[list[str], dict | None]:
     """Merge reviewed-pass tasks in canonical order.
 
@@ -414,8 +415,8 @@ def _merge_tasks_in_order(
             return merged, result
 
         merged.append(task_slug)
-        upsert_dag_task(session_root, 0, task_slug, "merged", dag.tasks[task_slug].agent)
-        emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=0)
+        upsert_dag_task(session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent)
+        emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
 
     return merged, None
 
@@ -540,7 +541,9 @@ def run_single_tier(
     merged: list[str] = []
     merge_error: dict | None = None
     if options.auto_merge and reviewed_pass:
-        merged, merge_error = _merge_tasks_in_order(dag, reviewed_pass, pane_slugs, session_root)
+        merged, merge_error = _merge_tasks_in_order(
+            dag, reviewed_pass, pane_slugs, session_root, run_id
+        )
         for slug in merged:
             task_states[slug] = "merged"
 
