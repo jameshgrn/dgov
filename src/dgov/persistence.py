@@ -133,6 +133,13 @@ PANE_STATES = frozenset(
 )
 
 
+# Pane hierarchy fields
+class PANE_TIER:
+    GOVERNOR = "governor"
+    MANAGER = "manager"
+    WORKER = "worker"
+
+
 # Transition table: 12 states, enforced in update_pane_state
 VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "active": frozenset(
@@ -181,6 +188,9 @@ class WorkerPane:
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
     base_sha: str = ""
+    parent_slug: str = ""
+    tier_id: str = ""
+    role: str = "worker"
     state: str = "active"
 
     def __post_init__(self) -> None:
@@ -205,6 +215,9 @@ _PANE_COLUMNS = frozenset(
         "created_at",
         "owns_worktree",
         "base_sha",
+        "parent_slug",
+        "tier_id",
+        "role",
         "state",
     }
 )
@@ -221,6 +234,9 @@ CREATE TABLE IF NOT EXISTS panes (
     created_at REAL,
     owns_worktree INTEGER,
     base_sha TEXT,
+    parent_slug TEXT,
+    tier_id TEXT,
+    role TEXT DEFAULT 'worker',
     state TEXT,
     metadata TEXT
 )"""
@@ -299,6 +315,14 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
     conn.execute(_CREATE_MERGE_QUEUE_TABLE_SQL)
+
+    # Migrate: add hierarchy columns if missing
+    for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
+        try:
+            conn.execute(f"ALTER TABLE panes ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
     conn.commit()
 
     with _conn_lock:
