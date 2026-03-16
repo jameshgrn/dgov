@@ -393,3 +393,29 @@ class TestTransitiveDependents:
         tasks = {"T0": _task("T0"), "T1": _task("T1")}
         deps = transitive_dependents(tasks, {"T0"})
         assert deps == set()
+class TestDashboardFixture:
+    """Verify the dashboard DAG fixture parses and validates."""
+
+    FIXTURE = str(Path(__file__).parent / "fixtures" / "dashboard_dag.toml")
+
+    def test_parse_fixture(self):
+        dag = parse_dag_file(self.FIXTURE)
+        assert dag.name == "dashboard-v2"
+        assert len(dag.tasks) == 7
+
+    def test_expected_tasks(self):
+        dag = parse_dag_file(self.FIXTURE)
+        expected = {"T0a", "T0b", "T0c", "T1a", "T2a", "T3a", "T4a"}
+        assert set(dag.tasks.keys()) == expected
+
+    def test_dependencies(self):
+        dag = parse_dag_file(self.FIXTURE)
+        assert dag.tasks["T0b"].depends_on == ("T0a",)
+        assert dag.tasks["T2a"].depends_on == ("T0b", "T1a")
+        assert dag.tasks["T4a"].depends_on == ("T1a", "T2a", "T3a")
+
+    def test_agents(self):
+        dag = parse_dag_file(self.FIXTURE)
+        for task in dag.tasks.values():
+            assert task.agent == "hunter"
+            assert task.escalation == ("gemini",)
