@@ -725,6 +725,23 @@ def pane_logs(slug, project_root, session_root, tail):
     click.echo("".join(lines), nl=False)
 
 
+@pane.command("output")
+@click.argument("slug")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+@click.option("--tail", "-n", default=50, help="Number of lines from end")
+def pane_output(slug, project_root, session_root, tail):
+    """Show clean worker output (ANSI stripped, from log file)."""
+    from dgov.status import tail_worker_log
+
+    session_root = os.path.abspath(session_root or project_root)
+    text = tail_worker_log(session_root, slug, lines=tail)
+    if text is None:
+        click.echo(json.dumps({"error": f"No log file for: {slug}"}), err=True)
+        sys.exit(1)
+    click.echo(text)
+
+
 @pane.command("respond")
 @click.argument("slug")
 @click.argument("message")
