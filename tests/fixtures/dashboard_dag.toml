@@ -1,0 +1,87 @@
+[dag]
+version = 1
+name = "dashboard-v2"
+project_root = "."
+session_root = "."
+default_permission_mode = "bypassPermissions"
+default_timeout_s = 900
+default_max_retries = 1
+merge_resolve = "skip"
+merge_squash = true
+
+[tasks.T0a]
+summary = "Add rich dependency"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = []
+prompt = "Add rich>=13 to project dependencies."
+commit_message = "Add rich dependency"
+
+[tasks.T0a.files]
+edit = ["pyproject.toml"]
+
+[tasks.T0b]
+summary = "Vendor erosion terrain model"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = ["T0a"]
+prompt = "Vendor erosion terrain model from scilint into src/dgov/terrain.py."
+commit_message = "Vendor terrain model"
+
+[tasks.T0b.files]
+create = ["src/dgov/terrain.py"]
+
+[tasks.T0c]
+summary = "Noise filter for prompt preview"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = []
+prompt = "Expand noise filter set in dashboard.py prompt preview."
+commit_message = "Expand noise filter"
+
+[tasks.T0c.files]
+edit = ["src/dgov/dashboard.py"]
+
+[tasks.T1a]
+summary = "Rich dashboard core"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = ["T0a"]
+prompt = "Implement Rich-based live dashboard in dashboard_v2.py."
+commit_message = "Add Rich dashboard v2"
+
+[tasks.T1a.files]
+create = ["src/dgov/dashboard_v2.py"]
+
+[tasks.T2a]
+summary = "Terrain sidebar integration"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = ["T0b", "T1a"]
+prompt = "Add erosion terrain sidebar to dashboard v2."
+commit_message = "Add terrain sidebar"
+
+[tasks.T2a.files]
+edit = ["src/dgov/dashboard_v2.py"]
+
+[tasks.T3a]
+summary = "Wire CLI with v1 fallback"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = ["T1a"]
+prompt = "Wire dashboard v2 into CLI with opt-in via DGOV_DASHBOARD=v2."
+commit_message = "Wire dashboard v2 into CLI"
+
+[tasks.T3a.files]
+edit = ["src/dgov/cli/admin.py"]
+
+[tasks.T4a]
+summary = "Dashboard v2 unit tests"
+agent = "hunter"
+escalation = ["gemini"]
+depends_on = ["T1a", "T2a", "T3a"]
+prompt = "Write unit tests for dashboard_v2.py."
+commit_message = "Add dashboard v2 tests"
+
+[tasks.T4a.files]
+create = ["tests/test_dashboard_v2.py"]
