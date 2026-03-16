@@ -25,7 +25,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
-_PREVIEW_LINES = 3
+_PREVIEW_LINES = 2
 
 
 def _strip_ansi(text: str) -> str:
@@ -445,6 +445,8 @@ def _draw_prompt_preview(
     row: int,
     pane: dict | None,
     max_x: int,
+    max_y: int = 0,
+    log_tail: str = "",
 ) -> int:
     """Draw the full prompt preview below the table. Returns next row."""
     # Separator
@@ -478,6 +480,29 @@ def _draw_prompt_preview(
         except curses.error:
             pass
         row += 1
+
+    # Log tail fills remaining vertical space
+    if log_tail and max_y > 0:
+        footer_height = 2
+        available = max_y - row - footer_height
+        if available > 1:
+            # Dim separator
+            try:
+                stdscr.addnstr(row, 0, "\u2504" * (max_x - 1), max_x - 1, curses.A_DIM)
+            except curses.error:
+                pass
+            row += 1
+            available -= 1
+
+            tail_lines = [ln for ln in log_tail.splitlines() if ln.strip()]
+            # Show the last N lines that fit
+            tail_lines = tail_lines[-available:]
+            for tl in tail_lines:
+                try:
+                    stdscr.addnstr(row, 2, truncate(tl, max_x - 3), max_x - 3, curses.A_DIM)
+                except curses.error:
+                    pass
+                row += 1
 
     return row
 
@@ -675,10 +700,25 @@ def _curses_main(
                         )
                         row += 1
 
-                    # Prompt preview below table
+                    # Prompt preview + log tail below table
                     if show_preview:
                         selected_pane = panes[selected] if panes else None
-                        _draw_prompt_preview(stdscr, row, selected_pane, max_x)
+                        log_tail = ""
+                        if selected_pane:
+                            slug = selected_pane.get("slug", "")
+                            if slug:
+                                from dgov.status import tail_worker_log
+
+                                sr = state.session_root or state.project_root
+                                log_tail = tail_worker_log(sr, slug, lines=20) or ""
+                        _draw_prompt_preview(
+                            stdscr,
+                            row,
+                            selected_pane,
+                            max_x,
+                            max_y=max_y,
+                            log_tail=log_tail,
+                        )
 
                 _draw_footer(stdscr, max_y - 2, max_x, mode="list")
 
