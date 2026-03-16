@@ -445,26 +445,66 @@ def run_single_tier(
     """
     from dgov.persistence import upsert_dag_task
 
-    # Dispatch all ready tasks
-    active_panes: dict[str, dict] = {}
-    for slug in tier:
-        if task_states.get(slug) in ("merged", "reviewed_pass", "skipped", "failed"):
-            continue
-        task = dag.tasks[slug]
-        try:
-            pane_info = _dispatch_task(dag, task, run_id, session_root)
-            active_panes[slug] = pane_info
-            task_states[slug] = "dispatched"
-        except Exception as exc:
-            logger.error("Dispatch failed for %s: %s", slug, exc)
-            task_states[slug] = "failed"
-            upsert_dag_task(session_root, run_id, slug, "failed", task.agent, error=str(exc))
+    # Dispatch tasks in batches, respecting agent concurrency limits
+    remaining = [
+        slug
+        for slug in tier
+        if task_states.get(slug) not in ("merged", "reviewed_pass", "skipped", "failed")
+    ]
+    all_active_panes: dict[str, dict] = {}
+    wait_results: dict[str, dict] = {}
 
-    if not active_panes:
+    while remaining:
+        batch_panes: dict[str, dict] = {}
+        deferred: list[str] = []
+
+        for slug in remaining:
+            task = dag.tasks[slug]
+            try:
+                pane_info = _dispatch_task(dag, task, run_id, session_root)
+                batch_panes[slug] = pane_info
+                all_active_panes[slug] = pane_info
+                task_states[slug] = "dispatched"
+            except RuntimeError as exc:
+                if "Concurrency limit" in str(exc):
+                    logger.info("Deferred %s due to concurrency limit", slug)
+                    deferred.append(slug)
+                else:
+                    logger.error("Dispatch failed for %s: %s", slug, exc)
+                    task_states[slug] = "failed"
+                    upsert_dag_task(
+                        session_root, run_id, slug, "failed", task.agent, error=str(exc)
+                    )
+            except Exception as exc:
+                logger.error("Dispatch failed for %s: %s", slug, exc)
+                task_states[slug] = "failed"
+                upsert_dag_task(session_root, run_id, slug, "failed", task.agent, error=str(exc))
+
+        if batch_panes:
+            batch_results = _wait_for_tier(dag, batch_panes, session_root)
+            wait_results.update(batch_results)
+
+        remaining = deferred
+        if remaining and not batch_panes:
+            # All remaining tasks are deferred but nothing was dispatched —
+            # no progress possible, break to avoid infinite loop.
+            for slug in remaining:
+                logger.error(
+                    "Dispatch failed for %s: concurrency limit with no active batch", slug
+                )
+                task_states[slug] = "failed"
+                upsert_dag_task(
+                    session_root,
+                    run_id,
+                    slug,
+                    "failed",
+                    dag.tasks[slug].agent,
+                    error="Concurrency limit: no active tasks to free capacity",
+                )
+            break
+
+    if not all_active_panes:
         return {"reviewed_pass": [], "failed": [], "merged": [], "merge_error": None}
-
-    # Wait for all
-    wait_results = _wait_for_tier(dag, active_panes, session_root)
 
     # Review completed tasks (only review panes in done state)
     reviewed_pass: list[str] = []
