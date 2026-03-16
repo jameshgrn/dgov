@@ -185,7 +185,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_command="cursor-agent",
         prompt_transport="positional",
         color=45,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="commit"),
     ),
     "copilot": AgentDef(
         id="copilot",
