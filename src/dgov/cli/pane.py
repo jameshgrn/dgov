@@ -712,7 +712,7 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
 @click.option(
     "--permission-mode",
     "-m",
-    default="acceptEdits",
+    default="bypassPermissions",
     help="Permission mode for the new agent",
 )
 def pane_escalate(slug, project_root, session_root, agent, permission_mode):
@@ -747,7 +747,7 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Override agent for retry")
 @click.option("--prompt", "-p", default=None, help="Override prompt for retry")
-@click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
+@click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
 def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode):
     """Retry a failed pane with a new attempt."""
     from dgov.recovery import retry_worker_pane
@@ -777,7 +777,7 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
 @SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default=None, help="Override agent")
 @click.option("--prompt", "-p", default=None, help="Override prompt")
-@click.option("--permission-mode", "-m", default="acceptEdits", help="Permission mode")
+@click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
 def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode):
     """Re-launch agent in an existing worktree."""
     from dgov.lifecycle import resume_worker_pane

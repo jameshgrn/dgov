@@ -85,7 +85,7 @@ def parse_dag_file(path: str) -> DagDefinition:
     project_root = dag_section.get("project_root", ".")
     session_root = dag_section.get("session_root", ".")
     defaults = {
-        "permission_mode": dag_section.get("default_permission_mode", "acceptEdits"),
+        "permission_mode": dag_section.get("default_permission_mode", "bypassPermissions"),
         "timeout_s": dag_section.get("default_timeout_s", 900),
     }
 

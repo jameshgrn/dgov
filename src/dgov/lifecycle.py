@@ -599,7 +599,7 @@ def resume_worker_pane(
     session_root: str | None = None,
     agent: str | None = None,
     prompt: str | None = None,
-    permission_mode: str = "acceptEdits",
+    permission_mode: str = "bypassPermissions",
 ) -> dict:
     """Resume a pane by re-launching an agent in its existing worktree.
 

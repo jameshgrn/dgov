@@ -150,7 +150,7 @@ def _parse_spec(spec_path: str) -> tuple[str, dict[str, dict]]:
                 "touches": fields.get("touches", []),
                 "depends_on": fields.get("depends_on", []),
                 "timeout": fields.get("timeout", 600),
-                "permission_mode": fields.get("permission_mode", "acceptEdits"),
+                "permission_mode": fields.get("permission_mode", "bypassPermissions"),
             }
     else:
         with open(path) as f:
@@ -166,7 +166,7 @@ def _parse_spec(spec_path: str) -> tuple[str, dict[str, dict]]:
                 "touches": t.get("touches", []),
                 "depends_on": t.get("depends_on", []),
                 "timeout": t.get("timeout", 600),
-                "permission_mode": t.get("permission_mode", "acceptEdits"),
+                "permission_mode": t.get("permission_mode", "bypassPermissions"),
             }
 
     return project_root, tasks
@@ -189,7 +189,7 @@ def _task_dict_to_spec(task_id: str, task: dict) -> DagTaskSpec:
         escalation=(),
         depends_on=tuple(task.get("depends_on", ())),
         files=DagFileSpec(edit=tuple(sorted(touches))),
-        permission_mode=task.get("permission_mode", "acceptEdits"),
+        permission_mode=task.get("permission_mode", "bypassPermissions"),
         timeout_s=task.get("timeout", 600),
     )
 
@@ -279,7 +279,7 @@ def run_batch(
                     project_root=project_root,
                     prompt=task["prompt"],
                     agent=task.get("agent", "claude"),
-                    permission_mode=task.get("permission_mode", "acceptEdits"),
+                    permission_mode=task.get("permission_mode", "bypassPermissions"),
                     slug=task["id"],
                     session_root=session_root,
                 )

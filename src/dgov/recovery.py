@@ -95,7 +95,7 @@ def retry_worker_pane(
     session_root: str | None = None,
     agent: str | None = None,
     prompt: str | None = None,
-    permission_mode: str = "acceptEdits",
+    permission_mode: str = "bypassPermissions",
 ) -> dict:
     """Retry a pane by creating a new one linked to the original.
 
