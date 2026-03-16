@@ -644,3 +644,89 @@ class TestTopLevelCommands:
         assert json.loads(batch_ok.output)["dry_run"] is True
         assert batch_fail.exit_code == 1
         assert json.loads(batch_fail.output)["failed"] == ["a"]
+
+
+class TestDagCliCommand:
+    """Tests for dgov dag CLI."""
+
+    def test_dag_run_dry_run(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["dag", "run", str(p), "--dry-run"])
+        assert result.exit_code == 0
+        assert "Tier 0" in result.output
+
+    def test_dag_run_skip_repeated(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+            [tasks.T1]
+            summary = "Test2"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T1.files]
+            create = ["b.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["dag", "run", str(p), "--dry-run", "--skip", "T0", "--skip", "T1"]
+        )
+        assert result.exit_code == 0
+
+    def test_dag_merge_no_run(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["dag", "merge", str(p)])
+        assert result.exit_code != 0  # no awaiting_merge run exists
