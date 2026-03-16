@@ -260,7 +260,9 @@ class TestUnifiedIsDone:
             assert result is False
 
     def test_with_stable_seconds_detects_stable(self, tmp_path: Path) -> None:
-        """With stable_seconds and matching output, _is_done returns True when stabilized."""
+        """With stable strategy and matching output, _is_done returns True when stabilized."""
+        from dgov.agents import DoneStrategy
+
         session_root = str(tmp_path)
         slug = "test-stable"
         _setup_pane(tmp_path, slug=slug)
@@ -279,11 +281,14 @@ class TestUnifiedIsDone:
                 pane_record=pane_record,
                 stable_seconds=5,
                 _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="stable", stable_seconds=5),
             )
             assert result is True
 
     def test_with_stable_seconds_agent_running_resets(self, tmp_path: Path) -> None:
         """If agent is still running, stabilization timer resets."""
+        from dgov.agents import DoneStrategy
+
         session_root = str(tmp_path)
         slug = "test-agent-alive"
         _setup_pane(tmp_path, slug=slug)
@@ -302,6 +307,7 @@ class TestUnifiedIsDone:
                 pane_record=pane_record,
                 stable_seconds=5,
                 _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="stable", stable_seconds=5),
             )
             assert result is False
             assert stable_state["stable_since"] is None

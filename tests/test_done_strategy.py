@@ -161,7 +161,9 @@ class TestAgentDefFromTomlWithDone:
             "transport": "positional",
         }
         agent = _agent_def_from_toml("my-agent", table, "user")
-        assert agent.done_strategy is None
+        # Defaults to "exit" to prevent premature stabilization during startup
+        assert agent.done_strategy is not None
+        assert agent.done_strategy.type == "exit"
 
 
 class TestLoadRegistryWithDone:
@@ -223,14 +225,14 @@ class TestLoadRegistryWithDone:
 
 @pytest.mark.unit
 class TestResolveStrategy:
-    def test_none_strategy_defaults_to_signal(self) -> None:
+    def test_none_strategy_defaults_to_exit(self) -> None:
         stype, ss = _resolve_strategy(None, None)
-        assert stype == "signal"
+        assert stype == "exit"
         assert ss == 0
 
     def test_none_strategy_with_stable_seconds(self) -> None:
         stype, ss = _resolve_strategy(None, 20)
-        assert stype == "signal"
+        assert stype == "exit"
         assert ss == 20
 
     def test_explicit_strategy(self) -> None:
@@ -415,8 +417,8 @@ class TestIsDoneWithStrategy:
             mock_commits.assert_not_called()
 
     @pytest.mark.unit
-    def test_none_strategy_uses_all_signals(self, tmp_path: Path) -> None:
-        """None strategy (default) uses all signals including commit check."""
+    def test_none_strategy_skips_commits(self, tmp_path: Path) -> None:
+        """None/exit strategy skips commit check (only done file + liveness)."""
         session_root = str(tmp_path)
         slug = "test-default"
         _setup_pane(tmp_path, slug=slug)
@@ -428,12 +430,16 @@ class TestIsDoneWithStrategy:
         }
 
         with (
-            patch("dgov.done._has_new_commits", return_value=True),
+            patch("dgov.done._has_new_commits", return_value=True) as mock_commits,
             patch("dgov.done._agent_still_running", return_value=False),
+            patch("dgov.done.get_backend") as mock_be,
         ):
+            mock_be.return_value.is_alive.return_value = True
             result = _is_done(
                 session_root,
                 slug,
                 pane_record=pane_record,
             )
-            assert result is True
+            # "exit" strategy skips commit check — pane is still alive, no done file
+            assert result is False
+            mock_commits.assert_not_called()

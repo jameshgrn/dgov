@@ -93,7 +93,10 @@ def _resolve_strategy(
         stype = done_strategy.type
         ss = done_strategy.stable_seconds if stype == "stable" else (stable_seconds or 15)
         return stype, ss
-    return "signal", stable_seconds or 0
+    # No strategy provided — default to "exit" (done file + liveness).
+    # Never fall back to stabilization here; it causes premature completion
+    # during agent startup when the foreground process is still the shell.
+    return "exit", stable_seconds or 0
 
 
 def _is_done(

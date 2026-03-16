@@ -231,7 +231,7 @@ class TestPaneCreate:
             "project_root": "/repo",
             "prompt": "Fix tests",
             "agent": "claude",
-            "permission_mode": "acceptEdits",
+            "permission_mode": "bypassPermissions",
             "slug": None,
             "env_vars": {"FOO": "bar", "BAZ": "qux"},
             "extra_flags": "--verbose",

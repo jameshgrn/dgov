@@ -360,6 +360,8 @@ class TestIsDone:
         assert _is_done(str(tmp_path), "test-slug") is False
 
     def test_new_commits_signal(self, tmp_path: Path) -> None:
+        from dgov.agents import DoneStrategy
+
         record = {
             "project_root": "/repo",
             "branch_name": "br",
@@ -369,7 +371,15 @@ class TestIsDone:
         with (
             patch("dgov.done._has_new_commits", return_value=True),
         ):
-            assert _is_done(str(tmp_path), "slug", pane_record=record) is True
+            assert (
+                _is_done(
+                    str(tmp_path),
+                    "slug",
+                    pane_record=record,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is True
+            )
 
     def test_dead_pane_sets_abandoned(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         record = {
@@ -420,6 +430,8 @@ class TestIsDone:
 
     def test_new_commits_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
         """Verify abandoned -> done transition works when new commits are found."""
+        from dgov.agents import DoneStrategy
+
         replace_all_panes(
             str(tmp_path),
             {
@@ -437,7 +449,15 @@ class TestIsDone:
 
         record = get_pane(str(tmp_path), "stale")
         with patch("dgov.done._has_new_commits", return_value=True):
-            assert _is_done(str(tmp_path), "stale", pane_record=record) is True
+            assert (
+                _is_done(
+                    str(tmp_path),
+                    "stale",
+                    pane_record=record,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is True
+            )
         assert get_pane(str(tmp_path), "stale")["state"] == "done"
 
 
@@ -2403,7 +2423,8 @@ class TestWaitWorkerPane:
         assert result == {"done": "s1", "method": "signal_or_commit"}
 
     def test_stable_output_detection(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        """Stabilization is now handled inside _is_done via stable_seconds."""
+        """Stabilization is now handled inside _is_done via done_strategy=stable."""
+        from dgov.agents import DoneStrategy
         from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
@@ -2431,6 +2452,7 @@ class TestWaitWorkerPane:
                 pane_record=pane_record,
                 stable_seconds=15,
                 _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="stable", stable_seconds=15),
             )
         assert result is True
 
@@ -2464,6 +2486,7 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When output is stable but agent process is still running, don't trigger done."""
+        from dgov.agents import DoneStrategy
         from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
@@ -2491,6 +2514,7 @@ class TestStableDetectionAgentCheck:
                 pane_record=pane_record,
                 stable_seconds=15,
                 _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="stable", stable_seconds=15),
             )
             assert result is False
             assert stable_state["stable_since"] is None  # Reset because agent is alive
@@ -2499,6 +2523,7 @@ class TestStableDetectionAgentCheck:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """When output is stable and agent process has exited (shell prompt), trigger done."""
+        from dgov.agents import DoneStrategy
         from dgov.persistence import add_pane
         from dgov.waiter import _is_done
 
@@ -2526,6 +2551,7 @@ class TestStableDetectionAgentCheck:
                 pane_record=pane_record,
                 stable_seconds=15,
                 _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="stable", stable_seconds=15),
             )
             assert result is True
 

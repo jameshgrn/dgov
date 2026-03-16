@@ -118,6 +118,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="option",
         prompt_option="--prompt",
         color=82,
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "cline": AgentDef(
         id="cline",
@@ -149,6 +150,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="qwen --continue{permissions}",
         color=99,
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "amp": AgentDef(
         id="amp",
@@ -160,6 +162,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--dangerously-allow-all",
         },
         color=208,
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "pi": AgentDef(
         id="pi",
@@ -182,6 +185,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_command="cursor-agent",
         prompt_transport="positional",
         color=45,
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "copilot": AgentDef(
         id="copilot",
@@ -196,6 +200,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="copilot --continue{permissions}",
         color=231,
+        done_strategy=DoneStrategy(type="exit"),
     ),
     "crush": AgentDef(
         id="crush",
@@ -277,6 +282,10 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     resume_section = table.pop("resume", {})
     env_section = table.pop("env", {})
     done_strategy = _done_strategy_from_toml(table)
+    # Default to "exit" when no [done] section — prevents premature
+    # stabilization-based completion during agent startup.
+    if done_strategy is None:
+        done_strategy = DoneStrategy(type="exit")
     return AgentDef(
         id=agent_id,
         name=table.get("name", agent_id),
