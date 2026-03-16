@@ -153,15 +153,22 @@ def list_worker_panes(
     session_root: str | None = None,
     *,
     include_freshness: bool = True,
+    include_prompt: bool = True,
 ) -> list[dict]:
     """List worker panes with live status from tmux.
 
     When *include_freshness* is False, skip the per-pane git subprocess calls
     that compute freshness (up to 3 git calls per pane). Use False in hot
     paths like dashboard refresh and preflight checks that don't need it.
+
+    When *include_prompt* is False, use a slim DB query that only loads the
+    first 200 characters of each prompt. Use False in hot paths like the
+    dashboard where full prompts are not needed.
     """
+    from dgov.persistence import list_panes_slim
+
     session_root = os.path.abspath(session_root or project_root)
-    panes = all_panes(session_root)
+    panes = list_panes_slim(session_root) if not include_prompt else all_panes(session_root)
     all_tmux = get_backend().bulk_info()
     result = []
     for p in panes:
