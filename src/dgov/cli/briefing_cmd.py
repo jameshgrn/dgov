@@ -126,7 +126,7 @@ def briefing_cmd(project_root: str, session_root: str | None, no_pane: bool, wat
 
     briefing_str = str(briefing_path)
     if watch:
-        cmd = f"watch -t -n 5 -c -- glow {briefing_str}"
+        cmd = f"while true; do clear; glow {briefing_str}; sleep 5; done"
     else:
         cmd = f"glow -p {briefing_str}"
 
