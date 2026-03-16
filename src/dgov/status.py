@@ -346,7 +346,7 @@ def capture_worker_output(
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI sequences (cursor, color, etc.)
     r"|\x1b\].*?(?:\x07|\x1b\\)"  # OSC sequences (title, hyperlinks, cwd)
-    r"|\x1bk.*?\x1b\\\\"  # tmux title-setting (ESC k ... ESC\)
+    r"|\x1bk.*?\x1b\\"  # tmux title-setting (ESC k ... ESC \)
     r"|\x1b\[.*?m"  # SGR color codes
     r"|\x1b[()][0-9A-Za-z]"  # Character set selection
     r"|\x1b[=>]"  # Keypad modes
