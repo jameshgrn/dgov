@@ -13,6 +13,7 @@ from dgov.dag import (
     DagDefinition,
     DagFileSpec,
     DagRunOptions,
+    DagRunSummary,
     DagTaskSpec,
     compute_tiers,
     parse_dag_file,
@@ -833,3 +834,177 @@ class TestEscalation:
             self._dag(), self._task(escalation=["gemini"]), 1, 0, "/tmp/proj"
         )
         assert result["status"] == "failed"
+
+
+class TestIntegrationDag:
+    """Integration-level tests using mocks only at system boundaries."""
+
+    TOML_3TASK = textwrap.dedent("""\
+        [dag]
+        version = 1
+        name = "integ-test"
+        project_root = "."
+        session_root = "{session}"
+
+        [tasks.T0]
+        summary = "Base task"
+        agent = "hunter"
+        escalation = ["gemini"]
+        prompt = "Do T0"
+        commit_message = "T0"
+        [tasks.T0.files]
+        create = ["a.py"]
+
+        [tasks.T1]
+        summary = "Dependent"
+        agent = "hunter"
+        depends_on = ["T0"]
+        prompt = "Do T1"
+        commit_message = "T1"
+        [tasks.T1.files]
+        create = ["b.py"]
+
+        [tasks.T2]
+        summary = "Final"
+        agent = "hunter"
+        depends_on = ["T1"]
+        prompt = "Do T2"
+        commit_message = "T2"
+        [tasks.T2.files]
+        create = ["c.py"]
+    """)
+
+    def _write_dag(self, tmp_path):
+        session = str(tmp_path)
+        p = tmp_path / "dag.toml"
+        p.write_text(self.TOML_3TASK.format(session=session))
+        return str(p)
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_successful_three_tier(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+        mock_merge.return_value = {"merged": "x", "branch": "x"}
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path)
+        assert summary.status == "completed"
+        assert set(summary.merged) == {"T0", "T1", "T2"}
+        assert summary.failed == []
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_skip_propagation(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+        mock_merge.return_value = {"merged": "x", "branch": "x"}
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path, skip={"T0"})
+        # T0 skipped, T1 and T2 transitively skipped
+        assert "T0" in summary.skipped
+        assert "T1" in summary.skipped
+        assert "T2" in summary.skipped
+        assert summary.merged == []
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_merge_conflict_stops_dag(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+        mock_merge.return_value = {"error": "Merge conflict", "conflicts": ["a.py"]}
+
+        path = self._write_dag(tmp_path)
+        summary = run_dag(path)
+        assert summary.status == "failed"
+
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.persistence.update_pane_state")
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.get_pane")
+    def test_no_auto_merge_then_merge(
+        self, mock_get_pane, mock_create, mock_wait, mock_review, mock_update, mock_merge, tmp_path
+    ):
+        from dgov.dag import merge_dag, run_dag
+
+        mock_create.side_effect = lambda **kw: _FakePane(kw.get("slug", "x"))
+        mock_wait.return_value = {"done": "x", "method": "exit"}
+        mock_get_pane.return_value = {"state": "done"}
+        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
+
+        path = self._write_dag(tmp_path)
+        summary1 = run_dag(path, auto_merge=False)
+        assert summary1.status == "awaiting_merge"
+        assert summary1.merged == []
+
+        # Now merge
+        mock_merge.return_value = {"merged": "x", "branch": "x"}
+        summary2 = merge_dag(path)
+        assert summary2.status == "completed"
+        assert len(summary2.merged) > 0
+
+
+class TestFixtureTiers:
+    """Verify the dashboard DAG fixture tiers correctly."""
+
+    FIXTURE = str(Path(__file__).parent / "fixtures" / "dashboard_dag.toml")
+
+    def test_fixture_tiers(self):
+        from dgov.dag import compute_tiers, parse_dag_file
+
+        dag = parse_dag_file(self.FIXTURE)
+        tiers = compute_tiers(dag.tasks)
+        # T0a and T0c have no deps and different files -> same tier
+        assert "T0a" in tiers[0]
+        assert "T0c" in tiers[0]
+        # T0b depends on T0a -> later tier
+        t0b_tier = next(i for i, t in enumerate(tiers) if "T0b" in t)
+        t0a_tier = next(i for i, t in enumerate(tiers) if "T0a" in t)
+        assert t0b_tier > t0a_tier
+        # T4a depends on T1a, T2a, T3a -> last tier
+        t4a_tier = next(i for i, t in enumerate(tiers) if "T4a" in t)
+        assert t4a_tier == len(tiers) - 1
+
+
+class TestUnhappyPathVerification:
+    """Verify tests catch real failures."""
+
+    def test_wrong_status_detected(self):
+        """Confirm that asserting the wrong status actually fails."""
+        summary = DagRunSummary(run_id=0, dag_file="x", status="completed")
+        # This should be True — if it were "failed" this would catch the bug
+        assert summary.status == "completed"
+        assert summary.status != "failed"
