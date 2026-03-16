@@ -63,7 +63,7 @@ def _plumbing_merge(
     if branch_tip.returncode != 0:
         return MergeResult(success=False, stderr=f"Cannot resolve {branch_name}")
 
-    # Create merge commit
+    # Create squash commit (single parent — linear history)
     msg = message or f"Merge {branch_name}"
     commit = subprocess.run(
         [
@@ -74,8 +74,6 @@ def _plumbing_merge(
             tree_hash,
             "-p",
             head_sha,
-            "-p",
-            branch_tip.stdout.strip(),
             "-m",
             msg,
         ],
