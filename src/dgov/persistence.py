@@ -434,21 +434,23 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
     _retry_on_lock(_do)
 
     # Update the pane title after the persisted state changes.
-    pane = get_pane(session_root, slug)
-    if pane:
-        pane_id = pane.get("pane_id", "")
-        agent = pane.get("agent", "")
-        project_root = pane.get("project_root", "")
-        if pane_id:
-            from dgov.lifecycle import _build_pane_title
+    # Skip for terminal states — pane is dead, title update would fork tmux for nothing.
+    if new_state not in ("merged", "closed", "superseded"):
+        pane = get_pane(session_root, slug)
+        if pane:
+            pane_id = pane.get("pane_id", "")
+            agent = pane.get("agent", "")
+            project_root = pane.get("project_root", "")
+            if pane_id:
+                from dgov.lifecycle import _build_pane_title
 
-            try:
-                title = _build_pane_title(
-                    agent, slug, project_root, state=pane.get("state", new_state)
-                )
-                get_backend().set_title(pane_id, title)
-            except (RuntimeError, OSError):
-                pass  # pane may already be dead
+                try:
+                    title = _build_pane_title(
+                        agent, slug, project_root, state=pane.get("state", new_state)
+                    )
+                    get_backend().set_title(pane_id, title)
+                except (RuntimeError, OSError):
+                    pass  # pane may already be dead
 
 
 def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:

@@ -50,8 +50,16 @@ def _read_last_output_from_log(session_root: str, slug: str, lines: int = 3) -> 
 # -- Freshness --
 
 
-def _compute_freshness(project_root: str, pane_record: dict) -> dict:
+def _compute_freshness(
+    project_root: str,
+    pane_record: dict,
+    *,
+    worker_changed_files: set[str] | None = None,
+) -> dict:
     """Compute freshness score for a pane relative to main.
+
+    If *worker_changed_files* is provided (from a prior review that already
+    computed ``git diff --name-only``), the worker-side git call is skipped.
 
     Returns {"freshness": "fresh"|"warn"|"stale", "commits_since_base": int,
              "overlapping_files": [...], "pane_age_hours": float}
@@ -90,19 +98,26 @@ def _compute_freshness(project_root: str, pane_record: dict) -> dict:
             capture_output=True,
             text=True,
         )
-        if main_diff.returncode == 0:
-            main_files = set(main_diff.stdout.strip().splitlines())
+        main_files = (
+            set(main_diff.stdout.strip().splitlines()) if main_diff.returncode == 0 else set()
+        )
+    else:
+        main_files = set()
 
-    # Files changed on worker branch
-    worker_files: set[str] = set()
-    if wt and Path(wt).exists() and base_sha:
+    # Files changed on worker branch (skip if caller already computed)
+    if worker_changed_files is not None:
+        worker_files = worker_changed_files
+    elif wt and Path(wt).exists() and base_sha:
         worker_diff = subprocess.run(
             ["git", "-C", wt, "diff", "--name-only", f"{base_sha}..HEAD"],
             capture_output=True,
             text=True,
         )
-        if worker_diff.returncode == 0:
-            worker_files = set(worker_diff.stdout.strip().splitlines())
+        worker_files = (
+            set(worker_diff.stdout.strip().splitlines()) if worker_diff.returncode == 0 else set()
+        )
+    else:
+        worker_files = set()
 
     overlap = sorted(main_files & worker_files)
 

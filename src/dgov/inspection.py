@@ -98,7 +98,7 @@ def review_worker_pane(
     else:
         emit_event(session_root, "review_fail", slug, issues=issues)
 
-    freshness = _compute_freshness(project_root, target)
+    freshness = _compute_freshness(project_root, target, worker_changed_files=changed_files)
 
     # Load events once, derive both counters from one pass
     from dgov.retry import _count_retries
