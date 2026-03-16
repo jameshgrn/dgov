@@ -55,6 +55,15 @@ VALID_EVENTS = frozenset(
         "mission_merging",
         "mission_completed",
         "mission_failed",
+        "dag_started",
+        "dag_tier_started",
+        "dag_task_dispatched",
+        "dag_task_completed",
+        "dag_task_failed",
+        "dag_task_escalated",
+        "dag_tier_completed",
+        "dag_completed",
+        "dag_failed",
     }
 )
 
