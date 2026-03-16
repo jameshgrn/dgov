@@ -102,7 +102,8 @@ def _plumbing_merge(
         capture_output=True,
         text=True,
     )
-    dirty = bool(status.stdout.strip())
+    # Only stash if there are tracked modifications (ignore untracked ?? files)
+    dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
     stashed = False
     if dirty:
         stash = subprocess.run(
@@ -204,7 +205,8 @@ def _no_squash_merge(
         capture_output=True,
         text=True,
     )
-    dirty = bool(status.stdout.strip())
+    # Only stash if there are tracked modifications (ignore untracked ?? files)
+    dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
     stashed = False
     if dirty:
         stash = subprocess.run(
