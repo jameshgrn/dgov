@@ -275,8 +275,11 @@ def setup_governor_workspace(project_root: str) -> list[str]:
             ],
             silent=True,
         )
-        # Focus lazygit on Commits panel
-        time.sleep(0.5)
+        # Focus lazygit on Commits panel — wait for it to actually start
+        for _ in range(8):
+            time.sleep(0.3)
+            if current_command(lg_id) == "lazygit":
+                break
         _run(["send-keys", "-t", lg_id, "4"], silent=True)
         panes.append(lg_id)
 
