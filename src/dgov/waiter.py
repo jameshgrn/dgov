@@ -112,6 +112,7 @@ def _poll_once(
     stable: int,
     last_blocked: str | None = None,
     done_strategy: DoneStrategy | None = None,
+    alive: bool | None = None,
 ) -> tuple[bool, str, str | None, float | None, str | None]:
     """Single poll cycle shared by wait_worker_pane and wait_all_worker_panes.
 
@@ -135,6 +136,7 @@ def _poll_once(
         stable_seconds=stable,
         _stable_state=stable_state,
         done_strategy=done_strategy,
+        alive=alive,
     ):
         # Determine method: check if done file existed before we called _is_done
         done_path = Path(session_root, STATE_DIR, "done", slug)
@@ -327,11 +329,15 @@ def wait_all_worker_panes(
     strategies: dict[str, DoneStrategy | None] = {}
 
     while pending:
+        # One bulk tmux call per tick — avoids N individual is_alive forks
+        alive_panes = set(get_backend().bulk_info().keys())
+
         for slug in list(pending):
             rec = _persist.get_pane(session_root, slug)
             if slug not in strategies:
                 strategies[slug] = _strategy_for_pane(rec)
             last, since, blocked = stable_trackers.get(slug, (None, None, None))
+            pane_id = rec.get("pane_id", "") if rec else ""
             done, method, last, since, blocked = _poll_once(
                 session_root,
                 project_root,
@@ -342,6 +348,7 @@ def wait_all_worker_panes(
                 stable,
                 blocked,
                 done_strategy=strategies[slug],
+                alive=pane_id in alive_panes if pane_id else None,
             )
             stable_trackers[slug] = (last, since, blocked)
             if done:

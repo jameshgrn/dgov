@@ -107,6 +107,7 @@ def _is_done(
     stable_seconds: int | None = None,
     _stable_state: dict | None = None,
     done_strategy: DoneStrategy | None = None,
+    alive: bool | None = None,
 ) -> bool:
     """Check if a worker is done via any of four signals.
 
@@ -200,7 +201,8 @@ def _is_done(
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     if pane_id:
-        alive = get_backend().is_alive(pane_id)
+        if alive is None:
+            alive = get_backend().is_alive(pane_id)
         logger.debug("pane alive=%s slug=%s", alive, slug)
         if not alive:
             # Grace period: only declare abandoned after 10s dead
