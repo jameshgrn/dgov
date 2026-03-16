@@ -254,6 +254,11 @@ def list_worker_panes(
                 activity = cmd_lower[:15]
 
         last_output = _read_last_output_from_log(session_root, slug)
+        duration_s = round(time.time() - (p.get("created_at") or time.time()))
+
+        summary = _extract_summary_from_log(session_root, slug)
+        phase = _compute_phase(state, alive, done, duration_s, summary)
+        progress = _read_progress_json(session_root, slug)
 
         entry: dict = {
             "slug": slug,
@@ -264,11 +269,14 @@ def list_worker_panes(
             "state": state,
             "activity": activity,
             "last_output": last_output,
+            "summary": summary,
+            "phase": phase,
+            "progress": progress,
             "current_command": cmd,
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),
             "prompt": p.get("prompt", "")[:80],
-            "duration_s": round(time.time() - (p.get("created_at") or time.time())),
+            "duration_s": duration_s,
             **freshness,
         }
         result.append(entry)
@@ -361,13 +369,159 @@ _ANSI_RE = re.compile(
     r"|\x1b\[.*?m"  # SGR color codes
     r"|\x1b[()][0-9A-Za-z]"  # Character set selection
     r"|\x1b[=>]"  # Keypad modes
-    r"|[\x00-\x08\x0e-\x1a\x7f]"  # Other control characters
+    r"|\x1b[\d;?]*[A-HJKfr]"  # Cursor positioning / scroll regions
+    r"|\x1b\[\?[\d;]*[hl]"  # Private mode set/reset (DECSET/DECRST)
+    r"|\x1b[78]"  # Save/restore cursor (DECSC/DECRC)
+    r"|[\x00-\x08\x0e-\x1f\x7f]"  # Control chars (wider range)
     r"|\r"  # Carriage returns
 )
 
 
 def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
+
+
+# -- Noise filtering --
+
+_NOISE_RE: list[re.Pattern[str]] = [
+    re.compile(r"^\s*$"),  # blank / whitespace-only
+    re.compile(r"^[\u2500-\u257f\u2580-\u259f\u2800-\u28ff\s]+$"),  # box-drawing / braille
+    re.compile(
+        r"(?i)(?:"
+        r"type your message|bypass permissions|shift\+tab|ctrl\+|YOLO|/model"
+        r"|for shortcuts|MCP servers|Update available"
+        r"|\[Opus|\[Sonnet|Sprouting|Cooking|Cooked for"
+        r")"
+    ),  # agent UI chrome
+    re.compile(r"^[\$#>%\s]+$"),  # bare shell prompts
+    re.compile(r"^\s*\d+pct\s*\|"),  # progress bars (N pct |)
+    re.compile(r"^\s*\d+%\s*[\|█▓▒░]"),  # progress bars (N% |)
+]
+
+
+def _is_noise_line(line: str) -> bool:
+    """Return True if *line* is TUI chrome or noise that should be filtered."""
+    return any(pat.search(line) for pat in _NOISE_RE)
+
+
+# -- Signal extraction --
+
+_SIGNAL_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?:Read|Reading)\s+(.+)"), "Reading {0}"),
+    (re.compile(r"(?:Edit|Editing)\s+(.+)"), "Editing {0}"),
+    (re.compile(r"(?:Write|Writing|Creating)\s+(.+)"), "Writing {0}"),
+    (re.compile(r"(?:Running|Ran)\s+(ruff\b.*)"), "Linting: {0}"),
+    (re.compile(r"(?:Running|Ran)\s+(pytest\b.*)"), "Testing: {0}"),
+    (re.compile(r"(?:Running|Ran)\s+(uv\b.*)"), "Running: {0}"),
+    (re.compile(r"(?:Running|Ran)\s+(git\b.*)"), "Git: {0}"),
+    (re.compile(r"git add\s+(.+)"), "Staging: {0}"),
+    (re.compile(r"git commit\s+(.*)"), "Committing"),
+    (re.compile(r"(\d+)\s+passed"), "{0} tests passed"),
+    (re.compile(r"All checks passed|no issues found", re.IGNORECASE), "Lint clean"),
+    (re.compile(r"(\d+)\s+files?\s+changed"), "{0} files changed"),
+]
+
+
+def _match_signal(line: str) -> str | None:
+    """Try to match *line* against known signal patterns, return formatted string or None."""
+    for pat, fmt in _SIGNAL_PATTERNS:
+        m = pat.search(line)
+        if m:
+            groups = m.groups()
+            if groups:
+                formatted = fmt.format(*(g[:60] if g else "" for g in groups))
+            else:
+                formatted = fmt
+            return formatted[:80]
+    return None
+
+
+def _extract_summary_from_log(session_root: str, slug: str, lines: int = 10) -> str:
+    """Extract a clean one-line summary from the worker log tail."""
+    raw = _read_last_output_from_log(session_root, slug, lines=lines)
+    if not raw:
+        return ""
+    stripped = _strip_ansi(raw)
+    all_lines = stripped.splitlines()
+    # Walk bottom-up, skip noise, try signal matching
+    for line in reversed(all_lines):
+        line = line.strip()
+        if not line or _is_noise_line(line):
+            continue
+        sig = _match_signal(line)
+        if sig:
+            return sig
+        # No signal match — return truncated non-noise line
+        return line[:60]
+    return ""
+
+
+# -- Phase computation --
+
+
+def _compute_phase(
+    state: str,
+    alive: bool,
+    done: bool,
+    duration_s: int,
+    summary: str,
+) -> str:
+    """Derive a human-readable phase from worker state and summary."""
+    _TERMINAL_MAP = {
+        "failed": "failed",
+        "merged": "merged",
+        "closed": "closed",
+        "superseded": "closed",
+        "escalated": "failed",
+        "timed_out": "failed",
+    }
+    if state in _TERMINAL_MAP:
+        return _TERMINAL_MAP[state]
+    if done:
+        return "done"
+    if not alive and state == "active":
+        return "abandoned"
+    if alive and duration_s < 30 and not summary:
+        return "starting"
+    summary_lower = summary.lower()
+    if "test" in summary_lower or "pytest" in summary_lower:
+        return "testing"
+    if "staging" in summary_lower or "committing" in summary_lower:
+        return "committing"
+    if summary:
+        return "working"
+    return "idle"
+
+
+# -- Progress JSON reader --
+
+
+def _read_progress_json(session_root: str, slug: str) -> dict | None:
+    """Read .dgov/progress/<slug>.json if present and recent (<60s)."""
+    import json
+
+    progress_path = Path(session_root) / STATE_DIR / "progress" / f"{slug}.json"
+    if not progress_path.exists():
+        return None
+    try:
+        mtime = progress_path.stat().st_mtime
+        if time.time() - mtime > 60:
+            return None
+        data = json.loads(progress_path.read_text())
+        if not isinstance(data, dict):
+            return None
+        # Normalize v1 vs legacy schema
+        if "v" in data:
+            # v1 schema: {v, phase, message}
+            return {"phase": data.get("phase", ""), "message": data.get("message", "")}
+        # Legacy schema: {status, message, turn}
+        return {
+            "phase": data.get("status", ""),
+            "message": data.get("message", ""),
+            "turn": data.get("turn"),
+        }
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
 
 
 def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None:
