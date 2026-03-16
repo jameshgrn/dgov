@@ -585,7 +585,7 @@ def run_single_tier(
 
     # Retry failed tasks up to max_retries
     retryable = [s for s in reviewed_fail if task_states.get(s) == "reviewed_fail"]
-    for retry_attempt in range(1, options.max_retries):
+    for retry_attempt in range(1, options.max_retries + 1):
         if not retryable:
             break
 
@@ -1088,7 +1088,7 @@ def _augment_prompt_with_review(
     try:
         from dgov.retry import retry_context
 
-        ctx = retry_context(session_root, pane_slug)
+        ctx = retry_context(pane_slug, session_root)
         if ctx and ctx.get("log_tail"):
             parts.append(f"\nLog tail:\n{ctx['log_tail']}")
     except Exception:
