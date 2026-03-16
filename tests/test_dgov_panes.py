@@ -2759,10 +2759,9 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
             session_root=str(tmp_path),
         )
 
-    assert events[0] == ("sleep", 0.25)
     # Env setup uses send_shell_command (bootstrap, not runtime interaction)
-    assert events[1][0] == "send_shell_command"
-    assert events[1][1].startswith("unset CLAUDECODE")
+    assert events[0][0] == "send_shell_command"
+    assert events[0][1].startswith("unset CLAUDECODE")
 
 
 # ---------------------------------------------------------------------------
@@ -2888,10 +2887,9 @@ class TestResumeWorkerPane:
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             resume_worker_pane(str(tmp_path), "fix-delay", session_root=str(tmp_path))
 
-        assert events[0] == ("sleep", 0.25)
         # Env setup uses send_shell_command (bootstrap, not runtime interaction)
-        assert events[1][0] == "send_shell_command"
-        assert events[1][1].startswith("unset CLAUDECODE")
+        assert events[0][0] == "send_shell_command"
+        assert events[0][1].startswith("unset CLAUDECODE")
 
     def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef

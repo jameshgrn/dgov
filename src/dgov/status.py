@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import time
-from collections import deque
 from pathlib import Path
 
 from dgov.backend import get_backend
@@ -22,27 +21,30 @@ from dgov.persistence import (
 
 logger = logging.getLogger(__name__)
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
 
-
-def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
-
-
-def _read_last_output_from_log(session_root: str, slug: str) -> str:
+def _read_last_output_from_log(session_root: str, slug: str, lines: int = 3) -> str:
+    """Read the last *lines* lines from a worker log, seeking from end."""
     log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     if not log_path.exists():
         return ""
 
     try:
-        with log_path.open(encoding="utf-8", errors="replace") as handle:
-            lines: deque[str] = deque(maxlen=3)
-            for line in handle:
-                lines.append(_strip_ansi(line.rstrip("\r\n")))
+        size = log_path.stat().st_size
+        if size == 0:
+            return ""
+        chunk_size = min(size, lines * 512)
+        with open(log_path, "rb") as f:
+            f.seek(max(0, size - chunk_size))
+            raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        if chunk_size < size:
+            first_nl = text.find("\n")
+            if first_nl != -1:
+                text = text[first_nl + 1 :]
+        tail = text.splitlines()[-lines:]
+        return _strip_ansi("\n".join(tail))
     except OSError:
         return ""
-
-    return "\n".join(lines)
 
 
 # -- Freshness --

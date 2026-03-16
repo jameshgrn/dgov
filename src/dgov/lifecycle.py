@@ -52,8 +52,6 @@ def ensure_dgov_gitignored(project_root: str) -> None:
 
 
 def _create_worktree(project_root: str, worktree_path: str, branch_name: str) -> None:
-    subprocess.run(["git", "-C", project_root, "worktree", "prune"], capture_output=True)
-
     # If worktree directory already exists for this branch, reuse it.
     if Path(worktree_path).is_dir():
         git_check = subprocess.run(
@@ -395,7 +393,6 @@ def create_worker_pane(
         pane_id = get_backend().create_worker_pane(
             cwd=worktree_path, env=startup_env, name=slug, agent=agent
         )
-        time.sleep(0.25)
 
         # 4. Setup and launch agent
         pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
@@ -658,7 +655,6 @@ def resume_worker_pane(
     pane_id = get_backend().create_worker_pane(
         cwd=worktree_path, env=startup_env, name=slug, agent=resume_agent
     )
-    time.sleep(0.25)
 
     _setup_and_launch_agent(
         pane_id=pane_id,

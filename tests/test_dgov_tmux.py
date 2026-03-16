@@ -152,25 +152,41 @@ class TestPaneCommands:
 
 
 class TestStyling:
+    def setup_method(self) -> None:
+        # Clear the per-session cache so each test fires the tmux calls
+        import dgov.tmux as _tmux_mod
+
+        _tmux_mod._borders_configured.clear()
+
     def test_setup_pane_borders_applies_session_scope(self) -> None:
         with patch("dgov.tmux._run") as mock_run:
             setup_pane_borders("dgov-repo")
 
-        # No global pane-border-style or pane-active-border-style — those
-        # are set per-pane by style_worker_pane() so agents get distinct colors.
-        assert mock_run.call_args_list == [
-            call(["set-option", "-t", "dgov-repo", "pane-border-status", "top"], silent=True),
-            call(
-                [
-                    "set-option",
-                    "-t",
-                    "dgov-repo",
-                    "pane-border-format",
-                    " #[bold]#P #[default]#{?pane_title,#{pane_title},#{pane_current_command}} ",
-                ],
-                silent=True,
-            ),
-        ]
+        # Single compound call (two set-option ops joined with ";")
+        border_fmt = " #[bold]#P #[default]#{?pane_title,#{pane_title},#{pane_current_command}} "
+        mock_run.assert_called_once_with(
+            [
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "pane-border-status",
+                "top",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "pane-border-format",
+                border_fmt,
+            ],
+            silent=True,
+        )
+
+    def test_setup_pane_borders_cached_on_second_call(self) -> None:
+        with patch("dgov.tmux._run") as mock_run:
+            setup_pane_borders("dgov-repo")
+            setup_pane_borders("dgov-repo")
+
+        assert mock_run.call_count == 1
 
     def test_style_dgov_session_sets_window_and_status_options(self) -> None:
         with (

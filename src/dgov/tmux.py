@@ -163,24 +163,35 @@ def kill_pane(pane_id: str) -> None:
     _run(["kill-pane", "-t", pane_id], silent=True)
 
 
+_borders_configured: set[str | None] = set()
+
+
 def setup_pane_borders(session_name: str | None = None) -> None:
-    """Set pane border styling to match IDE theme (idempotent).
+    """Set pane border styling to match IDE theme (idempotent, cached).
 
     Only sets border-status and a default border-format here.
     Per-pane colors are applied by ``style_worker_pane`` — setting a
     global ``pane-border-style`` would override those per-pane values.
     """
+    if session_name in _borders_configured:
+        return
     scope = ["-t", session_name] if session_name else ["-g"]
-    _run(["set-option", *scope, "pane-border-status", "top"], silent=True)
+    border_fmt = " #[bold]#P #[default]#{?pane_title,#{pane_title},#{pane_current_command}} "
     _run(
         [
             "set-option",
             *scope,
+            "pane-border-status",
+            "top",
+            ";",
+            "set-option",
+            *scope,
             "pane-border-format",
-            " #[bold]#P #[default]#{?pane_title,#{pane_title},#{pane_current_command}} ",
+            border_fmt,
         ],
         silent=True,
     )
+    _borders_configured.add(session_name)
 
 
 def style_dgov_session(session_name: str | None = None) -> None:
