@@ -194,8 +194,12 @@ def _setup_and_launch_agent(
 
     # 3. Build and send all env setup as a single compound shell command
     env_lines: list[str] = []
-    for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
-        env_lines.append(f"unset {var}")
+    # Only strip API keys for the claude agent (Claude Code should use OAuth).
+    # Pi-routed variants (pi-claude, pi-codex, etc.) need API keys to reach
+    # their upstream providers.
+    if agent_id == "claude":
+        for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
+            env_lines.append(f"unset {var}")
     for key, val in all_env.items():
         env_lines.append(f"export {key}={shlex.quote(val)}")
     dgov_env = {
