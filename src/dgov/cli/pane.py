@@ -908,6 +908,32 @@ def pane_nudge(slug, session_root, wait):
         sys.exit(1)
 
 
+@pane.command("merge-request")
+@click.argument("slug")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+def pane_merge_request(slug, project_root, session_root):
+    """Submit a merge request to the queue (used by LT-GOVs)."""
+    from dgov.persistence import emit_event, enqueue_merge, get_pane
+
+    session_root_abs = os.path.abspath(session_root or project_root)
+    target = get_pane(session_root_abs, slug)
+    if not target:
+        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
+        sys.exit(1)
+
+    requester = os.environ.get("DGOV_SLUG", "governor")
+    ticket = enqueue_merge(session_root_abs, slug, requester)
+    emit_event(session_root_abs, "merge_enqueued", slug, ticket=ticket, requester=requester)
+    click.echo(json.dumps({"ticket": ticket, "slug": slug, "requester": requester}))
+
+
 @pane.command("signal")
 @click.argument("slug")
 @click.argument("signal_type", type=click.Choice(["done", "failed"]))
