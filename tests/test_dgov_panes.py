@@ -2067,6 +2067,8 @@ class TestValidEvents:
             "dag_tier_completed",
             "dag_completed",
             "dag_failed",
+            "merge_enqueued",
+            "merge_completed",
         }
         assert expected == VALID_EVENTS
 

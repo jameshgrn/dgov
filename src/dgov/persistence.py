@@ -64,6 +64,8 @@ VALID_EVENTS = frozenset(
         "dag_tier_completed",
         "dag_completed",
         "dag_failed",
+        "merge_enqueued",
+        "merge_completed",
     }
 )
 
@@ -256,6 +258,17 @@ CREATE TABLE IF NOT EXISTS dag_tasks (
     FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
 )"""
 
+_CREATE_MERGE_QUEUE_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS merge_queue (
+    ticket TEXT PRIMARY KEY,
+    branch TEXT NOT NULL,
+    requester TEXT NOT NULL,
+    status TEXT DEFAULT 'pending',
+    result TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP
+)"""
+
 
 def state_path(session_root: str) -> Path:
     return Path(session_root) / STATE_DIR / _STATE_FILE
@@ -285,6 +298,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
+    conn.execute(_CREATE_MERGE_QUEUE_TABLE_SQL)
     conn.commit()
 
     with _conn_lock:
@@ -686,3 +700,77 @@ def list_dag_tasks(session_root: str, dag_run_id: int) -> list[dict]:
         }
         for r in rows
     ]
+
+
+# -- Merge queue --
+
+
+def enqueue_merge(session_root: str, branch: str, requester: str) -> str:
+    """Add a merge request to the queue. Returns ticket ID."""
+    import uuid
+
+    ticket = uuid.uuid4().hex[:8]
+    db = _get_db(session_root)
+    db.execute(
+        "INSERT INTO merge_queue (ticket, branch, requester) VALUES (?, ?, ?)",
+        (ticket, branch, requester),
+    )
+    db.commit()
+    return ticket
+
+
+def claim_next_merge(session_root: str) -> dict | None:
+    """Claim the next pending merge. Returns {ticket, branch, requester} or None.
+
+    Uses BEGIN IMMEDIATE for serialization — only one caller can claim at a time.
+    """
+    db = _get_db(session_root)
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT ticket, branch, requester FROM merge_queue "
+            "WHERE status = 'pending' ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if not row:
+            db.execute("COMMIT")
+            return None
+        ticket, branch, requester = row
+        db.execute(
+            "UPDATE merge_queue SET status = 'processing' WHERE ticket = ?",
+            (ticket,),
+        )
+        db.execute("COMMIT")
+        return {"ticket": ticket, "branch": branch, "requester": requester}
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+
+
+def complete_merge(session_root: str, ticket: str, success: bool, result_json: str = "{}") -> None:
+    """Record merge result for a claimed ticket."""
+    db = _get_db(session_root)
+    status = "done" if success else "failed"
+    db.execute(
+        "UPDATE merge_queue SET status = ?, result = ?, processed_at = CURRENT_TIMESTAMP "
+        "WHERE ticket = ?",
+        (status, result_json, ticket),
+    )
+    db.commit()
+
+
+def list_merge_queue(session_root: str, status: str | None = None) -> list[dict]:
+    """List merge queue entries, optionally filtered by status."""
+    db = _get_db(session_root)
+    if status:
+        rows = db.execute(
+            "SELECT ticket, branch, requester, status, result, created_at, processed_at "
+            "FROM merge_queue WHERE status = ? ORDER BY created_at",
+            (status,),
+        ).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT ticket, branch, requester, status, result, created_at, processed_at "
+            "FROM merge_queue ORDER BY created_at"
+        ).fetchall()
+    cols = ["ticket", "branch", "requester", "status", "result", "created_at", "processed_at"]
+    return [dict(zip(cols, r)) for r in rows]
