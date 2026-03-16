@@ -89,23 +89,22 @@ class TestTimedOutTransitions:
 
 
 class TestIllegalTransition:
-    def test_active_to_merged_raises(self, state_dir):
-        _seed_pane(state_dir)
-        with pytest.raises(IllegalTransitionError) as exc_info:
-            update_pane_state(state_dir, "test", "merged")
-        assert exc_info.value.current == "active"
-        assert exc_info.value.target == "merged"
-        assert exc_info.value.slug == "test"
-
     def test_done_to_active_raises(self, state_dir):
         _seed_pane(state_dir, state="done")
         with pytest.raises(IllegalTransitionError):
             update_pane_state(state_dir, "test", "active")
 
+    def test_active_to_merged_succeeds(self, state_dir, monkeypatch):
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
+        _seed_pane(state_dir)
+        update_pane_state(state_dir, "test", "merged")
+        rec = get_pane(state_dir, "test")
+        assert rec["state"] == "merged"
+
     def test_state_unchanged_after_illegal(self, state_dir):
         _seed_pane(state_dir)
         with pytest.raises(IllegalTransitionError):
-            update_pane_state(state_dir, "test", "merged")
+            update_pane_state(state_dir, "test", "reviewed_pass")
         rec = get_pane(state_dir, "test")
         assert rec["state"] == "active"
 

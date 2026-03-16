@@ -134,7 +134,7 @@ PANE_STATES = frozenset(
 # Transition table: 12 states, enforced in update_pane_state
 VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "active": frozenset(
-        {"done", "failed", "abandoned", "timed_out", "closed", "escalated", "superseded"}
+        {"done", "failed", "abandoned", "timed_out", "closed", "escalated", "superseded", "merged"}
     ),
     "done": frozenset(
         {"reviewed_pass", "reviewed_fail", "merged", "merge_conflict", "closed", "superseded"}
