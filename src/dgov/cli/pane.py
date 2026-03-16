@@ -187,7 +187,7 @@ def pane_create(
             session_root=session_root,
             skip_auto_structure=skip_auto_structure,
         )
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
