@@ -1,3 +1,4 @@
+# mission test marker
 """OpenRouter API client with local Qwen 4B fallback.
 
 Lightweight HTTP client using only urllib.request (zero new deps).
