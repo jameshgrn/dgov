@@ -258,17 +258,9 @@ def init_cmd(project_root):
     )
 
     # Add .dgov/ to .gitignore if not already there
-    gitignore = root / ".gitignore"
-    marker = ".dgov/"
-    if gitignore.is_file():
-        content = gitignore.read_text(encoding="utf-8")
-        if marker not in content.splitlines():
-            with open(gitignore, "a", encoding="utf-8") as f:
-                if not content.endswith("\n"):
-                    f.write("\n")
-                f.write(f"{marker}\n")
-    else:
-        gitignore.write_text(f"{marker}\n", encoding="utf-8")
+    from dgov.lifecycle import ensure_dgov_gitignored
+
+    ensure_dgov_gitignored(str(root))
 
     click.echo("Initialized dgov project:")
     click.echo(f"  {config_path}")

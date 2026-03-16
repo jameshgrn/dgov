@@ -32,6 +32,21 @@ from dgov.waiter import _wrap_done_signal
 logger = logging.getLogger(__name__)
 
 
+def ensure_dgov_gitignored(project_root: str) -> None:
+    """Add .dgov/ to .gitignore if not already present."""
+    gitignore = Path(project_root) / ".gitignore"
+    marker = ".dgov/"
+    if gitignore.is_file():
+        content = gitignore.read_text(encoding="utf-8")
+        if marker not in content.splitlines():
+            with open(gitignore, "a", encoding="utf-8") as f:
+                if not content.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{marker}\n")
+    else:
+        gitignore.write_text(f"{marker}\n", encoding="utf-8")
+
+
 # -- Git worktree helpers --
 
 
@@ -310,6 +325,7 @@ def create_worker_pane(
 
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
+    ensure_dgov_gitignored(project_root)
     slug = slug or _generate_slug(prompt)
     _validate_slug(slug)
     owns_worktree = existing_worktree is None
