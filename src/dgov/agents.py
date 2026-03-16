@@ -79,7 +79,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="claude --continue{permissions}",
         color=39,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="commit"),
     ),
     "codex": AgentDef(
         id="codex",

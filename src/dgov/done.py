@@ -186,10 +186,11 @@ def _is_done(
                         )
                         # Fall through to done
                     else:
-                        logger.debug(
-                            "new_commits slug=%s but agent still running (no stable_state)", slug
+                        logger.warning(
+                            "new_commits slug=%s agent running, no stable_state — declaring done",
+                            slug,
                         )
-                        return False
+                        # Fall through to done — blocking forever is worse than no grace period
                 current_state = pane_record.get("state", "")
                 force = current_state == "abandoned"
                 _persist.update_pane_state(session_root, slug, "done", force=force)
