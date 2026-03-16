@@ -182,11 +182,13 @@ def list_worker_panes(
     first 200 characters of each prompt. Use False in hot paths like the
     dashboard where full prompts are not needed.
     """
+    from dgov.agents import load_registry
     from dgov.persistence import list_panes_slim
 
     session_root = os.path.abspath(session_root or project_root)
     panes = list_panes_slim(session_root) if not include_prompt else all_panes(session_root)
     all_tmux = get_backend().bulk_info()
+    registry = load_registry(project_root)
     result = []
     for p in panes:
         pane_id = p.get("pane_id", "")
@@ -196,7 +198,16 @@ def list_worker_panes(
         cmd = all_tmux.get(pane_id, {}).get("current_command", "") if alive else ""
         done = state != "active"
         if state == "active":
-            done = _is_done(session_root, slug, pane_record=p)
+            agent_id = p.get("agent", "")
+            agent_def = registry.get(agent_id) if agent_id else None
+            agent_done_strategy = agent_def.done_strategy if agent_def else None
+            done = _is_done(
+                session_root,
+                slug,
+                pane_record=p,
+                done_strategy=agent_done_strategy,
+                alive=alive,
+            )
             if done:
                 # _is_done updated persistent state; reconcile local copy
                 updated = get_pane(session_root, slug)
