@@ -19,3 +19,8 @@ def greet(name: str) -> str:
 def power(base: int, exp: int) -> int:
     """Return base raised to exp."""
     return base**exp
+
+
+def negate(x: int) -> int:
+    """Return -x."""
+    return -x
