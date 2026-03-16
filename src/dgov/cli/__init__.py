@@ -101,6 +101,15 @@ def cli(ctx, governor):
     session_name = f"dgov-{repo}"
     project_root = str(Path.cwd())
 
+    # Auto-init if not yet initialized
+    from dgov.cli.admin import _scaffold_dgov_dirs
+    from dgov.lifecycle import ensure_dgov_gitignored
+
+    config_path = Path(project_root) / ".dgov" / "config.toml"
+    if not config_path.is_file():
+        _scaffold_dgov_dirs(Path(project_root))
+    ensure_dgov_gitignored(project_root)
+
     def _resolve_governor() -> tuple[str, str]:
         """Return (agent_id, permission_mode), running first-time setup if needed."""
         agent_id, perm = get_governor_agent(project_root)
