@@ -211,7 +211,7 @@ def pane_create(
 
 
 @pane.command("close")
-@click.argument("slug")
+@click.argument("slug", nargs=-1, required=True)
 @click.option(
     "--project-root",
     "-r",
@@ -224,11 +224,16 @@ def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
     from dgov.lifecycle import close_worker_pane
 
-    if close_worker_pane(project_root, slug, session_root=session_root, force=force):
-        click.echo(json.dumps({"closed": slug}))
-    else:
-        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
-        sys.exit(1)
+    exit_code = 0
+    for s in slug:
+        if close_worker_pane(project_root, s, session_root=session_root, force=force):
+            click.echo(json.dumps({"closed": s}))
+        else:
+            click.echo(json.dumps({"error": f"Pane not found: {s}"}), err=True)
+            exit_code = 1
+
+    if exit_code:
+        sys.exit(exit_code)
 
 
 @pane.command("merge")
