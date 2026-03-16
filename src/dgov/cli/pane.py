@@ -274,7 +274,7 @@ def pane_merge(slug, project_root, session_root, resolve, squash):
 
 
 @pane.command("wait")
-@click.argument("slug")
+@click.argument("slug", nargs=-1, required=True)
 @click.option(
     "--project-root",
     "-r",
@@ -302,31 +302,38 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     panes = list_worker_panes(project_root, session_root=session_root)
-    if not any(p.get("slug") == slug for p in panes):
-        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
-        sys.exit(1)
+    known = {p.get("slug") for p in panes}
+    exit_code = 0
 
-    try:
-        result = wait_worker_pane(
-            project_root,
-            slug,
-            session_root=session_root,
-            timeout=timeout,
-            poll=poll,
-            stable=stable,
-            auto_retry=auto_retry,
-        )
-        click.echo(json.dumps(result))
-    except PaneTimeoutError as exc:
-        timeout_result = {
-            "error": f"Timeout after {exc.timeout}s",
-            "slug": exc.slug,
-            "agent": exc.agent,
-        }
-        if exc.agent == "pi":
-            timeout_result["suggest_escalate"] = True
-        click.echo(json.dumps(timeout_result), err=True)
-        sys.exit(1)
+    for s in slug:
+        if s not in known:
+            click.echo(json.dumps({"error": f"Pane not found: {s}"}), err=True)
+            exit_code = 1
+            continue
+        try:
+            result = wait_worker_pane(
+                project_root,
+                s,
+                session_root=session_root,
+                timeout=timeout,
+                poll=poll,
+                stable=stable,
+                auto_retry=auto_retry,
+            )
+            click.echo(json.dumps(result))
+        except PaneTimeoutError as exc:
+            timeout_result = {
+                "error": f"Timeout after {exc.timeout}s",
+                "slug": exc.slug,
+                "agent": exc.agent,
+            }
+            if exc.agent == "pi":
+                timeout_result["suggest_escalate"] = True
+            click.echo(json.dumps(timeout_result), err=True)
+            exit_code = 1
+
+    if exit_code:
+        sys.exit(exit_code)
 
 
 @pane.command("wait-all")
