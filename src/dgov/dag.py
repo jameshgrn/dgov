@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -549,3 +551,321 @@ def run_single_tier(
         "merged": merged,
         "merge_error": merge_error,
     }
+
+
+# ---------------------------------------------------------------------------
+# Multi-tier orchestration
+# ---------------------------------------------------------------------------
+
+
+def _dag_file_hash(path: str) -> str:
+    """SHA-256 of the raw DAG file bytes (before parsing)."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _reconcile_orphan_panes(
+    dag: DagDefinition,
+    run_id: int,
+    session_root: str,
+) -> None:
+    """Scan for orphan panes from a previous governor crash and reconcile."""
+    from dgov.lifecycle import close_worker_pane
+    from dgov.persistence import list_dag_tasks, list_panes_slim, upsert_dag_task
+
+    dag_tasks = list_dag_tasks(session_root, run_id)
+    known_pane_slugs = {t["pane_slug"] for t in dag_tasks if t["pane_slug"]}
+    task_slugs = set(dag.tasks)
+
+    panes = list_panes_slim(session_root)
+    for pane in panes:
+        pane_slug = pane.get("slug", "")
+        if pane_slug in known_pane_slugs:
+            continue
+        # Check if this pane matches a DAG task slug pattern
+        base_slug = pane_slug.split("-esc-")[0].split("-retry-")[0]
+        if base_slug not in task_slugs:
+            continue
+        # Orphan pane found
+        state = pane.get("state", "")
+        logger.warning("Found orphan pane %s (state=%s) for task %s", pane_slug, state, base_slug)
+        if state in ("done", "running", "waiting"):
+            # Adopt it
+            upsert_dag_task(
+                session_root,
+                run_id,
+                base_slug,
+                "dispatched",
+                pane.get("agent", "unknown"),
+                pane_slug=pane_slug,
+            )
+        else:
+            # Dead pane, close it
+            try:
+                close_worker_pane(
+                    dag.project_root, pane_slug, session_root=session_root, force=True
+                )
+            except Exception:
+                pass
+
+
+def _start_or_resume_run(
+    dag_file: str,
+    options: DagRunOptions,
+    session_root: str,
+) -> tuple[int, DagDefinition, dict[str, str]]:
+    """Start a new DAG run or resume an existing one.
+
+    Returns (run_id, dag_definition, task_states).
+    """
+    from datetime import datetime, timezone
+
+    from dgov.persistence import (
+        create_dag_run,
+        emit_event,
+        ensure_dag_tables,
+        get_open_dag_run,
+        list_dag_tasks,
+    )
+
+    abs_path = str(Path(dag_file).resolve())
+    session_root = os.path.abspath(session_root)
+    ensure_dag_tables(session_root)
+
+    dag = parse_dag_file(dag_file)
+    file_hash = _dag_file_hash(dag_file)
+
+    existing = get_open_dag_run(session_root, abs_path)
+    if existing:
+        stored_hash = existing.get("state_json", {}).get("dag_sha256", "")
+        if stored_hash and stored_hash != file_hash:
+            raise ValueError(
+                f"DAG file has changed since run {existing['id']} started. "
+                f"Stored hash: {stored_hash[:12]}..., current: {file_hash[:12]}..."
+            )
+        run_id = existing["id"]
+        logger.info("Resuming DAG run %d", run_id)
+        _reconcile_orphan_panes(dag, run_id, session_root)
+        # Reconstruct task_states from dag_tasks rows (source of truth)
+        task_rows = list_dag_tasks(session_root, run_id)
+        task_states = {r["slug"]: r["status"] for r in task_rows}
+        return run_id, dag, task_states
+
+    # New run
+    tiers = compute_tiers(dag.tasks)
+    state_json = {
+        "dag_sha256": file_hash,
+        "dag_name": dag.name,
+        "tiers": tiers,
+        "topological_order": topological_order(dag.tasks),
+        "options": {
+            "tier_limit": options.tier_limit,
+            "skip": sorted(options.skip),
+            "max_retries": options.max_retries,
+            "auto_merge": options.auto_merge,
+        },
+    }
+    run_id = create_dag_run(
+        session_root,
+        abs_path,
+        datetime.now(timezone.utc).isoformat(),
+        "running",
+        0,
+        state_json,
+    )
+    emit_event(session_root, "dag_started", f"dag/{run_id}", dag_run_id=run_id)
+    logger.info("Started new DAG run %d for %s", run_id, dag.name)
+    return run_id, dag, {}
+
+
+def run_dag(
+    dag_file: str,
+    *,
+    dry_run: bool = False,
+    tier_limit: int | None = None,
+    skip: set[str] | None = None,
+    max_retries: int = 1,
+    auto_merge: bool = True,
+) -> DagRunSummary:
+    """Execute a TOML DAG: dispatch, wait, review, merge per tier."""
+    from dgov.lifecycle import close_worker_pane
+    from dgov.persistence import emit_event, update_dag_run, upsert_dag_task
+
+    dag = parse_dag_file(dag_file)
+    options = DagRunOptions(
+        dry_run=dry_run,
+        tier_limit=tier_limit,
+        skip=frozenset(skip or ()),
+        max_retries=max_retries,
+        auto_merge=auto_merge,
+    )
+
+    if dry_run:
+        tiers = compute_tiers(dag.tasks)
+        print(render_dry_run(tiers, dag.tasks))
+        return DagRunSummary(run_id=0, dag_file=dag_file, status="dry_run")
+
+    session_root = os.path.abspath(dag.session_root)
+    run_id, dag, task_states = _start_or_resume_run(dag_file, options, session_root)
+    tiers = compute_tiers(dag.tasks)
+
+    # Apply skip + transitive
+    skipped = set(options.skip)
+    if skipped:
+        transitive = transitive_dependents(dag.tasks, skipped)
+        skipped |= transitive
+        for slug in skipped:
+            task_states[slug] = "skipped"
+            upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
+            # Close already-dispatched panes for newly-skipped tasks
+            existing = [
+                t for t in (list(task_states.keys())) if task_states.get(t) == "dispatched"
+            ]
+            for s in existing:
+                if s in skipped:
+                    try:
+                        close_worker_pane(
+                            dag.project_root, s, session_root=session_root, force=True
+                        )
+                    except Exception:
+                        pass
+
+    max_tier = tier_limit if tier_limit is not None else len(tiers) - 1
+    all_merged: list[str] = []
+    all_failed: list[str] = []
+
+    for tier_idx, tier in enumerate(tiers):
+        if tier_idx > max_tier:
+            break
+
+        # Filter out skipped tasks
+        active_tier = [s for s in tier if task_states.get(s) != "skipped"]
+        if not active_tier:
+            continue
+
+        update_dag_run(session_root, run_id, current_tier=tier_idx)
+        emit_event(
+            session_root, "dag_tier_started", f"dag/{run_id}", dag_run_id=run_id, tier=tier_idx
+        )
+
+        result = run_single_tier(dag, active_tier, run_id, task_states, options, session_root)
+
+        all_merged.extend(result["merged"])
+        all_failed.extend(result["failed"])
+
+        emit_event(
+            session_root, "dag_tier_completed", f"dag/{run_id}", dag_run_id=run_id, tier=tier_idx
+        )
+
+        if result["merge_error"]:
+            update_dag_run(session_root, run_id, status="failed")
+            emit_event(
+                session_root,
+                "dag_failed",
+                f"dag/{run_id}",
+                dag_run_id=run_id,
+                error="merge_conflict",
+            )
+            return _build_summary(run_id, dag_file, "failed", task_states, all_merged, dag)
+
+        # Transitively skip dependents of failed tasks
+        if result["failed"]:
+            newly_skipped = transitive_dependents(dag.tasks, set(result["failed"]))
+            for slug in newly_skipped:
+                if task_states.get(slug) not in ("merged", "reviewed_pass", "failed", "skipped"):
+                    task_states[slug] = "skipped"
+                    upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
+
+    # Finalize
+    final_status = "awaiting_merge" if not auto_merge else "completed"
+    if all_failed:
+        final_status = "completed"  # partial success
+    update_dag_run(session_root, run_id, status=final_status)
+    emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
+    return _build_summary(run_id, dag_file, final_status, task_states, all_merged, dag)
+
+
+def _build_summary(
+    run_id: int,
+    dag_file: str,
+    status: str,
+    task_states: dict[str, str],
+    merged: list[str],
+    dag: DagDefinition,
+) -> DagRunSummary:
+    succeeded = [s for s, st in task_states.items() if st in ("merged", "reviewed_pass")]
+    failed = [s for s, st in task_states.items() if st in ("failed", "reviewed_fail")]
+    skipped = [s for s, st in task_states.items() if st == "skipped"]
+    unmerged = [s for s, st in task_states.items() if st == "reviewed_pass"]
+    return DagRunSummary(
+        run_id=run_id,
+        dag_file=dag_file,
+        status=status,
+        succeeded=succeeded,
+        failed=failed,
+        skipped=skipped,
+        merged=merged,
+        unmerged=unmerged,
+    )
+
+
+def merge_dag(dag_file: str) -> DagRunSummary:
+    """Merge an awaiting_merge DAG run in canonical topological order."""
+    from dgov.merger import merge_worker_pane
+    from dgov.persistence import (
+        emit_event,
+        ensure_dag_tables,
+        get_open_dag_run,
+        list_dag_tasks,
+        update_dag_run,
+        upsert_dag_task,
+    )
+
+    dag = parse_dag_file(dag_file)
+    abs_path = str(Path(dag_file).resolve())
+    session_root = os.path.abspath(dag.session_root)
+    ensure_dag_tables(session_root)
+
+    existing = get_open_dag_run(session_root, abs_path)
+    if not existing or existing["status"] != "awaiting_merge":
+        raise ValueError(f"No awaiting_merge run found for {abs_path}")
+
+    run_id = existing["id"]
+    file_hash = _dag_file_hash(dag_file)
+    stored_hash = existing.get("state_json", {}).get("dag_sha256", "")
+    if stored_hash and stored_hash != file_hash:
+        raise ValueError("DAG file has changed since the run was created")
+
+    task_rows = list_dag_tasks(session_root, run_id)
+    task_states = {r["slug"]: r["status"] for r in task_rows}
+    pane_slugs = {r["slug"]: r["pane_slug"] for r in task_rows if r["pane_slug"]}
+
+    ready = [s for s, st in task_states.items() if st == "reviewed_pass"]
+    if not ready:
+        raise ValueError("No reviewed_pass tasks to merge")
+
+    topo = topological_order(dag.tasks)
+    ordered = [s for s in topo if s in ready]
+
+    merged: list[str] = []
+    for slug in ordered:
+        pane_slug = pane_slugs.get(slug)
+        if not pane_slug:
+            continue
+        result = merge_worker_pane(
+            dag.project_root,
+            pane_slug,
+            session_root=session_root,
+            resolve=dag.merge_resolve,
+            squash=dag.merge_squash,
+        )
+        if "error" in result:
+            update_dag_run(session_root, run_id, status="failed")
+            emit_event(session_root, "dag_failed", f"dag/{run_id}", dag_run_id=run_id)
+            return _build_summary(run_id, dag_file, "failed", task_states, merged, dag)
+        merged.append(slug)
+        task_states[slug] = "merged"
+        upsert_dag_task(session_root, run_id, slug, "merged", dag.tasks[slug].agent)
+
+    update_dag_run(session_root, run_id, status="completed")
+    emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
+    return _build_summary(run_id, dag_file, "completed", task_states, merged, dag)
