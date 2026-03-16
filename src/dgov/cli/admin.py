@@ -222,8 +222,21 @@ def stats(project_root, session_root):
 )
 @SESSION_ROOT_OPTION
 @click.option("--refresh", default=1, type=float, help="Refresh interval in seconds")
-def dashboard(project_root, session_root, refresh):
+@click.option("--pane", is_flag=True, help="Launch dashboard in a tmux split pane")
+def dashboard(project_root, session_root, refresh, pane):
     """Launch live terminal dashboard."""
+    if pane:
+        import subprocess
+
+        cmd = f"dgov dashboard -r {os.path.abspath(project_root)} --refresh {refresh}"
+        if session_root:
+            cmd += f" --session-root {os.path.abspath(session_root)}"
+        subprocess.run(
+            ["tmux", "split-window", "-d", "-l", "30%", cmd],
+            check=True,
+        )
+        click.echo(json.dumps({"dashboard": "launched in pane"}))
+        return
     if os.environ.get("DGOV_DASHBOARD") == "v2":
         try:
             from dgov.dashboard_v2 import run_dashboard_v2
