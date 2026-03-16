@@ -1917,7 +1917,10 @@ class TestBlockTitleOverride:
                 agent="claude",
                 session_root=str(tmp_path),
             )
-        mock_backend.set_pane_option.assert_any_call("%99", "allow-set-title", "off")
+        mock_backend.configure_worker_pane.assert_called_once()
+        call_args = mock_backend.configure_worker_pane.call_args
+        assert call_args[0][0] == "%99"  # pane_id
+        assert call_args[0][2] == "claude"  # agent
 
 
 # ---------------------------------------------------------------------------
@@ -2728,7 +2731,9 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
         )
 
     assert events[0] == ("sleep", 0.25)
-    assert events[1] == ("send_input", "unset CLAUDECODE")
+    # Env setup is now a single batched send_input (unsets + exports)
+    assert events[1][0] == "send_input"
+    assert events[1][1].startswith("unset CLAUDECODE")
 
 
 # ---------------------------------------------------------------------------
@@ -2852,7 +2857,9 @@ class TestResumeWorkerPane:
             resume_worker_pane(str(tmp_path), "fix-delay", session_root=str(tmp_path))
 
         assert events[0] == ("sleep", 0.25)
-        assert events[1] == ("send_input", "unset CLAUDECODE")
+        # Env setup is now a single batched send_input (unsets + exports)
+        assert events[1][0] == "send_input"
+        assert events[1][1].startswith("unset CLAUDECODE")
 
     def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef

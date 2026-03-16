@@ -109,6 +109,11 @@ class TestFactory:
             def set_pane_option(self, worker_id: str, option: str, value: str) -> None:
                 pass
 
+            def configure_worker_pane(
+                self, worker_id: str, title: str, agent: str, *, color: int | None = None
+            ) -> None:
+                pass
+
             def select_layout(self, layout: str = "tiled") -> None:
                 pass
 
@@ -176,6 +181,11 @@ class TestFactory:
                 pass
 
             def set_pane_option(self, worker_id: str, option: str, value: str) -> None:
+                pass
+
+            def configure_worker_pane(
+                self, worker_id: str, title: str, agent: str, *, color: int | None = None
+            ) -> None:
                 pass
 
             def select_layout(self, layout: str = "tiled") -> None:

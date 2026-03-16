@@ -93,6 +93,12 @@ class WorkerBackend(Protocol):
         """Set a pane-level tmux option."""
         ...
 
+    def configure_worker_pane(
+        self, worker_id: str, title: str, agent: str, *, color: int | None = None
+    ) -> None:
+        """Lock title, apply agent colour, disable renaming — all in one call."""
+        ...
+
     def select_layout(self, layout: str = "tiled") -> None:
         """Apply a tmux layout to the current window."""
         ...
@@ -196,6 +202,13 @@ class TmuxBackend:
         from dgov import tmux
 
         tmux.set_pane_option(worker_id, option, value)
+
+    def configure_worker_pane(
+        self, worker_id: str, title: str, agent: str, *, color: int | None = None
+    ) -> None:
+        from dgov import tmux
+
+        tmux.configure_worker_pane(worker_id, title, agent, color=color)
 
     def select_layout(self, layout: str = "tiled") -> None:
         from dgov import tmux

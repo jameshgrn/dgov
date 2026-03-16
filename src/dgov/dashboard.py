@@ -179,7 +179,10 @@ def fetch_panes(state: DashboardState) -> None:
 
     try:
         panes = list_worker_panes(
-            state.project_root, session_root=state.session_root, include_freshness=False
+            state.project_root,
+            session_root=state.session_root,
+            include_freshness=False,
+            include_prompt=False,
         )
         branch = _get_branch(state.project_root)
         session_root = state.session_root or state.project_root

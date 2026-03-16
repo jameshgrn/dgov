@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import time
@@ -180,29 +181,22 @@ def _setup_and_launch_agent(
     """Lock pane, inject env, trigger hook, rewrite prompt, launch agent."""
     backend = get_backend()
 
-    # 1. Lock pane title (prevent agent/tmux from overwriting)
-    backend.set_pane_option(pane_id, "allow-rename", "off")
-    backend.set_pane_option(pane_id, "automatic-rename", "off")
+    # 1. Lock pane title, apply colour, disable renaming (single tmux call)
     title = _build_pane_title(agent_id, slug, project_root, state="active")
-    backend.set_title(pane_id, title)
-    backend.style(pane_id, agent_id, color=agent_def.color)
-    backend.set_pane_option(pane_id, "allow-set-title", "off")
+    backend.configure_worker_pane(pane_id, title, agent_id, color=agent_def.color)
 
-    # 2. Scrub env vars that cause worker auth issues
-    for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
-        backend.send_input(pane_id, f"unset {var}")
-
-    # 4. Start persistent logging
+    # 2. Start persistent logging
     logs_dir = Path(session_root) / STATE_DIR / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_file = str(logs_dir / f"{slug}.log")
     backend.start_logging(pane_id, log_file)
 
-    # 5. Inject env vars
+    # 3. Build and send all env setup as a single compound shell command
+    env_lines: list[str] = []
+    for var in ("CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_API_KEY"):
+        env_lines.append(f"unset {var}")
     for key, val in all_env.items():
-        backend.send_input(pane_id, f"export {key}={val!r}")
-
-    # 6. Export dgov state vars
+        env_lines.append(f"export {key}={shlex.quote(val)}")
     dgov_env = {
         "DGOV_ROOT": project_root,
         "DGOV_SESSION_ROOT": session_root,
@@ -213,9 +207,11 @@ def _setup_and_launch_agent(
         "DGOV_WORKTREE_PATH": worktree_path,
     }
     for key, val in dgov_env.items():
-        backend.send_input(pane_id, f"export {key}={val!r}")
+        env_lines.append(f"export {key}={shlex.quote(val)}")
+    if env_lines:
+        backend.send_input(pane_id, " && ".join(env_lines))
 
-    # 7. Trigger worktree_created hook
+    # 4. Trigger worktree_created hook
     hook_env = {
         "DGOV_ROOT": project_root,
         "DGOV_PANE_ID": pane_id,
@@ -228,16 +224,16 @@ def _setup_and_launch_agent(
     }
     hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
 
-    # 8. Auto-structure pi prompts
+    # 5. Auto-structure pi prompts
     if agent_id == "pi" and not skip_auto_structure:
         prompt = _structure_pi_prompt(prompt)
 
-    # 9. Rewrite absolute paths so agent edits worktree, not main repo
+    # 6. Rewrite absolute paths so agent edits worktree, not main repo
     rewritten_prompt = re.sub(
         re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, prompt
     )
 
-    # 10. Fallback protected-file warning if hook didn't write CLAUDE.md
+    # 7. Fallback protected-file warning if hook didn't write CLAUDE.md
     if not hook_ran:
         protected_warning = (
             "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
@@ -247,13 +243,13 @@ def _setup_and_launch_agent(
         if protected_warning.strip() not in rewritten_prompt:
             rewritten_prompt += protected_warning
 
-    # 11. Build done-signal path
+    # 8. Build done-signal path
     done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
     Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
     if clear_done_signal:
         Path(done_signal).unlink(missing_ok=True)
 
-    # 12. Launch agent (with done-signal wrapper)
+    # 9. Launch agent (with done-signal wrapper)
     if agent_def.prompt_transport == "send-keys":
         base_cmd = build_launch_command(
             agent_id,

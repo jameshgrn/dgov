@@ -361,6 +361,28 @@ def all_panes(session_root: str) -> list[dict]:
     return [_row_to_dict(row) for row in rows]
 
 
+def list_panes_slim(session_root: str) -> list[dict]:
+    """List all panes without full prompt text (for hot-path display).
+
+    Returns the first 200 characters of each prompt instead of the full blob.
+    """
+    conn = _get_db(session_root)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT slug, pane_id, agent, project_root, worktree_path,"
+        " branch_name, created_at, owns_worktree, base_sha, state,"
+        " metadata, substr(prompt, 1, 200) AS prompt FROM panes"
+    ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_pane_prompt(session_root: str, slug: str) -> str:
+    """Get just the prompt text for a single pane."""
+    conn = _get_db(session_root)
+    row = conn.execute("SELECT prompt FROM panes WHERE slug = ?", (slug,)).fetchone()
+    return row[0] if row else ""
+
+
 def update_pane_state(session_root: str, slug: str, new_state: str, force: bool = False) -> None:
     """Update the state field of a pane record.
 
