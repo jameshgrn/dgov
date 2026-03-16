@@ -731,13 +731,17 @@ def pane_logs(slug, project_root, session_root, tail):
 @SESSION_ROOT_OPTION
 @click.option("--tail", "-n", default=50, help="Number of lines from end")
 def pane_output(slug, project_root, session_root, tail):
-    """Show clean worker output (ANSI stripped, from log file)."""
-    from dgov.status import tail_worker_log
+    """Show clean worker output (prefers live screen capture for TUI agents)."""
+    from dgov.status import capture_worker_output, tail_worker_log
 
     session_root = os.path.abspath(session_root or project_root)
-    text = tail_worker_log(session_root, slug, lines=tail)
+    # Prefer live screen capture (clean for TUI agents) over log file
+    text = capture_worker_output(project_root, slug, lines=tail, session_root=session_root)
     if text is None:
-        click.echo(json.dumps({"error": f"No log file for: {slug}"}), err=True)
+        # Pane dead or missing — fall back to log file
+        text = tail_worker_log(session_root, slug, lines=tail)
+    if text is None:
+        click.echo(json.dumps({"error": f"No output for: {slug}"}), err=True)
         sys.exit(1)
     click.echo(text)
 
