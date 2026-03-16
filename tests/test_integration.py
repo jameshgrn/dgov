@@ -42,8 +42,8 @@ def repo(tmp_path: Path):
     _git(repo_dir, "config", "user.email", "test@test.com")
     _git(repo_dir, "config", "user.name", "Test")
 
-    # Gitignore .dgov so state files don't pollute worktree status
-    (Path(repo_dir) / ".gitignore").write_text(".dgov/\n")
+    # Gitignore .dgov and .dgov-worker-hooks so state files don't pollute worktree status
+    (Path(repo_dir) / ".gitignore").write_text(".dgov/\n.dgov-worker-hooks/\n")
     (Path(repo_dir) / "README.md").write_text("init\n")
     _git(repo_dir, "add", ".gitignore", "README.md")
     _git(repo_dir, "commit", "-m", "Initial commit")
