@@ -583,26 +583,25 @@ def pane_list(project_root, session_root, as_json, verbose):
         return
 
     # Format as table
-    header = (
-        f"{'Slug':<20} {'Agent':<10} {'State':<10} {'Activity':<12} "
-        f"{'Duration':<12} {'Prompt/Status'}"
-    )
+    header = f"{'Slug':<20} {'Agent':<8} {'State':<10} {'Phase':<12} {'Duration':<8} {'Summary'}"
     click.echo(header)
     click.echo("-" * len(header))
     for p in panes:
         slug = (p.get("slug", "") or "")[:19]
-        agent = p.get("agent", "unknown") or "unknown"
+        agent = (p.get("agent", "unknown") or "unknown")[:7]
         state = p.get("state", "active") or "active"
-        activity = p.get("activity", "unknown") or "unknown"
+        phase = p.get("phase", p.get("activity", "?")) or "?"
         duration_s = int(p.get("duration_s", 0))
         duration = _fmt_duration(duration_s)
-        last_output = (p.get("last_output", "") or "").strip()
-        prompt = (p.get("prompt", "") or "")[:40]
-        status_col = last_output if last_output else prompt
-        row = f"{slug:<20} {agent:<10} {state:<10} {activity:<12} {duration:<12} {status_col}"
+        summary = (p.get("summary", "") or "").strip()
+        if not summary:
+            summary = (p.get("last_output", "") or "").strip()[:60]
+        if not summary:
+            summary = (p.get("prompt", "") or "")[:40]
+        row = f"{slug:<20} {agent:<8} {state:<10} {phase:<12} {duration:<8} {summary}"
         click.echo(row)
-        if verbose and last_output:
-            click.echo(f"  └ {last_output}")
+        if verbose and p.get("last_output"):
+            click.echo(f"  └ {p['last_output'].strip()}")
 
 
 @pane.command("prune")

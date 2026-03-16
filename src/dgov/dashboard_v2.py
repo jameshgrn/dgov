@@ -135,9 +135,9 @@ def fetch_panes(state: DashboardState) -> None:
                 except (ValueError, OSError):
                     pass
 
-        # Log tail fallback
+        # Log tail fallback — only if no summary AND no activity
         for p in panes:
-            if not p.get("activity"):
+            if not p.get("summary") and not p.get("activity"):
                 slug = p.get("slug", "")
                 log_tail = tail_worker_log(session_root, slug, lines=2)
                 if log_tail:
@@ -180,18 +180,39 @@ def data_thread(state: DashboardState, interval: float) -> None:
         state.force_refresh.clear()
 
 
+_PHASE_COLORS: dict[str, str] = {
+    "starting": "dim",
+    "working": "yellow",
+    "testing": "cyan",
+    "committing": "green",
+    "idle": "yellow dim",
+    "done": "green",
+    "failed": "red",
+    "abandoned": "red dim",
+    "merged": "green dim",
+    "closed": "dim",
+}
+
+
+def _phase_style(phase: str) -> str:
+    return _PHASE_COLORS.get(phase, "")
+
+
 def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
     table.add_column("Phase", width=6, no_wrap=True)
     table.add_column("Slug", ratio=2, no_wrap=True)
     table.add_column("Agent", width=8, no_wrap=True)
     table.add_column("State", width=12, no_wrap=True)
-    table.add_column("Activity", ratio=3)
+    table.add_column("Phase", width=12, no_wrap=True)
+    table.add_column("Summary", ratio=3)
     table.add_column("Duration", width=8, justify="right", no_wrap=True)
 
     for i, p in enumerate(panes):
         pstate = p.get("state", "active")
         activity = p.get("activity", "")
+        phase = p.get("phase", p.get("activity", "?")) or "?"
+        summary = p.get("summary", str(activity)[:60]) or ""
         color = state_color(pstate)
         style = f"bold {color}" if i == selected else color
 
@@ -199,13 +220,16 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
         slug = Text(p.get("slug", ""))
         agent = Text(p.get("agent", "?"))
         state_text = Text(pstate, style=color)
-        activity_text = Text(str(activity)[:60] if activity else "")
+        phase_text = Text(str(phase), style=_phase_style(str(phase)))
+        summary_text = Text(str(summary)[:60])
         duration = Text(fmt_duration(int(p.get("duration_s", 0))))
 
         prefix = "\u25b8 " if i == selected else "  "
         slug_display = Text(f"{prefix}{slug.plain}")
 
-        table.add_row(dots, slug_display, agent, state_text, activity_text, duration, style=style)
+        table.add_row(
+            dots, slug_display, agent, state_text, phase_text, summary_text, duration, style=style
+        )
 
     return table
 
