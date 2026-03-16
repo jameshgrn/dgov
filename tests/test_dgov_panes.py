@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 
 from dgov.backend import set_backend
+from dgov.done import _has_new_commits, _is_done
 from dgov.lifecycle import _trigger_hook
 from dgov.persistence import (
     STATE_DIR,
@@ -24,7 +25,6 @@ from dgov.persistence import (
 )
 from dgov.status import capture_worker_output, list_worker_panes, prune_stale_panes
 from dgov.strategy import _generate_slug, _structure_pi_prompt, classify_task
-from dgov.waiter import _has_new_commits, _is_done
 
 pytestmark = pytest.mark.unit
 
@@ -367,7 +367,7 @@ class TestIsDone:
             "pane_id": "%5",
         }
         with (
-            patch("dgov.waiter._has_new_commits", return_value=True),
+            patch("dgov.done._has_new_commits", return_value=True),
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
 
@@ -380,7 +380,7 @@ class TestIsDone:
         }
         mock_backend.is_alive.return_value = False
         with (
-            patch("dgov.waiter._has_new_commits", return_value=False),
+            patch("dgov.done._has_new_commits", return_value=False),
             patch("dgov.persistence.update_pane_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
@@ -403,7 +403,7 @@ class TestIsDone:
         }
         mock_backend.is_alive.return_value = True
         with (
-            patch("dgov.waiter._has_new_commits", return_value=False),
+            patch("dgov.done._has_new_commits", return_value=False),
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is False
 
@@ -436,7 +436,7 @@ class TestIsDone:
         )
 
         record = get_pane(str(tmp_path), "stale")
-        with patch("dgov.waiter._has_new_commits", return_value=True):
+        with patch("dgov.done._has_new_commits", return_value=True):
             assert _is_done(str(tmp_path), "stale", pane_record=record) is True
         assert get_pane(str(tmp_path), "stale")["state"] == "done"
 
@@ -2423,7 +2423,7 @@ class TestWaitWorkerPane:
         mock_backend.is_alive.return_value = True
         with (
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 str(tmp_path),
@@ -2483,7 +2483,7 @@ class TestStableDetectionAgentCheck:
         mock_backend.is_alive.return_value = True
         with (
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=True),
+            patch("dgov.done._agent_still_running", return_value=True),
         ):
             result = _is_done(
                 str(tmp_path),
@@ -2518,7 +2518,7 @@ class TestStableDetectionAgentCheck:
         mock_backend.is_alive.return_value = True
         with (
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 str(tmp_path),

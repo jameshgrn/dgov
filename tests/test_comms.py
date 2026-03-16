@@ -11,10 +11,10 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
+from dgov.done import _is_done
 from dgov.persistence import STATE_DIR, VALID_EVENTS
 from dgov.waiter import (
     _detect_blocked,
-    _is_done,
     interact_with_pane,
     nudge_pane,
     signal_pane,
@@ -271,7 +271,7 @@ class TestUnifiedIsDone:
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
@@ -294,7 +294,7 @@ class TestUnifiedIsDone:
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=True),
+            patch("dgov.done._agent_still_running", return_value=True),
         ):
             result = _is_done(
                 session_root,
