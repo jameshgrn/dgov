@@ -333,7 +333,12 @@ def _wait_for_tier(
     active_panes: dict[str, dict],
     session_root: str,
 ) -> dict[str, dict]:
-    """Wait for all active panes in a tier. Returns {task_slug: wait_result}."""
+    """Wait for all active panes in a tier. Returns {task_slug: wait_result}.
+
+    NOTE: Waits sequentially per pane. wait_all_worker_panes / wait_for_slugs
+    don't support per-task timeouts or per-slug error results, so parallel
+    waiting requires a new API.  See known bug #11 in MEMORY.md.
+    """
     from dgov.waiter import wait_worker_pane
 
     results: dict[str, dict] = {}
@@ -577,6 +582,20 @@ def run_single_tier(
                 pane_slug=pane_slug,
             )
 
+    # Clean up failed/reviewed_fail panes to prevent resource leaks
+    for task_slug in tier:
+        if task_states.get(task_slug) in ("failed", "reviewed_fail"):
+            pane_slug_val = pane_slugs.get(task_slug)
+            if pane_slug_val:
+                try:
+                    from dgov.lifecycle import close_worker_pane
+
+                    close_worker_pane(
+                        dag.project_root, pane_slug_val, session_root=session_root, force=True
+                    )
+                except Exception:
+                    pass
+
     # Merge if auto_merge
     merged: list[str] = []
     merge_error: dict | None = None
@@ -819,9 +838,15 @@ def run_dag(
                     upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
 
     # Finalize
-    final_status = "awaiting_merge" if not auto_merge else "completed"
-    if all_failed:
-        final_status = "completed"  # partial success
+    if not auto_merge:
+        if all_merged or any(st == "reviewed_pass" for st in task_states.values()):
+            final_status = "awaiting_merge"
+        else:
+            final_status = "failed"
+    elif all_failed and not all_merged:
+        final_status = "failed"
+    else:
+        final_status = "completed"
     update_dag_run(session_root, run_id, status=final_status)
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
     return _build_summary(run_id, dag_file, final_status, task_states, all_merged, dag)
