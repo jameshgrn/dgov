@@ -472,13 +472,10 @@ def _full_cleanup(
     log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     log_path.unlink(missing_ok=True)
 
-    # 2. Kill tmux pane
+    # 2. Kill tmux pane (kill-pane is synchronous — no retry needed)
     pane_id = pane_record.get("pane_id")
     if pane_id:
         get_backend().destroy(pane_id)
-        if get_backend().is_alive(pane_id):
-            time.sleep(0.2)
-            get_backend().destroy(pane_id)
 
     # 3. Remove worktree + branch
     skipped_worktree = False
