@@ -152,6 +152,30 @@ def _build_pane_title(agent: str, slug: str, project_root: str, *, state: str = 
     return f"{title} {icon}" if icon else title
 
 
+# -- Worker hook installation --
+
+_PRE_MERGE_COMMIT_HOOK = """\
+#!/usr/bin/env bash
+echo "ERROR: Workers must not integrate branches (merge, pull, rebase)." >&2
+echo "Commit your changes and let the governor handle integration." >&2
+exit 1
+"""
+
+
+def _install_worker_hooks(worktree_path: str) -> None:
+    """Install git hooks that prevent workers from integrating branches."""
+    hooks_dir = Path(worktree_path) / ".dgov-worker-hooks"
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    hook_file = hooks_dir / "pre-merge-commit"
+    hook_file.write_text(_PRE_MERGE_COMMIT_HOOK, encoding="utf-8")
+    hook_file.chmod(0o755)
+    subprocess.run(
+        ["git", "-C", worktree_path, "config", "core.hooksPath", str(hooks_dir)],
+        capture_output=True,
+        check=True,
+    )
+
+
 # -- Shared launch pipeline --
 
 
@@ -225,6 +249,9 @@ def _setup_and_launch_agent(
         "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
     }
     hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
+
+    # 4b. Install pre-merge-commit hook to block branch integration in worktrees
+    _install_worker_hooks(worktree_path)
 
     # 5. Auto-structure pi prompts
     if agent_id == "pi" and not skip_auto_structure:
