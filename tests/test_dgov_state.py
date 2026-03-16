@@ -160,3 +160,67 @@ class TestDagPersistence:
         # Exact absolute path matches
         run = get_open_dag_run(session, "/abs/path/dag.toml")
         assert run is not None
+
+
+class TestDagEvents:
+    """Tests for DAG lifecycle events."""
+
+    def _make_session(self, tmp_path):
+        from dgov.persistence import ensure_dag_tables
+
+        session = str(tmp_path / "test-session")
+        Path(session).mkdir(parents=True, exist_ok=True)
+        ensure_dag_tables(session)
+        return session
+
+    @pytest.mark.parametrize(
+        "event_name",
+        [
+            "dag_started",
+            "dag_tier_started",
+            "dag_task_dispatched",
+            "dag_task_completed",
+            "dag_task_failed",
+            "dag_task_escalated",
+            "dag_tier_completed",
+            "dag_completed",
+            "dag_failed",
+        ],
+    )
+    def test_emit_dag_event_accepted(self, tmp_path, event_name):
+        from dgov.persistence import emit_event, read_events
+
+        session = self._make_session(tmp_path)
+        emit_event(session, event_name, "dag/1", dag_run_id=1, tier=0)
+        events = read_events(session)
+        assert any(e["event"] == event_name for e in events)
+
+    def test_dag_event_payload_intact(self, tmp_path):
+        from dgov.persistence import emit_event, read_events
+
+        session = self._make_session(tmp_path)
+        emit_event(
+            session, "dag_task_dispatched", "T0", dag_run_id=42, tier=1, agent="hunter", attempt=1
+        )
+        events = read_events(session)
+        ev = [e for e in events if e["event"] == "dag_task_dispatched"][0]
+        assert ev["dag_run_id"] == 42
+        assert ev["agent"] == "hunter"
+
+    def test_run_level_event_uses_dag_pane_prefix(self, tmp_path):
+        from dgov.persistence import emit_event, read_events
+
+        session = self._make_session(tmp_path)
+        emit_event(session, "dag_started", "dag/12", dag_run_id=12)
+        events = read_events(session)
+        ev = [e for e in events if e["event"] == "dag_started"][0]
+        assert ev["pane"] == "dag/12"
+
+    def test_task_level_event_uses_task_slug(self, tmp_path):
+        from dgov.persistence import emit_event, read_events
+
+        session = self._make_session(tmp_path)
+        emit_event(session, "dag_task_completed", "T3", dag_run_id=12, tier=2)
+        events = read_events(session)
+        ev = [e for e in events if e["event"] == "dag_task_completed"][0]
+        assert ev["pane"] == "T3"
