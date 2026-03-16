@@ -308,8 +308,8 @@ def _close_cached_connections() -> None:
         _conn_cache.clear()
 
 
-_LOCK_RETRIES = 5
-_LOCK_BACKOFF_S = 0.2
+_LOCK_RETRIES = 12
+_LOCK_BACKOFF_S = 0.3
 
 
 def _retry_on_lock(fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
