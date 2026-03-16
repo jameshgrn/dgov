@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dgov.persistence import (
@@ -40,40 +41,32 @@ def review_worker_pane(
     if not base_sha:
         return {"error": "No base_sha recorded — cannot compute diff"}
 
-    # Diff stat
-    stat_result = subprocess.run(
-        ["git", "-C", wt, "diff", "--stat", f"{base_sha}..HEAD"],
-        capture_output=True,
-        text=True,
-    )
+    # Run 4 independent git reads in parallel (saves ~3 fork latencies)
+    def _git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(["git", "-C", wt, *args], capture_output=True, text=True)
+
+    range_spec = f"{base_sha}..HEAD"
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        f_stat = pool.submit(_git, "diff", "--stat", range_spec)
+        f_names = pool.submit(_git, "diff", "--name-only", range_spec)
+        f_log = pool.submit(_git, "log", "--oneline", range_spec)
+        f_porcelain = pool.submit(_git, "status", "--porcelain")
+        f_full = pool.submit(_git, "diff", range_spec) if full else None
+
+    stat_result = f_stat.result()
     stat = stat_result.stdout.strip() if stat_result.returncode == 0 else ""
 
-    # Changed files (for protected check)
-    names_result = subprocess.run(
-        ["git", "-C", wt, "diff", "--name-only", f"{base_sha}..HEAD"],
-        capture_output=True,
-        text=True,
-    )
+    names_result = f_names.result()
     changed_files = (
         set(names_result.stdout.strip().splitlines()) if names_result.returncode == 0 else set()
     )
     protected_touched = sorted(changed_files & PROTECTED_FILES)
 
-    # Commit log
-    log_result = subprocess.run(
-        ["git", "-C", wt, "log", "--oneline", f"{base_sha}..HEAD"],
-        capture_output=True,
-        text=True,
-    )
+    log_result = f_log.result()
     commit_log = log_result.stdout.strip() if log_result.returncode == 0 else ""
     commit_count = len(commit_log.splitlines()) if commit_log else 0
 
-    # Uncommitted changes
-    porcelain = subprocess.run(
-        ["git", "-C", wt, "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-    )
+    porcelain = f_porcelain.result()
     # Filter out protected files — modified by worktree hook, not by worker
     porcelain_lines = []
     for ln in porcelain.stdout.strip().splitlines():
@@ -125,12 +118,8 @@ def review_worker_pane(
     }
     if issues:
         result["issues"] = issues
-    if full:
-        diff_result = subprocess.run(
-            ["git", "-C", wt, "diff", f"{base_sha}..HEAD"],
-            capture_output=True,
-            text=True,
-        )
+    if f_full is not None:
+        diff_result = f_full.result()
         result["diff"] = diff_result.stdout if diff_result.returncode == 0 else ""
 
     return result
