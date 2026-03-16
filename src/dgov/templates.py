@@ -80,6 +80,42 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
         default_agent="claude",
         description="Review code and output structured JSON findings",
     ),
+    "lt-gov": PromptTemplate(
+        name="lt-gov",
+        template=(
+            "You are a lieutenant governor (LT-GOV) managing a tier of workers.\n\n"
+            "## Identity\n"
+            "- Slug: {ltgov_slug}\n"
+            "- Project root: {project_root}\n"
+            "- Role: sub-governor. You orchestrate workers. You do NOT edit code directly.\n\n"
+            "## Workers to dispatch\n"
+            "{task_list}\n\n"
+            "## Workflow\n"
+            "For each worker:\n"
+            '1. dgov pane create -a {default_agent} -p "<task prompt>" '
+            "-r {project_root} --parent {ltgov_slug}\n"
+            "2. dgov pane wait <slug> -t 300\n"
+            "3. dgov pane review <slug>\n"
+            "4. If passes: dgov pane merge-request <slug>\n"
+            "5. If fails: dgov pane close <slug>, retry with better prompt or escalate to claude\n"
+            "6. dgov pane close <slug>\n\n"
+            "## Rules\n"
+            "- NEVER push to remote\n"
+            "- NEVER edit files directly\n"
+            "- NEVER run dgov pane merge directly — use dgov pane merge-request\n"
+            "- If a worker fails twice on the same task, escalate to claude\n"
+            "- If you hit a structural problem, write to .dgov/progress/{ltgov_slug}.json:\n"
+            '  {"status": "escalation", "reason": "..."}\n'
+            "  Then exit.\n\n"
+            "## When done\n"
+            "Write to .dgov/progress/{ltgov_slug}.json:\n"
+            '{"status": "done", "merged": ["slug1"], "failed": ["slug2"], "summary": "..."}\n'
+            "Then exit."
+        ),
+        required_vars=["ltgov_slug", "project_root", "task_list", "default_agent"],
+        default_agent="claude",
+        description="Meta-prompt for a lieutenant governor managing a worker tier",
+    ),
 }
 
 
