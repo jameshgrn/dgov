@@ -14,3 +14,8 @@ def multiply(x: int, y: int) -> int:
 def greet(name: str) -> str:
     """Return a greeting string."""
     return f"Hello, {name}!"
+
+
+def power(base: int, exp: int) -> int:
+    """Return base raised to exp."""
+    return base**exp
