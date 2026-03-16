@@ -1,9 +1,9 @@
-"""CLI command: dgov briefing — live status briefing via glow."""
+"""CLI command: dgov briefing — on-demand document viewer via glow."""
 
 from __future__ import annotations
 
 import os
-import time
+import shlex
 from pathlib import Path
 
 import click
@@ -11,130 +11,82 @@ import click
 from dgov.cli import SESSION_ROOT_OPTION
 
 
-def _generate_briefing(project_root: str, session_root: str) -> str:
-    """Generate a markdown briefing from current dgov state."""
-    from dgov.persistence import all_panes, read_events
-
-    lines = ["# dgov Briefing", ""]
-    lines.append(f"**Project**: `{project_root}`")
-    lines.append(f"**Generated**: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    lines.append("")
-
-    # Pane summary
-    panes = all_panes(session_root)
-    active = [p for p in panes if p.get("state") in ("active", "working")]
-    done = [p for p in panes if p.get("state") == "done"]
-    merged = [p for p in panes if p.get("state") == "merged"]
-    failed = [p for p in panes if p.get("state") in ("failed", "timed_out")]
-
-    lines.append("## Workers")
-    lines.append("")
-    lines.append("| Status | Count |")
-    lines.append("|--------|-------|")
-    lines.append(f"| Active | {len(active)} |")
-    lines.append(f"| Done | {len(done)} |")
-    lines.append(f"| Merged | {len(merged)} |")
-    lines.append(f"| Failed | {len(failed)} |")
-    lines.append("")
-
-    # Active panes detail
-    if active:
-        lines.append("### Active Workers")
-        lines.append("")
-        for p in active:
-            slug = p.get("slug", "?")
-            agent = p.get("agent", "?")
-            prompt = (p.get("prompt") or "")[:80]
-            lines.append(f"- **{slug}** ({agent}): {prompt}")
-        lines.append("")
-
-    # Done panes awaiting review
-    if done:
-        lines.append("### Awaiting Review")
-        lines.append("")
-        for p in done:
-            slug = p.get("slug", "?")
-            agent = p.get("agent", "?")
-            lines.append(f"- **{slug}** ({agent})")
-        lines.append("")
-
-    # Recent events (last 20)
-    events = read_events(session_root)
-    if events:
-        recent = events[-20:]
-        lines.append("## Recent Events")
-        lines.append("")
-        for ev in reversed(recent):
-            ts = ev.get("ts", "")
-            if isinstance(ts, (int, float)):
-                ts = time.strftime("%H:%M:%S", time.localtime(ts))
-            event_type = ev.get("event", "?")
-            pane_slug = ev.get("pane", "")
-            lines.append(f"- `{ts}` **{event_type}** {pane_slug}")
-        lines.append("")
-
-    # Ideas
-    ideas_path = Path(session_root) / ".dgov" / "ideas.jsonl"
-    if ideas_path.exists():
-        import json
-
-        ideas = []
-        for line in ideas_path.read_text().strip().splitlines():
-            try:
-                ideas.append(json.loads(line))
-            except Exception:  # noqa: BLE001
-                continue
-        if ideas:
-            lines.append("## Ideas Backlog")
-            lines.append("")
-            for idea in ideas[-10:]:
-                lines.append(f"- {idea.get('summary', idea.get('text', '?'))}")
-            lines.append("")
-
-    return "\n".join(lines)
+def _reports_dir(session_root: str) -> Path:
+    return Path(session_root) / ".dgov" / "reports"
 
 
-@click.command("briefing")
+@click.group("briefing", invoke_without_command=True)
+@click.argument("name", required=False)
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 @SESSION_ROOT_OPTION
-@click.option("--no-pane", is_flag=True, help="Generate briefing.md without opening glow pane")
-@click.option("--watch", "-w", is_flag=True, help="Auto-refresh briefing every 5 seconds in glow")
-def briefing_cmd(project_root: str, session_root: str | None, no_pane: bool, watch: bool) -> None:
-    """Generate a status briefing and display it with glow."""
+@click.pass_context
+def briefing_cmd(ctx, name: str | None, project_root: str, session_root: str | None) -> None:
+    """View reports and documents with glow.
+
+    \b
+    dgov briefing                  # list available reports
+    dgov briefing cursor-arch      # open a report in glow pane
+    dgov briefing /path/to/doc.md  # open any markdown file
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
 
-    briefing_path = Path(session_root) / ".dgov" / "briefing.md"
-    briefing_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Generate briefing
-    content = _generate_briefing(project_root, session_root)
-    briefing_path.write_text(content)
-    click.echo(f"Briefing written to {briefing_path}")
-
-    if no_pane:
+    if name is None:
+        # List available reports
+        reports = _reports_dir(session_root)
+        if not reports.is_dir():
+            click.echo("No reports yet. Reports appear in .dgov/reports/")
+            return
+        files = sorted(reports.glob("*.md"))
+        if not files:
+            click.echo("No reports yet. Reports appear in .dgov/reports/")
+            return
+        click.echo("Available reports:")
+        for f in files:
+            click.echo(f"  {f.stem}")
         return
 
-    # Open glow in a utility pane
+    # Resolve the file path
+    if os.path.isfile(name):
+        doc_path = os.path.abspath(name)
+    else:
+        # Try .dgov/reports/<name>.md
+        candidate = _reports_dir(session_root) / f"{name}.md"
+        if candidate.is_file():
+            doc_path = str(candidate)
+        else:
+            # Try without .md extension stripped
+            candidate2 = _reports_dir(session_root) / name
+            if candidate2.is_file():
+                doc_path = str(candidate2)
+            else:
+                click.echo(f"Report not found: {name}")
+                click.echo(f"Looked in: {_reports_dir(session_root)}")
+                raise SystemExit(1)
+
+    _open_glow_pane(doc_path)
+
+
+def _open_glow_pane(doc_path: str) -> None:
+    """Open glow in a tmux split pane to render a markdown file."""
     from dgov.tmux import _run, select_layout, send_command, set_title, split_pane
 
+    title = f"[doc] {Path(doc_path).stem}"
+
+    # Check if this doc is already open
     existing = _run(["list-panes", "-F", "#{pane_title}"], silent=True).splitlines()
-    if "[gov] briefing" in existing:
-        # Refresh existing pane — just regenerate the file, glow/watch will pick it up
-        click.echo("Briefing pane already open — content refreshed.")
+    if title in existing:
+        click.echo(f"Already open: {title}")
         return
 
-    briefing_str = str(briefing_path)
-    if watch:
-        cmd = f"while true; do clear; glow {briefing_str}; sleep 5; done"
-    else:
-        cmd = f"glow -p {briefing_str}"
-
+    cmd = f"glow -p {shlex.quote(doc_path)}"
     pane_id = split_pane()
     send_command(pane_id, cmd)
-    set_title(pane_id, "[gov] briefing")
+    set_title(pane_id, title)
 
-    # Style the pane border
     _run(
         [
             "set-option",
@@ -148,4 +100,4 @@ def briefing_cmd(project_root: str, session_root: str | None, no_pane: bool, wat
     )
 
     select_layout("main-vertical")
-    click.echo("Briefing pane opened (glow)")
+    click.echo(f"Opened: {doc_path}")
