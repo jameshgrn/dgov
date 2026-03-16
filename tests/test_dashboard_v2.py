@@ -6,52 +6,6 @@ import pytest
 
 
 @pytest.mark.unit
-class TestPhaseDots:
-    def test_active_working(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("active", "working on task")
-        assert "\u2b24" in result
-        assert "\u25cb" in result
-
-    def test_active_idle(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("active", "idle")
-        assert result.count("\u2b24") == 1
-
-    def test_done(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("done", "")
-        assert "\u25cb" not in result
-
-    def test_merged(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("merged", "")
-        assert "\u25cb" not in result
-
-    def test_failed(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("failed", "")
-        assert "\u2717" in result
-
-    def test_escalated(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("escalated", "")
-        assert result.count("\u2b24") == 2
-
-    def test_unknown_state(self):
-        from dgov.dashboard_v2 import phase_dots
-
-        result = phase_dots("unknown", "")
-        assert result.count("\u25cb") == 5
-
-
-@pytest.mark.unit
 class TestStateColor:
     def test_active(self):
         from dgov.dashboard_v2 import state_color
@@ -189,23 +143,6 @@ class TestTerrain:
         result = render_terrain(model)
         assert isinstance(result, Text)
         assert len(result) > 0
-
-
-@pytest.mark.unit
-class TestEventFeed:
-    def test_build_event_feed(self):
-        import time
-
-        from dgov.dashboard_v2 import _build_event_feed
-
-        events = [
-            {"timestamp": time.time(), "event": "pane_created", "pane": "fix-bug"},
-            {"timestamp": time.time(), "event": "pane_merged", "pane": "add-feat"},
-        ]
-        text = _build_event_feed(events)
-        assert "pane_created" in text.plain
-        assert "pane_merged" in text.plain
-        assert "fix-bug" in text.plain
 
 
 @pytest.mark.unit

@@ -36,20 +36,6 @@ logger = logging.getLogger(__name__)
 _STARTUP_TIME = time.time()
 
 
-def phase_dots(state: str, activity: str) -> str:
-    if state == "active" and "working" in activity:
-        return "\u2b24\u2b24\u2b24\u25cb\u25cb"
-    if state == "active":
-        return "\u2b24\u25cb\u25cb\u25cb\u25cb"
-    if state in ("done", "merged"):
-        return "\u2b24\u2b24\u2b24\u2b24\u2b24"
-    if state in ("failed", "abandoned", "timed_out"):
-        return "\u2717\u2717\u2717\u2717\u2717"
-    if state == "escalated":
-        return "\u2b24\u2b24\u25cb\u25cb\u25cb"
-    return "\u25cb\u25cb\u25cb\u25cb\u25cb"
-
-
 def state_color(state: str) -> str:
     return {
         "active": "yellow",
@@ -192,94 +178,35 @@ def data_thread(state: DashboardState, interval: float) -> None:
         state.force_refresh.clear()
 
 
-_PHASE_COLORS: dict[str, str] = {
-    "starting": "dim",
-    "working": "yellow",
-    "testing": "cyan",
-    "committing": "green",
-    "idle": "yellow dim",
-    "done": "green",
-    "failed": "red",
-    "abandoned": "red dim",
-    "merged": "green dim",
-    "closed": "dim",
-}
-
-
-def _phase_style(phase: str) -> str:
-    return _PHASE_COLORS.get(phase, "")
-
-
 def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
-    table.add_column("Phase", width=6, no_wrap=True)
-    table.add_column("Slug", ratio=2, no_wrap=True)
+    table.add_column("Slug", ratio=3, no_wrap=True)
     table.add_column("Agent", width=8, no_wrap=True)
-    table.add_column("Role", width=6, no_wrap=True)
-    table.add_column("State", width=12, no_wrap=True)
-    table.add_column("Phase", width=12, no_wrap=True)
-    table.add_column("Summary", ratio=3)
-    table.add_column("Duration", width=8, justify="right", no_wrap=True)
+    table.add_column("State", width=14, no_wrap=True)
+    table.add_column("Summary", ratio=4)
 
     for i, p in enumerate(panes):
         pstate = p.get("state", "active")
         activity = p.get("activity", "")
-        phase = p.get("phase", p.get("activity", "?")) or "?"
         summary = p.get("summary", str(activity)[:60]) or ""
         color = state_color(pstate)
         style = f"bold {color}" if i == selected else color
 
-        dots = Text(phase_dots(pstate, activity))
-        slug = Text(p.get("slug", ""))
-        agent = Text(p.get("agent", "?"))
-        role = p.get("role", "worker")
-        role_style = "bold magenta" if role == "lt-gov" else "dim"
-        role_text = Text(role, style=role_style)
-        state_text = Text(pstate, style=color)
-        phase_text = Text(str(phase), style=_phase_style(str(phase)))
-        summary_text = Text(str(summary)[:60])
-        duration = Text(fmt_duration(int(p.get("duration_s", 0))))
-
         prefix = "\u25b8 " if i == selected else "  "
-        slug_display = Text(f"{prefix}{slug.plain}")
+        slug_display = Text(f"{prefix}{p.get('slug', '')}")
+        agent = Text(p.get("agent", "?"))
+        dur = fmt_duration(int(p.get("duration_s", 0)))
+        state_text = Text(f"{pstate} {dur}", style=color)
+        summary_text = Text(str(summary)[:60])
 
-        table.add_row(
-            dots,
-            slug_display,
-            agent,
-            role_text,
-            state_text,
-            phase_text,
-            summary_text,
-            duration,
-            style=style,
-        )
+        table.add_row(slug_display, agent, state_text, summary_text, style=style)
 
     return table
-
-
-def _build_event_feed(events: list[dict]) -> Text:
-    text = Text()
-    for ev in events:
-        ts = ev.get("timestamp", 0)
-        if ts:
-            t = time.strftime("%H:%M", time.localtime(ts))
-        else:
-            t = "--:--"
-        event_type = ev.get("event", "?")
-        pane = ev.get("pane", "")
-        text.append(f"  {t} ", style="dim")
-        text.append(f"{event_type}", style="bold")
-        if pane:
-            text.append(f" {pane}", style="dim")
-        text.append("\n")
-    return text
 
 
 def _build_layout(state: DashboardState) -> Layout:
     with state.lock:
         panes = list(state.panes)
-        events = list(state.events)
         branch = state.branch
         last_refresh = state.last_refresh
         error = state.error
@@ -288,26 +215,20 @@ def _build_layout(state: DashboardState) -> Layout:
 
     ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
     header_text = Text()
-    header_text.append(" DGOV ", style="bold yellow")
-    header_text.append(f" v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {len(panes)} workers")
+    header_text.append(
+        f" DGOV v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {len(panes)} workers"
+    )
 
     if error:
         header_text.append(f"  err: {error}", style="red")
 
-    # Worker table
     table = _build_worker_table(panes, selected)
 
-    # Event feed
-    event_text = Text("\n Events\n", style="bold dim")
-    event_text.append_text(_build_event_feed(events))
-
-    # Footer
     footer = Text(
         " q:quit  j/k:\u2191\u2193  Enter:attach  r:refresh  m:merge  x:close",
         style="dim",
     )
 
-    # Build layout
     layout = Layout()
     layout.split_column(
         Layout(Panel(header_text, height=3), name="header", size=3),
@@ -316,21 +237,8 @@ def _build_layout(state: DashboardState) -> Layout:
     )
 
     body = layout["body"]
-    # We need to use a console to render the table to text, or use Panel with table
-    worker_panel = Panel(
-        Layout().split_column(
-            Layout(table, name="table", ratio=3),
-            Layout(
-                Panel(event_text, title="Events", border_style="dim"),
-                name="events",
-                ratio=1,
-            ),
-        ),
-        title="Workers",
-        border_style="blue",
-    )
+    worker_panel = Panel(table, title="Workers", border_style="blue")
 
-    # Hide terrain on narrow terminals
     try:
         term_width = os.get_terminal_size().columns
     except OSError:
