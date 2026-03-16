@@ -179,6 +179,35 @@ def chat_completion(
     raise RuntimeError("All LLM providers failed (OpenRouter + Qwen 4B)")
 
 
+def chat_completion_local_first(
+    messages: list[dict],
+    model: str | None = None,
+    max_tokens: int = 20,
+    temperature: float = 0,
+) -> dict:
+    """Send a chat completion with local-first fallback chain.
+
+    Tries: local Qwen 4B -> OpenRouter.
+    Returns the parsed JSON response dict.
+    Raises RuntimeError if all providers fail.
+    """
+    # Try local Qwen 4B first (sub-100ms)
+    try:
+        return _qwen_4b_request(messages, max_tokens=max_tokens, temperature=temperature)
+    except (RuntimeError, OSError):
+        logger.debug("Qwen 4B local request failed, trying OpenRouter fallback")
+
+    # Fall back to OpenRouter
+    try:
+        return _openrouter_request(
+            messages, model=model, max_tokens=max_tokens, temperature=temperature
+        )
+    except (RuntimeError, urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+        logger.debug("OpenRouter fallback also failed")
+
+    raise RuntimeError("All LLM providers failed (Qwen 4B + OpenRouter)")
+
+
 def list_free_models() -> list[dict]:
     """Fetch and cache available free models from OpenRouter API.
 

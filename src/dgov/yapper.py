@@ -62,7 +62,7 @@ def _validate_classification(raw: dict, agent_registry: dict | None = None) -> d
 
 def classify(text: str, agent_registry: dict | None = None) -> dict:
     """Classify user input via LLM. Returns validated JSON dict."""
-    from dgov.openrouter import chat_completion
+    from dgov.openrouter import chat_completion_local_first as chat_completion
 
     messages = [
         {"role": "system", "content": _CLASSIFY_SYSTEM},

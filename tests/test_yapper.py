@@ -92,7 +92,7 @@ class TestValidateClassification:
 
 
 class TestClassify:
-    @patch("dgov.openrouter.chat_completion")
+    @patch("dgov.openrouter.chat_completion_local_first")
     def test_valid_response(self, mock_cc):
         mock_cc.return_value = {
             "choices": [
@@ -116,7 +116,7 @@ class TestClassify:
         assert result["summary"] == "fix tests"
         assert "_fallback" not in result
 
-    @patch("dgov.openrouter.chat_completion")
+    @patch("dgov.openrouter.chat_completion_local_first")
     def test_markdown_fences_stripped(self, mock_cc):
         mock_cc.return_value = {
             "choices": [
@@ -135,14 +135,14 @@ class TestClassify:
         result = classify("what if we added caching")
         assert result["category"] == "IDEA"
 
-    @patch("dgov.openrouter.chat_completion")
+    @patch("dgov.openrouter.chat_completion_local_first")
     def test_json_decode_error_falls_back(self, mock_cc):
         mock_cc.return_value = {"choices": [{"message": {"content": "not json"}}]}
         result = classify("hello there")
         assert result["category"] == "CHATTER"
         assert result["_fallback"] is True
 
-    @patch("dgov.openrouter.chat_completion")
+    @patch("dgov.openrouter.chat_completion_local_first")
     def test_runtime_error_falls_back(self, mock_cc):
         mock_cc.side_effect = RuntimeError("API down")
         result = classify("fix something")
