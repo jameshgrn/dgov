@@ -15,7 +15,7 @@ The harness is agent-agnostic (11 agents built in, any CLI tool added via TOML),
 - **Lightweight** — pure Python, one dependency (click), no daemon, no server
 - **Extensible** — add agents via TOML config, backends via protocol, hooks via shell scripts
 - **Developer-friendly** — git worktrees, tmux panes, CLI commands; no new paradigm to learn
-- **Composable** — batch mode, experiment loops, and review-fix pipelines compose from the same primitives
+- **Composable** — DAGs, missions, and batch specs compose from the same primitives
 - **Opinionated where it matters** — governor stays on `main`, workers get worktrees, protected files are restored before merge
 
 ## Install
@@ -28,12 +28,11 @@ Requires: Python 3.12+, git, tmux.
 
 ## Quick start
 
-Run `dgov` with no arguments to launch the governor agent:
+Run `dgov` with no arguments to launch the governor workspace:
 
 ```bash
-dgov                          # first time: prompts for agent + permissions, then launches
-dgov                          # after that: auto-launches configured agent
-dgov --governor gemini        # override for one invocation
+dgov                          # launches dashboard + lazygit in tmux
+dgov --governor gemini        # override governor agent
 ```
 
 Or dispatch a worker directly:
@@ -45,7 +44,14 @@ dgov pane review <slug>
 dgov pane merge <slug>
 ```
 
-State and events live in `.dgov/state.db` (SQLite).
+Or do it in one step:
+
+```bash
+dgov pane create -a claude -p "Add retry logic to the HTTP client"
+dgov pane land <slug>          # review + merge + close
+```
+
+State and events live in `.dgov/state.db` (SQLite, WAL mode).
 
 ## Commands
 
@@ -56,74 +62,131 @@ State and events live in `.dgov/state.db` (SQLite).
 | `dgov status` | Show session state and pane health |
 | `dgov agents` | List all registered agents and install status |
 | `dgov dashboard` | Live TUI showing pane status, events, and metrics |
+| `dgov dashboard --pane` | Launch dashboard in a tmux split pane |
 
 ### Pane lifecycle
 
 | Command | Description |
 |---------|-------------|
-| `dgov pane create` | Create a new worker pane (worktree + tmux + agent) |
-| `dgov pane list` | List all panes |
-| `dgov pane wait` | Block until a pane finishes |
-| `dgov pane review` | Inspect a pane's diff and verdict |
-| `dgov pane merge` | Merge a pane's branch into main (`--no-squash` preserves commit history) |
-| `dgov pane close` | Close a pane and clean up worktree |
+| `dgov pane create` | Create a worker pane (worktree + tmux + agent) |
+| `dgov pane list` | List all panes with state, agent, duration |
+| `dgov pane wait` | Block until one or more panes finish |
+| `dgov pane wait-all` | Block until all active panes finish |
+| `dgov pane review` | Inspect a pane's diff, commit count, and verdict |
+| `dgov pane merge` | Merge a pane's branch into main (squash by default, `--no-squash` or `--rebase`) |
+| `dgov pane land` | Review + merge + close in one step |
+| `dgov pane merge-all` | Merge all reviewed-pass panes |
+| `dgov pane close` | Close a pane and clean up worktree (idempotent) |
 | `dgov pane resume` | Re-launch agent in existing worktree |
 | `dgov pane retry` | Fresh attempt with new worktree |
 | `dgov pane escalate` | Re-dispatch to a stronger agent |
-| `dgov pane capture` | Capture recent pane output |
-| `dgov pane logs` | Persistent log (survives pane death) |
+| `dgov pane output` | Clean ANSI-stripped log text |
+| `dgov pane capture` | Live tmux pane capture |
+| `dgov pane logs` | Raw persistent log (survives pane death) |
 | `dgov pane diff` | Raw diff for inspection |
-| `dgov pane message` | Send a message to a running worker pane |
-| `dgov pane lazygit` | Launch lazygit in a utility pane |
-| `dgov pane top` | Launch btop in a utility pane |
+| `dgov pane message` | Send text to a running worker |
+| `dgov pane respond` | Reply to an agent's prompt |
+| `dgov pane nudge` | Prod a stalled agent |
+| `dgov pane prune` | Clean up stale pane records |
 
-### Automation
+### DAG runner
+
+Run multi-task workflows defined in TOML. Tasks declare dependencies and file touches; dgov computes execution tiers via topological sort with file-overlap detection.
+
+```bash
+dgov dag run TASKS.toml                    # execute all tiers
+dgov dag run TASKS.toml --dry-run          # show tier plan without executing
+dgov dag run TASKS.toml --tier 0           # execute only tier 0
+dgov dag run TASKS.toml --skip slow-task   # skip a task and its dependents
+dgov dag run TASKS.toml --no-auto-merge    # hold merges for manual review
+dgov dag merge TASKS.toml                  # merge held tasks from a prior run
+```
+
+Features: retry with augmented prompts on failure, agent escalation chains, per-agent concurrency limits, crash-safe resume via SQLite, `commit_message` from TOML used as merge commit message.
+
+### Orchestration
 
 | Command | Description |
 |---------|-------------|
-| `dgov batch <spec>` | Execute a batch spec (TOML or JSON) with DAG-ordered parallelism. Tasks declare `depends_on` for explicit ordering and `touches` for file-overlap serialization. `--dry-run` renders the tier plan. |
-| `dgov experiment` | Run iterative experiments with accept/reject loop |
+| `dgov mission` | Single-prompt orchestration: dispatch, wait, review, merge |
+| `dgov batch` | Execute a batch spec with DAG-ordered parallelism |
+| `dgov experiment` | Iterative experiments with accept/reject loop |
 | `dgov review-fix` | Review-then-fix pipeline with severity filtering |
+| `dgov yap` | Classify agent output (actionable vs chatter) |
+
+### LT-GOV (delegation)
+
+A lieutenant governor is a claude worker with a meta-prompt that itself dispatches workers. The governor delegates a broad task to an LT-GOV, which breaks it down, dispatches sub-workers, and submits merge requests back to the governor's queue.
+
+```bash
+dgov pane create -a claude -T lt-gov -V task_list="..." # dispatch LT-GOV
+dgov merge-queue list                                    # see pending merges
+dgov merge-queue process                                 # claim and execute
+```
+
+| Command | Description |
+|---------|-------------|
+| `dgov pane merge-request` | Enqueue a merge (used by LT-GOVs) |
+| `dgov merge-queue list` | Show pending merge requests |
+| `dgov merge-queue process` | Claim and execute next merge |
 
 ### Tools
 
 | Command | Description |
 |---------|-------------|
-| `dgov blame <file>` | Show which agent/pane last touched a file (`--line-level` for per-line) |
-| `dgov openrouter models` | List available free models on OpenRouter |
+| `dgov blame <file>` | Show which agent/pane last touched a file |
+| `dgov openrouter models` | List available models on OpenRouter |
 | `dgov openrouter status` | Show API key status, default model, connectivity |
 | `dgov openrouter test` | Send a test prompt via OpenRouter |
-| `dgov template list` | List all prompt templates (built-in + user) |
-| `dgov template create` | Create a new template in `.dgov/templates/` |
+| `dgov template list` | List all prompt templates |
+| `dgov template create` | Create a new template |
 | `dgov template show` | Show template details and required variables |
-| `dgov checkpoint create` | Create a named checkpoint of current state |
+| `dgov checkpoint create` | Create a named checkpoint |
 | `dgov checkpoint list` | List all checkpoints |
 
 ## Built-in agents
 
-| Agent | CLI | Install check |
-|-------|-----|---------------|
-| `claude` | Claude Code | `claude` |
-| `codex` | Codex | `codex` |
-| `gemini` | Gemini CLI | `gemini` |
-| `cursor` | Cursor CLI | `cursor` |
-| `opencode` | OpenCode | `opencode` |
-| `cline` | Cline CLI | `cline` |
-| `qwen` | Qwen CLI | `qwen` |
-| `amp` | Amp CLI | `amp` |
-| `pi` | pi CLI | `pi` |
-| `copilot` | Copilot CLI | `copilot` |
-| `crush` | Crush CLI | `crush` |
+| Agent | CLI | Done detection |
+|-------|-----|----------------|
+| `claude` | Claude Code | commit (30s grace after last commit) |
+| `codex` | Codex CLI | exit |
+| `gemini` | Gemini CLI | exit |
+| `cursor` | Cursor CLI | stable |
+| `opencode` | OpenCode | exit |
+| `cline` | Cline CLI | stable |
+| `qwen` | Qwen CLI | exit |
+| `amp` | Amp CLI | exit |
+| `pi` | pi CLI | exit |
+| `copilot` | Copilot CLI | exit |
+| `crush` | Crush CLI | stable |
 
 User agents: `~/.dgov/agents.toml` (global) or `.dgov/agents.toml` (per-project). See `dgov agents` for what's installed.
+
+Done strategies: `exit` (process exits), `commit` (watches for git commits), `stable` (output stabilization), `signal` (done file touched).
+
+## Hooks
+
+Shell scripts that run at lifecycle events. Three levels of precedence:
+
+1. `.dgov/hooks/` — per-repo (highest priority)
+2. `.dgov-hooks/` — team/shared (checked into repo)
+3. `~/.dgov/hooks/` — global (lowest priority)
+
+| Hook | When |
+|------|------|
+| `worktree_created` | After worktree + branch are set up, before agent launches |
+| `pre_merge` | Before merging a worker's branch (restore protected files) |
+| `post_merge` | After merge (lint changed files, verify protected files) |
+| `before_worktree_remove` | Before deleting a worktree (archive artifacts) |
 
 ## Configuration
 
 - `.dgov/config.toml` — per-repo settings (`governor_agent`, `governor_permissions`)
-- `.dgov/agents.toml` — custom agent definitions
-- `.dgov/templates/` — prompt templates
-- `.dgov/batch/` — batch spec files
-- `.dgov/state.db` — SQLite state and events (auto-created)
+- `.dgov/agents.toml` — custom agent definitions (commands, env, done strategy)
+- `.dgov/templates/` — prompt templates with variable substitution
+- `.dgov/state.db` — SQLite state and events (auto-created, WAL mode)
+- `~/.dgov/config.toml` — global settings (OpenRouter API key, defaults)
+- `~/.dgov/agents.toml` — global custom agents
 
 ## License
 
