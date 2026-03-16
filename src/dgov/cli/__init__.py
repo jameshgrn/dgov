@@ -82,6 +82,7 @@ def cli(ctx, governor):
         "stats",
         "init",
         "doctor",
+        "yap",
     ):
         _check_governor_context()
 
@@ -221,6 +222,7 @@ from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
 from dgov.cli.templates import template  # noqa: E402
+from dgov.cli.yap_cmd import yap_cmd  # noqa: E402
 
 cli.add_command(pane)
 cli.add_command(preflight_cmd)
@@ -242,6 +244,7 @@ cli.add_command(doctor_cmd)
 cli.add_command(mission_cmd)
 cli.add_command(dag)
 cli.add_command(merge_queue)
+cli.add_command(yap_cmd)
 
 
 if __name__ == "__main__":

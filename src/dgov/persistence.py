@@ -66,6 +66,7 @@ VALID_EVENTS = frozenset(
         "dag_failed",
         "merge_enqueued",
         "merge_completed",
+        "yap_received",
     }
 )
 
