@@ -14,6 +14,17 @@ from dgov.agents import detect_installed_agents
 from dgov.cli import SESSION_ROOT_OPTION
 
 
+def _scaffold_dgov_dirs(root: Path) -> None:
+    """Create .dgov/ directory structure (idempotent)."""
+    dirs = [
+        root / ".dgov" / "hooks",
+        root / ".dgov" / "templates",
+        root / ".dgov" / "batch",
+    ]
+    for d in dirs:
+        d.mkdir(parents=True, exist_ok=True)
+
+
 @click.command("preflight")
 @click.option(
     "--project-root",
@@ -243,13 +254,7 @@ def init_cmd(project_root):
     permissions = click.prompt("Permission mode", default="acceptEdits", type=str)
 
     # Create directories
-    dirs = [
-        root / ".dgov" / "hooks",
-        root / ".dgov" / "templates",
-        root / ".dgov" / "batch",
-    ]
-    for d in dirs:
-        d.mkdir(parents=True, exist_ok=True)
+    _scaffold_dgov_dirs(root)
 
     # Write config
     config_path.write_text(
@@ -264,8 +269,8 @@ def init_cmd(project_root):
 
     click.echo("Initialized dgov project:")
     click.echo(f"  {config_path}")
-    for d in dirs:
-        click.echo(f"  {d}/")
+    for name in ("hooks", "templates", "batch"):
+        click.echo(f"  {root / '.dgov' / name}/")
 
 
 @click.command("doctor")
