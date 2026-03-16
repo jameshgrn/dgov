@@ -24,23 +24,26 @@ def dag_run(dagfile, dry_run, tier, skip, max_retries, auto_merge):
     """Execute a TOML DAG file."""
     from dgov.dag import compute_tiers, parse_dag_file, render_dry_run, run_dag
 
-    if dry_run:
-        dag_def = parse_dag_file(dagfile)
-        tiers = compute_tiers(dag_def.tasks)
-        click.echo(render_dry_run(tiers, dag_def.tasks))
-        return
+    try:
+        if dry_run:
+            dag_def = parse_dag_file(dagfile)
+            tiers = compute_tiers(dag_def.tasks)
+            click.echo(render_dry_run(tiers, dag_def.tasks))
+            return
 
-    summary = run_dag(
-        dagfile,
-        dry_run=False,
-        tier_limit=tier,
-        skip=set(skip) if skip else None,
-        max_retries=max_retries,
-        auto_merge=auto_merge,
-    )
-    click.echo(json.dumps(asdict(summary), indent=2, default=str))
-    if summary.failed:
-        raise SystemExit(1)
+        summary = run_dag(
+            dagfile,
+            dry_run=False,
+            tier_limit=tier,
+            skip=set(skip) if skip else None,
+            max_retries=max_retries,
+            auto_merge=auto_merge,
+        )
+        click.echo(json.dumps(asdict(summary), indent=2, default=str))
+        if summary.failed:
+            raise SystemExit(1)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
 
 
 @dag.command("merge")
@@ -49,7 +52,10 @@ def dag_merge(dagfile):
     """Merge an awaiting_merge DAG run in topological order."""
     from dgov.dag import merge_dag
 
-    summary = merge_dag(dagfile)
-    click.echo(json.dumps(asdict(summary), indent=2, default=str))
-    if summary.failed:
-        raise SystemExit(1)
+    try:
+        summary = merge_dag(dagfile)
+        click.echo(json.dumps(asdict(summary), indent=2, default=str))
+        if summary.failed:
+            raise SystemExit(1)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
