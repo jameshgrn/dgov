@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import subprocess
+import textwrap
 import threading
 import time
 from dataclasses import dataclass, field
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m")
 
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+_PREVIEW_LINES = 3
 
 
 def _strip_ansi(text: str) -> str:
@@ -75,13 +78,38 @@ def fmt_duration(seconds: int) -> str:
     return f"{h}h{m}m"
 
 
-def format_row(pane: dict, col_widths: dict[str, int]) -> dict[str, str]:
+def format_row(pane: dict, col_widths: dict[str, int], frame: int = 0) -> dict[str, str]:
     """Format a pane dict into display strings for each column."""
+    pane_state = pane.get("state", "active")
+
+    # Activity fallback based on state
+    activity = pane.get("activity", "")
+    if not activity or activity == "idle":
+        if pane_state == "active":
+            spinner = _SPINNER[frame % len(_SPINNER)]
+            activity = f"{spinner} working\u2026"
+        elif pane_state in ("done", "reviewed_pass"):
+            activity = "\u2713 complete"
+        elif pane_state in (
+            "failed",
+            "abandoned",
+            "timed_out",
+            "reviewed_fail",
+            "merge_conflict",
+        ):
+            activity = "\u2717 failed"
+        elif pane_state == "merged":
+            activity = "\u2713 merged"
+        elif pane_state == "escalated":
+            activity = "\u2191 escalated"
+        elif pane_state in ("closed", "superseded"):
+            activity = "\u2014 closed"
+
     return {
         "slug": truncate(pane.get("slug", ""), col_widths["slug"]),
         "agent": truncate(pane.get("agent", "?"), col_widths["agent"]),
-        "state": truncate(pane.get("state", "active"), col_widths["state"]),
-        "activity": truncate(pane.get("activity", ""), col_widths["activity"]),
+        "state": truncate(pane_state, col_widths["state"] - 2),
+        "activity": truncate(activity, col_widths["activity"]),
         "duration": fmt_duration(int(pane.get("duration_s", 0))),
         "prompt": truncate(pane.get("prompt", ""), col_widths["prompt"]),
     }
@@ -90,18 +118,19 @@ def format_row(pane: dict, col_widths: dict[str, int]) -> dict[str, str]:
 COLUMNS = [
     ("slug", 20),
     ("agent", 10),
-    ("state", 12),
+    ("state", 14),
     ("activity", 25),
     ("duration", 10),
-    ("prompt", 40),
+    ("prompt", 30),
 ]
 
 
 def compute_col_widths(max_width: int) -> dict[str, int]:
     """Compute column widths, shrinking prompt to fit terminal width."""
     fixed_width = sum(w for _, w in COLUMNS if _ != "prompt")
-    separators = len(COLUMNS) - 1  # one space between each
-    prompt_width = max(10, max_width - fixed_width - separators)
+    separators = len(COLUMNS) - 1  # │ between columns
+    prefix = 2  # ▸ or space prefix
+    prompt_width = max(10, max_width - fixed_width - separators - prefix)
     return {name: (prompt_width if name == "prompt" else w) for name, w in COLUMNS}
 
 
@@ -289,7 +318,7 @@ def _init_colors() -> None:
     curses.init_pair(4, curses.COLOR_CYAN, -1)  # reviewed
     curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # escalated
     curses.init_pair(6, curses.COLOR_WHITE, -1)  # closed/dim
-    curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)  # selected row
+    curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)  # reserved
 
 
 def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> int:
@@ -306,10 +335,20 @@ def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> in
     spinner = _SPINNER[state.frame % len(_SPINNER)]
 
     title = " DGOV "
-    status = f" {spinner} v{__version__} │ {project} │ {branch} │ {ts} │ {pane_count} panes"
+    status = (
+        f" {spinner} v{__version__} \u2502 {project}"
+        f" \u2502 {branch} \u2502 {ts} \u2502 {pane_count} panes"
+    )
     try:
         stdscr.addnstr(row, 0, title, max_x - 1, curses.color_pair(1) | curses.A_BOLD)
         stdscr.addnstr(row, len(title), status, max_x - len(title) - 1)
+    except curses.error:
+        pass
+    row += 1
+
+    # Thin horizontal rule under header
+    try:
+        stdscr.addnstr(row, 0, "\u2500" * (max_x - 1), max_x - 1, curses.A_DIM)
     except curses.error:
         pass
     row += 1
@@ -336,15 +375,21 @@ def _draw_table_header(
         "duration": "DURATION",
         "prompt": "PROMPT",
     }
-    x = 1
-    for name, _ in COLUMNS:
+    x = 2  # after prefix margin
+    for i, (name, _) in enumerate(COLUMNS):
         w = col_widths[name]
         label = labels.get(name, name.upper())
         try:
-            stdscr.addnstr(row, x, label.ljust(w), w, curses.A_BOLD | curses.A_UNDERLINE)
+            stdscr.addnstr(row, x, label.ljust(w), w, curses.A_DIM)
         except curses.error:
             pass
-        x += w + 1
+        x += w
+        if i < len(COLUMNS) - 1:
+            try:
+                stdscr.addnstr(row, x, "\u2502", 1, curses.A_DIM)
+            except curses.error:
+                pass
+            x += 1
     return row + 1
 
 
@@ -355,32 +400,83 @@ def _draw_pane_row(
     col_widths: dict[str, int],
     selected: bool,
     max_x: int,
+    frame: int = 0,
 ) -> None:
     """Draw a single pane row."""
-    formatted = format_row(pane, col_widths)
+    formatted = format_row(pane, col_widths, frame=frame)
     pane_state = pane.get("state", "active")
     color = curses.color_pair(state_color(pane_state))
+    sel_attr = curses.A_BOLD if selected else 0
 
-    if selected:
-        attr = curses.color_pair(7) | curses.A_BOLD
-    else:
-        attr = color
-
-    # Clear the row
+    # Selection prefix
+    prefix = "\u25b8 " if selected else "  "
     try:
-        stdscr.addnstr(row, 0, " " * (max_x - 1), max_x - 1, attr if selected else 0)
+        stdscr.addnstr(row, 0, prefix, 2, color if selected else 0)
     except curses.error:
         pass
 
-    x = 1
-    for name, _ in COLUMNS:
+    x = 2
+    for i, (name, _) in enumerate(COLUMNS):
         w = col_widths[name]
         val = formatted.get(name, "")
         try:
-            stdscr.addnstr(row, x, val.ljust(w), w, attr)
+            if name == "state":
+                # ● dot in state color, text in default
+                stdscr.addnstr(row, x, "\u25cf ", 2, color)
+                stdscr.addnstr(row, x + 2, val.ljust(w - 2), w - 2, sel_attr)
+            else:
+                stdscr.addnstr(row, x, val.ljust(w), w, sel_attr)
         except curses.error:
             pass
-        x += w + 1
+        x += w
+        if i < len(COLUMNS) - 1:
+            try:
+                stdscr.addnstr(row, x, "\u2502", 1, curses.A_DIM)
+            except curses.error:
+                pass
+            x += 1
+
+
+def _draw_prompt_preview(
+    stdscr: curses.window,
+    row: int,
+    pane: dict | None,
+    max_x: int,
+) -> int:
+    """Draw the full prompt preview below the table. Returns next row."""
+    # Separator
+    try:
+        stdscr.addnstr(row, 0, "\u2500" * (max_x - 1), max_x - 1, curses.A_DIM)
+    except curses.error:
+        pass
+    row += 1
+
+    if not pane:
+        return row
+
+    prompt = pane.get("prompt", "")
+    if not prompt:
+        return row
+
+    wrapped = textwrap.wrap(prompt, width=max(20, max_x - 4))
+    show_hint = len(wrapped) > _PREVIEW_LINES
+    display_lines = wrapped[:_PREVIEW_LINES]
+
+    for line in display_lines:
+        try:
+            stdscr.addnstr(row, 2, line, max_x - 3, curses.A_DIM)
+        except curses.error:
+            pass
+        row += 1
+
+    if show_hint:
+        try:
+            stdscr.addnstr(row, 2, "Enter for more\u2026", max_x - 3, curses.A_DIM)
+        except curses.error:
+            pass
+        row += 1
+
+    return row
 
 
 def _draw_footer(stdscr: curses.window, row: int, max_x: int, mode: str = "list") -> None:
@@ -393,7 +489,7 @@ def _draw_footer(stdscr: curses.window, row: int, max_x: int, mode: str = "list"
     else:
         keys = "q/Esc:back  j/k:\u2191\u2193 scroll"
     try:
-        stdscr.addnstr(row, 0, "\u2500" * (max_x - 1), max_x - 1)
+        stdscr.addnstr(row, 0, "\u2500" * (max_x - 1), max_x - 1, curses.A_DIM)
     except curses.error:
         pass
     try:
@@ -423,7 +519,7 @@ def _draw_detail(
         pass
     row += 1
     try:
-        stdscr.addnstr(row, 0, "\u2500" * (max_x - 1), max_x - 1)
+        stdscr.addnstr(row, 0, "\u2500" * (max_x - 1), max_x - 1, curses.A_DIM)
     except curses.error:
         pass
     row += 1
@@ -537,14 +633,26 @@ def _curses_main(
                     panes = list(state.panes)
 
                 if not panes:
+                    msg = (
+                        "No active panes \u2014 dispatch with:"
+                        ' dgov pane create -a <agent> -p "task"'
+                    )
+                    cx = max(0, (max_x - len(msg)) // 2)
                     try:
-                        stdscr.addnstr(row, 1, "No panes.", max_x - 2, curses.A_DIM)
+                        stdscr.addnstr(row + 2, cx, msg, max_x - 1, curses.A_DIM)
                     except curses.error:
                         pass
-                    row += 1
                 else:
                     selected = max(0, min(selected, len(panes) - 1))
-                    visible_rows = max_y - row - 2  # leave room for footer
+                    footer_height = 2
+                    preview_reserve = _PREVIEW_LINES + 2  # separator + lines + hint
+                    visible_rows = max_y - row - footer_height - preview_reserve
+                    show_preview = True
+                    if visible_rows < 3:
+                        # Not enough room for preview, skip it
+                        show_preview = False
+                        visible_rows = max_y - row - footer_height
+
                     # Scroll window
                     if selected >= visible_rows:
                         start = selected - visible_rows + 1
@@ -560,8 +668,14 @@ def _curses_main(
                             col_widths,
                             selected=i == selected,
                             max_x=max_x,
+                            frame=state.frame,
                         )
                         row += 1
+
+                    # Prompt preview below table
+                    if show_preview:
+                        selected_pane = panes[selected] if panes else None
+                        _draw_prompt_preview(stdscr, row, selected_pane, max_x)
 
                 _draw_footer(stdscr, max_y - 2, max_x, mode="list")
 
@@ -797,7 +911,7 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("Dashboard merge failed for %s", slug)
             with state.lock:
-                state.detail_text = f"Merge failed for {slug} — check logs"
+                state.detail_text = f"Merge failed for {slug} \u2014 check logs"
     elif action == "close":
         from dgov.lifecycle import close_worker_pane
 
@@ -806,4 +920,4 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
         except Exception:  # noqa: BLE001
             logger.exception("Dashboard close failed for %s", slug)
             with state.lock:
-                state.detail_text = f"Close failed for {slug} — check logs"
+                state.detail_text = f"Close failed for {slug} \u2014 check logs"
