@@ -7,6 +7,19 @@ import os
 import subprocess
 from pathlib import Path
 
+from dgov.dag import (
+    DagFileSpec,
+    DagTaskSpec,
+)
+from dgov.dag import (
+    compute_tiers as _dag_compute_tiers,
+)
+from dgov.dag import (
+    transitive_dependents as _dag_transitive_dependents,
+)
+from dgov.dag import (
+    validate_dag as _dag_validate,
+)
 from dgov.persistence import (
     STATE_DIR,
     all_panes,
@@ -160,109 +173,47 @@ def _parse_spec(spec_path: str) -> tuple[str, dict[str, dict]]:
 
 
 # ---------------------------------------------------------------------------
-# DAG validation and tier computation
+# DAG validation and tier computation (delegated to dag module)
 # ---------------------------------------------------------------------------
+
+
+def _task_dict_to_spec(task_id: str, task: dict) -> DagTaskSpec:
+    """Convert batch-style task dict to DagTaskSpec for shared helpers."""
+    touches = task.get("touches", [])
+    return DagTaskSpec(
+        slug=task_id,
+        summary=task.get("prompt", "")[:80],
+        prompt=task.get("prompt", ""),
+        commit_message="",
+        agent=task.get("agent", "claude"),
+        escalation=(),
+        depends_on=tuple(task.get("depends_on", ())),
+        files=DagFileSpec(edit=tuple(sorted(touches))),
+        permission_mode=task.get("permission_mode", "acceptEdits"),
+        timeout_s=task.get("timeout", 600),
+    )
+
+
+def _to_dag_specs(tasks: dict[str, dict]) -> dict[str, DagTaskSpec]:
+    """Convert all batch tasks to DagTaskSpec."""
+    return {tid: _task_dict_to_spec(tid, t) for tid, t in tasks.items()}
 
 
 def _validate_dag(tasks: dict[str, dict]) -> None:
     """Validate that depends_on references exist and there are no cycles."""
-    task_ids = set(tasks)
-
-    for task_id, task in tasks.items():
-        for dep in task["depends_on"]:
-            if dep not in task_ids:
-                raise ValueError(f"Task '{task_id}' depends on '{dep}' which does not exist")
-
-    # Topological sort to detect cycles
-    visited: set[str] = set()
-    path: set[str] = set()
-
-    def _visit(node: str) -> None:
-        if node in path:
-            cycle = [node]
-            raise ValueError(f"Dependency cycle detected: {' -> '.join(cycle)}")
-        if node in visited:
-            return
-        path.add(node)
-        for dep in tasks[node]["depends_on"]:
-            _visit(dep)
-        path.discard(node)
-        visited.add(node)
-
-    for tid in tasks:
-        _visit(tid)
+    _dag_validate(_to_dag_specs(tasks))
 
 
 def _compute_tiers(tasks: dict[str, dict]) -> list[list[dict]]:
-    """Group tasks into parallel tiers respecting depends_on and touch overlap.
-
-    A task is ready for a tier when:
-    1. All its depends_on are in earlier tiers
-    2. Its touches don't overlap with any task in the same tier
-    """
-    _validate_dag(tasks)
-
-    placed: dict[str, int] = {}  # task_id -> tier_index
-    tiers: list[list[dict]] = []
-    remaining = set(tasks)
-
-    while remaining:
-        tier: list[dict] = []
-        tier_touches: set[str] = set()
-        placed_this_round: list[str] = []
-
-        for task_id in sorted(remaining):
-            task = tasks[task_id]
-            deps = task["depends_on"]
-
-            # All deps must be placed in earlier tiers
-            if not all(d in placed for d in deps):
-                continue
-
-            # Check touch overlap with tasks already in this tier
-            task_touches = task.get("touches", [])
-            has_overlap = False
-            for tt in task_touches:
-                for et in tier_touches:
-                    if tt == et or tt.startswith(et) or et.startswith(tt):
-                        has_overlap = True
-                        break
-                if has_overlap:
-                    break
-
-            if has_overlap:
-                continue
-
-            tier.append(task)
-            tier_touches.update(task_touches)
-            placed_this_round.append(task_id)
-
-        if not placed_this_round:
-            # Should not happen after validation, but guard against infinite loop
-            raise ValueError(f"Cannot schedule remaining tasks: {remaining}")
-
-        tier_idx = len(tiers)
-        for tid in placed_this_round:
-            placed[tid] = tier_idx
-            remaining.discard(tid)
-        tiers.append(tier)
-
-    return tiers
+    """Group tasks into parallel tiers respecting depends_on and touch overlap."""
+    specs = _to_dag_specs(tasks)
+    tier_slugs = _dag_compute_tiers(specs)
+    return [[tasks[slug] for slug in tier] for tier in tier_slugs]
 
 
 def _transitive_dependents(tasks: dict[str, dict], failed_ids: set[str]) -> set[str]:
     """Return all task IDs that transitively depend on any of the failed_ids."""
-    dependents: set[str] = set()
-    changed = True
-    while changed:
-        changed = False
-        for tid, task in tasks.items():
-            if tid in dependents or tid in failed_ids:
-                continue
-            if any(d in failed_ids or d in dependents for d in task["depends_on"]):
-                dependents.add(tid)
-                changed = True
-    return dependents
+    return _dag_transitive_dependents(_to_dag_specs(tasks), failed_ids)
 
 
 def _render_dry_run(tiers: list[list[dict]], tasks: dict[str, dict]) -> str:

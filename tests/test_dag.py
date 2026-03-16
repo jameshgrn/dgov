@@ -8,7 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from dgov.dag import DagDefinition, parse_dag_file
+from dgov.dag import (
+    DagDefinition,
+    DagFileSpec,
+    DagTaskSpec,
+    compute_tiers,
+    parse_dag_file,
+    topological_order,
+    transitive_dependents,
+    validate_dag,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -259,3 +268,128 @@ class TestParseDagFile:
         """)
         dag = parse_dag_file(_write_toml(toml))
         assert dag.tasks["T0"].escalation == ("gemini", "claude")
+
+
+def _task(slug, depends_on=(), files_edit=()):
+    """Helper to create a minimal DagTaskSpec for testing."""
+    return DagTaskSpec(
+        slug=slug,
+        summary=f"Task {slug}",
+        prompt=f"Do {slug}",
+        commit_message=f"Commit {slug}",
+        agent="hunter",
+        escalation=(),
+        depends_on=tuple(depends_on),
+        files=DagFileSpec(edit=tuple(sorted(files_edit))),
+        permission_mode="acceptEdits",
+        timeout_s=900,
+    )
+
+
+class TestValidateDag:
+    def test_valid_dag(self):
+        tasks = {"T0": _task("T0"), "T1": _task("T1", depends_on=["T0"])}
+        validate_dag(tasks)  # should not raise
+
+    def test_missing_dep(self):
+        tasks = {"T0": _task("T0", depends_on=["T_MISSING"])}
+        with pytest.raises(ValueError, match="does not exist"):
+            validate_dag(tasks)
+
+    def test_self_cycle(self):
+        tasks = {"T0": _task("T0", depends_on=["T0"])}
+        with pytest.raises(ValueError, match="cycle"):
+            validate_dag(tasks)
+
+    def test_multi_node_cycle(self):
+        tasks = {
+            "A": _task("A", depends_on=["C"]),
+            "B": _task("B", depends_on=["A"]),
+            "C": _task("C", depends_on=["B"]),
+        }
+        with pytest.raises(ValueError, match="cycle"):
+            validate_dag(tasks)
+
+
+class TestTopologicalOrder:
+    def test_linear(self):
+        tasks = {
+            "T0": _task("T0"),
+            "T1": _task("T1", depends_on=["T0"]),
+            "T2": _task("T2", depends_on=["T1"]),
+        }
+        order = topological_order(tasks)
+        assert order.index("T0") < order.index("T1") < order.index("T2")
+
+    def test_diamond(self):
+        tasks = {
+            "T0": _task("T0"),
+            "T1": _task("T1", depends_on=["T0"]),
+            "T2": _task("T2", depends_on=["T0"]),
+            "T3": _task("T3", depends_on=["T1", "T2"]),
+        }
+        order = topological_order(tasks)
+        assert order.index("T0") < order.index("T1")
+        assert order.index("T0") < order.index("T2")
+        assert order.index("T1") < order.index("T3")
+        assert order.index("T2") < order.index("T3")
+
+    def test_stable_order(self):
+        tasks = {"B": _task("B"), "A": _task("A"), "C": _task("C")}
+        order = topological_order(tasks)
+        assert order == ["A", "B", "C"]
+
+
+class TestComputeTiers:
+    def test_single_tier(self):
+        tasks = {"T0": _task("T0", files_edit=["a.py"]), "T1": _task("T1", files_edit=["b.py"])}
+        tiers = compute_tiers(tasks)
+        assert len(tiers) == 1
+        assert set(tiers[0]) == {"T0", "T1"}
+
+    def test_overlap_serializes(self):
+        tasks = {
+            "T0": _task("T0", files_edit=["src/dag.py"]),
+            "T1": _task("T1", files_edit=["src/dag.py"]),
+        }
+        tiers = compute_tiers(tasks)
+        assert len(tiers) == 2
+
+    def test_ancestor_overlap(self):
+        tasks = {
+            "T0": _task("T0", files_edit=["src/dgov/"]),
+            "T1": _task("T1", files_edit=["src/dgov/dag.py"]),
+        }
+        tiers = compute_tiers(tasks)
+        assert len(tiers) == 2
+
+    def test_dependency_respects_tier(self):
+        tasks = {
+            "T0": _task("T0", files_edit=["a.py"]),
+            "T1": _task("T1", depends_on=["T0"], files_edit=["b.py"]),
+        }
+        tiers = compute_tiers(tasks)
+        assert len(tiers) == 2
+        assert tiers[0] == ["T0"]
+        assert tiers[1] == ["T1"]
+
+
+class TestTransitiveDependents:
+    def test_direct_dependent(self):
+        tasks = {"T0": _task("T0"), "T1": _task("T1", depends_on=["T0"])}
+        deps = transitive_dependents(tasks, {"T0"})
+        assert deps == {"T1"}
+
+    def test_transitive(self):
+        tasks = {
+            "T0": _task("T0"),
+            "T1": _task("T1", depends_on=["T0"]),
+            "T2": _task("T2", depends_on=["T1"]),
+        }
+        deps = transitive_dependents(tasks, {"T0"})
+        assert deps == {"T1", "T2"}
+
+    def test_no_dependents(self):
+        tasks = {"T0": _task("T0"), "T1": _task("T1")}
+        deps = transitive_dependents(tasks, {"T0"})
+        assert deps == set()
