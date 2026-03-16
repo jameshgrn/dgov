@@ -239,7 +239,7 @@ CREATE TABLE IF NOT EXISTS dag_runs (
     started_at TEXT NOT NULL,
     status TEXT NOT NULL,
     current_tier INTEGER NOT NULL DEFAULT 0,
-    state_json TEXT NOT NULL DEFAULT '{}"'
+    state_json TEXT NOT NULL DEFAULT '{}'
 )"""
 
 _CREATE_DAG_TASKS_TABLE_SQL = """
