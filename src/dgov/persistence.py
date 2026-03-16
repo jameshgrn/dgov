@@ -223,6 +223,30 @@ CREATE TABLE IF NOT EXISTS events (
     data TEXT NOT NULL DEFAULT '{}')
 """
 
+_CREATE_DAG_RUNS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS dag_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_file TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    current_tier INTEGER NOT NULL DEFAULT 0,
+    state_json TEXT NOT NULL DEFAULT '{}"'
+)"""
+
+_CREATE_DAG_TASKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS dag_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_run_id INTEGER NOT NULL,
+    slug TEXT NOT NULL,
+    status TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    pane_slug TEXT,
+    error TEXT,
+    UNIQUE(dag_run_id, slug),
+    FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
+)"""
+
 
 def state_path(session_root: str) -> Path:
     return Path(session_root) / STATE_DIR / _STATE_FILE
@@ -250,6 +274,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=5000")
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
     conn.commit()
 
     with _conn_lock:
@@ -493,3 +519,161 @@ def replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
         conn.commit()
 
     _retry_on_lock(_do)
+
+
+# -- DAG run persistence --
+
+
+def ensure_dag_tables(session_root: str) -> None:
+    """Ensure dag_runs and dag_tasks tables exist."""
+    conn = _get_db(session_root)
+    conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
+    conn.commit()
+
+
+def create_dag_run(
+    session_root: str,
+    dag_file: str,
+    started_at: str,
+    status: str,
+    current_tier: int,
+    state_json: dict,
+) -> int:
+    """Insert a new DAG run row and return its id."""
+
+    def _do() -> int:
+        conn = _get_db(session_root)
+        cur = conn.execute(
+            "INSERT INTO dag_runs"
+            " (dag_file, started_at, status, current_tier, state_json)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (dag_file, started_at, status, current_tier, json.dumps(state_json)),
+        )
+        conn.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    return _retry_on_lock(_do)
+
+
+def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
+    """Find an unfinished DAG run for the given absolute dag_file path."""
+    conn = _get_db(session_root)
+    row = conn.execute(
+        "SELECT id, dag_file, started_at, status, current_tier, state_json"
+        " FROM dag_runs"
+        " WHERE dag_file = ? AND status NOT IN (?, ?, ?)"
+        " ORDER BY id DESC LIMIT 1",
+        (dag_file, "completed", "failed", "cancelled"),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "dag_file": row[1],
+        "started_at": row[2],
+        "status": row[3],
+        "current_tier": row[4],
+        "state_json": json.loads(row[5]),
+    }
+
+
+def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
+    """Fetch a DAG run by id."""
+    conn = _get_db(session_root)
+    row = conn.execute(
+        "SELECT id, dag_file, started_at, status, current_tier, state_json"
+        " FROM dag_runs WHERE id = ?",
+        (dag_run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0],
+        "dag_file": row[1],
+        "started_at": row[2],
+        "status": row[3],
+        "current_tier": row[4],
+        "state_json": json.loads(row[5]),
+    }
+
+
+def update_dag_run(
+    session_root: str,
+    dag_run_id: int,
+    *,
+    status: str | None = None,
+    current_tier: int | None = None,
+    state_json: dict | None = None,
+) -> None:
+    """Update mutable fields on a DAG run."""
+    sets: list[str] = []
+    vals: list[object] = []
+    if status is not None:
+        sets.append("status = ?")
+        vals.append(status)
+    if current_tier is not None:
+        sets.append("current_tier = ?")
+        vals.append(current_tier)
+    if state_json is not None:
+        sets.append("state_json = ?")
+        vals.append(json.dumps(state_json))
+    if not sets:
+        return
+    vals.append(dag_run_id)
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        conn.execute(f"UPDATE dag_runs SET {', '.join(sets)} WHERE id = ?", vals)
+        conn.commit()
+
+    _retry_on_lock(_do)
+
+
+def upsert_dag_task(
+    session_root: str,
+    dag_run_id: int,
+    slug: str,
+    status: str,
+    agent: str,
+    attempt: int = 1,
+    pane_slug: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Insert or update a DAG task row."""
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        conn.execute(
+            """INSERT INTO dag_tasks (dag_run_id, slug, status, agent, attempt, pane_slug, error)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(dag_run_id, slug) DO UPDATE SET
+                 status=excluded.status, agent=excluded.agent,
+                 attempt=excluded.attempt, pane_slug=excluded.pane_slug,
+                 error=excluded.error""",
+            (dag_run_id, slug, status, agent, attempt, pane_slug, error),
+        )
+        conn.commit()
+
+    _retry_on_lock(_do)
+
+
+def list_dag_tasks(session_root: str, dag_run_id: int) -> list[dict]:
+    """List all task rows for a DAG run."""
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT slug, status, agent, attempt, pane_slug, error"
+        " FROM dag_tasks WHERE dag_run_id = ? ORDER BY slug",
+        (dag_run_id,),
+    ).fetchall()
+    return [
+        {
+            "slug": r[0],
+            "status": r[1],
+            "agent": r[2],
+            "attempt": r[3],
+            "pane_slug": r[4],
+            "error": r[5],
+        }
+        for r in rows
+    ]
