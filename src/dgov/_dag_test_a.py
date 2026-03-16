@@ -9,3 +9,8 @@ def add(x: int, y: int) -> int:
 def multiply(x: int, y: int) -> int:
     """Return x * y."""
     return x * y
+
+
+def greet(name: str) -> str:
+    """Return a greeting string."""
+    return f"Hello, {name}!"
