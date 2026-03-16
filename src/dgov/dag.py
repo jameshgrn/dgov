@@ -837,6 +837,15 @@ def run_dag(
                     task_states[slug] = "skipped"
                     upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
 
+    # Partial execution: --tier limited the run
+    if tier_limit is not None and max_tier < len(tiers) - 1:
+        unexecuted = [s for s in task_states if task_states[s] == "pending"]
+        if unexecuted:
+            final_status = "partial"
+            update_dag_run(session_root, run_id, status=final_status)
+            emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
+            return _build_summary(run_id, dag_file, final_status, task_states, all_merged, dag)
+
     # Finalize
     if not auto_merge:
         if all_merged or any(st == "reviewed_pass" for st in task_states.values()):
