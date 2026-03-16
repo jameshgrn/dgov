@@ -160,7 +160,8 @@ class TestFormatRow:
         row = format_row(pane, widths)
         assert row["slug"] == ""
         assert row["agent"] == "?"
-        assert row["activity"] == ""
+        # Empty pane defaults to "active" state, so activity shows spinner fallback
+        assert "working" in row["activity"]
 
     def test_long_slug_truncated(self) -> None:
         pane = {

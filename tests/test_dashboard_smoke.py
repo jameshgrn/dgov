@@ -246,8 +246,9 @@ class TestDrawTableHeader:
         widths = compute_col_widths(120)
         row = _draw_table_header(scr, 0, widths, 120)
         assert row == 1
-        # Should have drawn one label per column
-        assert scr.addnstr.call_count == len(COLUMNS)
+        # Labels + │ separators between columns
+        expected_calls = len(COLUMNS) + (len(COLUMNS) - 1)
+        assert scr.addnstr.call_count == expected_calls
 
 
 class TestDrawPaneRow:
@@ -409,7 +410,9 @@ class TestRunDashboardLoop:
 
         _run_dashboard_loop(stdscr, _make_dashboard_state([]))
 
-        assert any(call.args[2] == "No panes." for call in stdscr.addnstr.call_args_list)
+        assert any(
+            "No active panes" in str(call.args[2]) for call in stdscr.addnstr.call_args_list
+        )
 
     def test_navigation_updates_selected_row(self) -> None:
         stdscr = _make_stdscr()
@@ -430,6 +433,7 @@ class TestRunDashboardLoop:
             *,
             selected: bool,
             max_x: int,
+            frame: int = 0,
         ) -> None:
             assert max_x == 120
             if selected:
