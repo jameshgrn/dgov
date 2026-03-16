@@ -503,22 +503,24 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
 
 
 def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
-    """Update metadata fields on a specific pane.
+    """Update metadata fields on a specific pane atomically.
 
-    Stores extra fields (like ``max_retries``, ``retried_from``, ``superseded_by``)
-    in the ``metadata`` JSON column.
+    Uses SQLite json_set() to avoid read-modify-replace races where
+    concurrent callers can clobber each other's updates.
     """
+    if not kwargs:
+        return
 
     def _do() -> None:
         conn = _get_db(session_root)
-        conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
-        if not row:
-            return
-        d = _row_to_dict(row)
+        # Build nested json_set: json_set(json_set(base, '$.k1', ?), '$.k2', ?)
+        expr = "COALESCE(metadata, '{}')"
+        vals: list[object] = []
         for k, v in kwargs.items():
-            d[k] = v
-        _insert_pane_dict(conn, d)
+            expr = f"json_set({expr}, '$.{k}', ?)"
+            vals.append(v)
+        vals.append(slug)
+        conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", vals)
         conn.commit()
 
     _retry_on_lock(_do)
