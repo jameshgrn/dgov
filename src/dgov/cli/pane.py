@@ -224,16 +224,11 @@ def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
     from dgov.lifecycle import close_worker_pane
 
-    exit_code = 0
     for s in slug:
         if close_worker_pane(project_root, s, session_root=session_root, force=force):
             click.echo(json.dumps({"closed": s}))
         else:
-            click.echo(json.dumps({"error": f"Pane not found: {s}"}), err=True)
-            exit_code = 1
-
-    if exit_code:
-        sys.exit(exit_code)
+            click.echo(json.dumps({"already_closed": s}))
 
 
 @pane.command("merge")
@@ -269,6 +264,49 @@ def pane_merge(slug, project_root, session_root, resolve, squash):
 
     click.echo(json.dumps(result, indent=2))
 
+    if "error" in result:
+        sys.exit(1)
+
+
+@pane.command("land")
+@click.argument("slug")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+@click.option(
+    "--resolve",
+    type=click.Choice(["skip", "agent", "manual"]),
+    default="skip",
+    help="Conflict resolution strategy",
+)
+@click.option(
+    "--squash/--no-squash",
+    default=True,
+    help="Squash worker commits",
+)
+def pane_land(slug, project_root, session_root, resolve, squash):
+    """Review, merge, and close a worker pane in one step."""
+    from dgov.inspection import review_worker_pane
+    from dgov.merger import merge_worker_pane
+
+    # Review
+    review = review_worker_pane(project_root, slug, session_root=session_root)
+    if review.get("error"):
+        click.echo(json.dumps({"error": review["error"]}), err=True)
+        sys.exit(1)
+
+    verdict = review.get("verdict", "unknown")
+    commit_count = review.get("commit_count", 0)
+    click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
+
+    if commit_count == 0:
+        click.echo(json.dumps({"error": "No commits to merge"}), err=True)
+        sys.exit(1)
+
+    # Merge (this also runs cleanup automatically)
+    result = merge_worker_pane(
+        project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+    )
+    click.echo(json.dumps(result, indent=2))
     if "error" in result:
         sys.exit(1)
 
