@@ -76,6 +76,9 @@ class TestFactory:
             def send_input(self, worker_id: str, text: str) -> None:
                 pass
 
+            def send_shell_command(self, worker_id: str, command: str) -> None:
+                pass
+
             def capture_output(self, worker_id: str, lines: int = 30) -> str | None:
                 return None
 
@@ -231,11 +234,11 @@ class TestTmuxBackendDelegation:
         assert is_alive is True
         mock_pane_exists.assert_called_once_with("%%5")
 
-    def test_send_input_delegates_to_send_command(self):
-        with patch("dgov.tmux.send_command") as mock_send_command:
+    def test_send_input_delegates_to_send_text_input(self):
+        with patch("dgov.tmux.send_text_input") as mock_send_text_input:
             TmuxBackend().send_input("%%5", "echo hi")
 
-        mock_send_command.assert_called_once_with("%%5", "echo hi")
+        mock_send_text_input.assert_called_once_with("%%5", "echo hi")
 
     def test_capture_output_delegates_to_capture_pane(self):
         with patch("dgov.tmux.capture_pane", return_value="output") as mock_capture_pane:

@@ -109,7 +109,7 @@ class TestInteract:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command") as mock_send,
+            patch("dgov.tmux.send_text_input") as mock_send,
         ):
             result = interact_with_pane(session_root, "test-worker", "hello agent")
             assert result is True
@@ -137,7 +137,7 @@ class TestNudge:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="Are you done?\nYES"),
             patch("dgov.waiter.time.sleep"),
         ):
@@ -151,7 +151,7 @@ class TestNudge:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="NO, still working."),
             patch("dgov.waiter.time.sleep"),
         ):
@@ -164,7 +164,7 @@ class TestNudge:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="I'm processing files..."),
             patch("dgov.waiter.time.sleep"),
         ):
@@ -323,7 +323,7 @@ class TestRespondCLI:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
         ):
             result = runner.invoke(
                 cli,
@@ -368,7 +368,7 @@ class TestNudgeCLI:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="YES I'm done"),
             patch("dgov.waiter.time.sleep"),
         ):

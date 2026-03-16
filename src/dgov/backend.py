@@ -46,7 +46,19 @@ class WorkerBackend(Protocol):
         ...
 
     def send_input(self, worker_id: str, text: str) -> None:
-        """Send text input to the worker (like typing in a terminal)."""
+        """Send literal text input to the worker (like typing in a terminal).
+
+        Use for runtime interaction with a running process.
+        For shell bootstrap commands, use ``send_shell_command``.
+        """
+        ...
+
+    def send_shell_command(self, worker_id: str, command: str) -> None:
+        """Send a shell command to a worker at a shell prompt.
+
+        Uses script-file approach to avoid terminal buffer truncation.
+        Only call when the pane is at a shell prompt, not inside an agent.
+        """
         ...
 
     def capture_output(self, worker_id: str, lines: int = 30) -> str | None:
@@ -143,7 +155,12 @@ class TmuxBackend:
     def send_input(self, worker_id: str, text: str) -> None:
         from dgov import tmux
 
-        tmux.send_command(worker_id, text)
+        tmux.send_text_input(worker_id, text)
+
+    def send_shell_command(self, worker_id: str, command: str) -> None:
+        from dgov import tmux
+
+        tmux.send_command(worker_id, command)
 
     def capture_output(self, worker_id: str, lines: int = 30) -> str | None:
         from dgov import tmux

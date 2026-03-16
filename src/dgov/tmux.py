@@ -63,15 +63,22 @@ def create_background_pane(
     return _run(args)
 
 
+_SEND_KEYS_LIMIT = 200
+
+
 def send_command(pane_id: str, command: str) -> None:
     """Send a shell command to a pane and press Enter.
 
-    For commands over 200 chars, writes to a temp script and sources it
-    to avoid tmux send-keys/paste-buffer truncation with zsh.
+    Short commands use send-keys directly. Commands over
+    ``_SEND_KEYS_LIMIT`` chars are written to a temp script and
+    sourced, avoiding tmux/zsh truncation.
+    Only use this for shell commands at a shell prompt.
+    For literal text input to a running agent, use ``send_text_input``.
     """
-    if len(command) <= 200:
+    if len(command) <= _SEND_KEYS_LIMIT:
         _run(["send-keys", "-t", pane_id, command, "Enter"])
     else:
+        import shlex as _shlex
         import tempfile
 
         with tempfile.NamedTemporaryFile(
@@ -80,7 +87,18 @@ def send_command(pane_id: str, command: str) -> None:
             f.write(command)
             f.write("\n")
             script_path = f.name
-        _run(["send-keys", "-t", pane_id, f"source {script_path} && rm -f {script_path}", "Enter"])
+        quoted = _shlex.quote(script_path)
+        _run(["send-keys", "-t", pane_id, f"source {quoted}; rm -f {quoted}", "Enter"])
+
+
+def send_text_input(pane_id: str, text: str) -> None:
+    """Send literal text input to a running process in a pane.
+
+    Uses tmux send-keys directly — the text is delivered as if typed.
+    Use this for runtime interaction (pane send, autoresponder, nudges),
+    NOT for shell bootstrap commands.
+    """
+    _run(["send-keys", "-t", pane_id, text, "Enter"])
 
 
 def set_title(pane_id: str, title: str) -> None:

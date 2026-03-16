@@ -210,7 +210,7 @@ def _setup_and_launch_agent(
     for key, val in dgov_env.items():
         env_lines.append(f"export {key}={shlex.quote(val)}")
     if env_lines:
-        backend.send_input(pane_id, " && ".join(env_lines))
+        backend.send_shell_command(pane_id, " && ".join(env_lines))
 
     # 4. Trigger worktree_created hook
     hook_env = {
@@ -262,7 +262,7 @@ def _setup_and_launch_agent(
             registry=registry,
         )
         wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
-        backend.send_input(pane_id, wrapped_cmd)
+        backend.send_shell_command(pane_id, wrapped_cmd)
         if agent_def.send_keys_ready_delay_ms > 0:
             time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
         for key in agent_def.send_keys_pre_prompt:
@@ -279,7 +279,7 @@ def _setup_and_launch_agent(
             registry=registry,
         )
         wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
-        backend.send_input(pane_id, wrapped_cmd)
+        backend.send_shell_command(pane_id, wrapped_cmd)
 
 
 # -- Public API --

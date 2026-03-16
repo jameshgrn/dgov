@@ -2738,6 +2738,9 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
     mock_backend.create_worker_pane.return_value = "%99"
     events: list[tuple[str, object]] = []
     mock_backend.send_input.side_effect = lambda pane_id, text: events.append(("send_input", text))
+    mock_backend.send_shell_command.side_effect = lambda pane_id, cmd: events.append(
+        ("send_shell_command", cmd)
+    )
 
     with (
         patch("dgov.lifecycle.subprocess.run") as mock_run,
@@ -2757,8 +2760,8 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
         )
 
     assert events[0] == ("sleep", 0.25)
-    # Env setup is now a single batched send_input (unsets + exports)
-    assert events[1][0] == "send_input"
+    # Env setup uses send_shell_command (bootstrap, not runtime interaction)
+    assert events[1][0] == "send_shell_command"
     assert events[1][1].startswith("unset CLAUDECODE")
 
 
@@ -2869,6 +2872,9 @@ class TestResumeWorkerPane:
         mock_backend.send_input.side_effect = lambda pane_id, text: events.append(
             ("send_input", text)
         )
+        mock_backend.send_shell_command.side_effect = lambda pane_id, cmd: events.append(
+            ("send_shell_command", cmd)
+        )
 
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
@@ -2883,8 +2889,8 @@ class TestResumeWorkerPane:
             resume_worker_pane(str(tmp_path), "fix-delay", session_root=str(tmp_path))
 
         assert events[0] == ("sleep", 0.25)
-        # Env setup is now a single batched send_input (unsets + exports)
-        assert events[1][0] == "send_input"
+        # Env setup uses send_shell_command (bootstrap, not runtime interaction)
+        assert events[1][0] == "send_shell_command"
         assert events[1][1].startswith("unset CLAUDECODE")
 
     def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:

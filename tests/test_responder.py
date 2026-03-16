@@ -289,7 +289,7 @@ class TestAutoRespond:
         pw_prompt = "Enter " + "password:"
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command") as mock_send,
+            patch("dgov.tmux.send_text_input") as mock_send,
         ):
             result = auto_respond(session_root, "test-worker", pw_prompt, rules)
             assert result is not None
@@ -307,7 +307,7 @@ class TestAutoRespond:
         rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
         ):
             result1 = auto_respond(session_root, "test-worker", "proceed?", rules)
             assert result1 is not None
@@ -338,7 +338,7 @@ class TestAutoRespond:
         rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
         ):
             auto_respond(session_root, "test-worker", "proceed?", rules)
         events = read_events(session_root)
@@ -352,7 +352,7 @@ class TestAutoRespond:
         pw_prompt = "Enter " + "password:"
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.send_text_input"),
         ):
             auto_respond(session_root, "test-worker", pw_prompt, rules)
         events = read_events(session_root)
