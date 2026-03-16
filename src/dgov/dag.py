@@ -414,6 +414,7 @@ def _merge_tasks_in_order(
             session_root=session_root,
             resolve=dag.merge_resolve,
             squash=dag.merge_squash,
+            message=dag.tasks[task_slug].commit_message,
         )
         if "error" in result:
             logger.error("Merge error for %s: %s", task_slug, result["error"])

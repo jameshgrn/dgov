@@ -591,6 +591,7 @@ def merge_worker_pane(
     session_root: str | None = None,
     resolve: str = "skip",
     squash: bool = True,
+    message: str | None = None,
 ) -> dict:
     """Merge a worker pane's branch with configurable conflict resolution.
 
@@ -659,7 +660,7 @@ def merge_worker_pane(
                 merge_files_changed = len(changed_file_names)
 
     # Plumbing merge — zero working-tree side effects on failure
-    merge = _plumbing_merge(pane_project_root, branch_name, squash=squash)
+    merge = _plumbing_merge(pane_project_root, branch_name, message=message, squash=squash)
 
     if merge.success:
         merge_sha_r = subprocess.run(
