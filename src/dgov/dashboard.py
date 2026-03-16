@@ -275,6 +275,15 @@ def _init_colors() -> None:
     curses.init_pair(7, curses.COLOR_BLACK, curses.COLOR_WHITE)  # selected row
 
 
+_MINI_BANNER = [
+    " ██████   ██████  ██████ ██   ██",
+    " ██   ██ ██      ██   ██ ██   ██",
+    " ██   ██ ██  ███ ██   ██ ██   ██",
+    " ██   ██ ██   ██ ██   ██  ██ ██ ",
+    " ██████   ██████  ██████   ████  ",
+]
+
+
 def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> int:
     """Draw the header. Returns the next row to draw on."""
     row = 0
@@ -287,20 +296,19 @@ def _draw_header(stdscr: curses.window, state: DashboardState, max_x: int) -> in
     project = os.path.basename(os.path.abspath(state.project_root))
     ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
     spinner = _SPINNER[state.frame % len(_SPINNER)]
+    status_text = f"v{__version__}  {project}  {branch}  {ts}  {pane_count} panes"
 
-    header = (
-        f" {spinner} dgov v{__version__}  |  {project}"
-        f"  |  {branch}  |  {ts}  |  {pane_count} panes"
-    )
-    try:
-        stdscr.addnstr(row, 0, header, max_x - 1, curses.A_BOLD)
-    except curses.error:
-        pass
-    row += 1
-
-    if error:
+    # Draw banner with status alongside
+    for i, line in enumerate(_MINI_BANNER):
         try:
-            stdscr.addnstr(row, 0, f" Error: {error}", max_x - 1, curses.color_pair(3))
+            stdscr.addnstr(row, 0, line, max_x - 1, curses.color_pair(1) | curses.A_BOLD)
+            if i == 1:
+                info = f"  {spinner} {status_text}"
+                stdscr.addnstr(row, len(line), info, max_x - len(line) - 1)
+            if i == 3 and error:
+                stdscr.addnstr(
+                    row, len(line), f"  err: {error}", max_x - len(line) - 1, curses.color_pair(3)
+                )
         except curses.error:
             pass
         row += 1

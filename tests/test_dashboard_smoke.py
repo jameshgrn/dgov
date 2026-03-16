@@ -227,7 +227,7 @@ class TestDrawHeader:
         assert row >= 2
         assert scr.addnstr.called
 
-    def test_error_adds_extra_row(self) -> None:
+    def test_error_shown_inline(self) -> None:
         scr = _make_stdscr()
         state = DashboardState(project_root="/tmp/project")
         state.error = "something broke"
@@ -239,7 +239,8 @@ class TestDrawHeader:
         state2.last_refresh = 1000000.0
         row_no_error = _draw_header(scr2, state2, 120)
 
-        assert row_with_error == row_no_error + 1
+        # Error is inline in the banner, no extra row
+        assert row_with_error == row_no_error
 
 
 class TestDrawTableHeader:
