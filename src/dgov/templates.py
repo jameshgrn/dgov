@@ -105,11 +105,11 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "- NEVER run dgov pane merge directly — use dgov pane merge-request\n"
             "- If a worker fails twice on the same task, escalate to claude\n"
             "- If you hit a structural problem, write to .dgov/progress/{ltgov_slug}.json:\n"
-            '  {"status": "escalation", "reason": "..."}\n'
+            '  {{"status": "escalation", "reason": "..."}}\n'
             "  Then exit.\n\n"
             "## When done\n"
             "Write to .dgov/progress/{ltgov_slug}.json:\n"
-            '{"status": "done", "merged": ["slug1"], "failed": ["slug2"], "summary": "..."}\n'
+            '{{"status": "done", "merged": ["slug1"], "failed": ["slug2"], "summary": "..."}}\n'
             "Then exit."
         ),
         required_vars=["ltgov_slug", "project_root", "task_list", "default_agent"],
