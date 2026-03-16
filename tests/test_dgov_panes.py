@@ -619,7 +619,7 @@ class TestListWorkerPanes:
 
         checked: list[str] = []
 
-        def fake_is_done(session_root, slug, pane_record=None):
+        def fake_is_done(session_root, slug, pane_record=None, **_kw):
             checked.append(slug)
             return False
 
@@ -658,7 +658,7 @@ class TestListWorkerPanes:
             "%3": {"title": "worker", "current_command": "node"}
         }
 
-        def fake_is_done(session_root, slug, pane_record=None):
+        def fake_is_done(session_root, slug, pane_record=None, **_kw):
             # Simulate what real _is_done does: update state, return True
             update_pane_state(session_root, slug, "done")
             return True
@@ -2069,6 +2069,7 @@ class TestValidEvents:
             "dag_failed",
             "merge_enqueued",
             "merge_completed",
+            "yap_received",
         }
         assert expected == VALID_EVENTS
 
