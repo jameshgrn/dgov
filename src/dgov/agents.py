@@ -71,7 +71,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="cc",
         prompt_command="claude",
         prompt_transport="positional",
-        default_flags="-p",
+        default_flags="",
         permission_flags={
             "plan": "--permission-mode plan",
             "acceptEdits": "--permission-mode acceptEdits",
