@@ -203,6 +203,7 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table.add_column("Phase", width=6, no_wrap=True)
     table.add_column("Slug", ratio=2, no_wrap=True)
     table.add_column("Agent", width=8, no_wrap=True)
+    table.add_column("Role", width=6, no_wrap=True)
     table.add_column("State", width=12, no_wrap=True)
     table.add_column("Phase", width=12, no_wrap=True)
     table.add_column("Summary", ratio=3)
@@ -219,6 +220,9 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
         dots = Text(phase_dots(pstate, activity))
         slug = Text(p.get("slug", ""))
         agent = Text(p.get("agent", "?"))
+        role = p.get("role", "worker")
+        role_style = "bold magenta" if role == "lt-gov" else "dim"
+        role_text = Text(role, style=role_style)
         state_text = Text(pstate, style=color)
         phase_text = Text(str(phase), style=_phase_style(str(phase)))
         summary_text = Text(str(summary)[:60])
@@ -228,7 +232,15 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
         slug_display = Text(f"{prefix}{slug.plain}")
 
         table.add_row(
-            dots, slug_display, agent, state_text, phase_text, summary_text, duration, style=style
+            dots,
+            slug_display,
+            agent,
+            role_text,
+            state_text,
+            phase_text,
+            summary_text,
+            duration,
+            style=style,
         )
 
     return table
