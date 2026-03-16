@@ -355,13 +355,13 @@ class TestPaneCommands:
         assert agent_result.exit_code == 0
         assert manual_result.exit_code == 0
         mock_merge_skip.assert_called_once_with(
-            ".", "task", session_root=None, resolve="skip", squash=True
+            ".", "task", session_root=None, resolve="skip", squash=True, rebase=False
         )
         mock_merge_agent.assert_called_once_with(
-            ".", "task", session_root=None, resolve="agent", squash=True
+            ".", "task", session_root=None, resolve="agent", squash=True, rebase=False
         )
         mock_merge_manual.assert_called_once_with(
-            ".", "task", session_root=None, resolve="manual", squash=True
+            ".", "task", session_root=None, resolve="manual", squash=True, rebase=False
         )
 
     def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
@@ -490,7 +490,7 @@ class TestPaneCommands:
 
         assert result.exit_code == 0
         mock_merge.assert_called_once_with(
-            ".", "a", session_root=None, resolve="manual", squash=True
+            ".", "a", session_root=None, resolve="manual", squash=True, rebase=False
         )
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
