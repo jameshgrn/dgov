@@ -869,3 +869,287 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     update_dag_run(session_root, run_id, status="completed")
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
     return _build_summary(run_id, dag_file, "completed", task_states, merged, dag)
+# Retry and escalation logic
+# ---------------------------------------------------------------------------
+
+
+def _augment_prompt_with_review(
+    original_prompt: str,
+    review_result: dict | None,
+    pane_slug: str,
+    session_root: str,
+) -> str:
+    """Prepend review feedback and log tail to the original prompt."""
+    parts = ["The previous attempt failed. Issues found:\n"]
+
+    if review_result and review_result.get("issues"):
+        for issue in review_result["issues"]:
+            parts.append(f"  - {issue}")
+
+    # Try to get log tail context
+    try:
+        from dgov.retry import retry_context
+
+        ctx = retry_context(session_root, pane_slug)
+        if ctx and ctx.get("log_tail"):
+            parts.append(f"\nLog tail:\n{ctx['log_tail']}")
+    except Exception:
+        pass
+
+    parts.append(f"\n---\n{original_prompt}")
+    return "\n".join(parts)
+
+
+def _task_failure_reason(
+    wait_result: dict | Exception | None,
+    review_result: dict | None,
+) -> str:
+    """Classify the failure reason for event emission."""
+    if isinstance(wait_result, Exception):
+        exc_name = type(wait_result).__name__
+        if "Timeout" in exc_name:
+            return "timeout"
+        return "runtime_failed"
+    if wait_result and not wait_result.get("ok"):
+        error = wait_result.get("error", "")
+        if "health" in error.lower():
+            return "health_check_failed"
+        if "timeout" in error.lower():
+            return "timeout"
+        return "runtime_failed"
+    if review_result:
+        if review_result.get("commit_count", 1) == 0:
+            return "zero_commit"
+        if not review_result.get("passed"):
+            return "review_failed"
+    return "runtime_failed"
+
+
+def _retry_same_agent(
+    dag: DagDefinition,
+    task: DagTaskSpec,
+    run_id: int,
+    current_attempt: int,
+    max_retries: int,
+    review_result: dict | None,
+    session_root: str,
+) -> dict | None:
+    """Retry with the same agent. Returns new pane info or None if exhausted."""
+    from dgov.persistence import upsert_dag_task
+    from dgov.recovery import retry_worker_pane
+
+    if current_attempt >= max_retries:
+        return None
+
+    new_prompt = _augment_prompt_with_review(
+        task.prompt,
+        review_result,
+        task.slug,
+        session_root,
+    )
+    new_attempt = current_attempt + 1
+
+    try:
+        result = retry_worker_pane(
+            dag.project_root,
+            task.slug,
+            session_root=session_root,
+            agent=task.agent,
+            prompt=new_prompt,
+            permission_mode=task.permission_mode,
+        )
+        new_slug = result.get("slug", task.slug)
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task.slug,
+            "dispatched",
+            task.agent,
+            attempt=new_attempt,
+            pane_slug=new_slug,
+        )
+        return {"pane_slug": new_slug, "attempt": new_attempt, "agent": task.agent}
+    except Exception as exc:
+        logger.warning("Retry failed for %s: %s", task.slug, exc)
+        return None
+
+
+def _escalate_to_next_agent(
+    dag: DagDefinition,
+    task: DagTaskSpec,
+    run_id: int,
+    current_agent_idx: int,
+    session_root: str,
+) -> dict | None:
+    """Escalate to the next agent in chain. Returns new pane info or None."""
+    from dgov.persistence import emit_event, upsert_dag_task
+    from dgov.recovery import escalate_worker_pane
+
+    chain = [task.agent] + list(task.escalation)
+    next_idx = current_agent_idx + 1
+    if next_idx >= len(chain):
+        return None
+
+    next_agent = chain[next_idx]
+    logger.info("Escalating %s from %s to %s", task.slug, chain[current_agent_idx], next_agent)
+
+    try:
+        result = escalate_worker_pane(
+            dag.project_root,
+            task.slug,
+            target_agent=next_agent,
+            session_root=session_root,
+            permission_mode=task.permission_mode,
+        )
+        new_slug = result.get("slug", task.slug)
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task.slug,
+            "dispatched",
+            next_agent,
+            attempt=1,
+            pane_slug=new_slug,
+        )
+        emit_event(
+            session_root,
+            "dag_task_escalated",
+            task.slug,
+            dag_run_id=run_id,
+            from_agent=chain[current_agent_idx],
+            to_agent=next_agent,
+            reason="escalation",
+        )
+        return {
+            "pane_slug": new_slug,
+            "attempt": 1,
+            "agent": next_agent,
+            "agent_idx": next_idx,
+        }
+    except Exception as exc:
+        logger.warning("Escalation failed for %s to %s: %s", task.slug, next_agent, exc)
+        return None
+
+
+def run_task_until_terminal(
+    dag: DagDefinition,
+    task: DagTaskSpec,
+    run_id: int,
+    max_retries: int,
+    session_root: str,
+) -> dict:
+    """Run a single task through retry and escalation until terminal state.
+
+    Returns dict with keys: status, agent, attempt, reason.
+    """
+    from dgov.persistence import emit_event, upsert_dag_task
+    from dgov.waiter import wait_worker_pane
+
+    chain = [task.agent] + list(task.escalation)
+
+    for agent_idx_try in range(len(chain)):
+        current_agent = chain[agent_idx_try]
+
+        for attempt_try in range(max_retries + 1):
+            # Dispatch
+            try:
+                pane_info = _dispatch_task(dag, task, run_id, session_root)
+                pane_slug = pane_info["pane_slug"]
+            except Exception as exc:
+                reason = _task_failure_reason(exc, None)
+                next_ag = chain[agent_idx_try + 1] if agent_idx_try + 1 < len(chain) else "none"
+                emit_event(
+                    session_root,
+                    "dag_task_escalated",
+                    task.slug,
+                    dag_run_id=run_id,
+                    reason=reason,
+                    from_agent=current_agent,
+                    to_agent=next_ag,
+                )
+                break  # try next agent
+
+            # Wait
+            try:
+                wait_worker_pane(
+                    dag.project_root,
+                    pane_slug,
+                    session_root=session_root,
+                    timeout=task.timeout_s,
+                    auto_retry=False,
+                )
+            except Exception as exc:
+                reason = _task_failure_reason(exc, None)
+                if reason == "timeout":
+                    emit_event(
+                        session_root,
+                        "dag_task_escalated",
+                        task.slug,
+                        dag_run_id=run_id,
+                        reason="timeout",
+                    )
+                    break  # try next agent
+                upsert_dag_task(
+                    session_root,
+                    run_id,
+                    task.slug,
+                    "failed",
+                    current_agent,
+                    error=str(exc),
+                )
+                continue  # retry same agent
+
+            # Check pane state
+            pane_state_val = _get_pane_state(session_root, pane_slug)
+            if pane_state_val in ("failed", "timed_out", "abandoned"):
+                if attempt_try < max_retries:
+                    continue  # retry
+                break  # next agent
+
+            # Review
+            review = _review_task(dag, task.slug, pane_slug, session_root)
+            if review.get("error"):
+                if attempt_try < max_retries:
+                    continue
+                break
+
+            if review.get("commit_count", 1) == 0:
+                emit_event(
+                    session_root,
+                    "dag_task_escalated",
+                    task.slug,
+                    dag_run_id=run_id,
+                    reason="zero_commit",
+                )
+                break  # next agent immediately
+
+            if review.get("passed"):
+                return {
+                    "status": "reviewed_pass",
+                    "agent": current_agent,
+                    "attempt": attempt_try + 1,
+                    "pane_slug": pane_slug,
+                }
+
+            # Review failed — retry same agent
+            if attempt_try < max_retries:
+                continue
+            break  # next agent
+
+    # All agents exhausted
+    upsert_dag_task(
+        session_root,
+        run_id,
+        task.slug,
+        "failed",
+        chain[-1],
+        error="all agents exhausted",
+    )
+    emit_event(
+        session_root,
+        "dag_task_failed",
+        task.slug,
+        dag_run_id=run_id,
+        reason="exhausted",
+    )
+    return {"status": "failed", "agent": chain[-1], "attempt": 0, "reason": "exhausted"}
