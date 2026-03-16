@@ -583,6 +583,124 @@ def run_single_tier(
                 pane_slug=pane_slug,
             )
 
+    # Retry failed tasks up to max_retries
+    retryable = [s for s in reviewed_fail if task_states.get(s) == "reviewed_fail"]
+    for retry_attempt in range(1, options.max_retries):
+        if not retryable:
+            break
+
+        retry_batch: dict[str, dict] = {}
+        still_failing: list[str] = []
+
+        for task_slug in retryable:
+            task = dag.tasks[task_slug]
+            old_pane = pane_slugs.get(task_slug)
+            # Build augmented prompt with failure context
+            review_info = {"issues": [f"Attempt {retry_attempt} failed"]}
+            augmented = _augment_prompt_with_review(
+                task.prompt, review_info, old_pane or task_slug, session_root
+            )
+            # Close old pane first
+            if old_pane:
+                try:
+                    from dgov.lifecycle import close_worker_pane
+
+                    close_worker_pane(
+                        dag.project_root, old_pane, session_root=session_root, force=True
+                    )
+                except Exception:
+                    pass
+
+            # Re-dispatch with augmented prompt
+            try:
+                retry_task = DagTaskSpec(
+                    slug=task.slug,
+                    summary=task.summary,
+                    prompt=augmented,
+                    commit_message=task.commit_message,
+                    agent=task.agent,
+                    escalation=task.escalation,
+                    depends_on=task.depends_on,
+                    files=task.files,
+                    permission_mode=task.permission_mode,
+                    timeout_s=task.timeout_s,
+                )
+                pane_info = _dispatch_task(dag, retry_task, run_id, session_root)
+                retry_batch[task_slug] = pane_info
+                pane_slugs[task_slug] = pane_info["pane_slug"]
+                task_states[task_slug] = "dispatched"
+                upsert_dag_task(
+                    session_root,
+                    run_id,
+                    task_slug,
+                    "dispatched",
+                    task.agent,
+                    attempt=retry_attempt + 1,
+                    pane_slug=pane_info["pane_slug"],
+                )
+            except Exception as exc:
+                logger.error("Retry dispatch failed for %s: %s", task_slug, exc)
+                still_failing.append(task_slug)
+
+        if retry_batch:
+            retry_results = _wait_for_tier(dag, retry_batch, session_root)
+
+            for task_slug, wait_res in retry_results.items():
+                pane_slug = wait_res["pane_slug"]
+                pane_slugs[task_slug] = pane_slug
+                if not wait_res["ok"]:
+                    task_states[task_slug] = "failed"
+                    upsert_dag_task(
+                        session_root,
+                        run_id,
+                        task_slug,
+                        "failed",
+                        dag.tasks[task_slug].agent,
+                        error=wait_res.get("error"),
+                    )
+                    still_failing.append(task_slug)
+                    continue
+
+                pane_state = _get_pane_state(session_root, pane_slug)
+                if pane_state in ("failed", "timed_out", "abandoned"):
+                    task_states[task_slug] = "failed"
+                    upsert_dag_task(
+                        session_root,
+                        run_id,
+                        task_slug,
+                        "failed",
+                        dag.tasks[task_slug].agent,
+                        error=f"pane ended in {pane_state}",
+                    )
+                    still_failing.append(task_slug)
+                    continue
+
+                review = _review_task(dag, task_slug, pane_slug, session_root)
+                if review.get("error") or not review.get("passed"):
+                    still_failing.append(task_slug)
+                    task_states[task_slug] = "reviewed_fail"
+                    upsert_dag_task(
+                        session_root,
+                        run_id,
+                        task_slug,
+                        "reviewed_fail",
+                        dag.tasks[task_slug].agent,
+                        pane_slug=pane_slug,
+                    )
+                else:
+                    reviewed_pass.append(task_slug)
+                    task_states[task_slug] = "reviewed_pass"
+                    upsert_dag_task(
+                        session_root,
+                        run_id,
+                        task_slug,
+                        "reviewed_pass",
+                        dag.tasks[task_slug].agent,
+                        pane_slug=pane_slug,
+                    )
+
+        retryable = still_failing
+
     # Clean up failed/reviewed_fail panes to prevent resource leaks
     for task_slug in tier:
         if task_states.get(task_slug) in ("failed", "reviewed_fail"):
