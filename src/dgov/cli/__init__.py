@@ -80,6 +80,7 @@ def cli(ctx, governor):
         "template",
         "openrouter",
         "dashboard",
+        "briefing",
         "stats",
         "init",
         "doctor",
@@ -256,6 +257,7 @@ from dgov.cli.admin import (  # noqa: E402
     version_cmd,
 )
 from dgov.cli.batch_cmd import batch, checkpoint  # noqa: E402
+from dgov.cli.briefing_cmd import briefing_cmd  # noqa: E402
 from dgov.cli.dag_cmd import dag  # noqa: E402
 from dgov.cli.experiment import experiment  # noqa: E402
 from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
@@ -287,6 +289,7 @@ cli.add_command(mission_cmd)
 cli.add_command(dag)
 cli.add_command(merge_queue)
 cli.add_command(yap_cmd)
+cli.add_command(briefing_cmd)
 
 
 if __name__ == "__main__":
