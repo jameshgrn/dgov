@@ -56,8 +56,12 @@ Reply as JSON only: {"category": "...", "agent_hint": null, "files": [], "urgenc
 
 User text is passed after a `---` delimiter to reduce prompt injection surface.
 
-Model: OpenRouter (hunter-alpha or whatever's free) → Qwen 4B fallback.
+Model: **Local Qwen 4B on River first** (sub-100ms via tunnel) → OpenRouter fallback.
+Uses `chat_completion_local_first()` from openrouter.py (inverted fallback chain).
 Max tokens: 150. Temperature: 0.
+
+Rationale: classification is trivial (4 categories + JSON extraction). 4B handles it
+fine and avoids the 1-3s OpenRouter network round-trip. Yapper must feel instant.
 
 ### Post-classification validation (P0)
 
@@ -159,7 +163,7 @@ def _validate_classification(raw: dict, agent_registry: dict | None = None) -> d
 
 def classify(text: str, agent_registry: dict | None = None) -> dict:
     """Classify user input via LLM. Returns validated JSON dict."""
-    from dgov.openrouter import chat_completion
+    from dgov.openrouter import chat_completion_local_first as chat_completion
 
     messages = [
         {"role": "system", "content": _CLASSIFY_SYSTEM},
@@ -447,9 +451,10 @@ Not in v1. v1 is single-shot CLI only.
 
 ## Dependencies
 
-- Zero new deps. Uses existing `openrouter.chat_completion()`, `strategy.classify_task()`,
-  `lifecycle.create_worker_pane()`, `status.list_worker_panes()`
-- Model: same OpenRouter fallback chain (hunter-alpha → Qwen 4B)
+- Zero new deps. Uses existing `openrouter.chat_completion_local_first()`,
+  `strategy.classify_task()`, `lifecycle.create_worker_pane()`, `status.list_worker_panes()`
+- Classification model: local Qwen 4B (River GPU, localhost:8082) → OpenRouter fallback
+- Agent routing model: existing `classify_task()` uses OpenRouter (needs intelligence)
 
 ## Testing Strategy
 
