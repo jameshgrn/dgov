@@ -224,8 +224,8 @@ def fetch_detail(state: DashboardState, slug: str) -> None:
         review = review_worker_pane(state.project_root, slug, session_root=state.session_root)
         if "error" not in review:
             lines.append("== Diff Stat ==")
-            lines.append(review.get("stat", "(no changes)"))
             lines.append(f"Commits: {review.get('commit_count', 0)}")
+            lines.append(review.get("stat", "(no changes)"))
             lines.append("")
         else:
             lines.append(f"== Diff Stat == (error: {review['error']})")
@@ -234,6 +234,23 @@ def fetch_detail(state: DashboardState, slug: str) -> None:
         logger.debug("Failed to fetch diff stat for %s", slug, exc_info=True)
         lines.append("== Diff Stat == (unavailable)")
         lines.append("")
+
+    # File-level diff stat
+    try:
+        from dgov.inspection import diff_worker_pane
+
+        stat_result = diff_worker_pane(
+            state.project_root, slug, session_root=state.session_root, stat=True
+        )
+        if "error" not in stat_result:
+            stat_text = stat_result.get("diff", "")
+            if stat_text.strip():
+                lines.append("== Files Changed ==")
+                for stat_line in stat_text.splitlines():
+                    lines.append(stat_line)
+                lines.append("")
+    except Exception:  # noqa: BLE001
+        logger.debug("Failed to fetch file stat for %s", slug, exc_info=True)
 
     # Tail log file for recent output (works even for dead panes)
     try:
@@ -371,7 +388,7 @@ def _draw_footer(stdscr: curses.window, row: int, max_x: int, mode: str = "list"
     if mode == "list":
         keys = (
             "q:quit  r:refresh  j/k:\u2191\u2193  Enter:detail"
-            "  d:diff  c:capture  m:merge  x:close  a:attach  s:send"
+            "  d:diff  p:patch  c:capture  m:merge  x:close  a:attach  s:send"
         )
     else:
         keys = "q/Esc:back  j/k:\u2191\u2193 scroll"
@@ -413,11 +430,21 @@ def _draw_detail(
 
     # Content
     lines = text.split("\n")
+    is_patch = slug and text.lstrip().startswith("== Patch:")
     visible_rows = max_y - 4  # header(2) + footer(2)
     for i in range(scroll_offset, min(scroll_offset + visible_rows, len(lines))):
         line = lines[i]
         try:
-            attr = curses.A_BOLD if line.startswith("==") else 0
+            if line.startswith("=="):
+                attr = curses.A_BOLD
+            elif is_patch and line.startswith("+"):
+                attr = curses.color_pair(2)  # green
+            elif is_patch and line.startswith("-"):
+                attr = curses.color_pair(3)  # red
+            elif is_patch and line.startswith("@@"):
+                attr = curses.color_pair(4)  # cyan
+            else:
+                attr = 0
             stdscr.addnstr(row, 1, truncate(line, max_x - 2), max_x - 2, attr)
         except curses.error:
             pass
@@ -603,6 +630,14 @@ def _curses_main(
                     _show_diff(state, slug)
                     mode = "detail"
                     detail_scroll = 0
+            elif key == ord("p"):
+                with state.lock:
+                    panes_snap = list(state.panes)
+                if panes_snap and 0 <= selected < len(panes_snap):
+                    slug = panes_snap[selected]["slug"]
+                    _show_patch(state, slug)
+                    mode = "detail"
+                    detail_scroll = 0
             elif key == ord("c"):
                 with state.lock:
                     panes_snap = list(state.panes)
@@ -707,6 +742,29 @@ def _show_diff(state: DashboardState, slug: str) -> None:
     with state.lock:
         state.detail_slug = slug
         state.detail_text = f"== Diff: {slug} ==\n\n{text}"
+
+
+def _show_patch(state: DashboardState, slug: str) -> None:
+    """Fetch full diff and show in detail view with syntax coloring hints."""
+    from dgov.inspection import diff_worker_pane
+
+    try:
+        result = diff_worker_pane(
+            state.project_root,
+            slug,
+            session_root=state.session_root,
+            stat=False,
+        )
+        if "error" in result:
+            text = f"Error: {result['error']}"
+        else:
+            text = result.get("diff", "(no diff)")
+    except Exception as exc:  # noqa: BLE001
+        text = f"Error fetching patch: {exc}"
+
+    with state.lock:
+        state.detail_slug = slug
+        state.detail_text = f"== Patch: {slug} ==\n\n{text}"
 
 
 def _show_capture(state: DashboardState, slug: str) -> None:
