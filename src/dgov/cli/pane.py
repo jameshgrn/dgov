@@ -251,15 +251,30 @@ def pane_close(slug, project_root, session_root, force):
     default=True,
     help="Squash worker commits into one (default: squash)",
 )
-def pane_merge(slug, project_root, session_root, resolve, squash):
+@click.option(
+    "--rebase",
+    is_flag=True,
+    default=False,
+    help="Rebase merge (linear history, original commits)",
+)
+def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
     """Merge a branch into main with configurable conflict resolution.
 
     Merge the worktree branch for the given pane.
     """
     from dgov.merger import merge_worker_pane
 
+    if rebase and not squash:
+        click.echo("Cannot use --rebase with --no-squash", err=True)
+        sys.exit(1)
+
     result = merge_worker_pane(
-        project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+        project_root,
+        slug,
+        session_root=session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
     )
 
     click.echo(json.dumps(result, indent=2))
@@ -283,10 +298,20 @@ def pane_merge(slug, project_root, session_root, resolve, squash):
     default=True,
     help="Squash worker commits",
 )
-def pane_land(slug, project_root, session_root, resolve, squash):
+@click.option(
+    "--rebase",
+    is_flag=True,
+    default=False,
+    help="Rebase merge (linear history, original commits)",
+)
+def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close a worker pane in one step."""
     from dgov.inspection import review_worker_pane
     from dgov.merger import merge_worker_pane
+
+    if rebase and not squash:
+        click.echo("Cannot use --rebase with --no-squash", err=True)
+        sys.exit(1)
 
     # Review
     review = review_worker_pane(project_root, slug, session_root=session_root)
@@ -304,7 +329,12 @@ def pane_land(slug, project_root, session_root, resolve, squash):
 
     # Merge (this also runs cleanup automatically)
     result = merge_worker_pane(
-        project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+        project_root,
+        slug,
+        session_root=session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
     )
     click.echo(json.dumps(result, indent=2))
     if "error" in result:
@@ -441,10 +471,20 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
     default=True,
     help="Squash worker commits into one (default: squash)",
 )
-def pane_merge_all(project_root, session_root, resolve, squash):
+@click.option(
+    "--rebase",
+    is_flag=True,
+    default=False,
+    help="Rebase merge (linear history, original commits)",
+)
+def pane_merge_all(project_root, session_root, resolve, squash, rebase):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
     from dgov.merger import merge_worker_pane
     from dgov.status import list_worker_panes
+
+    if rebase and not squash:
+        click.echo("Cannot use --rebase with --no-squash", err=True)
+        sys.exit(1)
 
     panes = list_worker_panes(project_root, session_root=session_root)
     done_panes = [p for p in panes if p["done"]]
@@ -462,7 +502,12 @@ def pane_merge_all(project_root, session_root, resolve, squash):
     for p in done_panes:
         slug = p["slug"]
         result = merge_fn(
-            project_root, slug, session_root=session_root, resolve=resolve, squash=squash
+            project_root,
+            slug,
+            session_root=session_root,
+            resolve=resolve,
+            squash=squash,
+            rebase=rebase,
         )
         if "merged" in result:
             merged_slugs.append(slug)
