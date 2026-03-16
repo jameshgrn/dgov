@@ -105,10 +105,25 @@ def format_row(pane: dict, col_widths: dict[str, int], frame: int = 0) -> dict[s
         elif pane_state in ("closed", "superseded"):
             activity = "\u2014 closed"
 
+    # Phase dots indicator
+    pane_activity = pane.get("activity", "")
+    if pane_state == "active" and "working" in str(pane_activity):
+        dots = "\u2b24\u2b24\u2b24\u25cb\u25cb"
+    elif pane_state == "active":
+        dots = "\u2b24\u25cb\u25cb\u25cb\u25cb"
+    elif pane_state in ("done", "merged"):
+        dots = "\u2b24\u2b24\u2b24\u2b24\u2b24"
+    elif pane_state in ("failed", "abandoned", "timed_out"):
+        dots = "\u2717\u2717\u2717\u2717\u2717"
+    elif pane_state == "escalated":
+        dots = "\u2b24\u2b24\u25cb\u25cb\u25cb"
+    else:
+        dots = "\u25cb\u25cb\u25cb\u25cb\u25cb"
+
     return {
         "slug": truncate(pane.get("slug", ""), col_widths["slug"]),
         "agent": truncate(pane.get("agent", "?"), col_widths["agent"]),
-        "state": truncate(pane_state, col_widths["state"] - 2),
+        "state": truncate(f"{dots} {pane_state}", col_widths["state"] - 2),
         "activity": truncate(activity, col_widths["activity"]),
         "duration": fmt_duration(int(pane.get("duration_s", 0))),
         "prompt": truncate(pane.get("prompt", ""), col_widths["prompt"]),
@@ -118,7 +133,7 @@ def format_row(pane: dict, col_widths: dict[str, int], frame: int = 0) -> dict[s
 COLUMNS = [
     ("slug", 20),
     ("agent", 10),
-    ("state", 14),
+    ("state", 20),
     ("activity", 25),
     ("duration", 10),
     ("prompt", 30),
@@ -499,13 +514,26 @@ def _draw_prompt_preview(
             available -= 1
 
             # Filter out bootstrap noise (env exports, source commands, prompts)
-            _NOISE = {"unset", "export", "source", "DGOV_", "if DGOV", "➜", "kunset"}
+            _NOISE = {
+                "unset",
+                "export",
+                "source",
+                "DGOV_",
+                "if DGOV",
+                "set +o",
+                "compinit",
+                "zcompdump",
+                "autoload",
+                "kunset",
+            }
             cleaned = []
             for ln in log_tail.splitlines():
                 stripped = _strip_ansi(ln).strip()
                 if not stripped:
                     continue
                 if any(stripped.startswith(n) for n in _NOISE):
+                    continue
+                if stripped.startswith("\x1b") or "\x1b" in stripped:
                     continue
                 # Skip lines that are just control chars or very short fragments
                 if len(stripped) < 3:
