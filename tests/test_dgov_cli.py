@@ -323,8 +323,8 @@ class TestPaneCommands:
 
         assert ok.exit_code == 0
         assert json.loads(ok.output) == {"closed": "task"}
-        assert missing.exit_code == 1
-        assert json.loads(missing.output)["error"] == "Pane not found: missing"
+        assert missing.exit_code == 0
+        assert json.loads(missing.output) == {"already_closed": "missing"}
 
     def test_merge_uses_selected_strategy(self, runner: CliRunner) -> None:
         with patch(
