@@ -276,6 +276,9 @@ def list_worker_panes(
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),
             "prompt": p.get("prompt", "")[:80],
+            "role": p.get("role", "worker"),
+            "parent_slug": p.get("parent_slug", ""),
+            "tier_id": p.get("tier_id", ""),
             "duration_s": duration_s,
             **freshness,
         }

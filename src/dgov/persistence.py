@@ -445,7 +445,8 @@ def list_panes_slim(session_root: str) -> list[dict]:
     rows = conn.execute(
         "SELECT slug, pane_id, agent, project_root, worktree_path,"
         " branch_name, created_at, owns_worktree, base_sha, state,"
-        " metadata, substr(prompt, 1, 200) AS prompt FROM panes"
+        " metadata, substr(prompt, 1, 200) AS prompt,"
+        " parent_slug, tier_id, role FROM panes"
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
 
