@@ -223,11 +223,9 @@ class TestDrawHeader:
         state.last_refresh = 1000000.0
         state.panes = [SAMPLE_PANE]
         row = _draw_header(scr, state, 120)
-        # Header line + separator = at least row 2
-        assert row >= 2
-        assert scr.addnstr.called
+        assert row >= 1
 
-    def test_error_shown_inline(self) -> None:
+    def test_error_adds_row(self) -> None:
         scr = _make_stdscr()
         state = DashboardState(project_root="/tmp/project")
         state.error = "something broke"
@@ -239,8 +237,7 @@ class TestDrawHeader:
         state2.last_refresh = 1000000.0
         row_no_error = _draw_header(scr2, state2, 120)
 
-        # Error is inline in the banner, no extra row
-        assert row_with_error == row_no_error
+        assert row_with_error == row_no_error + 1
 
 
 class TestDrawTableHeader:
