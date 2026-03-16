@@ -247,17 +247,35 @@ def setup_governor_workspace(project_root: str) -> list[str]:
         dash_id = split_pane()
         send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
         set_title(dash_id, "[gov] dashboard")
-        set_pane_option(dash_id, "pane-border-style", "fg=colour39")
-        set_pane_option(dash_id, "pane-active-border-style", "fg=colour39,bold")
+        _run(
+            [
+                "set-option",
+                "-p",
+                "-t",
+                dash_id,
+                "pane-border-format",
+                " #[fg=colour39,bold]#{pane_index} #[fg=colour39]#{pane_title} ",
+            ],
+            silent=True,
+        )
         panes.append(dash_id)
 
     if "[gov] lazygit" not in existing:
         lg_id = split_pane()
         send_command(lg_id, "lazygit")
         set_title(lg_id, "[gov] lazygit")
-        set_pane_option(lg_id, "pane-border-style", "fg=colour214")
-        set_pane_option(lg_id, "pane-active-border-style", "fg=colour214,bold")
-        # Focus lazygit on Commits panel (panel 4)
+        _run(
+            [
+                "set-option",
+                "-p",
+                "-t",
+                lg_id,
+                "pane-border-format",
+                " #[fg=colour214,bold]#{pane_index} #[fg=colour214]#{pane_title} ",
+            ],
+            silent=True,
+        )
+        # Focus lazygit on Commits panel
         time.sleep(0.5)
         _run(["send-keys", "-t", lg_id, "4"], silent=True)
         panes.append(lg_id)
