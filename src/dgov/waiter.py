@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
-from dgov.done import _is_done
+from dgov.done import (  # noqa: F401 — re-export for backwards compat
+    _agent_still_running,
+    _count_commits,
+    _has_new_commits,
+    _is_done,
+    _resolve_strategy,
+    _wrap_done_signal,
+)
 from dgov.persistence import STATE_DIR
 
 if TYPE_CHECKING:

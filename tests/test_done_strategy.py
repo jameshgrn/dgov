@@ -16,8 +16,8 @@ from dgov.agents import (
     load_registry,
 )
 from dgov.backend import set_backend
+from dgov.done import _is_done, _resolve_strategy
 from dgov.persistence import STATE_DIR, WorkerPane, add_pane
-from dgov.waiter import _is_done, _resolve_strategy
 
 pytestmark = pytest.mark.unit
 
@@ -276,7 +276,7 @@ class TestIsDoneWithStrategy:
             "base_sha": "abc123",
         }
 
-        with patch("dgov.waiter._has_new_commits", return_value=True):
+        with patch("dgov.done._has_new_commits", return_value=True):
             result = _is_done(
                 session_root,
                 slug,
@@ -315,9 +315,9 @@ class TestIsDoneWithStrategy:
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 60}
 
         with (
-            patch("dgov.waiter._has_new_commits", return_value=False),
+            patch("dgov.done._has_new_commits", return_value=False),
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
@@ -349,7 +349,7 @@ class TestIsDoneWithStrategy:
 
         with (
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
@@ -380,7 +380,7 @@ class TestIsDoneWithStrategy:
 
         with (
             patch("dgov.status.capture_worker_output", return_value="same output"),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
@@ -404,7 +404,7 @@ class TestIsDoneWithStrategy:
             "base_sha": "abc123",
         }
 
-        with patch("dgov.waiter._has_new_commits", return_value=True) as mock_commits:
+        with patch("dgov.done._has_new_commits", return_value=True) as mock_commits:
             _is_done(
                 session_root,
                 slug,
@@ -428,8 +428,8 @@ class TestIsDoneWithStrategy:
         }
 
         with (
-            patch("dgov.waiter._has_new_commits", return_value=True),
-            patch("dgov.waiter._agent_still_running", return_value=False),
+            patch("dgov.done._has_new_commits", return_value=True),
+            patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
