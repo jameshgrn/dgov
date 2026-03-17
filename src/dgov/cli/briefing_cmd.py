@@ -10,9 +10,60 @@ import click
 
 from dgov.cli import SESSION_ROOT_OPTION
 
+_SKIP_NAMES = frozenset(
+    {
+        "readme",
+        "claude",
+        "gemini",
+        "handover",
+        ".napkin",
+        "changelog",
+        "contributing",
+        "license",
+    }
+)
 
-def _reports_dir(session_root: str) -> Path:
-    return Path(session_root) / ".dgov" / "reports"
+
+def _find_reports(project_root: str, session_root: str) -> list[Path]:
+    """Collect .md reports from .dgov/reports/, repo root, and docs/."""
+    seen: set[str] = set()
+    results: list[Path] = []
+    search = [
+        Path(session_root) / ".dgov" / "reports",
+        Path(project_root),
+        Path(project_root) / "docs",
+    ]
+    for d in search:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.md")):
+            key = f.stem.lower()
+            if key in _SKIP_NAMES:
+                continue
+            if key not in seen:
+                seen.add(key)
+                results.append(f)
+    return results
+
+
+def _resolve_report(name: str, project_root: str, session_root: str) -> str | None:
+    """Resolve a report name to an absolute file path."""
+    # Absolute or relative path given directly
+    if os.path.isfile(name):
+        return os.path.abspath(name)
+
+    # Search all report locations
+    search = [
+        Path(session_root) / ".dgov" / "reports",
+        Path(project_root),
+        Path(project_root) / "docs",
+    ]
+    for d in search:
+        for suffix in (f"{name}.md", name):
+            candidate = d / suffix
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 @click.group("briefing", invoke_without_command=True)
@@ -25,7 +76,7 @@ def briefing_cmd(ctx, name: str | None, project_root: str, session_root: str | N
 
     \b
     dgov briefing                  # list available reports
-    dgov briefing cursor-arch      # open a report in glow pane
+    dgov briefing plumbing-audit   # open a report in glow window
     dgov briefing /path/to/doc.md  # open any markdown file
     """
     if ctx.invoked_subcommand is not None:
@@ -35,69 +86,44 @@ def briefing_cmd(ctx, name: str | None, project_root: str, session_root: str | N
     session_root = os.path.abspath(session_root or project_root)
 
     if name is None:
-        # List available reports
-        reports = _reports_dir(session_root)
-        if not reports.is_dir():
-            click.echo("No reports yet. Reports appear in .dgov/reports/")
-            return
-        files = sorted(reports.glob("*.md"))
-        if not files:
-            click.echo("No reports yet. Reports appear in .dgov/reports/")
+        reports = _find_reports(project_root, session_root)
+        if not reports:
+            click.echo("No reports found.")
             return
         click.echo("Available reports:")
-        for f in files:
+        for f in reports:
             click.echo(f"  {f.stem}")
         return
 
-    # Resolve the file path
-    if os.path.isfile(name):
-        doc_path = os.path.abspath(name)
-    else:
-        # Try .dgov/reports/<name>.md
-        candidate = _reports_dir(session_root) / f"{name}.md"
-        if candidate.is_file():
-            doc_path = str(candidate)
-        else:
-            # Try without .md extension stripped
-            candidate2 = _reports_dir(session_root) / name
-            if candidate2.is_file():
-                doc_path = str(candidate2)
-            else:
-                click.echo(f"Report not found: {name}")
-                click.echo(f"Looked in: {_reports_dir(session_root)}")
-                raise SystemExit(1)
+    doc_path = _resolve_report(name, project_root, session_root)
+    if doc_path is None:
+        click.echo(f"Report not found: {name}")
+        raise SystemExit(1)
 
-    _open_glow_pane(doc_path)
+    _open_glow_window(doc_path)
 
 
-def _open_glow_pane(doc_path: str) -> None:
-    """Open glow in a tmux split pane to render a markdown file."""
-    from dgov.tmux import _run, select_layout, send_command, set_title, split_pane
+def _open_glow_window(doc_path: str) -> None:
+    """Open glow in a background tmux window."""
+    from dgov.tmux import _run, send_command
 
     title = f"[doc] {Path(doc_path).stem}"
 
-    # Check if this doc is already open
-    existing = _run(["list-panes", "-F", "#{pane_title}"], silent=True).splitlines()
+    # Check if this doc is already open in any window
+    existing = _run(["list-windows", "-F", "#{window_name}"], silent=True).splitlines()
     if title in existing:
-        click.echo(f"Already open: {title}")
+        # Switch to it
+        _run(["select-window", "-t", f"={title}"], silent=True)
+        click.echo(f"Switched to: {title}")
         return
 
     cmd = f"glow -p {shlex.quote(doc_path)}"
-    pane_id = split_pane()
-    send_command(pane_id, cmd)
-    set_title(pane_id, title)
-
-    _run(
-        [
-            "set-option",
-            "-p",
-            "-t",
-            pane_id,
-            "pane-border-format",
-            " #[fg=colour141,bold]#{pane_index} #[fg=colour141]#{pane_title} ",
-        ],
-        silent=True,
+    _run(["new-window", "-d", "-n", title], silent=True)
+    pane_id = (
+        _run(["list-panes", "-t", f"={title}", "-F", "#{pane_id}"], silent=True)
+        .strip()
+        .splitlines()[0]
     )
+    send_command(pane_id, cmd)
 
-    select_layout("main-vertical")
-    click.echo(f"Opened: {doc_path}")
+    click.echo(f"Opened: {doc_path} (window: {title})")

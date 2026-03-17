@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -23,23 +23,62 @@ class YapperResult:
     raw_classification: dict | None = None
 
 
+@dataclass
+class YapperSession:
+    """Holds conversation context across a REPL session."""
+
+    history: list[tuple[str, YapperResult]] = field(default_factory=list)
+    max_context: int = 8
+
+    def record(self, text: str, result: YapperResult) -> None:
+        self.history.append((text, result))
+        if len(self.history) > self.max_context:
+            self.history = self.history[-self.max_context :]
+
+    def format_context(self) -> str:
+        if not self.history:
+            return ""
+        lines = []
+        for text, result in self.history[-5:]:
+            if result.category == "COMMAND" and result.slug:
+                files = (result.raw_classification or {}).get("files", [])
+                file_str = f" files={files}" if files else ""
+                lines.append(f"- [{result.agent}] '{result.slug}': {result.summary}{file_str}")
+            elif result.category == "IDEA":
+                lines.append(f"- idea: {result.summary}")
+            else:
+                lines.append(f"- user said: {text[:80]}")
+        return "\n".join(lines)
+
+
 _VALID_CATEGORIES = {"COMMAND", "IDEA", "QUESTION", "CHATTER"}
 _SAFE_FILE_RE = re.compile(r"^(?![/])(?!.*\.\./)[a-zA-Z0-9_./-]+$")
 
-_CLASSIFY_SYSTEM = """Classify the user input below the --- separator into exactly one category:
-- COMMAND: user wants work done (fix, add, refactor, test, deploy, review, merge, rename)
-- IDEA: brainstorming or deferring ("what if", "maybe later", "idea:", "we could")
-- QUESTION: wants info about state, code, or process ("status", "which file", "how does")
-- CHATTER: greeting, thanks, acknowledgment, thinking out loud
-
-Extract from the input:
-- agent_hint: if user names a specific agent (claude, codex, gemini, pi), else null
-- files: file paths mentioned (src/..., tests/..., *.py), else []
-- urgency: "now" (default) or "later" ("eventually", "low priority")
-- summary: one-line imperative task description, strip filler
-
-Reply as JSON only:
-{"category": "COMMAND", "agent_hint": null, "files": [], "urgency": "now", "summary": "..."}"""
+_CLASSIFY_SYSTEM = (
+    "You are a secretary for a software governor. "
+    "Classify user input and extract structured task info.\n"
+    "\n"
+    "Categories:\n"
+    "- COMMAND: user wants work done (fix, add, refactor, test, "
+    "deploy, review, rename)\n"
+    "- IDEA: brainstorming or deferring (what if, maybe later, "
+    "idea:, we could)\n"
+    "- QUESTION: wants info about state, code, or process "
+    "(status, which file, how does)\n"
+    "- CHATTER: greeting, thanks, acknowledgment, thinking aloud\n"
+    "\n"
+    "Extract:\n"
+    "- agent_hint: if user names an agent (claude, codex, gemini, "
+    "pi), else null\n"
+    "- files: file paths mentioned (src/..., tests/...), else []\n"
+    "- urgency: now (default) or later\n"
+    "- summary: one-line imperative task description, strip filler. "
+    "Resolve pronouns (that, it, same thing) using recent context.\n"
+    "\n"
+    "Reply as JSON only:\n"
+    '{"category": "COMMAND", "agent_hint": null, "files": [], '
+    '"urgency": "now", "summary": "..."}'
+)
 
 
 def _validate_classification(raw: dict, agent_registry: dict | None = None) -> dict:
@@ -60,13 +99,23 @@ def _validate_classification(raw: dict, agent_registry: dict | None = None) -> d
     }
 
 
-def classify(text: str, agent_registry: dict | None = None) -> dict:
+def classify(
+    text: str,
+    agent_registry: dict | None = None,
+    session: YapperSession | None = None,
+) -> dict:
     """Classify user input via LLM. Returns validated JSON dict."""
     from dgov.openrouter import chat_completion_local_first as chat_completion
 
+    context = session.format_context() if session else ""
+    user_content = ""
+    if context:
+        user_content += f"Recent context:\n{context}\n\n"
+    user_content += f"---\n{text[:500]}"
+
     messages = [
         {"role": "system", "content": _CLASSIFY_SYSTEM},
-        {"role": "user", "content": f"---\n{text[:500]}"},
+        {"role": "user", "content": user_content},
     ]
     try:
         resp = chat_completion(messages, max_tokens=150, temperature=0)
@@ -89,6 +138,51 @@ def classify(text: str, agent_registry: dict | None = None) -> dict:
         }
 
 
+def _queue_dispatch(session_root: str, entry: dict) -> int:
+    """Append to dispatch queue. Returns queue depth."""
+    import os as _os
+
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    row = json.dumps({**entry, "ts": time.time()}) + "\n"
+    fd = _os.open(
+        str(queue_path),
+        _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND,
+        0o644,
+    )
+    try:
+        _os.write(fd, row.encode())
+    finally:
+        _os.close(fd)
+    return sum(1 for _ in queue_path.open())
+
+
+def read_dispatch_queue(session_root: str) -> list[dict]:
+    """Read all queued dispatches."""
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    if not queue_path.is_file():
+        return []
+    items = []
+    for line in queue_path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return items
+
+
+def clear_dispatch_queue(session_root: str) -> int:
+    """Clear the dispatch queue. Returns number of items cleared."""
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    if not queue_path.is_file():
+        return 0
+    count = sum(1 for _ in queue_path.open())
+    queue_path.unlink()
+    return count
+
+
 def _handle_command(
     text: str,
     classification: dict,
@@ -96,30 +190,62 @@ def _handle_command(
     session_root: str,
     permission_mode: str = "bypassPermissions",
 ) -> YapperResult:
-    """Dispatch a worker for a COMMAND."""
-    from dgov.agents import load_registry
+    """Dispatch an LT-GOV for a COMMAND, or queue if deferred."""
     from dgov.lifecycle import create_worker_pane
     from dgov.persistence import emit_event
-    from dgov.strategy import classify_task
+    from dgov.strategy import _generate_slug
 
     summary = classification.get("summary", text[:100])
     agent_hint = classification.get("agent_hint")
+    urgency = classification.get("urgency", "now")
+    files = classification.get("files", [])
 
-    registry = load_registry(project_root)
-    agent = agent_hint or classify_task(summary, list(registry.keys()))
+    # Deferred commands go to the queue
+    if urgency == "later":
+        depth = _queue_dispatch(
+            session_root,
+            {
+                "summary": summary,
+                "agent_hint": agent_hint,
+                "files": files,
+                "text": text[:500],
+            },
+        )
+        emit_event(
+            session_root,
+            "yap_received",
+            "",
+            category="COMMAND",
+            summary=summary,
+            urgency="later",
+        )
+        return YapperResult(
+            category="COMMAND",
+            action="queued",
+            summary=summary,
+            reply=f"Queued ({depth} in queue): {summary}",
+            raw_classification=classification,
+        )
 
-    # Do NOT call _structure_pi_prompt here — lifecycle.py auto-structures
-    # pi prompts (skip_auto_structure defaults to False). Avoids double-wrapping.
+    # Immediate commands → dispatch LT-GOV
+    slug = _generate_slug(summary)
+
     try:
         pane = create_worker_pane(
             project_root=project_root,
             prompt=summary,
-            agent=agent,
+            agent="claude",
             permission_mode=permission_mode,
             session_root=session_root,
+            slug=slug,
+            role="lt-gov",
+            env_vars={
+                "DGOV_SKIP_GOVERNOR_CHECK": "1",
+                "DGOV_PROJECT_ROOT": project_root,
+            },
         )
     except Exception as exc:
-        logger.error("Worker dispatch failed: %s", exc)
+        logger.error("LT-GOV dispatch failed: %s", exc)
         return YapperResult(
             category="COMMAND",
             action="error",
@@ -129,15 +255,21 @@ def _handle_command(
         )
 
     emit_event(
-        session_root, "yap_received", pane.slug, category="COMMAND", summary=summary, agent=agent
+        session_root,
+        "yap_received",
+        pane.slug,
+        category="COMMAND",
+        summary=summary,
+        agent="claude",
+        role="lt-gov",
     )
     return YapperResult(
         category="COMMAND",
         action="dispatched",
         summary=summary,
         slug=pane.slug,
-        agent=agent,
-        reply=f"Dispatched {agent} worker '{pane.slug}': {summary}",
+        agent="claude",
+        reply=f"LT-GOV '{pane.slug}': {summary}",
         raw_classification=classification,
     )
 
@@ -250,6 +382,7 @@ def yap(
     project_root: str,
     session_root: str | None = None,
     permission_mode: str = "bypassPermissions",
+    session: YapperSession | None = None,
 ) -> YapperResult:
     """Main entry point: classify input and route to handler."""
     session_root = session_root or project_root
@@ -257,20 +390,26 @@ def yap(
     from dgov.agents import load_registry
 
     registry = load_registry(project_root)
-    classification = classify(text, agent_registry=registry)
+    classification = classify(text, agent_registry=registry, session=session)
     category = classification.get("category", "CHATTER").upper()
 
     # Notify on fallback classification
     if classification.get("_fallback"):
         result = _handle_chatter(text, classification)
         result.reply = f"(classification failed) {result.reply}"
+        if session:
+            session.record(text, result)
         return result
 
     if category == "COMMAND":
-        return _handle_command(text, classification, project_root, session_root, permission_mode)
+        result = _handle_command(text, classification, project_root, session_root, permission_mode)
     elif category == "IDEA":
-        return _handle_idea(text, classification, session_root)
+        result = _handle_idea(text, classification, session_root)
     elif category == "QUESTION":
-        return _handle_question(text, classification, project_root, session_root)
+        result = _handle_question(text, classification, project_root, session_root)
     else:
-        return _handle_chatter(text, classification)
+        result = _handle_chatter(text, classification)
+
+    if session:
+        session.record(text, result)
+    return result

@@ -156,9 +156,7 @@ class TestClassify:
 class TestHandleCommand:
     @patch("dgov.persistence.emit_event")
     @patch("dgov.lifecycle.create_worker_pane")
-    @patch("dgov.strategy.classify_task", return_value="pi")
-    @patch("dgov.agents.load_registry", return_value=MOCK_REGISTRY)
-    def test_dispatches_worker(self, _reg, _ct, mock_create, mock_emit):
+    def test_dispatches_lt_gov(self, mock_create, mock_emit):
         mock_pane = MagicMock()
         mock_pane.slug = "fix-tests"
         mock_create.return_value = mock_pane
@@ -172,38 +170,32 @@ class TestHandleCommand:
 
         assert result.action == "dispatched"
         assert result.slug == "fix-tests"
-        assert result.agent == "pi"
+        assert result.agent == "claude"
         mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["agent"] == "claude"
+        assert call_kwargs["role"] == "lt-gov"
         mock_emit.assert_called_once()
 
     @patch("dgov.persistence.emit_event")
     @patch("dgov.lifecycle.create_worker_pane")
-    @patch("dgov.strategy.classify_task")
-    @patch("dgov.agents.load_registry", return_value=MOCK_REGISTRY)
-    def test_respects_agent_hint(self, _reg, mock_ct, mock_create, _emit):
-        mock_pane = MagicMock()
-        mock_pane.slug = "debug-merger"
-        mock_create.return_value = mock_pane
-
+    def test_deferred_urgency_queues(self, mock_create, mock_emit, tmp_path):
+        session_root = str(tmp_path)
         classification = {
             "category": "COMMAND",
-            "summary": "debug merger",
-            "agent_hint": "claude",
+            "summary": "add caching",
+            "agent_hint": None,
+            "urgency": "later",
+            "files": [],
         }
-        result = _handle_command(
-            "have claude debug the merger",
-            classification,
-            "/repo",
-            "/repo",
-        )
+        result = _handle_command("eventually add caching", classification, "/repo", session_root)
 
-        assert result.agent == "claude"
-        mock_ct.assert_not_called()
+        assert result.action == "queued"
+        assert "Queued" in result.reply
+        mock_create.assert_not_called()
 
     @patch("dgov.lifecycle.create_worker_pane")
-    @patch("dgov.strategy.classify_task", return_value="pi")
-    @patch("dgov.agents.load_registry", return_value=MOCK_REGISTRY)
-    def test_dispatch_failure_returns_error(self, _reg, _ct, mock_create):
+    def test_dispatch_failure_returns_error(self, mock_create):
         mock_create.side_effect = RuntimeError("tmux not found")
 
         classification = {
