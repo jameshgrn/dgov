@@ -1089,8 +1089,8 @@ def _augment_prompt_with_review(
         from dgov.retry import retry_context
 
         ctx = retry_context(pane_slug, session_root)
-        if ctx and ctx.get("log_tail"):
-            parts.append(f"\nLog tail:\n{ctx['log_tail']}")
+        if ctx:
+            parts.append(f"\nLog tail:\n{ctx}")
     except Exception:
         pass
 

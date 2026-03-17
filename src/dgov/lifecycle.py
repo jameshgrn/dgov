@@ -318,7 +318,7 @@ def _pi_extension_flags(project_root: str) -> str:
     """Return --extension flags for dgov pi extensions if they exist."""
     import importlib.resources
 
-    ext_dir = Path(importlib.resources.files("dgov") / "pi-extensions")
+    ext_dir = Path(str(importlib.resources.files("dgov") / "pi-extensions"))
     if not ext_dir.is_dir():
         return ""
     flags = []

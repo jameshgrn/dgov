@@ -315,22 +315,22 @@ def overlay_agents(text: Text, model: ErosionModel, agents: list[dict]) -> Text:
 
         stamps[(base_row, base_col)] = (glyph, color)
 
-    # Rebuild Text with stamps overlaid
-    result = Text()
-    for row_idx, line in enumerate(lines):
-        for col_idx, ch in enumerate(line):
-            if (row_idx, col_idx) in stamps:
-                glyph, style = stamps[(row_idx, col_idx)]
-                result.append(glyph, style=style)
-            else:
-                # Preserve original styling by copying from source text
-                result.append(
-                    ch,
-                    style=text.get_style_at_offset(
-                        sum(len(lines[r]) + 1 for r in range(row_idx)) + col_idx
-                    ),
-                )
-        if row_idx < len(lines) - 1:
-            result.append("\n")
+    # Overlay stamps onto a copy of the original text.
+    # Same-length plain replacement preserves all existing Rich style spans.
+    plain = text.plain
+    chars = list(plain)
+    # Map (row, col) -> flat offset
+    offsets: dict[int, str] = {}  # offset -> style_string
+    for (row, col), (glyph, style_str) in stamps.items():
+        if row >= display_rows or col >= len(lines[row]):
+            continue
+        offset = sum(len(lines[r]) + 1 for r in range(row)) + col
+        if 0 <= offset < len(chars):
+            chars[offset] = glyph
+            offsets[offset] = style_str
 
+    result = text.copy()
+    result.plain = "".join(chars)  # same length → spans preserved
+    for offset, style_str in offsets.items():
+        result.stylize(style_str, offset, offset + 1)
     return result
