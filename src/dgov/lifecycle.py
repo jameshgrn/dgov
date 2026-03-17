@@ -6,7 +6,6 @@ import logging
 import os
 import re
 import shlex
-import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -20,8 +19,7 @@ from dgov.persistence import (
     STATE_DIR,
     WorkerPane,
     _get_db,
-    _insert_pane_dict,
-    _row_to_dict,
+    _retry_on_lock,
     add_pane,
     emit_event,
     get_child_panes,
@@ -765,18 +763,22 @@ def resume_worker_pane(
         role=target.get("role", "worker"),
     )
 
-    # Update state: new pane_id, back to active
-    conn = _get_db(session_root)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
-    if row:
-        d = _row_to_dict(row)
-        d["pane_id"] = pane_id
-        d["state"] = "active"
+    # Update state: new pane_id, back to active (targeted UPDATE, not full-row replace)
+    def _do_resume_update():
+        conn = _get_db(session_root)
         if agent:
-            d["agent"] = resume_agent
-        _insert_pane_dict(conn, d)
+            conn.execute(
+                "UPDATE panes SET pane_id = ?, state = ?, agent = ? WHERE slug = ?",
+                (pane_id, "active", resume_agent, slug),
+            )
+        else:
+            conn.execute(
+                "UPDATE panes SET pane_id = ?, state = ? WHERE slug = ?",
+                (pane_id, "active", slug),
+            )
         conn.commit()
+
+    _retry_on_lock(_do_resume_update)
 
     emit_event(session_root, "pane_resumed", slug, agent=resume_agent)
 
