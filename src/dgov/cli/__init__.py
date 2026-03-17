@@ -244,6 +244,70 @@ def resume_cmd(ctx):
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
+@cli.command("refresh")
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+def refresh_cmd(project_root):
+    """Reinstall dgov from source and restart dashboard + terrain."""
+    import signal
+
+    project_root = os.path.abspath(project_root)
+
+    # 1. Reinstall
+    click.secho("Reinstalling dgov...", fg="yellow")
+    result = subprocess.run(
+        ["uv", "tool", "install", "--force", "--python", "3.14", "-e", "."],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        click.secho(f"Install failed: {result.stderr}", fg="red")
+        raise SystemExit(1)
+    click.secho("Installed.", fg="green")
+
+    # 2. Kill stale dashboard
+    pidfile = Path(project_root) / ".dgov" / "dashboard.pid"
+    if pidfile.is_file():
+        try:
+            old_pid = int(pidfile.read_text().strip())
+            os.kill(old_pid, signal.SIGTERM)
+            click.echo(f"Killed stale dashboard (pid {old_pid})")
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+        pidfile.unlink(missing_ok=True)
+
+    # 3. Kill terrain + dashboard panes by title and relaunch workspace
+    try:
+        panes = subprocess.run(
+            ["tmux", "list-panes", "-s", "-F", "#{pane_id} #{pane_title}"],
+            capture_output=True,
+            text=True,
+        )
+        if panes.returncode == 0:
+            for line in panes.stdout.splitlines():
+                parts = line.split(" ", 1)
+                if len(parts) == 2 and parts[1] in (
+                    "[gov] dashboard",
+                    "[gov] terrain",
+                ):
+                    subprocess.run(
+                        ["tmux", "kill-pane", "-t", parts[0]],
+                        capture_output=True,
+                    )
+                    click.echo(f"Killed {parts[1]}")
+    except OSError:
+        pass
+
+    # 4. Re-setup governor workspace (relaunches dashboard + terrain)
+    if os.environ.get("TMUX"):
+        from dgov.tmux import setup_governor_workspace
+
+        setup_governor_workspace(project_root)
+        click.secho("Workspace refreshed.", fg="green")
+    else:
+        click.echo("Not in tmux — skipping workspace setup.")
+
+
 # Register subcommands
 from dgov.cli.admin import (  # noqa: E402
     blame,
