@@ -521,6 +521,19 @@ class TestBuildLaunchCommandWithPermissions:
         )
         assert "--approval-mode yolo" in cmd_gemini_yolo
 
+    def test_extra_flags_no_duplicate_permission_flags(self, tmp_path: Path) -> None:
+        """BUG-001: extra_flags with --approval-mode should not duplicate permission flags."""
+        cmd = build_launch_command(
+            agent_id="gemini",
+            prompt="test",
+            permission_mode="bypassPermissions",
+            project_root=str(tmp_path),
+            slug="task-dedup",
+            extra_flags="--approval-mode yolo",
+        )
+        # Should appear exactly once, not twice
+        assert cmd.count("--approval-mode") == 1
+
 
 class TestCommandTemplateRendering:
     def test_claude_command_without_prompt(self, tmp_path: Path) -> None:

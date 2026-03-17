@@ -600,6 +600,11 @@ def build_launch_command(
     base = agent.prompt_command
     if agent.default_flags:
         base = f"{base} {agent.default_flags}"
+    # Skip permission flags if extra_flags already contains any of the same --flag names
+    if flags and extra_flags:
+        flag_names = {t for t in flags.split() if t.startswith("-")}
+        if flag_names & set(extra_flags.split()):
+            flags = ""
     if flags:
         base = f"{base} {flags}"
     if extra_flags:
