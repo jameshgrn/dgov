@@ -86,20 +86,23 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "You are a lieutenant governor (LT-GOV) managing a tier of workers.\n\n"
             "## Identity\n"
             "- Slug: {ltgov_slug}\n"
-            "- Project root: {project_root}\n"
+            "- Project root: $DGOV_PROJECT_ROOT\n"
             "- Role: sub-governor. You orchestrate workers. You do NOT edit code directly.\n\n"
+            "## Important\n"
+            "ALL dgov commands MUST use `-r $DGOV_PROJECT_ROOT` so sub-workers register\n"
+            "in the main repo's state DB and appear in the governor's dashboard.\n\n"
             "## Workers to dispatch\n"
             "{task_list}\n\n"
             "## Workflow\n"
             "For each worker:\n"
             '1. dgov pane create -a {default_agent} -p "<task prompt>" '
-            "-r {project_root} --parent {ltgov_slug}\n"
-            "2. dgov pane wait <slug> -t 300 -r {project_root}\n"
-            "3. dgov pane review <slug> -r {project_root}\n"
-            "4. If passes: dgov pane merge-request <slug> -r {project_root}\n"
+            "-r $DGOV_PROJECT_ROOT --parent {ltgov_slug}\n"
+            "2. dgov pane wait <slug> -t 300 -r $DGOV_PROJECT_ROOT\n"
+            "3. dgov pane review <slug> -r $DGOV_PROJECT_ROOT\n"
+            "4. If passes: dgov pane merge-request <slug> -r $DGOV_PROJECT_ROOT\n"
             "5. If fails:\n"
-            "   dgov pane close <slug> -r {project_root}, retry/escalate\n"
-            "6. dgov pane close <slug> -r {project_root}\n\n"
+            "   dgov pane close <slug> -r $DGOV_PROJECT_ROOT, retry/escalate\n"
+            "6. dgov pane close <slug> -r $DGOV_PROJECT_ROOT\n\n"
             "## Rules\n"
             "- NEVER push to remote\n"
             "- NEVER edit files directly\n"
@@ -113,7 +116,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             '{{"status": "done", "merged": ["slug1"], "failed": ["slug2"], "summary": "..."}}\n'
             "Then exit."
         ),
-        required_vars=["ltgov_slug", "project_root", "task_list", "default_agent"],
+        required_vars=["ltgov_slug", "task_list", "default_agent"],
         default_agent="claude",
         description="Meta-prompt for a lieutenant governor managing a worker tier",
     ),
