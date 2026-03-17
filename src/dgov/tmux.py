@@ -352,13 +352,15 @@ def _wait_for_shell(pane_id: str, timeout: float = 3.0) -> None:
         time.sleep(0.15)
 
 
-def _apply_governor_layout() -> None:
+def _apply_governor_layout(target: str | None = None) -> None:
     """Apply the standard governor layout: Claude left 55%, right column stacked."""
-    select_layout("main-vertical")
-    width = _run(["display-message", "-p", "#{window_width}"], silent=True)
+    t = ["-t", target] if target else []
+    _run(["select-layout", *t, "main-vertical"], silent=True)
+    width = _run(["display-message", *t, "-p", "#{window_width}"], silent=True)
     if width.isdigit():
         target_w = max(90, int(int(width) * 0.55))
-        _run(["resize-pane", "-t", ":.0", "-x", str(target_w)], silent=True)
+        pane0 = f"{target}.0" if target else ":.0"
+        _run(["resize-pane", "-t", pane0, "-x", str(target_w)], silent=True)
 
 
 def _write_lazygit_config(project_root: str) -> str:
@@ -374,23 +376,23 @@ def _write_lazygit_config(project_root: str) -> str:
     return cfg_path
 
 
-def setup_governor_workspace(project_root: str) -> list[str]:
+def setup_governor_workspace(project_root: str, *, target_window: str | None = None) -> list[str]:
     """Split dashboard + terrain + lazygit into the current window.
 
     Layout: Claude (left 55%) | dashboard / terrain / lazygit (right, stacked).
     Idempotent: skips panes that already exist (by title).
     Returns list of created pane_ids.
     """
-    existing = _run(
-        ["list-panes", "-F", "#{pane_title}"],
-        silent=True,
-    ).splitlines()
+    list_panes_args = ["list-panes", "-F", "#{pane_title}"]
+    if target_window is not None:
+        list_panes_args.extend(["-t", target_window])
+    existing = _run(list_panes_args, silent=True).splitlines()
 
     panes: list[str] = []
 
     if "[gov] dashboard" not in existing:
         try:
-            dash_id = split_pane()
+            dash_id = split_pane(target=target_window)
             _wait_for_shell(dash_id)
             send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
             set_title(dash_id, "[gov] dashboard")
@@ -401,7 +403,7 @@ def setup_governor_workspace(project_root: str) -> list[str]:
 
     if "[gov] terrain" not in existing:
         try:
-            ter_id = split_pane()
+            ter_id = split_pane(target=target_window)
             _wait_for_shell(ter_id)
             send_command(ter_id, "dgov terrain")
             set_title(ter_id, "[gov] terrain")
@@ -412,7 +414,7 @@ def setup_governor_workspace(project_root: str) -> list[str]:
 
     if "[gov] lazygit" not in existing:
         try:
-            lg_id = split_pane()
+            lg_id = split_pane(target=target_window)
             config_path = _write_lazygit_config(project_root)
             send_command(
                 lg_id,
@@ -425,11 +427,12 @@ def setup_governor_workspace(project_root: str) -> list[str]:
             logging.warning("Failed to create lazygit pane: %s", exc)
 
     # White border lines (window-level), colored labels (per-pane)
-    _run(["set-option", "-w", "pane-border-style", "fg=colour250"], silent=True)
-    _run(["set-option", "-w", "pane-active-border-style", "fg=colour255,bold"], silent=True)
+    wt = ["-t", target_window] if target_window else []
+    _run(["set-option", "-w", *wt, "pane-border-style", "fg=colour250"], silent=True)
+    _run(["set-option", "-w", *wt, "pane-active-border-style", "fg=colour255,bold"], silent=True)
 
     if panes:
-        _apply_governor_layout()
+        _apply_governor_layout(target_window)
     return panes
 
 

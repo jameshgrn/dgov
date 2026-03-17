@@ -301,14 +301,29 @@ def refresh_cmd(project_root):
     except OSError:
         pass
 
-    # 4. Re-setup governor workspace (relaunches dashboard + terrain)
+    # 4. Re-setup governor workspace
     if os.environ.get("TMUX"):
         from dgov.tmux import setup_governor_workspace
 
         created = setup_governor_workspace(project_root)
         click.secho(f"Workspace refreshed ({len(created)} panes recreated).", fg="green")
     else:
-        click.echo("Not in tmux — skipping workspace setup.")
+        repo = Path(project_root).name
+        session_name = f"dgov-{repo}"
+        exists = subprocess.run(
+            ["tmux", "has-session", "-t", session_name],
+            capture_output=True,
+        )
+        if exists.returncode != 0:
+            click.secho("No dgov session found. Run dgov to start one.", fg="yellow")
+            raise SystemExit(1)
+        from dgov.tmux import setup_governor_workspace
+
+        target = f"{session_name}:0"
+        created = setup_governor_workspace(project_root, target_window=target)
+        click.secho(f"Workspace refreshed ({len(created)} panes recreated).", fg="green")
+        click.secho("Attaching...", fg="green")
+        os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
 # Register subcommands
