@@ -222,6 +222,10 @@ def style_dgov_session(session_name: str | None = None) -> None:
         silent=True,
     )
 
+    # Propagate session name to terminal title (shows in Ghostty tabs)
+    _run(["set-option", *scope, "set-titles", "on"], silent=True)
+    _run(["set-option", *scope, "set-titles-string", "#S"], silent=True)
+
 
 _AGENT_COLORS: dict[str, int] = {
     "claude": 39,  # blue
