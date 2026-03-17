@@ -78,7 +78,7 @@ def run_terrain(refresh: float = 0.5) -> None:
     translator = EventTranslator()
 
     def _make_model(w: int, h: int) -> ErosionModel:
-        m = ErosionModel(width=max(w, 1), height=max(h, 2))
+        m = ErosionModel(width=max(w * 2, 1), height=max(h * 2, 2))
         for _ in range(5):
             m.step()
         return m
@@ -125,11 +125,11 @@ def run_terrain(refresh: float = 0.5) -> None:
                         if slug in sim._pos:
                             row, col = sim._pos[slug]
                         else:
-                            row, col = _spawn_position_from_slug(slug, h, w)
+                            row, col = _spawn_position_from_slug(slug, h // 2, w // 2)
                         model.terrain_event(
                             effect_type,
-                            int(round(row)),
-                            int(round(col)),
+                            min(int(round(row)) * 2, model.height_count - 2),
+                            min(int(round(col)) * 2, model.width - 2),
                             intensity,
                         )
             except Exception:
@@ -138,7 +138,7 @@ def run_terrain(refresh: float = 0.5) -> None:
 
         try:
             model.step()
-            rendered = render_terrain(model)
+            rendered = render_terrain(model, supersample=2)
             rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
         except Exception:
             rendered = Text("(terrain error)")

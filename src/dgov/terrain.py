@@ -312,14 +312,17 @@ def _river_color(flow: float, shade: float) -> tuple[int, int, int]:
     )
 
 
-def render_terrain(model: ErosionModel) -> Text:
+def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
     """Render 3D hillshaded terrain with half-block chars and river overlay."""
     h = model.height
     rows = model.height_count
     cols = model.width
     area = model.area
 
-    river_thresh = max(cols * 0.4, 20.0)
+    display_rows = rows // supersample
+    display_cols = cols // supersample
+
+    river_thresh = max(display_cols * 0.4, 20.0) * (supersample**2)
 
     # Compute hillshade per cell
     shade = [[0.5] * cols for _ in range(rows)]
@@ -353,20 +356,32 @@ def render_terrain(model: ErosionModel) -> Text:
             dot = nx * _LIGHT_X + ny * _LIGHT_Y + nz * _LIGHT_Z
             shade[r][c] = max(0.0, min(1.0, dot * 0.5 + 0.5))
 
-    def _pixel(r: int, c: int) -> tuple[int, int, int]:
-        elev = h[r][c]
-        s = shade[r][c]
-        flow = area[r][c]
+    def _pixel(dr: int, dc: int) -> tuple[int, int, int]:
+        if supersample == 1:
+            elev = h[dr][dc]
+            s = shade[dr][dc]
+            flow = area[dr][dc]
+        else:
+            te = ts = tf = 0.0
+            n = supersample * supersample
+            for sr in range(supersample):
+                for sc in range(supersample):
+                    r2 = dr * supersample + sr
+                    c2 = dc * supersample + sc
+                    te += h[r2][c2]
+                    ts += shade[r2][c2]
+                    tf += area[r2][c2]
+            elev, s, flow = te / n, ts / n, tf / n
         if flow > river_thresh and elev < 0.80:
             return _river_color(flow, s)
         return _elevation_color(elev, s)
 
     # Half-block rendering: ▀ with fg=top row, bg=bottom row
     text = Text()
-    pair_count = rows // 2
+    pair_count = display_rows // 2
     for pair in range(pair_count):
         r = pair * 2
-        for c in range(cols):
+        for c in range(display_cols):
             rt, gt, bt = _pixel(r, c)
             rb, gb, bb = _pixel(r + 1, c)
             text.append("▀", style=f"rgb({rt},{gt},{bt}) on rgb({rb},{gb},{bb})")
@@ -374,10 +389,10 @@ def render_terrain(model: ErosionModel) -> Text:
             text.append("\n")
 
     # Handle odd row count
-    if rows % 2 == 1:
+    if display_rows % 2 == 1:
         text.append("\n")
-        last = rows - 1
-        for c in range(cols):
+        last = display_rows - 1
+        for c in range(display_cols):
             rc, gc, bc = _pixel(last, c)
             text.append("▀", style=f"rgb({rc},{gc},{bc})")
 
