@@ -116,6 +116,13 @@ def list_checkpoints(session_root: str) -> list[dict]:
     return checkpoints
 
 
+def restore_checkpoint(session_root: str, name: str) -> dict:
+    """Load a previously created checkpoint by name."""
+    checkpoint_path = Path(session_root) / STATE_DIR / "checkpoints" / f"{name}.json"
+    with open(checkpoint_path) as f:
+        return json.load(f)
+
+
 # ---------------------------------------------------------------------------
 # Batch spec parsing
 # ---------------------------------------------------------------------------
@@ -338,3 +345,12 @@ def run_batch(
 
     results["skipped"] = list(skipped_ids)
     return results
+
+
+def batch_dispatch(
+    spec_path: str,
+    session_root: str | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Compatibility wrapper around run_batch used by older callers."""
+    return run_batch(spec_path, session_root=session_root, dry_run=dry_run)
