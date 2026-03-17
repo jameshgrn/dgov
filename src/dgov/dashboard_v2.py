@@ -16,13 +16,13 @@ import tty
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from rich import box
 from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-from rich import box
 
 from dgov import __version__
 
@@ -364,6 +364,7 @@ def _build_layout(
                 style = "dim"
                 # For ticks, slug is 'monitor', data has 'states'
                 import json
+
                 try:
                     data = json.loads(ev.get("data", "{}"))
                 except (ValueError, TypeError):
@@ -379,9 +380,10 @@ def _build_layout(
         else:
             style = "dim"
 
-        import dateutil.parser
+        from datetime import datetime
+
         try:
-            dt = dateutil.parser.isoparse(ev.get("ts", ""))
+            dt = datetime.fromisoformat(ev.get("ts", ""))
             ev_time = dt.strftime("%H:%M")
         except (ValueError, TypeError):
             ev_time = "--:--"
