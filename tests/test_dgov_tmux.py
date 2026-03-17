@@ -196,46 +196,53 @@ class TestStyling:
             style_dgov_session("dgov-repo")
 
         mock_borders.assert_called_once_with("dgov-repo")
-        assert mock_run.call_args_list == [
-            call(
-                ["set-option", "-t", "dgov-repo", "window-style", "fg=colour247,bg=colour236"],
-                silent=True,
-            ),
-            call(
-                [
-                    "set-option",
-                    "-t",
-                    "dgov-repo",
-                    "window-active-style",
-                    "fg=default,bg=colour234",
-                ],
-                silent=True,
-            ),
-            call(
-                ["set-option", "-t", "dgov-repo", "status-style", "fg=colour252,bg=colour236"],
-                silent=True,
-            ),
-            call(
-                [
-                    "set-option",
-                    "-t",
-                    "dgov-repo",
-                    "status-left",
-                    " #[bold,fg=colour39]dgov#[default] │ ",
-                ],
-                silent=True,
-            ),
-            call(
-                [
-                    "set-option",
-                    "-t",
-                    "dgov-repo",
-                    "status-right",
-                    " #{pane_title} │ %H:%M ",
-                ],
-                silent=True,
-            ),
-        ]
+        # Single compound call (all set-option ops joined with ";")
+        mock_run.assert_called_once_with(
+            [
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "window-style",
+                "fg=colour247,bg=colour236",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "window-active-style",
+                "fg=default,bg=colour234",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "status-style",
+                "fg=colour252,bg=colour236",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "status-left",
+                " #[bold,fg=colour39]dgov#[default] │ ",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "status-right",
+                " #{pane_title} │ %H:%M ",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "set-titles",
+                "on",
+                ";",
+                "set-option",
+                "-t",
+                "dgov-repo",
+                "set-titles-string",
+                "#S",
+            ],
+            silent=True,
+        )
 
     def test_style_worker_and_governor_panes(self) -> None:
         with (

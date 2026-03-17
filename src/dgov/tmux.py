@@ -202,29 +202,45 @@ def style_dgov_session(session_name: str | None = None) -> None:
 
     setup_pane_borders(session_name)
 
-    # Dim inactive panes, normal active — gives visual depth
-    _run(["set-option", *scope, "window-style", "fg=colour247,bg=colour236"], silent=True)
-    _run(["set-option", *scope, "window-active-style", "fg=default,bg=colour234"], silent=True)
-
-    # Status bar
-    _run(["set-option", *scope, "status-style", "fg=colour252,bg=colour236"], silent=True)
-    _run(
-        ["set-option", *scope, "status-left", " #[bold,fg=colour39]dgov#[default] │ "],
-        silent=True,
-    )
     _run(
         [
             "set-option",
             *scope,
+            "window-style",
+            "fg=colour247,bg=colour236",
+            ";",
+            "set-option",
+            *scope,
+            "window-active-style",
+            "fg=default,bg=colour234",
+            ";",
+            "set-option",
+            *scope,
+            "status-style",
+            "fg=colour252,bg=colour236",
+            ";",
+            "set-option",
+            *scope,
+            "status-left",
+            " #[bold,fg=colour39]dgov#[default] │ ",
+            ";",
+            "set-option",
+            *scope,
             "status-right",
             " #{pane_title} │ %H:%M ",
+            ";",
+            "set-option",
+            *scope,
+            "set-titles",
+            "on",
+            ";",
+            "set-option",
+            *scope,
+            "set-titles-string",
+            "#S",
         ],
         silent=True,
     )
-
-    # Propagate session name to terminal title (shows in Ghostty tabs)
-    _run(["set-option", *scope, "set-titles", "on"], silent=True)
-    _run(["set-option", *scope, "set-titles-string", "#S"], silent=True)
 
 
 _AGENT_COLORS: dict[str, int] = {
