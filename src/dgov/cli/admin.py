@@ -259,19 +259,9 @@ def dashboard(project_root, session_root, refresh, pane):
         )
         click.echo(json.dumps({"dashboard": "launched in pane"}))
         return
-    if os.environ.get("DGOV_DASHBOARD") == "v2":
-        try:
-            from dgov.dashboard_v2 import run_dashboard_v2
+    from dgov.dashboard_v2 import run_dashboard_v2
 
-            run_dashboard_v2(project_root, session_root, refresh)
-        except Exception:
-            from dgov.dashboard import run_dashboard
-
-            run_dashboard(project_root, session_root, refresh_interval=refresh)
-    else:
-        from dgov.dashboard import run_dashboard
-
-        run_dashboard(project_root, session_root, refresh_interval=refresh)
+    run_dashboard_v2(project_root, session_root, refresh)
 
 
 @click.command("init")
