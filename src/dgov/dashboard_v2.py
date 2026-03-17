@@ -330,7 +330,7 @@ def run_dashboard_v2(
     if is_tty:
         try:
             old_settings = termios.tcgetattr(sys.stdin)
-            tty.setraw(sys.stdin.fileno())
+            tty.setcbreak(sys.stdin.fileno())
         except termios.error:
             old_settings = None
             is_tty = False
@@ -345,7 +345,6 @@ def run_dashboard_v2(
             auto_refresh=True,
             get_renderable=_render_dashboard,
             refresh_per_second=_UI_REFRESH_PER_SECOND,
-            screen=is_tty,
             vertical_overflow="crop",
         ) as live:
             while not state.stop_event.is_set():
@@ -393,11 +392,11 @@ def run_dashboard_v2(
                         live.stop()
                         console.print(f"Merge [bold]{slug}[/bold]? (y/n) ", end="")
                         if is_tty:
-                            tty.setraw(sys.stdin.fileno())
+                            tty.setcbreak(sys.stdin.fileno())
                             confirm = sys.stdin.read(1)
                             if old_settings:
                                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                                tty.setraw(sys.stdin.fileno())
+                                tty.setcbreak(sys.stdin.fileno())
                         else:
                             confirm = "n"
                         console.print()
@@ -417,11 +416,11 @@ def run_dashboard_v2(
                         live.stop()
                         console.print(f"Close [bold]{slug}[/bold]? (y/n) ", end="")
                         if is_tty:
-                            tty.setraw(sys.stdin.fileno())
+                            tty.setcbreak(sys.stdin.fileno())
                             confirm = sys.stdin.read(1)
                             if old_settings:
                                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                                tty.setraw(sys.stdin.fileno())
+                                tty.setcbreak(sys.stdin.fileno())
                         else:
                             confirm = "n"
                         console.print()
