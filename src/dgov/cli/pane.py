@@ -103,6 +103,13 @@ def pane_create(
     parent,
 ):
     """Create a worker pane: worktree + tmux + agent."""
+    import os as _os
+
+    # Auto-correct for LT-GOV sub-workers in worktrees
+    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
+    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
+        project_root = _dgov_pr
+
     from dgov.agents import get_default_agent, load_registry
     from dgov.lifecycle import create_worker_pane
     from dgov.strategy import classify_task
@@ -322,6 +329,13 @@ def pane_batch(toml_file, project_root, session_root):
 @click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
 def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
+    import os as _os
+
+    # Auto-correct for LT-GOV sub-workers in worktrees
+    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
+    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
+        project_root = _dgov_pr
+
     from dgov.lifecycle import close_worker_pane
 
     for s in slug:
@@ -363,6 +377,13 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
 
     Merge the worktree branch for the given pane.
     """
+    import os as _os
+
+    # Auto-correct for LT-GOV sub-workers in worktrees
+    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
+    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
+        project_root = _dgov_pr
+
     from dgov.merger import merge_worker_pane
 
     if rebase and not squash:
@@ -474,6 +495,13 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     2. New commits on the worker branch beyond base_sha.
     3. Output stabilization (TUI agents that stay open).
     """
+    import os as _os
+
+    # Auto-correct for LT-GOV sub-workers in worktrees
+    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
+    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
+        project_root = _dgov_pr
+
     from dgov.status import list_worker_panes
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
