@@ -958,7 +958,7 @@ def run_dag(
 
     # Partial execution: --tier limited the run
     if tier_limit is not None and max_tier < len(tiers) - 1:
-        unexecuted = [s for s in task_states if task_states[s] == "pending"]
+        unexecuted = [s for s in dag.tasks if s not in task_states and s not in skipped]
         if unexecuted:
             final_status = "partial"
             update_dag_run(session_root, run_id, status=final_status)
