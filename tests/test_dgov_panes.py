@@ -704,7 +704,7 @@ class TestListWorkerPanes:
         with patch("dgov.status._is_done", return_value=False):
             result = list_worker_panes(str(tmp_path))
 
-        assert result[0]["last_output"] == "line 2\nline 3\nline 4"
+        assert result[0]["last_output"] == "line 1\nline 2\nline 3\nline 4"
         mock_backend.capture_output.assert_not_called()
 
     def test_missing_log_file_keeps_last_output_empty(

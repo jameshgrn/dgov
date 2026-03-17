@@ -256,7 +256,7 @@ def _is_done(
                                     "new_commits slug=%s agent running, no stable_state — done",
                                     slug,
                                 )
-                                # Fall through to done — blocking forever is worse than no grace period
+                                # Fall through — blocking forever is worse
                         current_state = pane_record.get("state", "")
                         force = current_state == "abandoned"
                         _persist.update_pane_state(session_root, slug, "done", force=force)
