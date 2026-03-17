@@ -245,6 +245,76 @@ def _no_squash_merge(
     return MergeResult(success=True, warnings=warnings)
 
 
+def _rebase_onto_head(project_root: str, branch_name: str) -> MergeResult:
+    """Rebase branch onto current HEAD so it's up-to-date before merge.
+
+    On success returns MergeResult(success=True).
+    On conflict aborts the rebase and returns MergeResult(success=False)
+    with conflict details in stderr/warnings.
+    """
+    # Check if rebase is needed (branch already up-to-date with HEAD)
+    base_r = subprocess.run(
+        ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    if base_r.returncode != 0:
+        return MergeResult(success=False, stderr=f"Cannot find merge-base for {branch_name}")
+
+    head_sha = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    if base_r.stdout.strip() == head_sha:
+        # Already based on HEAD — no rebase needed
+        return MergeResult(success=True)
+
+    # Remember current branch to restore after rebase
+    current = subprocess.run(
+        ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if current.returncode != 0:
+        return MergeResult(success=False, stderr="Detached HEAD — cannot rebase onto HEAD")
+
+    current_branch = current.stdout.strip()
+
+    # Rebase the worker branch onto HEAD (checks out branch_name as side effect)
+    rebase = subprocess.run(
+        ["git", "-C", project_root, "rebase", current_branch, branch_name],
+        capture_output=True,
+        text=True,
+    )
+    if rebase.returncode != 0:
+        subprocess.run(
+            ["git", "-C", project_root, "rebase", "--abort"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", project_root, "checkout", current_branch],
+            capture_output=True,
+        )
+        return MergeResult(
+            success=False,
+            stderr=(
+                f"Auto-rebase of {branch_name} onto {current_branch} "
+                f"failed: {rebase.stderr.strip()}"
+            ),
+        )
+
+    # Switch back to the original branch
+    subprocess.run(
+        ["git", "-C", project_root, "checkout", current_branch],
+        capture_output=True,
+    )
+
+    logger.info("Auto-rebased %s onto %s", branch_name, current_branch)
+    return MergeResult(success=True)
+
+
 def _rebase_merge(project_root: str, branch_name: str, message: str | None = None) -> MergeResult:
     """Rebase branch onto HEAD then fast-forward for linear history with original commits."""
     # Remember current branch
@@ -769,6 +839,21 @@ def merge_worker_pane(
             if names_r.returncode == 0:
                 changed_file_names = [f for f in names_r.stdout.strip().splitlines() if f]
                 merge_files_changed = len(changed_file_names)
+
+    # Auto-rebase worker branch onto HEAD to prevent stale-branch conflicts.
+    # Skip for rebase merges — _rebase_merge already rebases internally.
+    if not rebase:
+        pre_rebase = _rebase_onto_head(pane_project_root, branch_name)
+        if not pre_rebase.success:
+            _persist.update_pane_state(session_root, slug, "merge_conflict")
+            return {
+                "error": f"Auto-rebase failed for {branch_name}",
+                "slug": slug,
+                "branch": branch_name,
+                "rebase_stderr": pre_rebase.stderr,
+                "hint": "Worker branch has conflicts with current HEAD. "
+                "Resolve manually or re-dispatch the task.",
+            }
 
     # Dispatch merge strategy
     if rebase:

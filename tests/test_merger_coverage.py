@@ -317,11 +317,11 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
     ):
         result = merge_worker_pane(str(repo), "conflict-pane", session_root=str(repo))
 
-    assert result["error"] == "Merge conflict in dgov-conflict"
+    # Auto-rebase catches the conflict before plumbing merge is attempted
+    assert result["error"] == "Auto-rebase failed for dgov-conflict"
     assert result["slug"] == "conflict-pane"
     assert result["branch"] == "dgov-conflict"
-    assert result["conflicts"]
-    assert result["hint"] == "Re-run with --resolve agent or --resolve manual."
+    assert "rebase_stderr" in result
     assert (repo / "README.md").read_text() == "main change\n"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-conflict").returncode == 0
@@ -522,13 +522,12 @@ def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
             str(repo), "manual-pane", session_root=str(repo), resolve="manual"
         )
 
+    # Auto-rebase catches the conflict before manual resolution is attempted
+    assert result["error"] == "Auto-rebase failed for dgov-manual"
     assert result["slug"] == "manual-pane"
     assert result["branch"] == "dgov-manual"
-    assert result["resolve"] == "manual"
-    assert result["conflicts"]
-    assert "Resolve manually" in result["hint"]
-    assert (repo / ".git" / "MERGE_HEAD").exists()
-    assert "<<<<<<<" in (repo / "README.md").read_text()
+    assert "rebase_stderr" in result
+    assert not (repo / ".git" / "MERGE_HEAD").exists()
     mock_update_state.assert_called_once_with(str(repo), "manual-pane", "merge_conflict")
     mock_emit_event.assert_not_called()
     mock_set_metadata.assert_not_called()
@@ -570,7 +569,10 @@ def test_merge_worker_pane_returns_unknown_resolve_error_for_conflict(
             str(repo), "unknown-pane", session_root=str(repo), resolve="bogus"
         )
 
-    assert result == {"error": "Unknown resolve strategy: bogus"}
+    # Auto-rebase catches the conflict before resolve strategy is considered
+    assert result["error"] == "Auto-rebase failed for dgov-unknown"
+    assert result["slug"] == "unknown-pane"
+    assert result["branch"] == "dgov-unknown"
     assert not (repo / ".git" / "MERGE_HEAD").exists()
     mock_update_state.assert_called_once_with(str(repo), "unknown-pane", "merge_conflict")
     mock_emit_event.assert_not_called()
@@ -596,6 +598,7 @@ def test_merge_worker_pane_emits_failure_when_merge_fails_without_conflicts(
         patch("dgov.persistence.emit_event") as mock_emit_event,
         patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.merger._rebase_onto_head", return_value=MergeResult(success=True)),
         patch(
             "dgov.merger._plumbing_merge", return_value=MergeResult(success=False, stderr="boom")
         ),
