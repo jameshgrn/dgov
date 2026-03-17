@@ -317,9 +317,10 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
     panes = all_panes(session_root)
-    pruned = []
+    pruned: list[str] = []
+    pruned_slugs: set[str] = set()
 
-    # Pass 1: prune stale state entries (existing behaviour)
+    # Pass 1: prune stale state entries
     for p in panes:
         pane_id = p.get("pane_id", "")
         slug = p["slug"]
@@ -331,12 +332,11 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             done_path = Path(session_root) / STATE_DIR / "done" / slug
             done_path.unlink(missing_ok=True)
             pruned.append(slug)
+            pruned_slugs.add(slug)
 
     # Pass 2: prune terminal-state panes older than 1 hour
     now = time.time()
-    remaining_after_pass1 = all_panes(session_root)
-    pruned_slugs = set(pruned)
-    for p in remaining_after_pass1:
+    for p in panes:
         slug = p["slug"]
         if slug in pruned_slugs:
             continue
@@ -348,12 +348,12 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             done_path = Path(session_root) / STATE_DIR / "done" / slug
             done_path.unlink(missing_ok=True)
             pruned.append(slug)
+            pruned_slugs.add(slug)
 
-    # Pass 3: remove orphaned worktree dirs with no matching pane entry
+    # Pass 3: remove orphaned worktree dirs
     worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
     if worktrees_dir.is_dir():
-        remaining_panes = all_panes(session_root)
-        known_worktrees = {p.get("worktree_path") for p in remaining_panes}
+        known_worktrees = {p.get("worktree_path") for p in panes if p["slug"] not in pruned_slugs}
         for entry in worktrees_dir.iterdir():
             if not entry.is_dir():
                 continue
