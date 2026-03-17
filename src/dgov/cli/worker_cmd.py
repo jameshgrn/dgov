@@ -1,0 +1,80 @@
+"""Worker status reporting commands.
+
+Called BY agents running inside worker panes to report progress and completion.
+Uses DGOV_SLUG and DGOV_SESSION_ROOT env vars (injected by lifecycle.py).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+import click
+
+from dgov.persistence import STATE_DIR
+
+
+def _require_worker_env() -> tuple[str, str]:
+    """Return (session_root, slug) from env vars or exit with error."""
+    session_root = os.environ.get("DGOV_SESSION_ROOT", "")
+    slug = os.environ.get("DGOV_SLUG", "")
+    if not session_root or not slug:
+        click.echo(
+            "Error: DGOV_SESSION_ROOT and DGOV_SLUG must be set. "
+            "This command is meant to be called by agents inside dgov worker panes.",
+            err=True,
+        )
+        sys.exit(1)
+    return session_root, slug
+
+
+@click.group()
+def worker():
+    """Report worker status (called by agents, not humans)."""
+
+
+@worker.command("complete")
+@click.option("--message", "-m", default="", help="Completion message")
+def worker_complete(message):
+    """Signal that this worker has finished its task successfully."""
+    from pathlib import Path
+
+    from dgov.persistence import emit_event, update_pane_state
+
+    session_root, slug = _require_worker_env()
+    done_path = Path(session_root) / STATE_DIR / "done" / slug
+    done_path.parent.mkdir(parents=True, exist_ok=True)
+    done_path.touch()
+    update_pane_state(session_root, slug, "done")
+    emit_event(session_root, "pane_done", slug, message=message)
+    click.echo(json.dumps({"status": "complete", "slug": slug}))
+
+
+@worker.command("fail")
+@click.argument("reason", default="unspecified")
+def worker_fail(reason):
+    """Signal that this worker has failed."""
+    from pathlib import Path
+
+    from dgov.persistence import emit_event, update_pane_state
+
+    session_root, slug = _require_worker_env()
+    exit_path = Path(session_root) / STATE_DIR / "done" / f"{slug}.exit"
+    exit_path.parent.mkdir(parents=True, exist_ok=True)
+    exit_path.write_text(reason, encoding="utf-8")
+    update_pane_state(session_root, slug, "failed")
+    emit_event(session_root, "pane_done", slug, reason=reason)
+    click.echo(json.dumps({"status": "failed", "slug": slug, "reason": reason}))
+
+
+@worker.command("checkpoint")
+@click.argument("message")
+def worker_checkpoint(message):
+    """Record a progress checkpoint."""
+    from dgov.persistence import emit_event, set_pane_metadata
+
+    session_root, slug = _require_worker_env()
+    set_pane_metadata(session_root, slug, last_checkpoint=message)
+    emit_event(session_root, "checkpoint_created", slug, message=message)
+    click.echo(json.dumps({"status": "checkpoint", "slug": slug, "message": message}))
