@@ -140,6 +140,9 @@ def _poll_once(
         stable_state["current_output"] = (
             get_backend().capture_output(pane_id, lines=20) if alive else ""
         )
+        _current_cmd = get_backend().current_command(pane_id) if alive else None
+    else:
+        _current_cmd = None
 
     if _is_done(
         session_root,
@@ -149,6 +152,7 @@ def _poll_once(
         _stable_state=stable_state,
         done_strategy=done_strategy,
         alive=alive,
+        current_command=_current_cmd,
     ):
         method = stable_state.get("_done_reason", "signal_or_commit")
         return (

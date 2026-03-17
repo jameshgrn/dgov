@@ -85,10 +85,14 @@ _AGENT_COMMANDS = frozenset(
 )
 
 
-def _agent_still_running(pane_id: str) -> bool:
+def _agent_still_running(pane_id: str, current_command: str | None = None) -> bool:
     """Check if the worker's foreground process is still an agent."""
     try:
-        cmd = get_backend().current_command(pane_id)
+        cmd = (
+            current_command
+            if current_command is not None
+            else get_backend().current_command(pane_id)
+        )
         return cmd.strip().lower() in _AGENT_COMMANDS
     except (RuntimeError, OSError):
         return False
@@ -155,6 +159,7 @@ def _is_done(
     _stable_state: dict | None = None,
     done_strategy: DoneStrategy | None = None,
     alive: bool | None = None,
+    current_command: str | None = None,
 ) -> bool:
     """Check if a worker is done via prioritized completion signals.
 
@@ -224,7 +229,7 @@ def _is_done(
                         if _stable_state is not None:
                             _stable_state["commits_detected"] = True
                     else:
-                        if pane_id and _agent_still_running(pane_id):
+                        if pane_id and _agent_still_running(pane_id, current_command):
                             # Agent committed but is still running — grace period
                             if _stable_state is not None:
                                 commit_count = _count_commits(project_root, branch_name, base_sha)
@@ -348,7 +353,7 @@ def _is_done(
                 if stable_since is None:
                     _stable_state["stable_since"] = time.monotonic()
                 elif time.monotonic() - stable_since >= eff_stable:
-                    if _agent_still_running(pane_id):
+                    if _agent_still_running(pane_id, current_command):
                         _stable_state["stable_since"] = None
                     else:
                         done_path.parent.mkdir(parents=True, exist_ok=True)
