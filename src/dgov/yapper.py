@@ -194,6 +194,7 @@ def _handle_command(
     from dgov.lifecycle import create_worker_pane
     from dgov.persistence import emit_event
     from dgov.strategy import _generate_slug
+    from dgov.templates import BUILT_IN_TEMPLATES, render_template
 
     summary = classification.get("summary", text[:100])
     agent_hint = classification.get("agent_hint")
@@ -230,10 +231,20 @@ def _handle_command(
     # Immediate commands → dispatch LT-GOV
     slug = _generate_slug(summary)
 
+    ltgov_template = BUILT_IN_TEMPLATES["lt-gov"]
+    rendered_prompt = render_template(
+        ltgov_template,
+        {
+            "ltgov_slug": slug,
+            "task_list": summary,
+            "default_agent": "pi",
+        },
+    )
+
     try:
         pane = create_worker_pane(
             project_root=project_root,
-            prompt=summary,
+            prompt=rendered_prompt,
             agent="claude",
             permission_mode=permission_mode,
             session_root=session_root,
