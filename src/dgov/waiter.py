@@ -168,7 +168,11 @@ def _poll_once(
         nudge_stable = stable_state.get("stable_since")
         if nudge_stable is not None and time.monotonic() - nudge_stable > 45:
             _pane_id = pane_record.get("pane_id", "") if pane_record else ""
-            if _pane_id and get_backend().is_alive(_pane_id):
+            if (
+                _pane_id
+                and get_backend().is_alive(_pane_id)
+                and _agent_still_running(_pane_id, _current_cmd)
+            ):
                 get_backend().send_input(
                     _pane_id,
                     "REMINDER: commit your work and signal completion: "
