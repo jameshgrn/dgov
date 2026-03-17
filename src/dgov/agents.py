@@ -114,7 +114,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
-        send_keys_ready_delay_ms=3000,
+        send_keys_ready_delay_ms=8000,
         interactive=True,
         done_strategy=DoneStrategy(type="api"),
     ),

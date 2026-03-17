@@ -280,6 +280,8 @@ def _setup_and_launch_agent(
         Path(done_signal).unlink(missing_ok=True)
 
     # 9. Launch agent (with done-signal wrapper)
+    is_cursor = agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent"
+
     if agent_def.interactive:
         # Interactive TUI mode: launch without prompt, send prompt via tmux after ready.
         base_cmd = build_launch_command(
@@ -295,6 +297,12 @@ def _setup_and_launch_agent(
         backend.send_shell_command(pane_id, wrapped_cmd)
         ready_delay = agent_def.send_keys_ready_delay_ms or 2000
         time.sleep(ready_delay / 1000)
+
+        # 9a. Cursor: accept workspace trust BEFORE sending prompt
+        if is_cursor:
+            backend.send_keys(pane_id, ["a"])
+            time.sleep(2)
+
         backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
     elif agent_def.prompt_transport == "send-keys":
         base_cmd = build_launch_command(
@@ -325,11 +333,6 @@ def _setup_and_launch_agent(
         )
         wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
-
-    # 10. Auto-accept workspace trust for cursor agents
-    if agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent":
-        time.sleep(3)
-        backend.send_keys(pane_id, ["a"])
 
 
 # -- Public API --
