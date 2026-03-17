@@ -263,3 +263,74 @@ def render_terrain(model: ErosionModel) -> Text:
             text.append("▀", style=f"rgb({rc},{gc},{bc})")
 
     return text
+
+
+def overlay_agents(text: Text, model: ErosionModel, agents: list[dict]) -> Text:
+    """Stamp agent glyphs onto rendered terrain. Each agent dict has: slug, state, role, agent."""
+    if not agents or model.width < 1 or model.height_count < 2:
+        return text
+    import hashlib
+
+    lines = text.plain.split("\n")
+    if not lines:
+        return text
+    display_rows = len(lines)
+    display_cols = len(lines[0]) if lines else model.width
+
+    # Build a map of (row, col) -> (glyph, style_string) for agents
+    stamps: dict[tuple[int, int], tuple[str, str]] = {}
+    for i, ag in enumerate(agents):
+        slug = ag.get("slug", f"agent-{i}")
+        state = ag.get("state", "active")
+        role = ag.get("role", "worker")
+
+        # Deterministic position from slug hash
+        h = hashlib.md5(slug.encode()).digest()
+        base_col = (h[0] + h[1] * 256) % max(display_cols - 4, 1) + 2
+        base_row = (h[2] + h[3] * 256) % max(display_rows - 2, 1) + 1
+
+        # Simple drift for active agents based on time
+        if state == "active":
+            import time as _time
+
+            t = int(_time.time())
+            drift_x = ((h[4] + t) % 5) - 2
+            drift_y = ((h[5] + t // 3) % 3) - 1
+            base_col = max(1, min(display_cols - 2, base_col + drift_x))
+            base_row = max(0, min(display_rows - 1, base_row + drift_y))
+
+        # Glyph and color by role/state
+        if role == "lt-gov":
+            glyph = "\u25c6"  # diamond
+            color = "bold magenta"
+        elif state == "done" or state == "merged":
+            glyph = "\u2713"  # checkmark
+            color = "bold green"
+        elif state == "failed":
+            glyph = "\u2717"  # x mark
+            color = "bold red"
+        else:
+            glyph = "\u2022"  # bullet
+            color = "bold white"
+
+        stamps[(base_row, base_col)] = (glyph, color)
+
+    # Rebuild Text with stamps overlaid
+    result = Text()
+    for row_idx, line in enumerate(lines):
+        for col_idx, ch in enumerate(line):
+            if (row_idx, col_idx) in stamps:
+                glyph, style = stamps[(row_idx, col_idx)]
+                result.append(glyph, style=style)
+            else:
+                # Preserve original styling by copying from source text
+                result.append(
+                    ch,
+                    style=text.get_style_at_offset(
+                        sum(len(lines[r]) + 1 for r in range(row_idx)) + col_idx
+                    ),
+                )
+        if row_idx < len(lines) - 1:
+            result.append("\n")
+
+    return result

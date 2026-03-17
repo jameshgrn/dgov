@@ -63,6 +63,8 @@ def run_terrain(refresh: float = 0.5) -> None:
     last_w = 0
     last_h = 0
     tick = 0
+    _agents_cache: list[dict] = []
+    _agents_last_read: float = 0.0
 
     def _make_model(w: int, h: int) -> ErosionModel:
         m = ErosionModel(width=max(w, 1), height=max(h, 2))
@@ -87,6 +89,32 @@ def run_terrain(refresh: float = 0.5) -> None:
             rendered = Text("(terrain error)")
             rendered.no_wrap = True
             rendered.overflow = "crop"
+        nonlocal _agents_cache, _agents_last_read
+        now = time.time()
+        if now - _agents_last_read > 5.0:  # refresh every 5 seconds
+            try:
+                import os
+
+                from dgov.status import list_worker_panes
+
+                pr = os.environ.get("DGOV_PROJECT_ROOT", os.getcwd())
+                raw = list_worker_panes(pr, include_freshness=False, include_prompt=False)
+                _agents_cache = [
+                    {
+                        "slug": p.get("slug", ""),
+                        "state": p.get("state", ""),
+                        "role": p.get("role", "worker"),
+                        "agent": p.get("agent", ""),
+                    }
+                    for p in raw
+                ]
+            except Exception:
+                _agents_cache = []
+            _agents_last_read = now
+        if _agents_cache and model is not None:
+            from dgov.terrain import overlay_agents
+
+            rendered = overlay_agents(rendered, model, _agents_cache)
         tick += 1
         return Panel(rendered, title=f"Terrain  t={tick}", border_style="green")
 
