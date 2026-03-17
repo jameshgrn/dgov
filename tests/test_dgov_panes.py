@@ -37,6 +37,7 @@ def mock_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock.create_worker_pane.return_value = "%1"
     mock.is_alive.return_value = True
     mock.bulk_info.return_value = {}
+    mock.capture_output.return_value = None
     set_backend(mock)
     return mock
 
@@ -2434,6 +2435,124 @@ class TestWaitWorkerPane:
         ):
             result = wait_worker_pane(str(tmp_path), "s1", timeout=5, poll=0)
         assert result == {"done": "s1", "method": "signal_or_commit"}
+
+    def test_poll_once_detects_blocked_output_without_stable_strategy(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.agents import DoneStrategy
+        from dgov.waiter import _poll_once
+
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+        )
+        add_pane(str(tmp_path), pane)
+        pane_record = get_pane(str(tmp_path), "s1")
+        mock_backend.capture_output.return_value = "Enter password:"
+
+        with (
+            patch("dgov.responder.auto_respond", return_value=None),
+            patch("dgov.persistence.emit_event") as mock_emit,
+        ):
+            done, _, _, _, blocked = _poll_once(
+                str(tmp_path),
+                str(tmp_path),
+                "s1",
+                pane_record,
+                None,
+                None,
+                15,
+                None,
+                done_strategy=DoneStrategy(type="exit"),
+                alive=True,
+            )
+
+        assert done is False
+        assert blocked == "Enter password"
+        mock_emit.assert_called_once_with(
+            str(tmp_path), "pane_blocked", "s1", question="Enter password"
+        )
+
+    def test_poll_once_reports_exit_signal_method(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.waiter import _poll_once
+
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+        )
+        add_pane(str(tmp_path), pane)
+        done_dir = tmp_path / STATE_DIR / "done"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        (done_dir / "s1.exit").write_text("1")
+        pane_record = get_pane(str(tmp_path), "s1")
+        mock_backend.capture_output.return_value = ""
+
+        done, method, *_ = _poll_once(
+            str(tmp_path),
+            str(tmp_path),
+            "s1",
+            pane_record,
+            None,
+            None,
+            15,
+            None,
+            alive=True,
+        )
+
+        assert done is True
+        assert method == "exit_signal"
+
+    def test_poll_once_reports_commit_method(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.agents import DoneStrategy
+        from dgov.waiter import _poll_once
+
+        pane = WorkerPane(
+            slug="s1",
+            prompt="test",
+            pane_id="%5",
+            agent="claude",
+            project_root=str(tmp_path),
+            worktree_path=str(tmp_path / "wt"),
+            branch_name="s1",
+            base_sha="abc123",
+        )
+        add_pane(str(tmp_path), pane)
+        pane_record = get_pane(str(tmp_path), "s1")
+        mock_backend.capture_output.return_value = ""
+
+        with (
+            patch("dgov.done._has_new_commits", return_value=True),
+            patch("dgov.done._agent_still_running", return_value=False),
+        ):
+            done, method, *_ = _poll_once(
+                str(tmp_path),
+                str(tmp_path),
+                "s1",
+                pane_record,
+                None,
+                None,
+                15,
+                None,
+                done_strategy=DoneStrategy(type="commit"),
+                alive=True,
+            )
+
+        assert done is True
+        assert method == "commit"
 
     def test_stable_output_detection(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         """Stabilization is now handled inside _is_done via done_strategy=stable."""

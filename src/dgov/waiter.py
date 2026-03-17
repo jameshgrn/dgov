@@ -127,7 +127,15 @@ def _poll_once(
         "last_output": last_output,
         "stable_since": stable_since,
         "last_blocked": last_blocked,
+        "current_output": None,
     }
+
+    pane_id = pane_record.get("pane_id", "") if pane_record else ""
+    if pane_id:
+        if alive is None:
+            alive = get_backend().is_alive(pane_id)
+        if alive:
+            stable_state["current_output"] = get_backend().capture_output(pane_id, lines=20)
 
     if _is_done(
         session_root,
@@ -138,35 +146,17 @@ def _poll_once(
         done_strategy=done_strategy,
         alive=alive,
     ):
-        # Determine method: check if done file existed before we called _is_done
-        done_path = Path(session_root, STATE_DIR, "done", slug)
-        if done_path.exists():
-            # Could be signal, commit, or stable — check stable_state to distinguish
-            if stable_state.get("stable_since") is not None:
-                return (
-                    True,
-                    "stable",
-                    stable_state.get("last_output"),
-                    stable_state.get("stable_since"),
-                    stable_state.get("last_blocked"),
-                )
-            return (
-                True,
-                "signal_or_commit",
-                stable_state.get("last_output"),
-                stable_state.get("stable_since"),
-                stable_state.get("last_blocked"),
-            )
+        method = stable_state.get("_done_reason", "signal_or_commit")
         return (
             True,
-            "signal_or_commit",
+            method,
             stable_state.get("last_output"),
             stable_state.get("stable_since"),
             stable_state.get("last_blocked"),
         )
 
     # Check for blocked state and auto-respond if possible
-    current_output = stable_state.get("last_output")
+    current_output = stable_state.get("current_output")
     if current_output:
         blocked_match = _detect_blocked(current_output)
         if blocked_match:
@@ -211,6 +201,13 @@ def wait_for_slugs(
             rec = _persist.get_pane(session_root, slug)
             if slug not in strategies:
                 strategies[slug] = _strategy_for_pane(rec)
+            pane_id = rec.get("pane_id", "") if rec else ""
+            alive = None
+            if pane_id:
+                alive = get_backend().is_alive(pane_id)
+                stable_states[slug]["current_output"] = (
+                    get_backend().capture_output(pane_id, lines=20) if alive else None
+                )
             if _is_done(
                 session_root,
                 slug,
@@ -218,6 +215,7 @@ def wait_for_slugs(
                 stable_seconds=stable_seconds,
                 _stable_state=stable_states[slug],
                 done_strategy=strategies[slug],
+                alive=alive,
             ):
                 pending.discard(slug)
         if pending:

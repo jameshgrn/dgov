@@ -246,26 +246,30 @@ class TestLoadResponseRules:
 
 class TestCooldown:
     def test_no_cooldown_initially(self) -> None:
-        assert check_cooldown("slug", "pattern") is False
+        assert check_cooldown("/session-a", "slug", "pattern") is False
 
     def test_cooldown_after_record(self) -> None:
-        record_cooldown("slug", "pattern")
-        assert check_cooldown("slug", "pattern") is True
+        record_cooldown("/session-a", "slug", "pattern")
+        assert check_cooldown("/session-a", "slug", "pattern") is True
 
     def test_cooldown_expires(self) -> None:
         from dgov import responder
 
         old_time = time.monotonic() - COOLDOWN_SECONDS - 1
-        responder._cooldowns[("slug", "pattern")] = old_time
-        assert check_cooldown("slug", "pattern") is False
+        responder._cooldowns[("/session-a", "slug", "pattern")] = old_time
+        assert check_cooldown("/session-a", "slug", "pattern") is False
 
     def test_different_slug_not_cooled(self) -> None:
-        record_cooldown("slug-a", "pattern")
-        assert check_cooldown("slug-b", "pattern") is False
+        record_cooldown("/session-a", "slug-a", "pattern")
+        assert check_cooldown("/session-a", "slug-b", "pattern") is False
 
     def test_different_pattern_not_cooled(self) -> None:
-        record_cooldown("slug", "pattern-a")
-        assert check_cooldown("slug", "pattern-b") is False
+        record_cooldown("/session-a", "slug", "pattern-a")
+        assert check_cooldown("/session-a", "slug", "pattern-b") is False
+
+    def test_different_session_not_cooled(self) -> None:
+        record_cooldown("/session-a", "slug", "pattern")
+        assert check_cooldown("/session-b", "slug", "pattern") is False
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +317,19 @@ class TestAutoRespond:
             assert result1 is not None
             result2 = auto_respond(session_root, "test-worker", "proceed?", rules)
             assert result2 is None
+
+    def test_cooldown_is_isolated_per_session(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        session_a = _setup_pane(tmp_path / "session-a")
+        session_b = _setup_pane(tmp_path / "session-b")
+        rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
+        mock_backend.is_alive.return_value = True
+
+        auto_respond(session_a, "test-worker", "proceed?", rules)
+        auto_respond(session_b, "test-worker", "proceed?", rules)
+
+        assert mock_backend.send_input.call_count == 2
 
     def test_signal_done_touches_file(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)

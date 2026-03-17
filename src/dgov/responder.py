@@ -6,6 +6,7 @@ automatic replies (or escalates to the governor).
 
 from __future__ import annotations
 
+import os
 import re
 import time
 import tomllib
@@ -38,8 +39,8 @@ BUILT_IN_RULES: list[ResponseRule] = [
     ResponseRule(r"\b[yY]/[nN]\b", "y", "send"),
 ]
 
-# Cooldown tracking: {(slug, pattern): last_response_time}
-_cooldowns: dict[tuple[str, str], float] = {}
+# Cooldown tracking: {(session_root, slug, pattern): last_response_time}
+_cooldowns: dict[tuple[str, str, str], float] = {}
 
 COOLDOWN_SECONDS = 30
 
@@ -91,18 +92,22 @@ def match_response(output: str, rules: list[ResponseRule]) -> ResponseRule | Non
     return None
 
 
-def check_cooldown(slug: str, pattern: str) -> bool:
+def _cooldown_key(session_root: str, slug: str, pattern: str) -> tuple[str, str, str]:
+    return (os.path.abspath(session_root), slug, pattern)
+
+
+def check_cooldown(session_root: str, slug: str, pattern: str) -> bool:
     """Return True if we should skip (still in cooldown)."""
-    key = (slug, pattern)
+    key = _cooldown_key(session_root, slug, pattern)
     last = _cooldowns.get(key)
     if last is None:
         return False
     return (time.monotonic() - last) < COOLDOWN_SECONDS
 
 
-def record_cooldown(slug: str, pattern: str) -> None:
+def record_cooldown(session_root: str, slug: str, pattern: str) -> None:
     """Record that we just responded to this pattern for this slug."""
-    _cooldowns[(slug, pattern)] = time.monotonic()
+    _cooldowns[_cooldown_key(session_root, slug, pattern)] = time.monotonic()
 
 
 def reset_cooldowns() -> None:
@@ -132,7 +137,7 @@ def auto_respond(
         return None
 
     # Cooldown check
-    if check_cooldown(slug, rule.pattern):
+    if check_cooldown(session_root, slug, rule.pattern):
         return None
 
     target = get_pane(session_root, slug)
@@ -142,7 +147,7 @@ def auto_respond(
 
     if rule.action == "escalate":
         emit_event(session_root, "pane_blocked", slug, question=rule.pattern)
-        record_cooldown(slug, rule.pattern)
+        record_cooldown(session_root, slug, rule.pattern)
         return rule
 
     if rule.action == "send":
@@ -155,7 +160,7 @@ def auto_respond(
                 pattern=rule.pattern,
                 response=rule.response,
             )
-            record_cooldown(slug, rule.pattern)
+            record_cooldown(session_root, slug, rule.pattern)
             return rule
 
     if rule.action in ("signal_done", "signal_failed"):
@@ -172,7 +177,7 @@ def auto_respond(
             pattern=rule.pattern,
             action=rule.action,
         )
-        record_cooldown(slug, rule.pattern)
+        record_cooldown(session_root, slug, rule.pattern)
         return rule
 
     return None

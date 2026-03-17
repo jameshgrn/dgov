@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.backend import set_backend
-from dgov.done import _is_done
+from dgov.done import _circuit_breaker_fingerprint, _is_done
 from dgov.persistence import (
     CIRCUIT_BREAKER_THRESHOLD,
     STATE_DIR,
@@ -183,3 +183,43 @@ class TestCircuitBreakerInIsDone:
         pane = get_pane(sr, "test-slug")
         assert pane is not None
         assert pane["state"] == "active"
+
+    def test_hash_uses_more_than_last_five_lines(self, tmp_path: Path) -> None:
+        """Alternating states with the same last 5 lines should still be distinguished."""
+        _setup_pane(tmp_path)
+        sr = str(tmp_path)
+        pane_record = get_pane(sr, "test-slug")
+        stable_state: dict = {}
+
+        shared_tail = "\n".join(f"shared line {idx}" for idx in range(1, 6))
+        output_a = "context A line 1\ncontext A line 2\n" + shared_tail
+        output_b = "context B line 1\ncontext B line 2\n" + shared_tail
+
+        assert _circuit_breaker_fingerprint(output_a) != _circuit_breaker_fingerprint(output_b)
+
+        for output in [output_a, output_b, output_a, output_b]:
+            stable_state["current_output"] = output
+            assert (
+                _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                )
+                is False
+            )
+
+        stable_state["current_output"] = output_a
+        assert (
+            _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+            )
+            is True
+        )
+
+        pane = get_pane(sr, "test-slug")
+        assert pane is not None
+        assert pane["state"] == "failed"

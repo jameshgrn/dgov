@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_CIRCUIT_BREAKER_LINES = 20
+
 # -- Done-signal wrapper --
 
 
@@ -99,6 +101,33 @@ def _resolve_strategy(
     return "exit", stable_seconds or 0
 
 
+def _set_done_reason(stable_state: dict | None, reason: str) -> None:
+    """Record the completion reason for the current poll."""
+    if stable_state is not None:
+        stable_state["_done_reason"] = reason
+
+
+def _circuit_breaker_fingerprint(output: object) -> str | None:
+    """Hash a normalized output tail so repeated failure states can be tracked."""
+    if not isinstance(output, str) or not output:
+        return None
+
+    import hashlib
+
+    from dgov.status import _strip_ansi
+
+    normalized_lines = []
+    for raw_line in _strip_ansi(output).splitlines():
+        line = " ".join(raw_line.split())
+        if line:
+            normalized_lines.append(line)
+    if not normalized_lines:
+        return None
+
+    window = "\n".join(normalized_lines[-_CIRCUIT_BREAKER_LINES:])
+    return hashlib.sha256(window.encode()).hexdigest()[:16]
+
+
 def _is_done(
     session_root: str,
     slug: str,
@@ -109,16 +138,23 @@ def _is_done(
     done_strategy: DoneStrategy | None = None,
     alive: bool | None = None,
 ) -> bool:
-    """Check if a worker is done via any of four signals.
+    """Check if a worker is done via prioritized completion signals.
 
-    The *done_strategy* controls which signals are primary vs fallback:
+    Priority order is fixed and recorded in ``_stable_state["_done_reason"]``:
+
+    1. done-signal file
+    2. exit-code file
+    3. commit detection (strategy-dependent)
+    4. pane liveness / abandonment
+    5. output stabilization (strategy-dependent)
+    6. circuit breaker
+
+    The *done_strategy* controls which optional signals are enabled:
 
     - **signal** (default): done file -> exit file -> commits -> liveness -> stabilization.
     - **exit**: done file -> exit file -> liveness (skip commit check).
     - **commit**: done file -> exit file -> commits -> liveness (skip stabilization).
     - **stable**: done file -> exit file -> liveness -> stabilization (skip commit check).
-
-    All strategies always check the done/exit files first (they're authoritative).
 
     Returns True when the worker is no longer running (regardless of outcome).
     """
@@ -135,6 +171,7 @@ def _is_done(
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
         _persist.update_pane_state(session_root, slug, "done", force=force)
+        _set_done_reason(_stable_state, "done_signal")
         return True
 
     # Signal 1b: exit-code file (agent crashed / nonzero exit) — always checked
@@ -143,6 +180,7 @@ def _is_done(
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=exit_signal", "failed", slug)
         _persist.update_pane_state(session_root, slug, "failed", force=force)
+        _set_done_reason(_stable_state, "exit_signal")
         return True
 
     if pane_record is None:
@@ -198,6 +236,7 @@ def _is_done(
                 # Touch done-signal so we don't re-emit
                 done_path.parent.mkdir(parents=True, exist_ok=True)
                 done_path.touch()
+                _set_done_reason(_stable_state, "commit")
                 return True
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
@@ -215,10 +254,12 @@ def _is_done(
                 elif time.monotonic() - dead_since >= 10:
                     _persist.update_pane_state(session_root, slug, "abandoned")
                     _persist.emit_event(session_root, "pane_done", slug)
+                    _set_done_reason(_stable_state, "abandoned")
                     return True
             else:
                 _persist.update_pane_state(session_root, slug, "abandoned")
                 _persist.emit_event(session_root, "pane_done", slug)
+                _set_done_reason(_stable_state, "abandoned")
                 return True
         elif _stable_state is not None:
             # Pane came back alive — reset dead tracking
@@ -227,13 +268,17 @@ def _is_done(
     # Signal 4 (optional): output stabilization — skipped for "commit" strategy
     use_stable = stype == "stable" or (stype == "signal" and eff_stable > 0)
     if use_stable and stype != "commit" and _stable_state is not None and pane_id:
-        from dgov.status import capture_worker_output
+        current_output = _stable_state.get("current_output")
+        if current_output is None:
+            from dgov.status import capture_worker_output
 
-        project_root = pane_record.get("project_root", "")
-        current_output = capture_worker_output(
-            project_root, slug, lines=20, session_root=session_root
-        )
-        if current_output is not None:
+            project_root = pane_record.get("project_root", "")
+            current_output = capture_worker_output(
+                project_root, slug, lines=20, session_root=session_root
+            )
+            if current_output is not None:
+                _stable_state["current_output"] = current_output
+        if isinstance(current_output, str):
             last_output = _stable_state.get("last_output")
             stable_since = _stable_state.get("stable_since")
             if current_output == last_output:
@@ -246,6 +291,7 @@ def _is_done(
                         done_path.parent.mkdir(parents=True, exist_ok=True)
                         done_path.touch()
                         _persist.update_pane_state(session_root, slug, "done")
+                        _set_done_reason(_stable_state, "stable")
                         return True
             else:
                 _stable_state["last_output"] = current_output
@@ -253,12 +299,10 @@ def _is_done(
 
     # Signal 5: Circuit breaker — detect stuck workers repeating same output
     if _stable_state is not None and pane_id:
-        cb_output = _stable_state.get("last_output")
-        if cb_output:
-            import hashlib
-
-            tail = "\n".join(cb_output.strip().splitlines()[-5:])
-            output_hash = hashlib.sha256(tail.encode()).hexdigest()[:16]
+        output_hash = _circuit_breaker_fingerprint(
+            _stable_state.get("current_output") or _stable_state.get("last_output", "")
+        )
+        if output_hash:
             prev_hash = _stable_state.get("_cb_prev_hash")
             if output_hash != prev_hash:
                 count = _persist.record_failure(session_root, slug, output_hash)
@@ -272,6 +316,7 @@ def _is_done(
                     _persist.update_pane_state(session_root, slug, "failed")
                     _persist.set_pane_metadata(session_root, slug, circuit_breaker=True)
                     _persist.emit_event(session_root, "pane_circuit_breaker", slug)
+                    _set_done_reason(_stable_state, "circuit_breaker")
                     return True
             _stable_state["_cb_prev_hash"] = output_hash
 
