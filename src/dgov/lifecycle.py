@@ -310,6 +310,11 @@ def _setup_and_launch_agent(
         wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
 
+    # 10. Auto-accept workspace trust for cursor agents
+    if agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent":
+        time.sleep(3)
+        backend.send_keys(pane_id, ["a"])
+
 
 # -- Public API --
 
