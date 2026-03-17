@@ -66,7 +66,7 @@ Done detection uses a prioritized fallback strategy:
 The Yapper is a conversational front-end that classifies natural language into actionable dgov tasks.
 
 ```bash
-dgov yapper "Fix the overflow bug in the footer using claude"
+dgov yap "Fix the overflow bug in the footer using claude"
 ```
 
 It classifies input into:

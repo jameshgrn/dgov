@@ -289,7 +289,7 @@ def _build_layout(
     table = _build_worker_table(panes, selected)
 
     footer = Text(
-        " q:quit  j/k:\u2191\u2193  Enter:attach  r:refresh  m:merge  x:close  p:preview",
+        " q:quit  j/k:\u2191\u2193  Enter:view  r:refresh  m:merge  x:close  p:preview",
         style="dim",
     )
     worker_panel = Panel(table, title="Workers", border_style="blue")
@@ -322,40 +322,15 @@ def _build_layout(
     return layout
 
 
-def _toggle_worker_pane(pane_id: str, state: DashboardState) -> None:
-    """Pull a worker pane into the governor window bottom, or send it back."""
-    # Check if this worker pane is already in the current window
+def _switch_to_worker_window(pane_id: str) -> None:
+    """Switch to the worker's background tmux window."""
     try:
-        current_window = subprocess.run(
-            ["tmux", "display-message", "-p", "#{window_id}"],
+        subprocess.run(
+            ["tmux", "select-window", "-t", pane_id],
             capture_output=True,
-            text=True,
-        ).stdout.strip()
-        worker_window = subprocess.run(
-            ["tmux", "display-message", "-t", pane_id, "-p", "#{window_id}"],
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
+        )
     except Exception:
         return
-
-    if current_window == worker_window:
-        # Worker is already in governor window — send it back to its own window
-        subprocess.run(
-            ["tmux", "break-pane", "-d", "-t", pane_id],
-            capture_output=True,
-        )
-    else:
-        # Pull worker into governor window as bottom pane (40% height)
-        subprocess.run(
-            ["tmux", "join-pane", "-v", "-l", "40%", "-s", pane_id],
-            capture_output=True,
-        )
-        # Focus the worker pane so user can interact
-        subprocess.run(
-            ["tmux", "select-pane", "-t", pane_id],
-            capture_output=True,
-        )
 
 
 def _execute_action(state: DashboardState, action: str, slug: str) -> None:
@@ -475,14 +450,14 @@ def run_dashboard_v2(
                     state.force_refresh.set()
                     live.refresh()
                 elif ch == "\r" or ch == "\n":
-                    # Pull selected worker into bottom of governor window
+                    # Switch to worker's background tmux window
                     with state.lock:
                         panes = list(state.panes)
                         sel = state.selected
                     if panes and 0 <= sel < len(panes):
                         pane_id = panes[sel].get("pane_id", "")
                         if pane_id:
-                            _toggle_worker_pane(pane_id, state)
+                            _switch_to_worker_window(pane_id)
                 elif ch == "m":
                     with state.lock:
                         panes = list(state.panes)
@@ -537,14 +512,14 @@ def run_dashboard_v2(
                     state.force_refresh.set()
                     live.refresh()
                 elif ch == "a":
-                    # Alias for Enter — toggle worker pane
+                    # Alias for Enter — switch to worker window
                     with state.lock:
                         panes = list(state.panes)
                         sel = state.selected
                     if panes and 0 <= sel < len(panes):
                         pane_id = panes[sel].get("pane_id", "")
                         if pane_id:
-                            _toggle_worker_pane(pane_id, state)
+                            _switch_to_worker_window(pane_id)
     finally:
         state.stop_event.set()
         if old_settings:
@@ -557,5 +532,3 @@ def run_dashboard_v2(
                 pidfile.unlink(missing_ok=True)
             except OSError:
                 pass
-
-    # post_exit_attach is no longer used — workers join the governor window inline
