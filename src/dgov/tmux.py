@@ -325,9 +325,34 @@ def create_utility_pane(command: str, title: str, cwd: str | None = None) -> str
     return pane_id
 
 
-def setup_governor_workspace(project_root: str) -> list[str]:
-    """Split dashboard + lazygit into the current window as companion panes.
+def _style_pane(pane_id: str, colour: str) -> None:
+    """Apply a coloured border label to a pane."""
+    _run(
+        [
+            "set-option",
+            "-p",
+            "-t",
+            pane_id,
+            "pane-border-format",
+            f" #[fg={colour},bold]#{{pane_index}} #[fg={colour}]#{{pane_title}} ",
+        ],
+        silent=True,
+    )
 
+
+def _apply_governor_layout() -> None:
+    """Apply the standard governor layout: Claude left 55%, right column stacked."""
+    select_layout("main-vertical")
+    width = _run(["display-message", "-p", "#{window_width}"], silent=True)
+    if width.isdigit():
+        target_w = max(90, int(int(width) * 0.55))
+        _run(["resize-pane", "-t", ":.0", "-x", str(target_w)], silent=True)
+
+
+def setup_governor_workspace(project_root: str) -> list[str]:
+    """Split dashboard + terrain + lazygit into the current window.
+
+    Layout: Claude (left 55%) | dashboard / terrain / lazygit (right, stacked).
     Idempotent: skips panes that already exist (by title).
     Returns list of created pane_ids.
     """
@@ -342,34 +367,21 @@ def setup_governor_workspace(project_root: str) -> list[str]:
         dash_id = split_pane()
         send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
         set_title(dash_id, "[gov] dashboard")
-        _run(
-            [
-                "set-option",
-                "-p",
-                "-t",
-                dash_id,
-                "pane-border-format",
-                " #[fg=colour39,bold]#{pane_index} #[fg=colour39]#{pane_title} ",
-            ],
-            silent=True,
-        )
+        _style_pane(dash_id, "colour39")
         panes.append(dash_id)
+
+    if "[gov] terrain" not in existing:
+        ter_id = split_pane()
+        send_command(ter_id, "dgov terrain")
+        set_title(ter_id, "[gov] terrain")
+        _style_pane(ter_id, "colour34")
+        panes.append(ter_id)
 
     if "[gov] lazygit" not in existing:
         lg_id = split_pane()
         send_command(lg_id, "lazygit")
         set_title(lg_id, "[gov] lazygit")
-        _run(
-            [
-                "set-option",
-                "-p",
-                "-t",
-                lg_id,
-                "pane-border-format",
-                " #[fg=colour214,bold]#{pane_index} #[fg=colour214]#{pane_title} ",
-            ],
-            silent=True,
-        )
+        _style_pane(lg_id, "colour214")
         # Focus lazygit on Commits panel — wait for it to actually start
         for _ in range(8):
             time.sleep(0.3)
@@ -383,12 +395,7 @@ def setup_governor_workspace(project_root: str) -> list[str]:
     _run(["set-option", "-w", "pane-active-border-style", "fg=colour255,bold"], silent=True)
 
     if panes:
-        select_layout("main-vertical")
-        # Give Claude pane (index 0) 55% width so context bar fits
-        width = _run(["display-message", "-p", "#{window_width}"], silent=True)
-        if width.isdigit():
-            target_w = max(90, int(int(width) * 0.55))
-            _run(["resize-pane", "-t", ":.0", "-x", str(target_w)], silent=True)
+        _apply_governor_layout()
     return panes
 
 

@@ -264,6 +264,15 @@ def dashboard(project_root, session_root, refresh, pane):
     run_dashboard_v2(project_root, session_root, refresh)
 
 
+@click.command("terrain")
+@click.option("--refresh", default=0.5, type=float, help="Seconds between steps")
+def terrain_cmd(refresh):
+    """Run standalone terrain erosion simulation."""
+    from dgov.terrain_pane import run_terrain
+
+    run_terrain(refresh)
+
+
 @click.command("init")
 @click.option(
     "--project-root",

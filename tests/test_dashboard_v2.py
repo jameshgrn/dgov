@@ -145,7 +145,6 @@ class TestTerrain:
         assert changed
 
     def test_render_terrain_returns_text(self):
-        from rich.text import Text
 
         from dgov.terrain import ErosionModel, render_terrain
 
@@ -431,77 +430,6 @@ class TestLayoutRendering:
         assert "processing tiles" in output
         assert "q:quit" in output
 
-    def test_terrain_hidden_when_terminal_too_short(self):
-        from dgov.dashboard_v2 import DashboardState
-
-        state = DashboardState(
-            panes=[
-                {
-                    "slug": "worker-a",
-                    "agent": "pi",
-                    "state": "active",
-                    "summary": "processing tiles",
-                    "duration_s": 125,
-                }
-            ],
-            branch="main",
-            last_refresh=1710000000,
-            terrain_text=Text("terrain ridge"),
-        )
-
-        output = _render_dashboard_text(state, width=120, height=12)
-
-        assert "worker-a" in output
-        assert "Terrain" not in output
-        assert "terrain ridge" not in output
-
-    def test_terrain_hidden_when_terminal_too_narrow(self):
-        from dgov.dashboard_v2 import DashboardState
-
-        state = DashboardState(
-            panes=[
-                {
-                    "slug": "worker-a",
-                    "agent": "pi",
-                    "state": "active",
-                    "summary": "processing tiles",
-                    "duration_s": 125,
-                }
-            ],
-            branch="main",
-            last_refresh=1710000000,
-            terrain_text=Text("terrain ridge"),
-        )
-
-        output = _render_dashboard_text(state, width=99, height=20)
-
-        assert "worker-a" in output
-        assert "Terrain" not in output
-        assert "terrain ridge" not in output
-
-    def test_terrain_visible_when_terminal_has_room(self):
-        from dgov.dashboard_v2 import DashboardState
-
-        state = DashboardState(
-            panes=[
-                {
-                    "slug": "worker-a",
-                    "agent": "pi",
-                    "state": "active",
-                    "summary": "processing tiles",
-                    "duration_s": 125,
-                }
-            ],
-            branch="main",
-            last_refresh=1710000000,
-            terrain_text=Text("terrain ridge"),
-        )
-
-        output = _render_dashboard_text(state, width=120, height=20)
-
-        assert "Terrain" in output
-        assert "terrain ridge" in output
-
     def test_build_layout_reuses_existing_tree(self):
         from dgov.dashboard_v2 import DashboardState, _build_layout
 
@@ -517,7 +445,6 @@ class TestLayoutRendering:
             ],
             branch="main",
             last_refresh=1710000000,
-            terrain_text=Text("terrain ridge"),
             preview_lines=["hello from worker"],
             preview_visible=True,
         )
@@ -526,5 +453,4 @@ class TestLayoutRendering:
         updated = _build_layout(state, term_width=99, term_height=13, layout=layout)
 
         assert updated is layout
-        assert layout["body"]["main_body"]["terrain"].visible is False
         assert layout["body"]["preview"].visible is True

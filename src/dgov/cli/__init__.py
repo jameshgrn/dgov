@@ -85,6 +85,7 @@ def cli(ctx, governor):
         "init",
         "doctor",
         "yap",
+        "terrain",
     ):
         _check_governor_context()
 
@@ -254,6 +255,7 @@ from dgov.cli.admin import (  # noqa: E402
     rebase,
     stats,
     status,
+    terrain_cmd,
     version_cmd,
 )
 from dgov.cli.batch_cmd import batch, checkpoint  # noqa: E402
@@ -290,6 +292,7 @@ cli.add_command(dag)
 cli.add_command(merge_queue)
 cli.add_command(yap_cmd)
 cli.add_command(briefing_cmd)
+cli.add_command(terrain_cmd)
 
 
 if __name__ == "__main__":

@@ -24,20 +24,11 @@ from rich.text import Text
 
 from dgov import __version__
 
-try:
-    from dgov.terrain import ErosionModel, render_terrain
-
-    _HAS_TERRAIN = True
-except ImportError:
-    _HAS_TERRAIN = False
-
 logger = logging.getLogger(__name__)
 
 _STARTUP_TIME = time.time()
 _UI_REFRESH_PER_SECOND = 2
 _INPUT_POLL_INTERVAL = 0.05
-_MIN_TERRAIN_WIDTH = 100
-_MIN_TERRAIN_HEIGHT = 14
 
 
 def state_color(state: str) -> str:
@@ -79,9 +70,6 @@ class DashboardState:
     stop_event: threading.Event = field(default_factory=threading.Event)
     force_refresh: threading.Event = field(default_factory=threading.Event)
     selected: int = 0
-    terrain_text: Text | None = None
-    terrain_model: object | None = None  # ErosionModel instance
-    terrain_tick: int = 0
     post_exit_attach: str = ""
     preview_lines: list[str] = field(default_factory=list)
     preview_visible: bool = False
@@ -159,20 +147,6 @@ def fetch_panes(state: DashboardState) -> None:
             state.error = ""
             state.preview_lines = preview
 
-        # Step terrain model every 3rd refresh
-        with state.lock:
-            model = state.terrain_model
-            tick = state.terrain_tick
-        if model is not None and tick % 3 == 0:
-            try:
-                model.step()
-                rendered = render_terrain(model)
-                with state.lock:
-                    state.terrain_text = rendered
-            except Exception:
-                logger.debug("Terrain step failed", exc_info=True)
-        with state.lock:
-            state.terrain_tick += 1
     except Exception as exc:
         with state.lock:
             state.error = str(exc)
@@ -282,12 +256,8 @@ def _create_dashboard_layout() -> Layout:
         Layout(name="footer", size=3),
     )
     layout["body"].split_column(
-        Layout(name="main_body"),
+        Layout(name="workers"),
         Layout(name="preview", size=7, visible=False),
-    )
-    layout["body"]["main_body"].split_row(
-        Layout(name="workers", ratio=3),
-        Layout(name="terrain", ratio=1, visible=False),
     )
     return layout
 
@@ -304,7 +274,6 @@ def _build_layout(
         last_refresh = state.last_refresh
         error = state.error
         selected = state.selected
-        terrain = state.terrain_text
         preview_lines = list(state.preview_lines)
         preview_visible = state.preview_visible
 
@@ -325,23 +294,6 @@ def _build_layout(
     )
     worker_panel = Panel(table, title="Workers", border_style="blue")
 
-    if term_width is None or term_height is None:
-        try:
-            size = os.get_terminal_size()
-            if term_width is None:
-                term_width = size.columns
-            if term_height is None:
-                term_height = size.lines
-        except OSError:
-            term_width = 80 if term_width is None else term_width
-            term_height = 24 if term_height is None else term_height
-
-    show_terrain = (
-        terrain is not None
-        and term_width >= _MIN_TERRAIN_WIDTH
-        and term_height >= _MIN_TERRAIN_HEIGHT
-    )
-
     # Determine selected slug for preview title
     selected_slug = ""
     if panes and 0 <= selected < len(panes):
@@ -351,17 +303,13 @@ def _build_layout(
 
     preview_text = Text("\n".join(preview_lines)) if show_preview else Text("")
     preview_title = f"Output: {selected_slug}" if selected_slug else "Output"
-    terrain_renderable = terrain if terrain is not None else Text("")
 
     if layout is None:
         layout = _create_dashboard_layout()
 
     layout["header"].update(Panel(header_text, height=3))
     layout["footer"].update(Panel(footer, height=3))
-    layout["body"]["main_body"]["workers"].update(worker_panel)
-    layout["body"]["main_body"]["terrain"].update(
-        Panel(terrain_renderable, title="Terrain", border_style="green")
-    )
+    layout["body"]["workers"].update(worker_panel)
     layout["body"]["preview"].update(
         Panel(
             preview_text,
@@ -370,7 +318,6 @@ def _build_layout(
             height=7,
         )
     )
-    layout["body"]["main_body"]["terrain"].visible = show_terrain
     layout["body"]["preview"].visible = show_preview
     return layout
 
@@ -435,12 +382,6 @@ def run_dashboard_v2(
         project_root=project_root,
         session_root=session_root,
     )
-
-    if _HAS_TERRAIN:
-        try:
-            state.terrain_model = ErosionModel(width=25, height=30)
-        except Exception:
-            logger.debug("Failed to initialize terrain model", exc_info=True)
 
     thread = threading.Thread(target=data_thread, args=(state, refresh_interval), daemon=True)
     thread.start()
