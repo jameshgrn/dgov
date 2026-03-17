@@ -182,6 +182,46 @@ def data_thread(state: DashboardState, interval: float) -> None:
         state.force_refresh.clear()
 
 
+def _sort_panes_hierarchical(
+    panes: list[dict], selected: int
+) -> list[tuple[dict, int, bool, int]]:
+    """Sort panes: LT-GOVs first with children nested beneath, then standalone.
+
+    Returns list of ``(pane, indent_level, is_last_child, original_index)``.
+    """
+    ltgovs: list[tuple[int, dict]] = []
+    children: dict[str, list[tuple[int, dict]]] = {}
+    standalone: list[tuple[int, dict]] = []
+
+    for i, p in enumerate(panes):
+        role = p.get("role", "worker")
+        parent = p.get("parent_slug", "")
+        if role == "lt-gov":
+            ltgovs.append((i, p))
+        elif parent:
+            children.setdefault(parent, []).append((i, p))
+        else:
+            standalone.append((i, p))
+
+    result: list[tuple[dict, int, bool, int]] = []
+
+    for orig_idx, p in ltgovs:
+        result.append((p, 0, False, orig_idx))
+        kids = children.pop(p.get("slug", ""), [])
+        for j, (child_idx, child) in enumerate(kids):
+            result.append((child, 1, j == len(kids) - 1, child_idx))
+
+    # Orphan children whose parent LT-GOV wasn't found
+    for _parent_slug, kids in children.items():
+        for j, (child_idx, child) in enumerate(kids):
+            result.append((child, 1, j == len(kids) - 1, child_idx))
+
+    for orig_idx, p in standalone:
+        result.append((p, 0, False, orig_idx))
+
+    return result
+
+
 def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
     table.add_column("Slug", ratio=3, no_wrap=True)
@@ -189,14 +229,26 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table.add_column("State", width=14, no_wrap=True)
     table.add_column("Summary", ratio=4)
 
-    for i, p in enumerate(panes):
+    sorted_panes = _sort_panes_hierarchical(panes, selected)
+
+    for p, indent_level, is_last_child, orig_idx in sorted_panes:
         pstate = p.get("state", "active")
         activity = p.get("activity", "")
         summary = p.get("summary", str(activity)[:60]) or ""
         color = state_color(pstate)
-        style = f"bold {color}" if i == selected else color
+        is_selected = orig_idx == selected
+        role = p.get("role", "worker")
 
-        prefix = "\u25b8 " if i == selected else "  "
+        if role == "lt-gov":
+            prefix = "\u25c6 " if is_selected else "  \u25c7 "
+            style = "bold magenta"
+        elif indent_level > 0:
+            prefix = "  \u2514\u2500 " if is_last_child else "  \u251c\u2500 "
+            style = f"bold {color}" if is_selected else color
+        else:
+            prefix = "\u25b8 " if is_selected else "  "
+            style = f"bold {color}" if is_selected else color
+
         slug_display = Text(f"{prefix}{p.get('slug', '')}")
         agent = Text(p.get("agent", "?"))
         dur = fmt_duration(int(p.get("duration_s", 0)))

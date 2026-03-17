@@ -187,6 +187,144 @@ class TestWorkerTable:
 
 
 @pytest.mark.unit
+class TestSortPanesHierarchical:
+    def test_empty(self):
+        from dgov.dashboard_v2 import _sort_panes_hierarchical
+
+        assert _sort_panes_hierarchical([], 0) == []
+
+    def test_ltgov_before_standalone(self):
+        from dgov.dashboard_v2 import _sort_panes_hierarchical
+
+        panes = [
+            {"slug": "worker-a", "role": "worker"},
+            {"slug": "lt-gov-1", "role": "lt-gov"},
+        ]
+        result = _sort_panes_hierarchical(panes, 0)
+        slugs = [p.get("slug") for p, *_ in result]
+        assert slugs == ["lt-gov-1", "worker-a"]
+
+    def test_children_nested_under_parent(self):
+        from dgov.dashboard_v2 import _sort_panes_hierarchical
+
+        panes = [
+            {"slug": "standalone", "role": "worker"},
+            {"slug": "child-1", "role": "worker", "parent_slug": "lt-gov-1"},
+            {"slug": "lt-gov-1", "role": "lt-gov"},
+            {"slug": "child-2", "role": "worker", "parent_slug": "lt-gov-1"},
+        ]
+        result = _sort_panes_hierarchical(panes, 0)
+        slugs = [p.get("slug") for p, *_ in result]
+        assert slugs == ["lt-gov-1", "child-1", "child-2", "standalone"]
+
+    def test_last_child_flag(self):
+        from dgov.dashboard_v2 import _sort_panes_hierarchical
+
+        panes = [
+            {"slug": "lt-gov-1", "role": "lt-gov"},
+            {"slug": "child-1", "role": "worker", "parent_slug": "lt-gov-1"},
+            {"slug": "child-2", "role": "worker", "parent_slug": "lt-gov-1"},
+        ]
+        result = _sort_panes_hierarchical(panes, 0)
+        # child-1 is not last, child-2 is last
+        assert result[1][2] is False  # child-1 is_last_child
+        assert result[2][2] is True  # child-2 is_last_child
+
+    def test_original_index_preserved(self):
+        from dgov.dashboard_v2 import _sort_panes_hierarchical
+
+        panes = [
+            {"slug": "standalone", "role": "worker"},
+            {"slug": "lt-gov-1", "role": "lt-gov"},
+        ]
+        result = _sort_panes_hierarchical(panes, 0)
+        # lt-gov-1 was at index 1, standalone at index 0
+        assert result[0][3] == 1  # lt-gov-1 original_index
+        assert result[1][3] == 0  # standalone original_index
+
+    def test_orphan_children_still_rendered(self):
+        from dgov.dashboard_v2 import _sort_panes_hierarchical
+
+        panes = [
+            {"slug": "orphan", "role": "worker", "parent_slug": "missing-gov"},
+        ]
+        result = _sort_panes_hierarchical(panes, 0)
+        assert len(result) == 1
+        assert result[0][1] == 1  # indent_level
+
+
+@pytest.mark.unit
+class TestWorkerTableHierarchy:
+    def test_ltgov_diamond_prefix(self):
+        from dgov.dashboard_v2 import _build_worker_table
+
+        panes = [
+            {
+                "slug": "gov-1",
+                "role": "lt-gov",
+                "agent": "claude",
+                "state": "active",
+                "duration_s": 60,
+            },
+        ]
+        table = _build_worker_table(panes, 0)
+        assert table.row_count == 1
+
+    def test_child_tree_prefix(self):
+        from dgov.dashboard_v2 import _build_worker_table
+
+        panes = [
+            {
+                "slug": "gov-1",
+                "role": "lt-gov",
+                "agent": "claude",
+                "state": "active",
+                "duration_s": 60,
+            },
+            {
+                "slug": "child-1",
+                "role": "worker",
+                "parent_slug": "gov-1",
+                "agent": "pi",
+                "state": "active",
+                "duration_s": 30,
+            },
+        ]
+        table = _build_worker_table(panes, 0)
+        assert table.row_count == 2
+
+    def test_mixed_hierarchy_row_count(self):
+        from dgov.dashboard_v2 import _build_worker_table
+
+        panes = [
+            {
+                "slug": "standalone",
+                "role": "worker",
+                "agent": "pi",
+                "state": "done",
+                "duration_s": 10,
+            },
+            {
+                "slug": "gov-1",
+                "role": "lt-gov",
+                "agent": "claude",
+                "state": "active",
+                "duration_s": 60,
+            },
+            {
+                "slug": "child-1",
+                "role": "worker",
+                "parent_slug": "gov-1",
+                "agent": "pi",
+                "state": "active",
+                "duration_s": 30,
+            },
+        ]
+        table = _build_worker_table(panes, 1)
+        assert table.row_count == 3
+
+
+@pytest.mark.unit
 class TestLayoutRendering:
     def test_dashboard_text_is_visible(self):
         from dgov.dashboard_v2 import DashboardState
