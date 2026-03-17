@@ -93,8 +93,9 @@ def load_monitor_hooks(session_root: str) -> list[MonitorHook]:
 
     # Load home config
     _load_from_file(Path.home() / ".dgov" / "monitor-hooks.toml")
-    # Load project config
-    _load_from_file(Path(session_root) / ".dgov" / "monitor-hooks.toml")
+    # Load project config (resolve path for safety)
+    session_path = Path(session_root).resolve()
+    _load_from_file(session_path / ".dgov" / "monitor-hooks.toml")
 
     return list(hooks_map.values())
 
