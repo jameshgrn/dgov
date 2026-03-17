@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import subprocess
@@ -12,6 +13,27 @@ from dgov.models import MergeResult
 from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
 
 logger = logging.getLogger(__name__)
+
+
+class _MergeLock:
+    """File-based lock to serialize concurrent merges on the same repo."""
+
+    def __init__(self, project_root: str) -> None:
+        lock_dir = Path(project_root) / ".dgov"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        self._path = lock_dir / "merge.lock"
+        self._fd: int | None = None
+
+    def __enter__(self) -> "_MergeLock":
+        self._fd = os.open(str(self._path), os.O_CREAT | os.O_RDWR)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        if self._fd is not None:
+            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            os.close(self._fd)
+            self._fd = None
 
 
 # -- Plumbing merge --
@@ -31,139 +53,140 @@ def _plumbing_merge(
     When squash=False: uses ``git merge --no-ff`` to create a merge commit
     that preserves the worker's individual commit history.
     """
-    if not squash:
-        return _no_squash_merge(project_root, branch_name, message)
+    with _MergeLock(project_root):
+        if not squash:
+            return _no_squash_merge(project_root, branch_name, message)
 
-    head = subprocess.run(
-        ["git", "-C", project_root, "rev-parse", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if head.returncode != 0:
-        return MergeResult(success=False, stderr=head.stderr.strip())
-
-    head_sha = head.stdout.strip()
-
-    # In-memory merge — no working tree side effects
-    result = subprocess.run(
-        ["git", "merge-tree", "--write-tree", head_sha, branch_name],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
-
-    tree_hash = result.stdout.strip().splitlines()[0]
-    branch_tip = subprocess.run(
-        ["git", "-C", project_root, "rev-parse", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    if branch_tip.returncode != 0:
-        return MergeResult(success=False, stderr=f"Cannot resolve {branch_name}")
-
-    # Create squash commit (single parent — linear history)
-    msg = message or f"Merge {branch_name}"
-    commit = subprocess.run(
-        [
-            "git",
-            "-C",
-            project_root,
-            "commit-tree",
-            tree_hash,
-            "-p",
-            head_sha,
-            "-m",
-            msg,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if commit.returncode != 0:
-        return MergeResult(success=False, stderr=commit.stderr.strip())
-
-    new_commit = commit.stdout.strip()
-
-    # Advance current branch ref
-    current_branch = subprocess.run(
-        ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if current_branch.returncode != 0:
-        return MergeResult(success=False, stderr="Detached HEAD — cannot advance ref")
-
-    # Stash uncommitted changes on main worktree before ref update and reset
-    status = subprocess.run(
-        ["git", "-C", project_root, "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-    )
-    # Only stash if there are tracked modifications (ignore untracked ?? files)
-    dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
-    stashed = False
-    if dirty:
-        stash = subprocess.run(
-            ["git", "-C", project_root, "stash", "push", "-m", "dgov-plumbing-merge-auto"],
+        head = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
         )
-        stashed = stash.returncode == 0
+        if head.returncode != 0:
+            return MergeResult(success=False, stderr=head.stderr.strip())
 
-    branch_ref = f"refs/heads/{current_branch.stdout.strip()}"
-    update = subprocess.run(
-        ["git", "-C", project_root, "update-ref", branch_ref, new_commit],
-        capture_output=True,
-        text=True,
-    )
-    if update.returncode != 0:
-        if stashed:
-            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
-        return MergeResult(success=False, stderr=update.stderr.strip())
+        head_sha = head.stdout.strip()
 
-    # Reset working tree to match new commit
-    reset = subprocess.run(
-        ["git", "-C", project_root, "reset", "--hard", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if reset.returncode != 0:
-        logger.error(
-            "reset --hard failed after update-ref advanced %s to %s. "
-            "Working tree is out of sync. Run: git reset --hard HEAD",
-            branch_ref,
-            new_commit,
-        )
-        if stashed:
-            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
-        return MergeResult(
-            success=False,
-            stderr=(
-                f"reset --hard failed after update-ref advanced {branch_ref} to {new_commit}. "
-                f"Working tree is out of sync. Run: git reset --hard HEAD"
-            ),
-        )
-
-    # Pop stash if we stashed
-    warnings: list[str] = []
-    if stashed:
-        pop = subprocess.run(
-            ["git", "-C", project_root, "stash", "pop"],
+        # In-memory merge — no working tree side effects
+        result = subprocess.run(
+            ["git", "merge-tree", "--write-tree", head_sha, branch_name],
+            cwd=project_root,
             capture_output=True,
             text=True,
         )
-        if pop.returncode != 0:
-            logger.warning(
-                "Merge succeeded but stash pop failed — uncommitted changes "
-                "are preserved in stash. Recover with: git stash show && git stash pop"
+        if result.returncode != 0:
+            return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
+
+        tree_hash = result.stdout.strip().splitlines()[0]
+        branch_tip = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", branch_name],
+            capture_output=True,
+            text=True,
+        )
+        if branch_tip.returncode != 0:
+            return MergeResult(success=False, stderr=f"Cannot resolve {branch_name}")
+
+        # Create squash commit (single parent — linear history)
+        msg = message or f"Merge {branch_name}"
+        commit = subprocess.run(
+            [
+                "git",
+                "-C",
+                project_root,
+                "commit-tree",
+                tree_hash,
+                "-p",
+                head_sha,
+                "-m",
+                msg,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if commit.returncode != 0:
+            return MergeResult(success=False, stderr=commit.stderr.strip())
+
+        new_commit = commit.stdout.strip()
+
+        # Advance current branch ref
+        current_branch = subprocess.run(
+            ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if current_branch.returncode != 0:
+            return MergeResult(success=False, stderr="Detached HEAD — cannot advance ref")
+
+        # Stash uncommitted changes on main worktree before ref update and reset
+        status = subprocess.run(
+            ["git", "-C", project_root, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+        )
+        # Only stash if there are tracked modifications (ignore untracked ?? files)
+        dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
+        stashed = False
+        if dirty:
+            stash = subprocess.run(
+                ["git", "-C", project_root, "stash", "push", "-m", "dgov-plumbing-merge-auto"],
+                capture_output=True,
+                text=True,
             )
-            warnings.append(
-                "Stash pop failed after merge. Your uncommitted changes are safe in "
-                "the stash. Recover with: git stash show && git stash pop"
+            stashed = stash.returncode == 0
+
+        branch_ref = f"refs/heads/{current_branch.stdout.strip()}"
+        update = subprocess.run(
+            ["git", "-C", project_root, "update-ref", branch_ref, new_commit],
+            capture_output=True,
+            text=True,
+        )
+        if update.returncode != 0:
+            if stashed:
+                subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+            return MergeResult(success=False, stderr=update.stderr.strip())
+
+        # Reset working tree to match new commit
+        reset = subprocess.run(
+            ["git", "-C", project_root, "reset", "--hard", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if reset.returncode != 0:
+            logger.error(
+                "reset --hard failed after update-ref advanced %s to %s. "
+                "Working tree is out of sync. Run: git reset --hard HEAD",
+                branch_ref,
+                new_commit,
+            )
+            if stashed:
+                subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+            return MergeResult(
+                success=False,
+                stderr=(
+                    f"reset --hard failed after update-ref advanced {branch_ref} to {new_commit}. "
+                    f"Working tree is out of sync. Run: git reset --hard HEAD"
+                ),
             )
 
-    return MergeResult(success=True, warnings=warnings)
+        # Pop stash if we stashed
+        warnings: list[str] = []
+        if stashed:
+            pop = subprocess.run(
+                ["git", "-C", project_root, "stash", "pop"],
+                capture_output=True,
+                text=True,
+            )
+            if pop.returncode != 0:
+                logger.warning(
+                    "Merge succeeded but stash pop failed — uncommitted changes "
+                    "are preserved in stash. Recover with: git stash show && git stash pop"
+                )
+                warnings.append(
+                    "Stash pop failed after merge. Your uncommitted changes are safe in "
+                    "the stash. Recover with: git stash show && git stash pop"
+                )
+
+        return MergeResult(success=True, warnings=warnings)
 
 
 def _no_squash_merge(
@@ -317,112 +340,115 @@ def _rebase_onto_head(project_root: str, branch_name: str) -> MergeResult:
 
 def _rebase_merge(project_root: str, branch_name: str, message: str | None = None) -> MergeResult:
     """Rebase branch onto HEAD then fast-forward for linear history with original commits."""
-    # Remember current branch
-    current = subprocess.run(
-        ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if current.returncode != 0:
-        return MergeResult(success=False, stderr="Detached HEAD — cannot rebase-merge")
-
-    current_branch = current.stdout.strip()
-
-    # Count commits before rebase (for logging; commit_count unused in return
-    # but kept for parity with _no_squash_merge's accounting)
-    base_r = subprocess.run(
-        ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    commit_count = 0
-    if base_r.returncode == 0:
-        count_r = subprocess.run(
-            [
-                "git",
-                "-C",
-                project_root,
-                "rev-list",
-                "--count",
-                f"{base_r.stdout.strip()}..{branch_name}",
-            ],
+    with _MergeLock(project_root):
+        # Remember current branch
+        current = subprocess.run(
+            ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
             capture_output=True,
             text=True,
         )
-        if count_r.returncode == 0:
-            commit_count = int(count_r.stdout.strip())
+        if current.returncode != 0:
+            return MergeResult(success=False, stderr="Detached HEAD — cannot rebase-merge")
 
-    # Stash uncommitted changes (same pattern as _no_squash_merge)
-    status = subprocess.run(
-        ["git", "-C", project_root, "status", "--porcelain"],
-        capture_output=True,
-        text=True,
-    )
-    dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
-    stashed = False
-    if dirty:
-        stash = subprocess.run(
-            ["git", "-C", project_root, "stash", "push", "-m", "dgov-rebase-merge-auto"],
+        current_branch = current.stdout.strip()
+
+        # Count commits before rebase (for logging; commit_count unused in return
+        # but kept for parity with _no_squash_merge's accounting)
+        base_r = subprocess.run(
+            ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
             capture_output=True,
             text=True,
         )
-        stashed = stash.returncode == 0
+        commit_count = 0
+        if base_r.returncode == 0:
+            count_r = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    project_root,
+                    "rev-list",
+                    "--count",
+                    f"{base_r.stdout.strip()}..{branch_name}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if count_r.returncode == 0:
+                commit_count = int(count_r.stdout.strip())
 
-    # Rebase branch onto HEAD (this checks out branch_name)
-    rebase = subprocess.run(
-        ["git", "-C", project_root, "rebase", "HEAD", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    if rebase.returncode != 0:
-        subprocess.run(
-            ["git", "-C", project_root, "rebase", "--abort"],
+        # Stash uncommitted changes (same pattern as _no_squash_merge)
+        status = subprocess.run(
+            ["git", "-C", project_root, "status", "--porcelain"],
             capture_output=True,
+            text=True,
         )
+        dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
+        stashed = False
+        if dirty:
+            stash = subprocess.run(
+                ["git", "-C", project_root, "stash", "push", "-m", "dgov-rebase-merge-auto"],
+                capture_output=True,
+                text=True,
+            )
+            stashed = stash.returncode == 0
+
+        # Rebase branch onto HEAD (this checks out branch_name)
+        rebase = subprocess.run(
+            ["git", "-C", project_root, "rebase", "HEAD", branch_name],
+            capture_output=True,
+            text=True,
+        )
+        if rebase.returncode != 0:
+            subprocess.run(
+                ["git", "-C", project_root, "rebase", "--abort"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "-C", project_root, "checkout", current_branch],
+                capture_output=True,
+            )
+            if stashed:
+                subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+            return MergeResult(success=False, stderr=f"Rebase failed: {rebase.stderr.strip()}")
+
+        # Now on branch_name (rebased). Switch back and fast-forward.
         subprocess.run(
             ["git", "-C", project_root, "checkout", current_branch],
             capture_output=True,
+            text=True,
         )
-        if stashed:
-            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
-        return MergeResult(success=False, stderr=f"Rebase failed: {rebase.stderr.strip()}")
-
-    # Now on branch_name (rebased). Switch back and fast-forward.
-    subprocess.run(
-        ["git", "-C", project_root, "checkout", current_branch],
-        capture_output=True,
-        text=True,
-    )
-    ff = subprocess.run(
-        ["git", "-C", project_root, "merge", "--ff-only", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    if ff.returncode != 0:
-        if stashed:
-            subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
-        return MergeResult(success=False, stderr=f"Fast-forward failed: {ff.stderr.strip()}")
-
-    # Pop stash
-    warnings: list[str] = []
-    if stashed:
-        pop = subprocess.run(
-            ["git", "-C", project_root, "stash", "pop"],
+        ff = subprocess.run(
+            ["git", "-C", project_root, "merge", "--ff-only", branch_name],
             capture_output=True,
             text=True,
         )
-        if pop.returncode != 0:
-            logger.warning(
-                "Merge succeeded but stash pop failed — uncommitted changes "
-                "are preserved in stash. Recover with: git stash show && git stash pop"
-            )
-            warnings.append(
-                "Stash pop failed after merge. Your uncommitted changes are safe in "
-                "the stash. Recover with: git stash show && git stash pop"
-            )
+        if ff.returncode != 0:
+            if stashed:
+                subprocess.run(["git", "-C", project_root, "stash", "pop"], capture_output=True)
+            return MergeResult(success=False, stderr=f"Fast-forward failed: {ff.stderr.strip()}")
 
-    logger.info("Rebase-merged %s (%d commits) onto %s", branch_name, commit_count, current_branch)
-    return MergeResult(success=True, warnings=warnings)
+        # Pop stash
+        warnings: list[str] = []
+        if stashed:
+            pop = subprocess.run(
+                ["git", "-C", project_root, "stash", "pop"],
+                capture_output=True,
+                text=True,
+            )
+            if pop.returncode != 0:
+                logger.warning(
+                    "Merge succeeded but stash pop failed — uncommitted changes "
+                    "are preserved in stash. Recover with: git stash show && git stash pop"
+                )
+                warnings.append(
+                    "Stash pop failed after merge. Your uncommitted changes are safe in "
+                    "the stash. Recover with: git stash show && git stash pop"
+                )
+
+        logger.info(
+            "Rebase-merged %s (%d commits) onto %s", branch_name, commit_count, current_branch
+        )
+        return MergeResult(success=True, warnings=warnings)
 
 
 # -- Post-merge lint fix --
