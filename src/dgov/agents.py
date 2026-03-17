@@ -51,6 +51,7 @@ class AgentDef:
     send_keys_submit: tuple[str, ...] = ("Enter",)
     send_keys_post_paste_delay_ms: int = 0
     send_keys_ready_delay_ms: int = 0
+    interactive: bool = False
     default_flags: str = ""
     resume_template: str | None = None
     health_check: str | None = None
@@ -80,6 +81,8 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="claude --continue{permissions}",
         color=39,
+        send_keys_ready_delay_ms=3000,
+        interactive=True,
         done_strategy=DoneStrategy(type="api"),
     ),
     "codex": AgentDef(
@@ -93,6 +96,8 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
         },
         color=214,
+        send_keys_ready_delay_ms=5000,
+        interactive=True,
         done_strategy=DoneStrategy(type="api"),
     ),
     "gemini": AgentDef(
@@ -109,6 +114,8 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
+        send_keys_ready_delay_ms=3000,
+        interactive=True,
         done_strategy=DoneStrategy(type="api"),
     ),
     "opencode": AgentDef(
@@ -186,6 +193,8 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_command="cursor-agent",
         prompt_transport="positional",
         color=45,
+        send_keys_ready_delay_ms=5000,
+        interactive=True,
         done_strategy=DoneStrategy(type="api"),
     ),
     "copilot": AgentDef(
@@ -310,6 +319,7 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
         env=dict(env_section),
         done_strategy=done_strategy,
         source=source,
+        interactive=table.get("interactive", False),
     )
 
 

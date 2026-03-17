@@ -280,7 +280,23 @@ def _setup_and_launch_agent(
         Path(done_signal).unlink(missing_ok=True)
 
     # 9. Launch agent (with done-signal wrapper)
-    if agent_def.prompt_transport == "send-keys":
+    if agent_def.interactive:
+        # Interactive TUI mode: launch without prompt, send prompt via tmux after ready.
+        base_cmd = build_launch_command(
+            agent_id,
+            rewritten_prompt,
+            permission_mode,
+            project_root=worktree_path,
+            slug=slug,
+            extra_flags=extra_flags,
+            registry=registry,
+        )
+        wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
+        backend.send_shell_command(pane_id, wrapped_cmd)
+        ready_delay = agent_def.send_keys_ready_delay_ms or 2000
+        time.sleep(ready_delay / 1000)
+        backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
+    elif agent_def.prompt_transport == "send-keys":
         base_cmd = build_launch_command(
             agent_id,
             None,
