@@ -229,9 +229,19 @@ def list_free_models() -> list[dict]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    req = urllib.request.Request(_OPENROUTER_MODELS_URL, headers=headers)
-    with urllib.request.urlopen(req, timeout=_OPENROUTER_TIMEOUT) as resp:
-        data = json.loads(resp.read())
+    try:
+        req = urllib.request.Request(_OPENROUTER_MODELS_URL, headers=headers)
+        with urllib.request.urlopen(req, timeout=_OPENROUTER_TIMEOUT) as resp:
+            data = json.loads(resp.read())
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        TimeoutError,
+        json.JSONDecodeError,
+    ) as exc:
+        logger.warning("Failed to fetch free models: %s", exc)
+        return []
 
     models = []
     for m in data.get("data", []):

@@ -277,6 +277,7 @@ def _is_done(
     if stype == "api":
         # Run output stability tracking for fallback (api skips Signal 4)
         if _stable_state is not None and pane_id:
+            _stable_state.pop("current_output", None)
             current_output = _stable_state.get("current_output")
             if current_output is None:
                 from dgov.status import capture_worker_output
@@ -298,7 +299,8 @@ def _is_done(
 
         # Fallback: if agent has commits and pane output has been stable for 60s, treat as done
         if _stable_state is not None and _stable_state.get("commits_detected"):
-            elapsed = time.monotonic() - _stable_state.get("stable_since", time.monotonic())
+            stable_since = _stable_state.get("stable_since")
+            elapsed = time.monotonic() - stable_since if stable_since is not None else 0
             if elapsed > 60:
                 logger.info(
                     "api fallback: %s has commits and stable output for 60s, marking done", slug
