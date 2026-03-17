@@ -14,6 +14,45 @@ from rich.text import Text
 _D8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 _D8_DIST = [math.sqrt(2), 1.0, math.sqrt(2), 1.0, 1.0, math.sqrt(2), 1.0, math.sqrt(2)]
 
+_LETTER_D = ["11110", "10001", "10001", "10001", "10001", "10001", "11110"]
+_LETTER_G = ["01110", "10001", "10000", "10110", "10001", "10001", "01110"]
+_LETTER_O = ["01110", "10001", "10001", "10001", "10001", "10001", "01110"]
+_LETTER_V = ["10001", "10001", "10001", "10001", "01010", "01010", "00100"]
+
+
+def _build_dgov_bitmap():
+    letters = [_LETTER_D, _LETTER_G, _LETTER_O, _LETTER_V]
+    bitmap = []
+    for r in range(7):
+        row = []
+        for i, letter in enumerate(letters):
+            if i > 0:
+                row.extend([0] * 2)
+            row.extend(int(c) for c in letter[r])
+        bitmap.append(row)
+    return bitmap
+
+
+def _stamp_dgov(grid, rows, cols):
+    bitmap = _build_dgov_bitmap()
+    bh = len(bitmap)
+    bw = len(bitmap[0])
+    scale = max(1, int(cols * 0.5 / bw))
+    total_w = bw * scale
+    total_h = bh * scale
+    start_r = (rows - total_h) // 2
+    start_c = (cols - total_w) // 2
+    for br in range(bh):
+        for bc in range(bw):
+            if bitmap[br][bc]:
+                for dr in range(scale):
+                    for dc in range(scale):
+                        gr = start_r + br * scale + dr
+                        gc = start_c + bc * scale + dc
+                        if 1 <= gr < rows - 1 and 1 <= gc < cols - 1:
+                            grid[gr][gc] *= 0.92
+
+
 # Hillshade light direction: azimuth=315° (upper-left), altitude=45°
 _ALT = math.radians(45)
 _AZ = math.radians(315)
@@ -67,6 +106,7 @@ class ErosionModel:
             grid = self._box_blur(grid, height, width)
 
         # All outer edges are drains at 0.0.
+        _stamp_dgov(grid, height, width)
         self._apply_boundary_drains(grid)
 
         self.height = grid
