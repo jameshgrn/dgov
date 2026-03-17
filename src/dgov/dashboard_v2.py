@@ -22,6 +22,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from rich import box
 
 from dgov import __version__
 
@@ -305,12 +306,12 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
 def _create_dashboard_layout() -> Layout:
     layout = Layout(name="root")
     layout.split_column(
-        Layout(name="header", size=3),
+        Layout(name="header", size=1),
         Layout(name="body"),
-        Layout(name="footer", size=3),
+        Layout(name="footer", size=1),
     )
     layout["body"].split_column(
-        Layout(name="workers", ratio=2),
+        Layout(name="workers", ratio=3),
         Layout(name="bottom", ratio=1),
     )
     layout["body"]["bottom"].split_row(
@@ -376,7 +377,7 @@ def _build_layout(
         " q:quit  j/k:\u2191\u2193  Enter:view  r:refresh  m:merge  x:close  p:preview",
         style="dim",
     )
-    worker_panel = Panel(table, title="Workers", border_style="blue")
+    worker_panel = Panel(table, title="Workers", border_style="blue", box=box.ROUNDED)
 
     # Determine selected slug for preview title
     selected_slug = ""
@@ -391,8 +392,8 @@ def _build_layout(
     if layout is None:
         layout = _create_dashboard_layout()
 
-    layout["header"].update(Panel(header_text, height=3))
-    layout["footer"].update(Panel(footer, height=3))
+    layout["header"].update(header_text)
+    layout["footer"].update(footer)
     layout["body"]["workers"].update(worker_panel)
     layout["body"]["bottom"]["events"].update(Panel(ev_text, title="Events", border_style="dim"))
     layout["body"]["bottom"]["preview"].update(
