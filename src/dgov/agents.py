@@ -603,7 +603,8 @@ def build_launch_command(
     # Skip permission flags if extra_flags already contains any of the same --flag names
     if flags and extra_flags:
         flag_names = {t for t in flags.split() if t.startswith("-")}
-        if flag_names & set(extra_flags.split()):
+        extra_flag_names = {t for t in extra_flags.split() if t.startswith("-")}
+        if flag_names & extra_flag_names:
             flags = ""
     if flags:
         base = f"{base} {flags}"
