@@ -227,9 +227,15 @@ def _is_done(
                 logger.debug("new_commits=%s slug=%s", has_commits, slug)
                 if has_commits:
                     if stype == "api":
-                        # Don't declare done yet — use fallback in api block (commits + 60s stable)
-                        if _stable_state is not None:
+                        # If agent is dead but shell is alive, and we have commits, we are done.
+                        if pane_id and not _agent_still_running(pane_id, current_command):
+                            logger.debug("new_commits slug=%s agent exited, shell alive — done", slug)
+                            # Fall through to done
+                        elif _stable_state is not None:
                             _stable_state["commits_detected"] = True
+                            return False
+                        else:
+                            return False
                     else:
                         if pane_id and _agent_still_running(pane_id, current_command):
                             # Agent committed but is still running — grace period
