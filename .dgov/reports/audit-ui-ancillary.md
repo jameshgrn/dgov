@@ -1,6 +1,27 @@
 ## Audit: UI & Ancillary Modules
 
 ### Critical Bugs
+- None observed in the reviewed UI and ancillary modules.
+
+### Logic Errors
+- src/dgov/recovery.py:186-228, `retry_or_escalate` may return a generic escalation error when `next_agent == current_agent`, but this situation can also arise if `_resolve_escalation_target` fails to find a configured escalation path rather than a true exhaustion-of-retries condition; this blurs causes and makes upstream handling harder to reason about. Severity P3. Suggested fix: distinguish between "no escalation target configured" and "retries exhausted" in the error payload (e.g., add a `reason` field or separate error codes) so callers can decide whether to adjust config vs. change retry policy.
+
+### Inefficiencies
+- src/dgov/terrain.py:111-145, `ErosionModel.step` allocates fresh `cells`, `receiver`, `slope`, and `area` lists on every step, which is potentially expensive for larger grids and high refresh rates. Severity P3. Suggested fix: preallocate these arrays once on model construction (or cache and reuse them between steps) and only clear/overwrite their contents per step, which will significantly reduce allocations and GC pressure in long-running dashboards.
+- src/dgov/inspection.py:44-55, `review_worker_pane` spawns up to five separate `git` subprocesses per call (stat, names, log, status, full diff) even when `full=False`, which can be noticeable latency in tight review loops. Severity P3. Suggested fix: gate the expensive `--stat` and `log` calls behind flags when only a minimal verdict is needed, or reuse results from a cheaper `git diff --name-status` where possible.
+- src/dgov/preflight.py:163-202, `check_deps` runs `uv sync --locked` even when invoked frequently, and the default timeout is only 30s which may cause repeated heavy syncs under contention. Severity P3. Suggested fix: keep the current behavior for explicit `dgov preflight` but cache a recent successful deps check timestamp and skip re-running within a short TTL unless the caller explicitly asks for a full deps validation.
+
+### Dead Code
+- No clear dead code (unreachable branches or unused top-level functions) identified in the reviewed files; imports and helpers appear to be referenced.
+
+### Minor Issues
+- src/dgov/dashboard_v2.py:381-394, `_acquire_dashboard_lock` kills an existing PID and then unconditionally overwrites the pidfile without confirming that the old process actually terminated, which can lead to brief races where two dashboards contend on the same session. Severity P3. Suggested fix: after sending SIGTERM, poll with `os.kill(old_pid, 0)` for a short bounded window before accepting the lock, and if the process remains alive, abort with a clear error instead of taking over.
+- src/dgov/inspection.py:148-156, `diff_worker_pane` runs `git diff` without a timeout, so a blocked or interactive `git` (e.g., due to credential helpers or hooks) can hang the caller. Severity P3. Suggested fix: add a conservative timeout (e.g., 20–30 seconds) to the `subprocess.run` call and surface a structured timeout error message to callers.
+- src/dgov/openrouter.py:165-179 and 193-208, `chat_completion` and `chat_completion_local_first` collapse all underlying provider errors into a generic `RuntimeError("All LLM providers failed ...")`, which hides whether failure was due to auth, connectivity, or model issues. Severity P3. Suggested fix: include the last-seen provider error (or a summarized list of causes) in the raised exception payload so higher layers and users can distinguish configuration problems from transient outages.
+
+## Audit: UI & Ancillary Modules
+
+### Critical Bugs
 
 1. **dashboard_v2.py:156** — Unbounded `read_events` call loads entire event log into memory every refresh cycle. As the events table grows, this becomes an OOM risk and a hot-path performance killer. **Severity: P1**
    - Fix: Pass `limit=8` (matching the intended UI display): `read_events(session_root, limit=8)`.
