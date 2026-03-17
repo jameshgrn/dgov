@@ -270,6 +270,7 @@ def test_worker_pane_skip_returns_conflict_error():
         patch("dgov.persistence.get_pane", return_value=mock_pane),
         patch("dgov.merger._commit_worktree", return_value={}),
         patch("dgov.lifecycle._trigger_hook", return_value=True),
+        patch("dgov.merger._rebase_onto_head", return_value=MergeResult(True, "")),
         patch("dgov.merger._plumbing_merge", return_value=MergeResult(False, "conflict")),
         patch("dgov.merger._detect_conflicts", return_value=["test.py"]),
         patch("dgov.persistence.update_pane_state"),

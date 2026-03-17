@@ -2070,6 +2070,7 @@ class TestValidEvents:
             "merge_enqueued",
             "merge_completed",
             "yap_received",
+            "pane_circuit_breaker",
         }
         assert expected == VALID_EVENTS
 

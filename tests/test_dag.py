@@ -56,7 +56,7 @@ class TestParseDagFile:
         t = dag.tasks["T0"]
         assert t.agent == "hunter"
         assert t.files.create == ("src/foo.py",)
-        assert t.permission_mode == "acceptEdits"
+        assert t.permission_mode == "bypassPermissions"
         assert t.timeout_s == 900
 
     def test_missing_dag_section(self):
