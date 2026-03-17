@@ -417,8 +417,8 @@ class TestIsDoneWithStrategy:
             mock_commits.assert_not_called()
 
     @pytest.mark.unit
-    def test_none_strategy_skips_commits(self, tmp_path: Path) -> None:
-        """None/api strategy skips commit check (only done file + liveness)."""
+    def test_api_strategy_runs_commit_check_for_fallback(self, tmp_path: Path) -> None:
+        """Api strategy runs commit check for fallback; without 60s stability, not done yet."""
         session_root = str(tmp_path)
         slug = "test-default"
         _setup_pane(tmp_path, slug=slug)
@@ -435,14 +435,17 @@ class TestIsDoneWithStrategy:
             patch("dgov.done.get_backend") as mock_be,
         ):
             mock_be.return_value.is_alive.return_value = True
+            stable_state = {"last_output": "x", "stable_since": time.monotonic() - 30}
             result = _is_done(
                 session_root,
                 slug,
                 pane_record=pane_record,
+                _stable_state=stable_state,
             )
-            # "api" default strategy: no done file + pane alive → not done yet
+            # Api strategy: commits detected but only 30s stable (need 60s) → not done yet
             assert result is False
-            mock_commits.assert_not_called()
+            mock_commits.assert_called_once()
+            assert stable_state.get("commits_detected") is True
 
 
 # ---------------------------------------------------------------------------

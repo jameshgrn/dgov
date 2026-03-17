@@ -191,8 +191,8 @@ def _is_done(
 
     pane_id = pane_record.get("pane_id", "")
 
-    # Signal 2: new commits on the branch — skipped for "exit", "stable", and "api" strategies
-    if stype not in ("exit", "stable", "api"):
+    # Signal 2: new commits on the branch — skipped for "exit" and "stable" strategies
+    if stype not in ("exit", "stable"):
         project_root = pane_record.get("project_root", "")
         branch_name = pane_record.get("branch_name", "")
         base_sha = pane_record.get("base_sha", "")
@@ -200,47 +200,52 @@ def _is_done(
             has_commits = _has_new_commits(project_root, branch_name, base_sha)
             logger.debug("new_commits=%s slug=%s", has_commits, slug)
             if has_commits:
-                if pane_id and _agent_still_running(pane_id):
-                    # Agent committed but is still running — grace period
+                if stype == "api":
+                    # Don't declare done yet — use fallback in api block (commits + 60s stable)
                     if _stable_state is not None:
-                        commit_count = _count_commits(project_root, branch_name, base_sha)
-                        prev_count = _stable_state.get("commit_count")
-                        if prev_count is None or commit_count != prev_count:
-                            # New commits — reset grace timer
-                            _stable_state["commit_count"] = commit_count
-                            _stable_state["commit_seen_at"] = time.monotonic()
+                        _stable_state["commits_detected"] = True
+                else:
+                    if pane_id and _agent_still_running(pane_id):
+                        # Agent committed but is still running — grace period
+                        if _stable_state is not None:
+                            commit_count = _count_commits(project_root, branch_name, base_sha)
+                            prev_count = _stable_state.get("commit_count")
+                            if prev_count is None or commit_count != prev_count:
+                                # New commits — reset grace timer
+                                _stable_state["commit_count"] = commit_count
+                                _stable_state["commit_seen_at"] = time.monotonic()
+                                logger.debug(
+                                    "new_commits slug=%s count=%d agent running, grace",
+                                    slug,
+                                    commit_count,
+                                )
+                                return False
+                            commit_seen = _stable_state.get("commit_seen_at", 0)
+                            elapsed = time.monotonic() - commit_seen
+                            if elapsed < 30:
+                                logger.debug(
+                                    "new_commits slug=%s grace period %.0fs/30s", slug, elapsed
+                                )
+                                return False
                             logger.debug(
-                                "new_commits slug=%s count=%d agent still running, starting grace",
+                                "new_commits slug=%s grace period elapsed, declaring done", slug
+                            )
+                            # Fall through to done
+                        else:
+                            logger.warning(
+                                "new_commits slug=%s agent running, no stable_state — done",
                                 slug,
-                                commit_count,
                             )
-                            return False
-                        commit_seen = _stable_state.get("commit_seen_at", 0)
-                        elapsed = time.monotonic() - commit_seen
-                        if elapsed < 30:
-                            logger.debug(
-                                "new_commits slug=%s grace period %.0fs/30s", slug, elapsed
-                            )
-                            return False
-                        logger.debug(
-                            "new_commits slug=%s grace period elapsed, declaring done", slug
-                        )
-                        # Fall through to done
-                    else:
-                        logger.warning(
-                            "new_commits slug=%s agent running, no stable_state — declaring done",
-                            slug,
-                        )
-                        # Fall through to done — blocking forever is worse than no grace period
-                current_state = pane_record.get("state", "")
-                force = current_state == "abandoned"
-                _persist.update_pane_state(session_root, slug, "done", force=force)
-                _persist.emit_event(session_root, "pane_done", slug)
-                # Touch done-signal so we don't re-emit
-                done_path.parent.mkdir(parents=True, exist_ok=True)
-                done_path.touch()
-                _set_done_reason(_stable_state, "commit")
-                return True
+                            # Fall through to done — blocking forever is worse than no grace period
+                    current_state = pane_record.get("state", "")
+                    force = current_state == "abandoned"
+                    _persist.update_pane_state(session_root, slug, "done", force=force)
+                    _persist.emit_event(session_root, "pane_done", slug)
+                    # Touch done-signal so we don't re-emit
+                    done_path.parent.mkdir(parents=True, exist_ok=True)
+                    done_path.touch()
+                    _set_done_reason(_stable_state, "commit")
+                    return True
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     if pane_id:
@@ -268,8 +273,42 @@ def _is_done(
             # Pane came back alive — reset dead tracking
             _stable_state.pop("dead_since", None)
 
-    # API strategy: only signal files + liveness. Skip heuristics.
+    # API strategy: signal files + liveness, with commit+stable fallback for interactive agents
     if stype == "api":
+        # Run output stability tracking for fallback (api skips Signal 4)
+        if _stable_state is not None and pane_id:
+            current_output = _stable_state.get("current_output")
+            if current_output is None:
+                from dgov.status import capture_worker_output
+
+                project_root = pane_record.get("project_root", "")
+                current_output = capture_worker_output(
+                    project_root, slug, lines=20, session_root=session_root
+                )
+                if current_output is not None:
+                    _stable_state["current_output"] = current_output
+            if isinstance(current_output, str):
+                last_output = _stable_state.get("last_output")
+                if current_output == last_output:
+                    if _stable_state.get("stable_since") is None:
+                        _stable_state["stable_since"] = time.monotonic()
+                else:
+                    _stable_state["last_output"] = current_output
+                    _stable_state["stable_since"] = None
+
+        # Fallback: if agent has commits and pane output has been stable for 60s, treat as done
+        if _stable_state is not None and _stable_state.get("commits_detected"):
+            elapsed = time.monotonic() - _stable_state.get("stable_since", time.monotonic())
+            if elapsed > 60:
+                logger.info(
+                    "api fallback: %s has commits and stable output for 60s, marking done", slug
+                )
+                _persist.update_pane_state(session_root, slug, "done", force=True)
+                done_path.parent.mkdir(parents=True, exist_ok=True)
+                done_path.touch()
+                _persist.emit_event(session_root, "pane_done", slug, reason="api_fallback_stable")
+                _set_done_reason(_stable_state, "api_fallback_stable")
+                return True
         return False
 
     # Signal 4 (optional): output stabilization — skipped for "commit" strategy
