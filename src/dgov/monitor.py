@@ -26,17 +26,115 @@ from dgov.status import list_worker_panes, tail_worker_log
 logger = logging.getLogger(__name__)
 
 
+# Deterministic regex patterns for classification
+DETERMINISTIC_PATTERNS = {
+    "idle": [
+        r"\b(no[ \t]+work|[aA]waiting\s+input|pause[d]?|waiting\b|idling)\b",
+    ],
+    "done": [
+        r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
+    ],
+    "failed": [
+        r"\b(failed|error|exception|traceback|crash|panic|fatal)\b",
+    ],
+    "waiting_input": [
+        r"\b(waiting[ \t]+for\s+(user|input|confirmation|approval|prompt))\b",
+        r"\b(paused.*awaiting\b|awaiting.*input\b)",
+        r"^\s*#\s*(TODO|FIXME|XXX|HACK):",
+    ],
+    "committing": [
+        r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
+    ],
+}
+
+
+def _classify_deterministic(output: str) -> str | None:
+    """Try to classify output using deterministic regex patterns first.
+
+    Returns classification if matched, otherwise None for LLM fallback.
+    Called before LLM classification to avoid unnecessary API calls.
+    """
+    output_lower = output.lower()
+
+    for state, patterns in DETERMINISTIC_PATTERNS.items():
+        for pattern in patterns:
+            if _regex_match(pattern, output_lower):
+                return state
+
+    return None
+
+
+def _regex_match(pattern: str, text: str) -> bool:
+    """Match a regex pattern against text, handling case-insensitivity."""
+    import re
+
+    try:
+        return re.search(pattern, text, re.IGNORECASE) is not None
+    except re.error:
+        logger.debug("Invalid regex pattern: %s", pattern)
+        return False
+
+
 def classify_output(output: str) -> str:
-    """Classify agent output into working, done, stuck, or idle using local LLM."""
+    """Classify agent output into working, done, stuck, idle, waiting_input, or committing.
+
+    Uses deterministic regex patterns first for efficiency, falls back to LLM for
+    ambiguous cases. This two-layer approach minimizes API calls while maintaining accuracy.
+    """
     if not output.strip():
         return "idle"
 
+    # Layer 1: Deterministic classification (fast, no API call)
+    deterministic_result = _classify_deterministic(output)
+    if deterministic_result is not None:
+        logger.debug("Deterministic classification: %s", deterministic_result)
+        return deterministic_result
+
+    # Layer 2: LLM classification for ambiguous cases
     messages = [
         {
             "role": "system",
             "content": (
-                "Classify the coding agent output. "
-                "Reply with one word: working, done, stuck, or idle."
+                "Classify the coding agent output into exactly one category. "
+                "Reply with ONE word only: "
+                "working, done, stuck, idle, waiting_input, or committing.\n"
+                "\n"
+                "Categories:\n"
+                "- working: actively writing code, running commands, exploring\n"
+                "- done: task complete, ready to commit, successful finish message\n"
+                "- stuck: error messages, exceptions, repeated failed attempts, frozen state\n"
+                "- idle: no activity, paused without work, silent for extended period\n"
+                "- waiting_input: explicitly waiting for user confirmation/input/feedback\n"
+                "- committing: running git commands, preparing to push changes\n"
+                "\n"
+                "Few-shot examples:\n"
+                "\n"
+                "Example 1:\n"
+                'Output: "Let me create the database schema first."\n'
+                "Classification: working\n"
+                "\n"
+                "Example 2:\n"
+                'Output: "I\'ve finished implementing the feature. All tests pass."\n'
+                "Classification: done\n"
+                "\n"
+                "Example 3:\n"
+                'Output: "Connection failed again after 3 attempts. Error: '
+                'ConnectionRefusedError"\n'
+                "Classification: stuck\n"
+                "\n"
+                "Example 4:\n"
+                'Output: "No active work detected in last 60 seconds"\n'
+                "Classification: idle\n"
+                "\n"
+                "Example 5:\n"
+                'Output: "Waiting for your confirmation before proceeding with the refactoring."\n'
+                "Classification: waiting_input\n"
+                "\n"
+                "Example 6:\n"
+                "Output: \"git add src/ && git commit -m 'Add new feature'\"\n"
+                "Classification: committing\n"
+                "\n"
+                "Respond with ONLY the category name, nothing else."
             ),
         },
         {"role": "user", "content": output[-2000:]},
@@ -49,8 +147,10 @@ def classify_output(output: str) -> str:
             return "unknown"
         content = choices[0].get("message", {}).get("content") or ""
         choice = content.strip().lower()
-        if choice in {"working", "done", "stuck", "idle"}:
+        # Recognized classifications now include waiting_input and committing
+        if choice in {"working", "done", "stuck", "idle", "waiting_input", "committing"}:
             return choice
+        logger.debug("Unknown classification from LLM: %s", choice)
         return "unknown"
     except Exception as exc:
         logger.debug("Classification failed: %s", exc)
@@ -102,9 +202,17 @@ def poll_workers(
 
 
 def _take_action(project_root: str, session_root: str, worker: dict, history: dict) -> str | None:
-    """Evaluate history and take automated action if rules match."""
+    """Evaluate history and take automated action if rules match.
+
+    Only terminal states (done, stuck, idle) trigger remediation.
+    Intermediate states (working, waiting_input, committing) are passive.
+    """
     slug = worker["slug"]
     classification = worker["classification"]
+
+    # Skip remediation for non-terminal states
+    if classification in {"working", "waiting_input", "committing", "unknown"}:
+        return None
 
     if slug not in history:
         history[slug] = {"classifications": [], "last_action_at": 0.0}
@@ -133,7 +241,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     if not raw or raw.get("state") != "active":
         return None
 
-    # Rules
+    # Terminal state rules only
     if classification == "done" and worker["has_commits"] and consecutive >= 2:
         _auto_complete(project_root, session_root, slug)
         hist["last_action_at"] = time.time()
