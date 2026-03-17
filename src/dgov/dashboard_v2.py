@@ -88,6 +88,22 @@ def _get_branch(project_root: str) -> str:
         return "?"
 
 
+_branch_cache: dict[str, tuple[float, str]] = {}
+_BRANCH_CACHE_TTL = 10.0
+
+
+def _get_branch_cached(project_root: str) -> str:
+    now = time.time()
+    cached = _branch_cache.get(project_root)
+    if cached is not None:
+        ts, val = cached
+        if now - ts < _BRANCH_CACHE_TTL:
+            return val
+    val = _get_branch(project_root)
+    _branch_cache[project_root] = (now, val)
+    return val
+
+
 def fetch_panes(state: DashboardState) -> None:
     from dgov.persistence import read_events
     from dgov.status import list_worker_panes, tail_worker_log
@@ -99,7 +115,7 @@ def fetch_panes(state: DashboardState) -> None:
             include_freshness=False,
             include_prompt=False,
         )
-        branch = _get_branch(state.project_root)
+        branch = _get_branch_cached(state.project_root)
         session_root = state.session_root or state.project_root
 
         # Progress files
