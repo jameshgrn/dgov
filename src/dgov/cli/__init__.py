@@ -300,10 +300,13 @@ def refresh_cmd(project_root):
 
     # 4. Re-setup governor workspace (relaunches dashboard + terrain)
     if os.environ.get("TMUX"):
+        import time as _time
+
         from dgov.tmux import setup_governor_workspace
 
-        setup_governor_workspace(project_root)
-        click.secho("Workspace refreshed.", fg="green")
+        _time.sleep(0.3)  # let tmux settle after pane kills
+        created = setup_governor_workspace(project_root)
+        click.secho(f"Workspace refreshed ({len(created)} panes recreated).", fg="green")
     else:
         click.echo("Not in tmux — skipping workspace setup.")
 

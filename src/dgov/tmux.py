@@ -340,6 +340,16 @@ def _style_pane(pane_id: str, colour: str) -> None:
     )
 
 
+def _wait_for_shell(pane_id: str, timeout: float = 3.0) -> None:
+    """Wait until a newly-split pane has a shell ready (zsh/bash)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        cmd = current_command(pane_id)
+        if cmd in ("zsh", "bash", "fish", "sh"):
+            return
+        time.sleep(0.15)
+
+
 def _apply_governor_layout() -> None:
     """Apply the standard governor layout: Claude left 55%, right column stacked."""
     select_layout("main-vertical")
@@ -365,6 +375,7 @@ def setup_governor_workspace(project_root: str) -> list[str]:
 
     if "[gov] dashboard" not in existing:
         dash_id = split_pane()
+        _wait_for_shell(dash_id)
         send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
         set_title(dash_id, "[gov] dashboard")
         _style_pane(dash_id, "colour39")
@@ -372,6 +383,7 @@ def setup_governor_workspace(project_root: str) -> list[str]:
 
     if "[gov] terrain" not in existing:
         ter_id = split_pane()
+        _wait_for_shell(ter_id)
         send_command(ter_id, "dgov terrain")
         set_title(ter_id, "[gov] terrain")
         _style_pane(ter_id, "colour34")
