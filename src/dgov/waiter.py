@@ -137,8 +137,9 @@ def _poll_once(
     if pane_id:
         if alive is None:
             alive = get_backend().is_alive(pane_id)
-        if alive:
-            stable_state["current_output"] = get_backend().capture_output(pane_id, lines=20)
+        stable_state["current_output"] = (
+            get_backend().capture_output(pane_id, lines=20) if alive else ""
+        )
 
     if _is_done(
         session_root,
