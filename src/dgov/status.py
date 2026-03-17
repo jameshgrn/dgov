@@ -253,10 +253,10 @@ def list_worker_panes(
             elif cmd_lower:
                 activity = cmd_lower[:15]
 
-        last_output = _read_last_output_from_log(session_root, slug)
+        last_output = _read_last_output_from_log(session_root, slug, lines=10)
         duration_s = round(time.time() - (p.get("created_at") or time.time()))
 
-        summary = _extract_summary_from_log(session_root, slug)
+        summary = _extract_summary_from_log(session_root, slug, pre_read=last_output)
         phase = _compute_phase(state, alive, done, duration_s, summary)
         progress = _read_progress_json(session_root, slug)
 
@@ -460,9 +460,15 @@ def _match_signal(line: str) -> str | None:
     return None
 
 
-def _extract_summary_from_log(session_root: str, slug: str, lines: int = 10) -> str:
+def _extract_summary_from_log(
+    session_root: str, slug: str, lines: int = 10, *, pre_read: str | None = None
+) -> str:
     """Extract a clean one-line summary from the worker log tail."""
-    raw = _read_last_output_from_log(session_root, slug, lines=lines)
+    raw = (
+        pre_read
+        if pre_read is not None
+        else _read_last_output_from_log(session_root, slug, lines=lines)
+    )
     if not raw:
         return ""
     stripped = _strip_ansi(raw)
