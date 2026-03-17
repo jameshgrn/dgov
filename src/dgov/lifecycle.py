@@ -274,11 +274,11 @@ def _setup_and_launch_agent(
         if protected_warning.strip() not in rewritten_prompt:
             rewritten_prompt += protected_warning
 
-    # 8. Build done-signal path
+    # 8. Build done-signal path — always clear stale signals from prior attempts
     done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
     Path(done_signal).parent.mkdir(parents=True, exist_ok=True)
-    if clear_done_signal:
-        Path(done_signal).unlink(missing_ok=True)
+    Path(done_signal).unlink(missing_ok=True)
+    Path(done_signal + ".exit").unlink(missing_ok=True)
 
     # 9. Launch agent (with done-signal wrapper)
     is_cursor = agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent"
@@ -523,9 +523,11 @@ def _full_cleanup(
 
     Returns {"cleaned": True, "skipped_worktree": bool}.
     """
-    # 1. Delete done signal and log file
+    # 1. Delete done signal, exit signal, and log file
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.unlink(missing_ok=True)
+    exit_path = Path(session_root) / STATE_DIR / "done" / (slug + ".exit")
+    exit_path.unlink(missing_ok=True)
     log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     log_path.unlink(missing_ok=True)
 
