@@ -208,59 +208,64 @@ def _is_done(
 
     # Signal 2: new commits on the branch — skipped for "exit" and "stable" strategies
     if stype not in ("exit", "stable"):
-        project_root = pane_record.get("project_root", "")
-        branch_name = pane_record.get("branch_name", "")
-        base_sha = pane_record.get("base_sha", "")
-        if project_root and branch_name and base_sha:
-            has_commits = _has_new_commits(project_root, branch_name, base_sha)
-            logger.debug("new_commits=%s slug=%s", has_commits, slug)
-            if has_commits:
-                if stype == "api":
-                    # Don't declare done yet — use fallback in api block (commits + 60s stable)
-                    if _stable_state is not None:
-                        _stable_state["commits_detected"] = True
-                else:
-                    if pane_id and _agent_still_running(pane_id):
-                        # Agent committed but is still running — grace period
+        # api strategy without _stable_state: commit check result would be discarded
+        if stype == "api" and _stable_state is None:
+            pass  # skip to Signal 3
+        else:
+            project_root = pane_record.get("project_root", "")
+            branch_name = pane_record.get("branch_name", "")
+            base_sha = pane_record.get("base_sha", "")
+            if project_root and branch_name and base_sha:
+                has_commits = _has_new_commits(project_root, branch_name, base_sha)
+                logger.debug("new_commits=%s slug=%s", has_commits, slug)
+                if has_commits:
+                    if stype == "api":
+                        # Don't declare done yet — use fallback in api block (commits + 60s stable)
                         if _stable_state is not None:
-                            commit_count = _count_commits(project_root, branch_name, base_sha)
-                            prev_count = _stable_state.get("commit_count")
-                            if prev_count is None or commit_count != prev_count:
-                                # New commits — reset grace timer
-                                _stable_state["commit_count"] = commit_count
-                                _stable_state["commit_seen_at"] = time.monotonic()
+                            _stable_state["commits_detected"] = True
+                    else:
+                        if pane_id and _agent_still_running(pane_id):
+                            # Agent committed but is still running — grace period
+                            if _stable_state is not None:
+                                commit_count = _count_commits(project_root, branch_name, base_sha)
+                                prev_count = _stable_state.get("commit_count")
+                                if prev_count is None or commit_count != prev_count:
+                                    # New commits — reset grace timer
+                                    _stable_state["commit_count"] = commit_count
+                                    _stable_state["commit_seen_at"] = time.monotonic()
+                                    logger.debug(
+                                        "new_commits slug=%s count=%d agent running, grace",
+                                        slug,
+                                        commit_count,
+                                    )
+                                    return False
+                                commit_seen = _stable_state.get("commit_seen_at", 0)
+                                elapsed = time.monotonic() - commit_seen
+                                if elapsed < 30:
+                                    logger.debug(
+                                        "new_commits slug=%s grace period %.0fs/30s", slug, elapsed
+                                    )
+                                    return False
                                 logger.debug(
-                                    "new_commits slug=%s count=%d agent running, grace",
+                                    "new_commits slug=%s grace period elapsed, declaring done",
                                     slug,
-                                    commit_count,
                                 )
-                                return False
-                            commit_seen = _stable_state.get("commit_seen_at", 0)
-                            elapsed = time.monotonic() - commit_seen
-                            if elapsed < 30:
-                                logger.debug(
-                                    "new_commits slug=%s grace period %.0fs/30s", slug, elapsed
+                                # Fall through to done
+                            else:
+                                logger.warning(
+                                    "new_commits slug=%s agent running, no stable_state — done",
+                                    slug,
                                 )
-                                return False
-                            logger.debug(
-                                "new_commits slug=%s grace period elapsed, declaring done", slug
-                            )
-                            # Fall through to done
-                        else:
-                            logger.warning(
-                                "new_commits slug=%s agent running, no stable_state — done",
-                                slug,
-                            )
-                            # Fall through to done — blocking forever is worse than no grace period
-                    current_state = pane_record.get("state", "")
-                    force = current_state == "abandoned"
-                    _persist.update_pane_state(session_root, slug, "done", force=force)
-                    _persist.emit_event(session_root, "pane_done", slug)
-                    # Touch done-signal so we don't re-emit
-                    done_path.parent.mkdir(parents=True, exist_ok=True)
-                    done_path.touch()
-                    _set_done_reason(_stable_state, "commit")
-                    return True
+                                # Fall through to done — blocking forever is worse than no grace period
+                        current_state = pane_record.get("state", "")
+                        force = current_state == "abandoned"
+                        _persist.update_pane_state(session_root, slug, "done", force=force)
+                        _persist.emit_event(session_root, "pane_done", slug)
+                        # Touch done-signal so we don't re-emit
+                        done_path.parent.mkdir(parents=True, exist_ok=True)
+                        done_path.touch()
+                        _set_done_reason(_stable_state, "commit")
+                        return True
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     if pane_id:
