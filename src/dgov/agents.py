@@ -190,6 +190,9 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="cr",
         prompt_command="cursor-agent",
         prompt_transport="positional",
+        permission_flags={
+            "bypassPermissions": "--yolo",
+        },
         color=45,
         send_keys_ready_delay_ms=5000,
         interactive=True,

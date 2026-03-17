@@ -275,6 +275,7 @@ def run_batch(
 
         # Create all panes in this tier (skip tasks whose deps failed)
         slugs = []
+        slug_to_task_id: dict[str, str] = {}
         for task in tier:
             if task["id"] in skipped_ids:
                 tier_result["tasks"].append({"id": task["id"], "status": "skipped"})
@@ -291,6 +292,7 @@ def run_batch(
                     session_root=session_root,
                 )
                 slugs.append(pane.slug)
+                slug_to_task_id[pane.slug] = task["id"]
                 tier_result["tasks"].append(
                     {"id": task["id"], "slug": pane.slug, "status": "created"}
                 )
@@ -318,8 +320,9 @@ def run_batch(
                     {**t, "status": "timed_out"} if t.get("slug") == slug else t
                     for t in tier_result["tasks"]
                 ]
-                failed_ids.add(slug)
-                results["failed"].append(slug)
+                task_id = slug_to_task_id.get(slug, slug)
+                failed_ids.add(task_id)
+                results["failed"].append(task_id)
                 new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
                 skipped_ids.update(new_skips)
                 continue
@@ -332,8 +335,9 @@ def run_batch(
                     for t in tier_result["tasks"]
                 ]
             else:
-                failed_ids.add(slug)
-                results["failed"].append(slug)
+                task_id = slug_to_task_id.get(slug, slug)
+                failed_ids.add(task_id)
+                results["failed"].append(task_id)
                 new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
                 skipped_ids.update(new_skips)
                 tier_result["tasks"] = [
