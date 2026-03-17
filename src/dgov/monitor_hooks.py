@@ -24,6 +24,7 @@ KindType = Literal[
     "committing",
     "nudge",
     "fail",
+    "auto_complete",
 ]
 
 

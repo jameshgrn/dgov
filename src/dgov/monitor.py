@@ -41,6 +41,7 @@ DETERMINISTIC_PATTERNS = {
         r"\b(waiting[ \t]+for\s+(user|input|confirmation|approval|prompt))\b",
         r"\b(paused.*awaiting\b|awaiting.*input\b)",
         r"^\s*#\s*(TODO|FIXME|XXX|HACK):",
+        r"\bawaiting\s+input\b",
     ],
     "committing": [
         r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
@@ -49,7 +50,7 @@ DETERMINISTIC_PATTERNS = {
         r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
     ],
     "idle": [
-        r"\b(no[ \t]+work|[aA]waiting\s+input|pause[d]?|waiting\b|idling)\b",
+        r"\b(no[ \t]+work|pause[d]?|waiting\b|idling)\b",
     ],
 }
 
@@ -220,6 +221,8 @@ def poll_workers(
                 "keystroke": hook.keystroke,
             }
             classification = "hook_match"
+            # Persist to metadata so dgov status can see it
+            set_pane_metadata(session_root, slug, last_hook_match=hook_info)
 
         results.append(
             {
@@ -260,6 +263,9 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
         if kind == "fail":
             _mark_idle_failed(project_root, session_root, slug, reason="hook_fail")
             return "hook_fail"
+        if kind == "auto_complete":
+            _auto_complete(project_root, session_root, slug)
+            return "hook_auto_complete"
         # If it's a state override, treat it as that state for default rules below
         if kind in {"done", "stuck", "idle", "working", "waiting_input", "committing"}:
             classification = kind
