@@ -110,28 +110,20 @@ def _poll_once(
     project_root: str,
     slug: str,
     pane_record: dict | None,
-    last_output: str | None,
-    stable_since: float | None,
+    stable_state: dict,
     stable: int,
-    last_blocked: str | None = None,
     done_strategy: DoneStrategy | None = None,
     alive: bool | None = None,
-) -> tuple[bool, str, str | None, float | None, str | None]:
+) -> tuple[bool, str]:
     """Single poll cycle shared by wait_worker_pane and wait_all_worker_panes.
 
-    Returns (is_done, method, last_output, stable_since, last_blocked).
+    Returns (is_done, method).
     """
     import dgov.persistence as _persist
 
     logger.debug("poll slug=%s", slug)
 
-    # Build stabilization state dict for unified _is_done
-    stable_state: dict = {
-        "last_output": last_output,
-        "stable_since": stable_since,
-        "last_blocked": last_blocked,
-        "current_output": None,
-    }
+    stable_state["current_output"] = None
 
     pane_id = pane_record.get("pane_id", "") if pane_record else ""
     if pane_id:
@@ -155,13 +147,7 @@ def _poll_once(
         current_command=_current_cmd,
     ):
         method = stable_state.get("_done_reason", "signal_or_commit")
-        return (
-            True,
-            method,
-            stable_state.get("last_output"),
-            stable_state.get("stable_since"),
-            stable_state.get("last_blocked"),
-        )
+        return (True, method)
 
     # Auto-nudge: api strategy panes stable 45s+ without done signal get a reminder
     if done_strategy is not None and done_strategy.type == "api" and slug not in _nudged_slugs:
@@ -197,13 +183,7 @@ def _poll_once(
                     stable_state["last_blocked"] = blocked_match
                     _persist.emit_event(session_root, "pane_blocked", slug, question=blocked_match)
 
-    return (
-        False,
-        "",
-        stable_state.get("last_output"),
-        stable_state.get("stable_since"),
-        stable_state.get("last_blocked"),
-    )
+    return (False, "")
 
 
 # -- Public wait API --
@@ -275,20 +255,16 @@ def wait_worker_pane(
     pane_record = _persist.get_pane(session_root, slug)
     strategy = _strategy_for_pane(pane_record)
     start = time.monotonic()
-    last_output: str | None = None
-    stable_since: float | None = None
-    last_blocked: str | None = None
+    stable_state: dict = {}
 
     while True:
-        done, method, last_output, stable_since, last_blocked = _poll_once(
+        done, method = _poll_once(
             session_root,
             project_root,
             slug,
             pane_record,
-            last_output,
-            stable_since,
+            stable_state,
             stable,
-            last_blocked,
             done_strategy=strategy,
         )
         if done:
@@ -307,9 +283,7 @@ def wait_worker_pane(
                         slug = new_slug
                         pane_record = _persist.get_pane(session_root, slug)
                         strategy = _strategy_for_pane(pane_record)
-                        last_output = None
-                        stable_since = None
-                        last_blocked = None
+                        stable_state = {}
                         continue
 
             elapsed = time.monotonic() - start
@@ -348,9 +322,7 @@ def wait_all_worker_panes(
         return
 
     start = time.monotonic()
-    stable_trackers: dict[str, tuple[str | None, float | None, str | None]] = {
-        s: (None, None, None) for s in pending
-    }
+    stable_states: dict[str, dict] = {s: {} for s in pending}
     strategies: dict[str, DoneStrategy | None] = {}
 
     while pending:
@@ -361,21 +333,18 @@ def wait_all_worker_panes(
             rec = _persist.get_pane(session_root, slug)
             if slug not in strategies:
                 strategies[slug] = _strategy_for_pane(rec)
-            last, since, blocked = stable_trackers.get(slug, (None, None, None))
+            ss = stable_states.setdefault(slug, {})
             pane_id = rec.get("pane_id", "") if rec else ""
-            done, method, last, since, blocked = _poll_once(
+            done, method = _poll_once(
                 session_root,
                 project_root,
                 slug,
                 rec,
-                last,
-                since,
+                ss,
                 stable,
-                blocked,
                 done_strategy=strategies[slug],
                 alive=pane_id in alive_panes if pane_id else None,
             )
-            stable_trackers[slug] = (last, since, blocked)
             if done:
                 pending.discard(slug)
                 yield {"done": slug, "method": method}

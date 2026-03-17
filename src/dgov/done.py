@@ -194,6 +194,7 @@ def _is_done(
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
         _persist.update_pane_state(session_root, slug, "done", force=force)
+        _persist.emit_event(session_root, "pane_done", slug)
         _set_done_reason(_stable_state, "done_signal")
         return True
 
@@ -203,6 +204,7 @@ def _is_done(
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=exit_signal", "failed", slug)
         _persist.update_pane_state(session_root, slug, "failed", force=force)
+        _persist.emit_event(session_root, "pane_done", slug)
         _set_done_reason(_stable_state, "exit_signal")
         return True
 

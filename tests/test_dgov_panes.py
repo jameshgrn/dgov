@@ -2462,21 +2462,20 @@ class TestWaitWorkerPane:
             patch("dgov.responder.auto_respond", return_value=None),
             patch("dgov.persistence.emit_event") as mock_emit,
         ):
-            done, _, _, _, blocked = _poll_once(
+            stable_state = {}
+            done, _ = _poll_once(
                 str(tmp_path),
                 str(tmp_path),
                 "s1",
                 pane_record,
-                None,
-                None,
+                stable_state,
                 15,
-                None,
                 done_strategy=DoneStrategy(type="exit"),
                 alive=True,
             )
 
         assert done is False
-        assert blocked == "Enter password"
+        assert stable_state.get("last_blocked") == "Enter password"
         mock_emit.assert_called_once_with(
             str(tmp_path), "pane_blocked", "s1", question="Enter password"
         )
@@ -2502,15 +2501,13 @@ class TestWaitWorkerPane:
         pane_record = get_pane(str(tmp_path), "s1")
         mock_backend.capture_output.return_value = ""
 
-        done, method, *_ = _poll_once(
+        done, method = _poll_once(
             str(tmp_path),
             str(tmp_path),
             "s1",
             pane_record,
-            None,
-            None,
+            {},
             15,
-            None,
             alive=True,
         )
 
@@ -2541,15 +2538,13 @@ class TestWaitWorkerPane:
             patch("dgov.done._has_new_commits", return_value=True),
             patch("dgov.done._agent_still_running", return_value=False),
         ):
-            done, method, *_ = _poll_once(
+            done, method = _poll_once(
                 str(tmp_path),
                 str(tmp_path),
                 "s1",
                 pane_record,
-                None,
-                None,
+                {},
                 15,
-                None,
                 done_strategy=DoneStrategy(type="commit"),
                 alive=True,
             )
