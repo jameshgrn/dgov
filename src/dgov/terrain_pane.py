@@ -97,6 +97,7 @@ def run_terrain(refresh: float = 0.5) -> None:
         get_renderable=_render,
         refresh_per_second=2,
         transient=False,
+        screen=True,
     ) as live:  # noqa: F841
         try:
             while True:

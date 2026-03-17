@@ -424,6 +424,7 @@ def run_dashboard_v2(
             get_renderable=_render_dashboard,
             refresh_per_second=_UI_REFRESH_PER_SECOND,
             transient=False,
+            screen=True,
         ) as live:
             while not state.stop_event.is_set():
                 if not is_tty:
