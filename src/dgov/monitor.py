@@ -158,7 +158,11 @@ def _auto_complete(project_root: str, session_root: str, slug: str) -> None:
 
 
 def _nudge_stuck(project_root: str, session_root: str, slug: str) -> None:
-    """Send a nudge message to a stuck worker pane."""
+    """Send a nudge message to a stuck worker pane.
+
+    Skips nudging headless workers (interactive agents forced to -p/--prompt
+    mode) since they don't read stdin.
+    """
     pane = get_pane(session_root, slug)
     if not pane:
         return
@@ -166,6 +170,19 @@ def _nudge_stuck(project_root: str, session_root: str, slug: str) -> None:
     pane_id = pane.get("pane_id")
     if not pane_id:
         return
+
+    # Headless workers (interactive agents forced to non-interactive mode)
+    # don't read stdin — nudging them is a no-op.
+    agent_id = pane.get("agent", "")
+    role = pane.get("role", "worker")
+    if role == "worker" and agent_id:
+        from dgov.agents import load_registry
+
+        registry = load_registry(project_root)
+        agent_def = registry.get(agent_id)
+        if agent_def and agent_def.interactive:
+            logger.info("Monitor: skipping nudge for headless worker %s (%s)", slug, agent_id)
+            return
 
     get_backend().send_input(
         pane_id,

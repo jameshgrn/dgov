@@ -20,6 +20,8 @@ def monitor_cmd(project_root, session_root, interval, dry_run, pane):
         from dgov.tmux import create_utility_pane
 
         cmd = f"dgov monitor -r {shlex.quote(project_root)} -i {interval}"
+        if session_root != project_root:
+            cmd += f" -S {shlex.quote(session_root)}"
         if dry_run:
             cmd += " --dry-run"
         pane_id = create_utility_pane(cmd, "[gov] monitor", cwd=project_root)
