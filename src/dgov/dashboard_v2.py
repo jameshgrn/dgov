@@ -345,7 +345,7 @@ def _build_layout(
     )
 
     mon_color = "green" if monitor_alive else "red"
-    header_text.append(" \u2502 MON: ", style="dim")
+    header_text.append(" \u2502 ", style="dim")
     header_text.append("\u25cf", style=mon_color)
 
     if error:
