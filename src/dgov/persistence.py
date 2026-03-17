@@ -69,6 +69,8 @@ VALID_EVENTS = frozenset(
         "yap_received",
         "pane_circuit_breaker",
         "monitor_nudge",
+        "monitor_auto_complete",
+        "monitor_idle_timeout",
     }
 )
 

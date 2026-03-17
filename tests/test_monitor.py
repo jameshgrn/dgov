@@ -141,8 +141,9 @@ class TestPollWorkers:
 class TestTakeAction:
     """Test _take_action() decision engine."""
 
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
     @patch("dgov.monitor._auto_complete")
-    def test_auto_complete_after_two_done(self, mock_complete):
+    def test_auto_complete_after_two_done(self, mock_complete, mock_get_pane):
         from dgov.monitor import _take_action
 
         history = {"w1": {"classifications": ["done", "done"], "last_action_at": 0}}
@@ -151,8 +152,9 @@ class TestTakeAction:
         assert action is not None
         mock_complete.assert_called_once()
 
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
     @patch("dgov.monitor._nudge_stuck")
-    def test_nudge_after_three_stuck(self, mock_nudge):
+    def test_nudge_after_three_stuck(self, mock_nudge, mock_get_pane):
         from dgov.monitor import _take_action
 
         history = {"w1": {"classifications": ["stuck", "stuck", "stuck"], "last_action_at": 0}}
@@ -161,8 +163,9 @@ class TestTakeAction:
         assert action is not None
         mock_nudge.assert_called_once()
 
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
     @patch("dgov.monitor._mark_idle_failed")
-    def test_idle_timeout_after_four(self, mock_fail):
+    def test_idle_timeout_after_four(self, mock_fail, mock_get_pane):
         from dgov.monitor import _take_action
 
         history = {

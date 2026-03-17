@@ -106,6 +106,10 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     if len(hist["classifications"]) > 10:
         hist["classifications"] = hist["classifications"][-10:]
 
+    # Cooldown: skip if action was taken recently
+    if time.time() - hist["last_action_at"] < 60:
+        return None
+
     # Count consecutive trailing same classifications
     consecutive = 0
     for c in reversed(hist["classifications"]):
@@ -114,17 +118,25 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
         else:
             break
 
+    # Re-check state from DB to avoid TOCTOU race
+    raw = get_pane(session_root, slug)
+    if not raw or raw.get("state") != "active":
+        return None
+
     # Rules
     if classification == "done" and worker["has_commits"] and consecutive >= 2:
         _auto_complete(project_root, session_root, slug)
+        hist["last_action_at"] = time.time()
         return "auto_complete"
 
     if classification == "stuck" and consecutive >= 3:
         _nudge_stuck(project_root, session_root, slug)
+        hist["last_action_at"] = time.time()
         return "nudge"
 
     if classification == "idle" and consecutive >= 4:
         _mark_idle_failed(project_root, session_root, slug)
+        hist["last_action_at"] = time.time()
         return "idle_timeout"
 
     return None
@@ -137,7 +149,7 @@ def _auto_complete(project_root: str, session_root: str, slug: str) -> None:
     (done_dir / slug).touch()
 
     update_pane_state(session_root, slug, "done", force=True)
-    emit_event(session_root, "pane_done", slug, reason="monitor_auto_complete")
+    emit_event(session_root, "monitor_auto_complete", slug, reason="monitor_auto_complete")
     logger.info("Monitor: auto-completed %s", slug)
 
 
