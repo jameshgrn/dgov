@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dgov.agents import load_registry
 from dgov.backend import get_backend
 from dgov.done import _has_new_commits
-from dgov.agents import load_registry
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.openrouter import chat_completion_local_first
 from dgov.persistence import (
@@ -50,7 +50,7 @@ DETERMINISTIC_PATTERNS = {
         r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
     ],
     "idle": [
-        r"\b(no[ \t]+work|pause[d]?|waiting\b|idling)\b",
+        r"\b(no[ \t]+work|pause[d]?|idling)\b",
     ],
 }
 
@@ -221,8 +221,11 @@ def poll_workers(
                 "keystroke": hook.keystroke,
             }
             classification = "hook_match"
-            # Persist to metadata so dgov status can see it
-            set_pane_metadata(session_root, slug, last_hook_match=hook_info)
+            # Persist to metadata so dgov status can see it (only if changed)
+            if raw:
+                last_match = raw.get("metadata", {}).get("last_hook_match")
+                if last_match != hook_info:
+                    set_pane_metadata(session_root, slug, last_hook_match=hook_info)
 
         results.append(
             {
@@ -246,6 +249,16 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     """
     slug = worker["slug"]
     classification = worker["classification"]
+
+    # Initialize history entry early so cooldown applies to all actions
+    if slug not in history:
+        history[slug] = {"classifications": [], "last_action_at": 0.0}
+
+    hist = history[slug]
+
+    # Cooldown: skip if action was taken recently (applies to hook actions too)
+    if time.time() - hist["last_action_at"] < 60:
+        return None
 
     # Handle hook-based actions first
     if classification == "hook_match" and worker.get("hook_match"):
@@ -274,19 +287,11 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     if classification in {"working", "waiting_input", "committing", "unknown"}:
         return None
 
-    if slug not in history:
-        history[slug] = {"classifications": [], "last_action_at": 0.0}
-
-    hist = history[slug]
     hist["classifications"].append(classification)
 
     # Keep only last 10 for memory efficiency
     if len(hist["classifications"]) > 10:
         hist["classifications"] = hist["classifications"][-10:]
-
-    # Cooldown: skip if action was taken recently
-    if time.time() - hist["last_action_at"] < 60:
-        return None
 
     # Count consecutive trailing same classifications
     consecutive = 0
