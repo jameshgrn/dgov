@@ -117,35 +117,22 @@ def cli(ctx, governor):
     ensure_dgov_gitignored(project_root)
 
     def _resolve_governor() -> tuple[str, str]:
-        """Return (agent_id, permission_mode), running first-time setup if needed."""
+        """Return (agent_id, permission_mode). Silent defaults on first use."""
         agent_id, perm = get_governor_agent(project_root)
         if governor is not None:
             agent_id = governor
         if agent_id is not None:
-            return agent_id, perm or ""
-        # First-time setup
+            return agent_id, perm or "bypassPermissions"
+        # First-time: use defaults silently, write config
         registry = load_registry(project_root)
         installed = detect_installed_agents(registry)
         if not installed:
             click.echo("No agents found on PATH. Install claude, codex, or gemini first.")
             raise SystemExit(1)
         default_agent = "claude" if "claude" in installed else installed[0]
-        agent_id = click.prompt(
-            "Governor agent for this repo",
-            type=click.Choice(installed),
-            default=default_agent,
-        )
-        perm = click.prompt(
-            "Permission mode",
-            type=click.Choice(["", "plan", "acceptEdits", "bypassPermissions"]),
-            default="bypassPermissions",
-        )
-        assert agent_id is not None
-        assert perm is not None
-        write_project_config(project_root, "governor_agent", agent_id)
-        if perm:
-            write_project_config(project_root, "governor_permissions", perm)
-        return agent_id, perm
+        write_project_config(project_root, "governor_agent", default_agent)
+        write_project_config(project_root, "governor_permissions", "bypassPermissions")
+        return default_agent, "bypassPermissions"
 
     governor_prompt = (
         "You are the dgov governor for this repo. "
@@ -230,35 +217,36 @@ def resume_cmd(ctx):
         setup_governor_workspace(project_root)
         click.echo(f"{repo} — governor resumed (dashboard + lazygit refreshed)")
     else:
-        # Outside tmux — attach to existing session, then ensure workspace
-        # Send workspace setup command to the session before attaching
-        subprocess.run(
-            [
-                "tmux",
-                "send-keys",
-                "-t",
-                session_name,
-                f"dgov resume -r {project_root} 2>/dev/null || true",
-                "",
-            ],
-            capture_output=True,
-        )
+        # Outside tmux — recreate panes targeting the session, then attach
+        target = f"{session_name}:0"
+        setup_governor_workspace(project_root, target_window=target)
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
 @cli.command("refresh")
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 def refresh_cmd(project_root):
-    """Reinstall dgov from source and restart dashboard + terrain."""
+    """Reinstall dgov from source and restart workspace panes."""
     import signal
 
     import dgov as _dgov_mod
 
     project_root = os.path.abspath(project_root)
 
+    # 0. Resolve session name FIRST — we need it to scope all tmux operations
+    repo = Path(project_root).name
+    session_name = f"dgov-{repo}"
+
+    exists = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        capture_output=True,
+    )
+    if exists.returncode != 0:
+        click.secho(f"No dgov session '{session_name}'. Run `dgov` to start one.", fg="yellow")
+        raise SystemExit(1)
+
     # 1. Reinstall
     click.secho("Reinstalling dgov...", fg="yellow")
-    # Find dgov source directory (not the current project)
     _dgov_src = Path(_dgov_mod.__file__).resolve().parent.parent.parent
     if (_dgov_src / "pyproject.toml").is_file():
         result = subprocess.run(
@@ -277,7 +265,7 @@ def refresh_cmd(project_root):
         raise SystemExit(1)
     click.secho("Installed.", fg="green")
 
-    # 2. Kill stale dashboard
+    # 2. Kill stale dashboard process
     pidfile = Path(project_root) / ".dgov" / "dashboard.pid"
     if pidfile.is_file():
         try:
@@ -288,10 +276,18 @@ def refresh_cmd(project_root):
             pass
         pidfile.unlink(missing_ok=True)
 
-    # 3. Kill terrain + dashboard panes by title and relaunch workspace
+    # 3. Kill utility panes — scoped to THIS session only
     try:
         panes = subprocess.run(
-            ["tmux", "list-panes", "-s", "-F", "#{pane_id} #{pane_title}"],
+            [
+                "tmux",
+                "list-panes",
+                "-s",
+                "-t",
+                session_name,
+                "-F",
+                "#{pane_id} #{pane_title}",
+            ],
             capture_output=True,
             text=True,
         )
@@ -312,27 +308,15 @@ def refresh_cmd(project_root):
         pass
 
     # 4. Re-setup governor workspace
-    if os.environ.get("TMUX"):
-        from dgov.tmux import setup_governor_workspace
+    from dgov.tmux import setup_governor_workspace
 
+    if os.environ.get("TMUX"):
         created = setup_governor_workspace(project_root)
         click.secho(f"Workspace refreshed ({len(created)} panes recreated).", fg="green")
     else:
-        repo = Path(project_root).name
-        session_name = f"dgov-{repo}"
-        exists = subprocess.run(
-            ["tmux", "has-session", "-t", session_name],
-            capture_output=True,
-        )
-        if exists.returncode != 0:
-            click.secho("No dgov session found. Run dgov to start one.", fg="yellow")
-            raise SystemExit(1)
-        from dgov.tmux import setup_governor_workspace
-
         target = f"{session_name}:0"
         created = setup_governor_workspace(project_root, target_window=target)
-        click.secho(f"Workspace refreshed ({len(created)} panes recreated).", fg="green")
-        click.secho("Attaching...", fg="green")
+        click.secho(f"Refreshed ({len(created)} panes recreated). Attaching...", fg="green")
         os.execvp("tmux", ["tmux", "attach-session", "-t", session_name])
 
 
