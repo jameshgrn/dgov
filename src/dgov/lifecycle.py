@@ -200,6 +200,7 @@ def _setup_and_launch_agent(
     base_sha: str = "",
     skip_auto_structure: bool = False,
     clear_done_signal: bool = False,
+    role: str = "worker",
 ) -> None:
     """Lock pane, inject env, trigger hook, rewrite prompt, launch agent."""
 
@@ -281,9 +282,16 @@ def _setup_and_launch_agent(
     Path(done_signal + ".exit").unlink(missing_ok=True)
 
     # 9. Launch agent (with done-signal wrapper)
+    # Workers always use headless mode; only LT-GOVs get TUI interactive mode.
     is_cursor = agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent"
+    use_interactive = agent_def.interactive and role != "worker"
 
-    if agent_def.interactive:
+    # When forcing headless on a normally-interactive agent, add agent-specific flags
+    if not use_interactive and agent_def.interactive and role == "worker":
+        if agent_id == "claude":
+            extra_flags = f"-p {extra_flags}".strip()
+
+    if use_interactive:
         # Interactive TUI mode: launch without prompt, send prompt via tmux after ready.
         base_cmd = build_launch_command(
             agent_id,
@@ -470,6 +478,7 @@ def create_worker_pane(
             owns_worktree=owns_worktree,
             base_sha=base_sha,
             skip_auto_structure=skip_auto_structure,
+            role=role,
         )
 
         # 5. Build pane record and save to state
@@ -744,6 +753,7 @@ def resume_worker_pane(
         owns_worktree=True,
         base_sha=target.get("base_sha", ""),
         clear_done_signal=True,
+        role=target.get("role", "worker"),
     )
 
     # Update state: new pane_id, back to active
