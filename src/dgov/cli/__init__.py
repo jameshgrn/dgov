@@ -252,16 +252,26 @@ def refresh_cmd(project_root):
     """Reinstall dgov from source and restart dashboard + terrain."""
     import signal
 
+    import dgov as _dgov_mod
+
     project_root = os.path.abspath(project_root)
 
     # 1. Reinstall
     click.secho("Reinstalling dgov...", fg="yellow")
-    result = subprocess.run(
-        ["uv", "tool", "install", "--force", "--python", "3.14", "-e", "."],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-    )
+    # Find dgov source directory (not the current project)
+    _dgov_src = Path(_dgov_mod.__file__).resolve().parent.parent.parent
+    if (_dgov_src / "pyproject.toml").is_file():
+        result = subprocess.run(
+            ["uv", "tool", "install", "--force", "--python", "3.14", "-e", str(_dgov_src)],
+            capture_output=True,
+            text=True,
+        )
+    else:
+        result = subprocess.run(
+            ["uv", "tool", "upgrade", "dgov"],
+            capture_output=True,
+            text=True,
+        )
     if result.returncode != 0:
         click.secho(f"Install failed: {result.stderr}", fg="red")
         raise SystemExit(1)

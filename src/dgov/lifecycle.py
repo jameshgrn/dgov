@@ -345,6 +345,11 @@ def _setup_and_launch_agent(
         wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
 
+        # Cursor headless: accept workspace trust dialog
+        if is_cursor:
+            time.sleep(3)
+            backend.send_keys(pane_id, ["a"])
+
 
 # -- Public API --
 
