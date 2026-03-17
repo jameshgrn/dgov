@@ -27,6 +27,12 @@ def _check_governor_context() -> None:
     if os.environ.get("DGOV_SKIP_GOVERNOR_CHECK") == "1":
         return
 
+    if "DGOV_SLUG" in os.environ:
+        raise click.UsageError(
+            "dgov governor commands cannot be run from within a worker pane. "
+            "Workers must use `dgov worker complete` or standard git/build tools."
+        )
+
     try:
         git_dir = subprocess.run(
             ["git", "rev-parse", "--git-dir"],
