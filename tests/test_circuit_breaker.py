@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -108,70 +108,68 @@ class TestCircuitBreakerInIsDone:
         error_output = "FAIL: test_foo.py\nAssertionError: 1 != 2"
         working_output = "Running fix attempt..."
 
-        # Tick 1: error — first observation, count=1
-        stable_state["current_output"] = error_output
-        assert (
-            _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
-            )
-            is False
-        )
+        outputs = [error_output, working_output, error_output, working_output, error_output]
 
-        # Tick 2: working — different hash, count=1
-        stable_state["current_output"] = working_output
-        assert (
-            _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
+        with patch("dgov.status.capture_worker_output", side_effect=outputs):
+            # Tick 1: error — first observation, count=1
+            assert (
+                _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is False
             )
-            is False
-        )
 
-        # Tick 3: error again — count=2
-        stable_state["current_output"] = error_output
-        assert (
-            _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
+            # Tick 2: working — different hash, count=1
+            assert (
+                _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is False
             )
-            is False
-        )
 
-        # Tick 4: working
-        stable_state["current_output"] = working_output
-        assert (
-            _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
+            # Tick 3: error again — count=2
+            assert (
+                _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is False
             )
-            is False
-        )
 
-        # Tick 5: error — count=3, triggers circuit breaker
-        stable_state["current_output"] = error_output
-        assert (
-            _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
+            # Tick 4: working
+            assert (
+                _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is False
             )
-            is True
-        )
+
+            # Tick 5: error — count=3, triggers circuit breaker
+            assert (
+                _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                is True
+            )
 
         pane = get_pane(sr, "test-slug")
         assert pane is not None
@@ -190,16 +188,19 @@ class TestCircuitBreakerInIsDone:
         error_output = "ERROR: something broke"
         other_output = "trying again..."
 
-        for output in [error_output, other_output, error_output]:
-            stable_state["current_output"] = output
-            result = _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
-            )
-            assert result is False
+        with patch(
+            "dgov.status.capture_worker_output",
+            side_effect=[error_output, other_output, error_output],
+        ):
+            for _ in range(3):
+                result = _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
+                assert result is False
 
         pane = get_pane(sr, "test-slug")
         assert pane is not None
@@ -217,15 +218,15 @@ class TestCircuitBreakerInIsDone:
         error_output = "ERROR: stuck"
 
         # Same output 10 times — hash never changes between ticks, only recorded once
-        for _ in range(10):
-            stable_state["current_output"] = error_output
-            result = _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
-            )
+        with patch("dgov.status.capture_worker_output", return_value=error_output):
+            for _ in range(10):
+                result = _is_done(
+                    sr,
+                    "test-slug",
+                    pane_record=pane_record,
+                    _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
+                )
         assert result is False
 
         pane = get_pane(sr, "test-slug")
@@ -245,8 +246,22 @@ class TestCircuitBreakerInIsDone:
 
         assert _circuit_breaker_fingerprint(output_a) != _circuit_breaker_fingerprint(output_b)
 
-        for output in [output_a, output_b, output_a, output_b]:
-            stable_state["current_output"] = output
+        with patch(
+            "dgov.status.capture_worker_output",
+            side_effect=[output_a, output_b, output_a, output_b, output_a],
+        ):
+            for _ in range(4):
+                assert (
+                    _is_done(
+                        sr,
+                        "test-slug",
+                        pane_record=pane_record,
+                        _stable_state=stable_state,
+                        done_strategy=DoneStrategy(type="signal"),
+                    )
+                    is False
+                )
+
             assert (
                 _is_done(
                     sr,
@@ -255,20 +270,8 @@ class TestCircuitBreakerInIsDone:
                     _stable_state=stable_state,
                     done_strategy=DoneStrategy(type="signal"),
                 )
-                is False
+                is True
             )
-
-        stable_state["current_output"] = output_a
-        assert (
-            _is_done(
-                sr,
-                "test-slug",
-                pane_record=pane_record,
-                _stable_state=stable_state,
-                done_strategy=DoneStrategy(type="signal"),
-            )
-            is True
-        )
 
         pane = get_pane(sr, "test-slug")
         assert pane is not None
