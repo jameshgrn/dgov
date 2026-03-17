@@ -284,10 +284,8 @@ class TestPromptFile:
 
 class TestBuildLaunchCommand:
     def test_positional_with_prompt(self, tmp_path: Path) -> None:
-        cmd = build_launch_command(
-            "claude", "Fix the bug", project_root=str(tmp_path), slug="fix-bug"
-        )
-        assert "claude" in cmd
+        cmd = build_launch_command("pi", "Fix the bug", project_root=str(tmp_path), slug="fix-bug")
+        assert "pi" in cmd
         assert "DGOV_PROMPT_CONTENT" in cmd
 
     def test_no_prompt_returns_base(self) -> None:
@@ -317,7 +315,7 @@ class TestBuildLaunchCommand:
         assert "--verbose" in cmd
 
     def test_option_transport(self, tmp_path: Path) -> None:
-        cmd = build_launch_command("gemini", "Do stuff", project_root=str(tmp_path), slug="gem")
+        cmd = build_launch_command("opencode", "Do stuff", project_root=str(tmp_path), slug="oc")
         assert "--prompt" in cmd
         assert "DGOV_PROMPT_CONTENT" in cmd
 
@@ -407,37 +405,37 @@ class TestAllRegistryEntriesHaveRequiredFields:
 
 class TestBuildLaunchCommandOption:
     def test_build_launch_command_option(self, tmp_path: Path) -> None:
-        agent = AGENT_REGISTRY["gemini"]
+        agent = AGENT_REGISTRY["opencode"]
         assert agent.prompt_transport == "option"
         assert agent.prompt_option == "--prompt"
 
         cmd = build_launch_command(
-            agent_id="gemini",
+            agent_id="opencode",
             prompt="test prompt content",
             permission_mode="",
             project_root=str(tmp_path),
             slug="task2",
         )
 
-        assert "gemini" in cmd
+        assert "opencode" in cmd
         assert "--prompt" in cmd
         assert "$DGOV_PROMPT_CONTENT" in cmd
 
 
 class TestBuildLaunchCommandPositional:
     def test_build_launch_command_positional(self, tmp_path: Path) -> None:
-        agent = AGENT_REGISTRY["claude"]
+        agent = AGENT_REGISTRY["pi"]
         assert agent.prompt_transport == "positional"
 
         cmd = build_launch_command(
-            agent_id="claude",
+            agent_id="pi",
             prompt="test prompt content",
             permission_mode="",
             project_root=str(tmp_path),
             slug="task1",
         )
 
-        assert "claude" in cmd
+        assert "pi" in cmd
         assert "$DGOV_PROMPT_CONTENT" in cmd
         assert 'cat "$DGOV_PROMPT_FILE"' in cmd
         assert 'rm -f "$DGOV_PROMPT_FILE"' in cmd
@@ -446,28 +444,28 @@ class TestBuildLaunchCommandPositional:
 class TestBuildLaunchCommandSendKeysAgent:
     def test_send_keys_agent_ignores_prompt_file(self, tmp_path: Path) -> None:
         cmd = build_launch_command(
-            agent_id="claude",
+            agent_id="cline",
             prompt="ignored for send-keys",
             permission_mode="",
             project_root=str(tmp_path),
             slug="task",
         )
-        # claude uses positional, so prompt file IS used
-        assert "$DGOV_PROMPT_FILE" in cmd
+        # cline uses send-keys, so prompt file is NOT in the command
+        assert "$DGOV_PROMPT_FILE" not in cmd
 
 
 class TestBuildLaunchCommandSendkeys:
     def test_build_launch_command_sendkeys(self, tmp_path: Path) -> None:
         cmd = build_launch_command(
-            agent_id="claude",
+            agent_id="cline",
             prompt="test prompt content",
             permission_mode="",
             project_root=str(tmp_path),
             slug="task3",
         )
-        assert "claude" in cmd
-        assert "$DGOV_PROMPT_FILE" in cmd
-        assert "$DGOV_PROMPT_CONTENT" in cmd
+        assert "cline" in cmd
+        assert "$DGOV_PROMPT_FILE" not in cmd
+        assert "$DGOV_PROMPT_CONTENT" not in cmd
 
 
 class TestBuildLaunchCommandWithExtraFlags:
@@ -605,6 +603,13 @@ class TestUnknownAgentName:
                 project_root="/tmp",
                 slug="task",
             )
+
+
+class TestInteractiveAgentReturnsBaseCommand:
+    def test_interactive_agent_returns_base_command(self, tmp_path: Path) -> None:
+        cmd = build_launch_command("claude", "Fix bug", project_root=str(tmp_path), slug="t")
+        assert cmd == "claude"
+        assert "DGOV_PROMPT" not in cmd
 
 
 class TestWritePromptFile:
