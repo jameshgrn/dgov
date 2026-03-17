@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import shlex
 import subprocess
 import time
@@ -359,6 +361,19 @@ def _apply_governor_layout() -> None:
         _run(["resize-pane", "-t", ":.0", "-x", str(target_w)], silent=True)
 
 
+def _write_lazygit_config(project_root: str) -> str:
+    """Write a minimal lazygit config for the governor workspace and return its path."""
+    cfg_dir = os.path.join(project_root, ".dgov")
+    os.makedirs(cfg_dir, exist_ok=True)
+    cfg_path = os.path.join(cfg_dir, "lazygit.yml")
+    cfg_contents = (
+        "gui:\n  sidePanelWidth: 1.0\n  expandFocusedSidePanel: true\n  showBottomLine: false\n"
+    )
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        f.write(cfg_contents)
+    return cfg_path
+
+
 def setup_governor_workspace(project_root: str) -> list[str]:
     """Split dashboard + terrain + lazygit into the current window.
 
@@ -374,33 +389,40 @@ def setup_governor_workspace(project_root: str) -> list[str]:
     panes: list[str] = []
 
     if "[gov] dashboard" not in existing:
-        dash_id = split_pane()
-        _wait_for_shell(dash_id)
-        send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
-        set_title(dash_id, "[gov] dashboard")
-        _style_pane(dash_id, "colour39")
-        panes.append(dash_id)
+        try:
+            dash_id = split_pane()
+            _wait_for_shell(dash_id)
+            send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
+            set_title(dash_id, "[gov] dashboard")
+            _style_pane(dash_id, "colour39")
+            panes.append(dash_id)
+        except RuntimeError as exc:
+            logging.warning("Failed to create dashboard pane: %s", exc)
 
     if "[gov] terrain" not in existing:
-        ter_id = split_pane()
-        _wait_for_shell(ter_id)
-        send_command(ter_id, "dgov terrain")
-        set_title(ter_id, "[gov] terrain")
-        _style_pane(ter_id, "colour34")
-        panes.append(ter_id)
+        try:
+            ter_id = split_pane()
+            _wait_for_shell(ter_id)
+            send_command(ter_id, "dgov terrain")
+            set_title(ter_id, "[gov] terrain")
+            _style_pane(ter_id, "colour34")
+            panes.append(ter_id)
+        except RuntimeError as exc:
+            logging.warning("Failed to create terrain pane: %s", exc)
 
     if "[gov] lazygit" not in existing:
-        lg_id = split_pane()
-        send_command(lg_id, "lazygit")
-        set_title(lg_id, "[gov] lazygit")
-        _style_pane(lg_id, "colour214")
-        # Focus lazygit on Commits panel — wait for it to actually start
-        for _ in range(8):
-            time.sleep(0.3)
-            if current_command(lg_id) == "lazygit":
-                break
-        _run(["send-keys", "-t", lg_id, "4"], silent=True)
-        panes.append(lg_id)
+        try:
+            lg_id = split_pane()
+            config_path = _write_lazygit_config(project_root)
+            send_command(
+                lg_id,
+                f"lazygit -ucf {shlex.quote(config_path)}",
+            )
+            set_title(lg_id, "[gov] lazygit")
+            _style_pane(lg_id, "colour214")
+            panes.append(lg_id)
+        except RuntimeError as exc:
+            logging.warning("Failed to create lazygit pane: %s", exc)
 
     # White border lines (window-level), colored labels (per-pane)
     _run(["set-option", "-w", "pane-border-style", "fg=colour250"], silent=True)
