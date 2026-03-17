@@ -251,3 +251,33 @@ class TestNudgeStuck:
         mock_get_pane.return_value = None
         _nudge_stuck("/tmp", "/tmp", "missing-slug")
         # Should return early without sending input
+
+
+class TestClassifyDeterministic:
+    """Test _classify_deterministic() rule-based classification."""
+
+    def test_todo_no_longer_waiting(self):
+        from dgov.monitor import _classify_deterministic
+
+        output = "# TODO: implement this"
+        assert _classify_deterministic(output) != "waiting_input"
+
+    def test_done_precedence(self):
+        from dgov.monitor import _classify_deterministic
+
+        output = "I have committed the changes. Task is done."
+        assert _classify_deterministic(output) == "done"
+
+
+class TestTakeActionBugFixes:
+    """Test _take_action() bug fixes from monitor-bogs."""
+
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
+    @patch("dgov.monitor._auto_complete")
+    def test_done_no_commits_auto_completes(self, mock_complete, mock_get_pane):
+        from dgov.monitor import _take_action
+
+        worker = {"slug": "w1", "classification": "done", "has_commits": False}
+        history = {"w1": {"classifications": ["done", "done"], "last_action_at": 0}}
+        action = _take_action("/tmp", "/tmp", worker, history)
+        assert action == "auto_complete"
