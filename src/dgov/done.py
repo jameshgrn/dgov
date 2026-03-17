@@ -316,6 +316,7 @@ def _is_done(
     # Signal 4 (optional): output stabilization — skipped for "commit" strategy
     use_stable = stype == "stable" or (stype == "signal" and eff_stable > 0)
     if use_stable and stype != "commit" and _stable_state is not None and pane_id:
+        _stable_state.pop("current_output", None)
         current_output = _stable_state.get("current_output")
         if current_output is None:
             from dgov.status import capture_worker_output
