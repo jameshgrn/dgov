@@ -24,7 +24,7 @@ from dgov.persistence import (
     set_pane_metadata,
     update_pane_state,
 )
-from dgov.status import list_worker_panes, tail_worker_log
+from dgov.status import list_worker_panes, prune_stale_panes, tail_worker_log
 
 if TYPE_CHECKING:
     from dgov.monitor_hooks import MonitorHook
@@ -307,6 +307,12 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
         hist["last_action_at"] = time.time()
         return "auto_complete"
 
+    # Proactive cleanup: if worker has commits but is idling, auto-complete it
+    if classification == "idle" and worker["has_commits"] and consecutive >= 2:
+        _auto_complete(project_root, session_root, slug)
+        hist["last_action_at"] = time.time()
+        return "proactive_auto_complete"
+
     if classification == "stuck" and consecutive >= 3:
         _nudge_stuck(project_root, session_root, slug)
         hist["last_action_at"] = time.time()
@@ -403,11 +409,18 @@ def run_monitor(
 
     logger.info("Starting monitor on %s (interval %ds)", project_root, poll_interval)
 
+    tick = 0
     try:
         while True:
             try:
                 # Reload hooks each tick for live updates
                 hooks = load_monitor_hooks(session_root)
+
+                # Prune stale panes every 10 ticks (~2.5 mins at 15s interval)
+                if tick % 10 == 0:
+                    pruned = prune_stale_panes(project_root, session_root)
+                    if pruned:
+                        logger.info("Monitor: pruned stale panes: %s", ", ".join(pruned))
 
                 workers = poll_workers(project_root, session_root, hooks=hooks)
                 actions = []
@@ -432,5 +445,6 @@ def run_monitor(
                 return
 
             time.sleep(poll_interval)
+            tick += 1
     except KeyboardInterrupt:
         logger.info("Monitor stopped by user")
