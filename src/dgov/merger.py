@@ -773,20 +773,34 @@ def _restore_protected_files(project_root: str, pane_record: dict) -> None:
         return
 
     # Restore each file from the base commit
+    restored = []
     for fname in to_restore:
-        subprocess.run(
+        cp = subprocess.run(
             ["git", "-C", wt, "checkout", base_sha, "--", fname],
             capture_output=True,
         )
+        if cp.returncode == 0:
+            restored.append(fname)
+        else:
+            logger.warning(
+                "Failed to restore protected file %s on %s: %s",
+                fname,
+                branch,
+                cp.stderr.decode().strip() if cp.stderr else "unknown error",
+            )
+
+    if not restored:
+        logger.warning("No protected files could be restored on %s", branch)
+        return
 
     # Amend the last commit to include the restoration
-    subprocess.run(["git", "-C", wt, "add", "--"] + list(to_restore), capture_output=True)
+    subprocess.run(["git", "-C", wt, "add", "--"] + restored, capture_output=True)
     subprocess.run(
         ["git", "-C", wt, "commit", "--amend", "--no-edit"],
         capture_output=True,
     )
 
-    logger.info("Restored protected files on %s: %s", branch, to_restore)
+    logger.info("Restored protected files on %s: %s", branch, restored)
 
 
 # -- Public merge API --
