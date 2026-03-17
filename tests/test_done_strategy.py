@@ -440,8 +440,8 @@ class TestIsDoneWithStrategy:
                 slug,
                 pane_record=pane_record,
             )
-            # "api" default strategy still skips commit check when pane is alive and no done file
-            assert result is True
+            # "api" default strategy: no done file + pane alive → not done yet
+            assert result is False
             mock_commits.assert_not_called()
 
 
