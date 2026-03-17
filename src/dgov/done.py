@@ -251,4 +251,28 @@ def _is_done(
                 _stable_state["last_output"] = current_output
                 _stable_state["stable_since"] = None
 
+    # Signal 5: Circuit breaker — detect stuck workers repeating same output
+    if _stable_state is not None and pane_id:
+        cb_output = _stable_state.get("last_output")
+        if cb_output:
+            import hashlib
+
+            tail = "\n".join(cb_output.strip().splitlines()[-5:])
+            output_hash = hashlib.sha256(tail.encode()).hexdigest()[:16]
+            prev_hash = _stable_state.get("_cb_prev_hash")
+            if output_hash != prev_hash:
+                count = _persist.record_failure(session_root, slug, output_hash)
+                if count >= _persist.CIRCUIT_BREAKER_THRESHOLD:
+                    logger.info(
+                        "circuit_breaker slug=%s hash=%s count=%d",
+                        slug,
+                        output_hash,
+                        count,
+                    )
+                    _persist.update_pane_state(session_root, slug, "failed")
+                    _persist.set_pane_metadata(session_root, slug, circuit_breaker=True)
+                    _persist.emit_event(session_root, "pane_circuit_breaker", slug)
+                    return True
+            _stable_state["_cb_prev_hash"] = output_hash
+
     return False

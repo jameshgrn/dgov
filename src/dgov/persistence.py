@@ -67,6 +67,7 @@ VALID_EVENTS = frozenset(
         "merge_enqueued",
         "merge_completed",
         "yap_received",
+        "pane_circuit_breaker",
     }
 )
 
@@ -285,6 +286,9 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     processed_at TIMESTAMP
 )"""
+
+
+CIRCUIT_BREAKER_THRESHOLD = 3
 
 
 def state_path(session_root: str) -> Path:
@@ -550,6 +554,43 @@ def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
         conn.commit()
 
     _retry_on_lock(_do)
+
+
+def record_failure(session_root: str, slug: str, failure_hash: str) -> int:
+    """Record a failure hash for circuit-breaker detection.
+
+    Tracks failure hashes in pane metadata under ``failure_hashes``
+    (a JSON object mapping hash -> count).  Returns the count for
+    *failure_hash* after incrementing.
+    """
+
+    def _do() -> int:
+        conn = _get_db(session_root)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT metadata FROM panes WHERE slug = ?", (slug,)).fetchone()
+        if row is None:
+            return 0
+        meta: dict = {}
+        raw = row["metadata"]
+        if raw:
+            try:
+                meta = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+        hashes = meta.get("failure_hashes", {})
+        if not isinstance(hashes, dict):
+            hashes = {}
+        hashes[failure_hash] = hashes.get(failure_hash, 0) + 1
+        count: int = hashes[failure_hash]
+        meta["failure_hashes"] = hashes
+        conn.execute(
+            "UPDATE panes SET metadata = ? WHERE slug = ?",
+            (json.dumps(meta), slug),
+        )
+        conn.commit()
+        return count
+
+    return _retry_on_lock(_do)
 
 
 def replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
