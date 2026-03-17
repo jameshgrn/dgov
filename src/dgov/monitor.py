@@ -10,9 +10,11 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
 from dgov.done import _has_new_commits
+from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.openrouter import chat_completion_local_first
 from dgov.persistence import (
     STATE_DIR,
@@ -22,6 +24,9 @@ from dgov.persistence import (
     update_pane_state,
 )
 from dgov.status import list_worker_panes, tail_worker_log
+
+if TYPE_CHECKING:
+    from dgov.monitor_hooks import MonitorHook
 
 logger = logging.getLogger(__name__)
 
@@ -75,14 +80,25 @@ def _regex_match(pattern: str, text: str) -> bool:
         return False
 
 
-def classify_output(output: str) -> str:
+def classify_output(
+    output: str, hooks: list[MonitorHook] | None = None
+) -> str | tuple[str, MonitorHook]:
     """Classify agent output into working, done, stuck, idle, waiting_input, or committing.
 
-    Uses deterministic regex patterns first for efficiency, falls back to LLM for
-    ambiguous cases. This two-layer approach minimizes API calls while maintaining accuracy.
+    Uses configurable hooks first, then deterministic regex patterns, and finally
+    falls back to LLM for ambiguous cases.
     """
     if not output.strip():
         return "idle"
+
+    # Layer 0: Monitor Hooks (user-configured overrides)
+    if hooks:
+        matching_hook = match_monitor_hook(output, hooks)
+        if matching_hook:
+            logger.debug(
+                "Monitor hook matched: %s (%s)", matching_hook.kind, matching_hook.pattern
+            )
+            return ("hook_match", matching_hook)
 
     # Layer 1: Deterministic classification (fast, no API call)
     deterministic_result = _classify_deterministic(output)
@@ -158,7 +174,11 @@ def classify_output(output: str) -> str:
 
 
 def poll_workers(
-    project_root: str, session_root: str | None = None, *, panes: list[dict] | None = None
+    project_root: str,
+    session_root: str | None = None,
+    *,
+    panes: list[dict] | None = None,
+    hooks: list[MonitorHook] | None = None,
 ) -> list[dict]:
     """Poll all active worker panes and classify their current state."""
     session_root = session_root or project_root
@@ -180,13 +200,25 @@ def poll_workers(
         if not output:
             classification = "idle"
         else:
-            classification = classify_output(output)
+            classification = classify_output(output, hooks)
 
         # list_worker_panes doesn't include base_sha; fetch from raw pane record
         raw = get_pane(session_root, slug)
         base_sha = raw.get("base_sha", "") if raw else ""
         branch = w.get("branch") or ""
         has_commits = _has_new_commits(project_root, branch, base_sha)
+
+        # JSON serialize the hook if it matched
+        hook_info = None
+        if isinstance(classification, tuple):
+            _, hook = classification
+            hook_info = {
+                "pattern": hook.pattern,
+                "kind": hook.kind,
+                "message": hook.message,
+                "keystroke": hook.keystroke,
+            }
+            classification = "hook_match"
 
         results.append(
             {
@@ -195,6 +227,7 @@ def poll_workers(
                 "classification": classification,
                 "has_commits": has_commits,
                 "output_preview": output[:100] if output else "",
+                "hook_match": hook_info,
             }
         )
 
@@ -209,6 +242,26 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     """
     slug = worker["slug"]
     classification = worker["classification"]
+
+    # Handle hook-based actions first
+    if classification == "hook_match" and worker.get("hook_match"):
+        hook_data = worker["hook_match"]
+        kind = hook_data["kind"]
+        if kind == "nudge":
+            _nudge_stuck(
+                project_root,
+                session_root,
+                slug,
+                message=hook_data.get("message"),
+                keystroke=hook_data.get("keystroke"),
+            )
+            return "hook_nudge"
+        if kind == "fail":
+            _mark_idle_failed(project_root, session_root, slug, reason="hook_fail")
+            return "hook_fail"
+        # If it's a state override, treat it as that state for default rules below
+        if kind in {"done", "stuck", "idle", "working", "waiting_input", "committing"}:
+            classification = kind
 
     # Skip remediation for non-terminal states
     if classification in {"working", "waiting_input", "committing", "unknown"}:
@@ -271,7 +324,13 @@ def _auto_complete(project_root: str, session_root: str, slug: str) -> None:
     logger.info("Monitor: auto-completed %s", slug)
 
 
-def _nudge_stuck(project_root: str, session_root: str, slug: str) -> None:
+def _nudge_stuck(
+    project_root: str,
+    session_root: str,
+    slug: str,
+    message: str | None = None,
+    keystroke: str | None = None,
+) -> None:
     """Send a nudge message to a stuck worker pane.
 
     Skips nudging headless workers (interactive agents forced to -p/--prompt
@@ -298,20 +357,29 @@ def _nudge_stuck(project_root: str, session_root: str, slug: str) -> None:
             logger.info("Monitor: skipping nudge for headless worker %s (%s)", slug, agent_id)
             return
 
-    get_backend().send_input(
-        pane_id,
-        "\n\nYou appear stuck. Commit changes and run: dgov worker complete -m 'summary'\n",
-    )
+    backend = get_backend()
+    if keystroke:
+        backend.send_input(pane_id, keystroke)
+        logger.info("Monitor: nudged worker %s with keystroke", slug)
+    else:
+        text = (
+            message
+            or "\n\nYou appear stuck. Commit changes and run: dgov worker complete -m 'summary'\n"
+        )
+        backend.send_input(pane_id, text)
+        logger.info("Monitor: nudged stuck worker %s", slug)
+
     emit_event(session_root, "monitor_nudge", slug)
-    logger.info("Monitor: nudged stuck worker %s", slug)
 
 
-def _mark_idle_failed(project_root: str, session_root: str, slug: str) -> None:
+def _mark_idle_failed(
+    project_root: str, session_root: str, slug: str, reason: str | None = None
+) -> None:
     """Mark an idle worker as failed."""
     update_pane_state(session_root, slug, "failed", force=True)
-    set_pane_metadata(session_root, slug, monitor_reason="idle_timeout")
-    emit_event(session_root, "monitor_idle_timeout", slug, reason="monitor_idle_timeout")
-    logger.info("Monitor: timed out idle worker %s", slug)
+    set_pane_metadata(session_root, slug, monitor_reason=reason or "idle_timeout")
+    emit_event(session_root, "monitor_idle_timeout", slug, reason=reason or "monitor_idle_timeout")
+    logger.info("Monitor: timed out idle worker %s (reason=%s)", slug, reason)
 
 
 def run_monitor(
@@ -333,7 +401,10 @@ def run_monitor(
     try:
         while True:
             try:
-                workers = poll_workers(project_root, session_root)
+                # Reload hooks each tick for live updates
+                hooks = load_monitor_hooks(session_root)
+
+                workers = poll_workers(project_root, session_root, hooks=hooks)
                 actions = []
 
                 for w in workers:
