@@ -87,6 +87,7 @@ def cli(ctx, governor):
         "yap",
         "terrain",
         "worker",
+        "monitor",
     ):
         _check_governor_context()
 
@@ -332,6 +333,7 @@ from dgov.cli.dag_cmd import dag  # noqa: E402
 from dgov.cli.experiment import experiment  # noqa: E402
 from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
 from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
+from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
 from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
@@ -363,6 +365,7 @@ cli.add_command(yap_cmd)
 cli.add_command(briefing_cmd)
 cli.add_command(terrain_cmd)
 cli.add_command(worker)
+cli.add_command(monitor_cmd)
 
 
 if __name__ == "__main__":
