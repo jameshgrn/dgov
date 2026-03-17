@@ -269,8 +269,20 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
     ),
 }
 
+
+def _safe_mtime(path: Path) -> float:
+    """Return mtime for a path, or 0 if it does not exist or is inaccessible."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 # Module-level convenience alias (populated on first load_registry call or from built-ins).
 AGENT_REGISTRY: dict[str, AgentDef] = dict(_BUILTIN_AGENTS)
+
+# Cache for load_registry results, keyed by project root and config mtimes.
+_registry_cache: dict[str, object] = {}
 
 
 def _done_strategy_from_toml(table: dict) -> DoneStrategy | None:
@@ -390,10 +402,30 @@ def load_registry(project_root: str | None = None) -> dict[str, AgentDef]:
     Each layer merges over the previous. New agent IDs are added;
     existing IDs get field-level overrides.
     """
+    # Normalize project_root to a string for caching purposes
+    normalized_root = str(project_root) if project_root is not None else None
+
+    # Compute current mtimes for user and project config files
+    user_config = Path.home() / ".dgov" / "agents.toml"
+    user_mtime = _safe_mtime(user_config)
+    project_config = (Path(normalized_root) / ".dgov" / "agents.toml") if normalized_root else None
+    project_mtime = _safe_mtime(project_config) if project_config is not None else 0.0
+
+    cached_project_root = _registry_cache.get("project_root")
+    cached_user_mtime = _registry_cache.get("user_mtime")
+    cached_project_mtime = _registry_cache.get("project_mtime")
+
+    if (
+        cached_project_root == normalized_root
+        and cached_user_mtime == user_mtime
+        and cached_project_mtime == project_mtime
+        and "result" in _registry_cache
+    ):
+        return _registry_cache["result"]  # type: ignore[return-value]
+
     registry = dict(_BUILTIN_AGENTS)
 
     # User global: ~/.dgov/agents.toml
-    user_config = Path.home() / ".dgov" / "agents.toml"
     for agent_id, table in _load_toml_file(user_config).items():
         table = dict(table)  # shallow copy so pops don't mutate cache
         if agent_id in registry:
@@ -402,8 +434,7 @@ def load_registry(project_root: str | None = None) -> dict[str, AgentDef]:
             registry[agent_id] = _agent_def_from_toml(agent_id, table, "user")
 
     # Project-local: <project_root>/.dgov/agents.toml
-    if project_root:
-        project_config = Path(project_root) / ".dgov" / "agents.toml"
+    if project_config is not None:
         for agent_id, table in _load_toml_file(project_config).items():
             table = dict(table)
             # Project-local config: security boundary.
@@ -422,6 +453,11 @@ def load_registry(project_root: str | None = None) -> dict[str, AgentDef]:
             if agent_id in registry:
                 registry[agent_id] = _merge_agent_def(registry[agent_id], table, "project")
             # Project config cannot define NEW agents, only override existing ones
+
+    _registry_cache["result"] = registry
+    _registry_cache["project_root"] = normalized_root
+    _registry_cache["user_mtime"] = user_mtime
+    _registry_cache["project_mtime"] = project_mtime
 
     return registry
 
