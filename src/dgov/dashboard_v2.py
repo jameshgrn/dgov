@@ -338,7 +338,11 @@ def _build_layout(
         preview_visible = state.preview_visible
         monitor_alive = state.monitor_alive
 
-    ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
+    ts = (
+        time.strftime("%a %b %d, %I:%M:%S %p %Z", time.localtime(last_refresh))
+        if last_refresh
+        else "--"
+    )
     header_text = Text()
     header_text.append(
         f" DGOV v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {len(panes)} workers"
@@ -384,7 +388,7 @@ def _build_layout(
 
         try:
             dt = datetime.fromisoformat(ev.get("ts", ""))
-            ev_time = dt.strftime("%H:%M")
+            ev_time = dt.strftime("%I:%M %p")
         except (ValueError, TypeError):
             ev_time = "--:--"
 
