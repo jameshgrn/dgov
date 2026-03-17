@@ -419,6 +419,9 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
     get_backend().send_input(pane_id, "Are you done? Reply YES or NO.")
     time.sleep(wait_seconds)
 
+    if not get_backend().is_alive(pane_id):
+        return {"response": "error", "output": "Pane died during wait"}
+
     # Capture output
     captured = get_backend().capture_output(pane_id, lines=15)
 
