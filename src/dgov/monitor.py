@@ -57,11 +57,17 @@ def classify_output(output: str) -> str:
         return "unknown"
 
 
-def poll_workers(project_root: str, session_root: str | None = None) -> list[dict]:
+def poll_workers(
+    project_root: str, session_root: str | None = None, *, panes: list[dict] | None = None
+) -> list[dict]:
     """Poll all active worker panes and classify their current state."""
     session_root = session_root or project_root
-    workers = list_worker_panes(
-        project_root, session_root, include_freshness=False, include_prompt=False
+    workers = (
+        panes
+        if panes is not None
+        else list_worker_panes(
+            project_root, session_root, include_freshness=False, include_prompt=False
+        )
     )
 
     active = [w for w in workers if w.get("state") == "active" and w.get("alive")]
