@@ -126,7 +126,7 @@ def fetch_panes(state: DashboardState) -> None:
                     lines = [ln.strip() for ln in log_tail.splitlines() if ln.strip()]
                     p["activity"] = lines[-1] if lines else ""
 
-        events = read_events(session_root)[-8:]
+        events = read_events(session_root, limit=8)
 
         # Capture preview lines for the selected pane
         preview: list[str] = []

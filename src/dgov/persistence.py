@@ -102,17 +102,39 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
         logger.warning("emit_event(%s, %s) dropped — database locked", event, pane)
 
 
-def read_events(session_root: str, slug: str | None = None) -> list[dict]:
+def read_events(
+    session_root: str,
+    slug: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
     """Read events from the SQLite events table, optionally filtered by slug."""
     conn = _get_db(session_root)
     if slug is not None:
-        rows = conn.execute(
-            "SELECT ts, event, pane, data FROM events WHERE pane = ? ORDER BY id",
-            (slug,),
-        ).fetchall()
+        if limit is not None:
+            rows = conn.execute(
+                "SELECT ts, event, pane, data FROM events WHERE pane = ? ORDER BY id DESC LIMIT ?",
+                (slug, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, event, pane, data FROM events WHERE pane = ? ORDER BY id",
+                (slug,),
+            ).fetchall()
     else:
-        rows = conn.execute("SELECT ts, event, pane, data FROM events ORDER BY id").fetchall()
+        if limit is not None:
+            rows = conn.execute(
+                "SELECT ts, event, pane, data FROM events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, event, pane, data FROM events ORDER BY id",
+            ).fetchall()
     events = []
+    # For limited queries we fetch newest-first for performance, then reverse to keep
+    # chronological (oldest-first) order at the API boundary.
+    if limit is not None:
+        rows = list(reversed(rows))
     for ts, event, pane, data_str in rows:
         ev = {"ts": ts, "event": event, "pane": pane}
         try:
