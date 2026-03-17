@@ -399,97 +399,230 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
     return text
 
 
-# Pixel-art sprites: 3 cols x 2 char-rows per agent.
-# [top_row, bottom_row]; each row = [left, center, right]
-# Each cell = ((fg_r,fg_g,fg_b), (bg_r,bg_g,bg_b)) or None (transparent).
-# Bright center-top = eyes. None cells create distinct silhouettes.
+# Pixel-art sprites: 5 cols x 3 char-rows per agent.
+# [top_row, mid_row, bot_row]; each row = 5 cells.
+# Each cell = (fg, bg) | (fg, bg, char) | None (transparent).
+# 2-tuple -> default half-block.  3-tuple -> custom glyph.
+# Layout: top = head/hat, mid = eyes+arms, bot = body/feet.
 _AGENT_SPRITES: dict[str, list[list]] = {
+    # Claude -- purple, friendly antenna, round eyes
     "claude": [
         [
+            None,
             ((180, 80, 180), (130, 50, 130)),
-            ((255, 220, 255), (200, 100, 200)),
+            ((255, 200, 255), (180, 80, 180), "\u25b3"),  # △ antenna
             ((180, 80, 180), (130, 50, 130)),
+            None,
         ],
         [
-            ((130, 50, 130), (80, 20, 80)),
+            ((180, 80, 180), (130, 50, 130), "\u2576"),  # ╶ left arm
+            ((255, 255, 255), (200, 100, 200), "\u25d5"),  # ◕ eye
             ((200, 100, 200), (130, 50, 130)),
+            ((255, 255, 255), (200, 100, 200), "\u25d5"),  # ◕ eye
+            ((180, 80, 180), (130, 50, 130), "\u2574"),  # ╴ right arm
+        ],
+        [
+            None,
+            ((130, 50, 130), (80, 20, 80), "\u25aa"),  # ▪ foot
             ((130, 50, 130), (80, 20, 80)),
+            ((130, 50, 130), (80, 20, 80), "\u25aa"),  # ▪ foot
+            None,
         ],
     ],
+    # Hunter -- red/orange, fierce horns, intense bullseye eyes
     "hunter": [
         [
+            ((255, 160, 60), (180, 60, 20), "\u2572"),  # ╲ left horn
             ((220, 80, 40), (180, 60, 20)),
-            ((255, 200, 100), (220, 120, 50)),
+            ((255, 200, 100), (220, 80, 40)),
             ((220, 80, 40), (180, 60, 20)),
+            ((255, 160, 60), (180, 60, 20), "\u2571"),  # ╱ right horn
         ],
-        [None, ((180, 60, 20), (120, 30, 10)), None],
+        [
+            None,
+            ((255, 255, 100), (220, 80, 40), "\u25c9"),  # ◉ eye
+            ((220, 120, 50), (180, 60, 20)),
+            ((255, 255, 100), (220, 80, 40), "\u25c9"),  # ◉ eye
+            None,
+        ],
+        [
+            None,
+            ((180, 60, 20), (120, 30, 10), "\u25be"),  # ▾ foot
+            ((180, 60, 20), (120, 30, 10)),
+            ((180, 60, 20), (120, 30, 10), "\u25be"),  # ▾ foot
+            None,
+        ],
     ],
+    # Pi -- green, flower on head, nature spirit
     "pi": [
         [
-            ((60, 180, 120), (30, 140, 80)),
-            ((150, 255, 200), (80, 200, 140)),
-            ((60, 180, 120), (30, 140, 80)),
+            None,
+            ((100, 220, 160), (30, 140, 80)),
+            ((200, 255, 220), (60, 180, 120), "\u273f"),  # ✿ flower
+            ((100, 220, 160), (30, 140, 80)),
+            None,
         ],
-        [None, ((30, 140, 80), (20, 100, 50)), None],
-    ],
-    "cursor": [
-        [None, ((220, 240, 255), (120, 160, 230)), None],
         [
-            ((80, 120, 220), (40, 60, 150)),
-            ((160, 200, 255), (80, 120, 220)),
-            ((80, 120, 220), (40, 60, 150)),
+            ((60, 180, 120), (30, 140, 80), "\u2576"),  # ╶ arm
+            ((255, 255, 255), (80, 200, 140), "\u25d5"),  # ◕ eye
+            ((80, 200, 140), (30, 140, 80)),
+            ((255, 255, 255), (80, 200, 140), "\u25d5"),  # ◕ eye
+            ((60, 180, 120), (30, 140, 80), "\u2574"),  # ╴ arm
+        ],
+        [
+            None,
+            ((30, 140, 80), (20, 100, 50), "\u25aa"),  # ▪ foot
+            ((30, 140, 80), (20, 100, 50)),
+            ((30, 140, 80), (20, 100, 50), "\u25aa"),  # ▪ foot
+            None,
         ],
     ],
+    # Cursor -- blue, sleek arrow head, precise target eyes
+    "cursor": [
+        [
+            None,
+            None,
+            ((220, 240, 255), (80, 120, 220), "\u25bc"),  # ▼ cursor tip
+            None,
+            None,
+        ],
+        [
+            ((120, 160, 255), (40, 60, 150), "\u25c1"),  # ◁ left wing
+            ((255, 255, 255), (80, 120, 220), "\u25c9"),  # ◉ eye
+            ((160, 200, 255), (80, 120, 220)),
+            ((255, 255, 255), (80, 120, 220), "\u25c9"),  # ◉ eye
+            ((120, 160, 255), (40, 60, 150), "\u25b7"),  # ▷ right wing
+        ],
+        [
+            None,
+            ((40, 60, 150), (20, 30, 100), "\u25aa"),  # ▪ foot
+            ((80, 120, 220), (40, 60, 150)),
+            ((40, 60, 150), (20, 30, 100), "\u25aa"),  # ▪ foot
+            None,
+        ],
+    ],
+    # Codex -- gold, scholar hat, wise eyes
     "codex": [
         [
+            ((200, 160, 30), (160, 120, 10), "\u2581"),  # ▁ hat brim
             ((200, 160, 30), (160, 120, 10)),
-            ((255, 240, 150), (220, 180, 40)),
+            ((255, 240, 150), (200, 160, 30)),
             ((200, 160, 30), (160, 120, 10)),
+            ((200, 160, 30), (160, 120, 10), "\u2581"),  # ▁ hat brim
         ],
         [
-            ((180, 140, 20), (120, 90, 10)),
+            ((200, 160, 30), (160, 120, 10), "\u2576"),  # ╶ arm
+            ((255, 255, 255), (220, 180, 40), "\u25d5"),  # ◕ eye
             ((220, 180, 40), (180, 140, 20)),
+            ((255, 255, 255), (220, 180, 40), "\u25d5"),  # ◕ eye
+            ((200, 160, 30), (160, 120, 10), "\u2574"),  # ╴ arm
+        ],
+        [
+            None,
+            ((160, 120, 10), (120, 90, 10), "\u25aa"),  # ▪ foot
             ((180, 140, 20), (120, 90, 10)),
+            ((160, 120, 10), (120, 90, 10), "\u25aa"),  # ▪ foot
+            None,
         ],
     ],
+    # Gemini -- indigo/blue, twin stars, cosmic
     "gemini": [
-        [None, ((200, 220, 255), (100, 120, 200)), None],
         [
-            ((60, 80, 200), (30, 40, 130)),
+            None,
+            ((200, 220, 255), (60, 80, 200), "\u2726"),  # ✦ star
+            ((200, 220, 255), (100, 120, 200)),
+            ((200, 220, 255), (60, 80, 200), "\u2726"),  # ✦ star
+            None,
+        ],
+        [
+            ((100, 120, 200), (30, 40, 130), "\u2576"),  # ╶ arm
+            ((255, 255, 255), (60, 80, 200), "\u25d5"),  # ◕ eye
             ((140, 170, 255), (60, 80, 200)),
+            ((255, 255, 255), (60, 80, 200), "\u25d5"),  # ◕ eye
+            ((100, 120, 200), (30, 40, 130), "\u2574"),  # ╴ arm
+        ],
+        [
+            None,
+            ((30, 40, 130), (15, 20, 80), "\u25aa"),  # ▪ foot
             ((60, 80, 200), (30, 40, 130)),
+            ((30, 40, 130), (15, 20, 80), "\u25aa"),  # ▪ foot
+            None,
         ],
     ],
 }
 
+# Done -- green, sparkle crown, arms raised in celebration
 _DONE_SPRITE = [
     [
-        ((80, 220, 100), (40, 160, 50)),
-        ((150, 255, 170), (80, 220, 100)),
-        ((80, 220, 100), (40, 160, 50)),
+        None,
+        None,
+        ((180, 255, 180), (80, 220, 100), "\u2726"),  # ✦ sparkle
+        None,
+        None,
     ],
-    [None, ((40, 160, 50), (20, 100, 30)), None],
+    [
+        ((100, 220, 120), (40, 160, 50), "\u2571"),  # ╱ arm up
+        ((255, 255, 255), (80, 220, 100), "\u25d5"),  # ◕ happy eye
+        ((80, 220, 100), (40, 160, 50)),
+        ((255, 255, 255), (80, 220, 100), "\u25d5"),  # ◕ happy eye
+        ((100, 220, 120), (40, 160, 50), "\u2572"),  # ╲ arm up
+    ],
+    [
+        None,
+        ((40, 160, 50), (20, 100, 30), "\u25aa"),  # ▪ foot
+        ((40, 160, 50), (20, 100, 30)),
+        ((40, 160, 50), (20, 100, 30), "\u25aa"),  # ▪ foot
+        None,
+    ],
 ]
 
+# Failed -- red, skull mark, x-eyes, collapsed
 _FAILED_SPRITE = [
     [
+        None,
         ((220, 60, 60), (160, 30, 30)),
-        ((255, 120, 120), (220, 60, 60)),
+        ((255, 120, 120), (220, 60, 60), "\u2716"),  # ✖ skull mark
         ((220, 60, 60), (160, 30, 30)),
+        None,
     ],
-    [None, ((160, 30, 30), (100, 15, 15)), None],
+    [
+        None,
+        ((255, 80, 80), (220, 60, 60), "\u00d7"),  # × dead eye
+        ((220, 60, 60), (160, 30, 30)),
+        ((255, 80, 80), (220, 60, 60), "\u00d7"),  # × dead eye
+        None,
+    ],
+    [
+        None,
+        None,
+        ((160, 30, 30), (100, 15, 15)),
+        None,
+        None,
+    ],
 ]
 
+# LT-GOV -- gold/royal, crown, scepter sparkles
 _LTGOV_SPRITE = [
     [
+        ((255, 220, 60), (220, 180, 30), "\u2727"),  # ✧ ornament
         ((255, 220, 60), (220, 180, 30)),
-        ((255, 255, 220), (255, 220, 60)),
+        ((255, 255, 220), (255, 220, 60), "\u265b"),  # ♛ crown
         ((255, 220, 60), (220, 180, 30)),
+        ((255, 220, 60), (220, 180, 30), "\u2727"),  # ✧ ornament
     ],
     [
-        ((220, 180, 30), (180, 140, 10)),
+        ((220, 180, 30), (180, 140, 10), "\u2576"),  # ╶ arm
+        ((255, 255, 255), (255, 220, 60), "\u25d5"),  # ◕ eye
         ((255, 220, 60), (220, 180, 30)),
+        ((255, 255, 255), (255, 220, 60), "\u25d5"),  # ◕ eye
+        ((220, 180, 30), (180, 140, 10), "\u2574"),  # ╴ arm
+    ],
+    [
+        None,
+        ((220, 180, 30), (180, 140, 10), "\u25aa"),  # ▪ foot
         ((220, 180, 30), (180, 140, 10)),
+        ((220, 180, 30), (180, 140, 10), "\u25aa"),  # ▪ foot
+        None,
     ],
 ]
 
@@ -605,7 +738,7 @@ class AgentSim:
                 dr = r - op[0]
                 dc = c - op[1]
                 dist = math.sqrt(dr * dr + dc * dc)
-                if 0.1 < dist < 3.0:
+                if 0.1 < dist < 4.5:
                     repel = 0.4 / dist
                     vr += dr / dist * repel
                     vc += dc / dist * repel
@@ -614,14 +747,14 @@ class AgentSim:
             r += vr
             c += vc
 
-            # Boundary clamp (stay off edges)
-            r = max(1.5, min(rows - 1.5, r))
-            c = max(1.5, min(cols - 2.5, c))
+            # Boundary clamp (stay off edges for 5x3 sprites)
+            r = max(2.0, min(rows - 2.0, r))
+            c = max(3.0, min(cols - 3.0, c))
 
             self._pos[slug] = [r, c]
             self._vel[slug] = [vr, vc]
 
-            # Pixel-art sprite: 3 half-block cells centered on agent position
+            # Pixel-art sprite: 5 wide x 3 tall, centered on agent position
             ir, ic = int(round(r)), int(round(c))
             if role == "lt-gov":
                 sprite = _LTGOV_SPRITE
@@ -633,24 +766,33 @@ class AgentSim:
                 agent_name = ag.get("agent", "").split("-")[0]
                 sprite = _AGENT_SPRITES.get(agent_name, _AGENT_SPRITES.get("claude"))
 
-            # Place 3-wide x 2-tall sprite centered on agent position
-            for row_offset in range(2):
+            sprite_h = len(sprite)
+            sprite_w = len(sprite[0]) if sprite else 0
+            for row_offset in range(sprite_h):
                 sr = ir - 1 + row_offset
                 if sr < 0 or sr >= rows:
                     continue
                 sprite_row = sprite[row_offset]
-                for dx in range(3):
-                    sc = ic - 1 + dx
+                for dx in range(sprite_w):
+                    sc = ic - sprite_w // 2 + dx
                     if sc < 0 or sc >= cols:
                         continue
                     cell = sprite_row[dx]
                     if cell is None:
                         continue
-                    fg, bg = cell
-                    if row_offset == 0 and dx == 1 and self._tick % 4 < 2:
+                    if len(cell) == 3:
+                        fg, bg, char = cell
+                    else:
+                        fg, bg = cell
+                        char = "\u2580"
+                    # Head decoration pulse
+                    if row_offset == 0 and dx == sprite_w // 2 and self._tick % 4 < 2:
                         fg = (min(fg[0] + 30, 255), min(fg[1] + 30, 255), min(fg[2] + 30, 255))
+                    # Eye glow
+                    if row_offset == 1 and dx in (1, sprite_w - 2) and self._tick % 8 < 2:
+                        fg = (min(fg[0] + 40, 255), min(fg[1] + 40, 255), min(fg[2] + 40, 255))
                     stamps[(sr, sc)] = (
-                        "\u2580",
+                        char,
                         f"rgb({fg[0]},{fg[1]},{fg[2]}) on rgb({bg[0]},{bg[1]},{bg[2]})",
                     )
 
