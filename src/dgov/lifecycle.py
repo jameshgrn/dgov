@@ -331,6 +331,7 @@ def _setup_and_launch_agent(
             backend.send_keys(pane_id, [key])
         backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
     else:
+        force_headless = not use_interactive and agent_def.interactive
         launch_cmd = build_launch_command(
             agent_id,
             rewritten_prompt,
@@ -339,6 +340,7 @@ def _setup_and_launch_agent(
             slug=slug,
             extra_flags=extra_flags,
             registry=registry,
+            force_headless=force_headless,
         )
         wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)

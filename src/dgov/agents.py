@@ -583,11 +583,15 @@ def build_launch_command(
     slug: str = "task",
     extra_flags: str = "",
     registry: dict[str, AgentDef] | None = None,
+    force_headless: bool = False,
 ) -> str:
     """Build the shell command to launch an agent with an optional prompt.
 
     For positional and option transports, writes prompt to a temp file
     and builds a shell snippet that reads+deletes it (avoids escaping issues).
+
+    When *force_headless* is True, the prompt is always embedded in the
+    command even if the agent is marked interactive (used for workers).
 
     Returns the full shell command string. For send-keys transport agents,
     returns just the base command (prompt delivered separately via tmux buffer).
@@ -612,7 +616,7 @@ def build_launch_command(
     if not prompt:
         return agent.no_prompt_command or base
 
-    if agent.interactive and prompt:
+    if agent.interactive and prompt and not force_headless:
         return agent.no_prompt_command or base
 
     if agent.prompt_transport == "send-keys":
