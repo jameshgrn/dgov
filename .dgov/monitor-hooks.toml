@@ -1,8 +1,0 @@
-[[hooks.hook]]
-pattern = "AUTO_COMPLETE_ME"
-kind = "auto_complete"
-
-[[hooks.hook]]
-pattern = "CONFIRM_PROMPT"
-kind = "nudge"
-keystroke = "fixed\n"
