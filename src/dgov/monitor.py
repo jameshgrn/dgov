@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dgov.agents import load_registry
 from dgov.backend import get_backend
 from dgov.done import _has_new_commits
-from dgov.agents import load_registry
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.openrouter import chat_completion_local_first
 from dgov.persistence import (
