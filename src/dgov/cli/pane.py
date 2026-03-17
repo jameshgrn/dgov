@@ -765,6 +765,34 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
         sys.exit(1)
 
 
+@pane.command("retry-or-escalate")
+@click.argument("slug")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Git repo root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+@click.option("--max-retries", "-n", default=2, help="Retries before escalating (default: 2)")
+@click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
+def pane_retry_or_escalate(slug, project_root, session_root, max_retries, permission_mode):
+    """Retry a failed pane, auto-escalating after N retries at the same tier."""
+    from dgov.recovery import retry_or_escalate
+
+    result = retry_or_escalate(
+        project_root,
+        slug,
+        session_root=session_root,
+        max_retries=max_retries,
+        permission_mode=permission_mode,
+    )
+    click.echo(json.dumps(result, indent=2))
+    if "error" in result:
+        sys.exit(1)
+
+
 @pane.command("resume")
 @click.argument("slug")
 @click.option(

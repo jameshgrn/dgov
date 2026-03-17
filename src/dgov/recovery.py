@@ -1,4 +1,4 @@
-"""Pane recovery: escalate and retry."""
+"""Pane recovery: escalate, retry, and bounded retry with auto-escalation."""
 
 from __future__ import annotations
 
@@ -14,6 +14,17 @@ from dgov.persistence import (
     update_pane_state,
 )
 from dgov.retry import retry_context
+
+# Default escalation chain: maps an agent to the next-tier agent.
+# Terminal agents (codex) map to themselves — no further escalation.
+ESCALATION_CHAIN: dict[str, str] = {
+    "pi": "claude",
+    "hunter": "claude",
+    "gemini": "claude",
+    "claude": "codex",
+    "codex": "codex",
+    "cursor": "codex",
+}
 
 
 def escalate_worker_pane(
@@ -153,3 +164,102 @@ def retry_worker_pane(
         "attempt": attempt,
         "pane_id": new_pane.pane_id,
     }
+
+
+def retry_or_escalate(
+    project_root: str,
+    slug: str,
+    session_root: str | None = None,
+    max_retries: int = 2,
+    permission_mode: str = "bypassPermissions",
+) -> dict:
+    """Retry a failed pane, auto-escalating after *max_retries* at the same tier.
+
+    Tracks ``retry_count`` in pane metadata. When the count reaches
+    *max_retries*, the pane is escalated to the next agent in
+    ``ESCALATION_CHAIN`` (or the agent's own ``retry_escalate_to``
+    if configured) and the counter resets.
+
+    Returns ``{'action': 'retry'|'escalate', 'agent': ..., 'retry_count': N, ...}``.
+    """
+    session_root = os.path.abspath(session_root or project_root)
+    rec = get_pane(session_root, slug)
+    if not rec:
+        return {"error": f"Pane not found: {slug}"}
+
+    current_agent = rec.get("agent", "unknown")
+    retry_count = int(rec.get("retry_count", 0))
+
+    # Per-pane max_retries override takes priority
+    pane_max = rec.get("max_retries")
+    if pane_max is not None:
+        max_retries = int(pane_max)
+
+    if retry_count < max_retries:
+        # Retry with the same agent
+        result = retry_worker_pane(
+            project_root,
+            slug,
+            session_root=session_root,
+            permission_mode=permission_mode,
+        )
+        if result.get("error"):
+            return result
+
+        new_count = retry_count + 1
+        set_pane_metadata(session_root, result["new_slug"], retry_count=new_count)
+
+        return {
+            "action": "retry",
+            "agent": current_agent,
+            "retry_count": new_count,
+            "original_slug": slug,
+            "new_slug": result["new_slug"],
+        }
+
+    # Exhausted retries — escalate to next agent
+    # Check agent-level escalate_to first, then fall back to ESCALATION_CHAIN
+    next_agent = _resolve_escalation_target(current_agent, project_root)
+
+    if next_agent == current_agent:
+        return {
+            "error": f"Retries exhausted ({retry_count}/{max_retries}) "
+            f"and no escalation target for agent '{current_agent}'",
+        }
+
+    result = escalate_worker_pane(
+        project_root,
+        slug,
+        target_agent=next_agent,
+        session_root=session_root,
+        permission_mode=permission_mode,
+    )
+    if result.get("error"):
+        return result
+
+    # Reset retry_count on the new (escalated) pane
+    set_pane_metadata(session_root, result["new_slug"], retry_count=0)
+
+    return {
+        "action": "escalate",
+        "agent": next_agent,
+        "retry_count": 0,
+        "original_slug": slug,
+        "new_slug": result["new_slug"],
+        "from_agent": current_agent,
+    }
+
+
+def _resolve_escalation_target(current_agent: str, project_root: str) -> str:
+    """Determine the next agent for escalation.
+
+    Priority: agent's ``retry_escalate_to`` config > ``ESCALATION_CHAIN`` > same agent.
+    """
+    from dgov.agents import load_registry
+
+    registry = load_registry(project_root or None)
+    agent_def = registry.get(current_agent)
+    if agent_def and agent_def.retry_escalate_to:
+        return agent_def.retry_escalate_to
+
+    return ESCALATION_CHAIN.get(current_agent, current_agent)
