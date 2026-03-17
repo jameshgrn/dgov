@@ -96,8 +96,6 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
         },
         color=214,
-        send_keys_ready_delay_ms=5000,
-        interactive=True,
         done_strategy=DoneStrategy(type="api"),
     ),
     "gemini": AgentDef(
