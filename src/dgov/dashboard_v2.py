@@ -555,6 +555,3 @@ def run_dashboard_v2(
                 pidfile.unlink(missing_ok=True)
             except OSError:
                 pass
-
-            except OSError:
-                pass
