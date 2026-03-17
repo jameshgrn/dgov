@@ -690,6 +690,7 @@ def _commit_worktree(pane_record: dict) -> dict:
             i += 1
             if i < len(entries):
                 filepath = entries[i].decode()
+            continue
         if filepath and os.path.basename(filepath) not in skip:
             files_to_add.append(filepath)
         i += 1
