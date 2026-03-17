@@ -996,17 +996,27 @@ def pane_logs(slug, project_root, session_root, tail):
 @SESSION_ROOT_OPTION
 @click.option("--tail", "-n", default=50, help="Number of lines from end")
 def pane_output(slug, project_root, session_root, tail):
-    """Show clean worker output (prefers live screen capture for TUI agents)."""
+    """Show worker output (auto-routes: log for headless workers, capture for TUI)."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
+    from dgov.persistence import get_pane
     from dgov.status import capture_worker_output, tail_worker_log
 
     session_root = os.path.abspath(session_root or project_root)
-    # Prefer live screen capture (clean for TUI agents) over log file
-    text = capture_worker_output(project_root, slug, lines=tail, session_root=session_root)
-    if text is None:
-        # Pane dead or missing — fall back to log file
+    pane_record = get_pane(session_root, slug)
+    is_headless = not pane_record or pane_record.get("role", "worker") == "worker"
+
+    if is_headless:
+        # Headless workers: log file has clean output, capture may show empty shell
         text = tail_worker_log(session_root, slug, lines=tail)
+        if text is None:
+            text = capture_worker_output(project_root, slug, lines=tail, session_root=session_root)
+    else:
+        # TUI mode (lt-gov): live screen capture is cleaner than ANSI-laden logs
+        text = capture_worker_output(project_root, slug, lines=tail, session_root=session_root)
+        if text is None:
+            text = tail_worker_log(session_root, slug, lines=tail)
+
     if text is None:
         click.echo(json.dumps({"error": f"No output for: {slug}"}), err=True)
         sys.exit(1)
