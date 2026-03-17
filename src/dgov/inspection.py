@@ -96,7 +96,7 @@ def review_worker_pane(
     # Load events once, derive both counters from one pass
     from dgov.retry import _count_retries
 
-    events = read_events(session_root)
+    events = read_events(session_root, limit=500)
     retry_count = _count_retries(session_root, slug, events=events)
     auto_respond_count = sum(
         1 for ev in events if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug
