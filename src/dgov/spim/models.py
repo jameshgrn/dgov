@@ -14,6 +14,14 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 AGENT_STATES = frozenset({"idle", "watching", "proposing", "acting", "blocked", "done"})
+VALID_AGENT_TRANSITIONS = {
+    "idle": {"watching", "done"},
+    "watching": {"proposing", "acting", "blocked", "idle", "done"},
+    "proposing": {"watching", "acting", "blocked", "done"},
+    "acting": {"watching", "blocked", "done"},
+    "blocked": {"watching", "idle", "done"},
+    "done": set(),
+}
 CLAIM_STATUSES = frozenset({"pending", "accepted", "rejected", "blocked", "applied"})
 
 _CONN_CACHE: dict[tuple[str, int], sqlite3.Connection] = {}
@@ -108,17 +116,21 @@ def ensure_schema(db_path: str | Path) -> sqlite3.Connection:
     Path(db_file).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_file)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute(_CREATE_AGENTS_SQL)
-    conn.execute(_CREATE_EVENTS_SQL)
-    conn.execute(_CREATE_CLAIMS_SQL)
-    conn.execute(_CREATE_LOCKS_SQL)
-    conn.execute(_CREATE_DELTAS_SQL)
-    for statement in _CREATE_INDEXES_SQL:
-        conn.execute(statement)
-    conn.commit()
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute(_CREATE_AGENTS_SQL)
+        conn.execute(_CREATE_EVENTS_SQL)
+        conn.execute(_CREATE_CLAIMS_SQL)
+        conn.execute(_CREATE_LOCKS_SQL)
+        conn.execute(_CREATE_DELTAS_SQL)
+        for statement in _CREATE_INDEXES_SQL:
+            conn.execute(statement)
+        conn.commit()
+    except Exception:
+        conn.close()
+        raise
 
     with _CONN_LOCK:
         existing = _CONN_CACHE.get(key)
@@ -269,6 +281,15 @@ def update_agent(db_path: str | Path, agent_id: int, **fields: Any) -> None:
 
     def _do() -> None:
         conn = ensure_schema(db_path)
+        if "status" in fields:
+            row = conn.execute("SELECT status FROM agents WHERE id = ?", (agent_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown agent_id: {agent_id}")
+            current_status = str(row["status"])
+            new_status = fields["status"]
+            allowed_transitions = VALID_AGENT_TRANSITIONS.get(current_status, set())
+            if new_status not in allowed_transitions:
+                raise ValueError(f"Invalid transition from {current_status!r} to {new_status!r}")
         assignments = ", ".join(f"{field} = ?" for field in fields)
         cursor = conn.execute(
             f"UPDATE agents SET {assignments} WHERE id = ?",

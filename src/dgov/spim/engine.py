@@ -46,6 +46,7 @@ class SimEngine:
         self.lock_ttl = lock_ttl
         self._now_fn = now_fn
         self.lock_manager = RegionLockManager(self.db_path, now_fn=now_fn)
+        self._blocked_retry_count: dict[int, int] = {}
         models.ensure_schema(self.db_path)
 
     def observe(self, message: Observation) -> int:
@@ -104,7 +105,17 @@ class SimEngine:
         for claim in models.list_claims(self.db_path):
             if claim["status"] not in {"accepted", "blocked"}:
                 continue
-            processed += self._process_claim(claim)
+            claim_id = int(claim["claim_id"])
+            if claim["status"] == "blocked":
+                retries = self._blocked_retry_count.get(claim_id, 0)
+                if retries >= 5:
+                    continue
+            n = self._process_claim(claim)
+            processed += n
+            if n == 0:
+                self._blocked_retry_count[claim_id] = (
+                    self._blocked_retry_count.get(claim_id, 0) + 1
+                )
         return processed
 
     def run(self, *, ticks: int, sleep_seconds: float = 0.0) -> int:

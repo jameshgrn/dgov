@@ -65,7 +65,15 @@ class Governor:
             raise ValueError(f"Claim {claim_id} has already been applied and cannot be rejected")
 
         models.update_claim_status(self.db_path, claim_id, "rejected")
-        models.update_agent(self.db_path, int(claim["agent_id"]), status="done")
+        agent_id = int(claim["agent_id"])
+        other_claims = models.list_claims(self.db_path, agent_id=agent_id)
+        pending = [
+            c
+            for c in other_claims
+            if c["claim_id"] != claim_id and c["status"] in ("pending", "accepted")
+        ]
+        new_status = "idle" if pending else "done"
+        models.update_agent(self.db_path, agent_id, status=new_status)
         models.record_event(
             self.db_path,
             int(claim["agent_id"]),
