@@ -44,7 +44,11 @@ def classify_output(output: str) -> str:
 
     try:
         resp = chat_completion_local_first(messages, max_tokens=10, temperature=0)
-        choice = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip().lower()
+        choices = resp.get("choices") or []
+        if not choices:
+            return "unknown"
+        content = choices[0].get("message", {}).get("content") or ""
+        choice = content.strip().lower()
         if choice in {"working", "done", "stuck", "idle"}:
             return choice
         return "unknown"
