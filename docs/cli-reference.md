@@ -186,11 +186,20 @@ Retry a failed pane with a new attempt. Creates a new pane with an attempt suffi
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--project-root` | `-r` | string | `.` | Project root |
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--agent` | `-a` | string | `None` | Override agent for retry |
 | `--prompt` | `-p` | string | `None` | Override prompt for retry |
-| `--permission-mode` | `-m` | string | `acceptEdits` | Permission mode |
+| `--permission-mode` | `-m` | string | `bypassPermissions` | Permission mode |
+
+### dgov pane retry-or-escalate
+
+Retry a failed pane, auto-escalating after N retries at the same tier.
+
+**Arguments**: `SLUG`
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--max-retries` | `-n` | int | `2` | Retries before escalating |
+| `--permission-mode` | `-m` | string | `bypassPermissions` | Permission mode |
 
 ### dgov pane escalate
 
@@ -200,10 +209,8 @@ Re-dispatch a pane's task to a different (stronger) agent.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--project-root` | `-r` | string | `.` | Project root |
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
-| `--agent` | `-a` | string | `claude` | Agent to escalate to |
-| `--permission-mode`| `-m`| string | `acceptEdits` | Permission mode for the new agent |
+| `--agent` | `-a` | string | `None` | Agent to escalate to (default: registry default) |
+| `--permission-mode`| `-m`| string | `bypassPermissions` | Permission mode for the new agent |
 
 ### dgov pane resume
 
@@ -223,25 +230,17 @@ Re-launch an agent in an existing worktree (no new branch or worktree created).
 
 ## Pane communication
 
-### dgov pane interact
+### dgov pane message
 
-Send a message to a worker pane via tmux send-keys.
+Send text input directly to the agent's stdin. Backend-agnostic.
 
-**Arguments**: `SLUG`, `MESSAGE`
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/` |
+**Arguments**: `SLUG`, `TEXT`
 
 ### dgov pane respond
 
-Send a response to a worker pane. Alias for `interact`.
+Send a response to a worker pane via tmux `send-keys`.
 
 **Arguments**: `SLUG`, `MESSAGE`
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/` |
 
 ### dgov pane nudge
 
@@ -251,7 +250,6 @@ Nudge a worker: ask if done and parse a YES/NO response.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/` |
 | `--wait` | `-w` | int | `10` | Seconds to wait for response |
 
 ### dgov pane signal
@@ -259,10 +257,6 @@ Nudge a worker: ask if done and parse a YES/NO response.
 Manually signal a pane as done or failed.
 
 **Arguments**: `SLUG`, `SIGNAL_TYPE` (`done` or `failed`)
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/` |
 
 ---
 
@@ -301,46 +295,6 @@ Run an arbitrary command in a utility pane (no worktree created).
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--title` | `-t` | string | `None` | Pane title (defaults to command name) |
-| `--cwd` | `-c` | string | `.` | Working directory |
-
-### dgov pane lazygit
-
-Launch lazygit in a utility pane.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--cwd` | `-c` | string | `.` | Working directory |
-
-### dgov pane yazi
-
-Launch yazi in a utility pane.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--cwd` | `-c` | string | `.` | Working directory |
-
-### dgov pane htop
-
-Launch htop in a utility pane.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--cwd` | `-c` | string | `.` | Working directory |
-
-### dgov pane k9s
-
-Launch k9s in a utility pane.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--cwd` | `-c` | string | `.` | Working directory |
-
-### dgov pane top
-
-Launch btop in a utility pane.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
 | `--cwd` | `-c` | string | `.` | Working directory |
 
 ---

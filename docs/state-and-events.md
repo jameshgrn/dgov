@@ -22,6 +22,9 @@ Each record represents a worker pane and its current lifecycle state.
 | `created_at` | REAL | Unix timestamp of creation. |
 | `owns_worktree`| INTEGER | Whether dgov owns this worktree (bool stored as 0/1). |
 | `base_sha` | TEXT | The git commit hash the worker started from. |
+| `parent_slug` | TEXT | Slug of the parent pane (for LT-GOV workers). |
+| `tier_id` | TEXT | DAG tier identifier. |
+| `role` | TEXT | Pane role: `worker`, `governor`, or `lt-gov`. |
 | `state` | TEXT | Canonical state (see below). |
 | `metadata` | TEXT | JSON blob for extra fields (e.g., `max_retries`). |
 
@@ -31,13 +34,14 @@ State is managed through focused helper functions in `persistence.py` — there 
 
 | Function | Purpose |
 |----------|---------|
-| `_get_pane(session_root, slug)` | Retrieve a single pane record by slug. |
-| `_all_panes(session_root)` | Return all pane records as a list of dicts. |
-| `_add_pane(session_root, pane)` | Insert a `WorkerPane` dataclass into the database. |
-| `_remove_pane(session_root, slug)` | Delete a pane record by slug. |
-| `_update_pane_state(session_root, slug, new_state, force=False)` | Update state with transition validation. |
-| `_set_pane_metadata(session_root, slug, **kwargs)` | Update metadata fields (e.g., `max_retries`, `retried_from`). |
-| `_replace_all_panes(session_root, panes)` | Replace all records (test setup helper). |
+| `get_pane(session_root, slug)` | Retrieve a single pane record by slug. |
+| `all_panes(session_root)` | Return all pane records as a list of dicts. |
+| `list_panes_slim(session_root)` | List all panes with truncated prompt text (fast). |
+| `add_pane(session_root, pane)` | Insert a `WorkerPane` dataclass into the database. |
+| `remove_pane(session_root, slug)` | Delete a pane record by slug. |
+| `update_pane_state(session_root, slug, new_state, force=False)` | Update state with transition validation. |
+| `set_pane_metadata(session_root, slug, **kwargs)` | Update metadata fields (atomic). |
+| `replace_all_panes(session_root, panes)` | Replace all records (test setup helper). |
 
 ## Pane states
 
@@ -64,22 +68,21 @@ Illegal transitions raise `IllegalTransitionError(ValueError)`, which includes t
 
 ## Event journal
 
-The event journal is a dedicated `events` table in `.dgov/state.db`. Every significant state change writes a structured event.
+The event journal is a dedicated `events` table in `.dgov/state.db`. Every significant state change writes a structured event via `emit_event()`.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER | Primary key. |
-| `ts` | TEXT | ISO 8601 timestamp. |
+| `ts` | TEXT | ISO 8601 UTC timestamp. |
 | `event` | TEXT | Event type (e.g., `pane_created`). |
 | `pane` | TEXT | Slug of the associated pane. |
-| `agent` | TEXT | Agent ID. |
 | `data` | TEXT | JSON blob for event-specific metadata. |
 
-**Common event types:**
-- `pane_created`, `pane_done`, `pane_merged`, `pane_timed_out`.
-- `checkpoint_created`.
-- `review_fix_finding`, `review_fix_completed`.
-- `experiment_started`, `experiment_accepted`.
+**Event types (`VALID_EVENTS`):**
+- **Pane:** `pane_created`, `pane_done`, `pane_resumed`, `pane_timed_out`, `pane_merged`, `pane_merge_failed`, `pane_escalated`, `pane_superseded`, `pane_closed`, `pane_retry_spawned`, `pane_auto_retried`, `pane_blocked`, `pane_auto_responded`, `pane_circuit_breaker`.
+- **DAG:** `dag_started`, `dag_tier_started`, `dag_task_dispatched`, `dag_task_completed`, `dag_task_failed`, `dag_task_escalated`, `dag_tier_completed`, `dag_completed`, `dag_failed`.
+- **Mission:** `mission_pending`, `mission_running`, `mission_waiting`, `mission_reviewing`, `mission_merging`, `mission_completed`, `mission_failed`.
+- **Other:** `checkpoint_created`, `review_pass`, `review_fail`, `experiment_started`, `experiment_accepted`, `experiment_rejected`, `review_fix_started`, `review_fix_finding`, `review_fix_completed`, `merge_enqueued`, `merge_completed`, `yap_received`.
 
 ## Blame
 

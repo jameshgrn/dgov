@@ -6,30 +6,31 @@ dgov is a Python-based CLI tool designed to orchestrate AI coding agents. This p
 
 | Module | Purpose |
 |--------|---------|
-| `cli.py` | Entry point. Defines the Click command tree and flags. |
-| `lifecycle.py` | Core pane operations (create, close, merge, etc.). |
-| `status.py` | Status aggregation and list views. |
-| `inspection.py`| Inspecting pane state, diffs, and verdicts (review, diff, capture). |
-| `recovery.py` | Error recovery and state correction (retry, resume, prune). |
-| `persistence.py`| State management. Public API for SQLite state and events. |
-| `strategy.py` | Qwen 4B integration for task classification and slug generation. |
-| `waiter.py` | Poll/wait logic for workers. Done and blocked detection. |
+| `cli/` | Command-line interface split into command groups (pane, dag, etc.). |
+| `lifecycle.py` | Core pane operations (create, close, resume, and cleanup). |
+| `status.py` | Status aggregation, list views, and output capture. |
+| `inspection.py`| Inspecting pane state, diffs, and verdicts. |
+| `recovery.py` | Error recovery: retry, escalate, and auto-retry policy. |
+| `persistence.py`| SQLite state (panes, DAG runs, merge queue) and event journal. |
+| `dag.py` | DAG runner: topological sort, tier execution, and overlap detection. |
+| `yapper.py` | Conversational interface and task classification. |
+| `done.py` | Done detection signals and strategy resolution. |
+| `waiter.py` | Poll/wait logic for workers. |
 | `merger.py` | In-memory git merging, conflict resolution, and post-merge lint. |
-| `batch.py` | DAG tier computation and parallel task runner. |
-| `agents.py` | TOML-driven agent registry. Command builder for launching agents. |
+| `batch.py` | Batch spec execution (LEGACY - use dag.py). |
+| `agents.py` | TOML-driven agent registry and launch command builder. |
 | `backend.py` | `WorkerBackend` protocol for environmental abstraction. |
 | `tmux.py` | Low-level tmux command wrappers. |
 | `openrouter.py` | OpenRouter API client for model queries. |
-| `dashboard.py` | Live TUI showing pane status, events, and metrics. |
-| `experiment.py` | Sequential hypothesis testing loops and metric tracking. |
-| `retry.py` | Auto-retry engine and retry policy logic. |
+| `dashboard_v2.py`| Modern live TUI with pane focus and event stream. |
+| `experiment.py` | Iterative hypothesis testing loops and metric tracking. |
+| `retry.py` | Auto-retry engine and circuit breaker logic. |
 | `responder.py` | Auto-responder rules to unblock worker panes. |
 | `review_fix.py` | Two-phase automated code review and fix pipeline. |
 | `templates.py` | Prompt template substitution system. |
 | `blame.py` | File-to-agent attribution using git log and event data. |
-| `models.py` | Shared dataclasses (TaskSpec, MergeResult). |
 | `preflight.py` | Pre-dispatch validation and auto-fix logic. |
-| `state.py` | Status aggregation (panes, tunnel, kerberos). |
+| `terrain.py` | Local LLM (Qwen 4B) integration for offline classification. |
 
 ## Data flow
 

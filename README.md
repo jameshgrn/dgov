@@ -5,10 +5,77 @@ A meta harness for AI coding agents.
 A test harness runs tests. A meta harness runs the things that write the code. dgov sits above any CLI-based coding agent — Claude Code, Codex, Gemini, Cursor, Copilot, Cline, and others — and manages what they cannot manage about themselves: isolation, lifecycle, and integration.
 
 The problem is simple. AI coding agents edit files. When two agents edit the same repo at the same time, they collide. When an agent runs unsupervised, it stalls at permission prompts, drifts off-task, or silently fails. When it finishes, its changes sit on a branch that nobody reviews. dgov solves each of these problems through one mechanism: git worktrees governed by a uniform lifecycle.
-
 Each agent gets its own worktree. Each worktree gets its own branch. The governor — you, sitting on `main` — dispatches tasks, waits for completion, reviews diffs, and merges results. The agents write code. dgov tracks state, logs events, and attributes every change to the agent that made it.
 
-The harness is agent-agnostic (11 agents built in, any CLI tool added via TOML), backend-agnostic (tmux today, Docker and SSH tomorrow via a `WorkerBackend` protocol), and workflow-agnostic. Single tasks, batch DAGs, experiment loops, and review-fix pipelines all compose from four primitives: dispatch, wait, review, merge.
+## Lifecycle
+
+Panes follow a strict state machine enforced by the persistence layer. Transitions are validated to ensure consistency across the worker lifecycle.
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: dgov pane create
+    active --> done: task finished (commits or done-file)
+    active --> failed: agent crashed or exit-code file
+    active --> abandoned: tmux pane dead / no output
+    active --> escalated: dgov pane escalate
+    active --> timed_out: wait timeout reached
+    active --> closed: dgov pane close
+    active --> superseded: retried with fresh attempt
+
+    done --> reviewed_pass: dgov pane review (pass)
+    done --> reviewed_fail: dgov pane review (fail)
+    done --> merged: dgov pane merge
+    done --> merge_conflict: git merge failed
+
+    reviewed_pass --> merged: dgov pane merge
+    reviewed_pass --> merge_conflict: git merge failed
+
+    merge_conflict --> merged: manual fix + merge
+    merge_conflict --> escalated: re-dispatch fix task
+
+    failed --> escalated: dgov pane escalate
+    failed --> closed: dgov pane close
+
+    timed_out --> done: late finish detected
+    timed_out --> escalated: re-dispatch to stronger agent
+
+    merged --> closed: cleanup (automatic)
+    escalated --> closed: cleanup
+    superseded --> closed: cleanup
+    abandoned --> closed: cleanup
+
+    closed --> [*]
+```
+
+## Signal Flow
+
+The Governor and Workers communicate through three primary channels:
+
+1.  **State DB (SQLite):** Authoritative state (active, done, merged) and event journal.
+2.  **Filesystem (done signals):** Workers touch `.dgov/done/<slug>` on success or `.dgov/done/<slug>.exit` on failure. These are authoritative signals that override background detection.
+3.  **Tmux/Pseudo-terminal:** The governor captures worker output for stabilization detection and can send keystrokes/responses back to the agent via `dgov pane respond`.
+
+Done detection uses a prioritized fallback strategy:
+- **Authoritative:** Presence of a `.done` or `.done.exit` file.
+- **Inferred:** Git commits on the worker branch (30s grace period).
+- **Stabilization:** No output for N seconds (TUI agents).
+- **Liveness:** Tmux pane is dead or process is gone.
+
+## Yapper Interface
+
+The Yapper is a conversational front-end that classifies natural language into actionable dgov tasks.
+
+```bash
+dgov yapper "Fix the overflow bug in the footer using claude"
+```
+
+It classifies input into:
+- **COMMAND:** Dispatches a worker immediately.
+- **IDEA:** Noted in the event log for later.
+- **QUESTION:** Answers from the codebase or state DB.
+- **CHATTER:** Acknowledged without side effects.
+
+---
 
 ## Design
 
@@ -69,6 +136,7 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 | Command | Description |
 |---------|-------------|
 | `dgov pane create` | Create a worker pane (worktree + tmux + agent) |
+| `dgov pane util` | Run a command in a utility pane (no worktree) |
 | `dgov pane list` | List all panes with state, agent, duration |
 | `dgov pane wait` | Block until one or more panes finish |
 | `dgov pane wait-all` | Block until all active panes finish |
@@ -79,7 +147,9 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 | `dgov pane close` | Close a pane and clean up worktree (idempotent) |
 | `dgov pane resume` | Re-launch agent in existing worktree |
 | `dgov pane retry` | Fresh attempt with new worktree |
+| `dgov pane retry-or-escalate` | Retry with auto-escalation policy |
 | `dgov pane escalate` | Re-dispatch to a stronger agent |
+| `dgov pane classify` | Recommend an agent for a task |
 | `dgov pane output` | Clean ANSI-stripped log text |
 | `dgov pane capture` | Live tmux pane capture |
 | `dgov pane logs` | Raw persistent log (survives pane death) |
@@ -87,7 +157,9 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 | `dgov pane message` | Send text to a running worker |
 | `dgov pane respond` | Reply to an agent's prompt |
 | `dgov pane nudge` | Prod a stalled agent |
+| `dgov pane signal` | Manually signal a pane as done or failed |
 | `dgov pane prune` | Clean up stale pane records |
+| `dgov pane merge-request` | Enqueue a merge (used by LT-GOVs) |
 
 ### DAG runner
 

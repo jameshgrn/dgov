@@ -4,22 +4,62 @@ Managing worker panes is the primary function of the `dgov` CLI. This page docum
 
 ## State Machine
 
+Panes follow a strict state machine enforced by the persistence layer. Transitions are validated to ensure consistency across the worker lifecycle.
+
+```mermaid
+stateDiagram-v2
+    [*] --> active: dgov pane create
+    active --> done: task finished (commits or done-file)
+    active --> failed: agent crashed or exit-code file
+    active --> abandoned: tmux pane dead / no output
+    active --> escalated: dgov pane escalate
+    active --> timed_out: wait timeout reached
+    active --> closed: dgov pane close
+    active --> superseded: retried with fresh attempt
+
+    done --> reviewed_pass: dgov pane review (pass)
+    done --> reviewed_fail: dgov pane review (fail)
+    done --> merged: dgov pane merge
+    done --> merge_conflict: git merge failed
+
+    reviewed_pass --> merged: dgov pane merge
+    reviewed_pass --> merge_conflict: git merge failed
+
+    merge_conflict --> merged: manual fix + merge
+    merge_conflict --> escalated: re-dispatch fix task
+
+    failed --> escalated: dgov pane escalate
+    failed --> closed: dgov pane close
+
+    timed_out --> done: late finish detected
+    timed_out --> escalated: re-dispatch to stronger agent
+
+    merged --> closed: cleanup (automatic)
+    escalated --> closed: cleanup
+    superseded --> closed: cleanup
+    abandoned --> closed: cleanup
+
+    closed --> [*]
+```
+
 Panels progress through a well-defined set of states:
 
 | State | Description |
 |-------|-------------|
 | `active` | Pane is running, agent is processing tasks |
-| `done` | Task completed successfully (signal file or no new commits) |
+| `done` | Task completed successfully (signal file or new commits found) |
 | `failed` | Task failed with error condition |
-| `abandoned` | Task was explicitly abandoned by user |
+| `abandoned` | Task was explicitly abandoned by user or pane died without signal |
 | `timed_out` | Pane exceeded max duration without progress |
-| `closed` | Worktree and agent process have been removed |
+| `closed` | Worktree and agent process have been removed (terminal state) |
 | `escalated` | Task transferred to a stronger agent |
 | `superseded` | Pane replaced by a newer attempt (e.g., after retry) |
 | `merged` | Changes merged into main branch |
-| `reviewed` | Diff has been reviewed but not yet merged |
+| `reviewed_pass` | Diff has been reviewed and passed validation |
+| `reviewed_fail` | Diff has been reviewed and failed validation |
+| `merge_conflict` | Git merge failed due to conflicts |
 
-**Important**: A pane in `timed_out` state can transition to `done` or `merged` (e.g., if a late commit arrives). Every state change for a worker pane is validated against the `VALID_TRANSITIONS` table in `persistence.py`. This ensures that a pane cannot move, for example, from `merged` back to `active`. Illegal transitions raise `IllegalTransitionError`. Use `dgov pane signal <slug> done --force` to override if needed.
+**Important**: Every state change for a worker pane is validated against the `VALID_TRANSITIONS` table in `persistence.py`. This ensures that a pane cannot move, for example, from `merged` back to `active`. Illegal transitions raise `IllegalTransitionError`. Use `dgov pane signal <slug> done` to override if needed.
 
 ## Create
 
@@ -166,6 +206,14 @@ Re-dispatch a failed or timed-out task. Creates a new pane with a `-2` suffix an
 dgov pane retry fix-parser
 ```
 
+## Retry-or-Escalate
+
+Retry a failed pane, auto-escalating after N retries at the same tier.
+
+```bash
+dgov pane retry-or-escalate fix-parser --max-retries 2
+```
+
 ## Resume
 
 Re-launch an agent process in an existing worktree. Useful if the agent crashed or was manually killed. The worktree and all changes are preserved.
@@ -180,6 +228,14 @@ View the persistent log file for a specific worker pane.
 
 ```bash
 dgov pane logs fix-parser --tail 50
+```
+
+## Output
+
+Show clean worker output. Prefers live tmux capture for TUI agents, falls back to persistent log for dead panes.
+
+```bash
+dgov pane output fix-parser -n 50
 ```
 
 ## Close
@@ -207,13 +263,16 @@ Recommend an agent for a specific prompt without creating a pane.
 dgov pane classify "Add documentation to all functions in src/parser.py"
 ```
 
-## Interact and Respond
+## Message and Respond
 
-Send text input directly to the agent's stdin via tmux.
+Interact with a running worker pane.
 
 ```bash
-dgov pane interact fix-parser "Proceed with the refactor."
-dgov pane respond fix-parser "yes"
+# Send text to stdin (backend-agnostic)
+dgov pane message fix-parser "Proceed with the refactor"
+
+# Send keystrokes directly (tmux specific)
+dgov pane respond fix-parser "Enter"
 ```
 
 ## Nudge
