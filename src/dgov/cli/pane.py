@@ -221,6 +221,94 @@ def pane_create(
     click.echo(json.dumps(result, indent=2))
 
 
+@pane.command("batch")
+@click.argument("toml_file", type=click.Path(exists=True))
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+def pane_batch(toml_file, project_root, session_root):
+    """Dispatch multiple workers from a TOML file.
+
+    TOML format:
+
+    \b
+    [tasks.fix-parser]
+    agent = "pi"
+    prompt = "Fix the parser bug in..."
+    mode = "bypassPermissions"
+    """
+    import tomllib
+
+    from dgov.agents import get_default_agent, load_registry
+    from dgov.lifecycle import create_worker_pane
+
+    project_root = os.path.abspath(project_root)
+    registry = load_registry(project_root)
+    default_agent = get_default_agent(registry)
+
+    with open(toml_file, "rb") as f:
+        config = tomllib.load(f)
+
+    tasks = config.get("tasks", {})
+    if not tasks:
+        click.echo(json.dumps({"error": "No [tasks.*] sections found in TOML file"}), err=True)
+        sys.exit(1)
+
+    results = []
+    errors = []
+
+    for slug, task in tasks.items():
+        prompt = task.get("prompt")
+        if not prompt:
+            errors.append({"slug": slug, "error": "missing prompt"})
+            continue
+
+        agent = task.get("agent", default_agent)
+        if agent not in registry:
+            errors.append({"slug": slug, "error": f"unknown agent: {agent}"})
+            continue
+
+        mode = task.get("mode", "bypassPermissions")
+
+        try:
+            pane_obj = create_worker_pane(
+                project_root=project_root,
+                prompt=prompt,
+                agent=agent,
+                permission_mode=mode,
+                slug=slug,
+                session_root=session_root,
+            )
+            results.append(
+                {
+                    "slug": pane_obj.slug,
+                    "pane_id": pane_obj.pane_id,
+                    "agent": pane_obj.agent,
+                    "worktree": pane_obj.worktree_path,
+                    "branch": pane_obj.branch_name,
+                }
+            )
+        except (ValueError, RuntimeError) as exc:
+            errors.append({"slug": slug, "error": str(exc)})
+
+    summary = {
+        "dispatched": len(results),
+        "failed": len(errors),
+        "panes": results,
+    }
+    if errors:
+        summary["errors"] = errors
+
+    click.echo(json.dumps(summary, indent=2))
+    if errors:
+        sys.exit(1)
+
+
 @pane.command("close")
 @click.argument("slug", nargs=-1, required=True)
 @click.option(
