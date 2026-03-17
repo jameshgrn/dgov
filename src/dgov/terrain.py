@@ -344,6 +344,17 @@ def render_terrain(model: ErosionModel) -> Text:
     return text
 
 
+# Per-agent cute glyphs and colors for the terrain overlay
+_AGENT_GLYPHS: dict[str, tuple[str, str]] = {
+    "pi": ("\u273f", "bold cyan"),  # ✿ flower
+    "claude": ("\u25c8", "bold magenta"),  # ◈ gem
+    "codex": ("\u2726", "bold yellow"),  # ✦ 4-pointed star
+    "gemini": ("\u2727", "bold blue"),  # ✧ open star
+    "hunter": ("\u2663", "bold red"),  # ♣ club
+    "cursor": ("\u25c7", "bold white"),  # ◇ diamond outline
+}
+
+
 class AgentSim:
     """Lightweight agent-based model overlay for the terrain display.
 
@@ -471,18 +482,18 @@ class AgentSim:
             self._pos[slug] = [r, c]
             self._vel[slug] = [vr, vc]
 
-            # Glyph + style
+            # Glyph + style — cute per-agent icons
             ir, ic = int(round(r)), int(round(c))
             if role == "lt-gov":
-                glyph, color = "\u25c6", "bold magenta"
+                glyph, color = "\u265b", "bold magenta"  # ♛ crown
             elif state in ("done", "merged"):
-                glyph, color = "\u2713", "bold green"
+                glyph, color = "\u2665", "bold green"  # ♥ heart
             elif state == "failed":
-                # Blink: alternate glyph every other tick
-                glyph = "\u2717" if self._tick % 2 == 0 else " "
+                glyph = "\u2716" if self._tick % 2 == 0 else "\u00b7"  # ✖ / ·
                 color = "bold red"
             else:
-                glyph, color = "\u25cf", "bold white"  # filled circle
+                agent_name = ag.get("agent", "").split("-")[0]
+                glyph, color = _AGENT_GLYPHS.get(agent_name, ("\u25cf", "bold white"))
 
             stamps[(ir, ic)] = (glyph, color)
 
