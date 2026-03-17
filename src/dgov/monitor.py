@@ -34,12 +34,6 @@ logger = logging.getLogger(__name__)
 
 # Deterministic regex patterns for classification
 DETERMINISTIC_PATTERNS = {
-    "idle": [
-        r"\b(no[ \t]+work|[aA]waiting\s+input|pause[d]?|waiting\b|idling)\b",
-    ],
-    "done": [
-        r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
-    ],
     "failed": [
         r"\b(failed|error|exception|traceback|crash|panic|fatal)\b",
     ],
@@ -50,6 +44,12 @@ DETERMINISTIC_PATTERNS = {
     ],
     "committing": [
         r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
+    ],
+    "done": [
+        r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
+    ],
+    "idle": [
+        r"\b(no[ \t]+work|[aA]waiting\s+input|pause[d]?|waiting\b|idling)\b",
     ],
 }
 

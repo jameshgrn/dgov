@@ -1,0 +1,4 @@
+[[hooks.hook]]
+pattern = "CONFIRM_PROMPT"
+kind = "nudge"
+keystroke = "fixed\n"
