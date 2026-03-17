@@ -72,9 +72,11 @@ def poll_workers(project_root: str, session_root: str | None = None) -> list[dic
         else:
             classification = classify_output(output)
 
-        has_commits = _has_new_commits(
-            project_root, w.get("branch") or "", w.get("base_sha") or ""
-        )
+        # list_worker_panes doesn't include base_sha; fetch from raw pane record
+        raw = get_pane(session_root, slug)
+        base_sha = raw.get("base_sha", "") if raw else ""
+        branch = w.get("branch") or ""
+        has_commits = _has_new_commits(project_root, branch, base_sha)
 
         results.append(
             {

@@ -68,6 +68,7 @@ VALID_EVENTS = frozenset(
         "merge_completed",
         "yap_received",
         "pane_circuit_breaker",
+        "monitor_nudge",
     }
 )
 
