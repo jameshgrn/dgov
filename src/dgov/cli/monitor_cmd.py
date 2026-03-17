@@ -1,6 +1,7 @@
 """Monitor daemon CLI command."""
 
 import os
+import shlex
 
 import click
 
