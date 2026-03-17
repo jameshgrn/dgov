@@ -45,6 +45,7 @@ DETERMINISTIC_PATTERNS = {
     ],
     "done": [
         r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
+        r"[\u279c\u2714]\s+[\w\-\.]+\s+git:\([\w\-\.]+\)",  # shell prompt on branch
     ],
     "committing": [
         r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
@@ -191,12 +192,13 @@ def poll_workers(
         )
     )
 
-    active = [w for w in workers if w.get("state") == "active" and w.get("alive")]
+    active = [w for w in workers if w.get("state") == "active"]
     results = []
 
     for w in active:
         slug = w["slug"]
-        output = tail_worker_log(session_root, slug, lines=20)
+        alive = w.get("alive", False)
+        output = tail_worker_log(session_root, slug, lines=50)
 
         if not output:
             classification = "idle"
@@ -234,6 +236,7 @@ def poll_workers(
                 "agent": w.get("agent"),
                 "classification": classification,
                 "has_commits": has_commits,
+                "is_alive": alive,
                 "output_preview": output[:100] if output else "",
                 "hook_match": hook_info,
             }
@@ -303,6 +306,17 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     if not raw or raw.get("state") != "active":
         return None
 
+    # Handle stale workers (active but not alive)
+    if not worker.get("is_alive", True):
+        if worker.get("has_commits"):
+            _auto_complete(project_root, session_root, slug)
+            hist["last_action_at"] = time.time()
+            return "stale_auto_complete"
+        else:
+            _mark_idle_failed(project_root, session_root, slug, reason="stale_process")
+            hist["last_action_at"] = time.time()
+            return "stale_fail"
+
     # Handle waiting_input (not terminal, but needs notification)
     if classification == "waiting_input":
         if consecutive >= 3 and not hist.get("blocked_notified"):
@@ -324,13 +338,15 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
         return None
 
     # Terminal state rules only
-    if classification == "done" and consecutive >= 2:
-        _auto_complete(project_root, session_root, slug)
-        hist["last_action_at"] = time.time()
-        return "auto_complete"
+    if classification == "done":
+        # If we have commits, one 'done' is enough. If not, wait for 2.
+        if worker["has_commits"] or consecutive >= 2:
+            _auto_complete(project_root, session_root, slug)
+            hist["last_action_at"] = time.time()
+            return "auto_complete"
 
     # Proactive cleanup: if worker has commits but is idling, auto-complete it
-    if classification == "idle" and worker["has_commits"] and consecutive >= 2:
+    if classification == "idle" and worker["has_commits"]:
         _auto_complete(project_root, session_root, slug)
         hist["last_action_at"] = time.time()
         return "proactive_auto_complete"

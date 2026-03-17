@@ -200,8 +200,17 @@ class TestTakeAction:
         assert "working" in history["new-w"]["classifications"]
 
 
-class TestAutoComplete:
-    """Test _auto_complete() action."""
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
+    @patch("dgov.monitor._auto_complete")
+    def test_done_with_commits_acts_immediately(self, mock_complete, mock_get_pane):
+        from dgov.monitor import _take_action
+
+        worker = {"slug": "w1", "classification": "done", "has_commits": True, "is_alive": True}
+        # consecutive = 1 (current classification is 'done')
+        history = {"w1": {"classifications": [], "last_action_at": 0}}
+        action = _take_action("/tmp", "/tmp", worker, history)
+        assert action == "auto_complete"
+        mock_complete.assert_called_once()
 
     @patch("dgov.monitor.emit_event")
     @patch("dgov.monitor.update_pane_state")
@@ -301,3 +310,25 @@ class TestTakeActionBugFixes:
         action = _take_action("/tmp", "/tmp", worker, history)
         assert action == "blocked_event"
         mock_emit.assert_called_with("/tmp", "monitor_blocked", "w1", reason="waiting_input")
+
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
+    @patch("dgov.monitor._auto_complete")
+    def test_stale_worker_with_commits_auto_completes(self, mock_complete, mock_get_pane):
+        from dgov.monitor import _take_action
+
+        worker = {"slug": "w1", "classification": "idle", "has_commits": True, "is_alive": False}
+        history = {"w1": {"classifications": ["idle"], "last_action_at": 0}}
+        action = _take_action("/tmp", "/tmp", worker, history)
+        assert action == "stale_auto_complete"
+        mock_complete.assert_called_once()
+
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
+    @patch("dgov.monitor._mark_idle_failed")
+    def test_stale_worker_no_commits_fails(self, mock_fail, mock_get_pane):
+        from dgov.monitor import _take_action
+
+        worker = {"slug": "w1", "classification": "idle", "has_commits": False, "is_alive": False}
+        history = {"w1": {"classifications": ["idle"], "last_action_at": 0}}
+        action = _take_action("/tmp", "/tmp", worker, history)
+        assert action == "stale_fail"
+        mock_fail.assert_called_once()
