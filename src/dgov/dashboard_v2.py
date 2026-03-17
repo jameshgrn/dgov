@@ -43,6 +43,11 @@ def state_color(state: str) -> str:
         "escalated": "magenta",
         "superseded": "magenta",
         "closed": "dim",
+        "stuck": "bold red",
+        "waiting_input": "bold yellow",
+        "committing": "bold green",
+        "working": "yellow",
+        "idle": "dim",
     }.get(state, "white")
 
 
@@ -74,6 +79,7 @@ class DashboardState:
     post_exit_attach: str = ""
     preview_lines: list[str] = field(default_factory=list)
     preview_visible: bool = False
+    monitor_alive: bool = False
 
 
 def _get_branch(project_root: str) -> str:
@@ -106,7 +112,7 @@ def _get_branch_cached(project_root: str) -> str:
 
 
 def fetch_panes(state: DashboardState) -> None:
-    from dgov.persistence import read_events
+    from dgov.persistence import STATE_DIR, read_events
     from dgov.status import list_worker_panes, tail_worker_log
 
     try:
@@ -119,8 +125,25 @@ def fetch_panes(state: DashboardState) -> None:
         branch = _get_branch_cached(state.project_root)
         session_root = state.session_root or state.project_root
 
+        # Monitor status
+        monitor_status = {}
+        monitor_file = Path(session_root) / STATE_DIR / "monitor" / "status.json"
+        if monitor_file.is_file():
+            try:
+                monitor_status = _json.loads(monitor_file.read_text())
+            except (ValueError, OSError):
+                pass
+
+        # Merge monitor classifications into panes
+        monitor_workers = {w["slug"]: w for w in monitor_status.get("workers", [])}
+        for p in panes:
+            slug = p.get("slug", "")
+            if slug in monitor_workers:
+                p["monitor_classification"] = monitor_workers[slug].get("classification")
+                p["monitor_has_commits"] = monitor_workers[slug].get("has_commits")
+
         # Progress files
-        progress_dir = Path(session_root) / ".dgov" / "progress"
+        progress_dir = Path(session_root) / STATE_DIR / "progress"
         for p in panes:
             slug = p.get("slug", "")
             progress_file = progress_dir / f"{slug}.json"
@@ -143,7 +166,7 @@ def fetch_panes(state: DashboardState) -> None:
                     lines = [ln.strip() for ln in log_tail.splitlines() if ln.strip()]
                     p["activity"] = lines[-1] if lines else ""
 
-        events = read_events(session_root, limit=8)
+        events = read_events(session_root, limit=12)
 
         # Capture preview lines for the selected pane
         preview: list[str] = []
@@ -163,6 +186,9 @@ def fetch_panes(state: DashboardState) -> None:
             state.last_refresh = time.time()
             state.error = ""
             state.preview_lines = preview
+            # Add monitor health info to state for header
+            m_ts = monitor_status.get("timestamp", 0)
+            state.monitor_alive = (time.time() - m_ts < 45) if m_ts else False
 
     except Exception as exc:
         with state.lock:
@@ -231,7 +257,7 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
     table.add_column("Slug", ratio=3, no_wrap=True)
     table.add_column("Agent", width=8, no_wrap=True)
-    table.add_column("State", width=14, no_wrap=True)
+    table.add_column("State", width=16, no_wrap=True)
     table.add_column("Summary", ratio=4)
 
     sorted_panes = _sort_panes_hierarchical(panes, selected)
@@ -240,24 +266,35 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
         pstate = p.get("state", "active")
         activity = p.get("activity", "")
         summary = p.get("summary", str(activity)[:60]) or ""
-        color = state_color(pstate)
         is_selected = orig_idx == selected
         role = p.get("role", "worker")
+
+        # Use monitor classification if available for active panes
+        m_class = p.get("monitor_classification")
+        display_state = pstate
+        if pstate == "active" and m_class:
+            display_state = m_class
+
+        color = state_color(display_state)
+        style = f"bold {color}" if is_selected else color
 
         if role == "lt-gov":
             prefix = "\u25c6 " if is_selected else "  \u25c7 "
             style = "bold magenta"
         elif indent_level > 0:
             prefix = "  \u2514\u2500 " if is_last_child else "  \u251c\u2500 "
-            style = f"bold {color}" if is_selected else color
         else:
             prefix = "\u25b8 " if is_selected else "  "
-            style = f"bold {color}" if is_selected else color
 
         slug_display = Text(f"{prefix}{p.get('slug', '')}")
         agent = Text(p.get("agent", "?"))
         dur = fmt_duration(int(p.get("duration_s", 0)))
-        state_text = Text(f"{pstate} {dur}", style=color)
+
+        # Commit indicator
+        has_commits = p.get("monitor_has_commits", False)
+        commit_tag = " [bold green]C[/bold green]" if has_commits else ""
+
+        state_text = Text.from_markup(f"[{color}]{display_state} {dur}[/{color}]{commit_tag}")
         summary_text = Text(str(summary)[:60])
 
         table.add_row(slug_display, agent, state_text, summary_text, style=style)
@@ -273,8 +310,12 @@ def _create_dashboard_layout() -> Layout:
         Layout(name="footer", size=3),
     )
     layout["body"].split_column(
-        Layout(name="workers"),
-        Layout(name="preview", size=7, visible=False),
+        Layout(name="workers", ratio=2),
+        Layout(name="bottom", ratio=1),
+    )
+    layout["body"]["bottom"].split_row(
+        Layout(name="events", ratio=1),
+        Layout(name="preview", ratio=1, visible=False),
     )
     return layout
 
@@ -287,12 +328,14 @@ def _build_layout(
 ) -> Layout:
     with state.lock:
         panes = list(state.panes)
+        events = list(state.events)
         branch = state.branch
         last_refresh = state.last_refresh
         error = state.error
         selected = state.selected
         preview_lines = list(state.preview_lines)
         preview_visible = state.preview_visible
+        monitor_alive = state.monitor_alive
 
     ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
     header_text = Text()
@@ -300,10 +343,34 @@ def _build_layout(
         f" DGOV v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {len(panes)} workers"
     )
 
+    mon_color = "green" if monitor_alive else "red"
+    header_text.append(" \u2502 MON: ", style="dim")
+    header_text.append("\u25cf", style=mon_color)
+
     if error:
         header_text.append(f"  err: {error}", style="red")
 
     table = _build_worker_table(panes, selected)
+
+    # Build events list
+    ev_text = Text()
+    for ev in reversed(events):
+        kind = ev.get("kind", "")
+        slug = ev.get("slug", "")
+        # Highlight monitor actions
+        if kind.startswith("monitor_"):
+            style = "bold cyan"
+        elif kind in ("done", "merged", "closed"):
+            style = "green"
+        elif kind in ("failed", "error"):
+            style = "red"
+        else:
+            style = "dim"
+
+        ev_time = time.strftime("%H:%M", time.localtime(ev.get("timestamp", 0)))
+        ev_text.append(f"{ev_time} ", style="dim")
+        ev_text.append(f"{kind:<18} ", style=style)
+        ev_text.append(f"{slug}\n")
 
     footer = Text(
         " q:quit  j/k:\u2191\u2193  Enter:view  r:refresh  m:merge  x:close  p:preview",
@@ -327,15 +394,15 @@ def _build_layout(
     layout["header"].update(Panel(header_text, height=3))
     layout["footer"].update(Panel(footer, height=3))
     layout["body"]["workers"].update(worker_panel)
-    layout["body"]["preview"].update(
+    layout["body"]["bottom"]["events"].update(Panel(ev_text, title="Events", border_style="dim"))
+    layout["body"]["bottom"]["preview"].update(
         Panel(
             preview_text,
             title=preview_title,
             border_style="cyan",
-            height=7,
         )
     )
-    layout["body"]["preview"].visible = show_preview
+    layout["body"]["bottom"]["preview"].visible = show_preview
     return layout
 
 

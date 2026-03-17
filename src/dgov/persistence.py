@@ -71,6 +71,7 @@ VALID_EVENTS = frozenset(
         "monitor_nudge",
         "monitor_auto_complete",
         "monitor_idle_timeout",
+        "monitor_blocked",
     }
 )
 

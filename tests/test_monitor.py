@@ -24,14 +24,16 @@ class TestClassifyOutput:
         from dgov.monitor import classify_output
 
         mock_llm.return_value = {"choices": [{"message": {"content": "done"}}]}
-        assert classify_output("git commit -m 'fix bug'") == "done"
+        # Use a string that doesn't hit DETERMINISTIC_PATTERNS
+        assert classify_output("I have completed the requested changes and verified them.") == "done"
 
     @patch("dgov.monitor.chat_completion_local_first")
     def test_classify_stuck(self, mock_llm):
         from dgov.monitor import classify_output
 
         mock_llm.return_value = {"choices": [{"message": {"content": "stuck"}}]}
-        assert classify_output("Error: module not found\nError: module not found") == "stuck"
+        # Use a string that doesn't hit DETERMINISTIC_PATTERNS
+        assert classify_output("I am trying to find the issue but I keep looking at the same files.") == "stuck"
 
     @patch("dgov.monitor.chat_completion_local_first")
     def test_classify_idle(self, mock_llm):

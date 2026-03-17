@@ -203,9 +203,12 @@ def poll_workers(
         else:
             classification = classify_output(output, hooks)
 
-        # list_worker_panes doesn't include base_sha; fetch from raw pane record
-        raw = get_pane(session_root, slug)
-        base_sha = raw.get("base_sha", "") if raw else ""
+        # list_worker_panes now includes base_sha; if not, we fallback to get_pane
+        base_sha = w.get("base_sha", "")
+        if not base_sha:
+            raw = get_pane(session_root, slug)
+            base_sha = raw.get("base_sha", "") if raw else ""
+
         branch = w.get("branch") or ""
         has_commits = _has_new_commits(project_root, branch, base_sha)
 
@@ -221,10 +224,9 @@ def poll_workers(
             }
             classification = "hook_match"
             # Persist to metadata so dgov status can see it (only if changed)
-            if raw:
-                last_match = raw.get("metadata", {}).get("last_hook_match")
-                if last_match != hook_info:
-                    set_pane_metadata(session_root, slug, last_hook_match=hook_info)
+            last_match = w.get("metadata", {}).get("last_hook_match")
+            if last_match != hook_info:
+                set_pane_metadata(session_root, slug, last_hook_match=hook_info)
 
         results.append(
             {
@@ -244,20 +246,17 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     """Evaluate history and take automated action if rules match.
 
     Only terminal states (done, stuck, idle) trigger remediation.
-    Intermediate states (working, waiting_input, committing) are passive.
+    Intermediate states (working, waiting_input, committing) are passive,
+    but waiting_input can trigger a blocked event.
     """
     slug = worker["slug"]
     classification = worker["classification"]
 
     # Initialize history entry early so cooldown applies to all actions
     if slug not in history:
-        history[slug] = {"classifications": [], "last_action_at": 0.0}
+        history[slug] = {"classifications": [], "last_action_at": 0.0, "blocked_notified": False}
 
     hist = history[slug]
-
-    # Cooldown: skip if action was taken recently (applies to hook actions too)
-    if time.time() - hist["last_action_at"] < 60:
-        return None
 
     # Handle hook-based actions first
     if classification == "hook_match" and worker.get("hook_match"):
@@ -271,20 +270,19 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
                 message=hook_data.get("message"),
                 keystroke=hook_data.get("keystroke"),
             )
+            hist["last_action_at"] = time.time()
             return "hook_nudge"
         if kind == "fail":
             _mark_idle_failed(project_root, session_root, slug, reason="hook_fail")
+            hist["last_action_at"] = time.time()
             return "hook_fail"
         if kind == "auto_complete":
             _auto_complete(project_root, session_root, slug)
+            hist["last_action_at"] = time.time()
             return "hook_auto_complete"
         # If it's a state override, treat it as that state for default rules below
         if kind in {"done", "stuck", "idle", "working", "waiting_input", "committing"}:
             classification = kind
-
-    # Skip remediation for non-terminal states
-    if classification in {"working", "waiting_input", "committing", "unknown"}:
-        return None
 
     hist["classifications"].append(classification)
 
@@ -303,6 +301,26 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     # Re-check state from DB to avoid TOCTOU race
     raw = get_pane(session_root, slug)
     if not raw or raw.get("state") != "active":
+        return None
+
+    # Handle waiting_input (not terminal, but needs notification)
+    if classification == "waiting_input":
+        if consecutive >= 3 and not hist.get("blocked_notified"):
+            emit_event(session_root, "monitor_blocked", slug, reason="waiting_input")
+            hist["blocked_notified"] = True
+            return "blocked_event"
+        return None
+
+    # Reset blocked notification if state changed
+    if classification != "waiting_input":
+        hist["blocked_notified"] = False
+
+    # Skip remediation for non-terminal states
+    if classification in {"working", "committing", "unknown"}:
+        return None
+
+    # Cooldown: skip if action was taken recently
+    if time.time() - hist["last_action_at"] < 60:
         return None
 
     # Terminal state rules only

@@ -275,6 +275,7 @@ def list_worker_panes(
             "current_command": cmd,
             "worktree_path": p.get("worktree_path"),
             "branch": p.get("branch_name"),
+            "base_sha": p.get("base_sha", ""),
             "prompt": p.get("prompt", "")[:80],
             "role": p.get("role", "worker"),
             "parent_slug": p.get("parent_slug", ""),

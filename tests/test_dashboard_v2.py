@@ -453,4 +453,4 @@ class TestLayoutRendering:
         updated = _build_layout(state, term_width=99, term_height=13, layout=layout)
 
         assert updated is layout
-        assert layout["body"]["preview"].visible is True
+        assert layout["body"]["bottom"]["preview"].visible is True
