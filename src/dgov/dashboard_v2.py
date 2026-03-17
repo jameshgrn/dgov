@@ -34,7 +34,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _STARTUP_TIME = time.time()
-_UI_REFRESH_PER_SECOND = 4
+_UI_REFRESH_PER_SECOND = 2
 _INPUT_POLL_INTERVAL = 0.05
 _MIN_TERRAIN_WIDTH = 100
 _MIN_TERRAIN_HEIGHT = 14
@@ -274,10 +274,29 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
     return table
 
 
+def _create_dashboard_layout() -> Layout:
+    layout = Layout(name="root")
+    layout.split_column(
+        Layout(name="header", size=3),
+        Layout(name="body"),
+        Layout(name="footer", size=3),
+    )
+    layout["body"].split_column(
+        Layout(name="main_body"),
+        Layout(name="preview", size=7, visible=False),
+    )
+    layout["body"]["main_body"].split_row(
+        Layout(name="workers", ratio=3),
+        Layout(name="terrain", ratio=1, visible=False),
+    )
+    return layout
+
+
 def _build_layout(
     state: DashboardState,
     term_width: int | None = None,
     term_height: int | None = None,
+    layout: Layout | None = None,
 ) -> Layout:
     with state.lock:
         panes = list(state.panes)
@@ -304,15 +323,6 @@ def _build_layout(
         " q:quit  j/k:\u2191\u2193  Enter:attach  r:refresh  m:merge  x:close  p:preview",
         style="dim",
     )
-
-    layout = Layout()
-    layout.split_column(
-        Layout(Panel(header_text, height=3), name="header", size=3),
-        Layout(name="body"),
-        Layout(Panel(footer, height=3), name="footer", size=3),
-    )
-
-    body = layout["body"]
     worker_panel = Panel(table, title="Workers", border_style="blue")
 
     if term_width is None or term_height is None:
@@ -339,47 +349,29 @@ def _build_layout(
 
     show_preview = preview_visible and bool(preview_lines) and bool(selected_slug)
 
-    if show_preview:
-        preview_text = Text("\n".join(preview_lines))
-        preview_panel = Panel(
+    preview_text = Text("\n".join(preview_lines)) if show_preview else Text("")
+    preview_title = f"Output: {selected_slug}" if selected_slug else "Output"
+    terrain_renderable = terrain if terrain is not None else Text("")
+
+    if layout is None:
+        layout = _create_dashboard_layout()
+
+    layout["header"].update(Panel(header_text, height=3))
+    layout["footer"].update(Panel(footer, height=3))
+    layout["body"]["main_body"]["workers"].update(worker_panel)
+    layout["body"]["main_body"]["terrain"].update(
+        Panel(terrain_renderable, title="Terrain", border_style="green")
+    )
+    layout["body"]["preview"].update(
+        Panel(
             preview_text,
-            title=f"Output: {selected_slug}",
+            title=preview_title,
             border_style="cyan",
             height=7,
         )
-        main_body = Layout(name="main_body")
-        if show_terrain:
-            main_body.split_row(
-                Layout(worker_panel, name="workers", ratio=3),
-                Layout(
-                    Panel(terrain, title="Terrain", border_style="green"),
-                    name="terrain",
-                    ratio=1,
-                ),
-            )
-        else:
-            main_body.split_row(
-                Layout(worker_panel, name="workers"),
-            )
-        body.split_column(
-            main_body,
-            Layout(preview_panel, name="preview", size=7),
-        )
-    else:
-        if show_terrain:
-            body.split_row(
-                Layout(worker_panel, name="workers", ratio=3),
-                Layout(
-                    Panel(terrain, title="Terrain", border_style="green"),
-                    name="terrain",
-                    ratio=1,
-                ),
-            )
-        else:
-            body.split_row(
-                Layout(worker_panel, name="workers"),
-            )
-
+    )
+    layout["body"]["main_body"]["terrain"].visible = show_terrain
+    layout["body"]["preview"].visible = show_preview
     return layout
 
 
@@ -436,7 +428,7 @@ def run_dashboard_v2(
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
     pidfile = _acquire_dashboard_lock(session_root)
-    console = Console()
+    console = Console(force_terminal=sys.stdout.isatty())
     is_tty = sys.stdin.isatty()
 
     state = DashboardState(
@@ -462,9 +454,16 @@ def run_dashboard_v2(
             old_settings = None
             is_tty = False
 
+    layout = _create_dashboard_layout()
+
     def _render_dashboard() -> Layout:
         size = console.size
-        return _build_layout(state, term_width=size.width, term_height=size.height)
+        return _build_layout(
+            state,
+            term_width=size.width,
+            term_height=size.height,
+            layout=layout,
+        )
 
     try:
         with Live(
@@ -472,7 +471,7 @@ def run_dashboard_v2(
             auto_refresh=True,
             get_renderable=_render_dashboard,
             refresh_per_second=_UI_REFRESH_PER_SECOND,
-            vertical_overflow="crop",
+            transient=False,
         ) as live:
             while not state.stop_event.is_set():
                 if not is_tty:
