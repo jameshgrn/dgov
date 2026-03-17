@@ -185,22 +185,25 @@ def run_monitor(
 
     try:
         while True:
-            workers = poll_workers(project_root, session_root)
-            actions = []
+            try:
+                workers = poll_workers(project_root, session_root)
+                actions = []
 
-            for w in workers:
-                action = _take_action(project_root, session_root, w, history)
-                if action:
-                    actions.append({"slug": w["slug"], "action": action})
+                for w in workers:
+                    action = _take_action(project_root, session_root, w, history)
+                    if action:
+                        actions.append({"slug": w["slug"], "action": action})
 
-            status = {
-                "timestamp": time.time(),
-                "workers": workers,
-                "actions": actions,
-            }
+                status = {
+                    "timestamp": time.time(),
+                    "workers": workers,
+                    "actions": actions,
+                }
 
-            with open(monitor_dir / "status.json", "w") as f:
-                json.dump(status, f, indent=2)
+                with open(monitor_dir / "status.json", "w") as f:
+                    json.dump(status, f, indent=2)
+            except Exception:
+                logger.warning("Monitor tick failed", exc_info=True)
 
             if dry_run:
                 return
