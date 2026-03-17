@@ -270,9 +270,16 @@ class TestClassifyDeterministic:
         output = "I have committed the changes. Task is done."
         assert _classify_deterministic(output) == "done"
 
+    def test_stuck_regex(self):
+        from dgov.monitor import _classify_deterministic
+
+        assert _classify_deterministic("Error: module not found") == "stuck"
+        assert _classify_deterministic("Exception in thread main") == "stuck"
+        assert _classify_deterministic("Panic! at the disco") == "stuck"
+
 
 class TestTakeActionBugFixes:
-    """Test _take_action() bug fixes from monitor-bogs."""
+    """Test _take_action() bug fixes and new features."""
 
     @patch("dgov.monitor.get_pane", return_value={"state": "active"})
     @patch("dgov.monitor._auto_complete")
@@ -283,3 +290,14 @@ class TestTakeActionBugFixes:
         history = {"w1": {"classifications": ["done", "done"], "last_action_at": 0}}
         action = _take_action("/tmp", "/tmp", worker, history)
         assert action == "auto_complete"
+
+    @patch("dgov.monitor.emit_event")
+    @patch("dgov.monitor.get_pane", return_value={"state": "active"})
+    def test_blocked_event_after_three_waiting_input(self, mock_get_pane, mock_emit):
+        from dgov.monitor import _take_action
+
+        worker = {"slug": "w1", "classification": "waiting_input", "has_commits": False}
+        history = {"w1": {"classifications": ["waiting_input", "waiting_input"], "last_action_at": 0}}
+        action = _take_action("/tmp", "/tmp", worker, history)
+        assert action == "blocked_event"
+        mock_emit.assert_called_with("/tmp", "monitor_blocked", "w1", reason="waiting_input")

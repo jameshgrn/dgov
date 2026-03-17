@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Deterministic regex patterns for classification
 DETERMINISTIC_PATTERNS = {
-    "failed": [
+    "stuck": [
         r"\b(failed|error|exception|traceback|crash|panic|fatal)\b",
     ],
     "waiting_input": [
