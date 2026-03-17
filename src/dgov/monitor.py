@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
 from dgov.done import _has_new_commits
+from dgov.agents import load_registry
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.openrouter import chat_completion_local_first
 from dgov.persistence import (
@@ -349,8 +350,6 @@ def _nudge_stuck(
     agent_id = pane.get("agent", "")
     role = pane.get("role", "worker")
     if role == "worker" and agent_id:
-        from dgov.agents import load_registry
-
         registry = load_registry(project_root)
         agent_def = registry.get(agent_id)
         if agent_def and agent_def.interactive:
