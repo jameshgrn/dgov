@@ -3,6 +3,16 @@
 from __future__ import annotations
 
 import pytest
+from rich.console import Console
+from rich.text import Text
+
+
+def _render_dashboard_text(state, width: int, height: int) -> str:
+    from dgov.dashboard_v2 import _build_layout
+
+    console = Console(record=True, force_terminal=True, width=width, height=height)
+    console.print(_build_layout(state, term_width=width, term_height=height))
+    return console.export_text()
 
 
 @pytest.mark.unit
@@ -174,3 +184,77 @@ class TestWorkerTable:
         ]
         table = _build_worker_table(panes, 1)
         assert table.row_count == 2
+
+
+@pytest.mark.unit
+class TestLayoutRendering:
+    def test_dashboard_text_is_visible(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "processing tiles",
+                    "duration_s": 125,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+        )
+
+        output = _render_dashboard_text(state, width=120, height=16)
+
+        assert "DGOV v" in output
+        assert "worker-a" in output
+        assert "processing tiles" in output
+        assert "q:quit" in output
+
+    def test_terrain_hidden_when_terminal_too_short(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "processing tiles",
+                    "duration_s": 125,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            terrain_text=Text("terrain ridge"),
+        )
+
+        output = _render_dashboard_text(state, width=120, height=12)
+
+        assert "worker-a" in output
+        assert "Terrain" not in output
+        assert "terrain ridge" not in output
+
+    def test_terrain_visible_when_terminal_has_room(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "processing tiles",
+                    "duration_s": 125,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            terrain_text=Text("terrain ridge"),
+        )
+
+        output = _render_dashboard_text(state, width=120, height=20)
+
+        assert "Terrain" in output
+        assert "terrain ridge" in output

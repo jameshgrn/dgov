@@ -34,6 +34,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _STARTUP_TIME = time.time()
+_UI_REFRESH_PER_SECOND = 4
+_INPUT_POLL_INTERVAL = 0.05
+_MIN_TERRAIN_WIDTH = 100
+_MIN_TERRAIN_HEIGHT = 14
 
 
 def state_color(state: str) -> str:
@@ -204,7 +208,11 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
     return table
 
 
-def _build_layout(state: DashboardState) -> Layout:
+def _build_layout(
+    state: DashboardState,
+    term_width: int | None = None,
+    term_height: int | None = None,
+) -> Layout:
     with state.lock:
         panes = list(state.panes)
         branch = state.branch
@@ -239,11 +247,24 @@ def _build_layout(state: DashboardState) -> Layout:
     body = layout["body"]
     worker_panel = Panel(table, title="Workers", border_style="blue")
 
-    try:
-        term_width = os.get_terminal_size().columns
-    except OSError:
-        term_width = 80
-    if terrain is not None and term_width >= 100:
+    if term_width is None or term_height is None:
+        try:
+            size = os.get_terminal_size()
+            if term_width is None:
+                term_width = size.columns
+            if term_height is None:
+                term_height = size.lines
+        except OSError:
+            term_width = 80 if term_width is None else term_width
+            term_height = 24 if term_height is None else term_height
+
+    show_terrain = (
+        terrain is not None
+        and term_width >= _MIN_TERRAIN_WIDTH
+        and term_height >= _MIN_TERRAIN_HEIGHT
+    )
+
+    if show_terrain:
         body.split_row(
             Layout(worker_panel, name="workers", ratio=3),
             Layout(
@@ -314,23 +335,26 @@ def run_dashboard_v2(
             old_settings = None
             is_tty = False
 
+    def _render_dashboard() -> Layout:
+        size = console.size
+        return _build_layout(state, term_width=size.width, term_height=size.height)
+
     try:
         with Live(
-            _build_layout(state),
             console=console,
-            refresh_per_second=4,
-            auto_refresh=False,
+            auto_refresh=True,
+            get_renderable=_render_dashboard,
+            refresh_per_second=_UI_REFRESH_PER_SECOND,
+            screen=is_tty,
+            vertical_overflow="crop",
         ) as live:
             while not state.stop_event.is_set():
-                live.update(_build_layout(state))
-                live.refresh()
-
                 if not is_tty:
                     time.sleep(0.25)
                     continue
 
                 # Key handling with select
-                rlist, _, _ = select.select([sys.stdin], [], [], 0.05)
+                rlist, _, _ = select.select([sys.stdin], [], [], _INPUT_POLL_INTERVAL)
                 if not rlist:
                     continue
 
@@ -340,11 +364,14 @@ def run_dashboard_v2(
                 elif ch == "j":
                     with state.lock:
                         state.selected = min(state.selected + 1, max(0, len(state.panes) - 1))
+                    live.refresh()
                 elif ch == "k":
                     with state.lock:
                         state.selected = max(0, state.selected - 1)
+                    live.refresh()
                 elif ch == "r":
                     state.force_refresh.set()
+                    live.refresh()
                 elif ch == "\r" or ch == "\n":
                     # Attach to selected worker's tmux window
                     with state.lock:
@@ -378,6 +405,7 @@ def run_dashboard_v2(
                             _execute_action(state, "merge", slug)
                             state.force_refresh.set()
                         live.start()
+                        live.refresh()
                 elif ch == "x":
                     with state.lock:
                         panes = list(state.panes)
@@ -401,6 +429,7 @@ def run_dashboard_v2(
                             _execute_action(state, "close", slug)
                             state.force_refresh.set()
                         live.start()
+                        live.refresh()
                 elif ch == "a":
                     # Alias for Enter — attach to worker window
                     with state.lock:
