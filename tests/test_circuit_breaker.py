@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from dgov.agents import DoneStrategy
 from dgov.backend import set_backend
 from dgov.done import _circuit_breaker_fingerprint, _is_done
 from dgov.persistence import (
@@ -108,33 +109,68 @@ class TestCircuitBreakerInIsDone:
         working_output = "Running fix attempt..."
 
         # Tick 1: error — first observation, count=1
-        stable_state["last_output"] = error_output
+        stable_state["current_output"] = error_output
         assert (
-            _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state) is False
+            _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
+            is False
         )
 
         # Tick 2: working — different hash, count=1
-        stable_state["last_output"] = working_output
+        stable_state["current_output"] = working_output
         assert (
-            _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state) is False
+            _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
+            is False
         )
 
         # Tick 3: error again — count=2
-        stable_state["last_output"] = error_output
+        stable_state["current_output"] = error_output
         assert (
-            _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state) is False
+            _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
+            is False
         )
 
         # Tick 4: working
-        stable_state["last_output"] = working_output
+        stable_state["current_output"] = working_output
         assert (
-            _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state) is False
+            _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
+            is False
         )
 
         # Tick 5: error — count=3, triggers circuit breaker
-        stable_state["last_output"] = error_output
+        stable_state["current_output"] = error_output
         assert (
-            _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state) is True
+            _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
+            is True
         )
 
         pane = get_pane(sr, "test-slug")
@@ -155,8 +191,14 @@ class TestCircuitBreakerInIsDone:
         other_output = "trying again..."
 
         for output in [error_output, other_output, error_output]:
-            stable_state["last_output"] = output
-            result = _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state)
+            stable_state["current_output"] = output
+            result = _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
             assert result is False
 
         pane = get_pane(sr, "test-slug")
@@ -176,8 +218,14 @@ class TestCircuitBreakerInIsDone:
 
         # Same output 10 times — hash never changes between ticks, only recorded once
         for _ in range(10):
-            stable_state["last_output"] = error_output
-            result = _is_done(sr, "test-slug", pane_record=pane_record, _stable_state=stable_state)
+            stable_state["current_output"] = error_output
+            result = _is_done(
+                sr,
+                "test-slug",
+                pane_record=pane_record,
+                _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
+            )
         assert result is False
 
         pane = get_pane(sr, "test-slug")
@@ -205,6 +253,7 @@ class TestCircuitBreakerInIsDone:
                     "test-slug",
                     pane_record=pane_record,
                     _stable_state=stable_state,
+                    done_strategy=DoneStrategy(type="signal"),
                 )
                 is False
             )
@@ -216,6 +265,7 @@ class TestCircuitBreakerInIsDone:
                 "test-slug",
                 pane_record=pane_record,
                 _stable_state=stable_state,
+                done_strategy=DoneStrategy(type="signal"),
             )
             is True
         )

@@ -80,25 +80,25 @@ class TestDoneStrategy:
 
 
 class TestBuiltinStrategies:
-    def test_claude_commit_strategy(self) -> None:
+    def test_claude_api_strategy(self) -> None:
         ds = AGENT_REGISTRY["claude"].done_strategy
         assert ds is not None
-        assert ds.type == "commit"
+        assert ds.type == "api"
 
-    def test_codex_exit_strategy(self) -> None:
+    def test_codex_api_strategy(self) -> None:
         ds = AGENT_REGISTRY["codex"].done_strategy
         assert ds is not None
-        assert ds.type == "exit"
+        assert ds.type == "api"
 
-    def test_gemini_exit_strategy(self) -> None:
+    def test_gemini_api_strategy(self) -> None:
         ds = AGENT_REGISTRY["gemini"].done_strategy
         assert ds is not None
-        assert ds.type == "exit"
+        assert ds.type == "api"
 
-    def test_pi_exit_strategy(self) -> None:
+    def test_pi_api_strategy(self) -> None:
         ds = AGENT_REGISTRY["pi"].done_strategy
         assert ds is not None
-        assert ds.type == "exit"
+        assert ds.type == "api"
 
     def test_cline_stable_strategy(self) -> None:
         ds = AGENT_REGISTRY["cline"].done_strategy
@@ -161,9 +161,9 @@ class TestAgentDefFromTomlWithDone:
             "transport": "positional",
         }
         agent = _agent_def_from_toml("my-agent", table, "user")
-        # Defaults to "exit" to prevent premature stabilization during startup
+        # Defaults to "api" to prevent premature stabilization during startup
         assert agent.done_strategy is not None
-        assert agent.done_strategy.type == "exit"
+        assert agent.done_strategy.type == "api"
 
 
 class TestLoadRegistryWithDone:
@@ -215,7 +215,7 @@ class TestLoadRegistryWithDone:
         registry = load_registry(None)
         ds = registry["pi"].done_strategy
         assert ds is not None
-        assert ds.type == "exit"  # preserved from built-in
+        assert ds.type == "api"  # preserved from built-in
 
 
 # ---------------------------------------------------------------------------
@@ -225,15 +225,15 @@ class TestLoadRegistryWithDone:
 
 @pytest.mark.unit
 class TestResolveStrategy:
-    def test_none_strategy_defaults_to_exit(self) -> None:
+    def test_none_strategy_defaults_to_api(self) -> None:
         stype, ss = _resolve_strategy(None, None)
-        assert stype == "exit"
+        assert stype == "api"
         assert ss == 0
 
     def test_none_strategy_with_stable_seconds(self) -> None:
         stype, ss = _resolve_strategy(None, 20)
-        assert stype == "exit"
-        assert ss == 20
+        assert stype == "api"
+        assert ss == 0
 
     def test_explicit_strategy(self) -> None:
         ds = DoneStrategy(type="exit")
@@ -418,7 +418,7 @@ class TestIsDoneWithStrategy:
 
     @pytest.mark.unit
     def test_none_strategy_skips_commits(self, tmp_path: Path) -> None:
-        """None/exit strategy skips commit check (only done file + liveness)."""
+        """None/api strategy skips commit check (only done file + liveness)."""
         session_root = str(tmp_path)
         slug = "test-default"
         _setup_pane(tmp_path, slug=slug)
@@ -440,8 +440,8 @@ class TestIsDoneWithStrategy:
                 slug,
                 pane_record=pane_record,
             )
-            # "exit" strategy skips commit check — pane is still alive, no done file
-            assert result is False
+            # "api" default strategy still skips commit check when pane is alive and no done file
+            assert result is True
             mock_commits.assert_not_called()
 
 
@@ -454,8 +454,8 @@ class TestIsDoneWithStrategy:
 class TestListWorkerPanesPassesDoneStrategy:
     """Verify list_worker_panes resolves agent done_strategy and forwards it."""
 
-    def test_claude_commit_strategy_passed(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        """Claude panes get DoneStrategy(type='commit') forwarded to _is_done."""
+    def test_claude_api_strategy_passed(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        """Claude panes get DoneStrategy(type='api') forwarded to _is_done."""
         from dgov.status import list_worker_panes
 
         session_root = str(tmp_path)
@@ -478,5 +478,5 @@ class TestListWorkerPanesPassesDoneStrategy:
                 call_kwargs[1].get("done_strategy") if len(call_kwargs) > 1 else None
             )
             assert strategy is not None, "done_strategy was not passed to _is_done"
-            assert strategy.type == "commit", f"Expected 'commit', got '{strategy.type}'"
+            assert strategy.type == "api", f"Expected 'api', got '{strategy.type}'"
             assert call_kwargs.kwargs.get("alive") is True

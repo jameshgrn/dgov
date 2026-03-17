@@ -191,8 +191,8 @@ def _is_done(
 
     pane_id = pane_record.get("pane_id", "")
 
-    # Signal 2: new commits on the branch — skipped for "exit" and "stable" strategies
-    if stype not in ("exit", "stable"):
+    # Signal 2: new commits on the branch — skipped for "exit", "stable", and "api" strategies
+    if stype not in ("exit", "stable", "api"):
         project_root = pane_record.get("project_root", "")
         branch_name = pane_record.get("branch_name", "")
         base_sha = pane_record.get("base_sha", "")
