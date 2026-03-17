@@ -252,7 +252,8 @@ def _setup_and_launch_agent(
     hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
 
     # 4b. Install pre-merge-commit hook to block branch integration in worktrees
-    _install_worker_hooks(worktree_path)
+    if owns_worktree:
+        _install_worker_hooks(worktree_path)
 
     # 5. Auto-structure pi prompts
     if agent_id == "pi" and not skip_auto_structure:
