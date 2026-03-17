@@ -175,7 +175,7 @@ def _mark_idle_failed(project_root: str, session_root: str, slug: str) -> None:
     """Mark an idle worker as failed."""
     update_pane_state(session_root, slug, "failed", force=True)
     set_pane_metadata(session_root, slug, monitor_reason="idle_timeout")
-    emit_event(session_root, "pane_done", slug, reason="monitor_idle_timeout")
+    emit_event(session_root, "monitor_idle_timeout", slug, reason="monitor_idle_timeout")
     logger.info("Monitor: timed out idle worker %s", slug)
 
 
