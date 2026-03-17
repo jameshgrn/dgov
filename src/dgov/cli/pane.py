@@ -4,11 +4,23 @@ from __future__ import annotations
 
 import json
 import os
+import os as _os
 import sys
 
 import click
 
 from dgov.cli import SESSION_ROOT_OPTION
+
+
+def _autocorrect_roots(
+    project_root: str, session_root: str | None = None
+) -> tuple[str, str | None]:
+    dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
+    if dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
+        project_root = dgov_pr
+    if dgov_pr and session_root and "/.dgov/worktrees/" in _os.path.abspath(session_root):
+        session_root = dgov_pr
+    return project_root, session_root
 
 
 def _fmt_duration(seconds: int) -> str:
@@ -103,12 +115,7 @@ def pane_create(
     parent,
 ):
     """Create a worker pane: worktree + tmux + agent."""
-    import os as _os
-
-    # Auto-correct for LT-GOV sub-workers in worktrees
-    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
-    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
-        project_root = _dgov_pr
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import get_default_agent, load_registry
     from dgov.lifecycle import create_worker_pane
@@ -249,6 +256,8 @@ def pane_batch(toml_file, project_root, session_root):
     prompt = "Fix the parser bug in..."
     mode = "bypassPermissions"
     """
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     import tomllib
 
     from dgov.agents import get_default_agent, load_registry
@@ -329,12 +338,7 @@ def pane_batch(toml_file, project_root, session_root):
 @click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
 def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
-    import os as _os
-
-    # Auto-correct for LT-GOV sub-workers in worktrees
-    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
-    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
-        project_root = _dgov_pr
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.lifecycle import close_worker_pane
 
@@ -377,12 +381,7 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
 
     Merge the worktree branch for the given pane.
     """
-    import os as _os
-
-    # Auto-correct for LT-GOV sub-workers in worktrees
-    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
-    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
-        project_root = _dgov_pr
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.merger import merge_worker_pane
 
@@ -434,6 +433,8 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
 )
 def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close a worker pane in one step."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.inspection import review_worker_pane
     from dgov.merger import merge_worker_pane
 
@@ -495,12 +496,7 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     2. New commits on the worker branch beyond base_sha.
     3. Output stabilization (TUI agents that stay open).
     """
-    import os as _os
-
-    # Auto-correct for LT-GOV sub-workers in worktrees
-    _dgov_pr = _os.environ.get("DGOV_PROJECT_ROOT")
-    if _dgov_pr and "/.dgov/worktrees/" in _os.path.abspath(project_root):
-        project_root = _dgov_pr
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.status import list_worker_panes
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
@@ -554,6 +550,8 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
 @click.option("--stable", "-s", default=15, help="Seconds of stable output before declaring done")
 def pane_wait_all(project_root, session_root, timeout, poll, stable):
     """Wait for ALL worker panes to finish. Prints each as it completes."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.status import list_worker_panes
     from dgov.waiter import PaneTimeoutError, wait_all_worker_panes
 
@@ -617,6 +615,8 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 )
 def pane_merge_all(project_root, session_root, resolve, squash, rebase):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.merger import merge_worker_pane
     from dgov.status import list_worker_panes
 
@@ -686,6 +686,8 @@ def pane_merge_all(project_root, session_root, resolve, squash, rebase):
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Show last output line")
 def pane_list(project_root, session_root, as_json, verbose):
     """List all worker panes with live status."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
@@ -731,6 +733,8 @@ def pane_list(project_root, session_root, as_json, verbose):
 @SESSION_ROOT_OPTION
 def pane_prune(project_root, session_root):
     """Remove stale pane entries (dead pane + no worktree)."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.status import prune_stale_panes
 
     pruned = prune_stale_panes(project_root, session_root=session_root)
@@ -760,6 +764,8 @@ def pane_classify(prompt):
 @click.option("--lines", "-n", default=30, help="Number of lines to capture")
 def pane_capture(slug, project_root, session_root, lines):
     """Capture the last N lines of a worker pane's output."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.status import capture_worker_output
 
     output = capture_worker_output(project_root, slug, lines, session_root=session_root)
@@ -782,6 +788,8 @@ def pane_capture(slug, project_root, session_root, lines):
 @click.option("--full", is_flag=True, help="Show complete diff (not just stat)")
 def pane_review(slug, project_root, session_root, full):
     """Preview a worker pane's changes before merging."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.inspection import review_worker_pane
 
     result = review_worker_pane(project_root, slug, session_root=session_root, full=full)
@@ -804,6 +812,8 @@ def pane_review(slug, project_root, session_root, full):
 @click.option("--name-only", is_flag=True, help="Show changed file names only")
 def pane_diff(slug, project_root, session_root, stat, name_only):
     """Show diff for a worker pane's branch vs base."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.inspection import diff_worker_pane
 
     result = diff_worker_pane(
@@ -833,6 +843,8 @@ def pane_diff(slug, project_root, session_root, stat, name_only):
 )
 def pane_escalate(slug, project_root, session_root, agent, permission_mode):
     """Re-dispatch to a stronger agent."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.agents import get_default_agent, load_registry
     from dgov.recovery import escalate_worker_pane
 
@@ -866,6 +878,8 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
 @click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
 def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode):
     """Retry a failed pane with a new attempt."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.recovery import retry_worker_pane
 
     result = retry_worker_pane(
@@ -895,6 +909,8 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
 @click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
 def pane_retry_or_escalate(slug, project_root, session_root, max_retries, permission_mode):
     """Retry a failed pane, auto-escalating after N retries at the same tier."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.recovery import retry_or_escalate
 
     result = retry_or_escalate(
@@ -924,6 +940,8 @@ def pane_retry_or_escalate(slug, project_root, session_root, max_retries, permis
 @click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
 def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode):
     """Re-launch agent in an existing worktree."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.lifecycle import resume_worker_pane
 
     result = resume_worker_pane(
@@ -952,6 +970,8 @@ def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode
 @click.option("--tail", "-n", default=None, type=int, help="Show last N lines")
 def pane_logs(slug, project_root, session_root, tail):
     """Show persistent log for a pane."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     session_root = os.path.abspath(session_root or project_root)
     log_file = os.path.join(session_root, ".dgov", "logs", f"{slug}.log")
     if not os.path.exists(log_file):
@@ -977,6 +997,8 @@ def pane_logs(slug, project_root, session_root, tail):
 @click.option("--tail", "-n", default=50, help="Number of lines from end")
 def pane_output(slug, project_root, session_root, tail):
     """Show clean worker output (prefers live screen capture for TUI agents)."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.status import capture_worker_output, tail_worker_log
 
     session_root = os.path.abspath(session_root or project_root)
@@ -1020,6 +1042,8 @@ def pane_respond(slug, message, session_root):
 @SESSION_ROOT_OPTION
 def pane_message(slug, text, project_root, session_root):
     """Send a message to a running worker pane."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.backend import get_backend
     from dgov.persistence import get_pane
 
@@ -1063,6 +1087,8 @@ def pane_nudge(slug, session_root, wait):
 @SESSION_ROOT_OPTION
 def pane_merge_request(slug, project_root, session_root):
     """Submit a merge request to the queue (used by LT-GOVs)."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.persistence import emit_event, enqueue_merge, get_pane
 
     session_root_abs = os.path.abspath(session_root or project_root)

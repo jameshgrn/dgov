@@ -12,6 +12,7 @@ import click
 
 from dgov.agents import detect_installed_agents
 from dgov.cli import SESSION_ROOT_OPTION
+from dgov.cli.pane import _autocorrect_roots
 
 
 def _scaffold_dgov_dirs(root: Path) -> None:
@@ -45,6 +46,8 @@ def _scaffold_dgov_dirs(root: Path) -> None:
 @click.option("--branch", "-b", default=None, help="Expected branch name")
 def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
     """Run pre-flight checks before dispatch."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.agents import get_default_agent, load_registry
 
     if agent is None:
@@ -77,6 +80,8 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
 @SESSION_ROOT_OPTION
 def status(project_root, session_root):
     """Get full dgov status as JSON."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
@@ -114,6 +119,8 @@ def rebase(project_root, onto):
     Stashes dirty changes, rebases onto upstream (or main), and pops stash.
     On conflict: aborts rebase and restores working tree.
     """
+    project_root, _ = _autocorrect_roots(project_root)
+
     from dgov.inspection import rebase_governor
 
     result = rebase_governor(project_root, onto=onto)
@@ -138,6 +145,8 @@ def rebase(project_root, onto):
 @click.option("--lines", "-L", default=None, help="Line range for line-level blame (e.g. 10-20)")
 def blame(file_path, project_root, session_root, show_all, agent, line_level, lines):
     """Show which agent/pane last touched a file."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     if lines or line_level:
         from dgov.blame import blame_lines
 
@@ -186,6 +195,8 @@ def blame(file_path, project_root, session_root, show_all, agent, line_level, li
 )
 def list_agents(project_root):
     """List available agents and which are installed."""
+    project_root, _ = _autocorrect_roots(project_root)
+
     from dgov.agents import load_registry
 
     registry = load_registry(project_root)
@@ -226,6 +237,8 @@ def version_cmd():
 @SESSION_ROOT_OPTION
 def stats(project_root, session_root):
     """Show pane and agent statistics."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     from dgov.metrics import compute_stats
 
     project_root = os.path.abspath(project_root)
@@ -247,6 +260,8 @@ def stats(project_root, session_root):
 @click.option("--pane", is_flag=True, help="Launch dashboard in a tmux split pane")
 def dashboard(project_root, session_root, refresh, pane):
     """Launch live terminal dashboard."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
     if pane:
         import subprocess
 
@@ -283,6 +298,8 @@ def terrain_cmd(refresh):
 )
 def init_cmd(project_root):
     """Initialize a new dgov project: scaffold .dgov/ and write config."""
+    project_root, _ = _autocorrect_roots(project_root)
+
     root = Path(project_root).resolve()
     config_path = root / ".dgov" / "config.toml"
 
@@ -324,6 +341,8 @@ def init_cmd(project_root):
 )
 def doctor_cmd(project_root):
     """Run diagnostics on the dgov environment."""
+    project_root, _ = _autocorrect_roots(project_root)
+
     import platform
     import shutil
 
