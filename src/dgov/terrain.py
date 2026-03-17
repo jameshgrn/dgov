@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import random
 
@@ -19,6 +20,14 @@ _AZ = math.radians(315)
 _LIGHT_X = math.cos(_ALT) * math.sin(_AZ)
 _LIGHT_Y = -math.cos(_ALT) * math.cos(_AZ)  # row increases downward
 _LIGHT_Z = math.sin(_ALT)
+
+
+def _spawn_position_from_slug(slug: str, rows: int, cols: int) -> tuple[float, float]:
+    """Return the deterministic spawn position used for agents and terrain events."""
+    digest = hashlib.md5(slug.encode()).digest()
+    col = float((digest[0] + digest[1] * 256) % max(cols - 4, 1) + 2)
+    row = float((digest[2] + digest[3] * 256) % max(rows - 2, 1) + 1)
+    return row, col
 
 
 class ErosionModel:
@@ -40,8 +49,7 @@ class ErosionModel:
         self.m = m
         self.n = n
         self.uplift = uplift
-
-        rng = random.Random(seed)
+        self._rng = random.Random(seed)
 
         # Random base [0.25, 0.65] + center-high bias so terrain drains to all edges.
         grid: list[list[float]] = []
@@ -51,7 +59,7 @@ class ErosionModel:
             for c in range(width):
                 edge_dist = min(r, height - 1 - r, c, width - 1 - c)
                 edge_bias = max(0.0, min(1.0, edge_dist / max_edge_dist))
-                row.append(rng.uniform(0.25, 0.65) + 0.35 * edge_bias)
+                row.append(self._rng.uniform(0.25, 0.65) + 0.35 * edge_bias)
             grid.append(row)
 
         # 2 passes of 3x3 box blur
@@ -156,6 +164,77 @@ class ErosionModel:
                     row[c] += u
 
         self._apply_boundary_drains(h)
+
+    def terrain_event(self, event_type: str, row: int, col: int, intensity: float = 1.0) -> None:
+        """Apply a localized terrain perturbation around an interior cell."""
+        if not (0 <= row < self.height_count and 0 <= col < self.width):
+            raise ValueError(
+                f"terrain_event position out of bounds: row={row}, col={col}, "
+                f"size={self.height_count}x{self.width}"
+            )
+
+        event_specs = {
+            "uplift": (5, 0.08),
+            "erode": (3, -0.06),
+            "deposit": (3, 0.04),
+            "tremor": (4, 0.02),
+        }
+        if event_type not in event_specs:
+            raise ValueError(f"Unknown terrain event type: {event_type!r}")
+
+        radius, base_amplitude = event_specs[event_type]
+        sigma_sq = max((radius / 2.0) ** 2, 1e-9)
+
+        row_min = max(1, row - radius)
+        row_max = min(self.height_count - 2, row + radius)
+        col_min = max(1, col - radius)
+        col_max = min(self.width - 2, col + radius)
+
+        for nr in range(row_min, row_max + 1):
+            for nc in range(col_min, col_max + 1):
+                dist_sq = float((nr - row) ** 2 + (nc - col) ** 2)
+                if dist_sq > radius * radius:
+                    continue
+                weight = math.exp(-dist_sq / (2.0 * sigma_sq))
+                if event_type == "tremor":
+                    delta = self._rng.uniform(-1.0, 1.0) * base_amplitude * intensity * weight
+                else:
+                    delta = base_amplitude * intensity * weight
+                self.height[nr][nc] = max(0.0, min(2.0, self.height[nr][nc] + delta))
+                if event_type == "erode":
+                    self.area[nr][nc] += weight * intensity
+
+        self._apply_boundary_drains(self.height)
+
+
+class EventTranslator:
+    """Translate dgov persistence events into terrain perturbations."""
+
+    def __init__(self) -> None:
+        self._last_ts = ""
+
+    def translate(self, event: dict) -> tuple[str, float] | None:
+        ts = str(event.get("ts", ""))
+        if not ts or ts <= self._last_ts:
+            return None
+
+        self._last_ts = ts
+        mapping = {
+            "pane_created": ("uplift", 1.0),
+            "pane_done": ("erode", 1.2),
+            "pane_merged": ("erode", 1.2),
+            "pane_closed": ("deposit", 0.8),
+            "pane_timed_out": ("deposit", 0.8),
+            "pane_circuit_breaker": ("deposit", 1.5),
+            "mission_failed": ("deposit", 1.5),
+            "dag_failed": ("deposit", 1.5),
+            "checkpoint_created": ("tremor", 0.5),
+            "pane_escalated": ("uplift", 0.6),
+            "pane_retry_spawned": ("uplift", 0.6),
+            "review_pass": ("erode", 0.4),
+            "review_fail": ("deposit", 0.6),
+        }
+        return mapping.get(str(event.get("event", "")))
 
 
 _Q = 8  # quantization step — snaps RGB to 32 levels, reduces unique styles per frame
@@ -298,11 +377,7 @@ class AgentSim:
         for ag in agents:
             slug = ag.get("slug", "")
             if slug and slug not in self._pos:
-                import hashlib
-
-                h = hashlib.md5(slug.encode()).digest()
-                c = float((h[0] + h[1] * 256) % max(cols - 4, 1) + 2)
-                r = float((h[2] + h[3] * 256) % max(rows - 2, 1) + 1)
+                r, c = _spawn_position_from_slug(slug, rows, cols)
                 self._pos[slug] = [r, c]
                 self._vel[slug] = [0.0, 0.0]
 

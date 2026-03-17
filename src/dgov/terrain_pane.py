@@ -11,7 +11,14 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from dgov.terrain import AgentSim, ErosionModel, overlay_stamps, render_terrain
+from dgov.terrain import (
+    AgentSim,
+    ErosionModel,
+    EventTranslator,
+    _spawn_position_from_slug,
+    overlay_stamps,
+    render_terrain,
+)
 
 _PANEL_BORDER_WIDTH = 2
 _PANEL_BORDER_HEIGHT = 2
@@ -68,6 +75,7 @@ def run_terrain(refresh: float = 0.5) -> None:
     agents_cache: list[dict] = []
     agents_last_read: float = 0.0
     sim = AgentSim()
+    translator = EventTranslator()
 
     def _make_model(w: int, h: int) -> ErosionModel:
         m = ErosionModel(width=max(w, 1), height=max(h, 2))
@@ -84,22 +92,13 @@ def run_terrain(refresh: float = 0.5) -> None:
             model = _make_model(w, h)
             last_w, last_h = w, h
 
-        try:
-            model.step()
-            rendered = render_terrain(model)
-            rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
-        except Exception:
-            rendered = Text("(terrain error)")
-            rendered.no_wrap = True
-            rendered.overflow = "crop"
-
         # Poll pane state from DB every few seconds
         now = time.time()
         if now - agents_last_read > _AGENT_POLL_INTERVAL_S:
+            pr = os.environ.get("DGOV_PROJECT_ROOT", os.getcwd())
             try:
                 from dgov.status import list_worker_panes
 
-                pr = os.environ.get("DGOV_PROJECT_ROOT", os.getcwd())
                 raw = list_worker_panes(pr, include_freshness=False, include_prompt=False)
                 agents_cache = [
                     {
@@ -113,7 +112,38 @@ def run_terrain(refresh: float = 0.5) -> None:
                 ]
             except Exception:
                 agents_cache = []
+            try:
+                from dgov.persistence import read_events
+
+                if model is not None:
+                    for event in read_events(pr):
+                        translated = translator.translate(event)
+                        if translated is None:
+                            continue
+                        effect_type, intensity = translated
+                        slug = str(event.get("pane", ""))
+                        if slug in sim._pos:
+                            row, col = sim._pos[slug]
+                        else:
+                            row, col = _spawn_position_from_slug(slug, h, w)
+                        model.terrain_event(
+                            effect_type,
+                            int(round(row)),
+                            int(round(col)),
+                            intensity,
+                        )
+            except Exception:
+                pass
             agents_last_read = now
+
+        try:
+            model.step()
+            rendered = render_terrain(model)
+            rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
+        except Exception:
+            rendered = Text("(terrain error)")
+            rendered.no_wrap = True
+            rendered.overflow = "crop"
 
         # Run agent simulation and overlay onto terrain every frame
         if agents_cache and model is not None:
