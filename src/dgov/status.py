@@ -300,12 +300,19 @@ def list_worker_panes(
     return [result[i] for i in sorted(seen.values())]
 
 
+_TERMINAL_PRUNE_STATES = frozenset({"abandoned", "closed", "merged"})
+_TERMINAL_PRUNE_AGE_S = 3600  # 1 hour
+
+
 def prune_stale_panes(project_root: str, session_root: str | None = None) -> list[str]:
     """Remove state entries for panes that are dead and have no worktree.
 
     Also removes orphaned worktree directories in ``.dgov/worktrees/`` that
     have no matching pane entry in state (e.g. left behind after ``pane close``
     skipped a dirty worktree).
+
+    Additionally prunes panes in terminal states (abandoned, closed, merged)
+    that are older than 1 hour.
     """
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
@@ -325,10 +332,26 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             done_path.unlink(missing_ok=True)
             pruned.append(slug)
 
-    # Pass 2: remove orphaned worktree dirs with no matching pane entry
+    # Pass 2: prune terminal-state panes older than 1 hour
+    now = time.time()
+    remaining_after_pass1 = all_panes(session_root)
+    pruned_slugs = set(pruned)
+    for p in remaining_after_pass1:
+        slug = p["slug"]
+        if slug in pruned_slugs:
+            continue
+        state = p.get("state", "")
+        created_at = p.get("created_at", 0) or 0
+        age_s = now - created_at
+        if state in _TERMINAL_PRUNE_STATES and age_s > _TERMINAL_PRUNE_AGE_S:
+            remove_pane(session_root, slug)
+            done_path = Path(session_root) / STATE_DIR / "done" / slug
+            done_path.unlink(missing_ok=True)
+            pruned.append(slug)
+
+    # Pass 3: remove orphaned worktree dirs with no matching pane entry
     worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
     if worktrees_dir.is_dir():
-        # Re-read state after pass 1 removals
         remaining_panes = all_panes(session_root)
         known_worktrees = {p.get("worktree_path") for p in remaining_panes}
         for entry in worktrees_dir.iterdir():
@@ -337,8 +360,6 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             entry_str = str(entry)
             if entry_str in known_worktrees:
                 continue
-            # Orphan — no pane entry references this dir.
-            # Only remove if there's no live tmux pane using it.
             branch_name = entry.name
             _remove_worktree(project_root, entry_str, branch_name)
             pruned.append(f"orphan:{branch_name}")

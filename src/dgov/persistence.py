@@ -600,6 +600,14 @@ def record_failure(session_root: str, slug: str, failure_hash: str) -> int:
     return _retry_on_lock(_do)
 
 
+def get_child_panes(session_root: str, parent_slug: str) -> list[dict]:
+    """Return all panes whose parent_slug matches *parent_slug*."""
+    conn = _get_db(session_root)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM panes WHERE parent_slug = ?", (parent_slug,)).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
 def replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
     """Replace all panes in the database with the given list.
 

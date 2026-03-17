@@ -24,6 +24,7 @@ from dgov.persistence import (
     _row_to_dict,
     add_pane,
     emit_event,
+    get_child_panes,
     get_pane,
     remove_pane,
     update_pane_state,
@@ -560,13 +561,23 @@ def _full_cleanup(
 def close_worker_pane(
     project_root: str, slug: str, session_root: str | None = None, *, force: bool = False
 ) -> bool:
-    """Close a worker pane: kill tmux pane, remove worktree, update state."""
+    """Close a worker pane: kill tmux pane, remove worktree, update state.
+
+    For LT-GOV or parent panes, cascades to close all child panes first.
+    """
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
     target = get_pane(session_root, slug)
 
     if not target:
         return True  # already cleaned up (e.g. by merge)
+
+    # Cascade: close all child panes before closing the parent
+    children = get_child_panes(session_root, slug)
+    for child in children:
+        child_slug = child["slug"]
+        logger.info("Cascade-closing child pane %s (parent: %s)", child_slug, slug)
+        close_worker_pane(project_root, child_slug, session_root, force=force)
 
     # Auto-enable force for merged/closed panes
     if target.get("state") in ("merged", "closed"):
