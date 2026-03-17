@@ -384,6 +384,11 @@ def setup_governor_workspace(project_root: str) -> list[str]:
 
     if panes:
         select_layout("main-vertical")
+        # Give Claude pane (index 0) 55% width so context bar fits
+        width = _run(["display-message", "-p", "#{window_width}"], silent=True)
+        if width.isdigit():
+            target_w = max(90, int(int(width) * 0.55))
+            _run(["resize-pane", "-t", ":.0", "-x", str(target_w)], silent=True)
     return panes
 
 
