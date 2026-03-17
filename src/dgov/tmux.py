@@ -237,7 +237,7 @@ def style_dgov_session(session_name: str | None = None) -> None:
             "set-option",
             *scope,
             "set-titles-string",
-            "#S",
+            "#S: #W",
         ],
         silent=True,
     )

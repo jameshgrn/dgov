@@ -239,7 +239,7 @@ class TestStyling:
                 "-t",
                 "dgov-repo",
                 "set-titles-string",
-                "#S",
+                "#S: #W",
             ],
             silent=True,
         )
