@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json as _json
 import logging
 import os
@@ -370,28 +371,29 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
                 state.error = f"Close failed for {slug}"
 
 
-def _acquire_dashboard_lock(session_root: str) -> Path | None:
-    """Write a PID file; kill any stale dashboard process first.
+def _acquire_dashboard_lock(session_root: str) -> tuple[Path, object] | None:
+    """Acquire an exclusive flock on the dashboard pidfile.
 
-    Returns the pidfile path on success, None if another live dashboard is running.
+    Returns (pidfile_path, lock_fd) on success, None on failure.
     """
     pidfile = Path(session_root) / ".dgov" / "dashboard.pid"
     pidfile.parent.mkdir(parents=True, exist_ok=True)
 
-    if pidfile.is_file():
-        try:
-            old_pid = int(pidfile.read_text().strip())
-            # Check if the old process is still alive
-            os.kill(old_pid, 0)
-            # Still alive — kill it so we can take over
-            logger.info("Killing stale dashboard pid=%d", old_pid)
-            os.kill(old_pid, 15)  # SIGTERM
-            time.sleep(0.5)
-        except (ValueError, ProcessLookupError, PermissionError, OSError):
-            pass  # stale pidfile, process already dead
+    # Open (or create) the pidfile for read+write
+    fd = open(pidfile, "a+")  # noqa: SIM115
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fd.close()
+        logger.info("Another dashboard holds the lock on %s", pidfile)
+        return None
 
-    pidfile.write_text(str(os.getpid()))
-    return pidfile
+    # We hold the lock — write our PID
+    fd.seek(0)
+    fd.truncate()
+    fd.write(str(os.getpid()))
+    fd.flush()
+    return pidfile, fd
 
 
 def run_dashboard_v2(
@@ -401,7 +403,10 @@ def run_dashboard_v2(
 ) -> None:
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
-    pidfile = _acquire_dashboard_lock(session_root)
+    lock_result = _acquire_dashboard_lock(session_root)
+    if lock_result is None:
+        return
+    pidfile, lock_fd = lock_result
     console = Console(force_terminal=sys.stdout.isatty())
     is_tty = sys.stdin.isatty()
 
@@ -546,6 +551,10 @@ def run_dashboard_v2(
                 pass
         if pidfile:
             try:
+                lock_fd.close()
                 pidfile.unlink(missing_ok=True)
+            except OSError:
+                pass
+
             except OSError:
                 pass
