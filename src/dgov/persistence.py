@@ -73,7 +73,11 @@ VALID_EVENTS = frozenset(
 
 
 def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
-    """Write a structured event to the events table in state.db."""
+    """Write a structured event to the events table in state.db.
+
+    Best-effort: logs a warning on lock contention instead of crashing,
+    since events are informational and should never block operations.
+    """
     from datetime import datetime, timezone
 
     if event not in VALID_EVENTS:
@@ -89,7 +93,10 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
         )
         conn.commit()
 
-    _retry_on_lock(_do)
+    try:
+        _retry_on_lock(_do)
+    except sqlite3.OperationalError:
+        logger.warning("emit_event(%s, %s) dropped — database locked", event, pane)
 
 
 def read_events(session_root: str, slug: str | None = None) -> list[dict]:
@@ -314,7 +321,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
@@ -351,8 +358,8 @@ def _close_cached_connections() -> None:
         _conn_cache.clear()
 
 
-_LOCK_RETRIES = 12
-_LOCK_BACKOFF_S = 0.3
+_LOCK_RETRIES = 20
+_LOCK_BACKOFF_S = 0.5
 
 
 def _retry_on_lock(fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
