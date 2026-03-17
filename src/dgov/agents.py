@@ -30,9 +30,10 @@ class DoneStrategy:
     - "exit": Agent process exits — rely on done file + pane liveness, skip commit check.
     - "commit": Wait for new commits on branch — skip output stabilization.
     - "stable": Wait for output to stabilize for stable_seconds.
+    - "api": Agent calls dgov worker complete/fail. Only checks signal files + liveness.
     """
 
-    type: str  # "signal" | "exit" | "commit" | "stable"
+    type: str  # "signal" | "exit" | "commit" | "stable" | "api"
     stable_seconds: int = 15  # only used when type="stable"
 
 
@@ -79,7 +80,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="claude --continue{permissions}",
         color=39,
-        done_strategy=DoneStrategy(type="commit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "codex": AgentDef(
         id="codex",
@@ -92,7 +93,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
         },
         color=214,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "gemini": AgentDef(
         id="gemini",
@@ -108,7 +109,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "opencode": AgentDef(
         id="opencode",
@@ -118,7 +119,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="option",
         prompt_option="--prompt",
         color=82,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "cline": AgentDef(
         id="cline",
@@ -150,7 +151,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="qwen --continue{permissions}",
         color=99,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "amp": AgentDef(
         id="amp",
@@ -162,7 +163,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--dangerously-allow-all",
         },
         color=208,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "pi": AgentDef(
         id="pi",
@@ -176,7 +177,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="pi --continue{permissions}",
         color=34,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "cursor": AgentDef(
         id="cursor",
@@ -185,7 +186,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_command="cursor-agent",
         prompt_transport="positional",
         color=45,
-        done_strategy=DoneStrategy(type="commit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "copilot": AgentDef(
         id="copilot",
@@ -200,7 +201,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="copilot --continue{permissions}",
         color=231,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "crush": AgentDef(
         id="crush",
@@ -227,7 +228,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider anthropic --model claude-sonnet-4-20250514",
         color=39,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "pi-codex": AgentDef(
         id="pi-codex",
@@ -237,7 +238,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider openai --model o3",
         color=214,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "pi-gemini": AgentDef(
         id="pi-gemini",
@@ -247,7 +248,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider google --model gemini-2.5-pro",
         color=135,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
     "pi-openrouter": AgentDef(
         id="pi-openrouter",
@@ -257,7 +258,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider openrouter",
         color=208,
-        done_strategy=DoneStrategy(type="exit"),
+        done_strategy=DoneStrategy(type="api"),
     ),
 }
 
@@ -282,10 +283,9 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     resume_section = table.pop("resume", {})
     env_section = table.pop("env", {})
     done_strategy = _done_strategy_from_toml(table)
-    # Default to "exit" when no [done] section — prevents premature
-    # stabilization-based completion during agent startup.
+    # Default to "api" when no [done] section — agent reports completion via dgov.
     if done_strategy is None:
-        done_strategy = DoneStrategy(type="exit")
+        done_strategy = DoneStrategy(type="api")
     return AgentDef(
         id=agent_id,
         name=table.get("name", agent_id),

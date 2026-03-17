@@ -93,12 +93,15 @@ def _resolve_strategy(
     """
     if done_strategy is not None:
         stype = done_strategy.type
-        ss = done_strategy.stable_seconds if stype == "stable" else (stable_seconds or 15)
+        if stype == "stable":
+            ss = done_strategy.stable_seconds
+        elif stype == "signal":
+            ss = stable_seconds or 15
+        else:
+            ss = 0
         return stype, ss
-    # No strategy provided — default to "exit" (done file + liveness).
-    # Never fall back to stabilization here; it causes premature completion
-    # during agent startup when the foreground process is still the shell.
-    return "exit", stable_seconds or 0
+    # No strategy provided — default to "api" (agent reports completion via dgov).
+    return "api", 0
 
 
 def _set_done_reason(stable_state: dict | None, reason: str) -> None:
@@ -264,6 +267,10 @@ def _is_done(
         elif _stable_state is not None:
             # Pane came back alive — reset dead tracking
             _stable_state.pop("dead_since", None)
+
+    # API strategy: only signal files + liveness. Skip heuristics.
+    if stype == "api":
+        return False
 
     # Signal 4 (optional): output stabilization — skipped for "commit" strategy
     use_stable = stype == "stable" or (stype == "signal" and eff_stable > 0)
