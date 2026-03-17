@@ -399,57 +399,98 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
     return text
 
 
-# Pixel-art sprites: 3 half-block cells per agent.
-# Each cell = (fg_top_rgb, bg_bottom_rgb). Brighter center = head/eye, darker edges = body.
-_AGENT_SPRITES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
-    "pi": [
-        ((60, 180, 120), (30, 120, 60)),
-        ((120, 255, 200), (60, 180, 120)),
-        ((60, 180, 120), (30, 120, 60)),
-    ],
+# Pixel-art sprites: 3 cols x 2 char-rows per agent.
+# [top_row, bottom_row]; each row = [left, center, right]
+# Each cell = ((fg_r,fg_g,fg_b), (bg_r,bg_g,bg_b)) or None (transparent).
+# Bright center-top = eyes. None cells create distinct silhouettes.
+_AGENT_SPRITES: dict[str, list[list]] = {
     "claude": [
-        ((200, 100, 200), (130, 50, 130)),
-        ((255, 220, 255), (200, 100, 200)),
-        ((200, 100, 200), (130, 50, 130)),
-    ],
-    "codex": [
-        ((220, 180, 40), (150, 120, 20)),
-        ((255, 240, 150), (220, 180, 40)),
-        ((220, 180, 40), (150, 120, 20)),
-    ],
-    "gemini": [
-        ((60, 80, 200), (30, 40, 130)),
-        ((180, 200, 255), (60, 80, 200)),
-        ((60, 80, 200), (30, 40, 130)),
+        [
+            ((180, 80, 180), (130, 50, 130)),
+            ((255, 220, 255), (200, 100, 200)),
+            ((180, 80, 180), (130, 50, 130)),
+        ],
+        [
+            ((130, 50, 130), (80, 20, 80)),
+            ((200, 100, 200), (130, 50, 130)),
+            ((130, 50, 130), (80, 20, 80)),
+        ],
     ],
     "hunter": [
-        ((220, 80, 40), (150, 40, 20)),
-        ((255, 180, 80), (220, 80, 40)),
-        ((220, 80, 40), (150, 40, 20)),
+        [
+            ((220, 80, 40), (180, 60, 20)),
+            ((255, 200, 100), (220, 120, 50)),
+            ((220, 80, 40), (180, 60, 20)),
+        ],
+        [None, ((180, 60, 20), (120, 30, 10)), None],
+    ],
+    "pi": [
+        [
+            ((60, 180, 120), (30, 140, 80)),
+            ((150, 255, 200), (80, 200, 140)),
+            ((60, 180, 120), (30, 140, 80)),
+        ],
+        [None, ((30, 140, 80), (20, 100, 50)), None],
     ],
     "cursor": [
-        ((80, 120, 220), (40, 60, 150)),
-        ((200, 220, 255), (80, 120, 220)),
-        ((80, 120, 220), (40, 60, 150)),
+        [None, ((220, 240, 255), (120, 160, 230)), None],
+        [
+            ((80, 120, 220), (40, 60, 150)),
+            ((160, 200, 255), (80, 120, 220)),
+            ((80, 120, 220), (40, 60, 150)),
+        ],
+    ],
+    "codex": [
+        [
+            ((200, 160, 30), (160, 120, 10)),
+            ((255, 240, 150), (220, 180, 40)),
+            ((200, 160, 30), (160, 120, 10)),
+        ],
+        [
+            ((180, 140, 20), (120, 90, 10)),
+            ((220, 180, 40), (180, 140, 20)),
+            ((180, 140, 20), (120, 90, 10)),
+        ],
+    ],
+    "gemini": [
+        [None, ((200, 220, 255), (100, 120, 200)), None],
+        [
+            ((60, 80, 200), (30, 40, 130)),
+            ((140, 170, 255), (60, 80, 200)),
+            ((60, 80, 200), (30, 40, 130)),
+        ],
     ],
 }
 
 _DONE_SPRITE = [
-    ((60, 200, 80), (30, 130, 40)),
-    ((120, 255, 150), (60, 200, 80)),
-    ((60, 200, 80), (30, 130, 40)),
+    [
+        ((80, 220, 100), (40, 160, 50)),
+        ((150, 255, 170), (80, 220, 100)),
+        ((80, 220, 100), (40, 160, 50)),
+    ],
+    [None, ((40, 160, 50), (20, 100, 30)), None],
 ]
 
 _FAILED_SPRITE = [
-    ((220, 40, 40), (150, 20, 20)),
-    ((255, 100, 100), (220, 40, 40)),
-    ((220, 40, 40), (150, 20, 20)),
+    [
+        ((220, 60, 60), (160, 30, 30)),
+        ((255, 120, 120), (220, 60, 60)),
+        ((220, 60, 60), (160, 30, 30)),
+    ],
+    [None, ((160, 30, 30), (100, 15, 15)), None],
 ]
 
 _LTGOV_SPRITE = [
-    ((255, 220, 60), (200, 160, 30)),
-    ((255, 255, 200), (255, 220, 60)),
-    ((255, 220, 60), (200, 160, 30)),
+    [
+        ((255, 220, 60), (220, 180, 30)),
+        ((255, 255, 220), (255, 220, 60)),
+        ((255, 220, 60), (220, 180, 30)),
+    ],
+    [
+        ((220, 180, 30), (180, 140, 10)),
+        ((255, 220, 60), (220, 180, 30)),
+        ((220, 180, 30), (180, 140, 10)),
+    ],
 ]
 
 
@@ -574,7 +615,7 @@ class AgentSim:
             c += vc
 
             # Boundary clamp (stay off edges)
-            r = max(0.5, min(rows - 1.5, r))
+            r = max(1.5, min(rows - 1.5, r))
             c = max(1.5, min(cols - 2.5, c))
 
             self._pos[slug] = [r, c]
@@ -592,15 +633,23 @@ class AgentSim:
                 agent_name = ag.get("agent", "").split("-")[0]
                 sprite = _AGENT_SPRITES.get(agent_name, _AGENT_SPRITES.get("claude"))
 
-            # Place 3-char wide sprite centered on agent position
-            for dx in range(3):
-                sc = ic - 1 + dx
-                if 0 <= sc < cols:
-                    fg, bg = sprite[dx]
-                    # Pulse: brighten center cell on even ticks
-                    if dx == 1 and self._tick % 4 < 2:
+            # Place 3-wide x 2-tall sprite centered on agent position
+            for row_offset in range(2):
+                sr = ir - 1 + row_offset
+                if sr < 0 or sr >= rows:
+                    continue
+                sprite_row = sprite[row_offset]
+                for dx in range(3):
+                    sc = ic - 1 + dx
+                    if sc < 0 or sc >= cols:
+                        continue
+                    cell = sprite_row[dx]
+                    if cell is None:
+                        continue
+                    fg, bg = cell
+                    if row_offset == 0 and dx == 1 and self._tick % 4 < 2:
                         fg = (min(fg[0] + 30, 255), min(fg[1] + 30, 255), min(fg[2] + 30, 255))
-                    stamps[(ir, sc)] = (
+                    stamps[(sr, sc)] = (
                         "\u2580",
                         f"rgb({fg[0]},{fg[1]},{fg[2]}) on rgb({bg[0]},{bg[1]},{bg[2]})",
                     )
