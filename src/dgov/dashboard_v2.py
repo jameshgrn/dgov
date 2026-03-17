@@ -83,6 +83,8 @@ class DashboardState:
     terrain_model: object | None = None  # ErosionModel instance
     terrain_tick: int = 0
     post_exit_attach: str = ""
+    preview_lines: list[str] = field(default_factory=list)
+    preview_visible: bool = False
 
 
 def _get_branch(project_root: str) -> str:
@@ -138,12 +140,24 @@ def fetch_panes(state: DashboardState) -> None:
 
         events = read_events(session_root)[-8:]
 
+        # Capture preview lines for the selected pane
+        preview: list[str] = []
+        with state.lock:
+            sel_idx = state.selected
+            want_preview = state.preview_visible
+        if want_preview and panes and 0 <= sel_idx < len(panes):
+            slug = panes[sel_idx].get("slug", "")
+            raw = tail_worker_log(session_root, slug, lines=5)
+            if raw:
+                preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
+
         with state.lock:
             state.panes = panes
             state.events = events
             state.branch = branch
             state.last_refresh = time.time()
             state.error = ""
+            state.preview_lines = preview
 
         # Step terrain model every 3rd refresh
         with state.lock:
@@ -272,6 +286,8 @@ def _build_layout(
         error = state.error
         selected = state.selected
         terrain = state.terrain_text
+        preview_lines = list(state.preview_lines)
+        preview_visible = state.preview_visible
 
     ts = time.strftime("%H:%M:%S", time.localtime(last_refresh)) if last_refresh else "--:--:--"
     header_text = Text()
@@ -285,7 +301,7 @@ def _build_layout(
     table = _build_worker_table(panes, selected)
 
     footer = Text(
-        " q:quit  j/k:\u2191\u2193  Enter:attach  r:refresh  m:merge  x:close",
+        " q:quit  j/k:\u2191\u2193  Enter:attach  r:refresh  m:merge  x:close  p:preview",
         style="dim",
     )
 
@@ -316,19 +332,53 @@ def _build_layout(
         and term_height >= _MIN_TERRAIN_HEIGHT
     )
 
-    if show_terrain:
-        body.split_row(
-            Layout(worker_panel, name="workers", ratio=3),
-            Layout(
-                Panel(terrain, title="Terrain", border_style="green"),
-                name="terrain",
-                ratio=1,
-            ),
+    # Determine selected slug for preview title
+    selected_slug = ""
+    if panes and 0 <= selected < len(panes):
+        selected_slug = panes[selected].get("slug", "")
+
+    show_preview = preview_visible and bool(preview_lines) and bool(selected_slug)
+
+    if show_preview:
+        preview_text = Text("\n".join(preview_lines))
+        preview_panel = Panel(
+            preview_text,
+            title=f"Output: {selected_slug}",
+            border_style="cyan",
+            height=7,
+        )
+        main_body = Layout(name="main_body")
+        if show_terrain:
+            main_body.split_row(
+                Layout(worker_panel, name="workers", ratio=3),
+                Layout(
+                    Panel(terrain, title="Terrain", border_style="green"),
+                    name="terrain",
+                    ratio=1,
+                ),
+            )
+        else:
+            main_body.split_row(
+                Layout(worker_panel, name="workers"),
+            )
+        body.split_column(
+            main_body,
+            Layout(preview_panel, name="preview", size=7),
         )
     else:
-        body.split_row(
-            Layout(worker_panel, name="workers"),
-        )
+        if show_terrain:
+            body.split_row(
+                Layout(worker_panel, name="workers", ratio=3),
+                Layout(
+                    Panel(terrain, title="Terrain", border_style="green"),
+                    name="terrain",
+                    ratio=1,
+                ),
+            )
+        else:
+            body.split_row(
+                Layout(worker_panel, name="workers"),
+            )
 
     return layout
 
@@ -481,6 +531,11 @@ def run_dashboard_v2(
                             state.force_refresh.set()
                         live.start()
                         live.refresh()
+                elif ch == "p":
+                    with state.lock:
+                        state.preview_visible = not state.preview_visible
+                    state.force_refresh.set()
+                    live.refresh()
                 elif ch == "a":
                     # Alias for Enter — attach to worker window
                     with state.lock:

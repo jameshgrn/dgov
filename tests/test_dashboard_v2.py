@@ -325,6 +325,87 @@ class TestWorkerTableHierarchy:
 
 
 @pytest.mark.unit
+class TestPreviewState:
+    def test_preview_fields_default(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState()
+        assert state.preview_lines == []
+        assert state.preview_visible is False
+
+    def test_preview_hidden_by_default(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "working",
+                    "duration_s": 60,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            preview_lines=["line 1", "line 2"],
+            preview_visible=False,
+        )
+        output = _render_dashboard_text(state, width=120, height=30)
+        assert "Output:" not in output
+
+    def test_preview_shown_when_visible(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "working",
+                    "duration_s": 60,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            preview_lines=["hello from worker"],
+            preview_visible=True,
+        )
+        output = _render_dashboard_text(state, width=120, height=30)
+        assert "Output: worker-a" in output
+        assert "hello from worker" in output
+
+    def test_preview_hidden_when_no_lines(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "working",
+                    "duration_s": 60,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            preview_lines=[],
+            preview_visible=True,
+        )
+        output = _render_dashboard_text(state, width=120, height=30)
+        assert "Output:" not in output
+
+    def test_footer_includes_preview_key(self):
+        from dgov.dashboard_v2 import DashboardState
+
+        state = DashboardState(branch="main", last_refresh=1710000000)
+        output = _render_dashboard_text(state, width=120, height=20)
+        assert "p:preview" in output
+
+
+@pytest.mark.unit
 class TestLayoutRendering:
     def test_dashboard_text_is_visible(self):
         from dgov.dashboard_v2 import DashboardState
