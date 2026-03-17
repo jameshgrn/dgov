@@ -70,7 +70,7 @@ def review_worker_pane(
     # Filter out protected files — modified by worktree hook, not by worker
     porcelain_lines = []
     for ln in porcelain.stdout.strip().splitlines():
-        filename = ln.lstrip(" MAD??").lstrip()
+        filename = ln[3:]
         if not any(filename.startswith(pf) for pf in PROTECTED_FILES):
             porcelain_lines.append(ln)
     uncommitted = bool(porcelain_lines)
