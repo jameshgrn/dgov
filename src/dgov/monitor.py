@@ -488,10 +488,12 @@ def run_monitor(
 
                 if workers:
                     worker_states = ", ".join(f"{w['slug']}={w['classification']}" for w in workers)
-                    print(f"[{time.strftime('%H:%M:%S')}] Tick {tick}: {worker_states}")
+                    logger.info("Tick %d: %s", tick, worker_states)
+                    emit_event(session_root, "monitor_tick", "monitor", states=worker_states)
                 elif tick % 4 == 0:
                     # Heartbeat print when idle
-                    print(f"[{time.strftime('%H:%M:%S')}] Tick {tick}: idle")
+                    logger.info("Tick %d: idle", tick)
+                    emit_event(session_root, "monitor_tick", "monitor", states="idle")
 
             except Exception:
                 logger.warning("Monitor tick failed", exc_info=True)

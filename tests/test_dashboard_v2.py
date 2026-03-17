@@ -454,3 +454,10 @@ class TestLayoutRendering:
 
         assert updated is layout
         assert layout["body"]["bottom"]["preview"].visible is True
+
+    def test_monitor_panel_exists(self):
+        from dgov.dashboard_v2 import DashboardState, _build_layout
+
+        state = DashboardState(branch="main", last_refresh=1710000000)
+        layout = _build_layout(state, term_width=120, term_height=20)
+        assert layout["body"]["bottom"].get("monitor") is not None

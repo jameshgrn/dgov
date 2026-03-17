@@ -315,7 +315,7 @@ def _create_dashboard_layout() -> Layout:
         Layout(name="bottom", ratio=1),
     )
     layout["body"]["bottom"].split_row(
-        Layout(name="events", ratio=1),
+        Layout(name="monitor", ratio=1),
         Layout(name="preview", ratio=1, visible=False),
     )
     return layout
@@ -356,11 +356,22 @@ def _build_layout(
     # Build events list
     ev_text = Text()
     for ev in reversed(events):
-        kind = ev.get("kind", "")
-        slug = ev.get("slug", "")
+        kind = ev.get("event", "")
+        slug = ev.get("pane", "")
         # Highlight monitor actions
         if kind.startswith("monitor_"):
-            style = "bold cyan"
+            if kind == "monitor_tick":
+                style = "dim"
+                # For ticks, slug is 'monitor', data has 'states'
+                import json
+                try:
+                    data = json.loads(ev.get("data", "{}"))
+                except (ValueError, TypeError):
+                    data = {}
+                states = data.get("states", "")
+                slug = f"({states})" if states else ""
+            else:
+                style = "bold cyan"
         elif kind in ("done", "merged", "closed"):
             style = "green"
         elif kind in ("failed", "error"):
@@ -368,7 +379,13 @@ def _build_layout(
         else:
             style = "dim"
 
-        ev_time = time.strftime("%H:%M", time.localtime(ev.get("timestamp", 0)))
+        import dateutil.parser
+        try:
+            dt = dateutil.parser.isoparse(ev.get("ts", ""))
+            ev_time = dt.strftime("%H:%M")
+        except (ValueError, TypeError):
+            ev_time = "--:--"
+
         ev_text.append(f"{ev_time} ", style="dim")
         ev_text.append(f"{kind:<18} ", style=style)
         ev_text.append(f"{slug}\n")
@@ -395,7 +412,7 @@ def _build_layout(
     layout["header"].update(header_text)
     layout["footer"].update(footer)
     layout["body"]["workers"].update(worker_panel)
-    layout["body"]["bottom"]["events"].update(Panel(ev_text, title="Events", border_style="dim"))
+    layout["body"]["bottom"]["monitor"].update(Panel(ev_text, title="Monitor", border_style="dim"))
     layout["body"]["bottom"]["preview"].update(
         Panel(
             preview_text,
