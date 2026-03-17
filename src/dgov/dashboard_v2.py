@@ -404,6 +404,30 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
                 state.error = f"Close failed for {slug}"
 
 
+def _acquire_dashboard_lock(session_root: str) -> Path | None:
+    """Write a PID file; kill any stale dashboard process first.
+
+    Returns the pidfile path on success, None if another live dashboard is running.
+    """
+    pidfile = Path(session_root) / ".dgov" / "dashboard.pid"
+    pidfile.parent.mkdir(parents=True, exist_ok=True)
+
+    if pidfile.is_file():
+        try:
+            old_pid = int(pidfile.read_text().strip())
+            # Check if the old process is still alive
+            os.kill(old_pid, 0)
+            # Still alive — kill it so we can take over
+            logger.info("Killing stale dashboard pid=%d", old_pid)
+            os.kill(old_pid, 15)  # SIGTERM
+            time.sleep(0.5)
+        except (ValueError, ProcessLookupError, PermissionError, OSError):
+            pass  # stale pidfile, process already dead
+
+    pidfile.write_text(str(os.getpid()))
+    return pidfile
+
+
 def run_dashboard_v2(
     project_root: str,
     session_root: str | None = None,
@@ -411,6 +435,7 @@ def run_dashboard_v2(
 ) -> None:
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
+    pidfile = _acquire_dashboard_lock(session_root)
     console = Console()
     is_tty = sys.stdin.isatty()
 
@@ -552,6 +577,11 @@ def run_dashboard_v2(
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
             except termios.error:
+                pass
+        if pidfile:
+            try:
+                pidfile.unlink(missing_ok=True)
+            except OSError:
                 pass
 
     if state.post_exit_attach:

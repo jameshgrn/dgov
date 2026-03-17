@@ -33,8 +33,11 @@ def merge_queue():
 )
 @click.option("--squash/--no-squash", default=True, help="Squash commits (default: on)")
 @click.option("--rebase", is_flag=True, default=False, help="Rebase merge")
-def process_merge(project_root, session_root, resolve, squash, rebase):
+@click.option("--timeout", default=120, type=int, help="Timeout in seconds (default: 120)")
+def process_merge(project_root, session_root, resolve, squash, rebase, timeout):
     """Claim and execute the next pending merge from the queue."""
+    import signal
+
     from dgov.persistence import claim_next_merge, complete_merge, emit_event
 
     session_root_abs = os.path.abspath(session_root or project_root)
@@ -45,6 +48,12 @@ def process_merge(project_root, session_root, resolve, squash, rebase):
 
     slug = claimed["branch"]  # branch field stores the pane slug
     ticket = claimed["ticket"]
+
+    def _timeout_handler(signum, frame):  # noqa: ARG001
+        raise TimeoutError(f"merge-queue process timed out after {timeout}s")
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.alarm(timeout)
 
     try:
         from dgov.merger import merge_worker_pane
@@ -63,10 +72,17 @@ def process_merge(project_root, session_root, resolve, squash, rebase):
         click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
         if not success:
             sys.exit(1)
+    except TimeoutError as exc:
+        complete_merge(session_root_abs, ticket, False, json.dumps({"error": str(exc)}))
+        click.echo(json.dumps({"ticket": ticket, "slug": slug, "error": str(exc)}), err=True)
+        sys.exit(1)
     except Exception as exc:
         complete_merge(session_root_abs, ticket, False, json.dumps({"error": str(exc)}))
         click.echo(json.dumps({"ticket": ticket, "slug": slug, "error": str(exc)}), err=True)
         sys.exit(1)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
 
 
 @merge_queue.command("list")
