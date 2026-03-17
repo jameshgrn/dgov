@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import time
 
@@ -10,11 +11,12 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from dgov.terrain import ErosionModel, render_terrain
+from dgov.terrain import AgentSim, ErosionModel, overlay_stamps, render_terrain
 
 _PANEL_BORDER_WIDTH = 2
 _PANEL_BORDER_HEIGHT = 2
 _STARTUP_DELAY_S = 0.3
+_AGENT_POLL_INTERVAL_S = 5.0
 
 
 def _detect_pane_size(console: Console) -> tuple[int, int]:
@@ -63,8 +65,9 @@ def run_terrain(refresh: float = 0.5) -> None:
     last_w = 0
     last_h = 0
     tick = 0
-    _agents_cache: list[dict] = []
-    _agents_last_read: float = 0.0
+    agents_cache: list[dict] = []
+    agents_last_read: float = 0.0
+    sim = AgentSim()
 
     def _make_model(w: int, h: int) -> ErosionModel:
         m = ErosionModel(width=max(w, 1), height=max(h, 2))
@@ -73,7 +76,7 @@ def run_terrain(refresh: float = 0.5) -> None:
         return m
 
     def _render() -> Panel:
-        nonlocal model, last_w, last_h, tick
+        nonlocal model, last_w, last_h, tick, agents_cache, agents_last_read
         w, panel_rows = _detect_pane_size(console)
         h = panel_rows * 2  # half-block doubles rows
 
@@ -89,34 +92,38 @@ def run_terrain(refresh: float = 0.5) -> None:
             rendered = Text("(terrain error)")
             rendered.no_wrap = True
             rendered.overflow = "crop"
-        nonlocal _agents_cache, _agents_last_read
-        now = time.time()
-        if now - _agents_last_read > 5.0:  # refresh every 5 seconds
-            try:
-                import os
 
+        # Poll pane state from DB every few seconds
+        now = time.time()
+        if now - agents_last_read > _AGENT_POLL_INTERVAL_S:
+            try:
                 from dgov.status import list_worker_panes
 
                 pr = os.environ.get("DGOV_PROJECT_ROOT", os.getcwd())
                 raw = list_worker_panes(pr, include_freshness=False, include_prompt=False)
-                _agents_cache = [
+                agents_cache = [
                     {
                         "slug": p.get("slug", ""),
                         "state": p.get("state", ""),
                         "role": p.get("role", "worker"),
                         "agent": p.get("agent", ""),
+                        "parent_slug": p.get("parent_slug", ""),
                     }
                     for p in raw
                 ]
             except Exception:
-                _agents_cache = []
-            _agents_last_read = now
-        if _agents_cache and model is not None:
-            from dgov.terrain import overlay_agents
+                agents_cache = []
+            agents_last_read = now
 
-            rendered = overlay_agents(rendered, model, _agents_cache)
+        # Run agent simulation and overlay onto terrain every frame
+        if agents_cache and model is not None:
+            stamps = sim.update(agents_cache, panel_rows, w, model)
+            rendered = overlay_stamps(rendered, stamps)
+
         tick += 1
-        return Panel(rendered, title=f"Terrain  t={tick}", border_style="green")
+        n = len(agents_cache)
+        title = f"Terrain  t={tick}" + (f"  [{n} agents]" if n else "")
+        return Panel(rendered, title=title, border_style="green")
 
     time.sleep(_STARTUP_DELAY_S)
 

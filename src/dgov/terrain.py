@@ -265,62 +265,186 @@ def render_terrain(model: ErosionModel) -> Text:
     return text
 
 
-def overlay_agents(text: Text, model: ErosionModel, agents: list[dict]) -> Text:
-    """Stamp agent glyphs onto rendered terrain. Each agent dict has: slug, state, role, agent."""
-    if not agents or model.width < 1 or model.height_count < 2:
-        return text
-    import hashlib
+class AgentSim:
+    """Lightweight agent-based model overlay for the terrain display.
 
+    Agents wander the terrain, follow slopes, repel each other,
+    and LT-GOVs are attracted toward their child workers.
+    """
+
+    def __init__(self) -> None:
+        self._pos: dict[str, list[float]] = {}  # slug -> [row, col]
+        self._vel: dict[str, list[float]] = {}  # slug -> [vr, vc]
+        self._tick = 0
+
+    def update(
+        self,
+        agents: list[dict],
+        rows: int,
+        cols: int,
+        terrain: ErosionModel | None,
+    ) -> dict[tuple[int, int], tuple[str, str]]:
+        """Advance one tick. Returns {(row, col): (glyph, style)}."""
+        self._tick += 1
+        active_slugs = {a.get("slug", "") for a in agents}
+
+        # Prune departed agents
+        for slug in list(self._pos):
+            if slug not in active_slugs:
+                del self._pos[slug]
+                self._vel.pop(slug, None)
+
+        # Spawn new agents at hash-derived positions
+        for ag in agents:
+            slug = ag.get("slug", "")
+            if slug and slug not in self._pos:
+                import hashlib
+
+                h = hashlib.md5(slug.encode()).digest()
+                c = float((h[0] + h[1] * 256) % max(cols - 4, 1) + 2)
+                r = float((h[2] + h[3] * 256) % max(rows - 2, 1) + 1)
+                self._pos[slug] = [r, c]
+                self._vel[slug] = [0.0, 0.0]
+
+        # Parent -> children map for LT-GOV attraction
+        children_of: dict[str, list[str]] = {}
+        for ag in agents:
+            parent = ag.get("parent_slug", "")
+            if parent:
+                children_of.setdefault(parent, []).append(ag.get("slug", ""))
+
+        stamps: dict[tuple[int, int], tuple[str, str]] = {}
+
+        for ag in agents:
+            slug = ag.get("slug", "")
+            if not slug or slug not in self._pos:
+                continue
+            state = ag.get("state", "active")
+            role = ag.get("role", "worker")
+            r, c = self._pos[slug]
+            vr, vc = self._vel[slug]
+
+            if state in ("done", "merged"):
+                # Settle: decelerate to a stop
+                vr *= 0.4
+                vc *= 0.4
+            elif state == "failed":
+                # Jitter in place
+                vr = random.uniform(-0.3, 0.3)
+                vc = random.uniform(-0.3, 0.3)
+            else:
+                # Wander: random nudge
+                vr += random.uniform(-0.4, 0.4)
+                vc += random.uniform(-0.4, 0.4)
+
+                # Terrain gradient: drift downhill (follow water)
+                if terrain:
+                    ir, ic = int(r), int(c)
+                    hr = terrain.height_count
+                    wc = terrain.width
+                    if 0 < ir < hr - 1 and 0 < ic < wc - 1:
+                        dh_r = (
+                            terrain.height[min(ir + 1, hr - 1)][ic]
+                            - terrain.height[max(ir - 1, 0)][ic]
+                        )
+                        dh_c = (
+                            terrain.height[ir][min(ic + 1, wc - 1)]
+                            - terrain.height[ir][max(ic - 1, 0)]
+                        )
+                        vr -= dh_r * 0.6
+                        vc -= dh_c * 0.6
+
+                # LT-GOV: attract toward child centroid
+                if role == "lt-gov" and slug in children_of:
+                    cps = [self._pos[cs] for cs in children_of[slug] if cs in self._pos]
+                    if cps:
+                        cr = sum(p[0] for p in cps) / len(cps)
+                        cc = sum(p[1] for p in cps) / len(cps)
+                        vr += (cr - r) * 0.12
+                        vc += (cc - c) * 0.12
+
+                # Damping
+                vr *= 0.65
+                vc *= 0.65
+
+                # Speed limit
+                speed = math.sqrt(vr * vr + vc * vc)
+                if speed > 1.5:
+                    vr = vr / speed * 1.5
+                    vc = vc / speed * 1.5
+
+            # Separation: repel from nearby agents
+            for other_slug, op in self._pos.items():
+                if other_slug == slug:
+                    continue
+                dr = r - op[0]
+                dc = c - op[1]
+                dist = math.sqrt(dr * dr + dc * dc)
+                if 0.1 < dist < 3.0:
+                    repel = 0.4 / dist
+                    vr += dr / dist * repel
+                    vc += dc / dist * repel
+
+            # Integrate
+            r += vr
+            c += vc
+
+            # Boundary clamp (stay off edges)
+            r = max(0.5, min(rows - 1.5, r))
+            c = max(1.5, min(cols - 2.5, c))
+
+            self._pos[slug] = [r, c]
+            self._vel[slug] = [vr, vc]
+
+            # Glyph + style
+            ir, ic = int(round(r)), int(round(c))
+            if role == "lt-gov":
+                glyph, color = "\u25c6", "bold magenta"
+            elif state in ("done", "merged"):
+                glyph, color = "\u2713", "bold green"
+            elif state == "failed":
+                # Blink: alternate glyph every other tick
+                glyph = "\u2717" if self._tick % 2 == 0 else " "
+                color = "bold red"
+            else:
+                glyph, color = "\u25cf", "bold white"  # filled circle
+
+            stamps[(ir, ic)] = (glyph, color)
+
+        # Interaction sparks: adjacent agents get a lightning bolt between them
+        pos_list = [
+            (ag.get("slug", ""), self._pos.get(ag.get("slug", ""), [0, 0]))
+            for ag in agents
+            if ag.get("slug", "") in self._pos
+        ]
+        for i in range(len(pos_list)):
+            s1, p1 = pos_list[i]
+            for j in range(i + 1, len(pos_list)):
+                s2, p2 = pos_list[j]
+                dist = abs(int(round(p1[0])) - int(round(p2[0]))) + abs(
+                    int(round(p1[1])) - int(round(p2[1]))
+                )
+                if dist <= 2:
+                    mr = (int(round(p1[0])) + int(round(p2[0]))) // 2
+                    mc = (int(round(p1[1])) + int(round(p2[1]))) // 2
+                    if (mr, mc) not in stamps:
+                        stamps[(mr, mc)] = ("\u26a1", "bold yellow")
+
+        return stamps
+
+
+def overlay_stamps(text: Text, stamps: dict[tuple[int, int], tuple[str, str]]) -> Text:
+    """Apply stamp glyphs onto rendered terrain text, preserving original styles."""
+    if not stamps:
+        return text
     lines = text.plain.split("\n")
     if not lines:
         return text
     display_rows = len(lines)
-    display_cols = len(lines[0]) if lines else model.width
 
-    # Build a map of (row, col) -> (glyph, style_string) for agents
-    stamps: dict[tuple[int, int], tuple[str, str]] = {}
-    for i, ag in enumerate(agents):
-        slug = ag.get("slug", f"agent-{i}")
-        state = ag.get("state", "active")
-        role = ag.get("role", "worker")
-
-        # Deterministic position from slug hash
-        h = hashlib.md5(slug.encode()).digest()
-        base_col = (h[0] + h[1] * 256) % max(display_cols - 4, 1) + 2
-        base_row = (h[2] + h[3] * 256) % max(display_rows - 2, 1) + 1
-
-        # Simple drift for active agents based on time
-        if state == "active":
-            import time as _time
-
-            t = int(_time.time())
-            drift_x = ((h[4] + t) % 5) - 2
-            drift_y = ((h[5] + t // 3) % 3) - 1
-            base_col = max(1, min(display_cols - 2, base_col + drift_x))
-            base_row = max(0, min(display_rows - 1, base_row + drift_y))
-
-        # Glyph and color by role/state
-        if role == "lt-gov":
-            glyph = "\u25c6"  # diamond
-            color = "bold magenta"
-        elif state == "done" or state == "merged":
-            glyph = "\u2713"  # checkmark
-            color = "bold green"
-        elif state == "failed":
-            glyph = "\u2717"  # x mark
-            color = "bold red"
-        else:
-            glyph = "\u2022"  # bullet
-            color = "bold white"
-
-        stamps[(base_row, base_col)] = (glyph, color)
-
-    # Overlay stamps onto a copy of the original text.
-    # Same-length plain replacement preserves all existing Rich style spans.
     plain = text.plain
     chars = list(plain)
-    # Map (row, col) -> flat offset
-    offsets: dict[int, str] = {}  # offset -> style_string
+    offsets: dict[int, str] = {}
     for (row, col), (glyph, style_str) in stamps.items():
         if row >= display_rows or col >= len(lines[row]):
             continue
@@ -330,7 +454,7 @@ def overlay_agents(text: Text, model: ErosionModel, agents: list[dict]) -> Text:
             offsets[offset] = style_str
 
     result = text.copy()
-    result.plain = "".join(chars)  # same length → spans preserved
+    result.plain = "".join(chars)
     for offset, style_str in offsets.items():
         result.stylize(style_str, offset, offset + 1)
     return result
