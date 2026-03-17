@@ -442,10 +442,18 @@ def run_monitor(
     session_root = session_root or project_root
     history: dict[str, dict] = {}
 
+    # Ensure logging is configured for console output
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
     monitor_dir = Path(session_root, STATE_DIR, "monitor")
     monitor_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Starting monitor on %s (interval %ds)", project_root, poll_interval)
+    print(f"Monitor active: polling every {poll_interval}s...")
 
     tick = 0
     try:
@@ -467,6 +475,7 @@ def run_monitor(
                     action = _take_action(project_root, session_root, w, history)
                     if action:
                         actions.append({"slug": w["slug"], "action": action})
+                        print(f"[{time.strftime('%H:%M:%S')}] Action: {action} -> {w['slug']}")
 
                 status = {
                     "timestamp": time.time(),
@@ -476,6 +485,14 @@ def run_monitor(
 
                 with open(monitor_dir / "status.json", "w") as f:
                     json.dump(status, f, indent=2)
+
+                if workers:
+                    worker_states = ", ".join(f"{w['slug']}={w['classification']}" for w in workers)
+                    print(f"[{time.strftime('%H:%M:%S')}] Tick {tick}: {worker_states}")
+                elif tick % 4 == 0:
+                    # Heartbeat print when idle
+                    print(f"[{time.strftime('%H:%M:%S')}] Tick {tick}: idle")
+
             except Exception:
                 logger.warning("Monitor tick failed", exc_info=True)
 
@@ -486,3 +503,4 @@ def run_monitor(
             tick += 1
     except KeyboardInterrupt:
         logger.info("Monitor stopped by user")
+        print("\nMonitor stopped.")
