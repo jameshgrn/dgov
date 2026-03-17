@@ -117,22 +117,35 @@ def cli(ctx, governor):
     ensure_dgov_gitignored(project_root)
 
     def _resolve_governor() -> tuple[str, str]:
-        """Return (agent_id, permission_mode). Silent defaults on first use."""
+        """Return (agent_id, permission_mode), prompting on first use."""
         agent_id, perm = get_governor_agent(project_root)
         if governor is not None:
             agent_id = governor
         if agent_id is not None:
             return agent_id, perm or "bypassPermissions"
-        # First-time: use defaults silently, write config
+        # First-time setup — prompt for preferences
         registry = load_registry(project_root)
         installed = detect_installed_agents(registry)
         if not installed:
             click.echo("No agents found on PATH. Install claude, codex, or gemini first.")
             raise SystemExit(1)
         default_agent = "claude" if "claude" in installed else installed[0]
-        write_project_config(project_root, "governor_agent", default_agent)
-        write_project_config(project_root, "governor_permissions", "bypassPermissions")
-        return default_agent, "bypassPermissions"
+        agent_id = click.prompt(
+            "Governor agent for this repo",
+            type=click.Choice(installed),
+            default=default_agent,
+        )
+        perm = click.prompt(
+            "Permission mode",
+            type=click.Choice(["", "plan", "acceptEdits", "bypassPermissions"]),
+            default="bypassPermissions",
+        )
+        assert agent_id is not None
+        assert perm is not None
+        write_project_config(project_root, "governor_agent", agent_id)
+        if perm:
+            write_project_config(project_root, "governor_permissions", perm)
+        return agent_id, perm
 
     governor_prompt = (
         "You are the dgov governor for this repo. "
