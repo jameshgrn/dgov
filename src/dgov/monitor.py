@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -40,14 +41,13 @@ DETERMINISTIC_PATTERNS = {
     "waiting_input": [
         r"\b(waiting[ \t]+for\s+(user|input|confirmation|approval|prompt))\b",
         r"\b(paused.*awaiting\b|awaiting.*input\b)",
-        r"^\s*#\s*(TODO|FIXME|XXX|HACK):",
         r"\bawaiting\s+input\b",
-    ],
-    "committing": [
-        r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
     ],
     "done": [
         r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
+    ],
+    "committing": [
+        r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
     ],
     "idle": [
         r"\b(no[ \t]+work|pause[d]?|idling)\b",
@@ -72,11 +72,10 @@ def _classify_deterministic(output: str) -> str | None:
 
 
 def _regex_match(pattern: str, text: str) -> bool:
-    """Match a regex pattern against text, handling case-insensitivity."""
-    import re
+    """Match a regex pattern against text. Input is already lowercased."""
 
     try:
-        return re.search(pattern, text, re.IGNORECASE) is not None
+        return re.search(pattern, text) is not None
     except re.error:
         logger.debug("Invalid regex pattern: %s", pattern)
         return False
@@ -307,7 +306,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
         return None
 
     # Terminal state rules only
-    if classification == "done" and worker["has_commits"] and consecutive >= 2:
+    if classification == "done" and consecutive >= 2:
         _auto_complete(project_root, session_root, slug)
         hist["last_action_at"] = time.time()
         return "auto_complete"
