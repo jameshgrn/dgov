@@ -609,7 +609,6 @@ def build_launch_command(
         return agent.no_prompt_command or base
 
     if agent.interactive and prompt:
-        _write_prompt_file(project_root, slug, prompt)
         return agent.no_prompt_command or base
 
     if agent.prompt_transport == "send-keys":
