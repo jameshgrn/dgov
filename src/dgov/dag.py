@@ -169,12 +169,31 @@ def _merge_tasks_in_order(
         # Run post-merge check if defined
         check_cmd = dag.tasks[task_slug].post_merge_check
         if check_cmd:
+            check_env = os.environ.copy()
+            check_env["DGOV_TASK_SLUG"] = task_slug
+            check_env["DGOV_MERGE_SHA"] = subprocess.run(
+                ["git", "-C", dag.project_root, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            check_env["DGOV_CHANGED_FILES"] = "\n".join(
+                f
+                for f in subprocess.run(
+                    ["git", "-C", dag.project_root, "diff", "--name-only", "HEAD~1", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                )
+                .stdout.strip()
+                .splitlines()
+                if f
+            )
             check_result = subprocess.run(
                 check_cmd,
                 shell=True,
                 cwd=dag.project_root,
                 capture_output=True,
                 text=True,
+                env=check_env,
             )
             if check_result.returncode != 0:
                 # Roll back the merge commit
