@@ -887,3 +887,58 @@ def list_merge_queue(session_root: str, status: str | None = None) -> list[dict]
         ).fetchall()
     cols = ["ticket", "branch", "requester", "status", "result", "created_at", "processed_at"]
     return [dict(zip(cols, r)) for r in rows]
+
+
+def queue_dispatch(session_root: str, entry: dict) -> int:
+    """Append to dispatch queue. Returns queue depth."""
+    import os as _os
+
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    row = json.dumps({**entry, "ts": time.time()}) + "\n"
+    fd = _os.open(str(queue_path), _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o644)
+    try:
+        _os.write(fd, row.encode())
+    finally:
+        _os.close(fd)
+    return sum(1 for _ in queue_path.open())
+
+
+def read_dispatch_queue(session_root: str) -> list[dict]:
+    """Read all queued dispatches."""
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    if not queue_path.is_file():
+        return []
+    items = []
+    for line in queue_path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return items
+
+
+def clear_dispatch_queue(session_root: str) -> int:
+    """Clear the dispatch queue. Returns number of items cleared."""
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    if not queue_path.is_file():
+        return 0
+    count = sum(1 for _ in queue_path.open())
+    queue_path.unlink()
+    return count
+
+
+def append_idea(session_root: str, text: str, summary: str) -> None:
+    """Append an idea to ideas.jsonl."""
+    import os as _os
+
+    ideas_path = Path(session_root) / ".dgov" / "ideas.jsonl"
+    ideas_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {"ts": time.time(), "text": text, "summary": summary}
+    fd = _os.open(str(ideas_path), _os.O_WRONLY | _os.O_CREAT | _os.O_APPEND, 0o644)
+    try:
+        _os.write(fd, (json.dumps(entry) + "\n").encode())
+    finally:
+        _os.close(fd)
