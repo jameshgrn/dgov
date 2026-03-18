@@ -35,7 +35,6 @@ _BLOCKED_PATTERNS = [
     re.compile(r"(?i)do you want to proceed"),
     re.compile(r"(?i)proceed\?"),
     re.compile(r"\by/n\b", re.IGNORECASE),
-    re.compile(r"\bY/N\b"),
     re.compile(r"\[yes/no\]", re.IGNORECASE),
     re.compile(r"(?i)are you sure"),
     re.compile(r"(?i)enter password"),
