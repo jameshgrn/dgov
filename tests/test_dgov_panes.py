@@ -2075,6 +2075,8 @@ class TestValidEvents:
             "monitor_nudge",
             "monitor_auto_complete",
             "monitor_idle_timeout",
+            "monitor_blocked",
+            "monitor_tick",
         }
         assert expected == VALID_EVENTS
 
