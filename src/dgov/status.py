@@ -415,13 +415,15 @@ _ANSI_RE = re.compile(
     r"|\x1b[\d;?]*[A-HJKfr]"  # Cursor positioning / scroll regions
     r"|\x1b\[\?[\d;]*[hl]"  # Private mode set/reset (DECSET/DECRST)
     r"|\x1b[78]"  # Save/restore cursor (DECSC/DECRC)
+    r"|\x1b\[[0-9;]*~"  # Bracketed paste markers (200~/201~)
     r"|[\x00-\x08\x0e-\x1f\x7f]"  # Control chars (wider range)
     r"|\r"  # Carriage returns
 )
 
 
 def _strip_ansi(text: str) -> str:
-    return _ANSI_RE.sub("", text)
+    text = _ANSI_RE.sub("", text)
+    return re.sub(r"\[\d{3}~", "", text)
 
 
 # -- Noise filtering --
