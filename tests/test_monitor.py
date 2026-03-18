@@ -337,3 +337,66 @@ class TestTakeActionBugFixes:
         action = _take_action("/tmp", "/tmp", worker, history)
         assert action == "stale_fail"
         mock_fail.assert_called_once()
+
+
+class TestTryAutoMerge:
+    """Test _try_auto_merge auto-merge logic."""
+
+    @patch("dgov.monitor.merge_worker_pane")
+    @patch("dgov.monitor.review_worker_pane")
+    def test_auto_merge_safe_verdict(self, mock_review, mock_merge):
+        from dgov.monitor import _try_auto_merge
+
+        mock_review.return_value = {"verdict": "safe", "slug": "test-1"}
+        mock_merge.return_value = {"merged": "test-1", "branch": "dgov-test-1"}
+        result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
+        assert result == "auto_merge"
+        mock_merge.assert_called_once()
+
+    @patch("dgov.monitor.review_worker_pane")
+    def test_auto_merge_review_verdict(self, mock_review):
+        from dgov.monitor import _try_auto_merge
+
+        mock_review.return_value = {"verdict": "review", "issues": ["uncommitted changes"]}
+        result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
+        assert result is None
+
+    @patch("dgov.monitor.review_worker_pane")
+    def test_auto_merge_review_error(self, mock_review):
+        from dgov.monitor import _try_auto_merge
+
+        mock_review.return_value = {"error": "Pane not found"}
+        result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
+        assert result is None
+
+
+class TestTryAutoRetry:
+    """Test _try_auto_retry auto-retry logic."""
+
+    @patch("dgov.monitor.maybe_auto_retry")
+    def test_auto_retry_success(self, mock_retry):
+        from dgov.monitor import _try_auto_retry
+
+        mock_retry.return_value = {"retried": "test-1", "new_slug": "test-1-2", "attempt": 1}
+        result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
+        assert result == "auto_retry"
+
+    @patch("dgov.monitor.maybe_auto_retry")
+    def test_auto_escalate(self, mock_retry):
+        from dgov.monitor import _try_auto_retry
+
+        mock_retry.return_value = {
+            "escalated": "test-1",
+            "to": "qwen35-122b",
+            "new_slug": "test-1-esc-1",
+        }
+        result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
+        assert result == "auto_escalate"
+
+    @patch("dgov.monitor.maybe_auto_retry")
+    def test_no_retry_policy(self, mock_retry):
+        from dgov.monitor import _try_auto_retry
+
+        mock_retry.return_value = None
+        result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
+        assert result is None
