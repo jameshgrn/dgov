@@ -73,7 +73,7 @@ def wait_for_shell_ready(pane_id: str, timeout: float = 3.0) -> bool:
     """
     import re
 
-    prompt_re = re.compile(r"[➜$%#>]\s*$")
+    prompt_re = re.compile(r"(^[➜$%#>]|[$%#>]\s*$)")
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         output = capture_pane(pane_id, lines=3)
