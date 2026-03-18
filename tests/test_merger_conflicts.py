@@ -58,7 +58,7 @@ def test_plumbing_success(mock_run, tmp_path):
 
 
 @patch("subprocess.run")
-def test_plumbing_conflict(mock_run):
+def test_plumbing_conflict(mock_run, tmp_path):
     """Test merge conflict when git operation returns nonzero."""
     from dgov.merger import _detect_conflicts, _plumbing_merge
 
@@ -71,7 +71,7 @@ def test_plumbing_conflict(mock_run):
     # Sequence for _plumbing_merge call
     mock_run.side_effect = [mock_head, mock_merge_tree]
 
-    result = _plumbing_merge("/fake/path", "test-branch")
+    result = _plumbing_merge(str(tmp_path), "test-branch")
 
     assert result.success is False
 
@@ -83,7 +83,7 @@ def test_plumbing_conflict(mock_run):
 
     mock_run.side_effect = [mock_merge_base, mock_merge_tree_output]
 
-    conflicts = _detect_conflicts("/fake/path", "test-branch")
+    conflicts = _detect_conflicts(str(tmp_path), "test-branch")
 
     assert "test.py" in conflicts
 
