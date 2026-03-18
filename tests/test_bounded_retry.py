@@ -107,7 +107,7 @@ class TestRetryOrEscalate:
 
     def test_terminal_agent_no_escalation(self, tmp_path, monkeypatch):
         """qwen3-max maps to itself — no further escalation possible."""
-        _seed_pane(tmp_path, slug="task-1", agent="qwen3-max", retry_count=2)
+        _seed_pane(tmp_path, slug="task-1", agent="qwen-max", retry_count=2)
         monkeypatch.setattr(
             "dgov.agents.load_registry",
             lambda *a, **kw: {},
