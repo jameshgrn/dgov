@@ -143,3 +143,74 @@ def dag_resume(dagfile, run_id, max_retries, max_concurrent):
             raise SystemExit(1)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
+
+
+@dag.command("status")
+@click.argument("dagfile", type=click.Path(exists=True))
+@click.option("--run-id", type=int, default=None, help="Specific run ID (default: most recent)")
+def dag_status(dagfile, run_id):
+    """Show status of a DAG run: tasks, agents, states."""
+    import os
+    from pathlib import Path
+
+    from dgov.persistence import (
+        _get_db,
+        ensure_dag_tables,
+        get_dag_run,
+        list_dag_tasks,
+    )
+
+    abs_path = str(Path(dagfile).resolve())
+    session_root = os.path.abspath(".")
+    ensure_dag_tables(session_root)
+
+    if run_id is not None:
+        run = get_dag_run(session_root, run_id)
+        if not run:
+            raise click.ClickException(f"DAG run {run_id} not found")
+    else:
+        conn = _get_db(session_root)
+        row = conn.execute(
+            "SELECT id, dag_file, started_at, status, current_tier, state_json"
+            " FROM dag_runs WHERE dag_file = ? ORDER BY id DESC LIMIT 1",
+            (abs_path,),
+        ).fetchone()
+        if not row:
+            raise click.ClickException(f"No runs found for {abs_path}")
+        run = {
+            "id": row[0],
+            "dag_file": row[1],
+            "started_at": row[2],
+            "status": row[3],
+            "current_tier": row[4],
+        }
+        run_id = run["id"]
+
+    tasks = list_dag_tasks(session_root, run_id)
+
+    click.echo(f"DAG run {run_id}: {run['status']}")
+    click.echo(f"  file: {run['dag_file']}")
+    click.echo(f"  started: {run.get('started_at', 'unknown')}")
+    click.echo(f"  tier: {run.get('current_tier', '?')}")
+    click.echo()
+
+    if not tasks:
+        click.echo("  (no tasks)")
+        return
+
+    # Column widths
+    max_slug = max(len(t["slug"]) for t in tasks)
+    max_agent = max(len(t.get("agent", "?")) for t in tasks)
+
+    for t in tasks:
+        slug = t["slug"].ljust(max_slug)
+        agent = t.get("agent", "?").ljust(max_agent)
+        status = t.get("status", "?")
+        attempt = t.get("attempt", 1)
+        error = t.get("error", "")
+        line = f"  {slug}  {agent}  {status}"
+        if attempt and attempt > 1:
+            line += f"  (attempt {attempt})"
+        if error:
+            line += f"  [{error[:60]}]"
+        click.echo(line)
