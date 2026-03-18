@@ -435,7 +435,7 @@ def run_monitor(
     project_root: str,
     session_root: str | None = None,
     *,
-    poll_interval: int = 15,
+    poll_interval: int = 5,
     dry_run: bool = False,
 ) -> None:
     """Run the monitor loop."""
@@ -462,8 +462,8 @@ def run_monitor(
                 # Reload hooks each tick for live updates
                 hooks = load_monitor_hooks(session_root)
 
-                # Prune stale panes every 10 ticks (~2.5 mins at 15s interval)
-                if tick % 10 == 0:
+                # Prune stale panes every 30 ticks (~2.5 mins at 5s interval)
+                if tick % 30 == 0:
                     pruned = prune_stale_panes(project_root, session_root)
                     if pruned:
                         logger.info("Monitor: pruned stale panes: %s", ", ".join(pruned))
@@ -487,7 +487,9 @@ def run_monitor(
                     json.dump(status, f, indent=2)
 
                 if workers:
-                    worker_states = ", ".join(f"{w['slug']}={w['classification']}" for w in workers)
+                    worker_states = ", ".join(
+                        f"{w['slug']}={w['classification']}" for w in workers
+                    )
                     logger.info("Tick %d: %s", tick, worker_states)
                     emit_event(session_root, "monitor_tick", "monitor", states=worker_states)
                 elif tick % 4 == 0:

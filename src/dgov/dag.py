@@ -27,6 +27,13 @@ from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
 logger = logging.getLogger(__name__)
 
 
+def _progress(msg: str) -> None:
+    """Print a progress message to stderr for DAG execution visibility."""
+    import sys
+
+    print(f"[dag] {msg}", file=sys.stderr, flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Single-tier execution helpers
 # ---------------------------------------------------------------------------
@@ -165,6 +172,7 @@ def _merge_tasks_in_order(
             return merged, result
 
         merged.append(task_slug)
+        _progress(f"  merged {task_slug}")
 
         # Run post-merge check if defined
         check_cmd = dag.tasks[task_slug].post_merge_check
@@ -201,6 +209,7 @@ def _merge_tasks_in_order(
                     ["git", "-C", dag.project_root, "reset", "--hard", "HEAD~1"],
                     capture_output=True,
                 )
+                _progress(f"  post_merge_check FAILED for {task_slug}, rolled back")
                 logger.error(
                     "Post-merge check failed for %s: %s",
                     task_slug,
@@ -264,6 +273,7 @@ def run_single_tier(
                 batch_panes[slug] = pane_info
                 all_active_panes[slug] = pane_info
                 task_states[slug] = "dispatched"
+                _progress(f"  dispatched {slug} ({task.agent})")
             except RuntimeError as exc:
                 if "Concurrency limit" in str(exc):
                     logger.info("Deferred %s due to concurrency limit", slug)
@@ -356,6 +366,7 @@ def run_single_tier(
         if review.get("passed"):
             reviewed_pass.append(task_slug)
             task_states[task_slug] = "reviewed_pass"
+            _progress(f"  reviewed {task_slug}: pass")
             upsert_dag_task(
                 session_root,
                 run_id,
@@ -367,6 +378,7 @@ def run_single_tier(
         else:
             reviewed_fail.append(task_slug)
             task_states[task_slug] = "reviewed_fail"
+            _progress(f"  reviewed {task_slug}: fail")
             upsert_dag_task(
                 session_root,
                 run_id,
@@ -720,6 +732,7 @@ def run_dag(
         if not active_tier:
             continue
 
+        _progress(f"Tier {tier_idx}: {', '.join(active_tier)}")
         update_dag_run(session_root, run_id, current_tier=tier_idx)
         emit_event(
             session_root, "dag_tier_started", f"dag/{run_id}", dag_run_id=run_id, tier=tier_idx
@@ -772,6 +785,7 @@ def run_dag(
         final_status = "failed"
     else:
         final_status = "completed"
+    _progress(f"DAG {final_status}: {len(all_merged)} merged, {len(all_failed)} failed")
     update_dag_run(session_root, run_id, status=final_status)
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
     return _build_summary(run_id, dag_file, final_status, task_states, all_merged, dag)

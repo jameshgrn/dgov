@@ -9,7 +9,7 @@ import click
 @click.command("monitor")
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 @click.option("--session-root", "-S", default=None)
-@click.option("--interval", "-i", default=15, type=int, help="Poll interval seconds")
+@click.option("--interval", "-i", default=5, type=int, help="Poll interval seconds")
 @click.option("--dry-run", is_flag=True, help="One poll cycle then exit")
 @click.option("--pane", is_flag=True, help="Launch in tmux utility pane")
 def monitor_cmd(project_root, session_root, interval, dry_run, pane):
