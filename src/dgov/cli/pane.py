@@ -72,7 +72,7 @@ def pane_util(command, title, cwd):
     help="Permission mode: plan, acceptEdits, bypassPermissions",
 )
 @click.option("--slug", "-s", default=None, help="Override auto-generated slug")
-@click.option("--extra-flags", "-f", default="", help="Extra flags for the agent CLI")
+@click.option("--extra-flags", "-x", default="", help="Extra flags for the agent CLI")
 @click.option(
     "--env",
     "-e",
