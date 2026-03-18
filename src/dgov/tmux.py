@@ -90,15 +90,15 @@ _SEND_KEYS_LIMIT = 200
 def send_command(pane_id: str, command: str) -> None:
     """Send a shell command to a pane and press Enter.
 
-    Short commands use send-keys directly. Commands over
-    ``_SEND_KEYS_LIMIT`` chars are written to a temp script and
-    sourced, avoiding tmux/zsh truncation.
+    Uses tmux paste-buffer for atomic delivery — avoids the character-
+    by-character race where zsh's line editor garbles early keystrokes.
+    Long commands (>200 chars) are written to a temp script and sourced
+    to avoid terminal buffer truncation.
+
     Only use this for shell commands at a shell prompt.
     For literal text input to a running agent, use ``send_text_input``.
     """
-    if len(command) <= _SEND_KEYS_LIMIT:
-        _run(["send-keys", "-t", pane_id, command, "Enter"])
-    else:
+    if len(command) > _SEND_KEYS_LIMIT:
         import shlex as _shlex
         import tempfile
 
@@ -109,7 +109,16 @@ def send_command(pane_id: str, command: str) -> None:
             f.write("\n")
             script_path = f.name
         quoted = _shlex.quote(script_path)
-        _run(["send-keys", "-t", pane_id, f"source {quoted}; rm -f {quoted}", "Enter"])
+        text = f"source {quoted}; rm -f {quoted}"
+    else:
+        text = command
+
+    # Atomic paste avoids zsh line-editor races with character-by-character send-keys
+    buf_name = f"dgov-cmd-{int(time.time() * 1000)}"
+    _run(["set-buffer", "-b", buf_name, "--", text])
+    _run(["paste-buffer", "-b", buf_name, "-t", pane_id])
+    _run(["send-keys", "-t", pane_id, "Enter"])
+    _run(["delete-buffer", "-b", buf_name], silent=True)
 
 
 def send_text_input(pane_id: str, text: str) -> None:
