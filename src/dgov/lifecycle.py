@@ -432,6 +432,12 @@ def create_worker_pane(
         if owns_worktree:
             _create_worktree(project_root, worktree_path, branch_name)
 
+            # Symlink .venv from main repo so workers skip uv sync
+            _main_venv = Path(project_root) / ".venv"
+            _wt_venv = Path(worktree_path) / ".venv"
+            if _main_venv.is_dir() and not _wt_venv.exists():
+                _wt_venv.symlink_to(_main_venv)
+
         # 2b. Generic health check (config-driven)
         if agent_def.health_check:
             hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
