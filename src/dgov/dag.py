@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
@@ -164,6 +165,35 @@ def _merge_tasks_in_order(
             return merged, result
 
         merged.append(task_slug)
+
+        # Run post-merge check if defined
+        check_cmd = dag.tasks[task_slug].post_merge_check
+        if check_cmd:
+            check_result = subprocess.run(
+                check_cmd,
+                shell=True,
+                cwd=dag.project_root,
+                capture_output=True,
+                text=True,
+            )
+            if check_result.returncode != 0:
+                # Roll back the merge commit
+                subprocess.run(
+                    ["git", "-C", dag.project_root, "reset", "--hard", "HEAD~1"],
+                    capture_output=True,
+                )
+                logger.error(
+                    "Post-merge check failed for %s: %s",
+                    task_slug,
+                    check_result.stderr or check_result.stdout,
+                )
+                return merged[:-1], {
+                    "error": f"Post-merge check failed for {task_slug}",
+                    "check_command": check_cmd,
+                    "check_stderr": check_result.stderr.strip(),
+                    "check_stdout": check_result.stdout.strip(),
+                }
+
         upsert_dag_task(session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent)
         emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
 
