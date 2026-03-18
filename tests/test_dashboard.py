@@ -20,7 +20,7 @@ class TestStateColor:
     def test_active(self):
         from dgov.dashboard import state_color
 
-        assert state_color("active") == "yellow"
+        assert state_color("active") == "bright_cyan"
 
     def test_done(self):
         from dgov.dashboard import state_color
