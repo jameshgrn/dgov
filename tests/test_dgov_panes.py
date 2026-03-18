@@ -2794,6 +2794,7 @@ class TestStructurePiPrompt:
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._generate_slug", return_value="pi-test"),
             patch("dgov.lifecycle.load_registry", return_value=pi_registry),
+            patch("dgov.lifecycle._write_worktree_instructions"),
         ):
 
             def _fake_run(cmd, **kwargs):
