@@ -12,7 +12,6 @@ import pytest
 
 from dgov.backend import set_backend
 from dgov.done import _has_new_commits, _is_done
-from dgov.lifecycle import _trigger_hook
 from dgov.persistence import (
     STATE_DIR,
     WorkerPane,
@@ -460,54 +459,6 @@ class TestIsDone:
                 is True
             )
         assert get_pane(str(tmp_path), "stale")["state"] == "done"
-
-
-# ---------------------------------------------------------------------------
-# _trigger_hook
-# ---------------------------------------------------------------------------
-
-
-class TestTriggerHook:
-    def test_runs_executable_hook(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        hook_dir = tmp_path / ".dgov-hooks"
-        hook_dir.mkdir(parents=True)
-        hook = hook_dir / "post-merge"
-        hook.write_text("#!/bin/bash\necho done")
-        hook.chmod(0o755)
-
-        captured = {}
-
-        def fake_run(cmd, **kw):
-            captured["cmd"] = cmd
-            mock = MagicMock()
-            mock.returncode = 0
-            return mock
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        _trigger_hook("post-merge", str(tmp_path), {"SLUG": "test"})
-        assert "cmd" in captured
-
-    def test_no_hook_noop(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No hook dirs exist — should not crash
-        calls = []
-        monkeypatch.setattr("subprocess.run", lambda *a, **kw: calls.append(1))
-        _trigger_hook("post-merge", str(tmp_path), {})
-        assert len(calls) == 0
-
-    def test_timeout_swallowed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-
-        hook_dir = tmp_path / ".dgov-hooks"
-        hook_dir.mkdir(parents=True)
-        hook = hook_dir / "post-merge"
-        hook.write_text("#!/bin/bash\nsleep 100")
-        hook.chmod(0o755)
-
-        def fake_run(*a, **kw):
-            raise subprocess.TimeoutExpired("hook", 10)
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        # Should not raise
-        _trigger_hook("post-merge", str(tmp_path), {})
 
 
 # ---------------------------------------------------------------------------
@@ -1892,7 +1843,6 @@ class TestEmitEvent:
         mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle._generate_slug", return_value="test-slug"),
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
@@ -1928,7 +1878,6 @@ class TestBlockTitleOverride:
         mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle._generate_slug", return_value="title-test"),
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
@@ -2843,7 +2792,6 @@ class TestStructurePiPrompt:
         mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle._generate_slug", return_value="pi-test"),
             patch("dgov.lifecycle.load_registry", return_value=pi_registry),
         ):
@@ -2878,7 +2826,6 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
 
     with (
         patch("dgov.lifecycle.subprocess.run") as mock_run,
-        patch("dgov.lifecycle._trigger_hook", return_value=False),
         patch("dgov.lifecycle._generate_slug", return_value="delay-test"),
         patch(
             "dgov.lifecycle.time.sleep",
@@ -2944,7 +2891,6 @@ class TestResumeWorkerPane:
         mock_backend.create_worker_pane.return_value = "%10"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
@@ -3011,7 +2957,6 @@ class TestResumeWorkerPane:
 
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle.load_registry", return_value=registry),
             patch(
                 "dgov.lifecycle.time.sleep",
@@ -3065,7 +3010,6 @@ class TestResumeWorkerPane:
         mock_backend.create_worker_pane.return_value = "%20"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
@@ -3118,7 +3062,6 @@ class TestResumeWorkerPane:
         mock_backend.create_worker_pane.return_value = "%30"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle.load_registry", return_value=registry),
             patch(
                 "dgov.lifecycle.build_launch_command", return_value="claude 'prompt'"
@@ -3239,7 +3182,6 @@ class TestResumeWorkerPane:
         mock_backend.create_worker_pane.return_value = "%new"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._trigger_hook", return_value=False),
             patch("dgov.lifecycle.load_registry", return_value=registry),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
