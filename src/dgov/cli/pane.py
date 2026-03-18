@@ -24,7 +24,7 @@ def _autocorrect_roots(
 
 
 def _fmt_duration(seconds: int) -> str:
-    from dgov.dashboard import fmt_duration
+    from dgov.dashboard_v2 import fmt_duration
 
     return fmt_duration(seconds)
 
