@@ -634,6 +634,7 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
         patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": ["worker.py"]}),
+        patch("dgov.merger._run_related_tests", return_value={}),
     ):
         result = merge_worker_pane(str(repo), "post-merge", session_root=str(repo))
 
