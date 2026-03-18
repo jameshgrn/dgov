@@ -242,10 +242,8 @@ def test_worker_pane_success_with_merge(tmp_path):
     }
 
     with patch("dgov.persistence.get_pane", return_value=mock_pane):
-        # Test by patching _is_done and _trigger_hook (hooks need env vars we don't have)
         with (
             patch("dgov.waiter._is_done", return_value=True),
-            patch("dgov.lifecycle._trigger_hook", return_value=True),
         ):
             result = merge_worker_pane(str(fake_project), "test-slug")
 
@@ -269,7 +267,6 @@ def test_worker_pane_skip_returns_conflict_error():
     with (
         patch("dgov.persistence.get_pane", return_value=mock_pane),
         patch("dgov.merger._commit_worktree", return_value={}),
-        patch("dgov.lifecycle._trigger_hook", return_value=True),
         patch("dgov.merger._rebase_onto_head", return_value=MergeResult(True, "")),
         patch("dgov.merger._plumbing_merge", return_value=MergeResult(False, "conflict")),
         patch("dgov.merger._detect_conflicts", return_value=["test.py"]),
