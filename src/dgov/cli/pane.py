@@ -188,8 +188,16 @@ def pane_create(
 
     if preflight:
         from dgov.preflight import fix_preflight, run_preflight
+        from dgov.router import is_routable
+        from dgov.router import resolve_agent as _resolve
 
-        preflight_agent = agent if agent in registry else "pi"
+        if is_routable(agent):
+            try:
+                preflight_agent, _ = _resolve(agent, session_root or project_root, project_root)
+            except RuntimeError:
+                preflight_agent = "pi"
+        else:
+            preflight_agent = agent if agent in registry else "pi"
         report = run_preflight(
             project_root=project_root,
             agent=preflight_agent,
