@@ -144,41 +144,6 @@ def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> No
     agents_md.write_text(content, encoding="utf-8")
 
 
-def _trigger_hook(
-    hook_name: str,
-    project_root: str,
-    env_extra: dict[str, str],
-    *,
-    timeout: int = 10,
-) -> bool:
-    """Run a hook script if it exists. Returns True if a hook ran successfully.
-
-    Searches directories in priority order (first match wins):
-    1. .dgov/hooks/ (gitignored, local overrides)
-    2. .dgov-hooks/ (version controlled, team hooks)
-    3. ~/.dgov/hooks/ (global user hooks)
-    """
-    hook_dirs = [
-        Path(project_root) / ".dgov" / "hooks",
-        Path(project_root) / ".dgov-hooks",
-        Path.home() / ".dgov" / "hooks",
-    ]
-    for hook_dir in hook_dirs:
-        hook_path = hook_dir / hook_name
-        if hook_path.is_file() and os.access(hook_path, os.X_OK):
-            try:
-                result = subprocess.run(
-                    [str(hook_path)],
-                    env={**os.environ, **env_extra},
-                    cwd=project_root,
-                    timeout=timeout,
-                    capture_output=True,
-                )
-                return result.returncode == 0
-            except (subprocess.TimeoutExpired, OSError):
-                return False
-    return False
-
 
 # -- Pane title --
 
