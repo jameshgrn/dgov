@@ -72,6 +72,8 @@ VALID_EVENTS = frozenset(
         "monitor_auto_complete",
         "monitor_idle_timeout",
         "monitor_blocked",
+        "monitor_auto_merge",
+        "monitor_auto_retry",
         "monitor_tick",
     }
 )
