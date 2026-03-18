@@ -33,7 +33,7 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture()
-def repo(tmp_path: Path):
+def repo(tmp_path: Path, monkeypatch):
     """Create a real git repo with an initial commit and mock backend/hooks."""
     repo_dir = str(tmp_path / "project")
     Path(repo_dir).mkdir()
@@ -59,6 +59,10 @@ def repo(tmp_path: Path):
     from dgov.backend import set_backend
 
     set_backend(mock_backend)
+
+    # Prevent real tmux calls during create_worker_pane
+    monkeypatch.setattr("dgov.tmux.wait_for_shell_ready", lambda *a, **kw: True)
+    monkeypatch.setattr("dgov.lifecycle._write_worktree_instructions", lambda *a, **kw: None)
 
     yield {
         "repo_dir": repo_dir,
