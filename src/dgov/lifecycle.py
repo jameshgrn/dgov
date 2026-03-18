@@ -144,7 +144,6 @@ def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> No
     agents_md.write_text(content, encoding="utf-8")
 
 
-
 # -- Pane title --
 
 

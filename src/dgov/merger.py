@@ -456,8 +456,8 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
 def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
     """Run pytest on test files related to changed source files.
 
-    Maps src/dgov/X.py -> tests/test_X.py. Returns {"tests_ran": [...], "tests_passed": bool, "test_output": str}
-    or empty dict if no related tests found.
+    Maps src/dgov/X.py -> tests/test_X.py. Returns empty dict if no
+    related tests found.
     """
     test_files: list[str] = []
     for f in changed_files:
