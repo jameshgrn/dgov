@@ -432,6 +432,56 @@ def _mark_idle_failed(
     logger.info("Monitor: timed out idle worker %s (reason=%s)", slug, reason)
 
 
+def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | None:
+    """Attempt to auto-merge a done pane if review verdict is safe."""
+    review = review_worker_pane(project_root, slug, session_root=session_root)
+    if review.get("error"):
+        logger.warning("Auto-merge review error for %s: %s", slug, review["error"])
+        return None
+    if review.get("verdict") != "safe":
+        logger.info(
+            "Skip auto-merge %s: verdict=%s issues=%s",
+            slug,
+            review.get("verdict"),
+            review.get("issues"),
+        )
+        return None
+    result = merge_worker_pane(project_root, slug, session_root=session_root)
+    if result.get("merged"):
+        emit_event(session_root, "monitor_auto_merge", slug)
+        logger.info("Monitor: auto-merged %s", slug)
+        return "auto_merge"
+    logger.warning("Auto-merge failed for %s: %s", slug, result.get("error"))
+    return None
+
+
+def _try_auto_retry(project_root: str, session_root: str, slug: str) -> str | None:
+    """Attempt to auto-retry a failed pane using its agent retry policy."""
+    result = maybe_auto_retry(session_root, slug, project_root)
+    if not result:
+        return None
+    if result.get("retried"):
+        emit_event(
+            session_root,
+            "monitor_auto_retry",
+            slug,
+            new_slug=result.get("new_slug", ""),
+        )
+        logger.info("Monitor: auto-retried %s -> %s", slug, result.get("new_slug"))
+        return "auto_retry"
+    if result.get("escalated"):
+        emit_event(
+            session_root,
+            "monitor_auto_retry",
+            slug,
+            escalated_to=result.get("to", ""),
+            new_slug=result.get("new_slug", ""),
+        )
+        logger.info("Monitor: auto-escalated %s -> %s", slug, result.get("to"))
+        return "auto_escalate"
+    return None
+
+
 def run_monitor(
     project_root: str,
     session_root: str | None = None,
@@ -442,6 +492,8 @@ def run_monitor(
     """Run the monitor loop."""
     session_root = session_root or project_root
     history: dict[str, dict] = {}
+    merge_attempted: set[str] = set()
+    retry_attempted: set[str] = set()
 
     # Ensure logging is configured for console output
     logging.basicConfig(
@@ -477,6 +529,34 @@ def run_monitor(
                     if action:
                         actions.append({"slug": w["slug"], "action": action})
                         print(f"[{time.strftime('%H:%M:%S')}] Action: {action} -> {w['slug']}")
+
+                # Auto-merge done panes and auto-retry failed panes
+                all_recs = all_panes(session_root)
+                for rec in all_recs:
+                    s = rec.get("slug", "")
+                    st = rec.get("state", "")
+                    if st == "done" and s not in merge_attempted:
+                        try:
+                            act = _try_auto_merge(project_root, session_root, s)
+                            if act:
+                                actions.append({"slug": s, "action": act})
+                                print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
+                            else:
+                                merge_attempted.add(s)
+                        except Exception:
+                            logger.warning("Auto-merge error for %s", s, exc_info=True)
+                            merge_attempted.add(s)
+                    elif st == "failed" and s not in retry_attempted:
+                        try:
+                            act = _try_auto_retry(project_root, session_root, s)
+                            if act:
+                                actions.append({"slug": s, "action": act})
+                                print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
+                            else:
+                                retry_attempted.add(s)
+                        except Exception:
+                            logger.warning("Auto-retry error for %s", s, exc_info=True)
+                            retry_attempted.add(s)
 
                 status = {
                     "timestamp": time.time(),
