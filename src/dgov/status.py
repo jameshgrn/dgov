@@ -319,7 +319,7 @@ def list_worker_panes(
     return [result[i] for i in sorted(seen.values())]
 
 
-_TERMINAL_PRUNE_STATES = frozenset({"abandoned", "closed", "merged"})
+_TERMINAL_PRUNE_STATES = frozenset({"abandoned", "closed", "done", "failed", "merged"})
 _TERMINAL_PRUNE_AGE_S = 3600  # 1 hour
 
 

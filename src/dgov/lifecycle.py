@@ -641,7 +641,7 @@ def close_worker_pane(
         close_worker_pane(project_root, child_slug, session_root, force=force)
 
     # Auto-enable force for merged/closed panes
-    if target.get("state") in ("merged", "closed"):
+    if target.get("state") in ("merged", "closed", "done", "failed"):
         force = True
 
     result = _full_cleanup(
