@@ -453,6 +453,41 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
     return result
 
 
+def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
+    """Run pytest on test files related to changed source files.
+
+    Maps src/dgov/X.py -> tests/test_X.py. Returns {"tests_ran": [...], "tests_passed": bool, "test_output": str}
+    or empty dict if no related tests found.
+    """
+    test_files: list[str] = []
+    for f in changed_files:
+        if f.startswith("tests/") and f.endswith(".py"):
+            abs_path = str(Path(project_root) / f)
+            if Path(abs_path).exists():
+                test_files.append(abs_path)
+        elif f.startswith("src/dgov/") and f.endswith(".py"):
+            name = Path(f).stem
+            candidate = Path(project_root) / "tests" / f"test_{name}.py"
+            if candidate.exists():
+                test_files.append(str(candidate))
+    if not test_files:
+        return {}
+    test_files = sorted(set(test_files))
+    result = subprocess.run(
+        ["uv", "run", "pytest", "-q", "-m", "unit", *test_files],
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+        timeout=120,
+    )
+    output = (result.stdout + result.stderr).strip()
+    return {
+        "tests_ran": [str(Path(f).relative_to(project_root)) for f in test_files],
+        "tests_passed": result.returncode == 0,
+        "test_output": output[-500:] if len(output) > 500 else output,
+    }
+
+
 # -- Conflict detection --
 
 
@@ -867,6 +902,13 @@ def merge_worker_pane(
                 if damaged:
                     logger.warning("Protected files changed after merge: %s", damaged)
             lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
+            test_result = _run_related_tests(pane_project_root, changed_file_names)
+            if test_result:
+                logger.info(
+                    "Post-merge tests: passed=%s files=%s",
+                    test_result.get("tests_passed"),
+                    test_result.get("tests_ran"),
+                )
 
         result = {
             "merged": slug,
@@ -884,6 +926,8 @@ def merge_worker_pane(
             result["stash_warnings"] = merge.warnings
         if lint_result:
             result.update(lint_result)
+        if test_result:
+            result.update(test_result)
         return result
 
     # Plumbing merge failed — detect conflicts for resolution
