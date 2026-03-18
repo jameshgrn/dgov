@@ -236,6 +236,10 @@ def _setup_and_launch_agent(
         env_lines.append(f"export {key}={shlex.quote(val)}")
     if env_lines:
         backend.send_shell_command(pane_id, " && ".join(env_lines))
+        from dgov.tmux import wait_for_shell_ready
+
+        if not wait_for_shell_ready(pane_id, timeout=2.0):
+            logger.warning("Shell prompt not detected after env setup for %s", slug)
 
     # 4. Trigger worktree_created hook
     hook_env = {
