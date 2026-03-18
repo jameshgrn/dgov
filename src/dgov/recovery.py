@@ -31,22 +31,26 @@ class RetryPolicy:
     backoff_base: float = 5.0
 
 
-# Default escalation chain: maps an agent to the next-tier agent.
-# Terminal agents (codex) map to themselves — no further escalation.
+# Default escalation chain: maps an agent to the next-tier Qwen worker.
+# Terminal agents map to themselves — governor decides whether to dispatch an LT-GOV.
 ESCALATION_CHAIN: dict[str, str] = {
-    "pi": "claude",
-    "hunter": "claude",
-    "gemini": "claude",
-    "claude": "codex",
-    "codex": "codex",
-    "cursor": "codex",
+    "river-4b": "river-9b",
+    "river-9b": "river-35b",
+    "river-35b": "qwen35-122b",
+    "qwen35-9b": "qwen35-35b",
+    "qwen35-flash": "qwen35-35b",
+    "qwen35-35b": "qwen35-122b",
+    "qwen35-122b": "qwen35-397b",
+    "qwen35-397b": "qwen3-max",
+    "qwen3-max": "qwen3-max",
+    "hunter": "qwen35-35b",
 }
 
 
 def escalate_worker_pane(
     project_root: str,
     slug: str,
-    target_agent: str = "claude",
+    target_agent: str = "river-35b",
     session_root: str | None = None,
     permission_mode: str = "bypassPermissions",
 ) -> dict:
