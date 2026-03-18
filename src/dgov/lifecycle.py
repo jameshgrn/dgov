@@ -133,6 +133,8 @@ def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> No
             "- Do NOT push to remote\n"
             "- Commit your changes with a clear message\n"
             "- Call `dgov worker complete` when done\n\n"
+            "## Project context\n"
+            "- CLAUDE.md.full has the original project instructions (this file has worker-only rules)\n\n"
             "## Commit checklist\n"
             "1. git add <changed files>\n"
             '2. git commit -m "<message>"\n'
