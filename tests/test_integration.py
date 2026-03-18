@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -60,12 +60,11 @@ def repo(tmp_path: Path):
 
     set_backend(mock_backend)
 
-    with patch("dgov.lifecycle._trigger_hook", return_value=False):
-        yield {
-            "repo_dir": repo_dir,
-            "session_root": session_root,
-            "backend": mock_backend,
-        }
+    yield {
+        "repo_dir": repo_dir,
+        "session_root": session_root,
+        "backend": mock_backend,
+    }
 
     set_backend(None)  # type: ignore[arg-type]
     _close_cached_connections()
