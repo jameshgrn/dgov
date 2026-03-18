@@ -31,19 +31,28 @@ class RetryPolicy:
     backoff_base: float = 5.0
 
 
-# Default escalation chain: maps an agent to the next-tier Qwen worker.
-# Terminal agents map to themselves — governor decides whether to dispatch an LT-GOV.
+# Default escalation chain: maps agents to the next-tier logical name.
+# Logical names get resolved by the router to available physical backends.
 ESCALATION_CHAIN: dict[str, str] = {
-    "river-4b": "river-9b",
-    "river-9b": "river-35b",
-    "river-35b": "qwen35-122b",
-    "qwen35-9b": "qwen35-35b",
-    "qwen35-flash": "qwen35-35b",
-    "qwen35-35b": "qwen35-122b",
-    "qwen35-122b": "qwen35-397b",
-    "qwen35-397b": "qwen3-max",
-    "qwen3-max": "qwen3-max",
-    "hunter": "qwen35-35b",
+    # Logical names (preferred — resolved by router)
+    "qwen-4b": "qwen-9b",
+    "qwen-9b": "qwen-35b",
+    "qwen-35b": "qwen-122b",
+    "qwen-122b": "qwen-397b",
+    "qwen-397b": "qwen-max",
+    "qwen-max": "qwen-max",
+    # Physical names (backward compat for panes that stored physical agent)
+    "river-4b": "qwen-9b",
+    "river-9b": "qwen-35b",
+    "river-35b": "qwen-122b",
+    "river-35b-2": "qwen-122b",
+    "qwen35-9b": "qwen-35b",
+    "qwen35-flash": "qwen-35b",
+    "qwen35-35b": "qwen-122b",
+    "qwen35-122b": "qwen-397b",
+    "qwen35-397b": "qwen-max",
+    "qwen3-max": "qwen-max",
+    "hunter": "qwen-35b",
 }
 
 
