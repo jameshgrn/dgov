@@ -44,7 +44,8 @@ Only Claude Code can be governor. Workers are always Qwen models. Claude, Gemini
 
 ### Selection rules
 
-- Default to `river-35b`. If River tunnel is down, fall back to `qwen35-35b`.
+- **Always use logical agent names** (`qwen-35b`, `qwen-9b`, etc.) — never physical names (`river-35b`, `qwen35-35b`). The router handles health checks and fallback automatically.
+- Default to `qwen-35b`. Escalate to `qwen-122b` or `qwen-397b` for complex single-file reasoning.
 - Never dispatch claude/gemini/codex as a worker. If the task needs them, make them an LT-GOV.
 - One file per task for Qwen workers. Multi-file = LT-GOV.
 - Review exists to catch failures — dispatch cheap, retry cheap.
