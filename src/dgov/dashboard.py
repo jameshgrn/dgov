@@ -257,18 +257,13 @@ def _sort_panes_hierarchical(
 def _build_worker_table(panes: list[dict], selected: int) -> Table:
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
     table.add_column("Slug", ratio=3, no_wrap=True)
-    table.add_column("Agent", width=8, no_wrap=True)
+    table.add_column("Agent", ratio=2, no_wrap=True)
     table.add_column("State", width=16, no_wrap=True)
-    table.add_column("Summary", ratio=4)
 
     sorted_panes = _sort_panes_hierarchical(panes, selected)
 
     for p, indent_level, is_last_child, orig_idx in sorted_panes:
         pstate = p.get("state", "active")
-        activity = p.get("activity", "")
-        # Prefer prompt (task purpose) over log tail (often terminal noise)
-        prompt = p.get("prompt", "")
-        summary = prompt or p.get("summary", str(activity)[:60]) or ""
         is_selected = orig_idx == selected
         role = p.get("role", "worker")
 
@@ -298,9 +293,8 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
         commit_tag = " [bold green]C[/bold green]" if has_commits else ""
 
         state_text = Text.from_markup(f"[{color}]{display_state} {dur}[/{color}]{commit_tag}")
-        summary_text = Text(str(summary)[:60])
 
-        table.add_row(slug_display, agent, state_text, summary_text, style=style)
+        table.add_row(slug_display, agent, state_text, style=style)
 
     return table
 
