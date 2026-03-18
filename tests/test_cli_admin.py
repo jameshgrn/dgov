@@ -210,9 +210,9 @@ class TestDashboardCmd:
         assert expected_cmd in args[0][-1]
         assert kwargs.get("check") is True
 
-    def test_dashboard_inline_calls_v2(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_dashboard_inline_calls_run(self, runner: CliRunner, tmp_path: Path) -> None:
         with patch(
-            "dgov.dashboard_v2.run_dashboard_v2",
+            "dgov.dashboard.run_dashboard",
             return_value=None,
         ) as mock_run:
             result = runner.invoke(cli, ["dashboard", "-r", str(tmp_path)])

@@ -489,7 +489,7 @@ def _acquire_dashboard_lock(session_root: str) -> tuple[Path, object] | None:
     return pidfile, fd
 
 
-def run_dashboard_v2(
+def run_dashboard(
     project_root: str,
     session_root: str | None = None,
     refresh_interval: float = 1.0,

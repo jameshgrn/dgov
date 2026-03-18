@@ -1,4 +1,4 @@
-"""Unit tests for dashboard v2."""
+"""Unit tests for the dgov dashboard."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from rich.text import Text
 
 
 def _render_dashboard_text(state, width: int, height: int) -> str:
-    from dgov.dashboard_v2 import _build_layout
+    from dgov.dashboard import _build_layout
 
     console = Console(record=True, force_terminal=True, width=width, height=height)
     console.print(_build_layout(state, term_width=width, term_height=height))
@@ -18,32 +18,32 @@ def _render_dashboard_text(state, width: int, height: int) -> str:
 @pytest.mark.unit
 class TestStateColor:
     def test_active(self):
-        from dgov.dashboard_v2 import state_color
+        from dgov.dashboard import state_color
 
         assert state_color("active") == "yellow"
 
     def test_done(self):
-        from dgov.dashboard_v2 import state_color
+        from dgov.dashboard import state_color
 
         assert state_color("done") == "green"
 
     def test_failed(self):
-        from dgov.dashboard_v2 import state_color
+        from dgov.dashboard import state_color
 
         assert state_color("failed") == "red"
 
     def test_merged(self):
-        from dgov.dashboard_v2 import state_color
+        from dgov.dashboard import state_color
 
         assert state_color("merged") == "green"
 
     def test_escalated(self):
-        from dgov.dashboard_v2 import state_color
+        from dgov.dashboard import state_color
 
         assert state_color("escalated") == "magenta"
 
     def test_unknown(self):
-        from dgov.dashboard_v2 import state_color
+        from dgov.dashboard import state_color
 
         assert state_color("nonexistent") == "white"
 
@@ -51,32 +51,32 @@ class TestStateColor:
 @pytest.mark.unit
 class TestFmtDuration:
     def test_seconds(self):
-        from dgov.dashboard_v2 import fmt_duration
+        from dgov.dashboard import fmt_duration
 
         assert fmt_duration(45) == "45s"
 
     def test_minutes(self):
-        from dgov.dashboard_v2 import fmt_duration
+        from dgov.dashboard import fmt_duration
 
         assert fmt_duration(125) == "2m5s"
 
     def test_hours(self):
-        from dgov.dashboard_v2 import fmt_duration
+        from dgov.dashboard import fmt_duration
 
         assert fmt_duration(3661) == "1h1m"
 
     def test_negative(self):
-        from dgov.dashboard_v2 import fmt_duration
+        from dgov.dashboard import fmt_duration
 
         assert fmt_duration(-5) == "0s"
 
 
 @pytest.mark.unit
 class TestImports:
-    def test_dashboard_v2_importable(self):
-        from dgov.dashboard_v2 import run_dashboard_v2
+    def test_dashboard_importable(self):
+        from dgov.dashboard import run_dashboard
 
-        assert callable(run_dashboard_v2)
+        assert callable(run_dashboard)
 
     def test_terrain_importable(self):
         from dgov.terrain import ErosionModel, render_terrain
@@ -89,7 +89,7 @@ class TestImports:
 class TestSanitization:
     def test_markup_injection_in_table(self):
         """Rich markup in slug should not be interpreted."""
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         panes = [
             {
@@ -109,7 +109,7 @@ class TestSanitization:
 
     def test_ansi_in_activity(self):
         """ANSI codes in activity should not break rendering."""
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         panes = [
             {
@@ -157,13 +157,13 @@ class TestTerrain:
 @pytest.mark.unit
 class TestWorkerTable:
     def test_empty_panes(self):
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         table = _build_worker_table([], 0)
         assert table.row_count == 0
 
     def test_multiple_panes(self):
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         panes = [
             {
@@ -188,12 +188,12 @@ class TestWorkerTable:
 @pytest.mark.unit
 class TestSortPanesHierarchical:
     def test_empty(self):
-        from dgov.dashboard_v2 import _sort_panes_hierarchical
+        from dgov.dashboard import _sort_panes_hierarchical
 
         assert _sort_panes_hierarchical([], 0) == []
 
     def test_ltgov_before_standalone(self):
-        from dgov.dashboard_v2 import _sort_panes_hierarchical
+        from dgov.dashboard import _sort_panes_hierarchical
 
         panes = [
             {"slug": "worker-a", "role": "worker"},
@@ -204,7 +204,7 @@ class TestSortPanesHierarchical:
         assert slugs == ["lt-gov-1", "worker-a"]
 
     def test_children_nested_under_parent(self):
-        from dgov.dashboard_v2 import _sort_panes_hierarchical
+        from dgov.dashboard import _sort_panes_hierarchical
 
         panes = [
             {"slug": "standalone", "role": "worker"},
@@ -217,7 +217,7 @@ class TestSortPanesHierarchical:
         assert slugs == ["lt-gov-1", "child-1", "child-2", "standalone"]
 
     def test_last_child_flag(self):
-        from dgov.dashboard_v2 import _sort_panes_hierarchical
+        from dgov.dashboard import _sort_panes_hierarchical
 
         panes = [
             {"slug": "lt-gov-1", "role": "lt-gov"},
@@ -230,7 +230,7 @@ class TestSortPanesHierarchical:
         assert result[2][2] is True  # child-2 is_last_child
 
     def test_original_index_preserved(self):
-        from dgov.dashboard_v2 import _sort_panes_hierarchical
+        from dgov.dashboard import _sort_panes_hierarchical
 
         panes = [
             {"slug": "standalone", "role": "worker"},
@@ -242,7 +242,7 @@ class TestSortPanesHierarchical:
         assert result[1][3] == 0  # standalone original_index
 
     def test_orphan_children_still_rendered(self):
-        from dgov.dashboard_v2 import _sort_panes_hierarchical
+        from dgov.dashboard import _sort_panes_hierarchical
 
         panes = [
             {"slug": "orphan", "role": "worker", "parent_slug": "missing-gov"},
@@ -255,7 +255,7 @@ class TestSortPanesHierarchical:
 @pytest.mark.unit
 class TestWorkerTableHierarchy:
     def test_ltgov_diamond_prefix(self):
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         panes = [
             {
@@ -270,7 +270,7 @@ class TestWorkerTableHierarchy:
         assert table.row_count == 1
 
     def test_child_tree_prefix(self):
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         panes = [
             {
@@ -293,7 +293,7 @@ class TestWorkerTableHierarchy:
         assert table.row_count == 2
 
     def test_mixed_hierarchy_row_count(self):
-        from dgov.dashboard_v2 import _build_worker_table
+        from dgov.dashboard import _build_worker_table
 
         panes = [
             {
@@ -326,14 +326,14 @@ class TestWorkerTableHierarchy:
 @pytest.mark.unit
 class TestPreviewState:
     def test_preview_fields_default(self):
-        from dgov.dashboard_v2 import DashboardState
+        from dgov.dashboard import DashboardState
 
         state = DashboardState()
         assert state.preview_lines == []
         assert state.preview_visible is False
 
     def test_preview_hidden_by_default(self):
-        from dgov.dashboard_v2 import DashboardState
+        from dgov.dashboard import DashboardState
 
         state = DashboardState(
             panes=[
@@ -354,7 +354,7 @@ class TestPreviewState:
         assert "Output:" not in output
 
     def test_preview_shown_when_visible(self):
-        from dgov.dashboard_v2 import DashboardState
+        from dgov.dashboard import DashboardState
 
         state = DashboardState(
             panes=[
@@ -376,7 +376,7 @@ class TestPreviewState:
         assert "hello from worker" in output
 
     def test_preview_hidden_when_no_lines(self):
-        from dgov.dashboard_v2 import DashboardState
+        from dgov.dashboard import DashboardState
 
         state = DashboardState(
             panes=[
@@ -397,7 +397,7 @@ class TestPreviewState:
         assert "Output:" not in output
 
     def test_footer_includes_preview_key(self):
-        from dgov.dashboard_v2 import DashboardState
+        from dgov.dashboard import DashboardState
 
         state = DashboardState(branch="main", last_refresh=1710000000)
         output = _render_dashboard_text(state, width=120, height=20)
@@ -407,7 +407,7 @@ class TestPreviewState:
 @pytest.mark.unit
 class TestLayoutRendering:
     def test_dashboard_text_is_visible(self):
-        from dgov.dashboard_v2 import DashboardState
+        from dgov.dashboard import DashboardState
 
         state = DashboardState(
             panes=[
@@ -431,7 +431,7 @@ class TestLayoutRendering:
         assert "q:quit" in output
 
     def test_build_layout_reuses_existing_tree(self):
-        from dgov.dashboard_v2 import DashboardState, _build_layout
+        from dgov.dashboard import DashboardState, _build_layout
 
         state = DashboardState(
             panes=[
@@ -456,7 +456,7 @@ class TestLayoutRendering:
         assert layout["body"]["bottom"]["preview"].visible is True
 
     def test_monitor_panel_exists(self):
-        from dgov.dashboard_v2 import DashboardState, _build_layout
+        from dgov.dashboard import DashboardState, _build_layout
 
         state = DashboardState(branch="main", last_refresh=1710000000)
         layout = _build_layout(state, term_width=120, term_height=20)

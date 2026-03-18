@@ -17,8 +17,8 @@ The codebase is largely well-structured with most modules serving clear purposes
 ### monitor_hooks.py
 - No significant issues. Clean small module (85 lines) with a single `MonitorHook` dataclass.
 
-### dashboard_v2.py
-- [LINE:1] OVERLAP: `dashboard_v2.py` appears to be an older or alternative version alongside `dashboard.py` (which is 846 lines vs 80 lines). The v2 file is much smaller and likely incomplete or deprecated.
+### dashboard.py
+- Canonical dashboard implementation. Rich-based live TUI with pane focus and event stream.
 
 ### agents.py
 - No significant issues. Core module for agent management and communication.
@@ -79,12 +79,12 @@ The codebase is largely well-structured with most modules serving clear purposes
 
 1. **`retry.py` + `recovery.py`** — These share retry-related responsibilities. Consider merging retry policy logic into recovery.py or clearly documenting the boundary (retry.py = policy/decisions, recovery.py = execution).
 
-2. **`dashboard.py` vs `dashboard_v2.py`** — Determine which is canonical. If v2 is newer, migrate and delete v1. If v1 is canonical, delete v2.
+2. **`dashboard.py`** — Consolidated (was dashboard_v2.py).
 
 3. **`art.py` + `metrics.py`** — Both are minimal (1 function each). Consider moving `print_banner` to CLI and `compute_stats` to inspection.py or a utils module.
 
 ## Recommended deletions
 
 - `models.py` — Replace imports of `MergeResult` with direct imports from `inspection.py`
-- `dashboard_v2.py` — If `dashboard.py` is the active version (846 lines vs 80 lines)
+- ~~`dashboard_v2.py`~~ — Consolidated into `dashboard.py`
 - `strategy.py` — If `build_prompt_dict` and `load_prompt_from_env` can be relocated

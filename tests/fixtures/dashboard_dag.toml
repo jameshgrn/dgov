@@ -47,11 +47,11 @@ summary = "Rich dashboard core"
 agent = "hunter"
 escalation = ["gemini"]
 depends_on = ["T0a"]
-prompt = "Implement Rich-based live dashboard in dashboard_v2.py."
+prompt = "Implement Rich-based live dashboard in dashboard.py."
 commit_message = "Add Rich dashboard v2"
 
 [tasks.T1a.files]
-create = ["src/dgov/dashboard_v2.py"]
+create = ["src/dgov/dashboard.py"]
 
 [tasks.T2a]
 summary = "Terrain sidebar integration"
@@ -62,7 +62,7 @@ prompt = "Add erosion terrain sidebar to dashboard v2."
 commit_message = "Add terrain sidebar"
 
 [tasks.T2a.files]
-edit = ["src/dgov/dashboard_v2.py"]
+edit = ["src/dgov/dashboard.py"]
 
 [tasks.T3a]
 summary = "Wire CLI with v1 fallback"
@@ -80,8 +80,8 @@ summary = "Dashboard v2 unit tests"
 agent = "hunter"
 escalation = ["gemini"]
 depends_on = ["T1a", "T2a", "T3a"]
-prompt = "Write unit tests for dashboard_v2.py."
+prompt = "Write unit tests for dashboard.py."
 commit_message = "Add dashboard v2 tests"
 
 [tasks.T4a.files]
-create = ["tests/test_dashboard_v2.py"]
+create = ["tests/test_dashboard.py"]

@@ -22,7 +22,7 @@ dgov is a Python-based CLI tool designed to orchestrate AI coding agents. This p
 | `backend.py` | `WorkerBackend` protocol for environmental abstraction. |
 | `tmux.py` | Low-level tmux command wrappers. |
 | `openrouter.py` | OpenRouter API client for model queries. |
-| `dashboard_v2.py`| Modern live TUI with pane focus and event stream. |
+| `dashboard.py`   | Modern live TUI with pane focus and event stream. |
 | `experiment.py` | Iterative hypothesis testing loops and metric tracking. |
 | `retry.py` | Auto-retry engine and circuit breaker logic. |
 | `responder.py` | Auto-responder rules to unblock worker panes. |

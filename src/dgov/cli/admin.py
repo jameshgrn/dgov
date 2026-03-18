@@ -274,9 +274,9 @@ def dashboard(project_root, session_root, refresh, pane):
         )
         click.echo(json.dumps({"dashboard": "launched in pane"}))
         return
-    from dgov.dashboard_v2 import run_dashboard_v2
+    from dgov.dashboard import run_dashboard
 
-    run_dashboard_v2(project_root, session_root, refresh)
+    run_dashboard(project_root, session_root, refresh)
 
 
 @click.command("terrain")
