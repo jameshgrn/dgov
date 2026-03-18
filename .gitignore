@@ -12,3 +12,5 @@ site/
 .dgov-worker-hooks/
 .cursorrules
 .clinerules
+AGENTS.md
+CLAUDE.md.full
