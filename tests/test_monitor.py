@@ -25,7 +25,8 @@ class TestClassifyOutput:
 
         mock_llm.return_value = {"choices": [{"message": {"content": "done"}}]}
         # Use a string that doesn't hit DETERMINISTIC_PATTERNS
-        assert classify_output("I have completed the requested changes and verified them.") == "done"
+        result = classify_output("I have completed the requested changes and verified them.")
+        assert result == "done"
 
     @patch("dgov.monitor.chat_completion_local_first")
     def test_classify_stuck(self, mock_llm):
@@ -33,7 +34,10 @@ class TestClassifyOutput:
 
         mock_llm.return_value = {"choices": [{"message": {"content": "stuck"}}]}
         # Use a string that doesn't hit DETERMINISTIC_PATTERNS
-        assert classify_output("I am trying to find the issue but I keep looking at the same files.") == "stuck"
+        assert (
+            classify_output("I am trying to find the issue but I keep looking at the same files.")
+            == "stuck"
+        )
 
     @patch("dgov.monitor.chat_completion_local_first")
     def test_classify_idle(self, mock_llm):
@@ -199,7 +203,6 @@ class TestTakeAction:
         assert "new-w" in history
         assert "working" in history["new-w"]["classifications"]
 
-
     @patch("dgov.monitor.get_pane", return_value={"state": "active"})
     @patch("dgov.monitor._auto_complete")
     def test_done_with_commits_acts_immediately(self, mock_complete, mock_get_pane):
@@ -306,7 +309,9 @@ class TestTakeActionBugFixes:
         from dgov.monitor import _take_action
 
         worker = {"slug": "w1", "classification": "waiting_input", "has_commits": False}
-        history = {"w1": {"classifications": ["waiting_input", "waiting_input"], "last_action_at": 0}}
+        history = {
+            "w1": {"classifications": ["waiting_input", "waiting_input"], "last_action_at": 0}
+        }
         action = _take_action("/tmp", "/tmp", worker, history)
         assert action == "blocked_event"
         mock_emit.assert_called_with("/tmp", "monitor_blocked", "w1", reason="waiting_input")

@@ -229,7 +229,7 @@ def _is_done(
                     if stype == "api":
                         # If agent is dead but shell is alive, and we have commits, we are done.
                         if pane_id and not _agent_still_running(pane_id, current_command):
-                            logger.debug("new_commits slug=%s agent exited, shell alive — done", slug)
+                            logger.debug("new_commits slug=%s agent exited — done", slug)
                             # Fall through to done
                         elif _stable_state is not None:
                             _stable_state["commits_detected"] = True
