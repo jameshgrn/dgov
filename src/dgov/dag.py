@@ -7,15 +7,16 @@ import logging
 import os
 from pathlib import Path
 
-from dgov.dag_graph import (
+from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
     compute_tiers,
     render_dry_run,
     topological_order,
     transitive_dependents,
-    validate_dag,  # noqa: F401 — re-exported for batch.py / tests
+    validate_dag,
 )
-from dgov.dag_parser import (
+from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
     DagDefinition,
+    DagFileSpec,
     DagRunOptions,
     DagRunSummary,
     DagTaskSpec,

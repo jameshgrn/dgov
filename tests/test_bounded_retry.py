@@ -199,7 +199,7 @@ class TestEscalationChain:
             done_strategy: DoneStrategy | None = None
 
         monkeypatch.setattr(
-            "dgov.agents.load_registry",
+            "dgov.recovery.load_registry",
             lambda *a, **kw: {"pi": FakeAgent()},
         )
         result = _resolve_escalation_target("pi", "/fake")
