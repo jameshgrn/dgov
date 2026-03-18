@@ -786,13 +786,19 @@ def pane_capture(slug, project_root, session_root, lines):
 )
 @SESSION_ROOT_OPTION
 @click.option("--full", is_flag=True, help="Show complete diff (not just stat)")
-def pane_review(slug, project_root, session_root, full):
+@click.option("--diff", "show_diff", is_flag=True, help="Include full diff in review output")
+def pane_review(slug, project_root, session_root, full, show_diff):
     """Preview a worker pane's changes before merging."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.inspection import review_worker_pane
 
     result = review_worker_pane(project_root, slug, session_root=session_root, full=full)
+    if show_diff and "error" not in result:
+        from dgov.inspection import diff_worker_pane
+
+        diff_result = diff_worker_pane(project_root, slug, session_root=session_root)
+        result["diff"] = diff_result.get("diff", "")
     click.echo(json.dumps(result, indent=2))
     if "error" in result:
         sys.exit(1)
