@@ -16,15 +16,19 @@ from typing import TYPE_CHECKING
 from dgov.agents import load_registry
 from dgov.backend import get_backend
 from dgov.done import _has_new_commits
+from dgov.inspection import review_worker_pane
+from dgov.merger import merge_worker_pane
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.openrouter import chat_completion_local_first
 from dgov.persistence import (
     STATE_DIR,
+    all_panes,
     emit_event,
     get_pane,
     set_pane_metadata,
     update_pane_state,
 )
+from dgov.recovery import maybe_auto_retry
 from dgov.status import list_worker_panes, prune_stale_panes, tail_worker_log
 
 if TYPE_CHECKING:
@@ -488,6 +492,8 @@ def run_monitor(
     *,
     poll_interval: int = 5,
     dry_run: bool = False,
+    auto_merge: bool = True,
+    auto_retry: bool = True,
 ) -> None:
     """Run the monitor loop."""
     session_root = session_root or project_root
@@ -531,32 +537,33 @@ def run_monitor(
                         print(f"[{time.strftime('%H:%M:%S')}] Action: {action} -> {w['slug']}")
 
                 # Auto-merge done panes and auto-retry failed panes
-                all_recs = all_panes(session_root)
-                for rec in all_recs:
-                    s = rec.get("slug", "")
-                    st = rec.get("state", "")
-                    if st == "done" and s not in merge_attempted:
-                        try:
-                            act = _try_auto_merge(project_root, session_root, s)
-                            if act:
-                                actions.append({"slug": s, "action": act})
-                                print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
-                            else:
+                if auto_merge or auto_retry:
+                    all_recs = all_panes(session_root)
+                    for rec in all_recs:
+                        s = rec.get("slug", "")
+                        st = rec.get("state", "")
+                        if auto_merge and st == "done" and s not in merge_attempted:
+                            try:
+                                act = _try_auto_merge(project_root, session_root, s)
+                                if act:
+                                    actions.append({"slug": s, "action": act})
+                                    print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
+                                else:
+                                    merge_attempted.add(s)
+                            except Exception:
+                                logger.warning("Auto-merge error for %s", s, exc_info=True)
                                 merge_attempted.add(s)
-                        except Exception:
-                            logger.warning("Auto-merge error for %s", s, exc_info=True)
-                            merge_attempted.add(s)
-                    elif st == "failed" and s not in retry_attempted:
-                        try:
-                            act = _try_auto_retry(project_root, session_root, s)
-                            if act:
-                                actions.append({"slug": s, "action": act})
-                                print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
-                            else:
+                        elif auto_retry and st == "failed" and s not in retry_attempted:
+                            try:
+                                act = _try_auto_retry(project_root, session_root, s)
+                                if act:
+                                    actions.append({"slug": s, "action": act})
+                                    print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
+                                else:
+                                    retry_attempted.add(s)
+                            except Exception:
+                                logger.warning("Auto-retry error for %s", s, exc_info=True)
                                 retry_attempted.add(s)
-                        except Exception:
-                            logger.warning("Auto-retry error for %s", s, exc_info=True)
-                            retry_attempted.add(s)
 
                 status = {
                     "timestamp": time.time(),
