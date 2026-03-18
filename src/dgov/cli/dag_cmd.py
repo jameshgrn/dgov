@@ -20,7 +20,13 @@ def dag():
 @click.option("--skip", multiple=True, help="Skip a task slug (repeatable)")
 @click.option("--max-retries", type=int, default=1, help="Max retries per task before escalation")
 @click.option("--auto-merge/--no-auto-merge", default=True, help="Auto-merge reviewed-pass tasks")
-def dag_run(dagfile, dry_run, tier, skip, max_retries, auto_merge):
+@click.option(
+    "--max-concurrent",
+    type=int,
+    default=0,
+    help="Max tasks dispatched simultaneously per tier (0=unlimited)",
+)
+def dag_run(dagfile, dry_run, tier, skip, max_retries, auto_merge, max_concurrent):
     """Execute a TOML DAG file."""
     from dgov.dag import compute_tiers, parse_dag_file, render_dry_run, run_dag
 
@@ -38,6 +44,7 @@ def dag_run(dagfile, dry_run, tier, skip, max_retries, auto_merge):
             skip=set(skip) if skip else None,
             max_retries=max_retries,
             auto_merge=auto_merge,
+            max_concurrent=max_concurrent,
         )
         click.echo(json.dumps(asdict(summary), indent=2, default=str))
         if summary.failed:

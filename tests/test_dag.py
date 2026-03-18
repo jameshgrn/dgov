@@ -1008,3 +1008,32 @@ class TestUnhappyPathVerification:
         # This should be True — if it were "failed" this would catch the bug
         assert summary.status == "completed"
         assert summary.status != "failed"
+
+
+class TestMaxConcurrent:
+    def test_parse_max_concurrent_from_toml(self):
+        toml = textwrap.dedent("""\
+            [dag]
+            version = 1
+            name = "concurrent-test"
+            max_concurrent = 3
+
+            [tasks.T0]
+            summary = "A"
+            agent = "pi"
+            prompt = "do A"
+            commit_message = "A"
+
+            [tasks.T0.files]
+            edit = ["a.py"]
+        """)
+        dag = parse_dag_file(_write_toml(toml))
+        assert dag.max_concurrent == 3
+
+    def test_max_concurrent_defaults_to_zero(self):
+        dag = parse_dag_file(_write_toml(MINIMAL_TOML))
+        assert dag.max_concurrent == 0
+
+    def test_dag_run_options_max_concurrent(self):
+        opts = DagRunOptions(max_concurrent=2)
+        assert opts.max_concurrent == 2

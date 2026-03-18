@@ -204,10 +204,11 @@ def run_single_tier(
     wait_results: dict[str, dict] = {}
 
     while remaining:
+        max_batch = options.max_concurrent if options.max_concurrent > 0 else len(remaining)
         batch_panes: dict[str, dict] = {}
-        deferred: list[str] = []
+        deferred: list[str] = remaining[max_batch:]
 
-        for slug in remaining:
+        for slug in remaining[:max_batch]:
             task = dag.tasks[slug]
             try:
                 pane_info = _dispatch_task(dag, task, run_id, session_root)
@@ -609,18 +610,21 @@ def run_dag(
     skip: set[str] | None = None,
     max_retries: int = 1,
     auto_merge: bool = True,
+    max_concurrent: int = 0,
 ) -> DagRunSummary:
     """Execute a TOML DAG: dispatch, wait, review, merge per tier."""
     from dgov.lifecycle import close_worker_pane
     from dgov.persistence import emit_event, update_dag_run, upsert_dag_task
 
     dag = parse_dag_file(dag_file)
+    effective_concurrent = max_concurrent if max_concurrent > 0 else dag.max_concurrent
     options = DagRunOptions(
         dry_run=dry_run,
         tier_limit=tier_limit,
         skip=frozenset(skip or ()),
         max_retries=max_retries,
         auto_merge=auto_merge,
+        max_concurrent=effective_concurrent,
     )
 
     if dry_run:

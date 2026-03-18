@@ -37,6 +37,7 @@ class DagDefinition:
     default_max_retries: int
     merge_resolve: str
     merge_squash: bool
+    max_concurrent: int
     tasks: dict[str, DagTaskSpec]
 
 
@@ -47,6 +48,7 @@ class DagRunOptions:
     skip: frozenset[str] = frozenset()
     max_retries: int = 1
     auto_merge: bool = True
+    max_concurrent: int = 0
 
 
 @dataclass
@@ -96,6 +98,7 @@ def parse_dag_file(path: str) -> DagDefinition:
         default_max_retries=dag_section.get("default_max_retries", 1),
         merge_resolve=dag_section.get("merge_resolve", "skip"),
         merge_squash=dag_section.get("merge_squash", True),
+        max_concurrent=dag_section.get("max_concurrent", 0),
         tasks=tasks,
     )
 
