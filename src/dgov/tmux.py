@@ -118,6 +118,7 @@ def send_command(pane_id: str, command: str) -> None:
     buf_name = f"dgov-cmd-{int(time.time() * 1000)}"
     _run(["set-buffer", "-b", buf_name, "--", text])
     _run(["paste-buffer", "-b", buf_name, "-t", pane_id])
+    time.sleep(0.1)
     _run(["send-keys", "-t", pane_id, "Enter"])
     _run(["delete-buffer", "-b", buf_name], silent=True)
 
