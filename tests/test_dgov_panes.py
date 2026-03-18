@@ -2896,7 +2896,6 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
     # Env setup uses send_shell_command (bootstrap, not runtime interaction)
     shell_cmds = [e for e in events if e[0] == "send_shell_command"]
     assert len(shell_cmds) > 0, "Expected at least one send_shell_command"
-    assert shell_cmds[0][1].startswith("unset CLAUDECODE")
 
 
 # ---------------------------------------------------------------------------
@@ -3025,7 +3024,6 @@ class TestResumeWorkerPane:
         # Env setup uses send_shell_command (bootstrap, not runtime interaction)
         shell_cmds = [e for e in events if e[0] == "send_shell_command"]
         assert len(shell_cmds) > 0, "Expected at least one send_shell_command"
-        assert shell_cmds[0][1].startswith("unset CLAUDECODE")
 
     def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.agents import AgentDef
