@@ -499,6 +499,7 @@ def send_prompt_via_buffer(pane_id: str, prompt: str) -> None:
     buf_name = f"dgov-{int(time.time() * 1000)}"
     _run(["set-buffer", "-b", buf_name, "--", prompt])
     _run(["paste-buffer", "-b", buf_name, "-t", pane_id])
+    time.sleep(0.5)
     _run(["send-keys", "-t", pane_id, "Enter"])
     _run(["delete-buffer", "-b", buf_name], silent=True)
 
