@@ -819,18 +819,16 @@ def merge_worker_pane(
 
     # Auto-rebase worker branch onto HEAD to prevent stale-branch conflicts.
     # Skip for rebase merges — _rebase_merge already rebases internally.
+    rebase_fallback = False
     if not rebase:
         pre_rebase = _rebase_onto_head(pane_project_root, branch_name)
         if not pre_rebase.success:
-            _persist.update_pane_state(session_root, slug, "merge_conflict")
-            return {
-                "error": f"Auto-rebase failed for {branch_name}",
-                "slug": slug,
-                "branch": branch_name,
-                "rebase_stderr": pre_rebase.stderr,
-                "hint": "Worker branch has conflicts with current HEAD. "
-                "Resolve manually or re-dispatch the task.",
-            }
+            logger.warning(
+                "Auto-rebase failed for %s, falling back to plumbing merge: %s",
+                branch_name,
+                pre_rebase.stderr,
+            )
+            rebase_fallback = True
 
     # Dispatch merge strategy
     if rebase:
@@ -893,6 +891,8 @@ def merge_worker_pane(
             "stat": merge_stat,
             "files_changed": merge_files_changed,
         }
+        if rebase_fallback:
+            result["rebase_fallback"] = True
         if commit_result.get("committed"):
             result["auto_committed"] = commit_result["files"]
         if damaged:

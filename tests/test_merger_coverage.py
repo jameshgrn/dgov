@@ -860,3 +860,51 @@ def test_merge_worker_pane_surfaces_stash_warnings(
 
     assert result["merged"] == "surface-warn"
     assert result["stash_warnings"] == ["stash pop conflict"]
+
+
+def test_merge_worker_pane_falls_back_when_rebase_fails(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """When auto-rebase fails, plumbing merge is attempted as fallback."""
+    repo = _init_repo(tmp_path, "rebase-fallback")
+    worktree = _add_worktree(repo, tmp_path, "dgov-rebase-fb")
+
+    # Create divergent history: commit on main after branch point
+    (repo / "other.py").write_text("main change\n")
+    _git(repo, "add", "other.py")
+    _git(repo, "commit", "-m", "diverge main")
+
+    # Commit on worker branch (non-overlapping file)
+    (worktree / "worker.py").write_text("worker change\n")
+    _git(worktree, "add", "worker.py")
+    _git(worktree, "commit", "-m", "worker commit")
+
+    session_root = str(repo)
+    from dgov.persistence import WorkerPane, _get_db, add_pane
+
+    _get_db(session_root)
+    pane = WorkerPane(
+        slug="rebase-fb",
+        prompt="test",
+        pane_id="%99",
+        agent="pi",
+        project_root=str(repo),
+        worktree_path=str(worktree),
+        branch_name="dgov-rebase-fb",
+        state="done",
+    )
+    add_pane(session_root, pane)
+
+    # Monkey-patch _rebase_onto_head to simulate failure
+    with patch("dgov.merger._rebase_onto_head") as mock_rebase:
+        mock_rebase.return_value = MergeResult(
+            success=False,
+            stderr="CONFLICT: simulated rebase failure",
+        )
+        result = merge_worker_pane(str(repo), "rebase-fb", session_root=session_root)
+
+    # Should succeed via plumbing merge fallback, not error
+    assert "error" not in result, f"Unexpected error: {result}"
+    assert result["merged"] == "rebase-fb"
+    assert result.get("rebase_fallback") is True
