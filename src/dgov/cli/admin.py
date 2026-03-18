@@ -483,3 +483,118 @@ def doctor_cmd(project_root):
     else:
         click.echo("Some checks failed.")
     sys.exit(0 if ok else 1)
+
+
+@click.command("gc")
+@click.option("--root", "-r", default=".", help="Project root")
+@SESSION_ROOT_OPTION
+@click.option("--dry-run", is_flag=True, help="Show what would be cleaned")
+def gc_cmd(root, session_root, dry_run):
+    """Garbage-collect stale tmux sessions, worktrees, and branches."""
+    import shutil
+
+    from dgov.backend import get_backend
+    from dgov.persistence import STATE_DIR, all_panes, remove_pane
+
+    root = Path(root).resolve()
+    session_root = Path(session_root).resolve() if session_root else root
+    backend = get_backend()
+    removed = []
+
+    # 1. Kill dead tmux panes in state DB
+    panes = all_panes(str(session_root))
+    for p in panes:
+        pane_id = p.get("pane_id", "")
+        slug = p["slug"]
+        alive = backend.is_alive(pane_id) if pane_id else False
+        state = p.get("state", "")
+        if not alive and state in ("done", "failed", "abandoned", "closed", "merged"):
+            if dry_run:
+                click.echo(f"[dry-run] remove pane entry: {slug} ({state})")
+            else:
+                remove_pane(str(session_root), slug)
+                done_path = session_root / STATE_DIR / "done" / slug
+                done_path.unlink(missing_ok=True)
+            removed.append(f"pane:{slug}")
+
+    # 2. Remove orphaned worktree directories
+    wt_dir = root / ".dgov" / "worktrees"
+    if wt_dir.is_dir():
+        known_wts = {p.get("worktree_path") for p in panes}
+        for entry in wt_dir.iterdir():
+            if not entry.is_dir():
+                continue
+            if str(entry) in known_wts:
+                continue
+            if dry_run:
+                click.echo(f"[dry-run] remove orphan worktree: {entry.name}")
+            else:
+                shutil.rmtree(entry, ignore_errors=True)
+            removed.append(f"worktree:{entry.name}")
+
+    # 3. Remove orphaned git worktrees
+    wt_list = subprocess.run(
+        ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    if wt_list.returncode == 0:
+        first = True
+        for line in wt_list.stdout.splitlines():
+            if line.startswith("worktree "):
+                if first:
+                    first = False
+                    continue
+                wt_path = line.split(" ", 1)[1]
+                if not Path(wt_path).exists():
+                    if dry_run:
+                        click.echo(f"[dry-run] prune git worktree: {wt_path}")
+                    else:
+                        subprocess.run(
+                            ["git", "-C", str(root), "worktree", "remove", "--force", wt_path],
+                            capture_output=True,
+                        )
+                    removed.append(f"git-worktree:{Path(wt_path).name}")
+
+    # 4. Delete stale dgov- branches (merged into main)
+    br_result = subprocess.run(
+        ["git", "-C", str(root), "branch", "--merged", "main"],
+        capture_output=True,
+        text=True,
+    )
+    if br_result.returncode == 0:
+        for line in br_result.stdout.splitlines():
+            branch = line.strip().lstrip("* ")
+            if branch.startswith("dgov-"):
+                if dry_run:
+                    click.echo(f"[dry-run] delete merged branch: {branch}")
+                else:
+                    subprocess.run(
+                        ["git", "-C", str(root), "branch", "-d", branch],
+                        capture_output=True,
+                    )
+                removed.append(f"branch:{branch}")
+
+    # 5. Kill dead dgov-* tmux sessions (no attached clients, no panes)
+    sess_result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}:#{session_attached}"],
+        capture_output=True,
+        text=True,
+    )
+    if sess_result.returncode == 0:
+        for line in sess_result.stdout.splitlines():
+            parts = line.rsplit(":", 1)
+            if len(parts) != 2:
+                continue
+            sess_name, attached = parts[0], parts[1]
+            if sess_name.startswith("dgov-") and attached == "0":
+                if dry_run:
+                    click.echo(f"[dry-run] kill detached session: {sess_name}")
+                else:
+                    subprocess.run(
+                        ["tmux", "kill-session", "-t", sess_name],
+                        capture_output=True,
+                    )
+                removed.append(f"session:{sess_name}")
+
+    click.echo(json.dumps({"gc": removed, "count": len(removed), "dry_run": dry_run}))
