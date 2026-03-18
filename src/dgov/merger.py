@@ -9,7 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from dgov.models import MergeResult
+from dgov.inspection import MergeResult
 from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
 
 logger = logging.getLogger(__name__)

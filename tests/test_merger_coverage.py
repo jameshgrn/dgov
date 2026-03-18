@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dgov.backend import set_backend
+from dgov.inspection import MergeResult
 from dgov.merger import (
     _lint_fix_merged_files,
     _no_squash_merge,
@@ -17,7 +18,6 @@ from dgov.merger import (
     _restore_protected_files,
     merge_worker_pane,
 )
-from dgov.models import MergeResult
 from dgov.persistence import IllegalTransitionError, _close_cached_connections
 
 pytestmark = pytest.mark.unit

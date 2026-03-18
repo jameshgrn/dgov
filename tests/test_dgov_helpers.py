@@ -8,8 +8,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from dgov.backend import set_backend
+from dgov.inspection import MergeResult
 from dgov.lifecycle import _build_pane_title, _state_icon
-from dgov.models import MergeResult
 from dgov.persistence import (
     WorkerPane,
     _validate_state,

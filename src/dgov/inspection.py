@@ -5,6 +5,11 @@ from __future__ import annotations
 import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
+
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dgov.persistence import (
@@ -14,6 +19,15 @@ from dgov.persistence import (
     read_events,
 )
 from dgov.status import _compute_freshness
+
+
+@dataclass
+class MergeResult:
+    success: bool
+    stdout: str = ""
+    stderr: str = ""
+    conflicts: list[dict[str, str]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def review_worker_pane(

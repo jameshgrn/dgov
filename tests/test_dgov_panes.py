@@ -1532,8 +1532,8 @@ class TestMergeWorkerPane:
     def test_successful_merge(
         self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
+        from dgov.inspection import MergeResult
         from dgov.merger import merge_worker_pane
-        from dgov.models import MergeResult
 
         mock_merge.return_value = MergeResult(success=True)
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
@@ -1561,8 +1561,8 @@ class TestMergeWorkerPane:
     def test_successful_merge_ignores_stale_abandoned_state(
         self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
+        from dgov.inspection import MergeResult
         from dgov.merger import merge_worker_pane
-        from dgov.models import MergeResult
         from dgov.persistence import IllegalTransitionError
 
         mock_merge.return_value = MergeResult(success=True)
