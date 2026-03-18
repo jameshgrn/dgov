@@ -177,15 +177,22 @@ def pane_create(
         click.echo(json.dumps({"auto_classified": agent}), err=True)
 
     if agent not in registry:
-        click.echo(f"Unknown agent: {agent}. Available: {', '.join(registry)}", err=True)
-        sys.exit(1)
+        from dgov.router import is_routable
+
+        if not is_routable(agent):
+            from dgov.router import available_names
+
+            all_names = sorted(set(registry) | set(available_names()))
+            click.echo(f"Unknown agent: {agent}. Available: {', '.join(all_names)}", err=True)
+            sys.exit(1)
 
     if preflight:
         from dgov.preflight import fix_preflight, run_preflight
 
+        preflight_agent = agent if agent in registry else "pi"
         report = run_preflight(
             project_root=project_root,
-            agent=agent,
+            agent=preflight_agent,
             session_root=session_root,
         )
         if not report.passed and fix:
