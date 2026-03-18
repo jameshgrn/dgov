@@ -558,6 +558,10 @@ def run_dashboard(
                         ch = "k"
                     elif seq == "[B":
                         ch = "j"
+                    elif seq == "[H":
+                        ch = "g"
+                    elif seq == "[F":
+                        ch = "G"
                 if ch == "q":
                     break
                 elif ch == "j":
@@ -571,6 +575,17 @@ def run_dashboard(
                         state.selected = max(0, state.selected - 1)
                         if state.selected < state.scroll_offset:
                             state.scroll_offset = state.selected
+                    live.refresh()
+                elif ch == "g":
+                    with state.lock:
+                        state.selected = 0
+                        state.scroll_offset = 0
+                    live.refresh()
+                elif ch == "G":
+                    with state.lock:
+                        state.selected = max(0, len(state.panes) - 1)
+                        if state.selected >= state.scroll_offset + _VISIBLE_ROWS:
+                            state.scroll_offset = state.selected - _VISIBLE_ROWS + 1
                     live.refresh()
                 elif ch == "r":
                     state.force_refresh.set()
