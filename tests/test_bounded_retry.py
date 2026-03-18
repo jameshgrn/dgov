@@ -101,7 +101,7 @@ class TestRetryOrEscalate:
             str(tmp_path), "task-1", session_root=str(tmp_path), max_retries=2
         )
         assert result["action"] == "escalate"
-        assert result["agent"] == "qwen35-122b"  # river-35b -> qwen35-122b in ESCALATION_CHAIN
+        assert result["agent"] == "qwen-122b"  # river-35b -> qwen-122b in ESCALATION_CHAIN
         assert result["from_agent"] == "river-35b"
         assert result["retry_count"] == 0
 
@@ -166,14 +166,14 @@ class TestRetryOrEscalate:
 
 class TestEscalationChain:
     def test_default_chain_coverage(self):
-        assert ESCALATION_CHAIN["river-4b"] == "river-9b"
-        assert ESCALATION_CHAIN["river-9b"] == "river-35b"
-        assert ESCALATION_CHAIN["river-35b"] == "qwen35-122b"
-        assert ESCALATION_CHAIN["qwen35-35b"] == "qwen35-122b"
-        assert ESCALATION_CHAIN["qwen35-122b"] == "qwen35-397b"
-        assert ESCALATION_CHAIN["qwen35-397b"] == "qwen3-max"
-        assert ESCALATION_CHAIN["qwen3-max"] == "qwen3-max"
-        assert ESCALATION_CHAIN["hunter"] == "qwen35-35b"
+        assert ESCALATION_CHAIN["river-4b"] == "qwen-9b"
+        assert ESCALATION_CHAIN["river-9b"] == "qwen-35b"
+        assert ESCALATION_CHAIN["river-35b"] == "qwen-122b"
+        assert ESCALATION_CHAIN["qwen35-35b"] == "qwen-122b"
+        assert ESCALATION_CHAIN["qwen35-122b"] == "qwen-397b"
+        assert ESCALATION_CHAIN["qwen35-397b"] == "qwen-max"
+        assert ESCALATION_CHAIN["qwen-max"] == "qwen-max"
+        assert ESCALATION_CHAIN["hunter"] == "qwen-35b"
 
     def test_unknown_agent_returns_self(self, tmp_path, monkeypatch):
         """Agents not in the chain map to themselves (no escalation)."""
