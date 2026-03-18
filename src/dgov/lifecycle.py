@@ -469,6 +469,11 @@ def create_worker_pane(
             cwd=worktree_path, env=startup_env, name=slug, agent=agent
         )
 
+        # Wait for shell to initialize before sending commands.
+        # Without this, send-keys arrives before zsh loads .zshrc,
+        # causing commands to echo raw then replay — garbling source scripts.
+        time.sleep(0.3)
+
         # 4. Setup and launch agent
         pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
         if pi_ext:

@@ -160,8 +160,8 @@ def _poll_once(
             ):
                 get_backend().send_input(
                     _pane_id,
-                    "REMINDER: commit your work and signal completion: "
-                    "git add <files> && git commit -m 'message' && "
+                    "# REMINDER: commit your work and signal completion:\n"
+                    "# git add <files> && git commit -m 'message' && "
                     "dgov worker complete -m 'summary'",
                 )
                 _nudged_slugs.add(slug)

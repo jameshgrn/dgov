@@ -52,6 +52,7 @@ def pane_util(command, title, cwd):
 @click.option("--prompt", "-p", default=None, help="Task prompt for the agent")
 @click.option(
     "--prompt-file",
+    "-f",
     type=click.Path(exists=True),
     default=None,
     help="Read prompt from file instead of -p",
