@@ -38,11 +38,34 @@ def worker():
 @click.option("--message", "-m", default="", help="Completion message")
 def worker_complete(message):
     """Signal that this worker has finished its task successfully."""
+    import subprocess
     from pathlib import Path
 
     from dgov.persistence import emit_event, update_pane_state
 
     session_root, slug = _require_worker_env()
+    worktree = os.environ.get("DGOV_WORKTREE_PATH", "")
+
+    # Auto-commit uncommitted changes before signaling done
+    if worktree and Path(worktree).is_dir():
+        status = subprocess.run(
+            ["git", "-C", worktree, "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+        )
+        if status.stdout.strip():
+            subprocess.run(
+                ["git", "-C", worktree, "add", "-A"],
+                capture_output=True,
+            )
+            commit_msg = message or f"Auto-commit from {slug}"
+            subprocess.run(
+                ["git", "-C", worktree, "commit", "-m", commit_msg],
+                capture_output=True,
+                env={**os.environ, "DGOV_SKIP_GOVERNOR_CHECK": "1"},
+            )
+            click.echo(json.dumps({"auto_committed": True, "slug": slug}), err=True)
+
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.parent.mkdir(parents=True, exist_ok=True)
     done_path.touch()
