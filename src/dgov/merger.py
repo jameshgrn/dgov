@@ -852,7 +852,7 @@ def merge_worker_pane(
         "DGOV_BRANCH": branch_name or "",
         "DGOV_BASE_SHA": target.get("base_sha", ""),
         "DGOV_SLUG": slug,
-        "DGOVPROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
+        "DGOV_PROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
     }
     if not _trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
         _restore_protected_files(pane_project_root, target)
@@ -930,7 +930,7 @@ def merge_worker_pane(
             "DGOV_SLUG": slug,
             "DGOV_BRANCH": branch_name or "",
             "DGOV_CHANGED_FILES": "\n".join(changed_file_names),
-            "DGOVPROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
+            "DGOV_PROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
         }
         hook_ran = _trigger_hook("post_merge", pane_project_root, post_merge_env, timeout=30)
 
