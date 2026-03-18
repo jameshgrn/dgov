@@ -26,6 +26,7 @@ class DagTaskSpec:
     files: DagFileSpec
     permission_mode: str
     timeout_s: int
+    post_merge_check: str = ""
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,7 @@ def _parse_task(
         files=files,
         permission_mode=raw.get("permission_mode", defaults["permission_mode"]),
         timeout_s=raw.get("timeout_s", defaults["timeout_s"]),
+        post_merge_check=raw.get("post_merge_check", ""),
     )
 
 

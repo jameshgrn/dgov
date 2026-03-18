@@ -368,6 +368,7 @@ def run_single_tier(
                     files=task.files,
                     permission_mode=task.permission_mode,
                     timeout_s=task.timeout_s,
+                    post_merge_check=task.post_merge_check,
                 )
                 pane_info = _dispatch_task(dag, retry_task, run_id, session_root)
                 retry_batch[task_slug] = pane_info

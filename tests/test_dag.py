@@ -1001,6 +1001,47 @@ class TestFixtureTiers:
         assert t4a_tier == len(tiers) - 1
 
 
+class TestPostMergeCheck:
+    def test_parse_post_merge_check_from_toml(self):
+        toml = textwrap.dedent("""\
+            [dag]
+            version = 1
+            name = "check-test"
+
+            [tasks.T0]
+            summary = "A"
+            agent = "pi"
+            prompt = "do A"
+            commit_message = "A"
+            post_merge_check = "uv run pytest tests/ -q"
+
+            [tasks.T0.files]
+            edit = ["a.py"]
+        """)
+        dag = parse_dag_file(_write_toml(toml))
+        assert dag.tasks["T0"].post_merge_check == "uv run pytest tests/ -q"
+
+    def test_post_merge_check_defaults_to_empty(self):
+        dag = parse_dag_file(_write_toml(MINIMAL_TOML))
+        assert dag.tasks["T0"].post_merge_check == ""
+
+    def test_dag_task_spec_has_post_merge_check(self):
+        task = DagTaskSpec(
+            slug="t",
+            summary="s",
+            prompt="p",
+            commit_message="c",
+            agent="pi",
+            escalation=(),
+            depends_on=(),
+            files=DagFileSpec(create=("f.py",)),
+            permission_mode="bypassPermissions",
+            timeout_s=900,
+            post_merge_check="echo ok",
+        )
+        assert task.post_merge_check == "echo ok"
+
+
 class TestUnhappyPathVerification:
     """Verify tests catch real failures."""
 
