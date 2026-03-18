@@ -59,7 +59,7 @@ ESCALATION_CHAIN: dict[str, str] = {
 def escalate_worker_pane(
     project_root: str,
     slug: str,
-    target_agent: str = "river-35b",
+    target_agent: str = "qwen-35b",
     session_root: str | None = None,
     permission_mode: str = "bypassPermissions",
 ) -> dict:

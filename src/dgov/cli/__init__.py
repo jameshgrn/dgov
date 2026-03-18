@@ -352,6 +352,7 @@ from dgov.cli.admin import (  # noqa: E402
     blame,
     dashboard,
     doctor_cmd,
+    gc_cmd,
     init_cmd,
     list_agents,
     preflight_cmd,
@@ -398,6 +399,7 @@ cli.add_command(briefing_cmd)
 cli.add_command(terrain_cmd)
 cli.add_command(worker)
 cli.add_command(monitor_cmd)
+cli.add_command(gc_cmd)
 
 
 if __name__ == "__main__":
