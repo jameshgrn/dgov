@@ -51,6 +51,12 @@ def pane_util(command, title, cwd):
 @click.option("--agent", "-a", default=None, help="Agent CLI to launch (use 'auto' to classify)")
 @click.option("--prompt", "-p", default=None, help="Task prompt for the agent")
 @click.option(
+    "--prompt-file",
+    type=click.Path(exists=True),
+    default=None,
+    help="Read prompt from file instead of -p",
+)
+@click.option(
     "--project-root",
     "-r",
     default=".",
@@ -100,6 +106,7 @@ def pane_util(command, title, cwd):
 def pane_create(
     agent,
     prompt,
+    prompt_file,
     project_root,
     session_root,
     permission_mode,
@@ -123,6 +130,11 @@ def pane_create(
 
     registry = load_registry(project_root)
     skip_auto_structure = False
+
+    if prompt_file:
+        from pathlib import Path
+
+        prompt = Path(prompt_file).read_text().strip()
 
     if template:
         from dgov.templates import load_templates, render_template
@@ -153,13 +165,8 @@ def pane_create(
         if agent is None:
             agent = tpl.default_agent or get_default_agent(registry)
         skip_auto_structure = True
-    elif prompt is None:
-        click.echo("Either --prompt or --template is required.", err=True)
-        sys.exit(1)
-
-    if prompt is not None and not prompt.strip():
-        click.echo("Prompt cannot be empty.", err=True)
-        sys.exit(1)
+    elif not prompt:
+        raise click.ClickException("Prompt required: use -p, --prompt-file, or -T/--template")
 
     if agent is None:
         agent = get_default_agent(registry)
