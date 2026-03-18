@@ -1844,6 +1844,7 @@ class TestEmitEvent:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._generate_slug", return_value="test-slug"),
+            patch("dgov.lifecycle._write_worktree_instructions"),
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
             create_worker_pane(
@@ -1879,6 +1880,7 @@ class TestBlockTitleOverride:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._generate_slug", return_value="title-test"),
+            patch("dgov.lifecycle._write_worktree_instructions"),
         ):
             mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
             create_worker_pane(
@@ -2794,6 +2796,7 @@ class TestStructurePiPrompt:
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._generate_slug", return_value="pi-test"),
             patch("dgov.lifecycle.load_registry", return_value=pi_registry),
+            patch("dgov.lifecycle._write_worktree_instructions"),
         ):
 
             def _fake_run(cmd, **kwargs):
@@ -2831,6 +2834,7 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
             "dgov.lifecycle.time.sleep",
             side_effect=lambda seconds: events.append(("sleep", seconds)),
         ),
+        patch("dgov.lifecycle._write_worktree_instructions"),
     ):
         mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
         create_worker_pane(
