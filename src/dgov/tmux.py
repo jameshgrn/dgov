@@ -5,9 +5,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import shlex
 import subprocess
 import time
+from pathlib import Path
 
 
 def _run(args: list[str], *, silent: bool = False) -> str:
@@ -188,8 +190,22 @@ def current_command(pane_id: str) -> str:
 
 
 def kill_pane(pane_id: str) -> None:
-    """Kill a tmux pane."""
-    _run(["kill-pane", "-t", pane_id], silent=True)
+    """Kill a tmux pane and its parent window if it was the only pane."""
+    try:
+        window_id = _run(
+            ["display-message", "-t", pane_id, "-p", "#{window_id}"],
+            silent=True,
+        )
+        pane_count = _run(
+            ["display-message", "-t", pane_id, "-p", "#{window_panes}"],
+            silent=True,
+        )
+    except RuntimeError:
+        return  # pane already dead
+    if pane_count == "1":
+        _run(["kill-window", "-t", window_id], silent=True)
+    else:
+        _run(["kill-pane", "-t", pane_id], silent=True)
 
 
 _borders_configured: set[str | None] = set()
@@ -455,12 +471,25 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
         _apply_governor_layout(target_window)
 
     # Launch monitor as a background daemon (not a tmux pane)
-    subprocess.Popen(
-        ["dgov", "monitor", "-r", project_root],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    # PID file guard: skip if monitor already running
+    pid_file = Path(project_root) / ".dgov" / "monitor.pid"
+    _already_running = False
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            _already_running = True
+        except (ValueError, ProcessLookupError, PermissionError):
+            pid_file.unlink(missing_ok=True)
+    if not _already_running:
+        proc = subprocess.Popen(
+            ["dgov", "monitor", "-r", project_root],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        pid_file.parent.mkdir(parents=True, exist_ok=True)
+        pid_file.write_text(str(proc.pid))
 
     return panes
 
