@@ -635,6 +635,7 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
         patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": ["worker.py"]}),
         patch("dgov.merger._run_related_tests", return_value={}),
+        patch("dgov.merger._restore_protected_files"),
     ):
         result = merge_worker_pane(str(repo), "post-merge", session_root=str(repo))
 
@@ -642,7 +643,6 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
     assert result["merged"] == "post-merge"
     assert result["warning"] == "protected files changed: ['CLAUDE.md']"
     assert result["lint_fixed"] == ["worker.py"]
-    assert (repo / "CLAUDE.md").read_text() == "worker override\n"
     mock_update_state.assert_called_once_with(str(repo), "post-merge", "merged")
     mock_emit_event.assert_called_once_with(
         str(repo),

@@ -58,6 +58,13 @@ def worker_complete(message):
                 ["git", "-C", worktree, "add", "-A"],
                 capture_output=True,
             )
+            # Unstage protected files so worker CLAUDE.md/AGENTS.md
+            # don't get committed and cause merge conflicts
+            for pf in ("CLAUDE.md", "AGENTS.md"):
+                subprocess.run(
+                    ["git", "-C", worktree, "reset", "HEAD", "--", pf],
+                    capture_output=True,
+                )
             commit_msg = message or f"Auto-commit from {slug}"
             subprocess.run(
                 ["git", "-C", worktree, "commit", "-m", commit_msg],
