@@ -1,4 +1,4 @@
-"""Aggregate statistics from pane records and the event log."""
+"""Aggregate statistics and health metrics from pane records and the event log."""
 
 from __future__ import annotations
 
