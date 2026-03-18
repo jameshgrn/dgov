@@ -106,7 +106,10 @@ class TestPaneCommands:
             "-c",
             "/repo",
         ] in seen
-        assert ["tmux", "send-keys", "-t", "%5", "ls -la", "Enter"] in seen
+        # send_command uses paste-buffer for atomic delivery
+        assert any(c[0:2] == ["tmux", "set-buffer"] and "ls -la" in c for c in seen)
+        assert any(c[0:2] == ["tmux", "paste-buffer"] for c in seen)
+        assert ["tmux", "send-keys", "-t", "%5", "Enter"] in seen
         assert ["tmux", "select-pane", "-t", "%5", "-T", "worker"] in seen
         assert ["tmux", "select-layout", "tiled"] in seen
         assert ["tmux", "kill-pane", "-t", "%5"] in seen
