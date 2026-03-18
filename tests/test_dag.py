@@ -445,6 +445,7 @@ class TestRunSingleTier:
             default_max_retries=1,
             merge_resolve="skip",
             merge_squash=True,
+            max_concurrent=0,
             tasks={
                 "T0": DagTaskSpec(
                     slug="T0",
@@ -705,6 +706,7 @@ class TestEscalation:
             default_max_retries=1,
             merge_resolve="skip",
             merge_squash=True,
+            max_concurrent=0,
             tasks={"T0": t},
         )
 
