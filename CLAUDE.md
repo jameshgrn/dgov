@@ -1,4 +1,4 @@
-# Worker Instructions — worker-claudemd-hint
+# Worker Instructions — fix-tests-integration
 
 You are a **worker**. Complete the task, commit, and signal done.
 
@@ -9,6 +9,9 @@ You are a **worker**. Complete the task, commit, and signal done.
 - Do NOT push to remote
 - Commit your changes with a clear message
 - Call `dgov worker complete` when done
+
+## Project context
+- CLAUDE.md.full has the original project instructions (this file has worker-only rules)
 
 ## Commit checklist
 1. git add <changed files>
