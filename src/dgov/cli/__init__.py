@@ -165,8 +165,6 @@ def cli(ctx, governor):
     )
 
     if os.environ.get("TMUX"):
-        from dgov.art import print_banner
-
         style_dgov_session()
         # Style the current pane as governor
         pane_id = subprocess.run(
@@ -176,7 +174,18 @@ def cli(ctx, governor):
         ).stdout.strip()
         if pane_id:
             style_governor_pane(pane_id)
-        print_banner()
+        if os.environ.get("TERM") in ("dumb", "emacs"):
+            click.echo("dgov — dispatch · wait · review · merge")
+        else:
+            click.echo(
+                "\n"
+                " ██████   ██████  ██████ ██   ██\n"
+                " ██   ██ ██      ██   ██ ██   ██\n"
+                " ██   ██ ██  ███ ██   ██ ██   ██\n"
+                " ██   ██ ██   ██ ██   ██  ██ ██\n"
+                " ██████   ██████  ██████   ████\n"
+                "\033[2m  dispatch · wait · review · merge\033[0m\n"
+            )
         click.echo(f"{repo} — governor ready")
         setup_governor_workspace(project_root)
 
