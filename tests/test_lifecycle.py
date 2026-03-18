@@ -666,6 +666,7 @@ class TestResumeWorkerPane:
             patch("dgov.lifecycle.load_registry") as mock_registry,
             patch("dgov.lifecycle.get_backend") as mock_get_be,
             patch("dgov.lifecycle._setup_and_launch_agent"),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
         ):
             mock_be = MagicMock()
             mock_be.is_alive.return_value = False
@@ -717,6 +718,7 @@ class TestResumeWorkerPane:
             patch("dgov.lifecycle.load_registry") as mock_registry,
             patch("dgov.lifecycle.get_backend") as mock_get_be,
             patch("dgov.lifecycle._setup_and_launch_agent"),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
         ):
             mock_be = MagicMock()
             mock_be.is_alive.return_value = False
