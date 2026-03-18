@@ -883,32 +883,29 @@ def merge_worker_pane(
             session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
         )
 
-        # Post-merge: lint + verify protected files (built-in)
-        hook_ran = False
-
-        # Fallback: inline lint + verification if no hook
+        # Post-merge: lint + verify protected files
         damaged: list[str] = []
         lint_result: dict = {}
-        if not hook_ran:
-            base_sha = target.get("base_sha", "")
-            if base_sha:
-                for fname in PROTECTED_FILES:
-                    check = subprocess.run(
-                        ["git", "-C", pane_project_root, "diff", base_sha, "HEAD", "--", fname],
-                        capture_output=True,
-                    )
-                    if check.stdout.strip():
-                        damaged.append(fname)
-                if damaged:
-                    logger.warning("Protected files changed after merge: %s", damaged)
-            lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
-            test_result = _run_related_tests(pane_project_root, changed_file_names)
-            if test_result:
-                logger.info(
-                    "Post-merge tests: passed=%s files=%s",
-                    test_result.get("tests_passed"),
-                    test_result.get("tests_ran"),
+        test_result: dict = {}
+        base_sha = target.get("base_sha", "")
+        if base_sha:
+            for fname in PROTECTED_FILES:
+                check = subprocess.run(
+                    ["git", "-C", pane_project_root, "diff", base_sha, "HEAD", "--", fname],
+                    capture_output=True,
                 )
+                if check.stdout.strip():
+                    damaged.append(fname)
+            if damaged:
+                logger.warning("Protected files changed after merge: %s", damaged)
+        lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
+        test_result = _run_related_tests(pane_project_root, changed_file_names)
+        if test_result:
+            logger.info(
+                "Post-merge tests: passed=%s files=%s",
+                test_result.get("tests_passed"),
+                test_result.get("tests_ran"),
+            )
 
         result = {
             "merged": slug,
