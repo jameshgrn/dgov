@@ -16,7 +16,6 @@ from dgov.backend import get_backend
 from dgov.done import _wrap_done_signal
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
-    PROTECTED_FILES,
     STATE_DIR,
     WorkerPane,
     _get_db,
@@ -90,6 +89,59 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
 
 
 # -- Hook trigger --
+
+
+def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> None:
+    """Write role-appropriate CLAUDE.md into the worktree.
+
+    Replaces the external worktree_created hook with built-in logic.
+    """
+    import shutil
+    from pathlib import Path
+
+    claude_md = Path(worktree_path) / "CLAUDE.md"
+    if claude_md.exists():
+        backup = Path(worktree_path) / "CLAUDE.md.full"
+        if not backup.exists():
+            shutil.copy2(str(claude_md), str(backup))
+
+    if role == "lt-gov":
+        content = (
+            f"# LT-GOV Instructions — {slug}\n\n"
+            "You are a **lieutenant governor**. You orchestrate workers, you do NOT edit code.\n\n"
+            "## Rules\n"
+            '- Dispatch workers with: dgov pane create -a <agent> -p "<task>" '
+            f"-r $DGOV_PROJECT_ROOT --parent {slug}\n"
+            "- Wait: dgov pane wait <slug> -r $DGOV_PROJECT_ROOT\n"
+            "- Review: dgov pane review <slug> -r $DGOV_PROJECT_ROOT\n"
+            "- Request merge: dgov pane merge-request <slug> -r $DGOV_PROJECT_ROOT\n"
+            "- Close: dgov pane close <slug> -r $DGOV_PROJECT_ROOT\n"
+            "- NEVER edit files directly\n"
+            "- NEVER push to remote\n"
+            "- NEVER run dgov pane merge directly\n"
+            "- Use logical agent names: qwen-9b, qwen-35b, qwen-122b\n\n"
+            f"## When done\nWrite status to .dgov/progress/{slug}.json and exit.\n"
+        )
+    else:
+        content = (
+            f"# Worker Instructions — {slug}\n\n"
+            "You are a **worker**. Complete the task, commit, and signal done.\n\n"
+            "## Rules\n"
+            "- Edit ONLY the files specified in your task\n"
+            "- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml, or any config files\n"
+            "- Do NOT create new documentation files\n"
+            "- Do NOT push to remote\n"
+            "- Commit your changes with a clear message\n"
+            "- Call `dgov worker complete` when done\n\n"
+            "## Commit checklist\n"
+            "1. git add <changed files>\n"
+            '2. git commit -m "<message>"\n'
+            "3. dgov worker complete\n"
+        )
+
+    claude_md.write_text(content, encoding="utf-8")
+    agents_md = Path(worktree_path) / "AGENTS.md"
+    agents_md.write_text(content, encoding="utf-8")
 
 
 def _trigger_hook(
@@ -242,19 +294,8 @@ def _setup_and_launch_agent(
         if not wait_for_shell_ready(pane_id, timeout=2.0):
             logger.warning("Shell prompt not detected after env setup for %s", slug)
 
-    # 4. Trigger worktree_created hook
-    hook_env = {
-        "DGOV_ROOT": project_root,
-        "DGOV_PANE_ID": pane_id,
-        "DGOV_SLUG": slug,
-        "DGOV_PROMPT": hook_prompt,
-        "DGOV_AGENT": agent_id,
-        "DGOV_WORKTREE_PATH": worktree_path,
-        "DGOV_BRANCH": branch_name,
-        "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
-        "DGOV_ROLE": role,
-    }
-    hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
+    # 4. Write role-appropriate CLAUDE.md into the worktree
+    _write_worktree_instructions(worktree_path, slug, role)
 
     # 4b. Install pre-merge-commit hook to block branch integration in worktrees
     if owns_worktree:
@@ -268,16 +309,6 @@ def _setup_and_launch_agent(
     rewritten_prompt = re.sub(
         re.escape(project_root) + r"(?!/.dgov/worktrees/)", worktree_path, prompt
     )
-
-    # 7. Fallback protected-file warning if hook didn't write CLAUDE.md
-    if not hook_ran:
-        protected_warning = (
-            "\n\nIMPORTANT: Do NOT modify or overwrite these files: "
-            + ", ".join(sorted(PROTECTED_FILES))
-            + ". Do NOT create new documentation files."
-        )
-        if protected_warning.strip() not in rewritten_prompt:
-            rewritten_prompt += protected_warning
 
     # 8. Build done-signal path — always clear stale signals from prior attempts
     done_signal = str(Path(session_root) / STATE_DIR / "done" / slug)
