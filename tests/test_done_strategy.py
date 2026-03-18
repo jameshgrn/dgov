@@ -431,7 +431,7 @@ class TestIsDoneWithStrategy:
 
         with (
             patch("dgov.done._has_new_commits", return_value=True) as mock_commits,
-            patch("dgov.done._agent_still_running", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=True),
             patch("dgov.done.get_backend") as mock_be,
         ):
             mock_be.return_value.is_alive.return_value = True
