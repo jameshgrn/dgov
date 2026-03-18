@@ -11,7 +11,7 @@ import re
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 logger = logging.getLogger(__name__)
 
