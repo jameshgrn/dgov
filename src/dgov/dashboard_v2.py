@@ -387,7 +387,7 @@ def _build_layout(
         from datetime import datetime
 
         try:
-            dt = datetime.fromisoformat(ev.get("ts", ""))
+            dt = datetime.fromisoformat(ev.get("ts", "")).astimezone()
             ev_time = dt.strftime("%I:%M %p")
         except (ValueError, TypeError):
             ev_time = "--:--"
