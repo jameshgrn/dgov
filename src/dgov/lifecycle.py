@@ -483,6 +483,10 @@ def create_worker_pane(
         if not wait_for_shell_ready(pane_id, timeout=3.0):
             logger.warning("Shell ready timeout for %s — proceeding anyway", slug)
 
+        # Disable bracketed paste to prevent garbled pane output
+        get_backend().send_shell_command(pane_id, "printf '\\e[?2004l'")
+        time.sleep(0.2)
+
         # 4. Setup and launch agent
         pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
         if pi_ext:
@@ -783,6 +787,10 @@ def resume_worker_pane(
 
     if not wait_for_shell_ready(pane_id, timeout=3.0):
         logger.warning("Shell ready timeout for %s (resume) — proceeding anyway", slug)
+
+    # Disable bracketed paste to prevent garbled pane output
+    get_backend().send_shell_command(pane_id, "printf '\\e[?2004l'")
+    time.sleep(0.2)
 
     _setup_and_launch_agent(
         pane_id=pane_id,
