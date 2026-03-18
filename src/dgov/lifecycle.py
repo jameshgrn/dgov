@@ -252,6 +252,7 @@ def _setup_and_launch_agent(
         "DGOV_WORKTREE_PATH": worktree_path,
         "DGOV_BRANCH": branch_name,
         "DGOV_OWNS_WORKTREE": "1" if owns_worktree else "0",
+        "DGOV_ROLE": role,
     }
     hook_ran = _trigger_hook("worktree_created", project_root, hook_env)
 

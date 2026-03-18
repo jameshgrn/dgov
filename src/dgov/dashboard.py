@@ -394,7 +394,7 @@ def _build_layout(
         ev_text.append(f"{slug}\n")
 
     footer = Text(
-        " q:quit  j/k:\u2191\u2193  Enter:view  r:refresh  m:merge  x:close  p:preview",
+        " q:quit  j/k/\u2191\u2193:scroll  Enter:view  r:refresh  m:merge  x:close  p:preview",
         style="dim",
     )
     worker_panel = Panel(table, title="Workers", border_style="blue", box=box.ROUNDED)
