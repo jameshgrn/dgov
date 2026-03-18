@@ -765,7 +765,7 @@ def merge_worker_pane(
         {"error": ...} on failure.
     """
     import dgov.persistence as _persist
-    from dgov.lifecycle import _full_cleanup, _trigger_hook
+    from dgov.lifecycle import _full_cleanup
 
     session_root = os.path.abspath(session_root or project_root)
     target = _persist.get_pane(session_root, slug)
@@ -781,17 +781,8 @@ def merge_worker_pane(
     # Auto-commit uncommitted changes in worktree
     commit_result = _commit_worktree(target)
 
-    # Pre-merge hook: restore protected files, etc.
-    pre_merge_env = {
-        "DGOV_PROJECT_ROOT": pane_project_root,
-        "DGOV_WORKTREE_PATH": target.get("worktree_path", ""),
-        "DGOV_BRANCH": branch_name or "",
-        "DGOV_BASE_SHA": target.get("base_sha", ""),
-        "DGOV_SLUG": slug,
-        "DGOV_PROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
-    }
-    if not _trigger_hook("pre_merge", pane_project_root, pre_merge_env, timeout=30):
-        _restore_protected_files(pane_project_root, target)
+    # Pre-merge: restore protected files clobbered by workers
+    _restore_protected_files(pane_project_root, target)
 
     # Capture diff stat before merge (for enriched return)
     base_sha = target.get("base_sha", "")
@@ -857,16 +848,8 @@ def merge_worker_pane(
             session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
         )
 
-        # Post-merge hook: lint, verify protected files, etc.
-        post_merge_env = {
-            "DGOV_PROJECT_ROOT": pane_project_root,
-            "DGOV_BASE_SHA": target.get("base_sha", ""),
-            "DGOV_SLUG": slug,
-            "DGOV_BRANCH": branch_name or "",
-            "DGOV_CHANGED_FILES": "\n".join(changed_file_names),
-            "DGOV_PROTECTED_FILES": " ".join(sorted(PROTECTED_FILES)),
-        }
-        hook_ran = _trigger_hook("post_merge", pane_project_root, post_merge_env, timeout=30)
+        # Post-merge: lint + verify protected files (built-in)
+        hook_ran = False
 
         # Fallback: inline lint + verification if no hook
         damaged: list[str] = []
