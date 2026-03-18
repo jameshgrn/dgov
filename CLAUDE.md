@@ -85,6 +85,16 @@ Add tests too.
 - Push to remote from a worktree
 - Run the full test suite (target specific files with `-m` markers)
 
+## While waiting for workers
+
+Don't block on `dgov pane wait`. Use idle time productively:
+
+- Update `.napkin.md` — log dispatches, bugs, mistakes continuously
+- Update `HANDOVER.md` via `/handover` — keep it fresh for session handoff
+- Poll with `dgov pane list`, not blocking `dgov pane wait`
+- Dispatch independent work — don't serialize when tasks are parallel
+- Plan ahead — read files for the next task, draft prompts
+
 ## After every merge
 
 - Run `ruff check` + `ruff format` on changed files
