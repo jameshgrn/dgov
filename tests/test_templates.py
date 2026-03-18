@@ -275,7 +275,7 @@ class TestPaneCreateWithTemplate:
             ["pane", "create", "--no-preflight"],
         )
         assert result.exit_code == 1
-        assert "Either --prompt or --template is required" in result.output
+        assert "Prompt required" in result.output
 
 
 class TestTomlLoading:
