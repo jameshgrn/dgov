@@ -66,3 +66,80 @@ def dag_merge(dagfile):
             raise SystemExit(1)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
+
+
+@dag.command("resume")
+@click.argument("dagfile", type=click.Path(exists=True))
+@click.option(
+    "--run-id",
+    type=int,
+    default=None,
+    help="Specific run ID to resume (default: most recent failed)",
+)
+@click.option("--max-retries", type=int, default=1, help="Max retries per task before escalation")
+@click.option("--max-concurrent", type=int, default=0, help="Max tasks per tier (0=unlimited)")
+def dag_resume(dagfile, run_id, max_retries, max_concurrent):
+    """Resume a failed DAG run, re-executing unmerged tasks."""
+    from pathlib import Path
+
+    from dgov.persistence import (
+        ensure_dag_tables,
+        get_dag_run,
+        update_dag_run,
+    )
+
+    abs_path = str(Path(dagfile).resolve())
+    import os
+
+    session_root = os.path.abspath(".")
+
+    try:
+        ensure_dag_tables(session_root)
+
+        if run_id is not None:
+            existing = get_dag_run(session_root, run_id)
+            if not existing:
+                raise click.ClickException(f"DAG run {run_id} not found")
+            if existing["status"] not in ("failed", "partial"):
+                raise click.ClickException(
+                    f"Run {run_id} has status '{existing['status']}' "
+                    "-- only failed/partial runs can be resumed"
+                )
+            if existing["dag_file"] != abs_path:
+                raise click.ClickException(
+                    f"Run {run_id} was for {existing['dag_file']}, not {abs_path}"
+                )
+        else:
+            # Find most recent failed/partial run for this DAG file
+            from dgov.persistence import _get_db
+
+            conn = _get_db(session_root)
+            row = conn.execute(
+                "SELECT id, status FROM dag_runs"
+                " WHERE dag_file = ? AND status IN (?, ?)"
+                " ORDER BY id DESC LIMIT 1",
+                (abs_path, "failed", "partial"),
+            ).fetchone()
+            if not row:
+                raise click.ClickException(f"No failed or partial runs found for {abs_path}")
+            run_id = row[0]
+            click.echo(f"Resuming run {run_id} (status: {row[1]})")
+
+        # Reset run status to running so _start_or_resume_run picks it up
+        update_dag_run(session_root, run_id, status="running")
+
+        # Now run_dag will find the open run and resume it
+        from dgov.dag import run_dag
+
+        summary = run_dag(
+            dagfile,
+            dry_run=False,
+            max_retries=max_retries,
+            auto_merge=True,
+            max_concurrent=max_concurrent,
+        )
+        click.echo(json.dumps(asdict(summary), indent=2, default=str))
+        if summary.failed:
+            raise SystemExit(1)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
