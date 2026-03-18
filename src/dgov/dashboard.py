@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 _STARTUP_TIME = time.time()
 _UI_REFRESH_PER_SECOND = 2
 _INPUT_POLL_INTERVAL = 0.05
+_VISIBLE_ROWS = 15
 
 
 def state_color(state: str) -> str:
@@ -78,6 +79,7 @@ class DashboardState:
     stop_event: threading.Event = field(default_factory=threading.Event)
     force_refresh: threading.Event = field(default_factory=threading.Event)
     selected: int = 0
+    scroll_offset: int = 0
     post_exit_attach: str = ""
     preview_lines: list[str] = field(default_factory=list)
     preview_visible: bool = False
@@ -255,13 +257,16 @@ def _sort_panes_hierarchical(
     return result
 
 
-def _build_worker_table(panes: list[dict], selected: int) -> Table:
+def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0) -> Table:
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
     table.add_column("Slug", ratio=3, no_wrap=True)
     table.add_column("Agent", ratio=2, no_wrap=True)
     table.add_column("State", width=16, no_wrap=True)
 
     sorted_panes = _sort_panes_hierarchical(panes, selected)
+
+    visible_end = scroll_offset + _VISIBLE_ROWS
+    sorted_panes = sorted_panes[scroll_offset:visible_end]
 
     for p, indent_level, is_last_child, orig_idx in sorted_panes:
         pstate = p.get("state", "active")
@@ -334,6 +339,7 @@ def _build_layout(
         preview_lines = list(state.preview_lines)
         preview_visible = state.preview_visible
         monitor_alive = state.monitor_alive
+        scroll_offset = state.scroll_offset
 
     ts = (
         time.strftime("%a %b %d, %I:%M:%S %p %Z", time.localtime(last_refresh))
@@ -352,7 +358,7 @@ def _build_layout(
     if error:
         header_text.append(f"  err: {error}", style="red")
 
-    table = _build_worker_table(panes, selected)
+    table = _build_worker_table(panes, selected, scroll_offset)
 
     # Build events list
     ev_text = Text()
@@ -546,15 +552,25 @@ def run_dashboard(
                     continue
 
                 ch = sys.stdin.read(1)
+                if ch == "\x1b":
+                    seq = sys.stdin.read(2)
+                    if seq == "[A":
+                        ch = "k"
+                    elif seq == "[B":
+                        ch = "j"
                 if ch == "q":
                     break
                 elif ch == "j":
                     with state.lock:
                         state.selected = min(state.selected + 1, max(0, len(state.panes) - 1))
+                        if state.selected >= state.scroll_offset + _VISIBLE_ROWS:
+                            state.scroll_offset = state.selected - _VISIBLE_ROWS + 1
                     live.refresh()
                 elif ch == "k":
                     with state.lock:
                         state.selected = max(0, state.selected - 1)
+                        if state.selected < state.scroll_offset:
+                            state.scroll_offset = state.selected
                     live.refresh()
                 elif ch == "r":
                     state.force_refresh.set()
