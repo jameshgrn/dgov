@@ -37,7 +37,7 @@ _VISIBLE_ROWS = 15
 
 def state_color(state: str) -> str:
     return {
-        "active": "yellow",
+        "active": "bright_cyan",
         "done": "green",
         "merged": "green",
         "failed": "red",
