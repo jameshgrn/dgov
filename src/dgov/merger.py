@@ -7,12 +7,52 @@ import logging
 import os
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from dgov.inspection import MergeResult
 from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _stash_guard(project_root: str, label: str = "merge"):
+    """Stash dirty tracked files, yield, then pop. Warns on pop failure."""
+    status = subprocess.run(
+        ["git", "-C", project_root, "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+    )
+    dirty = any(not ln.startswith("??") for ln in status.stdout.strip().splitlines() if ln)
+    stashed = False
+    if dirty:
+        stash = subprocess.run(
+            ["git", "-C", project_root, "stash", "push", "-m", f"dgov-{label}-auto"],
+            capture_output=True,
+            text=True,
+        )
+        stashed = stash.returncode == 0
+
+    warnings: list[str] = []
+    try:
+        yield stashed, warnings
+    finally:
+        if stashed:
+            pop = subprocess.run(
+                ["git", "-C", project_root, "stash", "pop"],
+                capture_output=True,
+                text=True,
+            )
+            if pop.returncode != 0:
+                logger.warning(
+                    "Merge succeeded but stash pop failed — uncommitted changes "
+                    "are preserved in stash. Recover with: git stash show && git stash pop"
+                )
+                warnings.append(
+                    "Stash pop failed after merge. Your uncommitted changes are safe in "
+                    "the stash. Recover with: git stash show && git stash pop"
+                )
 
 
 class _MergeLock:
