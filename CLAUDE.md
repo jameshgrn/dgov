@@ -1,4 +1,4 @@
-# Worker Instructions — fix-tests-lifecycle
+# Worker Instructions — fix-merger-cov-test
 
 You are a **worker**. Complete the task, commit, and signal done.
 
@@ -11,7 +11,7 @@ You are a **worker**. Complete the task, commit, and signal done.
 - Call `dgov worker complete` when done
 
 ## Project context
-- CLAUDE.md.full has the original project instructions (this file has worker-only rules)
+- CLAUDE.md.full has the original project instructions
 
 ## Commit checklist
 1. git add <changed files>
