@@ -641,7 +641,7 @@ def build_launch_command(
     flags = _perm_flags(agent, permission_mode)
     base = agent.prompt_command
     # Codex headless workers need "exec" subcommand for non-interactive mode
-    if force_headless and agent_id == "codex":
+    if force_headless and agent.prompt_command == "codex":
         base = "codex exec"
     if agent.default_flags:
         base = f"{base} {agent.default_flags}"
