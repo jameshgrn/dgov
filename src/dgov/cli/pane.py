@@ -719,11 +719,10 @@ def pane_list(project_root, session_root, as_json, verbose):
         phase = p.get("phase", p.get("activity", "?")) or "?"
         duration_s = int(p.get("duration_s", 0))
         duration = _fmt_duration(duration_s)
-        summary = (p.get("summary", "") or "").strip()
+        # Prefer prompt (task purpose) over log tail (often terminal noise)
+        summary = (p.get("prompt", "") or "").strip()[:60]
         if not summary:
-            summary = (p.get("last_output", "") or "").strip()[:60]
-        if not summary:
-            summary = (p.get("prompt", "") or "")[:40]
+            summary = (p.get("summary", "") or "").strip()[:60]
         row = f"{slug:<20} {agent:<8} {state:<10} {phase:<12} {duration:<8} {summary}"
         click.echo(row)
         if verbose and p.get("last_output"):

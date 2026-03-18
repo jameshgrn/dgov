@@ -266,7 +266,9 @@ def _build_worker_table(panes: list[dict], selected: int) -> Table:
     for p, indent_level, is_last_child, orig_idx in sorted_panes:
         pstate = p.get("state", "active")
         activity = p.get("activity", "")
-        summary = p.get("summary", str(activity)[:60]) or ""
+        # Prefer prompt (task purpose) over log tail (often terminal noise)
+        prompt = p.get("prompt", "")
+        summary = prompt or p.get("summary", str(activity)[:60]) or ""
         is_selected = orig_idx == selected
         role = p.get("role", "worker")
 
