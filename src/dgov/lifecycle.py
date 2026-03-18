@@ -412,6 +412,15 @@ def create_worker_pane(
 
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
+
+    # Resolve logical agent name -> physical backend via router
+    from dgov.router import resolve_agent as _resolve_agent
+
+    resolved_agent, routed_from = _resolve_agent(agent, session_root, project_root)
+    if routed_from:
+        logger.info("Routed %s -> %s", routed_from, resolved_agent)
+    agent = resolved_agent
+
     registry = load_registry(project_root)
     agent_def = registry.get(agent)
     if agent_def is None:
