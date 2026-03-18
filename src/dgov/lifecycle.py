@@ -472,7 +472,10 @@ def create_worker_pane(
         # Wait for shell to initialize before sending commands.
         # Without this, send-keys arrives before zsh loads .zshrc,
         # causing commands to echo raw then replay — garbling source scripts.
-        time.sleep(0.3)
+        from dgov.tmux import wait_for_shell_ready
+
+        if not wait_for_shell_ready(pane_id, timeout=3.0):
+            logger.warning("Shell ready timeout for %s — proceeding anyway", slug)
 
         # 4. Setup and launch agent
         pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
@@ -753,6 +756,11 @@ def resume_worker_pane(
     pane_id = get_backend().create_worker_pane(
         cwd=worktree_path, env=startup_env, name=slug, agent=resume_agent
     )
+
+    from dgov.tmux import wait_for_shell_ready
+
+    if not wait_for_shell_ready(pane_id, timeout=3.0):
+        logger.warning("Shell ready timeout for %s (resume) — proceeding anyway", slug)
 
     _setup_and_launch_agent(
         pane_id=pane_id,

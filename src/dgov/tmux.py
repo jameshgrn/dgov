@@ -65,6 +65,25 @@ def create_background_pane(
     return _run(args)
 
 
+def wait_for_shell_ready(pane_id: str, timeout: float = 3.0) -> bool:
+    """Poll pane until shell prompt appears or timeout.
+
+    Looks for common prompt characters (➜, $, %, #, >) at the end of a
+    non-blank line.  Returns True if prompt detected, False on timeout.
+    """
+    import re
+
+    prompt_re = re.compile(r"[➜$%#>]\s*$")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        output = capture_pane(pane_id, lines=3)
+        for line in output.strip().splitlines():
+            if prompt_re.search(line):
+                return True
+        time.sleep(0.1)
+    return False
+
+
 _SEND_KEYS_LIMIT = 200
 
 
