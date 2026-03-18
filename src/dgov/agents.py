@@ -89,12 +89,13 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         id="codex",
         name="Codex",
         short_label="cx",
-        prompt_command="codex exec",
+        prompt_command="codex",
         prompt_transport="positional",
         permission_flags={
             "acceptEdits": "--full-auto",
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
         },
+        interactive=True,
         color=214,
         done_strategy=DoneStrategy(type="api"),
     ),
@@ -639,6 +640,9 @@ def build_launch_command(
     agent = reg[agent_id]
     flags = _perm_flags(agent, permission_mode)
     base = agent.prompt_command
+    # Codex headless workers need "exec" subcommand for non-interactive mode
+    if force_headless and agent_id == "codex":
+        base = "codex exec"
     if agent.default_flags:
         base = f"{base} {agent.default_flags}"
     # Skip permission flags if extra_flags already contains any of the same --flag names
