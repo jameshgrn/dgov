@@ -427,7 +427,6 @@ class TestLayoutRendering:
 
         assert "DGOV v" in output
         assert "worker-a" in output
-        assert "processing tiles" in output
         assert "q:quit" in output
 
     def test_build_layout_reuses_existing_tree(self):

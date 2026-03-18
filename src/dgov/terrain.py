@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from typing import Any
 
 from rich.text import Text
 
@@ -552,7 +553,7 @@ _AGENT_SPRITES: dict[str, list[list]] = {
 }
 
 # Done -- green, sparkle crown, arms raised in celebration
-_DONE_SPRITE = [
+_DONE_SPRITE: list[list[Any]] = [
     [
         None,
         None,
@@ -577,7 +578,7 @@ _DONE_SPRITE = [
 ]
 
 # Failed -- red, skull mark, x-eyes, collapsed
-_FAILED_SPRITE = [
+_FAILED_SPRITE: list[list[Any]] = [
     [
         None,
         ((220, 60, 60), (160, 30, 30)),
@@ -602,7 +603,7 @@ _FAILED_SPRITE = [
 ]
 
 # LT-GOV -- gold/royal, crown, scepter sparkles
-_LTGOV_SPRITE = [
+_LTGOV_SPRITE: list[list[Any]] = [
     [
         ((255, 220, 60), (220, 180, 30), "\u2727"),  # ✧ ornament
         ((255, 220, 60), (220, 180, 30)),
@@ -756,6 +757,7 @@ class AgentSim:
 
             # Pixel-art sprite: 5 wide x 3 tall, centered on agent position
             ir, ic = int(round(r)), int(round(c))
+            sprite: list[list[Any]]
             if role == "lt-gov":
                 sprite = _LTGOV_SPRITE
             elif state in ("done", "merged"):
@@ -764,7 +766,7 @@ class AgentSim:
                 sprite = _FAILED_SPRITE
             else:
                 agent_name = ag.get("agent", "").split("-")[0]
-                sprite = _AGENT_SPRITES.get(agent_name, _AGENT_SPRITES.get("claude"))
+                sprite = _AGENT_SPRITES.get(agent_name) or _AGENT_SPRITES["claude"]
 
             sprite_h = len(sprite)
             sprite_w = len(sprite[0]) if sprite else 0

@@ -516,7 +516,10 @@ class TestFullCleanup:
             MagicMock(returncode=0, stdout="M file.py\n", stderr=""),  # status --porcelain
             MagicMock(returncode=0, stdout="", stderr=""),  # worktree prune
         ]
-        with patch("dgov.lifecycle.subprocess.run", side_effect=mock_results):
+        with (
+            patch("dgov.lifecycle.subprocess.run", side_effect=mock_results),
+            patch("dgov.tmux._run", return_value=""),
+        ):
             result = _full_cleanup(sr, sr, "dirty-pane", pane, skip_worktree_if_dirty=True)
 
         assert result["skipped_worktree"] is True

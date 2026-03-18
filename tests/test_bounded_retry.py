@@ -10,7 +10,7 @@ from dgov.recovery import ESCALATION_CHAIN, _resolve_escalation_target, retry_or
 pytestmark = pytest.mark.unit
 
 
-def _seed_pane(tmp_path, slug="task-1", agent="pi", state="failed", **meta):
+def _seed_pane(tmp_path, slug="task-1", agent="river-35b", state="failed", **meta):
     """Insert a fake pane record for testing."""
     _get_db(str(tmp_path))
     pane = WorkerPane(
@@ -46,7 +46,7 @@ class TestRetryOrEscalate:
 
     def test_first_retry_same_agent(self, tmp_path, monkeypatch):
         """First failure retries with the same agent."""
-        _seed_pane(tmp_path, slug="task-1", agent="pi", retry_count=0)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=0)
         monkeypatch.setattr(
             "dgov.recovery.create_worker_pane",
             lambda **kw: _FakePane("task-1-2"),
@@ -60,13 +60,13 @@ class TestRetryOrEscalate:
             str(tmp_path), "task-1", session_root=str(tmp_path), max_retries=2
         )
         assert result["action"] == "retry"
-        assert result["agent"] == "pi"
+        assert result["agent"] == "river-35b"
         assert result["retry_count"] == 1
         assert result["new_slug"] == "task-1-2"
 
     def test_second_retry_still_retries(self, tmp_path, monkeypatch):
         """Second failure (retry_count=1, max=2) still retries."""
-        _seed_pane(tmp_path, slug="task-1", agent="pi", retry_count=1)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=1)
         monkeypatch.setattr(
             "dgov.recovery.create_worker_pane",
             lambda **kw: _FakePane("task-1-2"),
@@ -84,7 +84,7 @@ class TestRetryOrEscalate:
 
     def test_escalates_after_max_retries(self, tmp_path, monkeypatch):
         """After max_retries, escalates to next agent in chain."""
-        _seed_pane(tmp_path, slug="task-1", agent="pi", retry_count=2)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=2)
 
         created_slugs = []
 
@@ -101,13 +101,13 @@ class TestRetryOrEscalate:
             str(tmp_path), "task-1", session_root=str(tmp_path), max_retries=2
         )
         assert result["action"] == "escalate"
-        assert result["agent"] == "claude"  # pi -> claude in ESCALATION_CHAIN
-        assert result["from_agent"] == "pi"
+        assert result["agent"] == "qwen35-122b"  # river-35b -> qwen35-122b in ESCALATION_CHAIN
+        assert result["from_agent"] == "river-35b"
         assert result["retry_count"] == 0
 
     def test_terminal_agent_no_escalation(self, tmp_path, monkeypatch):
-        """Codex maps to itself — no further escalation possible."""
-        _seed_pane(tmp_path, slug="task-1", agent="codex", retry_count=2)
+        """qwen3-max maps to itself — no further escalation possible."""
+        _seed_pane(tmp_path, slug="task-1", agent="qwen3-max", retry_count=2)
         monkeypatch.setattr(
             "dgov.agents.load_registry",
             lambda *a, **kw: {},
@@ -121,7 +121,7 @@ class TestRetryOrEscalate:
 
     def test_pane_max_retries_override(self, tmp_path, monkeypatch):
         """Per-pane max_retries in metadata overrides the function argument."""
-        _seed_pane(tmp_path, slug="task-1", agent="pi", retry_count=0, max_retries=1)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=0, max_retries=1)
         monkeypatch.setattr(
             "dgov.recovery.create_worker_pane",
             lambda **kw: _FakePane("task-1-2"),
@@ -136,7 +136,7 @@ class TestRetryOrEscalate:
         assert result["retry_count"] == 1
 
         # Now retry_count=1, pane max_retries=1 → should escalate
-        _seed_pane(tmp_path, slug="task-2", agent="pi", retry_count=1, max_retries=1)
+        _seed_pane(tmp_path, slug="task-2", agent="river-35b", retry_count=1, max_retries=1)
 
         def fake_create(**kw):
             return _FakePane(kw.get("slug", "esc-1"))
@@ -152,7 +152,7 @@ class TestRetryOrEscalate:
 
     def test_retry_propagates_error(self, tmp_path, monkeypatch):
         """If retry_worker_pane returns an error, it bubbles up."""
-        _seed_pane(tmp_path, slug="task-1", agent="pi", retry_count=0)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=0)
         monkeypatch.setattr(
             "dgov.recovery.create_worker_pane",
             lambda **kw: (_ for _ in ()).throw(RuntimeError("tmux dead")),
@@ -166,12 +166,14 @@ class TestRetryOrEscalate:
 
 class TestEscalationChain:
     def test_default_chain_coverage(self):
-        assert ESCALATION_CHAIN["pi"] == "claude"
-        assert ESCALATION_CHAIN["claude"] == "codex"
-        assert ESCALATION_CHAIN["codex"] == "codex"
-        assert ESCALATION_CHAIN["gemini"] == "claude"
-        assert ESCALATION_CHAIN["hunter"] == "claude"
-        assert ESCALATION_CHAIN["cursor"] == "codex"
+        assert ESCALATION_CHAIN["river-4b"] == "river-9b"
+        assert ESCALATION_CHAIN["river-9b"] == "river-35b"
+        assert ESCALATION_CHAIN["river-35b"] == "qwen35-122b"
+        assert ESCALATION_CHAIN["qwen35-35b"] == "qwen35-122b"
+        assert ESCALATION_CHAIN["qwen35-122b"] == "qwen35-397b"
+        assert ESCALATION_CHAIN["qwen35-397b"] == "qwen3-max"
+        assert ESCALATION_CHAIN["qwen3-max"] == "qwen3-max"
+        assert ESCALATION_CHAIN["hunter"] == "qwen35-35b"
 
     def test_unknown_agent_returns_self(self, tmp_path, monkeypatch):
         """Agents not in the chain map to themselves (no escalation)."""

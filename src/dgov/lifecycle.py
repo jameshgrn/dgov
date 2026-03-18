@@ -583,8 +583,8 @@ def _full_cleanup(
                     os.killpg(os.getpgid(pid), signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
-        except RuntimeError:
-            pass  # pane already dead, skip PGID kill
+        except (RuntimeError, ValueError):
+            pass  # pane already dead or bad PID, skip PGID kill
         get_backend().destroy(pane_id)
 
     # 3. Remove worktree + branch

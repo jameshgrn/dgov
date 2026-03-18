@@ -15,6 +15,7 @@ import time
 import tty
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import IO
 
 from rich import box
 from rich.console import Console
@@ -458,7 +459,7 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
                 state.error = f"Close failed for {slug}"
 
 
-def _acquire_dashboard_lock(session_root: str) -> tuple[Path, object] | None:
+def _acquire_dashboard_lock(session_root: str) -> tuple[Path, IO[str]] | None:
     """Acquire an exclusive flock on the dashboard pidfile.
 
     Returns (pidfile_path, lock_fd) on success, None on failure.

@@ -121,6 +121,17 @@ Don't block on `dgov pane wait`. Use idle time productively:
 - Run targeted tests for the changed area
 - Verify you're still on main: `git rev-parse --abbrev-ref HEAD`
 
+## Before every push
+
+Run the full CI suite locally. Do NOT push until all pass:
+```
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+uv run mypy src/dgov/ --ignore-missing-imports
+uv run ty check src/dgov/
+DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/ -q -m unit
+```
+
 ## Tools
 
 - Lint: `uv run ruff check <file>` then `uv run ruff format <file>`

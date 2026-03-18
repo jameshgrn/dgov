@@ -203,7 +203,8 @@ def poll_workers(
         if not output:
             classification = "idle"
         else:
-            classification = classify_output(output, hooks)
+            result = classify_output(output, hooks)
+            classification = result if isinstance(result, str) else result[0]
 
         # list_worker_panes now includes base_sha; if not, we fallback to get_pane
         base_sha = w.get("base_sha", "")
