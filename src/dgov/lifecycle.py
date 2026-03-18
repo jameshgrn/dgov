@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shlex
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -565,9 +566,25 @@ def _full_cleanup(
     log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     log_path.unlink(missing_ok=True)
 
-    # 2. Kill tmux pane (kill-pane is synchronous — no retry needed)
+    # 2. Kill process group then tmux pane
     pane_id = pane_record.get("pane_id")
     if pane_id:
+        # Kill the entire process tree spawned in this pane
+        try:
+            from dgov.tmux import _run as tmux_run
+
+            pid_str = tmux_run(
+                ["display-message", "-t", pane_id, "-p", "#{pane_pid}"],
+                silent=True,
+            )
+            if pid_str.strip():
+                pid = int(pid_str.strip())
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError):
+                    pass
+        except RuntimeError:
+            pass  # pane already dead, skip PGID kill
         get_backend().destroy(pane_id)
 
     # 3. Remove worktree + branch
