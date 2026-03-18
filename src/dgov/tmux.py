@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import shlex
 import subprocess
 import time
@@ -401,7 +400,7 @@ def _wait_for_shell(pane_id: str, timeout: float = 3.0) -> None:
 
 
 def _apply_governor_layout(target: str | None = None) -> None:
-    """Apply the standard governor layout: Claude left 55%, right column stacked."""
+    """Apply the standard governor layout: Claude left 55%, terrain / dashboard stacked right."""
     t = ["-t", target] if target else []
     _run(["select-layout", *t, "main-vertical"], silent=True)
     width = _run(["display-message", *t, "-p", "#{window_width}"], silent=True)
@@ -411,23 +410,10 @@ def _apply_governor_layout(target: str | None = None) -> None:
         _run(["resize-pane", "-t", pane0, "-x", str(target_w)], silent=True)
 
 
-def _write_lazygit_config(project_root: str) -> str:
-    """Write a minimal lazygit config for the governor workspace and return its path."""
-    cfg_dir = os.path.join(project_root, ".dgov")
-    os.makedirs(cfg_dir, exist_ok=True)
-    cfg_path = os.path.join(cfg_dir, "lazygit.yml")
-    cfg_contents = (
-        "gui:\n  sidePanelWidth: 1.0\n  expandFocusedSidePanel: true\n  showBottomLine: false\n"
-    )
-    with open(cfg_path, "w", encoding="utf-8") as f:
-        f.write(cfg_contents)
-    return cfg_path
-
-
 def setup_governor_workspace(project_root: str, *, target_window: str | None = None) -> list[str]:
-    """Split dashboard + terrain + lazygit into the current window.
+    """Split terrain + dashboard into the current window and launch monitor daemon.
 
-    Layout: Claude (left 55%) | dashboard / terrain / lazygit (right, stacked).
+    Layout: Claude (left 55%) | terrain (top right) / dashboard (bottom right).
     Idempotent: skips panes that already exist (by title).
     Returns list of created pane_ids.
     """
@@ -437,17 +423,6 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
     existing = _run(list_panes_args, silent=True).splitlines()
 
     panes: list[str] = []
-
-    if "[gov] dashboard" not in existing:
-        try:
-            dash_id = split_pane(target=target_window)
-            _wait_for_shell(dash_id)
-            send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
-            set_title(dash_id, "[gov] dashboard")
-            _style_pane(dash_id, "colour39")
-            panes.append(dash_id)
-        except RuntimeError as exc:
-            logging.warning("Failed to create dashboard pane: %s", exc)
 
     if "[gov] terrain" not in existing:
         try:
@@ -460,19 +435,16 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
         except RuntimeError as exc:
             logging.warning("Failed to create terrain pane: %s", exc)
 
-    if "[gov] lazygit" not in existing:
+    if "[gov] dashboard" not in existing:
         try:
-            lg_id = split_pane(target=target_window)
-            config_path = _write_lazygit_config(project_root)
-            send_command(
-                lg_id,
-                f"lazygit -ucf {shlex.quote(config_path)}",
-            )
-            set_title(lg_id, "[gov] lazygit")
-            _style_pane(lg_id, "colour214")
-            panes.append(lg_id)
+            dash_id = split_pane(target=target_window)
+            _wait_for_shell(dash_id)
+            send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
+            set_title(dash_id, "[gov] dashboard")
+            _style_pane(dash_id, "colour39")
+            panes.append(dash_id)
         except RuntimeError as exc:
-            logging.warning("Failed to create lazygit pane: %s", exc)
+            logging.warning("Failed to create dashboard pane: %s", exc)
 
     # White border lines (window-level), colored labels (per-pane)
     wt = ["-t", target_window] if target_window else []
@@ -481,6 +453,15 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
 
     if panes:
         _apply_governor_layout(target_window)
+
+    # Launch monitor as a background daemon (not a tmux pane)
+    subprocess.Popen(
+        ["dgov", "monitor", "-r", project_root],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
     return panes
 
 

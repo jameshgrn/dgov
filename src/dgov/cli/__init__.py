@@ -243,7 +243,7 @@ def resume_cmd(ctx):
     if os.environ.get("TMUX"):
         # Already in tmux — just ensure workspace panes are alive
         setup_governor_workspace(project_root)
-        click.echo(f"{repo} — governor resumed (dashboard + lazygit refreshed)")
+        click.echo(f"{repo} — governor resumed (terrain + dashboard refreshed)")
     else:
         # Outside tmux — recreate panes targeting the session, then attach
         target = f"{session_name}:0"
@@ -325,7 +325,6 @@ def refresh_cmd(project_root):
                 if len(parts) == 2 and parts[1] in (
                     "[gov] dashboard",
                     "[gov] terrain",
-                    "[gov] lazygit",
                 ):
                     subprocess.run(
                         ["tmux", "kill-pane", "-t", parts[0]],
