@@ -19,33 +19,53 @@ dgov pane merge <slug>                          # integrate
 dgov pane close <slug>                          # cleanup
 ```
 
-## When to use which agent
+## Model routing
 
-**Default to `pi`.** It's free, fast, and handles most tasks when given a clear prompt. Escalate only when pi can't do the job — don't preemptively reach for claude. Review exists to catch failures; use it.
+Only Claude Code can be governor. Workers are always Qwen models. Claude, Gemini, and Codex are never workers — they serve only as lieutenant governors.
 
-- `pi` — **default**. Any well-scoped task: single-file features, bug fixes, test additions, refactors, formatting, find-replace
-- `claude` — escalate when: multi-file reasoning across 3+ files, architectural decisions, ambiguous debugging, complex test logic
-- `codex` — adversarial review, security audit, hard algorithmic implementation
-- `gemini` — large context analysis (full codebase reads), broad refactors touching many files
-- `auto` — let Qwen 4B classify (falls back to claude)
+### Worker tier (implementation)
 
-## Prompting pi
+1. **River GPU** (preferred) — free, local, no rate limits
+   - `river-35b` — default for single-file edits with exact code
+   - `river-9b` — simple shell commands, find-replace, formatting
+   - `river-4b` — classification, triage, monitoring
+2. **OpenRouter Qwen** (fallback when River is down or busy)
+   - `qwen35-35b` / `qwen35-flash` — same capability as river-35b
+   - `qwen35-9b` — same as river-9b
+   - `qwen35-122b` / `qwen35-397b` — complex single-file reasoning
+   - `qwen3-max` — hardest Qwen tasks, thinking model
+3. **hunter** (OpenRouter) — good at precise numbered-step tasks, bad at committing on time
 
-Pi (Qwen 35B) needs structured, explicit prompts. Vague prompts = pi stalls or does nothing. Every pi prompt MUST follow this pattern:
+### LT-GOV tier (orchestration only)
+
+- `claude` — multi-file reasoning, architectural decisions, complex debugging
+- `codex` — adversarial review, security audit
+- `gemini` — large context analysis, broad refactors
+
+### Selection rules
+
+- Default to `river-35b`. If River tunnel is down, fall back to `qwen35-35b`.
+- Never dispatch claude/gemini/codex as a worker. If the task needs them, make them an LT-GOV.
+- One file per task for Qwen workers. Multi-file = LT-GOV.
+- Review exists to catch failures — dispatch cheap, retry cheap.
+
+## Prompting Qwen workers
+
+Qwen models need structured, explicit prompts. Vague prompts = worker stalls or does nothing. Every worker prompt MUST follow this pattern:
 
 1. **Numbered steps** — not prose paragraphs. "1. Read X. 2. Edit Y. 3. Run Z."
-2. **Read first** — always start with "Read <file>" so pi sees actual code before editing
+2. **Read first** — always start with "Read <file>" so the worker sees actual code before editing
 3. **Exact code when possible** — show the code to add/change, not a description of it
 4. **Explicit commit at the end** — always end with:
    ```
    N. git add <files>
    N+1. git commit -m "<message>"
    ```
-   Pi will NOT commit unless told to. This is the #1 failure mode.
-5. **One file per task** — pi handles single-file changes well. Multi-file = escalate to claude.
+   Workers will NOT commit unless told to. This is the #1 failure mode.
+5. **One file per task** — workers handle single-file changes well. Multi-file = LT-GOV.
 6. **Name the files** — "Edit src/dgov/cli.py" not "edit the CLI module"
 
-### Good pi prompt
+### Good prompt
 ```
 1. Read src/dgov/cli.py. Find the pane_k9s function.
 2. Add this function right after it:
@@ -62,7 +82,7 @@ def pane_top(cwd):
 4. git commit -m "Add btop shortcut command"
 ```
 
-### Bad pi prompt
+### Bad prompt
 ```
 Add a btop shortcut command to the CLI, similar to the existing utility pane shortcuts.
 Add tests too.
