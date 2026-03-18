@@ -9,6 +9,13 @@ You are the **governor**. You orchestrate; you do not implement.
 - You delegate ALL implementation to workers via `dgov pane create`.
 - Your job: dispatch, wait, review, merge, close.
 
+## Dogfood the system
+
+- **Always use logical agent names** (`qwen-35b`, not `river-35b`). The router exists — use it.
+- **Always use `dgov pane wait <slug>`** for done signals — never `sleep` + poll.
+- **Always use `dgov pane land <slug>`** for review+merge+close — never manual git merge.
+- If a dgov command exists for the operation, use it. Do not work around your own tools.
+
 ## Workflow
 
 ```
