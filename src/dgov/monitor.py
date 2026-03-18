@@ -527,6 +527,32 @@ def run_monitor(
                     if pruned:
                         logger.info("Monitor: pruned stale panes: %s", ", ".join(pruned))
 
+                # Drain dispatch queue every 12 ticks (~1 min at 5s interval)
+                if tick % 12 == 6:
+                    queued = read_dispatch_queue(session_root)
+                    if queued:
+                        clear_dispatch_queue(session_root)
+                        for item in queued:
+                            summary = item.get("summary", "queued task")
+                            agent = item.get("agent_hint") or "qwen-35b"
+                            try:
+                                from dgov.lifecycle import create_worker_pane
+
+                                pane = create_worker_pane(
+                                    project_root=project_root,
+                                    prompt=summary,
+                                    agent=agent,
+                                    permission_mode="bypassPermissions",
+                                    session_root=session_root,
+                                )
+                                logger.info("Monitor: drained queue -> %s (%s)", pane.slug, agent)
+                            except Exception:
+                                logger.warning(
+                                    "Monitor: queue dispatch failed for: %s",
+                                    summary,
+                                    exc_info=True,
+                                )
+
                 workers = poll_workers(project_root, session_root, hooks=hooks)
                 actions = []
 
