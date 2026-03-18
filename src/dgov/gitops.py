@@ -1,4 +1,4 @@
-"""Low-level git plumbing helpers (no dgov imports)."""
+"""Low-level git plumbing helpers for worktree and branch management."""
 
 from __future__ import annotations
 
