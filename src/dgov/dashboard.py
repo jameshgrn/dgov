@@ -261,7 +261,9 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
     table = Table(expand=True, box=None, padding=(0, 1), show_header=True)
     table.add_column("Slug", ratio=3, no_wrap=True)
     table.add_column("Agent", ratio=2, no_wrap=True)
-    table.add_column("State", width=16, no_wrap=True)
+    table.add_column("State", width=10, no_wrap=True)
+    table.add_column("Phase", width=12, no_wrap=True)
+    table.add_column("Duration", width=8, no_wrap=True)
 
     sorted_panes = _sort_panes_hierarchical(panes, selected)
 
@@ -298,9 +300,13 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
         has_commits = p.get("monitor_has_commits", False)
         commit_tag = " [bold green]C[/bold green]" if has_commits else ""
 
-        state_text = Text.from_markup(f"[{color}]{display_state} {dur}[/{color}]{commit_tag}")
+        state_text = Text.from_markup(f"[{color}]{pstate}[/{color}]{commit_tag}")
+        phase_text = (
+            Text.from_markup(f"[{color}]{m_class or ''}[/{color}]") if m_class else Text("")
+        )
+        dur_text = Text.from_markup(f"[dim]{dur}[/dim]")
 
-        table.add_row(slug_display, agent, state_text, style=style)
+        table.add_row(slug_display, agent, state_text, phase_text, dur_text, style=style)
 
     return table
 
