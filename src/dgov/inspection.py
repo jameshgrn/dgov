@@ -108,7 +108,7 @@ def review_worker_pane(
     freshness = _compute_freshness(project_root, target, worker_changed_files=changed_files)
 
     # Load events once, derive both counters from one pass
-    from dgov.retry import _count_retries
+    from dgov.recovery import _count_retries
 
     events = read_events(session_root, limit=500)
     retry_count = _count_retries(session_root, slug, events=events)

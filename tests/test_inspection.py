@@ -64,7 +64,7 @@ def inspection_mocks(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     monkeypatch.setattr("dgov.inspection.read_events", read_events)
     monkeypatch.setattr("dgov.status._compute_freshness", freshness)
     monkeypatch.setattr("dgov.inspection._compute_freshness", freshness)
-    monkeypatch.setattr("dgov.retry._count_retries", count_retries)
+    monkeypatch.setattr("dgov.recovery._count_retries", count_retries)
 
     return {
         "get_pane": get_pane,

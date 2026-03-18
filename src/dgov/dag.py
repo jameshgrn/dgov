@@ -828,7 +828,7 @@ def _augment_prompt_with_review(
 
     # Try to get log tail context
     try:
-        from dgov.retry import retry_context
+        from dgov.recovery import retry_context
 
         ctx = retry_context(pane_slug, session_root)
         if ctx:

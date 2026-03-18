@@ -1,4 +1,4 @@
-"""Tests for dgov.retry — auto-retry engine."""
+"""Tests for dgov.recovery — auto-retry engine."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from dgov.persistence import (
     emit_event,
     set_pane_metadata,
 )
-from dgov.retry import (
+from dgov.recovery import (
     RetryPolicy,
     _count_retries,
     get_retry_policy,
@@ -168,7 +168,7 @@ class TestGetRetryPolicy:
         policy = get_retry_policy(str(tmp_path), "nonexistent")
         assert policy is None
 
-    @patch("dgov.retry.load_registry")
+    @patch("dgov.recovery.load_registry")
     def test_returns_policy_from_agent(self, mock_registry, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path, agent="test-agent")
         agent_def = MagicMock()
@@ -181,7 +181,7 @@ class TestGetRetryPolicy:
         assert policy.max_retries == 3
         assert policy.escalate_to == "claude"
 
-    @patch("dgov.retry.load_registry")
+    @patch("dgov.recovery.load_registry")
     def test_pane_override_takes_priority(self, mock_registry, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path, agent="test-agent")
 
@@ -204,7 +204,7 @@ class TestGetRetryPolicy:
 
 
 class TestMaybeAutoRetry:
-    @patch("dgov.retry.load_registry")
+    @patch("dgov.recovery.load_registry")
     def test_returns_none_when_no_policy(self, mock_registry, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path, state="failed")
         mock_registry.return_value = {"claude": MagicMock(max_retries=0)}
@@ -222,8 +222,8 @@ class TestMaybeAutoRetry:
         assert result is None
 
     @patch("dgov.recovery.retry_worker_pane")
-    @patch("dgov.retry.load_registry")
-    @patch("dgov.retry.time.sleep")
+    @patch("dgov.recovery.load_registry")
+    @patch("dgov.recovery.time.sleep")
     def test_retries_under_max(
         self, mock_sleep, mock_registry, mock_retry, tmp_path: Path
     ) -> None:
@@ -244,8 +244,8 @@ class TestMaybeAutoRetry:
         mock_sleep.assert_called_once()
 
     @patch("dgov.recovery.escalate_worker_pane")
-    @patch("dgov.retry.load_registry")
-    @patch("dgov.retry.time.sleep")
+    @patch("dgov.recovery.load_registry")
+    @patch("dgov.recovery.time.sleep")
     def test_escalates_when_exhausted(
         self, mock_sleep, mock_registry, mock_escalate, tmp_path: Path
     ) -> None:
@@ -269,7 +269,7 @@ class TestMaybeAutoRetry:
         assert result["escalated"] == "test-worker"
         assert result["to"] == "claude"
 
-    @patch("dgov.retry.load_registry")
+    @patch("dgov.recovery.load_registry")
     def test_returns_none_when_exhausted_no_escalation(
         self, mock_registry, tmp_path: Path
     ) -> None:
@@ -292,7 +292,7 @@ class TestMaybeAutoRetry:
 
 
 class TestWaitWithAutoRetry:
-    @patch("dgov.retry.maybe_auto_retry")
+    @patch("dgov.recovery.maybe_auto_retry")
     @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
     @patch("dgov.persistence.update_pane_state")

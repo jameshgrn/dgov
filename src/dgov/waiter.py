@@ -272,7 +272,7 @@ def wait_worker_pane(
             current_state = rec.get("state", "") if rec else ""
 
             if auto_retry and current_state in ("failed", "abandoned"):
-                from dgov.retry import maybe_auto_retry
+                from dgov.recovery import maybe_auto_retry
 
                 retry_result = maybe_auto_retry(session_root, slug, project_root)
                 if retry_result:
