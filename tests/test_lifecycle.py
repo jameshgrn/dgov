@@ -281,7 +281,7 @@ class TestCreateWorktree:
         assert "-b" not in add_args
         assert "existing-branch" in add_args
 
-    def test_reuses_existing_worktree_directory(self, tmp_path: Path) -> None:
+    def test_rejects_existing_worktree_directory(self, tmp_path: Path) -> None:
         from dgov.lifecycle import _create_worktree
 
         proj = tmp_path / "proj"
@@ -294,9 +294,9 @@ class TestCreateWorktree:
             MagicMock(returncode=0, stdout="", stderr=""),
         ]
         with patch("dgov.lifecycle.subprocess.run", side_effect=mock_results) as mock_run:
-            _create_worktree(str(proj), str(wt), "branch")
+            with pytest.raises(RuntimeError, match="Worktree already exists"):
+                _create_worktree(str(proj), str(wt), "branch")
 
-        # Only the dir check should run; no worktree add
         assert mock_run.call_count == 1
 
     def test_raises_runtime_error_on_failure(self, tmp_path: Path) -> None:
