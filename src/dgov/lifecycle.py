@@ -378,7 +378,6 @@ def _setup_and_launch_agent(
     for key, val in all_env.items():
         env_lines.append(f"export {key}={shlex.quote(val)}")
     dgov_env = {
-        "DGOV_ROOT": project_root,
         "DGOV_SESSION_ROOT": session_root,
         "DGOV_SLUG": slug,
         "DGOV_AGENT": agent_id,
@@ -662,6 +661,8 @@ def create_worker_pane(
             time.sleep(0.2)
 
             # 4. Setup and launch agent
+            if agent_def.prompt_command == "pi":
+                extra_flags = f"{extra_flags} --no-extensions".strip()
             pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
             if pi_ext:
                 extra_flags = f"{extra_flags} {pi_ext}".strip()

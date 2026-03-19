@@ -9,6 +9,7 @@ import pytest
 from dgov.tmux import (
     _run,
     capture_pane,
+    create_background_pane,
     create_utility_pane,
     current_command,
     kill_pane,
@@ -325,6 +326,102 @@ class TestStyling:
             ],
             silent=True,
         )
+
+
+class TestCreateBackgroundPane:
+    """Tests for create_background_pane — expects hidden background windows."""
+
+    def test_creates_hidden_window_without_tmux_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When TMUX env is not set, use new-window -d for hidden background window."""
+        monkeypatch.delenv("TMUX", raising=False)
+        mock_run = MagicMock(return_value="%99")
+        monkeypatch.setattr("dgov.tmux._run", mock_run)
+
+        result = create_background_pane(name="worker", agent="qwen-35b", cwd="/repo")
+
+        assert result == "%99"
+        # Should use new-window -d (hidden background window)
+        mock_run.assert_called_once_with(
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-n",
+                "[qwen-35b] worker",
+                "-c",
+                "/repo",
+            ]
+        )
+
+    def test_creates_hidden_window_even_when_in_tmux(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Even inside tmux, create a hidden background window."""
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,12345,67890")
+        mock_run = MagicMock(return_value="%88")
+        monkeypatch.setattr("dgov.tmux._run", mock_run)
+
+        result = create_background_pane(name="agent", agent="codex", env={"FOO": "bar"})
+
+        assert result == "%88"
+        # Always uses new-window -d, never split-window -h -d
+        mock_run.assert_called_once_with(
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-n",
+                "[codex] agent",
+                "-e",
+                "FOO=bar",
+            ]
+        )
+
+    def test_no_title_or_agent_omits_window_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Without name/agent, new-window doesn't get -n flag."""
+        monkeypatch.delenv("TMUX", raising=False)
+        mock_run = MagicMock(return_value="%77")
+        monkeypatch.setattr("dgov.tmux._run", mock_run)
+
+        result = create_background_pane(cwd="/workdir")
+
+        assert result == "%77"
+        mock_run.assert_called_once_with(
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-c",
+                "/workdir",
+            ]
+        )
+
+    def test_env_vars_sorted_alphabetically(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Environment variables are sorted alphabetically in the command."""
+        monkeypatch.delenv("TMUX", raising=False)
+        mock_run = MagicMock(return_value="%66")
+        monkeypatch.setattr("dgov.tmux._run", mock_run)
+
+        result = create_background_pane(
+            name="test",
+            agent="pi",
+            env={"ZEBRA": "last", "ALPHA": "first", "MIDDLE": "mid"},
+        )
+
+        assert result == "%66"
+        call_args = mock_run.call_args[0][0]
+        # Find the -e flags and verify order
+        e_indices = [i for i, arg in enumerate(call_args) if arg == "-e"]
+        assert len(e_indices) == 3
+        assert call_args[e_indices[0] + 1] == "ALPHA=first"
+        assert call_args[e_indices[1] + 1] == "MIDDLE=mid"
+        assert call_args[e_indices[2] + 1] == "ZEBRA=last"
 
 
 class TestComposedHelpers:
