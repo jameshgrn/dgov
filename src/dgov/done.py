@@ -59,6 +59,17 @@ def _wrap_done_signal(cmd: str, done_signal: str) -> str:
     return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
 
 
+def _wrap_exit_signal(cmd: str, done_signal: str) -> str:
+    """Wrap *cmd* so .exit file is written on failure but nothing on success.
+
+    Unlike _wrap_done_signal, this does NOT write the done signal on success.
+    It only records non-zero exit codes via the .exit file for detection by
+    _is_done().
+    """
+    fail = shlex.quote(done_signal + ".exit")
+    return f"{cmd} || echo $? > {fail}"
+
+
 # -- Commit detection --
 
 
