@@ -107,6 +107,74 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
                 check=True,
             )
     except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Failed to create worktree: {e.stderr}") from e
+
+
+def _find_unique_slug(project_root: str, session_root: str, base_slug: str) -> tuple[str, str]:
+    """Find a unique slug by appending numeric suffix if needed.
+
+    Checks for collisions with existing pane slugs, branch names, and
+    worktree paths. Returns (unique_slug, worktree_path).
+    """
+
+    from dgov.persistence import all_panes
+
+    # Get existing panes and their branches/worktrees
+    existing_panes = all_panes(session_root)
+    existing_slugs = {p["slug"] for p in existing_panes}
+    existing_branches = {p["branch_name"] for p in existing_panes if p.get("branch_name")}
+    existing_worktrees = {p["worktree_path"] for p in existing_panes if p.get("worktree_path")}
+
+    # Base path pattern
+    worktrees_dir = Path(project_root) / ".dgov" / "worktrees"
+    candidate_slug = base_slug
+    counter = 1
+
+    while True:
+        # Check slug collision
+        if candidate_slug in existing_slugs:
+            candidate_slug = f"{base_slug}-{counter}"
+            counter += 1
+            continue
+
+        # Check branch name collision
+        branch_name = candidate_slug  # branch name matches slug
+        if branch_name in existing_branches:
+            candidate_slug = f"{base_slug}-{counter}"
+            counter += 1
+            continue
+
+        # Check worktree path collision
+        worktree_path = str(worktrees_dir / candidate_slug)
+        if worktree_path in existing_worktrees:
+            candidate_slug = f"{base_slug}-{counter}"
+            counter += 1
+            continue
+
+        # All clear
+        return candidate_slug, worktree_path
+
+    result = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", "--verify", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    try:
+        if result.returncode == 0:
+            subprocess.run(
+                ["git", "-C", project_root, "worktree", "add", worktree_path, branch_name],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        else:
+            subprocess.run(
+                ["git", "-C", project_root, "worktree", "add", "-b", branch_name, worktree_path],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+    except subprocess.CalledProcessError as e:
         raise RuntimeError(
             f"Failed to create worktree for branch {branch_name!r} "
             f"at path {worktree_path!r}: {e.stderr.strip()}"
@@ -501,15 +569,9 @@ def create_worker_pane(
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
     ensure_dgov_gitignored(project_root)
-    slug = slug or _generate_slug(prompt)
-    _validate_slug(slug)
+    base_slug = slug or _generate_slug(prompt)
+    _validate_slug(base_slug)
     owns_worktree = existing_worktree is None
-    branch_name = slug
-    worktree_path = (
-        existing_worktree
-        if existing_worktree
-        else str(Path(project_root) / ".dgov" / "worktrees" / slug)
-    )
 
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
@@ -525,8 +587,10 @@ def create_worker_pane(
     # From here on, side effects need cleanup on failure
     pane_id: str | None = None
     try:
-        # 2. Create git worktree (skip if using existing path)
+        # 2. Find unique slug avoiding collisions with existing panes/branches/worktrees
         if owns_worktree:
+            slug, worktree_path = _find_unique_slug(project_root, session_root, base_slug)
+            branch_name = slug
             _create_worktree(project_root, worktree_path, branch_name)
 
             # Symlink .venv from main repo so workers skip uv sync
@@ -542,6 +606,13 @@ def create_worker_pane(
         # an available backend right before pane creation, avoiding races where
         # the chosen backend becomes busy between initial resolution and pane creation.
         with _pane_lock(project_root):
+            # Track physical agents allocated under this lock to avoid false
+            # positive concurrency failures when resolve_agent() already chose
+            # an available backend. This prevents the routed-agent race where
+            # a second concurrent request resolves to the same backend and
+            # incorrectly fails the per-backend concurrency check.
+            allocated_physical_agents: set[str] = set()
+
             # Re-resolve logical agent name -> physical backend after lock
             # River-first then OpenRouter fallback preserved by router order
             from dgov.router import resolve_agent as _resolve_agent
@@ -550,6 +621,7 @@ def create_worker_pane(
             if routed_from:
                 logger.info("Routed %s -> %s", routed_from, final_agent)
             agent = final_agent
+            allocated_physical_agents.add(agent)
 
             registry = load_registry(project_root)
             agent_def = registry.get(agent)
@@ -588,8 +660,14 @@ def create_worker_pane(
                     )
 
             # Concurrency guard (config-driven)
+            # Skip check for agents allocated under this lock to avoid false
+            # positives from routed-agent race. Only check against truly external
+            # workers that were started before this lock was acquired.
             if agent_def.max_concurrent is not None:
                 active = _count_active_agent_workers(session_root, agent)
+                # Subtract self if this agent was just allocated under this lock
+                if agent in allocated_physical_agents:
+                    active -= 1
                 if active >= agent_def.max_concurrent:
                     raise RuntimeError(
                         f"Concurrency limit: {active} {agent} workers already running "
