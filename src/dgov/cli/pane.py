@@ -904,7 +904,8 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
 @click.option("--agent", "-a", default=None, help="Override agent for retry")
 @click.option("--prompt", "-p", default=None, help="Override prompt for retry")
 @click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
-def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode):
+@click.option("--close", is_flag=True, help="Close the original pane before retrying")
+def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode, close):
     """Retry a failed pane with a new attempt."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
@@ -917,6 +918,7 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode)
         agent=agent,
         prompt=prompt,
         permission_mode=permission_mode,
+        close=close,
     )
     click.echo(json.dumps(result, indent=2))
     if "error" in result:

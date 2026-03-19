@@ -818,6 +818,22 @@ def merge_worker_pane(
             rebase_fallback = True
 
     # Dispatch merge strategy
+    # Remove existing worktree before merge to avoid 'already used by worktree' errors
+    wt_path = target.get("worktree_path")
+    if wt_path and Path(wt_path).exists():
+        subprocess.run(
+            ["git", "-C", project_root, "worktree", "remove", "--force", wt_path],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", project_root, "branch", "-d", branch_name],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", project_root, "worktree", "prune"],
+            capture_output=True,
+        )
+
     if rebase:
         merge = _rebase_merge(pane_project_root, branch_name, message=message)
     else:

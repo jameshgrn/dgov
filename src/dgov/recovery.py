@@ -135,6 +135,7 @@ def retry_worker_pane(
     agent: str | None = None,
     prompt: str | None = None,
     permission_mode: str = "bypassPermissions",
+    close: bool = False,
 ) -> dict:
     """Retry a pane by creating a new one linked to the original.
 
@@ -149,6 +150,11 @@ def retry_worker_pane(
 
     original_prompt = prompt or target.get("prompt", "")
     original_agent = agent or target.get("agent", "claude")
+
+    if close:
+        from dgov.lifecycle import close_worker_pane
+
+        close_worker_pane(project_root, slug, session_root=session_root)
 
     # Compute attempt number from slug pattern
     base_slug = re.sub(r"-\d+$", "", slug)  # strip trailing -N

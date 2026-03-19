@@ -371,11 +371,13 @@ from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
 from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
 from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
+from dgov.cli.plan_cmd import plan  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
 from dgov.cli.templates import template  # noqa: E402
 from dgov.cli.worker_cmd import worker  # noqa: E402
 
 cli.add_command(pane)
+cli.add_command(plan)
 cli.add_command(preflight_cmd)
 cli.add_command(status)
 cli.add_command(rebase)
