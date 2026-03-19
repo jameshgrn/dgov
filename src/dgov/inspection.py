@@ -118,6 +118,10 @@ def review_worker_pane(
         1 for ev in events if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug
     )
 
+    # Run smoke tests on related test files
+    changed_file_list = list(changed_files)
+    test_result = _run_related_tests(project_root, changed_file_list)
+
     result = {
         "slug": slug,
         "branch": branch,
@@ -137,6 +141,8 @@ def review_worker_pane(
     if f_full is not None:
         diff_result = f_full.result()
         result["diff"] = diff_result.stdout if diff_result.returncode == 0 else ""
+    if test_result:
+        result.update(test_result)
 
     return result
 
@@ -359,3 +365,38 @@ def _find_event_ts(events: list[dict], event_name: str) -> datetime | None:
             except (ValueError, KeyError):
                 return None
     return None
+
+
+def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
+    """Run pytest on test files related to changed source files.
+
+    Maps src/dgov/X.py -> tests/test_X.py. Returns empty dict if no
+    related tests found.
+    """
+    test_files: list[str] = []
+    for f in changed_files:
+        if f.startswith("tests/") and f.endswith(".py"):
+            abs_path = str(Path(project_root) / f)
+            if Path(abs_path).exists():
+                test_files.append(abs_path)
+        elif f.startswith("src/dgov/") and f.endswith(".py"):
+            name = Path(f).stem
+            candidate = Path(project_root) / "tests" / f"test_{name}.py"
+            if candidate.exists():
+                test_files.append(str(candidate))
+    if not test_files:
+        return {}
+    test_files = sorted(set(test_files))
+    result = subprocess.run(
+        ["uv", "run", "pytest", "-q", "-m", "unit", *test_files],
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+        timeout=120,
+    )
+    output = (result.stdout + result.stderr).strip()
+    return {
+        "tests_ran": [str(Path(f).relative_to(project_root)) for f in test_files],
+        "tests_passed": result.returncode == 0,
+        "test_output": output[-500:] if len(output) > 500 else output,
+    }
