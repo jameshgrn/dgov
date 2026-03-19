@@ -284,7 +284,14 @@ def _is_done(
                         # If agent is dead but shell is alive, and we have commits, we are done.
                         if pane_id and not _agent_still_running(pane_id, current_command):
                             logger.debug("new_commits slug=%s agent exited - done", slug)
-                            # Fall through to done
+                            current_state = pane_record.get("state", "")
+                            force = current_state == "abandoned"
+                            _persist.update_pane_state(session_root, slug, "done", force=force)
+                            _persist.emit_event(session_root, "pane_done", slug)
+                            done_path.parent.mkdir(parents=True, exist_ok=True)
+                            done_path.touch()
+                            _set_done_reason(_stable_state, "commit")
+                            return True
                         elif _stable_state is not None:
                             _stable_state["commits_detected"] = True
                             return False
