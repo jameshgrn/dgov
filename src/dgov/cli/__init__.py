@@ -370,7 +370,6 @@ from dgov.cli.experiment import experiment  # noqa: E402
 from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
 from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
 from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
-from dgov.cli.swarm import swarm  # noqa: E402
 from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
 from dgov.cli.plan_cmd import plan  # noqa: E402
@@ -405,7 +404,6 @@ cli.add_command(terrain_cmd)
 cli.add_command(tunnel_cmd)
 cli.add_command(worker)
 cli.add_command(monitor_cmd)
-cli.add_command(swarm)
 
 
 if __name__ == "__main__":
