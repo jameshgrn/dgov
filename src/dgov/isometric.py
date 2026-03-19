@@ -42,19 +42,23 @@ def _encode_kitty(img: Image.Image) -> str:
         return ""
 
     is_tmux = "TMUX" in os.environ
-    ESC = "\x1b"
-    # Tmux wrap: ESC Ptmux; ESC <seq> ESC \
-    START = f"{ESC}Ptmux;{ESC}" if is_tmux else ESC
-    END = f"{ESC}\\{ESC}\\" if is_tmux else f"{ESC}\\"
+    # ESC character
+    ESC = chr(27)
+
+    # Tmux wrap helper: ESC Ptmux; ESC <seq> ESC \
+    def wrap(seq: str) -> str:
+        if is_tmux:
+            return f"{ESC}Ptmux;{ESC}{seq}{ESC}\\"
+        return f"{ESC}{seq}"
 
     out = []
     # Send first chunk with a=T (transmit and display), f=100 (PNG format)
-    out.append(f"{START}_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}{END}")
+    out.append(wrap(f"_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}"))
 
     # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
-        out.append(f"{START}_Gm={m};{chunk}{END}")
+        out.append(wrap(f"_Gm={m};{chunk}"))
 
     return "".join(out)
 
@@ -71,8 +75,6 @@ def render_isometric(model: ErosionModel) -> str:
         return ""
 
     # Calculate image size
-    # Screen X: (col - row) * (TILE_W / 2)
-    # Screen Y: (col + row) * (TILE_H / 2)
     width = (rows + cols) * (TILE_W // 2) + 100
     height = (rows + cols) * (TILE_H // 2) + 100
 
@@ -88,11 +90,9 @@ def render_isometric(model: ErosionModel) -> str:
             h_val = model.height[r][c]
             z_off = int(h_val * Z_SCALE)
 
-            # Isometric projection math
             sx = cx + (c - r) * (TILE_W // 2)
             sy = cy + (c + r) * (TILE_H // 2) - z_off
 
-            # Draw Tile (Diamond)
             points = [
                 (sx, sy),  # Top
                 (sx + TILE_W // 2, sy + TILE_H // 2),  # Right
@@ -103,7 +103,6 @@ def render_isometric(model: ErosionModel) -> str:
             color = PALETTE["bedrock"] if h_val > 0.5 else PALETTE["alluvium"]
             draw.polygon(points, fill=color, outline="black")
 
-            # Draw Vertical Faces (simplified)
             draw.polygon(
                 [
                     (sx - TILE_W // 2, sy + TILE_H // 2),
@@ -111,7 +110,7 @@ def render_isometric(model: ErosionModel) -> str:
                     (sx, sy + TILE_H + z_off),
                     (sx - TILE_W // 2, sy + TILE_H // 2 + z_off),
                 ],
-                fill="#37474F",  # Left shadow
+                fill="#37474F",
             )
             draw.polygon(
                 [
@@ -120,7 +119,7 @@ def render_isometric(model: ErosionModel) -> str:
                     (sx, sy + TILE_H + z_off),
                     (sx + TILE_W // 2, sy + TILE_H // 2 + z_off),
                 ],
-                fill="#546E7A",  # Right highlight
+                fill="#546E7A",
             )
 
     return _encode_kitty(img)

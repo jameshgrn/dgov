@@ -30,7 +30,8 @@ class KittyRenderable:
         self.data = data
 
     def __rich_console__(self, console, options):
-        yield Segment(self.data, control=True)
+        # Prepend 'Home' (\x1b[H) to draw at top of pane without scrolling
+        yield Segment(f"\x1b[H{self.data}", control=True)
 
 
 _PANEL_BORDER_WIDTH = 2
@@ -96,7 +97,7 @@ def run_terrain(refresh: float = 0.5) -> None:
             m.step()
         return m
 
-    def _render() -> Panel:
+    def _render() -> Panel | KittyRenderable:
         nonlocal model, last_w, last_h, tick, agents_cache, agents_last_read
         w, panel_rows = _detect_pane_size(console)
         h = panel_rows * 2  # half-block doubles rows
@@ -152,7 +153,8 @@ def run_terrain(refresh: float = 0.5) -> None:
         try:
             model.step()
             if os.environ.get("DGOV_ISOMETRIC") == "1":
-                rendered = KittyRenderable(render_isometric(model))
+                # Bypass Panel to prevent wrapping corruption
+                return KittyRenderable(render_isometric(model))
             else:
                 rendered = render_terrain(model, supersample=2)
                 rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
