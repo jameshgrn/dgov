@@ -293,13 +293,15 @@ def refresh_cmd(project_root):
         raise SystemExit(1)
     click.secho("Installed.", fg="green")
 
-    # 2. Kill stale dashboard process
-    pidfile = Path(project_root) / ".dgov" / "dashboard.pid"
-    if pidfile.is_file():
+    # 2. Kill stale dashboard + monitor daemons so workspace setup restarts them
+    for name in ("dashboard", "monitor"):
+        pidfile = Path(project_root) / ".dgov" / f"{name}.pid"
+        if not pidfile.is_file():
+            continue
         try:
             old_pid = int(pidfile.read_text().strip())
             os.kill(old_pid, signal.SIGTERM)
-            click.echo(f"Killed stale dashboard (pid {old_pid})")
+            click.echo(f"Killed stale {name} (pid {old_pid})")
         except (ValueError, ProcessLookupError, PermissionError):
             pass
         pidfile.unlink(missing_ok=True)
