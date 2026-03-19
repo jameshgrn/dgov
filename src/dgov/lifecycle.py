@@ -130,9 +130,8 @@ def _write_worktree_instructions(
                     lines.append(f"- {f}\n")
                 lines.append("\n")
             if context["also_check"]:
-                lines.append("Also check:\n")
                 for f in context["also_check"]:
-                    lines.append(f"- {f}\n")
+                    lines.append(f"- **Also check:** {f}\n")
                 lines.append("\n")
             if context["tests"]:
                 lines.append("Tests:\n")
