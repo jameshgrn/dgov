@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import logging
 import os
 import re
@@ -9,6 +10,7 @@ import shlex
 import signal
 import subprocess
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from dgov.agents import AgentDef, build_launch_command, load_registry
@@ -35,6 +37,21 @@ from dgov.strategy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _pane_lock(project_root: str):
+    """File-based lock to serialize pane creation on the same repo."""
+    lock_dir = Path(project_root) / ".dgov"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_dir / "pane.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def ensure_dgov_gitignored(project_root: str) -> None:
@@ -530,100 +547,118 @@ def create_worker_pane(
             if _main_venv.is_dir() and not _wt_venv.exists():
                 _wt_venv.symlink_to(_main_venv)
 
-        # 2b. Generic health check (config-driven)
-        if agent_def.health_check:
-            hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
-            if hc.returncode != 0 and agent_def.health_fix:
-                subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
+        # 2b-2c. Health check + concurrency guard protected by file lock
+        # This atomic section prevents race conditions when multiple governors
+        # create panes concurrently on the same repo.
+        with _pane_lock(project_root):
+            # Health check (config-driven) with 10s timeout
+            if agent_def.health_check:
                 hc = subprocess.run(
-                    agent_def.health_check, shell=True, capture_output=True, text=True
+                    agent_def.health_check, shell=True, capture_output=True, text=True, timeout=10
                 )
-            if hc.returncode != 0:
-                raise RuntimeError(f"Health check failed for {agent}: {agent_def.health_check}")
+                if hc.returncode != 0 and agent_def.health_fix:
+                    subprocess.run(
+                        agent_def.health_fix,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    hc = subprocess.run(
+                        agent_def.health_check,
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                if hc.returncode != 0:
+                    raise RuntimeError(
+                        f"Health check failed for {agent}: {agent_def.health_check}"
+                    )
 
-        # 2c. Generic concurrency guard (config-driven)
-        if agent_def.max_concurrent is not None:
-            active = _count_active_agent_workers(session_root, agent)
-            if active >= agent_def.max_concurrent:
-                raise RuntimeError(
-                    f"Concurrency limit: {active} {agent} workers already running "
-                    f"(max {agent_def.max_concurrent}). "
-                    f"Wait for one to finish or use a different agent."
-                )
+            # Concurrency guard (config-driven)
+            if agent_def.max_concurrent is not None:
+                active = _count_active_agent_workers(session_root, agent)
+                if active >= agent_def.max_concurrent:
+                    raise RuntimeError(
+                        f"Concurrency limit: {active} {agent} workers already running "
+                        f"(max {agent_def.max_concurrent}). "
+                        f"Wait for one to finish or use a different agent."
+                    )
 
-        # 3. Create background worker pane
-        startup_env = {
-            "DISABLE_AUTO_UPDATE": "true",
-            "DISABLE_UPDATE_PROMPT": "true",
-        }
-        get_backend().setup_pane_borders()
-        pane_id = get_backend().create_worker_pane(
-            cwd=worktree_path, env=startup_env, name=slug, agent=agent
-        )
+            # 3. Create background worker pane
+            startup_env = {
+                "DISABLE_AUTO_UPDATE": "true",
+                "DISABLE_UPDATE_PROMPT": "true",
+            }
+            get_backend().setup_pane_borders()
+            pane_id = get_backend().create_worker_pane(
+                cwd=worktree_path, env=startup_env, name=slug, agent=agent
+            )
 
-        # Wait for shell to initialize before sending commands.
-        # Without this, send-keys arrives before zsh loads .zshrc,
-        # causing commands to echo raw then replay — garbling source scripts.
-        from dgov.tmux import wait_for_shell_ready
+            # Wait for shell to initialize before sending commands.
+            # Without this, send-keys arrives before zsh loads .zshrc,
+            # causing commands to echo raw then replay — garbling source scripts.
+            from dgov.tmux import wait_for_shell_ready
 
-        if not wait_for_shell_ready(pane_id, timeout=3.0):
-            logger.warning("Shell ready timeout for %s — proceeding anyway", slug)
+            if not wait_for_shell_ready(pane_id, timeout=3.0):
+                logger.warning("Shell ready timeout for %s — proceeding anyway", slug)
 
-        # Disable bracketed paste to prevent garbled pane output
-        get_backend().send_shell_command(pane_id, "printf '\\e[?2004l'")
-        time.sleep(0.2)
+            # Disable bracketed paste to prevent garbled pane output
+            get_backend().send_shell_command(pane_id, "printf '\\e[?2004l'")
+            time.sleep(0.2)
 
-        # 4. Setup and launch agent
-        pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
-        if pi_ext:
-            extra_flags = f"{extra_flags} {pi_ext}".strip()
-        _setup_and_launch_agent(
-            pane_id=pane_id,
-            slug=slug,
-            project_root=project_root,
-            session_root=session_root,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            agent_id=agent,
-            agent_def=agent_def,
-            registry=registry,
-            permission_mode=permission_mode,
-            prompt=prompt,
-            hook_prompt=prompt,
-            all_env=all_env,
-            extra_flags=extra_flags,
-            owns_worktree=owns_worktree,
-            base_sha=base_sha,
-            skip_auto_structure=skip_auto_structure,
-            role=role,
-        )
+            # 4. Setup and launch agent
+            pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
+            if pi_ext:
+                extra_flags = f"{extra_flags} {pi_ext}".strip()
+            _setup_and_launch_agent(
+                pane_id=pane_id,
+                slug=slug,
+                project_root=project_root,
+                session_root=session_root,
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                agent_id=agent,
+                agent_def=agent_def,
+                registry=registry,
+                permission_mode=permission_mode,
+                prompt=prompt,
+                hook_prompt=prompt,
+                all_env=all_env,
+                extra_flags=extra_flags,
+                owns_worktree=owns_worktree,
+                base_sha=base_sha,
+                skip_auto_structure=skip_auto_structure,
+                role=role,
+            )
 
-        # 5. Build pane record and save to state
-        pane = WorkerPane(
-            slug=slug,
-            prompt=prompt,
-            pane_id=pane_id,
-            agent=agent,
-            project_root=project_root,
-            worktree_path=worktree_path,
-            branch_name=branch_name,
-            owns_worktree=owns_worktree,
-            base_sha=base_sha,
-            role=role,
-            parent_slug=parent_slug,
-        )
-        add_pane(session_root, pane)
+            # 5. Build pane record and save to state
+            pane = WorkerPane(
+                slug=slug,
+                prompt=prompt,
+                pane_id=pane_id,
+                agent=agent,
+                project_root=project_root,
+                worktree_path=worktree_path,
+                branch_name=branch_name,
+                owns_worktree=owns_worktree,
+                base_sha=base_sha,
+                role=role,
+                parent_slug=parent_slug,
+            )
+            add_pane(session_root, pane)
 
-        emit_event(
-            session_root,
-            "pane_created",
-            slug,
-            agent=agent,
-            prompt=prompt[:200],
-            base_sha=base_sha,
-        )
+            emit_event(
+                session_root,
+                "pane_created",
+                slug,
+                agent=agent,
+                prompt=prompt[:200],
+                base_sha=base_sha,
+            )
 
-        return pane
+            return pane
 
     except BaseException:
         if pane_id:

@@ -8,7 +8,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dgov.inspection import diff_worker_pane, rebase_governor, review_worker_pane
+from dgov.inspection import (
+    compute_stats,
+    diff_worker_pane,
+    rebase_governor,
+    review_worker_pane,
+)
+from dgov.lifecycle import WorkerPane, add_pane
+from dgov.persistence import emit_event
 
 pytestmark = pytest.mark.unit
 
