@@ -282,7 +282,7 @@ def test_merge_worker_pane_returns_error_when_pane_missing(tmp_path: Path) -> No
     mock_close_worker_pane.assert_not_called()
 
 
-def test_merge_worker_pane_raises_for_illegal_transition_from_active_state(
+def test_merge_worker_pane_refuses_active_pane_state(
     tmp_path: Path,
 ) -> None:
     repo = _init_repo(tmp_path, "illegal-state")
@@ -304,21 +304,21 @@ def test_merge_worker_pane_raises_for_illegal_transition_from_active_state(
 
     with (
         patch("dgov.persistence.get_pane", return_value=pane),
-        patch(
-            "dgov.persistence.update_pane_state",
-            side_effect=IllegalTransitionError("active", "merged", "active-pane"),
-        ) as mock_update_state,
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
         patch("dgov.persistence.emit_event") as mock_emit_event,
         patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
     ):
-        with pytest.raises(IllegalTransitionError, match="active -> merged"):
-            merge_worker_pane(str(repo), "active-pane", session_root=str(repo))
+        result = merge_worker_pane(str(repo), "active-pane", session_root=str(repo))
 
-    assert (repo / "worker.txt").read_text() == "merged before state update\n"
+    assert result["error"] == "Pane active-pane is in state 'active', not 'done'"
+    assert result["current_state"] == "active"
+    assert (worktree / "worker.txt").read_text() == "merged before state update\n"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-active").returncode == 0
-    mock_update_state.assert_called_once_with(str(repo), "active-pane", "merged")
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
+    assert not (repo / "worker.txt").exists()
+    mock_update_state.assert_not_called()
     mock_emit_event.assert_not_called()
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
@@ -426,7 +426,7 @@ def test_merge_worker_pane_returns_error_when_branch_name_missing(tmp_path: Path
     mock_close_worker_pane.assert_not_called()
 
 
-def test_merge_worker_pane_auto_commits_pending_worktree_changes(
+def test_merge_worker_pane_refuses_dirty_worktree_changes(
     tmp_path: Path,
     _mock_backend: MagicMock,
 ) -> None:
@@ -455,20 +455,57 @@ def test_merge_worker_pane_auto_commits_pending_worktree_changes(
     ):
         result = merge_worker_pane(str(repo), "auto-commit", session_root=str(repo))
 
-    merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert result["merged"] == "auto-commit"
-    assert result["branch"] == "dgov-auto-commit"
-    assert result["files_changed"] == 1
-    assert result["auto_committed"] == ["worker.txt"]
-    assert (repo / "worker.txt").read_text() == "committed by merge\n"
-    mock_update_state.assert_called_once_with(str(repo), "auto-commit", "merged")
-    mock_emit_event.assert_called_once_with(
-        str(repo),
-        "pane_merged",
-        "auto-commit",
-        merge_sha=merge_sha,
-        branch="dgov-auto-commit",
+    assert result["error"] == "Worktree for pane auto-commit has uncommitted changes"
+    assert result["dirty_files"] == ["worker.txt"]
+    assert result["slug"] == "auto-commit"
+    assert (worktree / "worker.txt").read_text() == "committed by merge\n"
+    assert worktree.exists()
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
+    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+    mock_update_state.assert_not_called()
+    mock_emit_event.assert_not_called()
+    mock_set_metadata.assert_not_called()
+    mock_close_worker_pane.assert_not_called()
+
+
+def test_merge_worker_pane_refuses_attached_agent(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    repo = _init_repo(tmp_path, "attached-agent")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-attached")
+
+    (worktree / "worker.txt").write_text("committed work\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "add worker file")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="attached-pane",
+        branch_name="dgov-attached",
+        base_sha=base_sha,
     )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.done._agent_still_running", return_value=True),
+    ):
+        _mock_backend.is_alive.return_value = True
+        result = merge_worker_pane(str(repo), "attached-pane", session_root=str(repo))
+
+    assert result["error"] == "Agent process still attached to pane attached-pane"
+    assert result["pane_id"] == "%1"
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
+    assert (repo / "worker.txt").exists() is False
+    mock_update_state.assert_not_called()
+    mock_emit_event.assert_not_called()
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 

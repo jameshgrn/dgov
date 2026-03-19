@@ -611,18 +611,18 @@ def _resolve_conflicts_with_agent(
     return resolved
 
 
-def _check_dirty_worktree(project_root: str, exclude_protected: bool = True) -> list[str]:
+def _check_dirty_worktree(worktree_path: str, exclude_protected: bool = True) -> list[str]:
     """Check for uncommitted non-protected changes in a worktree.
 
-    Returns a list of dirty file paths (relative to project_root).
+    Returns a list of dirty file paths (relative to the worktree).
     If exclude_protected=True, protected files are excluded from the list.
     """
-    if not Path(project_root).exists():
+    if not Path(worktree_path).exists():
         return []
 
     # Check for uncommitted changes using NUL-delimited porcelain format
     status = subprocess.run(
-        ["git", "-C", project_root, "status", "--porcelain", "-z"],
+        ["git", "-C", worktree_path, "status", "--porcelain", "-z"],
         capture_output=True,
     )
     if not status.stdout.strip(b"\x00"):
@@ -752,6 +752,7 @@ def merge_worker_pane(
 
     branch_name = target.get("branch_name")
     pane_project_root = target.get("project_root") or project_root
+    worktree_path = target.get("worktree_path", "")
     if not branch_name:
         return {"error": f"Pane {slug} is missing branch_name"}
 
@@ -776,7 +777,7 @@ def merge_worker_pane(
         }
 
     # Precondition 3: Worktree must have no uncommitted non-protected changes
-    dirty_files = _check_dirty_worktree(pane_project_root, exclude_protected=True)
+    dirty_files = _check_dirty_worktree(worktree_path, exclude_protected=True)
     if dirty_files:
         return {
             "error": f"Worktree for pane {slug} has uncommitted changes",

@@ -1112,32 +1112,31 @@ class TestDetectConflicts:
 
 
 # ---------------------------------------------------------------------------
-# _commit_worktree
+# _check_dirty_worktree
 # ---------------------------------------------------------------------------
 
 
-class TestCommitWorktree:
+class TestCheckDirtyWorktree:
     def test_no_worktree_path(self) -> None:
-        from dgov.merger import _commit_worktree
+        from dgov.merger import _check_dirty_worktree
 
-        result = _commit_worktree({})
-        assert result == {"committed": False}
+        result = _check_dirty_worktree("")
+        assert result == []
 
     def test_nonexistent_worktree(self, tmp_path: Path) -> None:
-        from dgov.merger import _commit_worktree
+        from dgov.merger import _check_dirty_worktree
 
-        result = _commit_worktree({"worktree_path": str(tmp_path / "nope")})
-        assert result == {"committed": False}
+        result = _check_dirty_worktree(str(tmp_path / "nope"))
+        assert result == []
 
     def test_no_changes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        from dgov.merger import _commit_worktree
+        from dgov.merger import _check_dirty_worktree
 
-        # status --porcelain -z returns empty
         mock = MagicMock()
         mock.stdout = b"\x00"
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock)
-        result = _commit_worktree({"worktree_path": str(tmp_path)})
-        assert result == {"committed": False}
+        result = _check_dirty_worktree(str(tmp_path))
+        assert result == []
 
 
 # ---------------------------------------------------------------------------

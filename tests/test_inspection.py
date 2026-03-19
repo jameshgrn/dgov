@@ -195,7 +195,7 @@ class TestReviewWorkerPane:
 
         assert result["verdict"] == "review"
         assert result["uncommitted"] is True
-        assert result["issues"] == ["uncommitted changes (will be auto-committed on merge)"]
+        assert result["issues"] == ["uncommitted changes (merge refused until committed)"]
 
     def test_full_true_includes_diff_output(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -340,7 +340,7 @@ class TestReviewWorkerPane:
 
         assert result["verdict"] == "review"
         assert result["uncommitted"] is True
-        assert "uncommitted changes (will be auto-committed on merge)" in result.get("issues", [])
+        assert "uncommitted changes (merge refused until committed)" in result.get("issues", [])
 
     def test_committed_protected_files_still_flagged_as_issues(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]

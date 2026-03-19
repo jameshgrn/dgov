@@ -102,7 +102,7 @@ def review_worker_pane(
     if protected_touched:
         issues.append(f"protected files touched: {protected_touched}")
     if uncommitted:
-        issues.append("uncommitted changes (will be auto-committed on merge)")
+        issues.append("uncommitted changes (merge refused until committed)")
     if commit_count == 0:
         issues.append("no commits — nothing to merge")
 
