@@ -171,9 +171,8 @@ class TestEscalationChain:
         assert ESCALATION_CHAIN["river-35b"] == "qwen-122b"
         assert ESCALATION_CHAIN["qwen35-35b"] == "qwen-122b"
         assert ESCALATION_CHAIN["qwen35-122b"] == "qwen-397b"
-        assert ESCALATION_CHAIN["qwen35-397b"] == "qwen-max"
-        assert ESCALATION_CHAIN["qwen-max"] == "qwen-max"
-        assert ESCALATION_CHAIN["hunter"] == "qwen-35b"
+        assert ESCALATION_CHAIN["qwen35-397b"] == "qwen-397b"
+        assert ESCALATION_CHAIN["qwen-397b"] == "qwen-397b"  # ceiling
 
     def test_unknown_agent_returns_self(self, tmp_path, monkeypatch):
         """Agents not in the chain map to themselves (no escalation)."""

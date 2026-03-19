@@ -33,15 +33,15 @@ class RetryPolicy:
 
 # Default escalation chain: maps agents to the next-tier logical name.
 # Logical names get resolved by the router to available physical backends.
-# Escalation proceeds: 4b → 9b → 35b → 122b → 397b → max
+# Escalation proceeds: 4b → 9b → 35b → 122b → 397b (ceiling).
+# qwen-max is governor/frontier only — not a worker escalation target.
 ESCALATION_CHAIN: dict[str, str] = {
     # Logical names (preferred — resolved by router)
     "qwen-4b": "qwen-9b",
     "qwen-9b": "qwen-35b",
     "qwen-35b": "qwen-122b",
     "qwen-122b": "qwen-397b",
-    "qwen-397b": "qwen-max",
-    "qwen-max": "qwen-max",
+    "qwen-397b": "qwen-397b",  # ceiling — no further worker escalation
     # Physical names (backward compat for panes that stored physical agent)
     "river-4b": "qwen-9b",
     "river-9b": "qwen-35b",
@@ -51,9 +51,7 @@ ESCALATION_CHAIN: dict[str, str] = {
     "qwen35-flash": "qwen-35b",
     "qwen35-35b": "qwen-122b",
     "qwen35-122b": "qwen-397b",
-    "qwen35-397b": "qwen-max",
-    "qwen3-max": "qwen-max",
-    "hunter": "qwen-35b",
+    "qwen35-397b": "qwen-397b",  # ceiling
 }
 
 

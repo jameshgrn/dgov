@@ -24,7 +24,7 @@ _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 _OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key"
 _OPENROUTER_TIMEOUT = 10
-_DEFAULT_MODEL = "openrouter/hunter-alpha"
+_DEFAULT_MODEL = "qwen/qwen3.5-35b"
 _REFERER = "https://github.com/jameshgrn/dgov"
 _TITLE = "dgov"
 

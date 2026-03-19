@@ -40,8 +40,7 @@ Only Claude Code can be governor. Workers are always Qwen models. Claude, Gemini
    - `qwen35-35b` / `qwen35-flash` — same capability as river-35b
    - `qwen35-9b` — same as river-9b
    - `qwen35-122b` / `qwen35-397b` — complex single-file reasoning
-   - `qwen3-max` — hardest Qwen tasks, thinking model
-3. **hunter** (OpenRouter) — good at precise numbered-step tasks, bad at committing on time
+   - `qwen3-max` — frontier/governor-only, not a worker escalation target
 
 ### LT-GOV tier (orchestration only)
 
