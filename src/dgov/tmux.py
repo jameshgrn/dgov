@@ -445,7 +445,10 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
         try:
             ter_id = split_pane(target=target_window)
             _wait_for_shell(ter_id)
-            send_command(ter_id, "dgov terrain")
+            cmd = "dgov terrain"
+            if os.environ.get("DGOV_ISOMETRIC") == "1":
+                cmd += " --iso"
+            send_command(ter_id, cmd)
             set_title(ter_id, "[gov] terrain")
             _style_pane(ter_id, "colour34")
             panes.append(ter_id)
