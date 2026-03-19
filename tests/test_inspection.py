@@ -1,4 +1,4 @@
-"""Unit tests for dgov.inspection."""
+"""Unit tests for dgov.inspection and dgov.metrics."""
 
 from __future__ import annotations
 
@@ -348,3 +348,90 @@ class TestRebaseGovernor:
         assert not (repo / ".git" / "rebase-merge").exists()
         assert _git(repo, "status", "--porcelain").stdout.strip() == "M dirty.txt"
         assert _git(repo, "stash", "list").stdout.strip() == ""
+
+
+@pytest.fixture()
+def metrics_session_root(tmp_path):
+    (tmp_path / ".dgov").mkdir()
+    return str(tmp_path)
+
+
+def _seed_metrics(
+    session_root: str, slug: str, agent: str = "claude", state: str = "active"
+) -> None:
+    pane = WorkerPane(
+        slug=slug,
+        prompt="task",
+        pane_id="%99",
+        agent=agent,
+        project_root=session_root,
+        worktree_path=f"{session_root}/wt/{slug}",
+        branch_name=slug,
+        state=state,
+    )
+    add_pane(session_root, pane)
+
+
+class TestComputeStatsEmpty:
+    def test_compute_stats_empty(self, metrics_session_root):
+        data = compute_stats(metrics_session_root)
+        assert data["total_panes"] == 0
+        assert data["by_state"] == {}
+        assert data["by_agent"] == {}
+        assert data["recent_failures"] == []
+        assert data["event_count"] == 0
+
+
+class TestComputeStatsWithPanes:
+    def test_compute_stats_with_panes(self, metrics_session_root):
+        _seed_metrics(metrics_session_root, "a", state="active")
+        _seed_metrics(metrics_session_root, "b", state="merged")
+        _seed_metrics(metrics_session_root, "c", state="failed")
+
+        data = compute_stats(metrics_session_root)
+        assert data["total_panes"] == 3
+        assert data["by_state"]["active"] == 1
+        assert data["by_state"]["merged"] == 1
+        assert data["by_state"]["failed"] == 1
+
+
+class TestComputeStatsByAgent:
+    def test_compute_stats_by_agent(self, metrics_session_root):
+        _seed_metrics(metrics_session_root, "a1", agent="claude", state="merged")
+        _seed_metrics(metrics_session_root, "a2", agent="claude", state="failed")
+        _seed_metrics(metrics_session_root, "b1", agent="pi", state="merged")
+        _seed_metrics(metrics_session_root, "b2", agent="pi", state="merged")
+
+        # Add events for duration calculation
+        emit_event(metrics_session_root, "pane_created", "a1")
+        emit_event(metrics_session_root, "pane_merged", "a1")
+        emit_event(metrics_session_root, "pane_created", "b1")
+        emit_event(metrics_session_root, "pane_merged", "b1")
+
+        data = compute_stats(metrics_session_root)
+        claude = data["by_agent"]["claude"]
+        assert claude["total"] == 2
+        assert claude["success_rate"] == 0.5
+        assert claude["failures"] == 1
+
+        pi = data["by_agent"]["pi"]
+        assert pi["total"] == 2
+        assert pi["success_rate"] == 1.0
+        assert pi["failures"] == 0
+        assert pi["avg_duration_s"] is not None
+
+
+class TestComputeStatsRecentFailures:
+    def test_compute_stats_recent_failures(self, metrics_session_root):
+        for i in range(7):
+            slug = f"fail-{i}"
+            _seed_metrics(metrics_session_root, slug, state="failed")
+            emit_event(metrics_session_root, "pane_created", slug)
+
+        data = compute_stats(metrics_session_root)
+        assert len(data["recent_failures"]) == 5
+        for f in data["recent_failures"]:
+            assert "slug" in f
+            assert "agent" in f
+            assert "state" in f
+            assert f["state"] == "failed"
