@@ -203,7 +203,7 @@ dgov pane escalate fix-parser -a claude
 Re-dispatch a failed or timed-out task. Creates a new pane with a `-2` suffix and fresh worktree.
 
 ```bash
-dgov pane retry fix-parser
+dgov pane retry fix-parser --close
 ```
 
 ## Retry-or-Escalate

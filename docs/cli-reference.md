@@ -35,6 +35,16 @@ List all registered agents and their install/health status.
 
 Show dgov version. No arguments.
 
+### dgov plan refactor
+
+Generate a structured prompt for a refactoring task (Move, Extract, Inline, etc.).
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `--src` | | string | required | Source (e.g. `src/a.py:func`) |
+| `--dest`| | string | required | Destination file (e.g. `src/b.py`) |
+| `--task`| | string | `Move` | Action type |
+
 ### dgov rebase
 
 Rebase the governor's branch onto its upstream. Stashes dirty changes, rebases, pops stash. Aborts on conflict.
@@ -50,7 +60,7 @@ Launch a live terminal dashboard showing pane status, agents, and health. Refres
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--project-root` | `-r` | string | `.` | Project root |
-| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
+| `--session-root | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--refresh` | | float | `2` | Refresh interval in seconds |
 
 ---
@@ -88,7 +98,7 @@ Create a worker pane: worktree + tmux pane + agent.
 | `--prompt` | `-p` | string | `None` | Task prompt |
 | `--permission-mode`| `-m`| string | `acceptEdits` | Mode: `plan`, `acceptEdits`, `bypassPermissions` |
 | `--slug` | `-s` | string | `None` | Override auto-generated slug |
-| `--extra-flags` | `-f` | string | `""` | Extra flags for the agent CLI |
+| `--extra-flags | `-f` | string | `""` | Extra flags for the agent CLI |
 | `--env` | `-e` | string | `None` | Environment variable as `KEY=VALUE` (repeatable) |
 | `--preflight` | | bool | `True` | Run pre-flight checks before dispatch |
 | `--fix` | | bool | `True` | Auto-fix preflight failures |
@@ -111,7 +121,7 @@ Wait for a single worker pane to finish. Three detection modes (first wins): don
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--timeout` | `-t` | int | `600` | Max seconds to wait (0 = forever) |
-| `--poll` | `-i` | int | `3` | Poll interval in seconds |
+| `--poll` | `-i | int | `3` | Poll interval in seconds |
 | `--stable` | `-s` | int | `15` | Seconds of stable output before declaring done |
 | `--auto-retry` | | bool | `True` | Auto-retry failed panes per agent retry policy |
 
@@ -146,7 +156,7 @@ Show git diff for a worker pane's branch vs base commit.
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--stat` | | bool | `False` | Show diffstat only |
-| `--name-only`| | bool | `False` | Show changed file names only |
+| `--name-only`| | bool | `False | Show changed file names only |
 
 ### dgov pane capture
 
@@ -189,6 +199,7 @@ Retry a failed pane with a new attempt. Creates a new pane with an attempt suffi
 | `--agent` | `-a` | string | `None` | Override agent for retry |
 | `--prompt` | `-p` | string | `None` | Override prompt for retry |
 | `--permission-mode` | `-m` | string | `bypassPermissions` | Permission mode |
+| `--close` | | bool | `False` | Close original pane before retrying |
 
 ### dgov pane retry-or-escalate
 
@@ -199,7 +210,7 @@ Retry a failed pane, auto-escalating after N retries at the same tier.
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--max-retries` | `-n` | int | `2` | Retries before escalating |
-| `--permission-mode` | `-m` | string | `bypassPermissions` | Permission mode |
+| `--permission-mode` | `-m` | string | `bypassPermissions | Permission mode |
 
 ### dgov pane escalate
 
@@ -412,7 +423,7 @@ Show which agent/pane last touched a file. Resolves commits to agents via merge 
 | `--session-root` | `-R` | string | `None` | Session root |
 | `--all` | `-a` | bool | `False` | Show full history (not just last touch) |
 | `--agent` | | string | `None` | Filter by agent name |
-| `--line-level` | | bool | `False` | Show line-level blame detail |
+| `--line-level | | bool | `False` | Show line-level blame detail |
 | `--lines` | `-L` | string | `None` | Line range for line-level blame (e.g. `10-20` or `10`) |
 
 Note: `blame` uses `-R` for `--session-root`, not `-S`.
@@ -427,5 +438,5 @@ Run pre-flight checks before dispatch. Standalone version of the checks that run
 | `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--agent` | `-a` | string | `claude` | Agent to validate for |
 | `--fix` | | bool | `False` | Auto-fix fixable failures |
-| `--touches` | `-t` | string | `None` | Files the task will touch (repeatable) |
+| `--touches` | `-t | string | `None` | Files the task will touch (repeatable) |
 | `--branch` | `-b` | string | `None` | Expected branch name |
