@@ -11,6 +11,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from dgov.isometric import render_isometric
 from dgov.terrain import (
     AgentSim,
     ErosionModel,
@@ -138,15 +139,18 @@ def run_terrain(refresh: float = 0.5) -> None:
 
         try:
             model.step()
-            rendered = render_terrain(model, supersample=2)
-            rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
+            if os.environ.get("DGOV_ISOMETRIC") == "1":
+                rendered = Text.from_ansi(render_isometric(model))
+            else:
+                rendered = render_terrain(model, supersample=2)
+                rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
         except Exception:
             rendered = Text("(terrain error)")
             rendered.no_wrap = True
             rendered.overflow = "crop"
 
         # Run agent simulation and overlay onto terrain every frame
-        if agents_cache and model is not None:
+        if os.environ.get("DGOV_ISOMETRIC") != "1" and agents_cache and model is not None:
             stamps = sim.update(agents_cache, panel_rows, w, model)
             rendered = overlay_stamps(rendered, stamps)
 
