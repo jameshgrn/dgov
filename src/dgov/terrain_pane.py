@@ -31,9 +31,10 @@ class KittyRenderable:
 
     def __rich_console__(self, console, options):
         # \x1b[H move to 1,1
-        # \x1b[J clear from cursor to end of screen
+        # Use a=d,d=A to delete all graphics frames before drawing new one
+        # This prevents flickering vs simple clear
         # Yield the raw data as a control segment
-        yield Segment(f"\x1b[H\x1b[J{self.data}", control=True)
+        yield Segment(f"\x1b[H\x1b]Ga=d,d=A\x07{self.data}", control=True)
 
 
 _PANEL_BORDER_WIDTH = 2

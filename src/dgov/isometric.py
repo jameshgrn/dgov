@@ -11,9 +11,9 @@ from PIL import Image, ImageDraw
 from dgov.terrain import ErosionModel
 
 # Tile specification from TERRAIN-CONCEPT.md
-TILE_W = 32
-TILE_H = 16
-Z_SCALE = 32  # 1.0 height = 32 pixels vertical offset
+TILE_W = 16
+TILE_H = 8
+Z_SCALE = 8  # 1.0 height = 8 pixels vertical offset
 
 # Colors from TERRAIN-CONCEPT.md
 PALETTE = {
@@ -58,7 +58,8 @@ def _encode_kitty(img: Image.Image) -> str:
 
     out = []
     # Send first chunk with a=T (transmit and display), f=100 (PNG format)
-    out.append(wrap_payload(f"_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}"))
+    # c=,r= forces Kitty to fit the image to terminal cell dimensions
+    out.append(wrap_payload(f"_Gf=100,a=T,c=,r=,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}"))
 
     # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
@@ -79,15 +80,15 @@ def render_isometric(model: ErosionModel) -> str:
     if not model.height or len(model.height) != rows:
         return ""
 
-    # Calculate image size
-    width = (rows + cols) * (TILE_W // 2) + 100
-    height = (rows + cols) * (TILE_H // 2) + 100
+    # Calculate image size - constrained to fit terminal pane
+    width = (rows + cols) * (TILE_W // 2)
+    height = (rows + cols) * (TILE_H // 2) + int(2.0 * Z_SCALE)
 
     img = Image.new("RGB", (width, height), PALETTE["sky_upper"])
     draw = ImageDraw.Draw(img)
 
-    # Offset to center
-    cx, cy = width // 2, 50
+    # Offset to center - leave room for height visualization
+    cx, cy = width // 2, int(2.0 * Z_SCALE)
 
     # Painter's Algorithm: Draw from back (row 0, col 0) to front
     for r in range(rows):
