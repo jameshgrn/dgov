@@ -143,42 +143,25 @@ def _find_unique_slug(project_root: str, session_root: str, base_slug: str) -> t
             candidate_slug = f"{base_slug}-{counter}"
             counter += 1
             continue
+        git_branch = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", "--verify", branch_name],
+            capture_output=True,
+            text=True,
+        )
+        if git_branch.returncode == 0:
+            candidate_slug = f"{base_slug}-{counter}"
+            counter += 1
+            continue
 
         # Check worktree path collision
         worktree_path = str(worktrees_dir / candidate_slug)
-        if worktree_path in existing_worktrees:
+        if worktree_path in existing_worktrees or Path(worktree_path).exists():
             candidate_slug = f"{base_slug}-{counter}"
             counter += 1
             continue
 
         # All clear
         return candidate_slug, worktree_path
-
-    result = subprocess.run(
-        ["git", "-C", project_root, "rev-parse", "--verify", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    try:
-        if result.returncode == 0:
-            subprocess.run(
-                ["git", "-C", project_root, "worktree", "add", worktree_path, branch_name],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        else:
-            subprocess.run(
-                ["git", "-C", project_root, "worktree", "add", "-b", branch_name, worktree_path],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(
-            f"Failed to create worktree for branch {branch_name!r} "
-            f"at path {worktree_path!r}: {e.stderr.strip()}"
-        ) from e
 
 
 # -- Hook trigger --
