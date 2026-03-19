@@ -639,3 +639,109 @@ class TestResumeWorkerPane:
 
         assert result.get("resumed") is True
         assert result.get("agent") == "claude"
+
+
+# ──────────────────────────────────────────────────────────────
+# TestWriteWorktreeInstructions
+# ──────────────────────────────────────────────────────────────
+
+
+class TestWriteWorktreeInstructions:
+    def test_worker_instructions_isolate_governor_body(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Generated worker instructions must not inherit main repo CLAUDE.md content."""
+        from dgov.lifecycle import _write_worktree_instructions
+
+        # Create a worktree with a "governor-style" CLAUDE.md already present
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "CLAUDE.md").write_text(
+            "# Governor Instructions\n\nYou are the **governor**. You orchestrate; you do not implement.\n\n## Role\n- Stay on `main`. Always.\n- Delegate ALL implementation to workers.",
+            encoding="utf-8",
+        )
+
+        # Write worker instructions
+        _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser bug")
+
+        claude_content = (wt / "CLAUDE.md").read_text(encoding="utf-8")
+
+        # Verify isolation: governor body must NOT appear in worker instructions
+        assert "You are the **governor**" not in claude_content
+        assert "Stay on `main`" not in claude_content
+        assert "Delegate ALL implementation" not in claude_content
+
+        # Verify worker preamble IS present
+        assert "# Worker Instructions — test-task" in claude_content
+        assert "You are a **worker**" in claude_content
+        assert "Complete the task, commit, and signal done" in claude_content
+
+    def test_lt_gov_instructions_isolate_governor_body(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Generated LT-GOV instructions must not inherit main repo CLAUDE.md content."""
+        from dgov.lifecycle import _write_worktree_instructions
+
+        # Create a worktree with a "governor-style" CLAUDE.md already present
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "CLAUDE.md").write_text(
+            "# Governor Instructions\n\nYou are the **governor**. You orchestrate; you do not implement.\n\n## Role\n- Stay on `main`. Always.",
+            encoding="utf-8",
+        )
+
+        # Write LT-GOV instructions
+        _write_worktree_instructions(
+            str(wt), "orchestration-task", "lt-gov", prompt="Dispatch workers"
+        )
+
+        claude_content = (wt / "CLAUDE.md").read_text(encoding="utf-8")
+
+        # Verify isolation: governor body must NOT appear in LT-GOV instructions
+        assert "You are the **governor**" not in claude_content
+        assert "Stay on `main`" not in claude_content
+
+        # Verify LT-GOV preamble IS present
+        assert "# LT-GOV Instructions — orchestration-task" in claude_content
+        assert "You are a **lieutenant governor**" in claude_content
+        assert "You orchestrate workers, you do NOT edit code" in claude_content
+
+    def test_agents_md_also_written(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        """AGENTS.md counterpart is also written with same isolated content."""
+        from dgov.lifecycle import _write_worktree_instructions
+
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+
+        _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser")
+
+        # Both files should exist and have identical content
+        claude_content = (wt / "CLAUDE.md").read_text(encoding="utf-8")
+        agents_content = (wt / "AGENTS.md").read_text(encoding="utf-8")
+
+        assert claude_content == agents_content
+        assert "# Worker Instructions — test-task" in claude_content
+        assert "# Worker Instructions — test-task" in agents_content
+
+    def test_git_excludes_claude_and_agents(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        """CLAUDE.md and AGENTS.md are git-excluded via .git/info/exclude."""
+        from dgov.lifecycle import _write_worktree_instructions
+
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+
+        # Initialize git repo so .git/info/exclude exists
+        subprocess.run(["git", "-C", str(wt), "init"], capture_output=True)
+        subprocess.run(
+            ["git", "-C", str(wt), "config", "user.email", "test@test.com"], capture_output=True
+        )
+        subprocess.run(["git", "-C", str(wt), "config", "user.name", "Test"], capture_output=True)
+
+        _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser")
+
+        # Check .git/info/exclude contains both files
+        exclude_file = wt / ".git" / "info" / "exclude"
+        exclude_content = exclude_file.read_text(encoding="utf-8")
+
+        assert "CLAUDE.md" in exclude_content
+        assert "AGENTS.md" in exclude_content
