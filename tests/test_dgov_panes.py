@@ -2763,29 +2763,54 @@ class TestStructurePiPrompt:
         # First 50 chars of prompt used for commit message
         assert '5. git commit -m "Add an htop shortcut to src/dgov/cli.py following"' in structured
 
-    def test_structure_pi_prompt_adds_commit(self) -> None:
+    def test_structure_pi_prompt_verification_step(self) -> None:
+        """Verify step 6 checks git log exists after commit."""
         prompt = "Update tests/test_dgov_panes.py"
         structured = _structure_pi_prompt(prompt)
-        assert "git commit -m" in structured
-        assert "Update tests/test_dgov_panes.py" in structured
+        # Step 6: verify commits exist after the commit step
+        assert "git log --oneline $DGOV_BASE_SHA..HEAD" in structured
+        assert "verify at least one commit exists" in structured
+
+    def test_structure_pi_prompt_completion_subcommand(self) -> None:
+        """Verify step 7 uses dgov worker complete with actual commit message."""
+        prompt = "Update tests/test_dgov_panes.py"
+        structured = _structure_pi_prompt(prompt)
+        # Step 7: signal completion using the inferred commit message
+        assert 'dgov worker complete -m "Update tests/test_dgov_panes.py"' in structured
+
+    def test_structure_pi_prompt_failure_subcommand(self) -> None:
+        """Verify step 8 uses dgov worker fail for no-changes case."""
+        prompt = "Fix src/foo.py"
+        structured = _structure_pi_prompt(prompt)
+        # Step 8: handle failure/no-change case
+        assert 'dgov worker fail "<reason>"' in structured
+
+    def test_structure_pi_prompt_uses_explicit_commit_message(self) -> None:
+        """Verify completion step uses the explicit commit message, not a placeholder."""
+        prompt = "Fix src/foo.py"
+        structured = _structure_pi_prompt(
+            prompt,
+            ["src/foo.py"],
+            commit_message="Fix foo worker path",
+        )
+        # Commit step uses explicit message
+        assert 'git commit -m "Fix foo worker path"' in structured
+        # Completion step also uses the same explicit message (not placeholder)
+        assert 'dgov worker complete -m "Fix foo worker path"' in structured
+        # Verify it's the actual text, not a placeholder like <summary of changes>
+        assert "<summary" not in structured.lower()
 
     def test_structure_pi_prompt_no_files(self) -> None:
         prompt = "Explain why the code is slow"
         structured = _structure_pi_prompt(prompt)
-        # Should still have task and commit
+        # Should still have task, commit, verification, and completion steps
         assert "1. Explain why the code is slow" in structured
         assert '2. git commit -m "Explain why the code is slow"' in structured
+        assert "git log --oneline $DGOV_BASE_SHA..HEAD" in structured
+        assert 'dgov worker complete -m "Explain why the code is slow"' in structured
         # Should not have read/add steps
         assert "Read" not in structured
         assert "git add" not in structured
-
-    def test_structure_pi_prompt_uses_explicit_commit_message(self) -> None:
-        structured = _structure_pi_prompt(
-            "Fix src/foo.py",
-            ["src/foo.py"],
-            commit_message="Fix foo worker path",
-        )
-        assert 'git commit -m "Fix foo worker path"' in structured
 
     @patch("dgov.lifecycle._structure_pi_prompt", wraps=_structure_pi_prompt)
     def test_create_worker_pane_calls_structure_for_pi(
