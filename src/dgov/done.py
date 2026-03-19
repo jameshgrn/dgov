@@ -155,7 +155,7 @@ def _resolve_strategy(
         else:
             ss = 0
         return stype, ss
-    # No strategy provided — default to "api" (agent reports completion via dgov).
+    # No strategy provided - default to "api" (agent reports completion via dgov).
     return "api", 0
 
 
@@ -226,6 +226,17 @@ def _is_done(
 
     # Signal 1a: done-signal file (clean exit) — always checked
     if done_path.exists():
+        # Require at least one commit when branch/base info is available
+        project_root = pane_record.get("project_root", "") if pane_record else ""
+        branch_name = pane_record.get("branch_name", "") if pane_record else ""
+        base_sha = pane_record.get("base_sha", "") if pane_record else ""
+
+        if project_root and branch_name and base_sha:
+            has_new_commits_flag = _has_new_commits(project_root, branch_name, base_sha)
+            if not has_new_commits_flag:
+                # No commits yet — don't mark as done, let worker continue
+                return False
+
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
@@ -234,7 +245,7 @@ def _is_done(
         _set_done_reason(_stable_state, "done_signal")
         return True
 
-    # Signal 1b: exit-code file (agent crashed / nonzero exit) — always checked
+    # Signal 1b: exit-code file (agent crashed / nonzero exit) - always checked
     if exit_path.exists():
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
@@ -249,7 +260,7 @@ def _is_done(
 
     pane_id = pane_record.get("pane_id", "")
 
-    # Signal 2: new commits on the branch — skipped for "exit" and "stable" strategies
+    # Signal 2: new commits on the branch - skipped for "exit" and "stable" strategies
     if stype not in ("exit", "stable"):
         # api strategy without _stable_state: commit check result would be discarded
         if stype == "api" and _stable_state is None:
@@ -265,7 +276,7 @@ def _is_done(
                     if stype == "api":
                         # If agent is dead but shell is alive, and we have commits, we are done.
                         if pane_id and not _agent_still_running(pane_id, current_command):
-                            logger.debug("new_commits slug=%s agent exited — done", slug)
+                            logger.debug("new_commits slug=%s agent exited - done", slug)
                             # Fall through to done
                         elif _stable_state is not None:
                             _stable_state["commits_detected"] = True
@@ -274,12 +285,12 @@ def _is_done(
                             return False
                     else:
                         if pane_id and _agent_still_running(pane_id, current_command):
-                            # Agent committed but is still running — grace period
+                            # Agent committed but is still running - grace period
                             if _stable_state is not None:
                                 commit_count = _count_commits(project_root, branch_name, base_sha)
                                 prev_count = _stable_state.get("commit_count")
                                 if prev_count is None or commit_count != prev_count:
-                                    # New commits — reset grace timer
+                                    # New commits - reset grace timer
                                     _stable_state["commit_count"] = commit_count
                                     _stable_state["commit_seen_at"] = time.monotonic()
                                     logger.debug(
@@ -302,10 +313,10 @@ def _is_done(
                                 # Fall through to done
                             else:
                                 logger.warning(
-                                    "new_commits slug=%s agent running, no stable_state — done",
+                                    "new_commits slug=%s agent running, no stable_state - done",
                                     slug,
                                 )
-                                # Fall through — blocking forever is worse
+                                # Fall through - blocking forever is worse
                         current_state = pane_record.get("state", "")
                         force = current_state == "abandoned"
                         _persist.update_pane_state(session_root, slug, "done", force=force)
@@ -339,7 +350,7 @@ def _is_done(
                 _set_done_reason(_stable_state, "abandoned")
                 return True
         elif _stable_state is not None:
-            # Pane came back alive — reset dead tracking
+            # Pane came back alive - reset dead tracking
             _stable_state.pop("dead_since", None)
 
     # API strategy: signal files + liveness, with commit+stable fallback for interactive agents
@@ -379,7 +390,7 @@ def _is_done(
                 return True
         return False
 
-    # Signal 4 (optional): output stabilization — skipped for "commit" strategy
+    # Signal 4 (optional): output stabilization - skipped for "commit" strategy
     use_stable = stype == "stable" or (stype == "signal" and eff_stable > 0)
     if use_stable and stype != "commit" and _stable_state is not None and pane_id:
         current_output = _stable_state.pop("current_output", None)
@@ -409,7 +420,7 @@ def _is_done(
                 _stable_state["last_output"] = current_output
                 _stable_state["stable_since"] = None
 
-    # Signal 5: Circuit breaker — detect stuck workers repeating same output
+    # Signal 5: Circuit breaker - detect stuck workers repeating same output
     if _stable_state is not None and pane_id:
         output_hash = _circuit_breaker_fingerprint(
             _stable_state.get("current_output") or _stable_state.get("last_output", "")
