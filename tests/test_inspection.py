@@ -245,6 +245,123 @@ class TestReviewWorkerPane:
             ["src/dgov/feature.py"],
         )
 
+    def test_uncommitted_clauDE_md_does_not_block_safe_verdict(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """Uncommitted CLAUDE.md changes (worker instruction drift) should not downgrade verdict."""
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
+
+        # Simulate uncommitted CLAUDE.md modification (worktree hook drift)
+        (repo / "CLAUDE.md").write_text("modified by worktree hook\n")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        assert result["verdict"] == "safe"
+        assert result["uncommitted"] is False
+        assert "uncommitted changes" not in result.get("issues", [])
+        assert result["commit_count"] == 1
+        assert result["files_changed"] == 1
+
+    def test_uncommitted_agents_md_does_not_block_safe_verdict(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """Uncommitted AGENTS.md changes (worker instruction drift) should not downgrade verdict."""
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
+
+        # Simulate uncommitted AGENTS.md modification (worktree hook drift)
+        (repo / "AGENTS.md").write_text("modified by worktree hook\n")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        assert result["verdict"] == "safe"
+        assert result["uncommitted"] is False
+        assert "uncommitted changes" not in result.get("issues", [])
+        assert result["commit_count"] == 1
+        assert result["files_changed"] == 1
+
+    def test_both_clauDE_md_and_agents_md_uncommitted_still_safe(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """Both CLAUDE.md and AGENTS.md uncommitted together should still be safe."""
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
+
+        # Simulate both instruction files modified
+        (repo / "CLAUDE.md").write_text("hook modification 1\n")
+        (repo / "AGENTS.md").write_text("hook modification 2\n")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        assert result["verdict"] == "safe"
+        assert result["uncommitted"] is False
+        assert "uncommitted changes" not in result.get("issues", [])
+
+    def test_real_uncommitted_source_changes_still_block_safe(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """Real uncommitted source changes should still produce the uncommitted issue."""
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
+
+        # Uncommitted real source change (not instruction file)
+        (repo / "tracked.txt").write_text("modified source\n")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        assert result["verdict"] == "review"
+        assert result["uncommitted"] is True
+        assert "uncommitted changes (will be auto-committed on merge)" in result.get("issues", [])
+
+    def test_committed_protected_files_still_flagged_as_issues(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """Committed changes to protected files in branch diff should still be flagged."""
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "THEORY.md", "protected content\n", "Touch THEORY.md")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        assert result["verdict"] == "review"
+        assert result["protected_touched"] == ["THEORY.md"]
+        assert "protected files touched" in result.get("issues", [])[0]
+
 
 class TestDiffWorkerPane:
     def test_happy_path(self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]) -> None:

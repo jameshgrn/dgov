@@ -83,12 +83,18 @@ def review_worker_pane(
     commit_count = len(commit_log.splitlines()) if commit_log else 0
 
     porcelain = f_porcelain.result()
-    # Filter out protected files — modified by worktree hook, not by worker
+    # Filter out protected files and worker instruction files — modified by worktree hook, not by worker
+    # CLAUDE.md and AGENTS.md are worktree-local instructions that should not downgrade safe verdict
     porcelain_lines = []
     for ln in porcelain.stdout.strip().splitlines():
         filename = ln[3:]
-        if not any(filename.startswith(pf) for pf in PROTECTED_FILES):
-            porcelain_lines.append(ln)
+        # Skip protected files
+        if any(filename.startswith(pf) for pf in PROTECTED_FILES):
+            continue
+        # Skip worker instruction files (worktree-local, not source changes)
+        if filename in ("CLAUDE.md", "AGENTS.md"):
+            continue
+        porcelain_lines.append(ln)
     uncommitted = bool(porcelain_lines)
 
     # Verdict
