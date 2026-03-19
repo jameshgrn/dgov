@@ -30,8 +30,10 @@ class KittyRenderable:
         self.data = data
 
     def __rich_console__(self, console, options):
-        # Prepend 'Home' (\x1b[H) to draw at top of pane without scrolling
-        yield Segment(f"\x1b[H{self.data}", control=True)
+        # \x1b[H move to 1,1
+        # \x1b[J clear from cursor to end of screen
+        # Yield the raw data as a control segment
+        yield Segment(f"\x1b[H\x1b[J{self.data}", control=True)
 
 
 _PANEL_BORDER_WIDTH = 2
@@ -80,6 +82,10 @@ def _clamp_rendered(rendered: Text, width: int, height: int) -> Text:
 
 def run_terrain(refresh: float = 0.5) -> None:
     """Run the SPIM erosion model in a Rich Live display, forever."""
+    # Force ISO mode if env var is set
+    iso_mode = os.environ.get("DGOV_ISOMETRIC") == "1"
+
+    # Force full terminal for Rich
     console = Console(force_terminal=True)
 
     model: ErosionModel | None = None
@@ -100,13 +106,13 @@ def run_terrain(refresh: float = 0.5) -> None:
     def _render() -> Panel | KittyRenderable:
         nonlocal model, last_w, last_h, tick, agents_cache, agents_last_read
         w, panel_rows = _detect_pane_size(console)
-        h = panel_rows * 2  # half-block doubles rows
+        h = panel_rows * 2
 
         if model is None or w != last_w or h != last_h:
             model = _make_model(w, h)
             last_w, last_h = w, h
 
-        # Poll pane state from DB every few seconds
+        # Poll pane state
         now = time.time()
         if now - agents_last_read > _AGENT_POLL_INTERVAL_S:
             pr = os.environ.get("DGOV_PROJECT_ROOT", os.getcwd())
@@ -136,10 +142,11 @@ def run_terrain(refresh: float = 0.5) -> None:
                             continue
                         effect_type, intensity = translated
                         slug = str(event.get("pane", ""))
-                        if slug in sim._pos:
-                            row, col = sim._pos[slug]
-                        else:
-                            row, col = _spawn_position_from_slug(slug, h // 2, w // 2)
+                        row, col = (
+                            sim._pos[slug]
+                            if slug in sim._pos
+                            else _spawn_position_from_slug(slug, h // 2, w // 2)
+                        )
                         model.terrain_event(
                             effect_type,
                             min(int(round(row)) * 2, model.height_count - 2),
@@ -152,19 +159,19 @@ def run_terrain(refresh: float = 0.5) -> None:
 
         try:
             model.step()
-            if os.environ.get("DGOV_ISOMETRIC") == "1":
-                # Bypass Panel to prevent wrapping corruption
+            if iso_mode:
+                # Return raw KittyRenderable to bypass Panel layout
                 return KittyRenderable(render_isometric(model))
             else:
                 rendered = render_terrain(model, supersample=2)
                 rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
-        except Exception:
-            rendered = Text("(terrain error)")
+        except Exception as exc:
+            if iso_mode:
+                raise exc  # Fail loudly in ISO mode for debugging
+            rendered = Text(f"(terrain error: {exc})")
             rendered.no_wrap = True
-            rendered.overflow = "crop"
 
-        # Run agent simulation and overlay onto terrain every frame
-        if os.environ.get("DGOV_ISOMETRIC") != "1" and agents_cache and model is not None:
+        if not iso_mode and agents_cache and model is not None:
             stamps = sim.update(agents_cache, panel_rows, w, model)
             rendered = overlay_stamps(rendered, stamps)
 
@@ -175,12 +182,14 @@ def run_terrain(refresh: float = 0.5) -> None:
 
     time.sleep(_STARTUP_DELAY_S)
 
+    # In ISO mode, we don't want screen=True because it clears the terminal buffer
+    # which can conflict with persistent graphics.
     with Live(
         console=console,
         get_renderable=_render,
         refresh_per_second=2,
         transient=False,
-        screen=True,
+        screen=(not iso_mode),
     ) as live:  # noqa: F841
         try:
             while True:

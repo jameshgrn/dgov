@@ -28,7 +28,7 @@ PALETTE = {
 def _encode_kitty(img: Image.Image) -> str:
     """Encode a PIL Image to a Kitty graphics protocol escape sequence.
 
-    Handles tmux wrapping if necessary.
+    Handles tmux wrapping if necessary. Use robust escaping for tmux.
     """
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -42,23 +42,25 @@ def _encode_kitty(img: Image.Image) -> str:
         return ""
 
     is_tmux = "TMUX" in os.environ
-    # ESC character
-    ESC = chr(27)
+    ESC = "\x1b"
 
-    # Tmux wrap helper: ESC Ptmux; ESC <seq> ESC \
-    def wrap(seq: str) -> str:
-        if is_tmux:
-            return f"{ESC}Ptmux;{ESC}{seq}{ESC}\\"
-        return f"{ESC}{seq}"
+    # Tmux DCS passthrough: ESC Ptmux; ESC <seq> ESC \
+    # We must double all ESC characters inside the sequence for tmux.
+    def tmux_escape(seq: str) -> str:
+        if not is_tmux:
+            return f"{ESC}{seq}"
+        # Replace ESC with ESC ESC inside the sequence
+        escaped_seq = seq.replace(ESC, f"{ESC}{ESC}")
+        return f"{ESC}Ptmux;{escaped_seq}{ESC}\\"
 
     out = []
     # Send first chunk with a=T (transmit and display), f=100 (PNG format)
-    out.append(wrap(f"_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}"))
+    out.append(tmux_escape(f"_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}"))
 
     # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
-        out.append(wrap(f"_Gm={m};{chunk}"))
+        out.append(tmux_escape(f"_Gm={m};{chunk}"))
 
     return "".join(out)
 
@@ -75,6 +77,7 @@ def render_isometric(model: ErosionModel) -> str:
         return ""
 
     # Calculate image size
+    # Grid center to screen center
     width = (rows + cols) * (TILE_W // 2) + 100
     height = (rows + cols) * (TILE_H // 2) + 100
 
@@ -90,9 +93,11 @@ def render_isometric(model: ErosionModel) -> str:
             h_val = model.height[r][c]
             z_off = int(h_val * Z_SCALE)
 
+            # Isometric projection math
             sx = cx + (c - r) * (TILE_W // 2)
             sy = cy + (c + r) * (TILE_H // 2) - z_off
 
+            # Draw Tile (Diamond)
             points = [
                 (sx, sy),  # Top
                 (sx + TILE_W // 2, sy + TILE_H // 2),  # Right
@@ -103,6 +108,8 @@ def render_isometric(model: ErosionModel) -> str:
             color = PALETTE["bedrock"] if h_val > 0.5 else PALETTE["alluvium"]
             draw.polygon(points, fill=color, outline="black")
 
+            # Draw Vertical Faces (simplified)
+            # Left face
             draw.polygon(
                 [
                     (sx - TILE_W // 2, sy + TILE_H // 2),
@@ -110,8 +117,9 @@ def render_isometric(model: ErosionModel) -> str:
                     (sx, sy + TILE_H + z_off),
                     (sx - TILE_W // 2, sy + TILE_H // 2 + z_off),
                 ],
-                fill="#37474F",
+                fill="#37474F",  # Left shadow
             )
+            # Right face
             draw.polygon(
                 [
                     (sx + TILE_W // 2, sy + TILE_H // 2),
@@ -119,7 +127,7 @@ def render_isometric(model: ErosionModel) -> str:
                     (sx, sy + TILE_H + z_off),
                     (sx + TILE_W // 2, sy + TILE_H // 2 + z_off),
                 ],
-                fill="#546E7A",
+                fill="#546E7A",  # Right highlight
             )
 
     return _encode_kitty(img)
