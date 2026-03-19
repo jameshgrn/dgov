@@ -28,7 +28,7 @@ dgov pane close <slug>                          # cleanup
 
 ## Model routing
 
-Only Claude Code can be governor. Workers are always Qwen models. Claude, Gemini, and Codex are never workers — they serve only as lieutenant governors.
+Claude Code or Gemini CLI can be governor. Workers are always Qwen models. Codex is never a worker — it serves only as a lieutenant governor.
 
 ### Worker tier (implementation)
 
@@ -42,17 +42,20 @@ Only Claude Code can be governor. Workers are always Qwen models. Claude, Gemini
    - `qwen35-122b` / `qwen35-397b` — complex single-file reasoning
    - `qwen3-max` — frontier/governor-only, not a worker escalation target
 
+### Governor tier
+
+- `claude` — Claude Code (primary governor)
+- `gemini` — Gemini CLI (alternate governor when Claude tokens are scarce)
+
 ### LT-GOV tier (orchestration only)
 
-- `claude` — multi-file reasoning, architectural decisions, complex debugging
-- `codex` — adversarial review, security audit
-- `gemini` — large context analysis, broad refactors
+- `codex` — adversarial review, security audit, large-scale refactors
 
 ### Selection rules
 
 - **Always use logical agent names** (`qwen-35b`, `qwen-9b`, etc.) — never physical names (`river-35b`, `qwen35-35b`). The router handles health checks and fallback automatically.
 - Default to `qwen-35b`. Escalate to `qwen-122b` or `qwen-397b` for complex single-file reasoning.
-- Never dispatch claude/gemini/codex as a worker. If the task needs them, make them an LT-GOV.
+- Never dispatch claude/gemini/codex as a worker. Codex can be an LT-GOV.
 - One file per task for Qwen workers. Multi-file = LT-GOV.
 - Review exists to catch failures — dispatch cheap, retry cheap.
 
