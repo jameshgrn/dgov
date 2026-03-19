@@ -611,23 +611,25 @@ def _resolve_conflicts_with_agent(
     return resolved
 
 
-def _commit_worktree(pane_record: dict) -> dict:
-    """Auto-commit uncommitted changes in a worker's worktree.
+def _check_dirty_worktree(project_root: str, exclude_protected: bool = True) -> list[str]:
+    """Check for uncommitted non-protected changes in a worktree.
 
-    Stages all modified/new files except hook artifacts like CLAUDE.md.
-    Returns {"committed": True, "files": [...]} or {"committed": False}.
+    Returns a list of dirty file paths (relative to project_root).
+    If exclude_protected=True, protected files are excluded from the list.
     """
-    wt = pane_record.get("worktree_path")
-    if not wt or not Path(wt).exists():
-        return {"committed": False}
+    if not Path(project_root).exists():
+        return []
 
     # Check for uncommitted changes using NUL-delimited porcelain format
-    status = subprocess.run(["git", "-C", wt, "status", "--porcelain", "-z"], capture_output=True)
+    status = subprocess.run(
+        ["git", "-C", project_root, "status", "--porcelain", "-z"],
+        capture_output=True,
+    )
     if not status.stdout.strip(b"\x00"):
-        return {"committed": False}
+        return []
 
-    skip = PROTECTED_FILES
-    files_to_add = []
+    skip = PROTECTED_FILES if exclude_protected else set()
+    dirty_files = []
     entries = status.stdout.split(b"\x00")
     i = 0
     while i < len(entries):
@@ -643,30 +645,10 @@ def _commit_worktree(pane_record: dict) -> dict:
                 filepath = entries[i].decode()
             continue
         if filepath and os.path.basename(filepath) not in skip:
-            files_to_add.append(filepath)
+            dirty_files.append(filepath)
         i += 1
 
-    if not files_to_add:
-        return {"committed": False}
-
-    # Stage files
-    subprocess.run(
-        ["git", "-C", wt, "add", "--"] + files_to_add,
-        capture_output=True,
-        check=True,
-    )
-
-    prompt = pane_record.get("prompt", "worker changes")
-    slug = pane_record.get("slug", "worker")
-    subject = prompt.split("\n")[0][:72].rstrip(".")
-
-    subprocess.run(
-        ["git", "-C", wt, "commit", "-m", f"{subject}\n\nWorker: {slug}"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return {"committed": True, "files": files_to_add}
+    return dirty_files
 
 
 def _restore_protected_files(project_root: str, pane_record: dict) -> None:
@@ -742,6 +724,11 @@ def merge_worker_pane(
 ) -> dict:
     """Merge a worker pane's branch with configurable conflict resolution.
 
+    Strict preconditions (enforced before any git mutation):
+        1. Pane state must be exactly "done"
+        2. No agent process may still be attached to the pane
+        3. Worktree must have no uncommitted non-protected changes
+
     Fast path: git merge --ff-only (clean, no conflicts possible).
     Conflict path depends on ``resolve``:
         - "skip": return an error with conflict details and leave the worktree untouched
@@ -754,6 +741,7 @@ def merge_worker_pane(
         {"error": ...} on failure.
     """
     import dgov.persistence as _persist
+    from dgov.done import _agent_still_running
     from dgov.lifecycle import _full_cleanup
 
     session_root = os.path.abspath(session_root or project_root)
@@ -767,8 +755,35 @@ def merge_worker_pane(
     if not branch_name:
         return {"error": f"Pane {slug} is missing branch_name"}
 
-    # Auto-commit uncommitted changes in worktree
-    commit_result = _commit_worktree(target)
+    # Precondition 1: Pane state must be exactly "done"
+    pane_state = target.get("state", "")
+    if pane_state != "done":
+        return {
+            "error": f"Pane {slug} is in state '{pane_state}', not 'done'",
+            "slug": slug,
+            "current_state": pane_state,
+            "hint": "Worker must complete successfully before merge.",
+        }
+
+    # Precondition 2: No agent process may still be attached
+    pane_id = target.get("pane_id", "")
+    if pane_id and _agent_still_running(pane_id):
+        return {
+            "error": f"Agent process still attached to pane {slug}",
+            "slug": slug,
+            "pane_id": pane_id,
+            "hint": "Wait for worker to complete or manually clean up the pane.",
+        }
+
+    # Precondition 3: Worktree must have no uncommitted non-protected changes
+    dirty_files = _check_dirty_worktree(pane_project_root, exclude_protected=True)
+    if dirty_files:
+        return {
+            "error": f"Worktree for pane {slug} has uncommitted changes",
+            "slug": slug,
+            "dirty_files": dirty_files,
+            "hint": "Commit or stash changes in the worktree before merging.",
+        }
 
     # Pre-merge: restore protected files clobbered by workers
     _restore_protected_files(pane_project_root, target)
@@ -870,8 +885,6 @@ def merge_worker_pane(
         }
         if rebase_fallback:
             result["rebase_fallback"] = True
-        if commit_result.get("committed"):
-            result["auto_committed"] = commit_result["files"]
         if damaged:
             result["warning"] = f"protected files changed: {damaged}"
         if merge.warnings:
