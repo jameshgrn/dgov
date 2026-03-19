@@ -1216,17 +1216,22 @@ def pane_message(slug, text, project_root, session_root):
 
     from dgov.backend import get_backend
     from dgov.persistence import get_pane
+    from dgov.waiter import interact_with_pane
 
     session_root = os.path.abspath(session_root or project_root)
-    pane = get_pane(session_root, slug)
-    if not pane:
-        click.echo(json.dumps({"error": f"Pane not found: {slug}"}))
+    if not interact_with_pane(session_root, slug, text):
+        target = get_pane(session_root, slug)
+        if not target:
+            click.echo(json.dumps({"error": f"Pane not found: {slug}"}))
+        else:
+            pane_id = target.get("pane_id")
+            if not pane_id:
+                click.echo(json.dumps({"error": f"Pane {slug} has no pane_id"}))
+            elif not get_backend().is_alive(pane_id):
+                click.echo(json.dumps({"error": f"Pane {slug} is not running"}))
+            else:
+                click.echo(json.dumps({"error": f"Pane {slug} agent not attached"}))
         sys.exit(1)
-    pane_id = pane.get("pane_id")
-    if not pane_id or not get_backend().is_alive(pane_id):
-        click.echo(json.dumps({"error": f"Pane {slug} is not running"}))
-        sys.exit(1)
-    get_backend().send_input(pane_id, text)
     click.echo(json.dumps({"sent": True, "slug": slug, "message": text[:100]}))
 
 
