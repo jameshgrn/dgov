@@ -16,6 +16,35 @@ from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
 logger = logging.getLogger(__name__)
 
 
+def _count_branch_commits(project_root: str, branch_name: str) -> int:
+    """Count commits on *branch_name* relative to its merge-base with HEAD."""
+    base_r = subprocess.run(
+        ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    if base_r.returncode != 0:
+        return 0
+    count_r = subprocess.run(
+        [
+            "git",
+            "-C",
+            project_root,
+            "rev-list",
+            "--count",
+            f"{base_r.stdout.strip()}..{branch_name}",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if count_r.returncode != 0:
+        return 0
+    try:
+        return int(count_r.stdout.strip())
+    except ValueError:
+        return 0
+
+
 @contextmanager
 def _stash_guard(project_root: str, label: str = "merge"):
     """Stash dirty tracked files, yield, then pop. Warns on pop failure."""
@@ -196,28 +225,7 @@ def _no_squash_merge(
     project_root: str, branch_name: str, message: str | None = None
 ) -> MergeResult:
     """Merge branch with --no-ff to preserve worker commit history."""
-    # Count commits on the worker branch relative to merge-base
-    base_r = subprocess.run(
-        ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    commit_count = 0
-    if base_r.returncode == 0:
-        count_r = subprocess.run(
-            [
-                "git",
-                "-C",
-                project_root,
-                "rev-list",
-                "--count",
-                f"{base_r.stdout.strip()}..{branch_name}",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if count_r.returncode == 0:
-            commit_count = int(count_r.stdout.strip())
+    commit_count = _count_branch_commits(project_root, branch_name)
 
     # Extract slug from branch name (dgov-<slug>)
     slug = branch_name.removeprefix("dgov-") if branch_name.startswith("dgov-") else branch_name
@@ -327,29 +335,7 @@ def _rebase_onto_head(project_root: str, branch_name: str) -> MergeResult:
 def _rebase_merge(project_root: str, branch_name: str, message: str | None = None) -> MergeResult:
     """Rebase branch onto HEAD then fast-forward for linear history with original commits."""
     with _MergeLock(project_root):
-        # Count commits before rebase (for logging; commit_count unused in return
-        # but kept for parity with _no_squash_merge's accounting)
-        base_r = subprocess.run(
-            ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
-            capture_output=True,
-            text=True,
-        )
-        commit_count = 0
-        if base_r.returncode == 0:
-            count_r = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    project_root,
-                    "rev-list",
-                    "--count",
-                    f"{base_r.stdout.strip()}..{branch_name}",
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if count_r.returncode == 0:
-                commit_count = int(count_r.stdout.strip())
+        commit_count = _count_branch_commits(project_root, branch_name)
 
         with _stash_guard(project_root, "rebase") as (stashed, warnings):
             result, current_branch = _stash_and_rebase(
