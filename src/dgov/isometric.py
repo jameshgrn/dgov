@@ -5,21 +5,31 @@ from __future__ import annotations
 import base64
 import io
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from dgov.terrain import ErosionModel
 
+# Tile specification from TERRAIN-CONCEPT.md
+TILE_W = 32
+TILE_H = 16
+Z_SCALE = 32  # 1.0 height = 32 pixels vertical offset
+
+# Colors from TERRAIN-CONCEPT.md
+PALETTE = {
+    "sky_upper": "#37474F",
+    "sky_dawn": "#FFCCBC",
+    "bedrock": "#78909C",
+    "alluvium": "#8B4513",
+    "shadow": "#1A237E",
+}
+
 
 def _encode_kitty(img: Image.Image) -> str:
-    """Encode a PIL Image to a Kitty graphics protocol escape sequence.
-
-    See: https://sw.kovidgoyal.net/kitty/graphics-protocol/
-    """
+    """Encode a PIL Image to a Kitty graphics protocol escape sequence."""
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     b64_data = base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
-    # Chunking for kitty (max 4096 bytes payload per chunk)
     chunk_size = 4096
     chunks = [b64_data[i : i + chunk_size] for i in range(0, len(b64_data), chunk_size)]
 
@@ -27,10 +37,7 @@ def _encode_kitty(img: Image.Image) -> str:
         return ""
 
     out = []
-    # Send first chunk with a=T (transmit and display), f=100 (PNG format)
     out.append(f"\\033_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}\\033\\\\")
-
-    # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
         out.append(f"\\033_Gm={m};{chunk}\\033\\\\")
@@ -39,27 +46,61 @@ def _encode_kitty(img: Image.Image) -> str:
 
 
 def render_isometric(model: ErosionModel) -> str:
-    """Render an ErosionModel to a Kitty graphics sequence."""
-    # TBD: Full isometric projection.
-    # For now, just render a flat 2D top-down heatmap to test the protocol.
+    """Render an ErosionModel using isometric projection."""
     rows = model.height_count
     cols = model.width
 
-    img = Image.new("RGB", (cols * 4, rows * 4), "black")
-    pixels = img.load()
+    # Calculate image size
+    # Screen X: (col - row) * (TILE_W / 2)
+    # Screen Y: (col + row) * (TILE_H / 2)
+    width = (rows + cols) * (TILE_W // 2) + 100
+    height = (rows + cols) * (TILE_H // 2) + 100
 
-    if not pixels:
-        return ""
+    img = Image.new("RGB", (width, height), PALETTE["sky_upper"])
+    draw = ImageDraw.Draw(img)
 
+    # Offset to center
+    cx, cy = width // 2, 50
+
+    # Painter's Algorithm: Draw from back (row 0, col 0) to front
     for r in range(rows):
         for c in range(cols):
-            h = model.height[r][c]
-            # Simple colormap: low=blue, mid=green, high=white
-            val = int(max(0, min(1.0, h)) * 255)
-            color = (val, val, val)
+            h_val = model.height[r][c]
+            z_off = int(h_val * Z_SCALE)
 
-            for dr in range(4):
-                for dc in range(4):
-                    pixels[c * 4 + dc, r * 4 + dr] = color
+            # Isometric projection math
+            sx = cx + (c - r) * (TILE_W // 2)
+            sy = cy + (c + r) * (TILE_H // 2) - z_off
+
+            # Draw Tile (Diamond)
+            points = [
+                (sx, sy),  # Top
+                (sx + TILE_W // 2, sy + TILE_H // 2),  # Right
+                (sx, sy + TILE_H),  # Bottom
+                (sx - TILE_W // 2, sy + TILE_H // 2),  # Left
+            ]
+
+            color = PALETTE["bedrock"] if h_val > 0.5 else PALETTE["alluvium"]
+            draw.polygon(points, fill=color, outline="black")
+
+            # Draw Vertical Faces (simplified)
+            draw.polygon(
+                [
+                    (sx - TILE_W // 2, sy + TILE_H // 2),
+                    (sx, sy + TILE_H),
+                    (sx, sy + TILE_H + z_off),
+                    (sx - TILE_W // 2, sy + TILE_H // 2 + z_off),
+                ],
+                fill="#37474F",  # Left shadow
+            )
+            draw.polygon(
+                [
+                    (sx + TILE_W // 2, sy + TILE_H // 2),
+                    (sx, sy + TILE_H),
+                    (sx, sy + TILE_H + z_off),
+                    (sx + TILE_W // 2, sy + TILE_H // 2 + z_off),
+                ],
+                fill="#546E7A",  # Right highlight
+            )
 
     return _encode_kitty(img)
