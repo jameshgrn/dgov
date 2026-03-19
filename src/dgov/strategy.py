@@ -240,6 +240,20 @@ def _structure_pi_prompt(
 
     # Use double quotes for the commit message in the step text
     steps.append(f'{step_num}. git commit -m "{commit_msg}"')
+    step_num += 1
+
+    # 6. Verify commit exists
+    cmd = "git log --oneline $DGOV_BASE_SHA..HEAD"
+    steps.append(f"{step_num}. Run: {cmd} and verify at least one commit exists")
+    step_num += 1
+
+    # 7. Signal completion
+    steps.append(f'{step_num}. Run: dgov worker complete -m "{commit_msg}"')
+    step_num += 1
+
+    # 8. Handle failure case
+    fail_cmd = 'dgov worker fail "<reason>"'
+    steps.append(f"{step_num}. If no changes, run: {fail_cmd}")
 
     return "\n".join(steps)
 
