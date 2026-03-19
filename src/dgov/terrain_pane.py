@@ -9,10 +9,8 @@ import time
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
-from rich.segment import Segment
 from rich.text import Text
 
-from dgov.isometric import _wrap_kitty_payload, render_isometric
 from dgov.terrain import (
     AgentSim,
     ErosionModel,
@@ -21,18 +19,6 @@ from dgov.terrain import (
     overlay_stamps,
     render_terrain,
 )
-
-
-class KittyRenderable:
-    """Renderable that outputs raw Kitty graphics escape sequences."""
-
-    def __init__(self, data: str):
-        self.data = data
-
-    def __rich_console__(self, console, options):
-        delete_seq = _wrap_kitty_payload("_Ga=d")
-        yield Segment(f"{delete_seq}{self.data}", control=True)
-
 
 _PANEL_BORDER_WIDTH = 2
 _PANEL_BORDER_HEIGHT = 2
@@ -80,9 +66,6 @@ def _clamp_rendered(rendered: Text, width: int, height: int) -> Text:
 
 def run_terrain(refresh: float = 0.5) -> None:
     """Run the SPIM erosion model in a Rich Live display, forever."""
-    # Force ISO mode if env var is set
-    iso_mode = os.environ.get("DGOV_ISOMETRIC") == "1"
-
     # Force full terminal for Rich
     console = Console(force_terminal=True)
 
@@ -101,7 +84,7 @@ def run_terrain(refresh: float = 0.5) -> None:
             m.step()
         return m
 
-    def _render() -> Panel | KittyRenderable:
+    def _render() -> Panel:
         nonlocal model, last_w, last_h, tick, agents_cache, agents_last_read
         w, panel_rows = _detect_pane_size(console)
         h = panel_rows * 2
@@ -157,27 +140,13 @@ def run_terrain(refresh: float = 0.5) -> None:
 
         try:
             model.step()
-            if iso_mode:
-                # Wrap KittyRenderable in Panel even in iso_mode
-                # Adjust cols/rows to account for Panel border
-                iso_cols = max(w - _PANEL_BORDER_WIDTH, 1)
-                iso_rows = max(panel_rows - _PANEL_BORDER_HEIGHT, 1)
-                iso_data = render_isometric(model, cols=iso_cols, rows=iso_rows)
-                rendered = KittyRenderable(iso_data)
-                tick += 1
-                n = len(agents_cache)
-                title = f"Terrain  t={tick}" + (f"  [{n} agents]" if n else "")
-                return Panel(rendered, title=title, border_style="green")
-            else:
-                rendered = render_terrain(model, supersample=2)
-                rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
+            rendered = render_terrain(model, supersample=2)
+            rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
         except Exception as exc:
-            if iso_mode:
-                raise exc  # Fail loudly in ISO mode for debugging
             rendered = Text(f"(terrain error: {exc})")
             rendered.no_wrap = True
 
-        if not iso_mode and agents_cache and model is not None:
+        if agents_cache and model is not None:
             stamps = sim.update(agents_cache, panel_rows, w, model)
             rendered = overlay_stamps(rendered, stamps)
 
@@ -188,14 +157,12 @@ def run_terrain(refresh: float = 0.5) -> None:
 
     time.sleep(_STARTUP_DELAY_S)
 
-    # In ISO mode, we don't want screen=True because it clears the terminal buffer
-    # which can conflict with persistent graphics.
     with Live(
         console=console,
         get_renderable=_render,
         refresh_per_second=2,
         transient=False,
-        screen=(not iso_mode),
+        screen=True,
     ) as live:  # noqa: F841
         try:
             while True:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -281,11 +280,8 @@ def dashboard(project_root, session_root, refresh, pane):
 
 @click.command("terrain")
 @click.option("--refresh", default=0.5, help="Seconds between steps")
-@click.option("--iso", is_flag=True, help="Use isometric renderer")
-def terrain_cmd(refresh, iso):
+def terrain_cmd(refresh):
     """Run standalone terrain erosion simulation."""
-    if iso:
-        os.environ["DGOV_ISOMETRIC"] = "1"
     from dgov.terrain_pane import run_terrain
 
     run_terrain(refresh)
