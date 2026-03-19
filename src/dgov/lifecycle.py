@@ -94,56 +94,96 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
 def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> None:
     """Write role-appropriate CLAUDE.md into the worktree.
 
-    Replaces the external worktree_created hook with built-in logic.
+    Also git-excludes CLAUDE.md and AGENTS.md so they can never be
+    staged by ``git add -A``, and injects the codebase map if present.
     """
     import shutil
-    from pathlib import Path
 
-    claude_md = Path(worktree_path) / "CLAUDE.md"
+    wt = Path(worktree_path)
+    claude_md = wt / "CLAUDE.md"
     if claude_md.exists():
-        backup = Path(worktree_path) / "CLAUDE.md.full"
+        backup = wt / "CLAUDE.md.full"
         if not backup.exists():
             shutil.copy2(str(claude_md), str(backup))
+
+    # Read codebase map if it exists
+    codebase_section = ""
+    codebase_md = wt / "CODEBASE.md"
+    if codebase_md.exists():
+        codebase_section = (
+            "\n## Codebase map\n"
+            "Read CODEBASE.md for the full module map, data flow, "
+            "and common edit patterns.\n\n"
+        )
 
     if role == "lt-gov":
         content = (
             f"# LT-GOV Instructions — {slug}\n\n"
-            "You are a **lieutenant governor**. You orchestrate workers, you do NOT edit code.\n\n"
+            "You are a **lieutenant governor**. You orchestrate workers, "
+            "you do NOT edit code.\n\n"
             "## Rules\n"
-            '- Dispatch workers with: dgov pane create -a <agent> -p "<task>" '
-            f"-r $DGOV_PROJECT_ROOT --parent {slug}\n"
+            "- Dispatch workers with: dgov pane create -a <agent> "
+            f'-p "<task>" -r $DGOV_PROJECT_ROOT --parent {slug}\n'
             "- Wait: dgov pane wait <slug> -r $DGOV_PROJECT_ROOT\n"
             "- Review: dgov pane review <slug> -r $DGOV_PROJECT_ROOT\n"
-            "- Request merge: dgov pane merge-request <slug> -r $DGOV_PROJECT_ROOT\n"
+            "- Request merge: dgov pane merge-request <slug>\n"
             "- Close: dgov pane close <slug> -r $DGOV_PROJECT_ROOT\n"
             "- NEVER edit files directly\n"
             "- NEVER push to remote\n"
             "- NEVER run dgov pane merge directly\n"
             "- Use logical agent names: qwen-9b, qwen-35b, qwen-122b\n\n"
-            f"## When done\nWrite status to .dgov/progress/{slug}.json and exit.\n"
+            f"## When done\n"
+            f"Write status to .dgov/progress/{slug}.json and exit.\n"
+            f"{codebase_section}"
         )
     else:
         content = (
             f"# Worker Instructions — {slug}\n\n"
-            "You are a **worker**. Complete the task, commit, and signal done.\n\n"
+            "You are a **worker**. Complete the task, commit, "
+            "and signal done.\n\n"
             "## Rules\n"
             "- Edit ONLY the files specified in your task\n"
-            "- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml, or any config files\n"
+            "- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml, "
+            "or any config files\n"
             "- Do NOT create new documentation files\n"
             "- Do NOT push to remote\n"
             "- Commit your changes with a clear message\n"
             "- Call `dgov worker complete` when done\n\n"
-            "## Project context\n"
-            "- CLAUDE.md.full has the original project instructions\n\n"
             "## Commit checklist\n"
             "1. git add <changed files>\n"
             '2. git commit -m "<message>"\n'
             "3. dgov worker complete\n"
+            f"{codebase_section}"
         )
 
     claude_md.write_text(content, encoding="utf-8")
-    agents_md = Path(worktree_path) / "AGENTS.md"
-    agents_md.write_text(content, encoding="utf-8")
+    (wt / "AGENTS.md").write_text(content, encoding="utf-8")
+
+    # Git-exclude CLAUDE.md and AGENTS.md so no `git add` can stage them
+    _git_exclude_files(worktree_path, ["CLAUDE.md", "AGENTS.md"])
+
+
+def _git_exclude_files(worktree_path: str, filenames: list[str]) -> None:
+    """Add filenames to the worktree's git exclude (not .gitignore)."""
+    result = subprocess.run(
+        ["git", "-C", worktree_path, "rev-parse", "--git-dir"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return
+    git_dir = Path(result.stdout.strip())
+    if not git_dir.is_absolute():
+        git_dir = Path(worktree_path) / git_dir
+    exclude_file = git_dir / "info" / "exclude"
+    exclude_file.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude_file.read_text() if exclude_file.exists() else ""
+    existing_lines = set(existing.splitlines())
+    to_add = [f for f in filenames if f not in existing_lines]
+    if to_add:
+        with exclude_file.open("a") as fh:
+            for f in to_add:
+                fh.write(f"{f}\n")
 
 
 # -- Pane title --
