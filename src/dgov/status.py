@@ -58,13 +58,6 @@ def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None
     except OSError:
         return None
 
-
-def _read_last_output_from_log(session_root: str, slug: str, lines: int = 3) -> str:
-    """Read the last *lines* lines from a worker log, seeking from end."""
-    result = tail_worker_log(session_root, slug, lines=lines)
-    return result if result is not None else ""
-
-
 # -- Freshness --
 
 
@@ -271,7 +264,7 @@ def list_worker_panes(
             elif cmd_lower:
                 activity = cmd_lower[:15]
 
-        last_output = _read_last_output_from_log(session_root, slug, lines=10)
+        last_output = tail_worker_log(session_root, slug, lines=10) or ""
         duration_s = round(time.time() - (p.get("created_at") or time.time()))
 
         summary = _extract_summary_from_log(session_root, slug, pre_read=last_output)
@@ -465,7 +458,7 @@ def _extract_summary_from_log(
     raw = (
         pre_read
         if pre_read is not None
-        else _read_last_output_from_log(session_root, slug, lines=lines)
+        else tail_worker_log(session_root, slug, lines=lines) or ""
     )
     if not raw:
         return ""
