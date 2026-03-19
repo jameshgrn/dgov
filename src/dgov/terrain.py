@@ -102,18 +102,82 @@ class ErosionModel:
                 row.append(self._rng.uniform(0.25, 0.65) + 0.35 * edge_bias)
             grid.append(row)
 
-        # Add a few random hills for interesting base terrain variety
-        num_hills = self._rng.randint(2, 5)
-        for _ in range(num_hills):
-            hr = self._rng.randint(2, height - 3)
-            hc = self._rng.randint(2, width - 3)
-            radius = self._rng.uniform(3.0, 8.0)
-            amp = self._rng.uniform(0.2, 0.5)
+        # Select a base topology for interesting terrain variety
+        topology = self._rng.choice(["hills", "fault", "rift", "volcano", "islands"])
+
+        if topology == "hills":
+            num_hills = self._rng.randint(2, 5)
+            for _ in range(num_hills):
+                hr = self._rng.randint(2, height - 3)
+                hc = self._rng.randint(2, width - 3)
+                radius = self._rng.uniform(3.0, 8.0)
+                amp = self._rng.uniform(0.2, 0.5)
+                for r in range(height):
+                    for c in range(width):
+                        dsq = (r - hr) ** 2 + (c - hc) ** 2
+                        if dsq < radius * radius:
+                            grid[r][c] += amp * math.exp(-dsq / (2.0 * (radius / 2.0) ** 2))
+
+        elif topology == "fault":
+            angle = self._rng.uniform(0, 2 * math.pi)
+            nx, ny = math.cos(angle), math.sin(angle)
+            cx, cy = width / 2.0, height / 2.0
+            amp = self._rng.uniform(0.2, 0.4)
             for r in range(height):
                 for c in range(width):
-                    dsq = (r - hr) ** 2 + (c - hc) ** 2
-                    if dsq < radius * radius:
-                        grid[r][c] += amp * math.exp(-dsq / (2.0 * (radius / 2.0) ** 2))
+                    dist = (c - cx) * nx + (r - cy) * ny
+                    if dist > 0:
+                        grid[r][c] += amp
+                    else:
+                        grid[r][c] -= amp * 0.2
+
+        elif topology == "rift":
+            angle = self._rng.uniform(0, 2 * math.pi)
+            nx, ny = math.cos(angle), math.sin(angle)
+            cx, cy = width / 2.0, height / 2.0
+            rift_w = self._rng.uniform(3.0, 6.0)
+            amp = self._rng.uniform(0.3, 0.5)
+            for r in range(height):
+                for c in range(width):
+                    dist = abs((c - cx) * nx + (r - cy) * ny)
+                    if dist < rift_w:
+                        grid[r][c] -= (1.0 - (dist / rift_w) ** 2) * amp
+                    else:
+                        grid[r][c] += math.exp(-((dist - rift_w) ** 2) / 10.0) * (amp * 0.5)
+
+        elif topology == "volcano":
+            hr = height / 2.0 + self._rng.uniform(-height / 5.0, height / 5.0)
+            hc = width / 2.0 + self._rng.uniform(-width / 5.0, width / 5.0)
+            radius = self._rng.uniform(8.0, 14.0)
+            amp = self._rng.uniform(0.6, 1.0)
+            for r in range(height):
+                for c in range(width):
+                    dist = math.sqrt((r - hr) ** 2 + (c - hc) ** 2)
+                    if dist < radius:
+                        cone = (1.0 - dist / radius) * amp
+                        crater = math.exp(-(dist**2) / 2.0) * (amp * 0.5)
+                        grid[r][c] += cone - crater
+
+        elif topology == "islands":
+            for r in range(height):
+                for c in range(width):
+                    grid[r][c] -= 0.3  # lower base
+            num_isles = self._rng.randint(4, 8)
+            for _ in range(num_isles):
+                hr = self._rng.randint(2, height - 3)
+                hc = self._rng.randint(2, width - 3)
+                radius = self._rng.uniform(2.0, 6.0)
+                amp = self._rng.uniform(0.4, 0.7)
+                for r in range(height):
+                    for c in range(width):
+                        dsq = (r - hr) ** 2 + (c - hc) ** 2
+                        if dsq < radius * radius:
+                            grid[r][c] += amp * math.exp(-dsq / (2.0 * (radius / 2.0) ** 2))
+
+        # Clamp to reasonable values so it doesn't get totally extreme
+        for r in range(height):
+            for c in range(width):
+                grid[r][c] = max(0.05, min(1.5, grid[r][c]))
 
         # 2 passes of 3x3 box blur
         for _ in range(2):
