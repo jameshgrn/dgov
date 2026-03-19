@@ -50,21 +50,52 @@ def create_background_pane(
     name: str | None = None,
     agent: str | None = None,
 ) -> str:
-    """Create a worker in a new background tmux window. Returns pane ID.
+    """Create a worker pane, preferring a visible split over a hidden window.
 
-    Uses new-window -d so the window is created without switching focus.
-    Each worker gets its own full-size TTY in an invisible window.
+    If running inside an interactive tmux client (TMUX env var set), creates
+    a visible horizontal split in the current window using `split-window -h -d`.
+    This keeps the worker visible while focus remains on the governor pane.
+
+    If not in a tmux context, falls back to creating a new background window
+    with `new-window -d` as before.
+
+    Preserves cwd/env handling and returns the new pane ID.
     """
-    args = ["new-window", "-d", "-P", "-F", "#{pane_id}"]
-    if name:
-        prefix = agent if agent else "dgov"
-        args.extend(["-n", f"[{prefix}] {name}"])
-    if env:
-        for key, value in sorted(env.items()):
-            args.extend(["-e", f"{key}={value}"])
-    if cwd:
-        args.extend(["-c", cwd])
-    return _run(args)
+    # Check if we're in an interactive tmux session
+    tmux_session = os.environ.get("TMUX")
+
+    if tmux_session:
+        # Prefer visible split in current window
+        args = ["split-window", "-h", "-d", "-P", "-F", "#{pane_id}"]
+        if env:
+            for key, value in sorted(env.items()):
+                args.extend(["-e", f"{key}={value}"])
+        if cwd:
+            args.extend(["-c", cwd])
+        pane_id = _run(args)
+
+        # Apply title and styling if provided
+        if name:
+            prefix = agent if agent else "dgov"
+            set_title(pane_id, f"[{prefix}] {name}")
+            style_worker_pane(pane_id, agent or "default")
+
+        # Re-apply sane layout after creating the visible split
+        select_layout("tiled")
+
+        return pane_id
+    else:
+        # Fallback: hidden new window (original behavior)
+        args = ["new-window", "-d", "-P", "-F", "#{pane_id}"]
+        if name:
+            prefix = agent if agent else "dgov"
+            args.extend(["-n", f"[{prefix}] {name}"])
+        if env:
+            for key, value in sorted(env.items()):
+                args.extend(["-e", f"{key}={value}"])
+        if cwd:
+            args.extend(["-c", cwd])
+        return _run(args)
 
 
 def wait_for_shell_ready(pane_id: str, timeout: float = 3.0) -> bool:
