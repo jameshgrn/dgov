@@ -73,7 +73,7 @@ def ensure_dgov_gitignored(project_root: str) -> None:
 
 
 def _create_worktree(project_root: str, worktree_path: str, branch_name: str) -> None:
-    # If worktree directory already exists for this branch, reuse it.
+    # Reject stale worktree reuse on fresh create.
     if Path(worktree_path).is_dir():
         git_check = subprocess.run(
             ["git", "-C", worktree_path, "rev-parse", "--git-common-dir"],
@@ -81,7 +81,10 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
             text=True,
         )
         if git_check.returncode == 0:
-            return
+            raise RuntimeError(
+                f"Worktree already exists at {worktree_path!r}. "
+                f"Use a new slug or explicit recovery path."
+            )
 
     result = subprocess.run(
         ["git", "-C", project_root, "rev-parse", "--verify", branch_name],
