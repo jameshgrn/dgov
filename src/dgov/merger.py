@@ -236,6 +236,64 @@ def _no_squash_merge(
         return MergeResult(success=True, warnings=warnings)
 
 
+def _stash_and_rebase(
+    project_root: str, label: str, onto_ref: str, branch_to_rebase: str
+) -> tuple[MergeResult, str]:
+    """Shared helper: stash dirty files, run rebase, restore branch on error.
+
+    Returns (MergeResult, current_branch) where current_branch is the branch
+    name we were on before the rebase (for restoration purposes).
+
+    The caller must use _stash_guard to manage stashing; this handles the
+    rebase execution and error recovery.
+    """
+    # Remember current branch to restore after rebase
+    current = subprocess.run(
+        ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if current.returncode != 0:
+        return (
+            MergeResult(success=False, stderr="Detached HEAD — cannot rebase"),
+            "",
+        )
+
+    current_branch = current.stdout.strip()
+
+    # Rebase the branch onto the target ref
+    rebase = subprocess.run(
+        ["git", "-C", project_root, "rebase", onto_ref, branch_to_rebase],
+        capture_output=True,
+        text=True,
+    )
+    if rebase.returncode != 0:
+        subprocess.run(
+            ["git", "-C", project_root, "rebase", "--abort"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", project_root, "checkout", current_branch],
+            capture_output=True,
+        )
+        return (
+            MergeResult(
+                success=False,
+                stderr=f"Rebase failed: {rebase.stderr.strip()}",
+            ),
+            current_branch,
+        )
+
+    # Switch back to the original branch
+    subprocess.run(
+        ["git", "-C", project_root, "checkout", current_branch],
+        capture_output=True,
+    )
+
+    logger.info("Auto-rebased %s onto %s", branch_to_rebase, onto_ref)
+    return (MergeResult(success=True), current_branch)
+
+
 def _rebase_onto_head(project_root: str, branch_name: str) -> MergeResult:
     """Rebase branch onto current HEAD so it's up-to-date before merge.
 
@@ -262,64 +320,13 @@ def _rebase_onto_head(project_root: str, branch_name: str) -> MergeResult:
         # Already based on HEAD — no rebase needed
         return MergeResult(success=True)
 
-    # Remember current branch to restore after rebase
-    current = subprocess.run(
-        ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
-        capture_output=True,
-        text=True,
-    )
-    if current.returncode != 0:
-        return MergeResult(success=False, stderr="Detached HEAD — cannot rebase onto HEAD")
-
-    current_branch = current.stdout.strip()
-
-    # Rebase the worker branch onto HEAD (checks out branch_name as side effect)
-    rebase = subprocess.run(
-        ["git", "-C", project_root, "rebase", current_branch, branch_name],
-        capture_output=True,
-        text=True,
-    )
-    if rebase.returncode != 0:
-        subprocess.run(
-            ["git", "-C", project_root, "rebase", "--abort"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "-C", project_root, "checkout", current_branch],
-            capture_output=True,
-        )
-        return MergeResult(
-            success=False,
-            stderr=(
-                f"Auto-rebase of {branch_name} onto {current_branch} "
-                f"failed: {rebase.stderr.strip()}"
-            ),
-        )
-
-    # Switch back to the original branch
-    subprocess.run(
-        ["git", "-C", project_root, "checkout", current_branch],
-        capture_output=True,
-    )
-
-    logger.info("Auto-rebased %s onto %s", branch_name, current_branch)
-    return MergeResult(success=True)
+    result, _ = _stash_and_rebase(project_root, "onto-head", "HEAD", branch_name)
+    return result
 
 
 def _rebase_merge(project_root: str, branch_name: str, message: str | None = None) -> MergeResult:
     """Rebase branch onto HEAD then fast-forward for linear history with original commits."""
     with _MergeLock(project_root):
-        # Remember current branch
-        current = subprocess.run(
-            ["git", "-C", project_root, "symbolic-ref", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        if current.returncode != 0:
-            return MergeResult(success=False, stderr="Detached HEAD — cannot rebase-merge")
-
-        current_branch = current.stdout.strip()
-
         # Count commits before rebase (for logging; commit_count unused in return
         # but kept for parity with _no_squash_merge's accounting)
         base_r = subprocess.run(
@@ -345,22 +352,11 @@ def _rebase_merge(project_root: str, branch_name: str, message: str | None = Non
                 commit_count = int(count_r.stdout.strip())
 
         with _stash_guard(project_root, "rebase") as (stashed, warnings):
-            # Rebase branch onto HEAD (this checks out branch_name)
-            rebase = subprocess.run(
-                ["git", "-C", project_root, "rebase", "HEAD", branch_name],
-                capture_output=True,
-                text=True,
+            result, current_branch = _stash_and_rebase(
+                project_root, "rebase-merge", "HEAD", branch_name
             )
-            if rebase.returncode != 0:
-                subprocess.run(
-                    ["git", "-C", project_root, "rebase", "--abort"],
-                    capture_output=True,
-                )
-                subprocess.run(
-                    ["git", "-C", project_root, "checkout", current_branch],
-                    capture_output=True,
-                )
-                return MergeResult(success=False, stderr=f"Rebase failed: {rebase.stderr.strip()}")
+            if not result.success:
+                return result
 
             # Now on branch_name (rebased). Switch back and fast-forward.
             subprocess.run(
