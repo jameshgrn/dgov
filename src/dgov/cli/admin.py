@@ -239,7 +239,7 @@ def stats(project_root, session_root):
     """Show pane and agent statistics."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.metrics import compute_stats
+    from dgov.inspection import compute_stats
 
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
