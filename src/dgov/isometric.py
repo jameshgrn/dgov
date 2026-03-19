@@ -40,15 +40,15 @@ def _encode_kitty(img: Image.Image) -> str:
     if not chunks:
         return ""
 
+    ESC = "\x1b"
     out = []
     # Send first chunk with a=T (transmit and display), f=100 (PNG format)
-    # We use double backslashes so the string contains a literal backslash.
-    out.append(f"\\033_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}\\033\\\\")
+    out.append(f"{ESC}_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}{ESC}\\")
 
     # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
-        out.append(f"\\033_Gm={m};{chunk}\\033\\\\")
+        out.append(f"{ESC}_Gm={m};{chunk}{ESC}\\")
 
     return "".join(out)
 

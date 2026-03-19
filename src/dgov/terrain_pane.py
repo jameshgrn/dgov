@@ -9,6 +9,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.text import Text
 
 from dgov.isometric import render_isometric
@@ -20,6 +21,17 @@ from dgov.terrain import (
     overlay_stamps,
     render_terrain,
 )
+
+
+class KittyRenderable:
+    """Renderable that outputs raw Kitty graphics escape sequences."""
+
+    def __init__(self, data: str):
+        self.data = data
+
+    def __rich_console__(self, console, options):
+        yield Segment(self.data, control=True)
+
 
 _PANEL_BORDER_WIDTH = 2
 _PANEL_BORDER_HEIGHT = 2
@@ -140,7 +152,7 @@ def run_terrain(refresh: float = 0.5) -> None:
         try:
             model.step()
             if os.environ.get("DGOV_ISOMETRIC") == "1":
-                rendered = Text.from_ansi(render_isometric(model))
+                rendered = KittyRenderable(render_isometric(model))
             else:
                 rendered = render_terrain(model, supersample=2)
                 rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
