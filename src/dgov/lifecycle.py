@@ -15,7 +15,7 @@ from pathlib import Path
 
 from dgov.agents import AgentDef, build_launch_command, load_registry
 from dgov.backend import get_backend
-from dgov.done import _wrap_done_signal
+from dgov.done import _wrap_exit_signal
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
@@ -379,7 +379,7 @@ def _setup_and_launch_agent(
     Path(done_signal).unlink(missing_ok=True)
     Path(done_signal + ".exit").unlink(missing_ok=True)
 
-    # 9. Launch agent (with done-signal wrapper)
+    # 9. Launch agent (with exit-only wrapper)
     # Workers always use headless mode; only LT-GOVs get TUI interactive mode.
     is_cursor = agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent"
     use_interactive = agent_def.interactive and role != "worker"
@@ -400,7 +400,7 @@ def _setup_and_launch_agent(
             extra_flags=extra_flags,
             registry=registry,
         )
-        wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
+        wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
         ready_delay = agent_def.send_keys_ready_delay_ms or 2000
         time.sleep(ready_delay / 1000)
@@ -421,7 +421,7 @@ def _setup_and_launch_agent(
             extra_flags=extra_flags,
             registry=registry,
         )
-        wrapped_cmd = _wrap_done_signal(base_cmd, done_signal)
+        wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
         if agent_def.send_keys_ready_delay_ms > 0:
             time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
@@ -440,7 +440,7 @@ def _setup_and_launch_agent(
             registry=registry,
             force_headless=force_headless,
         )
-        wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
+        wrapped_cmd = _wrap_exit_signal(launch_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
 
         # Cursor headless: accept workspace trust dialog (send twice for reliability)
