@@ -73,6 +73,23 @@ def worker_complete(message):
             )
             click.echo(json.dumps({"auto_committed": True, "slug": slug}), err=True)
 
+    # Verify at least one commit exists beyond DGOV_BASE_SHA
+    base_sha = os.environ.get("DGOV_BASE_SHA", "")
+    if base_sha:
+        log = subprocess.run(
+            ["git", "-C", worktree, "log", f"{base_sha}..HEAD", "--oneline"],
+            capture_output=True,
+            text=True,
+        )
+        commits = [c for c in log.stdout.strip().split("\n") if c]
+        if not commits:
+            click.echo(
+                f"Error: No commits found beyond DGOV_BASE_SHA ({base_sha}). "
+                f"Cannot signal completion without actual repo changes.",
+                err=True,
+            )
+            sys.exit(1)
+
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.parent.mkdir(parents=True, exist_ok=True)
     done_path.touch()
