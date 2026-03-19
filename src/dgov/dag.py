@@ -127,6 +127,189 @@ def _wait_for_tier(
         except Exception as exc:
             logger.warning("Wait failed for %s: %s", task_slug, exc)
             results[task_slug] = {"ok": False, "error": str(exc), "pane_slug": pane_slug}
+
+
+def _is_task_terminal_success(
+    task_slug: str,
+    task_states: dict[str, str],
+    auto_merge: bool,
+) -> bool:
+    """Check if a task has reached terminal-success state for its mode.
+
+    - If auto_merge=True: terminal success means "merged"
+    - If auto_merge=False: terminal success means "reviewed_pass" or "merged"
+    """
+    state = task_states.get(task_slug)
+    if auto_merge:
+        return state == "merged"
+    return state in ("reviewed_pass", "merged")
+
+
+def _are_all_dependencies_met(
+    task: DagTaskSpec,
+    task_states: dict[str, str],
+    auto_merge: bool,
+) -> bool:
+    """Check if all dependencies are satisfied for this task to run.
+
+    A dependency is satisfied when it has reached terminal-success state:
+    - merged (if auto_merge=True)
+    - reviewed_pass or merged (if auto_merge=False)
+
+    Returns True if no dependencies (leaf task).
+    """
+    if not task.depends_on:
+        return True
+    return all(_is_task_terminal_success(dep, task_states, auto_merge) for dep in task.depends_on)
+
+
+def _mark_transitive_skipped(
+    dag: DagDefinition,
+    failed_or_skipped: set[str],
+    task_states: dict[str, str],
+    run_id: int,
+    session_root: str,
+) -> None:
+    """Mark all transitive dependents of failed/skipped tasks as skipped."""
+    from dgov.persistence import upsert_dag_task
+
+    newly_skipped = transitive_dependents(dag.tasks, failed_or_skipped)
+    for slug in newly_skipped:
+        if task_states.get(slug) not in ("merged", "reviewed_pass", "failed", "skipped"):
+            task_states[slug] = "skipped"
+            upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
+
+
+def _get_ready_tasks(
+    dag: DagDefinition,
+    task_states: dict[str, str],
+    tier_limit: int | None,
+    auto_merge: bool,
+) -> list[str]:
+    """Get all tasks that are ready to dispatch based on dependency readiness.
+
+    A task is ready when:
+    1. It hasn't been dispatched/reviewed/failed/skipped yet
+    2. All its dependencies are in terminal-success state
+    3. Its computed tier index <= tier_limit (if tier_limit is set)
+    """
+    tiers = compute_tiers(dag.tasks)
+    task_to_tier: dict[str, int] = {}
+    for tier_idx, tier_tasks in enumerate(tiers):
+        for slug in tier_tasks:
+            task_to_tier[slug] = tier_idx
+
+    ready: list[str] = []
+    for slug, task in dag.tasks.items():
+        # Skip if already processed
+        current_state = task_states.get(slug)
+        if current_state not in ("", None):
+            continue
+
+        # Check tier limit
+        if tier_limit is not None and task_to_tier.get(slug, 0) > tier_limit:
+            continue
+
+        # Check dependencies are met
+        if _are_all_dependencies_met(task, task_states, auto_merge):
+            ready.append(slug)
+
+    return sorted(ready)
+
+
+def _wait_for_any_completion(
+    dag: DagDefinition,
+    active_pane_slugs: dict[str, str],
+    session_root: str,
+    task_states: dict[str, str],
+    run_id: int,
+    options: DagRunOptions,
+) -> dict[str, str]:
+    """Wait for any active pane to complete and process it.
+
+    Returns dict mapping task_slug to new state.
+    This enables event-driven progression instead of blocking on entire tiers.
+    """
+    from dgov.persistence import upsert_dag_task
+    from dgov.waiter import wait_worker_pane
+
+    results: dict[str, str] = {}
+
+    # Wait for each pane individually (sequential wait for simplicity)
+    for task_slug, pane_slug in active_pane_slugs.items():
+        task = dag.tasks[task_slug]
+        try:
+            wait_worker_pane(
+                dag.project_root,
+                pane_slug,
+                session_root=session_root,
+                timeout=task.timeout_s,
+                auto_retry=False,
+            )
+        except Exception as exc:
+            logger.warning("Wait failed for %s: %s", task_slug, exc)
+            task_states[task_slug] = "failed"
+            upsert_dag_task(session_root, run_id, task_slug, "failed", task.agent, error=str(exc))
+            results[task_slug] = "failed"
+            continue
+
+        # Check pane state
+        pane_state = _get_pane_state(session_root, pane_slug)
+        if pane_state in ("failed", "timed_out", "abandoned"):
+            task_states[task_slug] = "failed"
+            upsert_dag_task(
+                session_root,
+                run_id,
+                task_slug,
+                "failed",
+                task.agent,
+                error=f"pane ended in {pane_state}",
+            )
+            results[task_slug] = "failed"
+            continue
+
+        # Review
+        review = _review_task(dag, task_slug, pane_slug, session_root)
+        if review.get("error"):
+            task_states[task_slug] = "failed"
+            upsert_dag_task(
+                session_root,
+                run_id,
+                task_slug,
+                "failed",
+                task.agent,
+                error=review["error"],
+            )
+            results[task_slug] = "failed"
+            continue
+
+        if review.get("passed"):
+            task_states[task_slug] = "reviewed_pass"
+            upsert_dag_task(
+                session_root,
+                run_id,
+                task_slug,
+                "reviewed_pass",
+                task.agent,
+                pane_slug=pane_slug,
+            )
+            results[task_slug] = "reviewed_pass"
+            _progress(f"  reviewed {task_slug}: pass")
+        else:
+            task_states[task_slug] = "reviewed_fail"
+            upsert_dag_task(
+                session_root,
+                run_id,
+                task_slug,
+                "reviewed_fail",
+                task.agent,
+                pane_slug=pane_slug,
+            )
+            results[task_slug] = "reviewed_fail"
+            _progress(f"  reviewed {task_slug}: fail")
+
+    return results
+
     return results
 
 
@@ -711,9 +894,17 @@ def run_dag(
     auto_merge: bool = True,
     max_concurrent: int = 0,
 ) -> DagRunSummary:
-    """Execute a TOML DAG: dispatch, wait, review, merge per tier."""
+    """Execute a DAG file using readiness-based scheduling.
+
+    Tasks become runnable when all dependencies are in terminal-success state:
+    - merged (if auto_merge=True)
+    - reviewed_pass or merged (if auto_merge=False)
+
+    Does not block ready work behind tier barriers. Merges happen in
+    topological order separately from execution.
+    """
     from dgov.lifecycle import close_worker_pane
-    from dgov.persistence import emit_event, update_dag_run, upsert_dag_task
+    from dgov.persistence import emit_event, get_dag_task, update_dag_run, upsert_dag_task
 
     dag = parse_dag_file(dag_file)
     effective_concurrent = max_concurrent if max_concurrent > 0 else dag.max_concurrent
@@ -733,7 +924,6 @@ def run_dag(
 
     session_root = os.path.abspath(dag.session_root)
     run_id, dag, task_states = _start_or_resume_run(dag_file, options, session_root)
-    tiers = compute_tiers(dag.tasks)
 
     # Apply skip + transitive
     skipped = set(options.skip)
@@ -744,11 +934,8 @@ def run_dag(
             task_states[slug] = "skipped"
             upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
             # Close already-dispatched panes for newly-skipped tasks
-            existing = [
-                t for t in (list(task_states.keys())) if task_states.get(t) == "dispatched"
-            ]
-            for s in existing:
-                if s in skipped:
+            for s in list(task_states.keys()):
+                if s in skipped and task_states.get(s) == "dispatched":
                     try:
                         close_worker_pane(
                             dag.project_root, s, session_root=session_root, force=True
@@ -756,63 +943,148 @@ def run_dag(
                     except Exception:
                         pass
 
-    max_tier = tier_limit if tier_limit is not None else len(tiers) - 1
     all_merged: list[str] = []
     all_failed: list[str] = []
+    pending_merge: list[str] = []  # reviewed_pass tasks waiting for merge
+    highest_tier_started: int = -1
 
-    for tier_idx, tier in enumerate(tiers):
-        if tier_idx > max_tier:
+    # Main readiness-based execution loop
+    while True:
+        # Get tasks ready to dispatch
+        ready = _get_ready_tasks(dag, task_states, tier_limit, auto_merge)
+
+        # Track active panes (dispatched but not yet reviewed)
+        active_panes: dict[str, str] = {}
+        for slug, state in task_states.items():
+            if state == "dispatched":
+                task_row = get_dag_task(session_root, run_id, slug)
+                if task_row and task_row.get("pane_slug"):
+                    active_panes[slug] = task_row["pane_slug"]
+
+        # Dispatch ready tasks up to concurrency limit
+        currently_dispatched = len(active_panes)
+        can_dispatch = max_concurrent if max_concurrent > 0 else dag.max_concurrent
+        slots_available = max(0, can_dispatch - currently_dispatched)
+
+        if ready and slots_available > 0:
+            batch = ready[:slots_available]
+            for slug in batch:
+                task = dag.tasks[slug]
+                try:
+                    pane_info = _dispatch_task(dag, task, run_id, session_root)
+                    task_states[slug] = "dispatched"
+                    active_panes[slug] = pane_info["pane_slug"]
+                    _progress(f"  dispatched {slug} ({task.agent})")
+
+                    # Update highest tier started
+                    tiers = compute_tiers(dag.tasks)
+                    for tier_idx, tier_tasks in enumerate(tiers):
+                        if slug in tier_tasks:
+                            highest_tier_started = max(highest_tier_started, tier_idx)
+                            break
+                except RuntimeError as exc:
+                    if "Concurrency limit" in str(exc):
+                        logger.info("Deferred %s due to concurrency limit", slug)
+                    else:
+                        logger.error("Dispatch failed for %s: %s", slug, exc)
+                        task_states[slug] = "failed"
+                        upsert_dag_task(
+                            session_root, run_id, slug, "failed", task.agent, error=str(exc)
+                        )
+                        all_failed.append(slug)
+                        _mark_transitive_skipped(dag, {slug}, task_states, run_id, session_root)
+                except Exception as exc:
+                    logger.error("Dispatch failed for %s: %s", slug, exc)
+                    task_states[slug] = "failed"
+                    upsert_dag_task(
+                        session_root, run_id, slug, "failed", task.agent, error=str(exc)
+                    )
+                    all_failed.append(slug)
+                    _mark_transitive_skipped(dag, {slug}, task_states, run_id, session_root)
+
+        # Process completed panes (wait for any that are done)
+        if active_panes:
+            completed = _wait_for_any_completion(
+                dag, active_panes, session_root, task_states, run_id, options
+            )
+
+            # Collect failures for transitive skip
+            failures = {slug for slug, state in completed.items() if state == "failed"}
+            if failures:
+                _mark_transitive_skipped(dag, failures, task_states, run_id, session_root)
+                all_failed.extend(failures)
+
+            # Collect reviewed_pass for merging
+            passed = [slug for slug, state in completed.items() if state == "reviewed_pass"]
+            if passed:
+                pending_merge.extend(passed)
+                _progress(f"  {len(passed)} task(s) ready for merge")
+
+        # Merge if we have reviewed_pass tasks and auto_merge is enabled
+        if auto_merge and pending_merge:
+            pane_slugs: dict[str, str] = {}
+            for slug in pending_merge:
+                task_row = get_dag_task(session_root, run_id, slug)
+                if task_row and task_row.get("pane_slug"):
+                    pane_slugs[slug] = task_row["pane_slug"]
+
+            merged, merge_error = _merge_tasks_in_order(
+                dag, pending_merge, pane_slugs, session_root, run_id
+            )
+            all_merged.extend(merged)
+
+            if merge_error:
+                update_dag_run(session_root, run_id, status="failed")
+                emit_event(
+                    session_root,
+                    "dag_failed",
+                    f"dag/{run_id}",
+                    dag_run_id=run_id,
+                    error="merge_conflict",
+                )
+                return _build_summary(run_id, dag_file, "failed", task_states, all_merged, dag)
+
+            pending_merge = []
+
+        # Check if we're done: no ready tasks, no active panes, nothing pending merge
+        remaining_unprocessed = [
+            slug
+            for slug, state in task_states.items()
+            if state not in ("merged", "reviewed_pass", "failed", "skipped", "")
+        ]
+        no_ready = not ready
+        no_active = not active_panes
+
+        if no_ready and no_active and not remaining_unprocessed:
             break
 
-        # Filter out skipped tasks
-        active_tier = [s for s in tier if task_states.get(s) != "skipped"]
-        if not active_tier:
-            continue
+        # Small sleep to avoid busy-waiting
+        import time
 
-        _progress(f"Tier {tier_idx}: {', '.join(active_tier)}")
-        update_dag_run(session_root, run_id, current_tier=tier_idx)
-        emit_event(
-            session_root, "dag_tier_started", f"dag/{run_id}", dag_run_id=run_id, tier=tier_idx
-        )
+        time.sleep(0.1)
 
-        result = run_single_tier(dag, active_tier, run_id, task_states, options, session_root)
+    # Handle non-auto-merge case: tasks may be reviewed_pass but not merged
+    if not auto_merge and pending_merge:
+        for slug in pending_merge:
+            if task_states.get(slug) == "reviewed_pass":
+                pass  # Already marked
 
-        all_merged.extend(result["merged"])
-        all_failed.extend(result["failed"])
+    # Finalize status
+    tiers = compute_tiers(dag.tasks)
+    max_tier = tier_limit if tier_limit is not None else len(tiers) - 1
 
-        emit_event(
-            session_root, "dag_tier_completed", f"dag/{run_id}", dag_run_id=run_id, tier=tier_idx
-        )
-
-        if result["merge_error"]:
-            update_dag_run(session_root, run_id, status="failed")
-            emit_event(
-                session_root,
-                "dag_failed",
-                f"dag/{run_id}",
-                dag_run_id=run_id,
-                error="merge_conflict",
-            )
-            return _build_summary(run_id, dag_file, "failed", task_states, all_merged, dag)
-
-        # Transitively skip dependents of failed tasks
-        if result["failed"]:
-            newly_skipped = transitive_dependents(dag.tasks, set(result["failed"]))
-            for slug in newly_skipped:
-                if task_states.get(slug) not in ("merged", "reviewed_pass", "failed", "skipped"):
-                    task_states[slug] = "skipped"
-                    upsert_dag_task(session_root, run_id, slug, "skipped", dag.tasks[slug].agent)
-
-    # Partial execution: --tier limited the run
-    if tier_limit is not None and max_tier < len(tiers) - 1:
-        unexecuted = [s for s in dag.tasks if s not in task_states and s not in skipped]
+    if tier_limit is not None and highest_tier_started < max_tier:
+        unexecuted = [
+            s
+            for s in dag.tasks
+            if task_states.get(s) not in ("merged", "reviewed_pass", "failed", "skipped")
+        ]
         if unexecuted:
             final_status = "partial"
             update_dag_run(session_root, run_id, status=final_status)
             emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
             return _build_summary(run_id, dag_file, final_status, task_states, all_merged, dag)
 
-    # Finalize
     if not auto_merge:
         if all_merged or any(st == "reviewed_pass" for st in task_states.values()):
             final_status = "awaiting_merge"
@@ -822,6 +1094,7 @@ def run_dag(
         final_status = "failed"
     else:
         final_status = "completed"
+
     _progress(f"DAG {final_status}: {len(all_merged)} merged, {len(all_failed)} failed")
     update_dag_run(session_root, run_id, status=final_status)
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
