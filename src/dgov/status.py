@@ -58,6 +58,7 @@ def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None
     except OSError:
         return None
 
+
 # -- Freshness --
 
 
@@ -192,11 +193,16 @@ def list_worker_panes(
     When *include_prompt* is False, use a slim DB query that only loads the
     first 200 characters of each prompt. Use False in hot paths like the
     dashboard where full prompts are not needed.
+
+    Automatically prunes stale panes (terminal state + no worktree, or
+    terminal state older than 1 hour) before returning results.
     """
     from dgov.agents import load_registry
     from dgov.persistence import list_panes_slim
 
     session_root = os.path.abspath(session_root or project_root)
+    # Auto-prune stale panes before listing
+    prune_stale_panes(project_root, session_root)
     panes = list_panes_slim(session_root) if not include_prompt else all_panes(session_root)
     all_tmux = get_backend().bulk_info()
     registry = load_registry(project_root)
