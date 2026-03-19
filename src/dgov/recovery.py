@@ -33,6 +33,7 @@ class RetryPolicy:
 
 # Default escalation chain: maps agents to the next-tier logical name.
 # Logical names get resolved by the router to available physical backends.
+# Escalation proceeds: 4b → 9b → 35b → 122b → 397b → max
 ESCALATION_CHAIN: dict[str, str] = {
     # Logical names (preferred — resolved by router)
     "qwen-4b": "qwen-9b",
