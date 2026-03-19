@@ -83,8 +83,8 @@ def review_worker_pane(
     commit_count = len(commit_log.splitlines()) if commit_log else 0
 
     porcelain = f_porcelain.result()
-    # Filter out protected files and worker instruction files — modified by worktree hook, not by worker
-    # CLAUDE.md and AGENTS.md are worktree-local instructions that should not downgrade safe verdict
+    # Filter out protected files and worker instruction files.
+    # CLAUDE.md and AGENTS.md are worktree-local and should not downgrade safe verdicts.
     porcelain_lines = []
     for ln in porcelain.stdout.strip().splitlines():
         filename = ln[3:]
