@@ -92,69 +92,68 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
 
 
 def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> None:
-    """Write role-appropriate CLAUDE.md into the worktree.
+    """Prepend role-appropriate instructions to CLAUDE.md in the worktree.
 
-    Also git-excludes CLAUDE.md and AGENTS.md so they can never be
-    staged by ``git add -A``, and injects the codebase map if present.
+    Preserves existing repo CLAUDE.md content as project context instead
+    of replacing it. Also git-excludes CLAUDE.md and AGENTS.md so they
+    can never be staged by ``git add -A``.
     """
-    import shutil
-
     wt = Path(worktree_path)
     claude_md = wt / "CLAUDE.md"
-    if claude_md.exists():
-        backup = wt / "CLAUDE.md.full"
-        if not backup.exists():
-            shutil.copy2(str(claude_md), str(backup))
 
-    # Read codebase map if it exists
-    codebase_section = ""
-    codebase_md = wt / "CODEBASE.md"
-    if codebase_md.exists():
-        codebase_section = (
-            "\n## Codebase map\n"
-            "Read CODEBASE.md for the full module map, data flow, "
-            "and common edit patterns.\n\n"
-        )
+    # Preserve existing repo content
+    repo_context = ""
+    if claude_md.exists():
+        repo_context = claude_md.read_text(encoding="utf-8")
+
+    # Codebase map reference
+    codebase_hint = ""
+    if (wt / "CODEBASE.md").exists():
+        codebase_hint = "- Read CODEBASE.md for module map, task routing, and test mapping\n"
 
     if role == "lt-gov":
-        content = (
+        preamble = (
             f"# LT-GOV Instructions — {slug}\n\n"
-            "You are a **lieutenant governor**. You orchestrate workers, "
-            "you do NOT edit code.\n\n"
+            "You are a **lieutenant governor**. You orchestrate "
+            "workers, you do NOT edit code.\n\n"
             "## Rules\n"
             "- Dispatch workers with: dgov pane create -a <agent> "
             f'-p "<task>" -r $DGOV_PROJECT_ROOT --parent {slug}\n'
             "- Wait: dgov pane wait <slug> -r $DGOV_PROJECT_ROOT\n"
-            "- Review: dgov pane review <slug> -r $DGOV_PROJECT_ROOT\n"
-            "- Request merge: dgov pane merge-request <slug>\n"
-            "- Close: dgov pane close <slug> -r $DGOV_PROJECT_ROOT\n"
+            "- Review: dgov pane review <slug>\n"
+            "- Close: dgov pane close <slug>\n"
             "- NEVER edit files directly\n"
             "- NEVER push to remote\n"
-            "- NEVER run dgov pane merge directly\n"
-            "- Use logical agent names: qwen-9b, qwen-35b, qwen-122b\n\n"
+            "- Use logical agent names: qwen-9b, qwen-35b, qwen-122b\n"
+            f"{codebase_hint}\n"
             f"## When done\n"
             f"Write status to .dgov/progress/{slug}.json and exit.\n"
-            f"{codebase_section}"
         )
     else:
-        content = (
+        preamble = (
             f"# Worker Instructions — {slug}\n\n"
             "You are a **worker**. Complete the task, commit, "
             "and signal done.\n\n"
             "## Rules\n"
             "- Edit ONLY the files specified in your task\n"
-            "- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml, "
-            "or any config files\n"
-            "- Do NOT create new documentation files\n"
+            "- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml\n"
+            "- Do NOT create new files unless the task requires it\n"
             "- Do NOT push to remote\n"
-            "- Commit your changes with a clear message\n"
-            "- Call `dgov worker complete` when done\n\n"
+            "- You are in a git worktree, not the main repo\n"
+            "- CLAUDE.md/AGENTS.md are git-excluded and cannot "
+            "be committed\n"
+            f"{codebase_hint}\n"
             "## Commit checklist\n"
             "1. git add <changed files>\n"
             '2. git commit -m "<message>"\n'
             "3. dgov worker complete\n"
-            f"{codebase_section}"
         )
+
+    # Combine: worker/lt-gov preamble + original repo context
+    if repo_context:
+        content = preamble + "\n---\n\n" + repo_context
+    else:
+        content = preamble
 
     claude_md.write_text(content, encoding="utf-8")
     (wt / "AGENTS.md").write_text(content, encoding="utf-8")
