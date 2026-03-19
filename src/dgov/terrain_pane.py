@@ -31,7 +31,7 @@ class KittyRenderable:
 
     def __rich_console__(self, console, options):
         delete_seq = _wrap_kitty_payload("_Ga=d")
-        yield Segment(f"\x1b[H{delete_seq}{self.data}", control=True)
+        yield Segment(f"{delete_seq}{self.data}", control=True)
 
 
 _PANEL_BORDER_WIDTH = 2
@@ -158,9 +158,16 @@ def run_terrain(refresh: float = 0.5) -> None:
         try:
             model.step()
             if iso_mode:
-                # Return raw KittyRenderable to bypass Panel layout
-                # Pass pane dimensions for proper scaling
-                return KittyRenderable(render_isometric(model, cols=w, rows=panel_rows))
+                # Wrap KittyRenderable in Panel even in iso_mode
+                # Adjust cols/rows to account for Panel border
+                iso_cols = max(w - _PANEL_BORDER_WIDTH, 1)
+                iso_rows = max(panel_rows - _PANEL_BORDER_HEIGHT, 1)
+                iso_data = render_isometric(model, cols=iso_cols, rows=iso_rows)
+                rendered = KittyRenderable(iso_data)
+                tick += 1
+                n = len(agents_cache)
+                title = f"Terrain  t={tick}" + (f"  [{n} agents]" if n else "")
+                return Panel(rendered, title=title, border_style="green")
             else:
                 rendered = render_terrain(model, supersample=2)
                 rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
