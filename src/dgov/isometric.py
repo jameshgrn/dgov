@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 
 from PIL import Image, ImageDraw
 
@@ -27,7 +28,7 @@ PALETTE = {
 def _encode_kitty(img: Image.Image) -> str:
     """Encode a PIL Image to a Kitty graphics protocol escape sequence.
 
-    See: https://sw.kovidgoyal.net/kitty/graphics-protocol/
+    Handles tmux wrapping if necessary.
     """
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -40,15 +41,20 @@ def _encode_kitty(img: Image.Image) -> str:
     if not chunks:
         return ""
 
+    is_tmux = "TMUX" in os.environ
     ESC = "\x1b"
+    # Tmux wrap: ESC Ptmux; ESC <seq> ESC \
+    START = f"{ESC}Ptmux;{ESC}" if is_tmux else ESC
+    END = f"{ESC}\\{ESC}\\" if is_tmux else f"{ESC}\\"
+
     out = []
     # Send first chunk with a=T (transmit and display), f=100 (PNG format)
-    out.append(f"{ESC}_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}{ESC}\\")
+    out.append(f"{START}_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}{END}")
 
     # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
-        out.append(f"{ESC}_Gm={m};{chunk}{ESC}\\")
+        out.append(f"{START}_Gm={m};{chunk}{END}")
 
     return "".join(out)
 
