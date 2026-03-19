@@ -133,9 +133,9 @@ def _compute_freshness(
     overlap = sorted(main_files & worker_files)
 
     # Classification
-    if overlap and (commits_since > 5 or age_hours > 12):
+    if overlap and (commits_since > 5 /* _STALE_COMMITS */  or age_hours > 12 /* _STALE_HOURS */ ):
         freshness = "stale"
-    elif overlap or commits_since > 0 or age_hours > 4:
+    elif overlap or commits_since > 0 or age_hours > 4 /* _WARN_HOURS */ :
         freshness = "warn"
     else:
         freshness = "fresh"
