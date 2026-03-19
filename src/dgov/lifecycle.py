@@ -177,19 +177,15 @@ def _write_worktree_instructions(
     prompt: str | None = None,
     context_packet: ContextPacket | None = None,
 ) -> None:
-    """Prepend role-appropriate instructions to CLAUDE.md in the worktree.
+    """Write role-appropriate instructions to CLAUDE.md in the worktree.
 
-    Preserves existing repo CLAUDE.md content as project context instead
-    of replacing it. Also git-excludes CLAUDE.md and AGENTS.md so they
-    can never be staged by ``git add -A``.
+    Generated files contain only the role-specific preamble plus any
+    start-here/codebase hints. Do not inherit the governor/repo CLAUDE.md body.
+    Also git-excludes CLAUDE.md and AGENTS.md so they can never be staged
+    by ``git add -A``.
     """
     wt = Path(worktree_path)
     claude_md = wt / "CLAUDE.md"
-
-    # Preserve existing repo content
-    repo_context = ""
-    if claude_md.exists():
-        repo_context = claude_md.read_text(encoding="utf-8")
 
     # Codebase map reference
     codebase_hint = ""
@@ -251,11 +247,8 @@ def _write_worktree_instructions(
             "   with a reason instead of `complete`\n"
         )
 
-    # Combine: worker/lt-gov preamble + original repo context
-    if repo_context:
-        content = preamble + "\n---\n\n" + repo_context
-    else:
-        content = preamble
+    # Write only the role-specific preamble (no repo context inheritance)
+    content = preamble
 
     claude_md.write_text(content, encoding="utf-8")
     (wt / "AGENTS.md").write_text(content, encoding="utf-8")
