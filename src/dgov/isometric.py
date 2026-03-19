@@ -25,12 +25,26 @@ PALETTE = {
 }
 
 
-def _encode_kitty(img: Image.Image) -> str:
+def _wrap_kitty_payload(payload: str) -> str:
+    """Wrap a Kitty graphics payload, using tmux passthrough when needed."""
+    esc = "\x1b"
+    seq = f"{esc}{payload}{esc}\\"
+    if "TMUX" not in os.environ:
+        return seq
+
+    escaped = seq.replace(esc, f"{esc}{esc}")
+    return f"{esc}Ptmux;{escaped}{esc}\\"
+
+
+def _encode_kitty(img: Image.Image, cols: int, rows: int) -> str:
     """Encode a PIL Image to a Kitty graphics protocol escape sequence.
 
     Handles tmux wrapping using DCS passthrough.
     Tmux requires: ESC Ptmux; ESC <seq> ESC \\
     And ALL internal ESC characters must be doubled: ESC -> ESC ESC
+
+    Adds c={cols},r={rows} to the first chunk's metadata to tell Kitty to
+    scale the image to fit those terminal cell dimensions.
     """
     buf = io.BytesIO()
     img.save(buf, format="PNG")
@@ -43,46 +57,36 @@ def _encode_kitty(img: Image.Image) -> str:
     if not chunks:
         return ""
 
-    is_tmux = "TMUX" in os.environ
-    ESC = "\x1b"
-
-    def wrap_payload(payload: str) -> str:
-        # Standard Kitty sequence
-        seq = f"{ESC}{payload}{ESC}\\"
-        if not is_tmux:
-            return seq
-        # Tmux passthrough: ESC Ptmux; <escaped_seq> ESC \
-        # ESC in <escaped_seq> must be doubled
-        escaped = seq.replace(ESC, f"{ESC}{ESC}")
-        return f"{ESC}Ptmux;{escaped}{ESC}\\"
-
     out = []
-    # Send first chunk with a=T (transmit and display), f=100 (PNG format)
-    # c=,r= forces Kitty to fit the image to terminal cell dimensions
-    out.append(wrap_payload(f"_Gf=100,a=T,c=,r=,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}"))
+    first_chunk = chunks[0]
+    more = "1" if len(chunks) > 1 else "0"
+    out.append(
+        _wrap_kitty_payload(
+            f"_Gf=100,a=T,c={max(cols, 1)},r={max(rows, 1)},m={more};{first_chunk}"
+        )
+    )
 
-    # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
-        out.append(wrap_payload(f"_Gm={m};{chunk}"))
+        out.append(_wrap_kitty_payload(f"_Gm={m};{chunk}"))
 
     return "".join(out)
 
 
-def render_isometric(model: ErosionModel) -> str:
+def render_isometric(model: ErosionModel, cols: int, rows: int) -> str:
     """Render an ErosionModel using isometric projection."""
-    rows = model.height_count
-    cols = model.width
+    model_rows = model.height_count
+    model_cols = model.width
 
-    if rows <= 0 or cols <= 0:
+    if model_rows <= 0 or model_cols <= 0 or cols <= 0 or rows <= 0:
         return ""
 
-    if not model.height or len(model.height) != rows:
+    if not model.height or len(model.height) != model_rows:
         return ""
 
     # Calculate image size - constrained to fit terminal pane
-    width = (rows + cols) * (TILE_W // 2)
-    height = (rows + cols) * (TILE_H // 2) + int(2.0 * Z_SCALE)
+    width = (model_rows + model_cols) * (TILE_W // 2)
+    height = (model_rows + model_cols) * (TILE_H // 2) + int(2.0 * Z_SCALE)
 
     img = Image.new("RGB", (width, height), PALETTE["sky_upper"])
     draw = ImageDraw.Draw(img)
@@ -91,8 +95,8 @@ def render_isometric(model: ErosionModel) -> str:
     cx, cy = width // 2, int(2.0 * Z_SCALE)
 
     # Painter's Algorithm: Draw from back (row 0, col 0) to front
-    for r in range(rows):
-        for c in range(cols):
+    for r in range(model_rows):
+        for c in range(model_cols):
             h_val = model.height[r][c]
             z_off = int(h_val * Z_SCALE)
 
@@ -130,4 +134,4 @@ def render_isometric(model: ErosionModel) -> str:
                 fill="#546E7A",
             )
 
-    return _encode_kitty(img)
+    return _encode_kitty(img, cols=cols, rows=rows)

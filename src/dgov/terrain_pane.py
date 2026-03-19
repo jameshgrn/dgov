@@ -12,7 +12,7 @@ from rich.panel import Panel
 from rich.segment import Segment
 from rich.text import Text
 
-from dgov.isometric import render_isometric
+from dgov.isometric import _wrap_kitty_payload, render_isometric
 from dgov.terrain import (
     AgentSim,
     ErosionModel,
@@ -30,11 +30,8 @@ class KittyRenderable:
         self.data = data
 
     def __rich_console__(self, console, options):
-        # \x1b[H move to 1,1
-        # Use a=d,d=A to delete all graphics frames before drawing new one
-        # This prevents flickering vs simple clear
-        # Yield the raw data as a control segment
-        yield Segment(f"\x1b[H\x1b]Ga=d,d=A\x07{self.data}", control=True)
+        delete_seq = _wrap_kitty_payload("_Ga=d")
+        yield Segment(f"\x1b[H{delete_seq}{self.data}", control=True)
 
 
 _PANEL_BORDER_WIDTH = 2
@@ -162,7 +159,8 @@ def run_terrain(refresh: float = 0.5) -> None:
             model.step()
             if iso_mode:
                 # Return raw KittyRenderable to bypass Panel layout
-                return KittyRenderable(render_isometric(model))
+                # Pass pane dimensions for proper scaling
+                return KittyRenderable(render_isometric(model, cols=w, rows=panel_rows))
             else:
                 rendered = render_terrain(model, supersample=2)
                 rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
