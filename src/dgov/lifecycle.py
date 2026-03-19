@@ -555,6 +555,9 @@ def create_worker_pane(
     base_slug = slug or _generate_slug(prompt)
     _validate_slug(base_slug)
     owns_worktree = existing_worktree is None
+    slug = base_slug
+    worktree_path = os.path.abspath(existing_worktree) if existing_worktree else ""
+    branch_name = base_slug
 
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
@@ -570,31 +573,20 @@ def create_worker_pane(
     # From here on, side effects need cleanup on failure
     pane_id: str | None = None
     try:
-        # 2. Find unique slug avoiding collisions with existing panes/branches/worktrees
-        if owns_worktree:
-            slug, worktree_path = _find_unique_slug(project_root, session_root, base_slug)
-            branch_name = slug
-            _create_worktree(project_root, worktree_path, branch_name)
-
-            # Symlink .venv from main repo so workers skip uv sync
-            _main_venv = Path(project_root) / ".venv"
-            _wt_venv = Path(worktree_path) / ".venv"
-            if _main_venv.is_dir() and not _wt_venv.exists():
-                _wt_venv.symlink_to(_main_venv)
-
-        # 2b-2c. Lock + resolve agent + health/concurrency checks (atomic)
-        # This atomic section prevents race conditions when multiple governors
-        # create panes concurrently on the same repo. We re-resolve the agent
-        # after acquiring the lock so that a logical name like qwen-35b picks
-        # an available backend right before pane creation, avoiding races where
-        # the chosen backend becomes busy between initial resolution and pane creation.
+        # 2-5. Create the pane atomically under the repo lock.
+        # This prevents a race where the monitor sees a newly-created worktree
+        # before the pane is persisted and prunes it as an orphan.
         with _pane_lock(project_root):
-            # Track physical agents allocated under this lock to avoid false
-            # positive concurrency failures when resolve_agent() already chose
-            # an available backend. This prevents the routed-agent race where
-            # a second concurrent request resolves to the same backend and
-            # incorrectly fails the per-backend concurrency check.
-            allocated_physical_agents: set[str] = set()
+            if owns_worktree:
+                slug, worktree_path = _find_unique_slug(project_root, session_root, base_slug)
+                branch_name = slug
+                _create_worktree(project_root, worktree_path, branch_name)
+
+                # Symlink .venv from main repo so workers skip uv sync
+                _main_venv = Path(project_root) / ".venv"
+                _wt_venv = Path(worktree_path) / ".venv"
+                if _main_venv.is_dir() and not _wt_venv.exists():
+                    _wt_venv.symlink_to(_main_venv)
 
             # Re-resolve logical agent name -> physical backend after lock
             # River-first then OpenRouter fallback preserved by router order
@@ -604,7 +596,6 @@ def create_worker_pane(
             if routed_from:
                 logger.info("Routed %s -> %s", routed_from, final_agent)
             agent = final_agent
-            allocated_physical_agents.add(agent)
 
             registry = load_registry(project_root)
             agent_def = registry.get(agent)
@@ -643,20 +634,18 @@ def create_worker_pane(
                     )
 
             # Concurrency guard (config-driven)
-            # Skip check for agents allocated under this lock to avoid false
-            # positives from routed-agent race. Only check against truly external
-            # workers that were started before this lock was acquired.
             if agent_def.max_concurrent is not None:
-                active = _count_active_agent_workers(session_root, agent)
-                # Subtract self if this agent was just allocated under this lock
-                if agent in allocated_physical_agents:
-                    active -= 1
-                if active >= agent_def.max_concurrent:
-                    raise RuntimeError(
-                        f"Concurrency limit: {active} {agent} workers already running "
-                        f"(max {agent_def.max_concurrent}). "
-                        f"Wait for one to finish or use a different agent."
-                    )
+                # For logical routed names, resolve_agent() already chose an
+                # available backend under this same lock, so repeating the
+                # per-backend check here is both redundant and racy.
+                if routed_from is None:
+                    active = _count_active_agent_workers(session_root, agent)
+                    if active >= agent_def.max_concurrent:
+                        raise RuntimeError(
+                            f"Concurrency limit: {active} {agent} workers already running "
+                            f"(max {agent_def.max_concurrent}). "
+                            f"Wait for one to finish or use a different agent."
+                        )
 
             # 3. Create background worker pane
             startup_env = {
