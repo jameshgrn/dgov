@@ -136,6 +136,7 @@ class TestNudge:
     def test_parses_yes_response(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
         with (
+            patch("dgov.done._has_completion_commit", return_value=True),
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="Are you done?\nYES"),
@@ -146,6 +147,20 @@ class TestNudge:
             # Verify done-signal file was touched
             done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
             assert done_path.exists()
+
+    def test_yes_response_without_commit_does_not_mark_done(self, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        with (
+            patch("dgov.done._has_completion_commit", return_value=False),
+            patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.send_text_input"),
+            patch("dgov.tmux.capture_pane", return_value="Are you done?\nYES"),
+            patch("dgov.waiter.time.sleep"),
+        ):
+            result = nudge_pane(session_root, "test-worker", wait_seconds=1)
+            assert result["response"] == "YES"
+            done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
+            assert not done_path.exists()
 
     def test_parses_no_response(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
@@ -185,10 +200,19 @@ class TestNudge:
 class TestSignal:
     def test_signal_done(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
-        result = signal_pane(session_root, "test-worker", "done")
+        with patch("dgov.done._has_completion_commit", return_value=True):
+            result = signal_pane(session_root, "test-worker", "done")
         assert result is True
         done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
         assert done_path.exists()
+
+    def test_signal_done_requires_commit(self, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        with patch("dgov.done._has_completion_commit", return_value=False):
+            result = signal_pane(session_root, "test-worker", "done")
+        assert result is False
+        done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
+        assert not done_path.exists()
 
     def test_signal_failed(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
@@ -232,7 +256,7 @@ class TestUnifiedIsDone:
         done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         (done_dir / slug).touch()
-        assert _is_done(session_root, slug) is True
+        assert _is_done(session_root, slug) is False
 
     def test_exit_file_marks_failed(self, tmp_path: Path) -> None:
         session_root = str(tmp_path)
@@ -247,7 +271,8 @@ class TestUnifiedIsDone:
         session_root = str(tmp_path)
         slug = "test-active"
         _setup_pane(tmp_path, slug=slug)
-        assert _is_done(session_root, slug) is False
+        with patch("dgov.tmux.pane_exists", return_value=True):
+            assert _is_done(session_root, slug) is False
 
     def test_without_stable_seconds_skips_stabilization(self, tmp_path: Path) -> None:
         """Without stable_seconds, _is_done does NOT do output stabilization."""
@@ -260,25 +285,32 @@ class TestUnifiedIsDone:
             assert result is False
 
     def test_with_stable_seconds_detects_stable(self, tmp_path: Path) -> None:
-        """With stable strategy and matching output, _is_done returns True when stabilized."""
+        """Stable output only completes a pane after a real commit exists."""
         from dgov.agents import DoneStrategy
 
         session_root = str(tmp_path)
         slug = "test-stable"
         _setup_pane(tmp_path, slug=slug)
-        pane_record = {"pane_id": "%99", "project_root": "", "branch_name": "", "base_sha": ""}
+        pane_record = {
+            "pane_id": "%99",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",
+        }
 
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 20}
 
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.status.capture_worker_output", return_value="same output"),
+            patch("dgov.done._has_new_commits", return_value=True),
             patch("dgov.done._agent_still_running", return_value=False),
         ):
             result = _is_done(
                 session_root,
                 slug,
                 pane_record=pane_record,
+                alive=True,
                 stable_seconds=5,
                 _stable_state=stable_state,
                 done_strategy=DoneStrategy(type="stable", stable_seconds=5),
@@ -305,6 +337,7 @@ class TestUnifiedIsDone:
                 session_root,
                 slug,
                 pane_record=pane_record,
+                alive=True,
                 stable_seconds=5,
                 _stable_state=stable_state,
                 done_strategy=DoneStrategy(type="stable", stable_seconds=5),
@@ -344,13 +377,25 @@ class TestRespondCLI:
 class TestSignalCLI:
     def test_signal_done_cli(self, runner: CliRunner, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
-        result = runner.invoke(
-            cli,
-            ["pane", "signal", "test-worker", "done", "-S", session_root],
-        )
+        with patch("dgov.done._has_completion_commit", return_value=True):
+            result = runner.invoke(
+                cli,
+                ["pane", "signal", "test-worker", "done", "-S", session_root],
+            )
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["signaled"] == "done"
+
+    def test_signal_done_cli_requires_commit(self, runner: CliRunner, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        with patch("dgov.done._has_completion_commit", return_value=False):
+            result = runner.invoke(
+                cli,
+                ["pane", "signal", "test-worker", "done", "-S", session_root],
+            )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert "completion commit" in data["error"]
 
     def test_signal_failed_cli(self, runner: CliRunner, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)

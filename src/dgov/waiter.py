@@ -397,6 +397,7 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
     Returns {"response": "YES"|"NO"|"unclear", "output": str}.
     """
     import dgov.persistence as _persist
+    from dgov.done import _has_completion_commit
 
     target = _persist.get_pane(session_root, slug)
     if not target:
@@ -430,10 +431,11 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
                 break
 
     if response == "YES":
-        done_path = Path(session_root) / STATE_DIR / "done" / slug
-        done_path.parent.mkdir(parents=True, exist_ok=True)
-        done_path.touch()
-        _persist.update_pane_state(session_root, slug, "done")
+        if _has_completion_commit(target):
+            done_path = Path(session_root) / STATE_DIR / "done" / slug
+            done_path.parent.mkdir(parents=True, exist_ok=True)
+            done_path.touch()
+            _persist.update_pane_state(session_root, slug, "done")
 
     return {"response": response, "output": captured or ""}
 
@@ -445,6 +447,7 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
     Returns True on success, False if pane not found.
     """
     import dgov.persistence as _persist
+    from dgov.done import _has_completion_commit
 
     target = _persist.get_pane(session_root, slug)
     if not target:
@@ -454,6 +457,8 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
     done_dir.mkdir(parents=True, exist_ok=True)
 
     if signal == "done":
+        if not _has_completion_commit(target):
+            return False
         (done_dir / slug).touch()
         _persist.update_pane_state(session_root, slug, "done")
     elif signal == "failed":

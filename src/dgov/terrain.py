@@ -105,77 +105,154 @@ class ErosionModel:
                 row.append(self._rng.uniform(0.25, 0.65) + 0.35 * edge_bias)
             grid.append(row)
 
-        # Select a base topology for interesting terrain variety
-        topology = self._rng.choice(["hills", "fault", "rift", "volcano", "islands"])
+        # Composite tectonic base-relief generator for geologically plausible terrain
+        # All structure parameters sampled once, then applied as smooth spatial fields
 
-        if topology == "hills":
-            num_hills = self._rng.randint(2, 5)
-            for _ in range(num_hills):
-                hr = self._rng.randint(2, height - 3)
-                hc = self._rng.randint(2, width - 3)
-                radius = self._rng.uniform(3.0, 8.0)
-                amp = self._rng.uniform(0.2, 0.5)
+        # 1. Warped regional tilt for basin-scale drainage asymmetry
+        tilt_angle = self._rng.uniform(0, 2 * math.pi)
+        tilt_amp = self._rng.uniform(0.08, 0.15)
+        warp_freq_r = self._rng.uniform(0.3, 0.6) / height
+        warp_freq_c = self._rng.uniform(0.3, 0.6) / width
+        warp_phase_r = self._rng.uniform(0, 2 * math.pi)
+        warp_phase_c = self._rng.uniform(0, 2 * math.pi)
+        for r in range(height):
+            for c in range(width):
+                tilt_dir = c * math.cos(tilt_angle) + r * math.sin(tilt_angle)
+                warp = math.sin(r * warp_freq_r + warp_phase_r) * math.sin(
+                    c * warp_freq_c + warp_phase_c
+                )
+                grid[r][c] += tilt_amp * tilt_dir / max(height, width) + 0.03 * warp
+
+        # 2. Fold belt(s): anticline/syncline style ridge-valley patterns
+        num_fold_belts = self._rng.randint(1, 3)
+        for _ in range(num_fold_belts):
+            fold_angle = self._rng.uniform(0, math.pi)  # folds are bidirectional
+            fold_nx, fold_ny = math.cos(fold_angle), math.sin(fold_angle)
+            fold_cx = self._rng.uniform(width * 0.2, width * 0.8)
+            fold_cy = self._rng.uniform(height * 0.2, height * 0.8)
+            fold_width = self._rng.uniform(6.0, 12.0)  # across-strike width
+            fold_length = self._rng.uniform(10.0, 20.0)  # along-strike extent
+            fold_amp = self._rng.uniform(0.15, 0.35)
+            fold_wave_len = self._rng.uniform(4.0, 8.0)  # wavelength of ridge-valley repeats
+
+            for r in range(height):
+                for c in range(width):
+                    # Perpendicular distance from fold axis (across strike)
+                    dist_across = abs((c - fold_cx) * fold_nx + (r - fold_cy) * fold_ny)
+                    # Parallel distance along fold axis
+                    dist_along = (c - fold_cx) * (-fold_ny) + (r - fold_cy) * fold_nx
+
+                    # Across-strike Gaussian falloff
+                    across_falloff = math.exp(-0.5 * (dist_across / fold_width) ** 2)
+                    # Along-strike cosine taper (finite length)
+                    along_taper = math.cos(math.pi * dist_along / (2 * fold_length))
+                    along_taper = max(0.0, along_taper)
+
+                    # Anticline-syncline pattern: alternating ridges and valleys
+                    fold_pattern = math.sin(dist_across * math.pi / fold_wave_len)
+
+                    combined = fold_amp * across_falloff * along_taper * fold_pattern
+                    grid[r][c] += combined
+
+        # 3. Fault-controlled relief: scarps and offset blocks with finite extent
+        num_faults = self._rng.randint(1, 3)
+        for _ in range(num_faults):
+            fault_angle = self._rng.uniform(0, 2 * math.pi)
+            fault_nx, fault_ny = math.cos(fault_angle), math.sin(fault_angle)
+            fault_cx = self._rng.uniform(width * 0.1, width * 0.9)
+            fault_cy = self._rng.uniform(height * 0.1, height * 0.9)
+            fault_width = self._rng.uniform(2.0, 5.0)  # scarp width
+            fault_length = self._rng.uniform(8.0, 18.0)  # along-fault extent
+            fault_scarp = self._rng.uniform(0.12, 0.28)  # uplift on one side
+            fault_offset_var = self._rng.uniform(0.02, 0.08)  # local roughness
+
+            for r in range(height):
+                for c in range(width):
+                    # Distance perpendicular to fault trace
+                    dist_perp = (c - fault_cx) * fault_nx + (r - fault_cy) * fault_ny
+                    # Distance parallel to fault trace
+                    dist_parallel = (c - fault_cx) * (-fault_ny) + (r - fault_cy) * fault_ny
+
+                    # Along-fault taper (finite length)
+                    along_taper = math.cos(math.pi * dist_parallel / (2 * fault_length))
+                    along_taper = max(0.0, along_taper)
+
+                    # Smooth scarp transition (sigmoid-like)
+                    scarp_profile = math.tanh(dist_perp / fault_width)
+
+                    # Finite-width block with localized roughness
+                    fault_field = fault_scarp * scarp_profile * along_taper
+                    # Add small-scale roughness (deterministic via position, not RNG per cell)
+                    roughness = (
+                        fault_offset_var
+                        * math.sin(dist_parallel * 0.5)
+                        * math.sin(dist_perp * 0.3)
+                    )
+                    grid[r][c] += fault_field + roughness
+
+        # 4. Secondary features: domes, basins, subdued volcanic cones, island-like highs
+        feature_choice = self._rng.choice(["domes", "basins", "cones", "islands", "mixed"])
+
+        if feature_choice in ("domes", "mixed"):
+            num_domes = self._rng.randint(1, 3)
+            for _ in range(num_domes):
+                dome_r = self._rng.randint(3, height - 4)
+                dome_c = self._rng.randint(3, width - 4)
+                dome_radius = self._rng.uniform(5.0, 10.0)
+                dome_amp = self._rng.uniform(0.1, 0.25)
                 for r in range(height):
                     for c in range(width):
-                        dsq = (r - hr) ** 2 + (c - hc) ** 2
-                        if dsq < radius * radius:
-                            grid[r][c] += amp * math.exp(-dsq / (2.0 * (radius / 2.0) ** 2))
+                        dsq = (r - dome_r) ** 2 + (c - dome_c) ** 2
+                        if dsq < dome_radius * dome_radius:
+                            dome = dome_amp * math.exp(-dsq / (2.0 * (dome_radius / 2.5) ** 2))
+                            grid[r][c] += dome
 
-        elif topology == "fault":
-            angle = self._rng.uniform(0, 2 * math.pi)
-            nx, ny = math.cos(angle), math.sin(angle)
-            cx, cy = width / 2.0, height / 2.0
-            amp = self._rng.uniform(0.2, 0.4)
-            for r in range(height):
-                for c in range(width):
-                    dist = (c - cx) * nx + (r - cy) * ny
-                    if dist > 0:
-                        grid[r][c] += amp
-                    else:
-                        grid[r][c] -= amp * 0.2
-
-        elif topology == "rift":
-            angle = self._rng.uniform(0, 2 * math.pi)
-            nx, ny = math.cos(angle), math.sin(angle)
-            cx, cy = width / 2.0, height / 2.0
-            rift_w = self._rng.uniform(3.0, 6.0)
-            amp = self._rng.uniform(0.3, 0.5)
-            for r in range(height):
-                for c in range(width):
-                    dist = abs((c - cx) * nx + (r - cy) * ny)
-                    if dist < rift_w:
-                        grid[r][c] -= (1.0 - (dist / rift_w) ** 2) * amp
-                    else:
-                        grid[r][c] += math.exp(-((dist - rift_w) ** 2) / 10.0) * (amp * 0.5)
-
-        elif topology == "volcano":
-            hr = height / 2.0 + self._rng.uniform(-height / 5.0, height / 5.0)
-            hc = width / 2.0 + self._rng.uniform(-width / 5.0, width / 5.0)
-            radius = self._rng.uniform(8.0, 14.0)
-            amp = self._rng.uniform(0.6, 1.0)
-            for r in range(height):
-                for c in range(width):
-                    dist = math.sqrt((r - hr) ** 2 + (c - hc) ** 2)
-                    if dist < radius:
-                        cone = (1.0 - dist / radius) * amp
-                        crater = math.exp(-(dist**2) / 2.0) * (amp * 0.5)
-                        grid[r][c] += cone - crater
-
-        elif topology == "islands":
-            for r in range(height):
-                for c in range(width):
-                    grid[r][c] -= 0.3  # lower base
-            num_isles = self._rng.randint(4, 8)
-            for _ in range(num_isles):
-                hr = self._rng.randint(2, height - 3)
-                hc = self._rng.randint(2, width - 3)
-                radius = self._rng.uniform(2.0, 6.0)
-                amp = self._rng.uniform(0.4, 0.7)
+        if feature_choice in ("basins", "mixed"):
+            num_basins = self._rng.randint(1, 2)
+            for _ in range(num_basins):
+                basin_r = self._rng.randint(3, height - 4)
+                basin_c = self._rng.randint(3, width - 4)
+                basin_radius = self._rng.uniform(6.0, 12.0)
+                basin_depth = self._rng.uniform(0.08, 0.18)
                 for r in range(height):
                     for c in range(width):
-                        dsq = (r - hr) ** 2 + (c - hc) ** 2
-                        if dsq < radius * radius:
-                            grid[r][c] += amp * math.exp(-dsq / (2.0 * (radius / 2.0) ** 2))
+                        dsq = (r - basin_r) ** 2 + (c - basin_c) ** 2
+                        if dsq < basin_radius * basin_radius:
+                            basin = -basin_depth * (1.0 - (dsq / basin_radius**2) ** 0.5)
+                            grid[r][c] += basin
+
+        if feature_choice in ("cones", "mixed"):
+            num_cones = self._rng.randint(1, 3)
+            for _ in range(num_cones):
+                cone_r = self._rng.randint(3, height - 4)
+                cone_c = self._rng.randint(3, width - 4)
+                cone_radius = self._rng.uniform(3.0, 7.0)
+                cone_amp = self._rng.uniform(0.08, 0.18)
+                for r in range(height):
+                    for c in range(width):
+                        dist = math.sqrt((r - cone_r) ** 2 + (c - cone_c) ** 2)
+                        if dist < cone_radius:
+                            # Subdued cone (not dramatic volcano)
+                            cone = cone_amp * (1.0 - dist / cone_radius) ** 1.5
+                            grid[r][c] += cone
+
+        if feature_choice in ("islands", "mixed"):
+            # Lower background slightly for contrast
+            for r in range(height):
+                for c in range(width):
+                    grid[r][c] -= 0.05
+            num_highs = self._rng.randint(3, 6)
+            for _ in range(num_highs):
+                high_r = self._rng.randint(2, height - 3)
+                high_c = self._rng.randint(2, width - 3)
+                high_radius = self._rng.uniform(2.5, 5.5)
+                high_amp = self._rng.uniform(0.15, 0.35)
+                for r in range(height):
+                    for c in range(width):
+                        dsq = (r - high_r) ** 2 + (c - high_c) ** 2
+                        if dsq < high_radius * high_radius:
+                            high = high_amp * math.exp(-dsq / (2.0 * (high_radius / 2.0) ** 2))
+                            grid[r][c] += high
 
         # Clamp to reasonable values so it doesn't get totally extreme
         for r in range(height):

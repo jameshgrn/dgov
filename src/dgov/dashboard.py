@@ -275,13 +275,7 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
         is_selected = orig_idx == selected
         role = p.get("role", "worker")
 
-        # Use monitor classification if available for active panes
-        m_class = p.get("monitor_classification")
-        display_state = pstate
-        if pstate == "active" and m_class:
-            display_state = m_class
-
-        color = state_color(display_state)
+        color = state_color(pstate)
         style = f"bold {color}" if is_selected else color
 
         if role == "lt-gov":
@@ -301,9 +295,27 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
         commit_tag = " [bold green]C[/bold green]" if has_commits else ""
 
         state_text = Text.from_markup(f"[{color}]{pstate}[/{color}]{commit_tag}")
-        phase_text = (
-            Text.from_markup(f"[{color}]{m_class or ''}[/{color}]") if m_class else Text("")
-        )
+        phase = p.get("phase", "")
+        monitor_phase = p.get("monitor_classification", "")
+        nonterminal_monitor_phases = {
+            "starting",
+            "working",
+            "testing",
+            "committing",
+            "idle",
+            "waiting_input",
+            "stuck",
+            "unknown",
+            "hook_match",
+        }
+        if pstate != "active":
+            phase = ""
+        elif monitor_phase in nonterminal_monitor_phases:
+            phase = monitor_phase
+        elif phase in {"done", "failed", "merged", "closed", "abandoned"}:
+            phase = ""
+
+        phase_text = Text(phase)
         dur_text = Text.from_markup(f"[dim]{dur}[/dim]")
 
         table.add_row(slug_display, agent, state_text, phase_text, dur_text, style=style)

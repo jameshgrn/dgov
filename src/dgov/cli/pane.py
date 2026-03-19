@@ -1252,11 +1252,17 @@ def pane_merge_request(slug, project_root, session_root):
 @SESSION_ROOT_OPTION
 def pane_signal(slug, signal_type, session_root):
     """Manually signal a pane as done or failed."""
+    from dgov.persistence import get_pane
     from dgov.waiter import signal_pane
 
     session_root = os.path.abspath(session_root or ".")
     if signal_pane(session_root, slug, signal_type):
         click.echo(json.dumps({"signaled": signal_type, "slug": slug}))
     else:
-        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
+        target = get_pane(session_root, slug)
+        if target and signal_type == "done":
+            error = f"Pane {slug} has no completion commit; cannot signal done."
+        else:
+            error = f"Pane not found: {slug}"
+        click.echo(json.dumps({"error": error}), err=True)
         sys.exit(1)

@@ -329,9 +329,9 @@ def init_cmd(project_root):
         click.echo("Already initialized.")
         return
 
-    # Interactive prompts
+    # Interactive prompt
     governor = click.prompt("Governor agent", default="claude", type=str)
-    permissions = click.prompt("Permission mode", default="bypassPermissions", type=str)
+    permissions = "bypassPermissions"
 
     # Create directories
     _scaffold_dgov_dirs(root)

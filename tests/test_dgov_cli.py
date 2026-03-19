@@ -12,7 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from dgov import __version__
-from dgov.cli import _check_governor_context, cli
+from dgov.cli import _check_governor_context, _ensure_governor_session, cli
 
 pytestmark = pytest.mark.unit
 
@@ -74,9 +74,9 @@ class TestGovernorContext:
                 return _cp(stdout=".git\n")
             return _cp(stdout="feature/test\n")
 
-        monkeypatch.setattr("dgov.cli.subprocess.run", fake_run)
-        with pytest.raises(click.UsageError, match="must stay on 'main'"):
-            _check_governor_context()
+        with patch("dgov.cli.subprocess.run", side_effect=fake_run):
+            with pytest.raises(click.UsageError, match="must stay on 'main'"):
+                _check_governor_context()
 
     def test_ignores_timeouts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DGOV_SKIP_GOVERNOR_CHECK", raising=False)
@@ -106,6 +106,7 @@ class TestBareCli:
                 return_value=_cp(stdout="%11\n"),
             ),
             patch("dgov.agents.get_governor_agent", return_value=("claude", "")),
+            patch("dgov.agents.write_project_config"),
             patch("dgov.cli.os.execvp") as mock_execvp,
         ):
             result = runner.invoke(cli, [])
@@ -122,30 +123,161 @@ class TestBareCli:
         monkeypatch.chdir(tmp_path)
         monkeypatch.delenv("TMUX", raising=False)
 
-        calls: list[list[str]] = []
-
-        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
-            calls.append(cmd)
-            if cmd[1:3] == ["has-session", "-t"]:
-                return _cp(returncode=1)
-            return _cp()
-
         with (
-            patch("dgov.cli.subprocess.run", side_effect=fake_run),
-            patch("dgov.tmux.style_dgov_session") as mock_style_session,
+            patch("dgov.cli._ensure_governor_session", return_value=(True, True)) as mock_ensure,
             patch("dgov.cli.os.execvp") as mock_execvp,
-            patch("dgov.agents.get_governor_agent", return_value=("claude", "")),
+            patch("dgov.agents.get_governor_agent", return_value=("claude", "plan")),
+            patch("dgov.agents.write_project_config") as mock_write,
         ):
             result = runner.invoke(cli, [])
 
         assert result.exit_code == 0
         session_name = f"dgov-{tmp_path.name}"
-        assert ["tmux", "has-session", "-t", session_name] in calls
-        assert ["tmux", "new-session", "-d", "-s", session_name] in calls
-        mock_style_session.assert_called_once_with(session_name)
+        mock_ensure.assert_called_once_with(
+            str(tmp_path),
+            session_name,
+            "claude",
+            "bypassPermissions",
+        )
+        mock_write.assert_any_call(str(tmp_path), "governor_permissions", "bypassPermissions")
         mock_execvp.assert_called_once_with(
             "tmux",
             ["tmux", "attach-session", "-t", session_name],
+        )
+
+
+class TestEnsureGovernorSession:
+    def test_skips_duplicate_launch_when_governor_is_already_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            calls.append(cmd)
+            if cmd[0:2] == ["tmux", "list-panes"]:
+                return _cp(stdout="%1|[gov] main|codex\n%2|[gov] terrain|python\n")
+            if cmd[0:2] == ["tmux", "send-keys"]:
+                return _cp()
+            return _cp()
+
+        registry = {"codex": SimpleNamespace(prompt_command="codex")}
+        monkeypatch.setattr("dgov.cli._ensure_tmux_session", lambda *args: False)
+        monkeypatch.setattr("dgov.cli.subprocess.run", fake_run)
+
+        with (
+            patch("dgov.tmux.setup_governor_workspace"),
+            patch("dgov.tmux.style_dgov_session"),
+            patch("dgov.tmux.style_governor_pane") as mock_style_governor,
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch("dgov.agents.build_launch_command", return_value="codex --dangerously-bypass"),
+        ):
+            created, started = _ensure_governor_session(
+                str(tmp_path),
+                "dgov-test",
+                "codex",
+                "bypassPermissions",
+            )
+
+        assert created is False
+        assert started is False
+        mock_style_governor.assert_called_once_with("%1")
+        assert not any(cmd[0:2] == ["tmux", "send-keys"] for cmd in calls)
+
+    def test_launches_governor_into_first_pane_when_missing(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            calls.append(cmd)
+            if cmd[0:2] == ["tmux", "list-panes"]:
+                return _cp(stdout="%9||zsh\n%10|[gov] terrain|python\n")
+            return _cp()
+
+        registry = {"gemini": SimpleNamespace(prompt_command="gemini")}
+        monkeypatch.setattr("dgov.cli._ensure_tmux_session", lambda *args: True)
+        monkeypatch.setattr("dgov.cli.subprocess.run", fake_run)
+
+        with (
+            patch("dgov.tmux.setup_governor_workspace"),
+            patch("dgov.tmux.style_dgov_session"),
+            patch("dgov.tmux.style_governor_pane") as mock_style_governor,
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch("dgov.agents.build_launch_command", return_value="gemini --approval-mode yolo"),
+        ):
+            created, started = _ensure_governor_session(
+                str(tmp_path),
+                "dgov-test",
+                "gemini",
+                "bypassPermissions",
+            )
+
+        assert created is True
+        assert started is True
+        mock_style_governor.assert_called_once_with("%9")
+        assert ["tmux", "send-keys", "-t", "%9", "gemini --approval-mode yolo", "Enter"] in calls
+
+
+class TestResumeAndRefresh:
+    def test_resume_recreates_missing_session_from_saved_config(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("TMUX", raising=False)
+
+        with (
+            patch("dgov.agents.get_governor_agent", return_value=("gemini", "plan")),
+            patch("dgov.agents.write_project_config") as mock_write,
+            patch("dgov.cli._ensure_governor_session", return_value=(True, True)) as mock_ensure,
+            patch("dgov.cli.os.execvp") as mock_execvp,
+        ):
+            result = runner.invoke(cli, ["resume"])
+
+        assert result.exit_code == 0
+        mock_write.assert_any_call(str(tmp_path), "governor_permissions", "bypassPermissions")
+        mock_ensure.assert_called_once_with(
+            str(tmp_path),
+            f"dgov-{tmp_path.name}",
+            "gemini",
+            "bypassPermissions",
+        )
+        mock_execvp.assert_called_once_with(
+            "tmux",
+            ["tmux", "attach-session", "-t", f"dgov-{tmp_path.name}"],
+        )
+
+    def test_refresh_rebuilds_missing_session_instead_of_exiting(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("TMUX", raising=False)
+        (tmp_path / ".dgov").mkdir()
+
+        def fake_run(cmd: list[str], **kwargs) -> MagicMock:
+            if cmd[:3] == ["uv", "tool", "install"]:
+                return _cp()
+            return _cp()
+
+        with (
+            patch("dgov.agents.get_governor_agent", return_value=("codex", "")),
+            patch("dgov.agents.write_project_config") as mock_write,
+            patch("dgov.cli.subprocess.run", side_effect=fake_run),
+            patch("dgov.cli._ensure_governor_session", return_value=(True, True)) as mock_ensure,
+            patch("dgov.cli.os.execvp") as mock_execvp,
+        ):
+            result = runner.invoke(cli, ["refresh", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        mock_write.assert_any_call(str(tmp_path), "governor_permissions", "bypassPermissions")
+        mock_ensure.assert_called_once_with(
+            str(tmp_path),
+            f"dgov-{tmp_path.name}",
+            "codex",
+            "bypassPermissions",
+        )
+        mock_execvp.assert_called_once_with(
+            "tmux",
+            ["tmux", "attach-session", "-t", f"dgov-{tmp_path.name}"],
         )
 
 

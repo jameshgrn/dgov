@@ -344,16 +344,22 @@ class TestIsDone:
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug").touch()
-        assert _is_done(str(tmp_path), "test-slug") is True
+        assert _is_done(str(tmp_path), "test-slug") is False
 
     def test_done_signal_honored_even_while_agent_command_visible(self, tmp_path: Path) -> None:
         """Done file is authoritative — agent-like foreground command doesn't block it."""
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug").touch()
-        record = {"pane_id": "%5"}
+        record = {
+            "pane_id": "%5",
+            "project_root": "/repo",
+            "branch_name": "test-slug",
+            "base_sha": "abc",
+        }
         with patch("dgov.persistence.update_pane_state") as mock_state:
-            assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
+            with patch("dgov.done._has_new_commits", return_value=True):
+                assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
         mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done", force=False)
 
     def test_no_pane_record_no_signal(self, tmp_path: Path) -> None:
@@ -425,8 +431,8 @@ class TestIsDone:
         (done_dir / "stale").touch()
 
         record = get_pane(str(tmp_path), "stale")
-        assert _is_done(str(tmp_path), "stale", pane_record=record) is True
-        assert get_pane(str(tmp_path), "stale")["state"] == "done"
+        assert _is_done(str(tmp_path), "stale", pane_record=record) is False
+        assert get_pane(str(tmp_path), "stale")["state"] == "abandoned"
 
     def test_new_commits_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
         """Verify abandoned -> done transition works when new commits are found."""
@@ -2528,6 +2534,7 @@ class TestWaitWorkerPane:
 
         mock_backend.is_alive.return_value = True
         with (
+            patch("dgov.done._has_new_commits", return_value=False),
             patch("dgov.status.capture_worker_output", return_value="same output"),
             patch("dgov.done._agent_still_running", return_value=False),
         ):
@@ -2539,7 +2546,7 @@ class TestWaitWorkerPane:
                 _stable_state=stable_state,
                 done_strategy=DoneStrategy(type="stable", stable_seconds=15),
             )
-        assert result is True
+        assert result is False
 
     def test_timeout_raises(self, tmp_path: Path) -> None:
         from dgov.waiter import PaneTimeoutError, wait_worker_pane
@@ -2627,6 +2634,7 @@ class TestStableDetectionAgentCheck:
 
         mock_backend.is_alive.return_value = True
         with (
+            patch("dgov.done._has_new_commits", return_value=False),
             patch("dgov.status.capture_worker_output", return_value="same output"),
             patch("dgov.done._agent_still_running", return_value=False),
         ):
@@ -2638,7 +2646,7 @@ class TestStableDetectionAgentCheck:
                 _stable_state=stable_state,
                 done_strategy=DoneStrategy(type="stable", stable_seconds=15),
             )
-            assert result is True
+            assert result is False
 
     def test_no_stable_seconds_skips_stabilization(
         self, tmp_path: Path, mock_backend: MagicMock

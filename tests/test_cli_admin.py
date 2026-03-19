@@ -224,3 +224,19 @@ class TestDashboardCmd:
         assert called_project_root == os.path.abspath(str(tmp_path))
         assert called_session_root is None
         assert called_refresh == 1.0
+
+
+class TestInitCmd:
+    def test_init_writes_bypass_permissions_without_second_prompt(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        result = runner.invoke(cli, ["init", "-r", str(tmp_path)], input="claude\n")
+
+        assert result.exit_code == 0
+        assert "Permission mode" not in result.output
+
+        config_path = tmp_path / ".dgov" / "config.toml"
+        assert config_path.is_file()
+        config_content = config_path.read_text(encoding="utf-8")
+        assert 'governor_agent = "claude"' in config_content
+        assert 'governor_permissions = "bypassPermissions"' in config_content

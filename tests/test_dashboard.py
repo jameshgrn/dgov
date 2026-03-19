@@ -156,6 +156,13 @@ class TestTerrain:
 
 @pytest.mark.unit
 class TestWorkerTable:
+    def _render_table_text(self, panes: list[dict]) -> str:
+        from dgov.dashboard import _build_worker_table
+
+        console = Console(record=True, force_terminal=True, width=120, height=20)
+        console.print(_build_worker_table(panes, 0))
+        return console.export_text()
+
     def test_empty_panes(self):
         from dgov.dashboard import _build_worker_table
 
@@ -183,6 +190,41 @@ class TestWorkerTable:
         ]
         table = _build_worker_table(panes, 1)
         assert table.row_count == 2
+
+    def test_active_state_does_not_render_done_phase_from_monitor(self):
+        text = self._render_table_text(
+            [
+                {
+                    "slug": "worker-a",
+                    "agent": "river-9b",
+                    "state": "active",
+                    "phase": "committing",
+                    "monitor_classification": "done",
+                    "monitor_has_commits": True,
+                    "duration_s": 19,
+                }
+            ]
+        )
+
+        assert "active" in text
+        assert "committing" in text
+        assert "done" not in text
+
+    def test_terminal_state_does_not_repeat_state_in_phase(self):
+        text = self._render_table_text(
+            [
+                {
+                    "slug": "worker-b",
+                    "agent": "river-9b",
+                    "state": "done",
+                    "phase": "done",
+                    "monitor_classification": "done",
+                    "duration_s": 43,
+                }
+            ]
+        )
+
+        assert text.count("done") == 1
 
 
 @pytest.mark.unit

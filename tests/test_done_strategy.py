@@ -263,7 +263,7 @@ class TestIsDoneWithStrategy:
         done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         (done_dir / slug).touch()
-        assert _is_done(session_root, slug, done_strategy=DoneStrategy(type="signal")) is True
+        assert _is_done(session_root, slug, done_strategy=DoneStrategy(type="signal")) is False
 
     @pytest.mark.unit
     def test_exit_strategy_skips_commit_check(self, tmp_path: Path) -> None:
@@ -297,7 +297,7 @@ class TestIsDoneWithStrategy:
         done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
         (done_dir / slug).touch()
-        assert _is_done(session_root, slug, done_strategy=DoneStrategy(type="exit")) is True
+        assert _is_done(session_root, slug, done_strategy=DoneStrategy(type="exit")) is False
 
     @pytest.mark.unit
     def test_commit_strategy_skips_stabilization(
@@ -343,13 +343,14 @@ class TestIsDoneWithStrategy:
         pane_record = {
             "pane_id": "%1",
             "project_root": str(tmp_path),
-            "branch_name": "",
-            "base_sha": "",
+            "branch_name": slug,
+            "base_sha": "abc123",
         }
         # stable_since is 10s ago, strategy requires 30s
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 10}
 
         with (
+            patch("dgov.done._has_new_commits", return_value=True),
             patch("dgov.status.capture_worker_output", return_value="same output"),
             patch("dgov.done._agent_still_running", return_value=False),
         ):
@@ -374,13 +375,14 @@ class TestIsDoneWithStrategy:
         pane_record = {
             "pane_id": "%1",
             "project_root": str(tmp_path),
-            "branch_name": "",
-            "base_sha": "",
+            "branch_name": slug,
+            "base_sha": "abc123",
         }
         # stable_since is 35s ago, strategy requires 30s
         stable_state = {"last_output": "same output", "stable_since": time.monotonic() - 35}
 
         with (
+            patch("dgov.done._has_new_commits", return_value=True),
             patch("dgov.status.capture_worker_output", return_value="same output"),
             patch("dgov.done._agent_still_running", return_value=False),
         ):

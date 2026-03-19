@@ -107,7 +107,10 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
                 check=True,
             )
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to create worktree: {e.stderr}") from e
+        raise RuntimeError(
+            f"Failed to create worktree for branch {branch_name!r} "
+            f"at path {worktree_path!r}: {e.stderr}"
+        ) from e
 
 
 def _find_unique_slug(project_root: str, session_root: str, base_slug: str) -> tuple[str, str]:

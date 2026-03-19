@@ -99,6 +99,18 @@ def _count_commits(project_root: str, branch: str, base_sha: str) -> int:
         return 0
 
 
+def _has_completion_commit(pane_record: dict | None) -> bool:
+    """Return True only when a pane has a real post-base commit."""
+    if pane_record is None:
+        return False
+    project_root = pane_record.get("project_root", "")
+    branch_name = pane_record.get("branch_name", "")
+    base_sha = pane_record.get("base_sha", "")
+    if not (project_root and branch_name and base_sha):
+        return False
+    return _has_new_commits(project_root, branch_name, base_sha)
+
+
 # -- Agent process detection --
 
 _AGENT_COMMANDS = frozenset(
@@ -219,6 +231,9 @@ def _is_done(
     """
     import dgov.persistence as _persist
 
+    if pane_record is None:
+        pane_record = _persist.get_pane(session_root, slug)
+
     stype, eff_stable = _resolve_strategy(done_strategy, stable_seconds)
 
     done_path = Path(session_root, STATE_DIR, "done", slug)
@@ -226,16 +241,8 @@ def _is_done(
 
     # Signal 1a: done-signal file (clean exit) — always checked
     if done_path.exists():
-        # Require at least one commit when branch/base info is available
-        project_root = pane_record.get("project_root", "") if pane_record else ""
-        branch_name = pane_record.get("branch_name", "") if pane_record else ""
-        base_sha = pane_record.get("base_sha", "") if pane_record else ""
-
-        if project_root and branch_name and base_sha:
-            has_new_commits_flag = _has_new_commits(project_root, branch_name, base_sha)
-            if not has_new_commits_flag:
-                # No commits yet — don't mark as done, let worker continue
-                return False
+        if pane_record is None or not _has_completion_commit(pane_record):
+            return False
 
         current_state = pane_record.get("state", "") if pane_record else ""
         force = current_state == "abandoned"
@@ -411,6 +418,8 @@ def _is_done(
                     if _agent_still_running(pane_id, current_command):
                         _stable_state["stable_since"] = None
                     else:
+                        if not _has_completion_commit(pane_record):
+                            return False
                         done_path.parent.mkdir(parents=True, exist_ok=True)
                         done_path.touch()
                         _persist.update_pane_state(session_root, slug, "done")
