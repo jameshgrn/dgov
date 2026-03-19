@@ -27,7 +27,12 @@ from dgov.persistence import (
     remove_pane,
     update_pane_state,
 )
-from dgov.strategy import _generate_slug, _structure_pi_prompt, _validate_slug
+from dgov.strategy import (
+    _generate_slug,
+    _structure_pi_prompt,
+    _validate_slug,
+    extract_task_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +96,9 @@ def _create_worktree(project_root: str, worktree_path: str, branch_name: str) ->
 # -- Hook trigger --
 
 
-def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> None:
+def _write_worktree_instructions(
+    worktree_path: str, slug: str, role: str, prompt: str | None = None
+) -> None:
     """Prepend role-appropriate instructions to CLAUDE.md in the worktree.
 
     Preserves existing repo CLAUDE.md content as project context instead
@@ -111,6 +118,34 @@ def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> No
     if (wt / "CODEBASE.md").exists():
         codebase_hint = "- Read CODEBASE.md for module map, task routing, and test mapping\n"
 
+    # Extract routed task context if prompt provided
+    start_here_section = ""
+    if prompt:
+        context = extract_task_context(prompt)
+        if any(context.values()):
+            lines = ["## Start here\n"]
+            if context["primary_files"]:
+                lines.append("Primary files:\n")
+                for f in context["primary_files"]:
+                    lines.append(f"- {f}\n")
+                lines.append("\n")
+            if context["also_check"]:
+                lines.append("Also check:\n")
+                for f in context["also_check"]:
+                    lines.append(f"- {f}\n")
+                lines.append("\n")
+            if context["tests"]:
+                lines.append("Tests:\n")
+                for f in context["tests"]:
+                    lines.append(f"- {f}\n")
+                lines.append("\n")
+            if context["hints"]:
+                lines.append("Hints:\n")
+                for h in context["hints"]:
+                    lines.append(f"- {h}\n")
+                lines.append("\n")
+            start_here_section = "".join(lines)
+
     if role == "lt-gov":
         preamble = (
             f"# LT-GOV Instructions — {slug}\n\n"
@@ -125,10 +160,12 @@ def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> No
             "- NEVER edit files directly\n"
             "- NEVER push to remote\n"
             "- Use logical agent names: qwen-9b, qwen-35b, qwen-122b\n"
-            f"{codebase_hint}\n"
-            f"## When done\n"
-            f"Write status to .dgov/progress/{slug}.json and exit.\n"
         )
+        # Inject Start here section before codebase hint when routed context exists
+        if start_here_section:
+            preamble += start_here_section + "\n"
+        preamble += codebase_hint + "\n"
+        preamble += f"## When done\nWrite status to .dgov/progress/{slug}.json and exit.\n"
     else:
         preamble = (
             f"# Worker Instructions — {slug}\n\n"
@@ -142,7 +179,12 @@ def _write_worktree_instructions(worktree_path: str, slug: str, role: str) -> No
             "- You are in a git worktree, not the main repo\n"
             "- CLAUDE.md/AGENTS.md are git-excluded and cannot "
             "be committed\n"
-            f"{codebase_hint}\n"
+        )
+        # Inject Start here section before codebase hint when routed context exists
+        if start_here_section:
+            preamble += start_here_section + "\n"
+        preamble += codebase_hint + "\n"
+        preamble += (
             "## Commit checklist\n"
             "1. git add <changed files>\n"
             '2. git commit -m "<message>"\n'
@@ -300,7 +342,7 @@ def _setup_and_launch_agent(
             logger.warning("Shell prompt not detected after env setup for %s", slug)
 
     # 4. Write role-appropriate CLAUDE.md into the worktree
-    _write_worktree_instructions(worktree_path, slug, role)
+    _write_worktree_instructions(worktree_path, slug, role, prompt=prompt)
 
     # 4b. Install pre-merge-commit hook to block branch integration in worktrees
     if owns_worktree:
