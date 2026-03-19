@@ -372,7 +372,33 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
 
 
 def _auto_complete(project_root: str, session_root: str, slug: str) -> None:
-    """Force a worker to 'done' state via signal file."""
+    """Force a worker to 'done' state via signal file.
+
+    Defense in depth: only complete if there are actual commits beyond base
+    when branch/base info is available. If no commits and info is available,
+    do nothing (worker may still be working).
+    """
+    # Get pane record to check branch/base info
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return
+
+    branch_name = pane.get("branch_name", "")
+    base_sha = pane.get("base_sha", "")
+    project_root_from_pane = pane.get("project_root", "")
+
+    # Require commits when branch/base info is available
+    if branch_name and base_sha and project_root_from_pane:
+        has_commits = _has_new_commits(project_root_from_pane, branch_name, base_sha)
+        if not has_commits:
+            # No commits yet — don't auto-complete, worker may still be working
+            logger.debug(
+                "Monitor: skipping auto-complete for %s — no commits beyond %s",
+                slug,
+                base_sha[:8],
+            )
+            return
+
     done_dir = Path(session_root, STATE_DIR, "done")
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / slug).touch()
