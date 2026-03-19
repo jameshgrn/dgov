@@ -370,6 +370,41 @@ def retry_context(slug: str, session_root: str, events: list[dict] | None = None
     return "\n\n".join(parts)
 
 
+def _detect_provider_failure(context: str) -> tuple[bool, str | None]:
+    """Detect upstream provider/runtime failures in failure context.
+
+    Returns (is_provider_failure, provider_name) tuple.
+    Provider names are extracted from patterns like "Upstream error from <provider>:".
+    """
+    if not context:
+        return False, None
+
+    # Pattern for "Upstream error from <provider>:"
+    upstream_match = re.search(r"Upstream error from ([\w\-\.]+):", context)
+    if upstream_match:
+        return True, upstream_match.group(1)
+
+    # Pattern for common provider transport failures
+    provider_patterns = [
+        r"(OpenRouter|Anthropic|Google|Azure|Bedrock) error[:\s]",
+        r"provider\s+(error|failure|timeout)[:\s]",
+        r"transport\s+error.*(?:OpenRouter|Anthropic|Google|Azure|Bedrock)",
+        r"rate.?limit.*(?:exceeded|reached)",
+        r"connection\s+(?:refused|reset|timeout).*provider",
+    ]
+
+    for pattern in provider_patterns:
+        if re.search(pattern, context, re.IGNORECASE):
+            # Try to extract provider name, otherwise return generic
+            provider_match = re.search(
+                r"(OpenRouter|Anthropic|Google|Azure|Bedrock|local|river)", context, re.IGNORECASE
+            )
+            provider = provider_match.group(1).lower() if provider_match else "unknown"
+            return True, provider
+
+    return False, None
+
+
 def get_retry_policy(session_root: str, slug: str) -> RetryPolicy | None:
     """Look up the retry policy for a pane's agent.
 
@@ -412,6 +447,9 @@ def maybe_auto_retry(
 ) -> dict | None:
     """Auto-retry a failed/abandoned pane if its agent has a retry policy.
 
+    Also auto-retries provider/runtime failures exactly once even without
+    an explicit retry policy, using the original prompt unchanged.
+
     Returns:
         {"retried": slug, "new_slug": ..., "attempt": N} on retry
         {"escalated": slug, "to": agent} on escalation
@@ -426,6 +464,47 @@ def maybe_auto_retry(
         return None
 
     policy = get_retry_policy(session_root, slug)
+    original_prompt = rec.get("prompt", "")
+    context = retry_context(slug, session_root)
+
+    # Check for provider/runtime failure — retry exactly once even without policy
+    is_provider_failure, provider_name = _detect_provider_failure(context)
+    if is_provider_failure and not policy:
+        logger.info(
+            "Detected provider/runtime failure for %s (provider=%s), "
+            "retrying once with original prompt",
+            slug,
+            provider_name,
+        )
+        emit_event(
+            session_root,
+            "pane_auto_retried",
+            slug,
+            attempt=1,
+            failure_class="provider_runtime",
+            provider_name=provider_name,
+        )
+
+        result = retry_worker_pane(
+            project_root,
+            slug,
+            session_root=session_root,
+            prompt=original_prompt,  # No advisory text — task itself didn't fail
+        )
+
+        if result.get("error"):
+            logger.warning("Provider failure auto-retry failed for %s: %s", slug, result["error"])
+            return None
+
+        return {
+            "retried": slug,
+            "new_slug": result.get("new_slug", ""),
+            "attempt": 1,
+            "failure_class": "provider_runtime",
+            "provider_name": provider_name,
+        }
+
+    # No policy and not a provider failure — no retry
     if not policy:
         return None
 

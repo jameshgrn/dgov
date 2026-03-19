@@ -19,6 +19,7 @@ from dgov.persistence import (
 from dgov.recovery import (
     RetryPolicy,
     _count_retries,
+    _detect_provider_failure,
     get_retry_policy,
     maybe_auto_retry,
     retry_context,
@@ -402,3 +403,162 @@ class TestCLINoAutoRetry:
         # auto_retry should default to True
         call_kwargs = mock_wait.call_args
         assert call_kwargs.kwargs.get("auto_retry") is True
+
+
+# ---------------------------------------------------------------------------
+# _detect_provider_failure
+# ---------------------------------------------------------------------------
+
+
+class TestDetectProviderFailure:
+    def test_detects_upstream_error_pattern(self) -> None:
+        context = "Upstream error from openrouter: connection timeout"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "openrouter"
+
+    def test_detects_anthropic_error(self) -> None:
+        context = "Anthropic error: rate limit exceeded"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "anthropic"
+
+    def test_detects_google_error(self) -> None:
+        context = "Google error: service unavailable"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "google"
+
+    def test_detects_azure_error(self) -> None:
+        context = "Azure error: authentication failed"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "azure"
+
+    def test_detects_bedrock_error(self) -> None:
+        context = "Bedrock error: model not found"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "bedrock"
+
+    def test_detects_rate_limit_pattern(self) -> None:
+        context = "rate limit exceeded for OpenRouter"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "openrouter"
+
+    def test_detects_connection_refused_with_provider(self) -> None:
+        context = "connection refused to provider endpoint (Anthropic)"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is True
+        assert provider == "anthropic"
+
+    def test_returns_false_for_non_provider_failure(self) -> None:
+        context = "SyntaxError: invalid syntax at line 42"
+        is_failure, provider = _detect_provider_failure(context)
+        assert is_failure is False
+        assert provider is None
+
+    def test_returns_false_for_empty_context(self) -> None:
+        is_failure, provider = _detect_provider_failure("")
+        assert is_failure is False
+        assert provider is None
+
+    def test_returns_false_for_none_context(self) -> None:
+        is_failure, provider = _detect_provider_failure(None)  # type: ignore
+        assert is_failure is False
+        assert provider is None
+
+
+# ---------------------------------------------------------------------------
+# maybe_auto_retry with provider failure detection
+# ---------------------------------------------------------------------------
+
+
+class TestMaybeAutoRetryProviderFailure:
+    @patch("dgov.recovery.retry_worker_pane")
+    @patch("dgov.recovery.retry_context")
+    def test_retries_provider_failure_without_policy(
+        self, mock_context, mock_retry, tmp_path: Path
+    ) -> None:
+        """Provider/runtime failures get one retry even without explicit policy."""
+        session_root = _setup_pane(tmp_path, state="failed", agent="claude")
+        slug = "test-worker"
+
+        mock_context.return_value = "Upstream error from openrouter: connection timeout"
+        mock_retry.return_value = {
+            "retried": True,
+            "new_slug": "test-worker-2",
+            "attempt": 1,
+        }
+
+        result = maybe_auto_retry(session_root, slug, "/fake/project")
+
+        assert result is not None
+        assert result["retried"] == slug
+        assert result["new_slug"] == "test-worker-2"
+        assert result["attempt"] == 1
+        assert result["failure_class"] == "provider_runtime"
+        assert result["provider_name"] == "openrouter"
+        # Verify original prompt was used (no advisory text)
+        call_prompt = mock_retry.call_args.kwargs.get("prompt", "")
+        assert "Avoid the same failure" not in call_prompt
+
+    @patch("dgov.recovery.retry_worker_pane")
+    @patch("dgov.recovery.retry_context")
+    def test_provider_failure_emits_event_with_metadata(
+        self, mock_context, mock_retry, tmp_path: Path
+    ) -> None:
+        """Provider failure retry emits pane_auto_retried with failure metadata."""
+        from dgov.persistence import read_events
+
+        session_root = _setup_pane(tmp_path, state="failed", agent="claude")
+        slug = "test-worker"
+
+        mock_context.return_value = "Upstream error from anthropic: rate limited"
+        mock_retry.return_value = {
+            "retried": True,
+            "new_slug": "test-worker-2",
+            "attempt": 1,
+        }
+
+        maybe_auto_retry(session_root, slug, "/fake/project")
+
+        events = read_events(session_root)
+        retried_events = [e for e in events if e.get("event") == "pane_auto_retried"]
+        assert len(retried_events) == 1
+        ev = retried_events[0]
+        assert ev.get("failure_class") == "provider_runtime"
+        assert ev.get("provider_name") == "anthropic"
+
+    @patch("dgov.recovery.load_registry")
+    @patch("dgov.recovery.retry_context")
+    def test_provider_failure_respects_existing_policy(
+        self, mock_context, mock_registry, tmp_path: Path
+    ) -> None:
+        """When policy exists, normal retry path is taken (with advisory text)."""
+        session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
+        slug = "test-worker"
+
+        agent_def = MagicMock()
+        agent_def.max_retries = 2
+        agent_def.retry_escalate_to = None
+        mock_registry.return_value = {"test-agent": agent_def}
+
+        mock_context.return_value = "Upstream error from openrouter: connection timeout"
+
+        with patch("dgov.recovery.time.sleep"):
+            with patch("dgov.recovery.retry_worker_pane") as mock_retry:
+                mock_retry.return_value = {
+                    "retried": True,
+                    "new_slug": "test-worker-2",
+                    "attempt": 1,
+                }
+
+                result = maybe_auto_retry(session_root, slug, "/fake/project")
+
+                assert result is not None
+                assert result["retried"] == slug
+                # When policy exists, advisory text IS added
+                call_prompt = mock_retry.call_args.kwargs.get("prompt", "")
+                assert "Avoid the same failure" in call_prompt
