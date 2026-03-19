@@ -248,7 +248,7 @@ class TestReviewWorkerPane:
     def test_uncommitted_clauDE_md_does_not_block_safe_verdict(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
     ) -> None:
-        """Uncommitted CLAUDE.md changes (worker instruction drift) should not downgrade verdict."""
+        """Uncommitted CLAUDE.md drift should not downgrade the review verdict."""
         repo = tmp_path / "repo"
         base_sha = _init_repo(repo)
         _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
@@ -273,7 +273,7 @@ class TestReviewWorkerPane:
     def test_uncommitted_agents_md_does_not_block_safe_verdict(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
     ) -> None:
-        """Uncommitted AGENTS.md changes (worker instruction drift) should not downgrade verdict."""
+        """Uncommitted AGENTS.md drift should not downgrade the review verdict."""
         repo = tmp_path / "repo"
         base_sha = _init_repo(repo)
         _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
