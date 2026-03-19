@@ -51,8 +51,9 @@ def _stamp_dgov(grid, erodibility, rows, cols):
                         gc = start_c + bc * scale + dc
                         if 1 <= gr < rows - 1 and 1 <= gc < cols - 1:
                             erodibility[gr][gc] = 5.0
-                            # Initial dip + flattening so it looks like an engraved stamp
-                            grid[gr][gc] = min(grid[gr][gc] * 0.95, 0.45)
+                            # Ensure stamp area is fully submerged/engraved initially
+                            # so the shape is very distinct from the start
+                            grid[gr][gc] = 0.35
 
 
 # Hillshade light direction: azimuth=315° (upper-left), altitude=45°
