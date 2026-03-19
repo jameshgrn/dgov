@@ -215,16 +215,49 @@ class TestTakeAction:
         assert action == "auto_complete"
         mock_complete.assert_called_once()
 
+    @patch("dgov.monitor.get_pane")
     @patch("dgov.monitor.emit_event")
     @patch("dgov.monitor.update_pane_state")
-    def test_auto_complete_touches_done_signal(self, mock_update, mock_event, tmp_path):
+    @patch("dgov.monitor._has_new_commits", return_value=True)
+    def test_auto_complete_touches_done_signal(
+        self, mock_has_commits, mock_update, mock_event, mock_get_pane, tmp_path
+    ):
         from dgov.monitor import _auto_complete
 
+        mock_get_pane.return_value = {
+            "slug": "w1",
+            "branch_name": "w1",
+            "base_sha": "abc123",
+            "project_root": str(tmp_path),
+        }
         (tmp_path / ".dgov" / "done").mkdir(parents=True)
         _auto_complete(str(tmp_path), str(tmp_path), "w1")
         assert (tmp_path / ".dgov" / "done" / "w1").exists()
         mock_update.assert_called_once()
         mock_event.assert_called_once()
+        mock_has_commits.assert_called_once_with(str(tmp_path), "w1", "abc123")
+
+    @patch("dgov.monitor.get_pane")
+    @patch("dgov.monitor.emit_event")
+    @patch("dgov.monitor.update_pane_state")
+    @patch("dgov.monitor._has_new_commits", return_value=False)
+    def test_auto_complete_skips_done_signal_without_commits(
+        self, mock_has_commits, mock_update, mock_event, mock_get_pane, tmp_path
+    ):
+        from dgov.monitor import _auto_complete
+
+        mock_get_pane.return_value = {
+            "slug": "w1",
+            "branch_name": "w1",
+            "base_sha": "abc123",
+            "project_root": str(tmp_path),
+        }
+        (tmp_path / ".dgov" / "done").mkdir(parents=True)
+        _auto_complete(str(tmp_path), str(tmp_path), "w1")
+        assert not (tmp_path / ".dgov" / "done" / "w1").exists()
+        mock_update.assert_not_called()
+        mock_event.assert_not_called()
+        mock_has_commits.assert_called_once_with(str(tmp_path), "w1", "abc123")
 
 
 class TestRunMonitor:
