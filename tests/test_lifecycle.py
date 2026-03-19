@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import stat
 import subprocess
 import time
@@ -366,6 +367,68 @@ class TestFullCleanup:
 
         mock_backend.destroy.assert_called_once_with("%42")
 
+    def test_kills_descendant_process_groups(self, tmp_path: Path) -> None:
+        from dgov.lifecycle import _terminate_pane_process_tree
+
+        ps_output = "\n".join(
+            [
+                "123 50 123",
+                "456 123 456",
+                "789 456 456",
+                "900 123 900",
+            ]
+        )
+
+        with (
+            patch("dgov.lifecycle.subprocess.run") as mock_run,
+            patch("dgov.lifecycle.os.killpg") as mock_killpg,
+        ):
+            mock_run.return_value = MagicMock(stdout=ps_output)
+            _terminate_pane_process_tree(123)
+
+        mock_run.assert_called_once_with(
+            ["ps", "-axo", "pid=,ppid=,pgid="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        killed_pgids = [call.args[0] for call in mock_killpg.call_args_list]
+        assert killed_pgids == [900, 456, 123]
+
+    def test_falls_back_to_root_process_group_when_snapshot_fails(self, tmp_path: Path) -> None:
+        from dgov.lifecycle import _terminate_pane_process_tree
+
+        with (
+            patch("dgov.lifecycle.subprocess.run", side_effect=OSError("ps missing")),
+            patch("dgov.lifecycle.os.getpgid", return_value=321) as mock_getpgid,
+            patch("dgov.lifecycle.os.killpg") as mock_killpg,
+        ):
+            _terminate_pane_process_tree(123)
+
+        mock_getpgid.assert_called_once_with(123)
+        mock_killpg.assert_called_once_with(321, signal.SIGTERM)
+
+    def test_full_cleanup_uses_process_tree_termination(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.lifecycle import _full_cleanup
+
+        sr = str(tmp_path)
+        _add_pane(tmp_path, "test-pane", pane_id="%42")
+
+        pane = get_pane(sr, "test-pane")
+        assert pane is not None
+
+        with (
+            patch("dgov.tmux._run", return_value="123"),
+            patch("dgov.lifecycle._terminate_pane_process_tree") as mock_terminate,
+            patch("dgov.lifecycle.subprocess.run"),
+        ):
+            _full_cleanup(sr, sr, "test-pane", pane)
+
+        mock_terminate.assert_called_once_with(123)
+        mock_backend.destroy.assert_called_once_with("%42")
+
     def test_removes_worktree_and_branch(self, tmp_path: Path) -> None:
         from dgov.lifecycle import _full_cleanup
 
@@ -657,7 +720,12 @@ class TestWriteWorktreeInstructions:
         wt = tmp_path / "worktree"
         wt.mkdir()
         (wt / "CLAUDE.md").write_text(
-            "# Governor Instructions\n\nYou are the **governor**. You orchestrate; you do not implement.\n\n## Role\n- Stay on `main`. Always.\n- Delegate ALL implementation to workers.",
+            (
+                "# Governor Instructions\n\n"
+                "You are the **governor**. You orchestrate; you do not implement.\n\n"
+                "## Role\n- Stay on `main`. Always.\n"
+                "- Delegate ALL implementation to workers."
+            ),
             encoding="utf-8",
         )
 
@@ -686,7 +754,11 @@ class TestWriteWorktreeInstructions:
         wt = tmp_path / "worktree"
         wt.mkdir()
         (wt / "CLAUDE.md").write_text(
-            "# Governor Instructions\n\nYou are the **governor**. You orchestrate; you do not implement.\n\n## Role\n- Stay on `main`. Always.",
+            (
+                "# Governor Instructions\n\n"
+                "You are the **governor**. You orchestrate; you do not implement.\n\n"
+                "## Role\n- Stay on `main`. Always."
+            ),
             encoding="utf-8",
         )
 

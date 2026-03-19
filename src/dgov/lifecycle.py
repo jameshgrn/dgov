@@ -69,6 +69,72 @@ def ensure_dgov_gitignored(project_root: str) -> None:
         gitignore.write_text(f"{marker}\n", encoding="utf-8")
 
 
+def _process_snapshot() -> dict[int, tuple[int, int]]:
+    """Return {pid: (ppid, pgid)} from the current process table."""
+    result = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,pgid="],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    snapshot: dict[int, tuple[int, int]] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        try:
+            pid, ppid, pgid = (int(part) for part in parts)
+        except ValueError:
+            continue
+        snapshot[pid] = (ppid, pgid)
+    return snapshot
+
+
+def _collect_descendant_pids(root_pid: int, snapshot: dict[int, tuple[int, int]]) -> set[int]:
+    """Collect root_pid and all descendants from a pid/ppid snapshot."""
+    children_by_parent: dict[int, list[int]] = {}
+    for pid, (ppid, _pgid) in snapshot.items():
+        children_by_parent.setdefault(ppid, []).append(pid)
+
+    descendants: set[int] = set()
+    stack = [root_pid]
+    while stack:
+        pid = stack.pop()
+        if pid in descendants:
+            continue
+        descendants.add(pid)
+        stack.extend(children_by_parent.get(pid, []))
+    return descendants
+
+
+def _terminate_pane_process_tree(root_pid: int) -> None:
+    """Terminate the pane process group and any descendant process groups."""
+    try:
+        snapshot = _process_snapshot()
+    except (subprocess.SubprocessError, OSError):
+        snapshot = {}
+
+    descendant_pids = _collect_descendant_pids(root_pid, snapshot) if snapshot else {root_pid}
+    pgids = {
+        pgid
+        for pid in descendant_pids
+        if (entry := snapshot.get(pid)) is not None
+        for pgid in [entry[1]]
+        if pgid > 0
+    }
+    if not pgids:
+        try:
+            pgids = {os.getpgid(root_pid)}
+        except (ProcessLookupError, PermissionError):
+            return
+
+    for pgid in sorted(pgids, reverse=True):
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            continue
+
+
 # -- Git worktree helpers --
 
 
@@ -750,7 +816,7 @@ def _full_cleanup(
     # 2. Kill process group then tmux pane
     pane_id = pane_record.get("pane_id")
     if pane_id:
-        # Kill the entire process tree spawned in this pane
+        # Kill the pane shell plus any descendant process groups it spawned.
         try:
             from dgov.tmux import _run as tmux_run
 
@@ -759,11 +825,7 @@ def _full_cleanup(
                 silent=True,
             )
             if pid_str.strip():
-                pid = int(pid_str.strip())
-                try:
-                    os.killpg(os.getpgid(pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError):
-                    pass
+                _terminate_pane_process_tree(int(pid_str.strip()))
         except (RuntimeError, ValueError):
             pass  # pane already dead or bad PID, skip PGID kill
         get_backend().destroy(pane_id)
