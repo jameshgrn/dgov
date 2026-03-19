@@ -46,9 +46,15 @@ def _encode_kitty(img: Image.Image) -> str:
 
 
 def render_isometric(model: ErosionModel) -> str:
-    """Render an ErosionModel using isometric projection."""
+    \"\"\"Render an ErosionModel using isometric projection.\"\"\"
     rows = model.height_count
     cols = model.width
+
+    if rows <= 0 or cols <= 0:
+        return \"\"
+
+    if not model.height or len(model.height) != rows:
+        return \"\"
 
     # Calculate image size
     # Screen X: (col - row) * (TILE_W / 2)
