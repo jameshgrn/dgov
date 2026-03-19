@@ -104,11 +104,12 @@ Add tests too.
 - Git operations on main (commit, tag)
 - Push `main` to `origin/main` when the user explicitly requests it
 - Triage and prioritize tasks
+- **Micro-edits** (1-3 lines) when dispatching a worker would take longer than the fix itself. Examples: adding an import, fixing a typo, wiring a CLI registration. Note these in the napkin as "governor exception."
+- Edit CLAUDE.md, CODEBASE.md, .napkin.md, HANDOVER.md directly (project meta-files)
 
 ## What you must NEVER do
 
-- Edit source files in `src/` or `tests/`
-- Write new code files
+- Write new source files or large code blocks (>10 lines)
 - Checkout branches other than main
 - Push to remote from a worktree
 - Run the full test suite (target specific files with `-m` markers)
