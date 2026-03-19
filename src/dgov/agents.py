@@ -568,7 +568,8 @@ def get_default_agent(registry: dict[str, AgentDef] | None = None) -> str:
 
     Priority:
     1. User config: [dgov] default_agent in ~/.dgov/config.toml
-    2. Logical Qwen worker routes (if available): qwen-9b → qwen-35b → qwen-122b → qwen-397b → qwen-4b
+    2. Logical Qwen worker routes (if available):
+       qwen-9b → qwen-35b → qwen-122b → qwen-397b → qwen-4b
     3. First installed from: claude → codex → gemini
     4. First installed agent in registry
     5. "claude" (ultimate fallback)

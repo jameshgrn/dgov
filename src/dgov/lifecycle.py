@@ -207,9 +207,11 @@ def _write_worktree_instructions(
             "## Commit checklist\n"
             "1. git add <changed files>\n"
             '2. git commit -m "<message>"\n'
-            "3. Verify at least one commit exists beyond DGOV_BASE_SHA via `git log --oneline $DGOV_BASE_SHA..HEAD`\n"
+            "3. Verify at least one commit exists beyond DGOV_BASE_SHA\n"
+            "   with `git log --oneline $DGOV_BASE_SHA..HEAD`\n"
             "4. Run `dgov worker complete` ONLY after step 3 succeeds\n"
-            "5. If no real repo changes were made, run `dgov worker fail` with reason instead of `complete`\n"
+            "5. If no real repo changes were made, run `dgov worker fail`\n"
+            "   with a reason instead of `complete`\n"
         )
 
     # Combine: worker/lt-gov preamble + original repo context
