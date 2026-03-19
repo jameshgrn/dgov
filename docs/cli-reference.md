@@ -60,8 +60,13 @@ Launch a live terminal dashboard showing pane status, agents, and health. Refres
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
 | `--project-root` | `-r` | string | `.` | Project root |
-| `--session-root | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
 | `--refresh` | | float | `2` | Refresh interval in seconds |
+
+### dgov tunnel
+
+Establish or refresh the River SSH multiplexed tunnel. Uses `zsh` to source `~/.zshrc` and run the `river-tunnel` function. This is recommended if local River workers fail preflight checks.
+
 
 ---
 

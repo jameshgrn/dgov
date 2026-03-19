@@ -16,7 +16,7 @@
 | DAG/batch/mission | `dag.py`, `batch.py`, `mission.py` | `dag_parser.py`, `dag_graph.py` | `test_dag.py`, `test_batch.py`, `test_mission.py` |
 | State DB/events | `persistence.py` | `status.py`, `metrics.py` | `test_dgov_state.py`, `test_persistence_pane.py` |
 | Top-level CLI command | matching `cli/*_cmd.py` | `cli/__init__.py` (registration) | `test_cli_admin.py`, `test_dgov_cli.py` |
-| Preflight/doctor | `preflight.py`, `cli/admin.py` | `agents.py` | `test_dgov_preflight.py`, `test_init_doctor.py` |
+| Preflight/doctor/tunnel | `preflight.py`, `cli/admin.py` | `agents.py` | `test_dgov_preflight.py`, `test_init_doctor.py` |
 
 ## Invariants — do not break these
 

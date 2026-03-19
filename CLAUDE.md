@@ -33,11 +33,11 @@ Claude Code or Gemini CLI can be governor. Workers are always Qwen models. Codex
 ### Worker tier (implementation)
 
 1. **River GPU** (preferred) — free, local, no rate limits
-   - `river-35b` — default for single-file edits with exact code
-   - `river-9b` — simple shell commands, find-replace, formatting
+   - `river-35b` / `river-35b-2` — complex single-file logic, exact code generation
+   - `river-9b` / `river-9b-2` / `river-9b-3` — capable general agent for most implementation tasks
    - `river-4b` — classification, triage, monitoring
 2. **OpenRouter Qwen** (fallback when River is down or busy)
-   - `qwen35-35b` / `qwen35-flash` — same capability as river-35b
+   - `qwen35-35b` — same capability as river-35b
    - `qwen35-9b` — same as river-9b
    - `qwen35-122b` / `qwen35-397b` — complex single-file reasoning
    - `qwen3-max` — frontier/governor-only, not a worker escalation target
@@ -50,14 +50,16 @@ Claude Code or Gemini CLI can be governor. Workers are always Qwen models. Codex
 ### LT-GOV tier (orchestration only)
 
 - `codex` — adversarial review, security audit, large-scale refactors
+- `qwen-flash` — low-latency triage and quick checks
 
 ### Selection rules
 
-- **Always use logical agent names** (`qwen-35b`, `qwen-9b`, etc.) — never physical names (`river-35b`, `qwen35-35b`). The router handles health checks and fallback automatically.
+- **Always use logical agent names** (`qwen-35b`, `qwen-9b`, etc.) — never physical names (`river-35b`, `qwen35-35b`). The router handles health checks, load-balancing across local GPUs, and fallback automatically.
 - Default to `qwen-35b`. Escalate to `qwen-122b` or `qwen-397b` for complex single-file reasoning.
 - Never dispatch claude/gemini/codex as a worker. Codex can be an LT-GOV.
 - One file per task for Qwen workers. Multi-file = LT-GOV.
 - Review exists to catch failures — dispatch cheap, retry cheap.
+- **Maintain your tunnel:** Run `dgov tunnel` if local workers fail preflight.
 
 ## Prompting Qwen workers
 
