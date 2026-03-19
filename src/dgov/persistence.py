@@ -75,6 +75,8 @@ VALID_EVENTS = frozenset(
         "monitor_auto_merge",
         "monitor_auto_retry",
         "monitor_tick",
+        "convo_message",
+        "think_entry",
     }
 )
 
@@ -104,6 +106,13 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
         _retry_on_lock(_do)
     except sqlite3.OperationalError:
         logger.warning("emit_event(%s, %s) dropped — database locked", event, pane)
+
+
+def log_convo_message(
+    session_root: str, role: str, content: str, pane: str = "global", **kwargs
+) -> None:
+    """Log a conversation message to the event journal."""
+    emit_event(session_root, "convo_message", pane, role=role, content=content, **kwargs)
 
 
 def read_events(
