@@ -25,11 +25,15 @@ PALETTE = {
 
 
 def _encode_kitty(img: Image.Image) -> str:
-    """Encode a PIL Image to a Kitty graphics protocol escape sequence."""
+    """Encode a PIL Image to a Kitty graphics protocol escape sequence.
+
+    See: https://sw.kovidgoyal.net/kitty/graphics-protocol/
+    """
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     b64_data = base64.standard_b64encode(buf.getvalue()).decode("ascii")
 
+    # Chunking for kitty (max 4096 bytes payload per chunk)
     chunk_size = 4096
     chunks = [b64_data[i : i + chunk_size] for i in range(0, len(b64_data), chunk_size)]
 
@@ -37,7 +41,11 @@ def _encode_kitty(img: Image.Image) -> str:
         return ""
 
     out = []
+    # Send first chunk with a=T (transmit and display), f=100 (PNG format)
+    # We use double backslashes so the string contains a literal backslash.
     out.append(f"\\033_Gf=100,a=T,m={'1' if len(chunks) > 1 else '0'};{chunks[0]}\\033\\\\")
+
+    # Send remaining chunks
     for i, chunk in enumerate(chunks[1:], 1):
         m = "1" if i < len(chunks) - 1 else "0"
         out.append(f"\\033_Gm={m};{chunk}\\033\\\\")
@@ -46,15 +54,15 @@ def _encode_kitty(img: Image.Image) -> str:
 
 
 def render_isometric(model: ErosionModel) -> str:
-    \"\"\"Render an ErosionModel using isometric projection.\"\"\"
+    """Render an ErosionModel using isometric projection."""
     rows = model.height_count
     cols = model.width
 
     if rows <= 0 or cols <= 0:
-        return \"\"
+        return ""
 
     if not model.height or len(model.height) != rows:
-        return \"\"
+        return ""
 
     # Calculate image size
     # Screen X: (col - row) * (TILE_W / 2)
