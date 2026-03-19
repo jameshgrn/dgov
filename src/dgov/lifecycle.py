@@ -507,25 +507,6 @@ def create_worker_pane(
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
 
-    # Resolve logical agent name -> physical backend via router
-    from dgov.router import resolve_agent as _resolve_agent
-
-    resolved_agent, routed_from = _resolve_agent(agent, session_root, project_root)
-    if routed_from:
-        logger.info("Routed %s -> %s", routed_from, resolved_agent)
-    agent = resolved_agent
-
-    registry = load_registry(project_root)
-    agent_def = registry.get(agent)
-    if agent_def is None:
-        raise ValueError(f"Unknown agent {agent!r}. Available: {sorted(registry)}")
-    all_env.update(agent_def.env)
-    if env_vars:
-        all_env.update(env_vars)
-    for key in all_env:
-        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-            raise ValueError(f"Invalid environment variable name: {key!r}")
-
     # 1. Capture base SHA (HEAD of project_root before worktree creation)
     base_sha_result = subprocess.run(
         ["git", "-C", project_root, "rev-parse", "HEAD"],
@@ -547,10 +528,33 @@ def create_worker_pane(
             if _main_venv.is_dir() and not _wt_venv.exists():
                 _wt_venv.symlink_to(_main_venv)
 
-        # 2b-2c. Health check + concurrency guard protected by file lock
+        # 2b-2c. Lock + resolve agent + health/concurrency checks (atomic)
         # This atomic section prevents race conditions when multiple governors
-        # create panes concurrently on the same repo.
+        # create panes concurrently on the same repo. We re-resolve the agent
+        # after acquiring the lock so that a logical name like qwen-35b picks
+        # an available backend right before pane creation, avoiding races where
+        # the chosen backend becomes busy between initial resolution and pane creation.
         with _pane_lock(project_root):
+            # Re-resolve logical agent name -> physical backend after lock
+            # River-first then OpenRouter fallback preserved by router order
+            from dgov.router import resolve_agent as _resolve_agent
+
+            final_agent, routed_from = _resolve_agent(agent, session_root, project_root)
+            if routed_from:
+                logger.info("Routed %s -> %s", routed_from, final_agent)
+            agent = final_agent
+
+            registry = load_registry(project_root)
+            agent_def = registry.get(agent)
+            if agent_def is None:
+                raise ValueError(f"Unknown agent {agent!r}. Available: {sorted(registry)}")
+            all_env.update(agent_def.env)
+            if env_vars:
+                all_env.update(env_vars)
+            for key in all_env:
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                    raise ValueError(f"Invalid environment variable name: {key!r}")
+
             # Health check (config-driven) with 10s timeout
             if agent_def.health_check:
                 hc = subprocess.run(
