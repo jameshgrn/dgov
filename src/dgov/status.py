@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from dgov.backend import get_backend
-from dgov.done import _is_done
+from dgov.done import _is_done, _strip_ansi
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
@@ -401,29 +401,6 @@ def capture_worker_output(
         return None
 
     return get_backend().capture_output(pane_id, lines)
-
-
-# -- ANSI stripping (lightweight, no curses dependency) --
-
-_ANSI_RE = re.compile(
-    r"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI sequences (cursor, color, etc.)
-    r"|\x1b\].*?(?:\x07|\x1b\\)"  # OSC sequences (title, hyperlinks, cwd)
-    r"|\x1bk.*?\x1b\\"  # tmux title-setting (ESC k ... ESC \)
-    r"|\x1b\[.*?m"  # SGR color codes
-    r"|\x1b[()][0-9A-Za-z]"  # Character set selection
-    r"|\x1b[=>]"  # Keypad modes
-    r"|\x1b[\d;?]*[A-HJKfr]"  # Cursor positioning / scroll regions
-    r"|\x1b\[\?[\d;]*[hl]"  # Private mode set/reset (DECSET/DECRST)
-    r"|\x1b[78]"  # Save/restore cursor (DECSC/DECRC)
-    r"|\x1b\[[0-9;]*~"  # Bracketed paste markers (200~/201~)
-    r"|[\x00-\x08\x0e-\x1f\x7f]"  # Control chars (wider range)
-    r"|\r"  # Carriage returns
-)
-
-
-def _strip_ansi(text: str) -> str:
-    text = _ANSI_RE.sub("", text)
-    return re.sub(r"\[\d{3}~", "", text)
 
 
 # -- Noise filtering --

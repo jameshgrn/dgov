@@ -8,6 +8,7 @@ only depends on backend and persistence (lower-level).
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import subprocess
 import time
@@ -21,6 +22,30 @@ if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
 
 logger = logging.getLogger(__name__)
+
+
+# -- ANSI stripping (lightweight, no curses dependency) --
+
+_ANSI_RE = re.compile(
+    r"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI sequences (cursor, color, etc.)
+    r"|\x1b\].*?(?:\x07|\x1b\\)"  # OSC sequences (title, hyperlinks, cwd)
+    r"|\x1bk.*?\x1b\\"  # tmux title-setting (ESC k ... ESC \)
+    r"|\x1b\[.*?m"  # SGR color codes
+    r"|\x1b[()][0-9A-Za-z]"  # Character set selection
+    r"|\x1b[=>]"  # Keypad modes
+    r"|\x1b[\d;?]*[A-HJKfr]"  # Cursor positioning / scroll regions
+    r"|\x1b\[\?[\d;]*[hl]"  # Private mode set/reset (DECSET/DECRST)
+    r"|\x1b[78]"  # Save/restore cursor (DECSC/DECRC)
+    r"|\x1b\[[0-9;]*~"  # Bracketed paste markers (200~/201~)
+    r"|[\x00-\x08\x0e-\x1f\x7f]"  # Control chars (wider range)
+    r"|\r"  # Carriage returns
+)
+
+
+def _strip_ansi(text: str) -> str:
+    text = _ANSI_RE.sub("", text)
+    return re.sub(r"\[\d{3}~", "", text)
+
 
 _CIRCUIT_BREAKER_LINES = 20
 
