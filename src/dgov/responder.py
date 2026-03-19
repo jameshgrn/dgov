@@ -125,8 +125,10 @@ def auto_respond(
 
     Returns the matched rule if an action was taken, None otherwise.
     Does NOT send for 'escalate' actions — the caller should handle those.
+    Does NOT send for 'send' actions if the pane has dropped to a shell prompt.
     """
     from dgov.backend import get_backend
+    from dgov.done import _agent_still_running
     from dgov.persistence import STATE_DIR, emit_event, get_pane
 
     if rules is None:
@@ -151,7 +153,8 @@ def auto_respond(
         return rule
 
     if rule.action == "send":
-        if pane_id and get_backend().is_alive(pane_id):
+        # Only send if pane exists, is alive, and agent is still running
+        if pane_id and get_backend().is_alive(pane_id) and _agent_still_running(pane_id):
             get_backend().send_input(pane_id, rule.response)
             emit_event(
                 session_root,

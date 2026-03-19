@@ -282,7 +282,9 @@ class TestAutoRespond:
         session_root = _setup_pane(tmp_path)
         rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
         mock_backend.is_alive.return_value = True
-        result = auto_respond(session_root, "test-worker", "proceed?", rules)
+        mock_backend.current_command.return_value = "claude"
+        with patch("dgov.done._agent_still_running", return_value=True):
+            result = auto_respond(session_root, "test-worker", "proceed?", rules)
         assert result is not None
         assert result.action == "send"
         mock_backend.send_input.assert_called_once_with("%99", "yes")
@@ -312,6 +314,7 @@ class TestAutoRespond:
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.tmux.send_text_input"),
+            patch("dgov.done._agent_still_running", return_value=True),
         ):
             result1 = auto_respond(session_root, "test-worker", "proceed?", rules)
             assert result1 is not None
@@ -325,9 +328,11 @@ class TestAutoRespond:
         session_b = _setup_pane(tmp_path / "session-b")
         rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
         mock_backend.is_alive.return_value = True
+        mock_backend.current_command.return_value = "claude"
 
-        auto_respond(session_a, "test-worker", "proceed?", rules)
-        auto_respond(session_b, "test-worker", "proceed?", rules)
+        with patch("dgov.done._agent_still_running", return_value=True):
+            auto_respond(session_a, "test-worker", "proceed?", rules)
+            auto_respond(session_b, "test-worker", "proceed?", rules)
 
         assert mock_backend.send_input.call_count == 2
 
@@ -356,6 +361,7 @@ class TestAutoRespond:
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
             patch("dgov.tmux.send_text_input"),
+            patch("dgov.done._agent_still_running", return_value=True),
         ):
             auto_respond(session_root, "test-worker", "proceed?", rules)
         events = read_events(session_root)
@@ -381,6 +387,48 @@ class TestAutoRespond:
         rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
         result = auto_respond(session_root, "nonexistent", "proceed?", rules)
         assert result is None
+
+    def test_send_action_skipped_at_shell_prompt(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """When pane is alive but agent has dropped to shell, do not send."""
+        session_root = _setup_pane(tmp_path)
+        rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
+        mock_backend.is_alive.return_value = True
+        mock_backend.current_command.return_value = "bash"  # shell, not agent
+
+        with patch("dgov.done._agent_still_running", return_value=False):
+            result = auto_respond(session_root, "test-worker", "proceed?", rules)
+
+        assert result is None
+        mock_backend.send_input.assert_not_called()
+
+    def test_send_action_sends_when_agent_running(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """When pane is alive and agent is running, send the response."""
+        session_root = _setup_pane(tmp_path)
+        rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
+        mock_backend.is_alive.return_value = True
+        mock_backend.current_command.return_value = "claude"  # agent command
+
+        with patch("dgov.done._agent_still_running", return_value=True):
+            result = auto_respond(session_root, "test-worker", "proceed?", rules)
+
+        assert result is not None
+        assert result.action == "send"
+        mock_backend.send_input.assert_called_once_with("%99", "yes")
+
+    def test_send_action_ignores_dead_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        """When pane is dead, do not send even if agent command would match."""
+        session_root = _setup_pane(tmp_path)
+        rules = [ResponseRule(_PAT_PROCEED, "yes", "send")]
+        mock_backend.is_alive.return_value = False
+
+        result = auto_respond(session_root, "test-worker", "proceed?", rules)
+
+        assert result is None
+        mock_backend.send_input.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
