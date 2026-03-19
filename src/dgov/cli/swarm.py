@@ -3,9 +3,10 @@
 Phase 1 skeleton for think/convo/watch subcommands.
 """
 
-import click
+import json
+import time
 
-from dgov.backend import get_backend
+import click
 
 
 @click.group()
@@ -55,32 +56,128 @@ def convo(session: str, agents: tuple[str, ...], prompt: str | None) -> None:
         click.echo("Error: at least one agent required", err=True)
         return
 
-    backend = get_backend()
-    pane_id = backend.create_pane(
-        f"[convo] {' + '.join(agents)}",
-        f"Conversation with: {' + '.join(agents)}",
-        cwd=session,
+    from dgov.lifecycle import create_worker_pane
+    from dgov.persistence import emit_event
+
+    # Create conversation host pane
+    host_prompt = "\n".join(
+        [
+            "You are a conversation host orchestrating dialogue between agents.",
+            f"Participants: {' + '.join(agents)}",
+            "",
+            "Your role: route messages between participants, maintain context, and summarize when needed.",
+        ]
     )
-    ts = datetime.now(timezone.utc).isoformat()
     if prompt:
-        backend.send_to_pane(pane_id, f"CONVO_START\n\nAgents: {', '.join(agents)}\n\n{prompt}")
-    click.echo(f'{{"pane_id": "{pane_id}", "status": "started", "ts": "{ts}"}}')
+        host_prompt += f"\n\nInitial message:\n{prompt}"
+
+    host_pane = create_worker_pane(
+        project_root=session,
+        prompt=host_prompt,
+        agent="qwen-35b",
+        role="conversation_host",
+        session_root=session,
+    )
+
+    # Launch participant panes linked to the host
+    participant_slugs = []
+    for agent in agents:
+        part_prompt = (
+            f"You are participating in a conversation hosted by {host_pane.slug}.\n"
+            f"Role: {agent}\n\n"
+            "Follow the host's routing instructions and respond to your turn."
+        )
+        part_pane = create_worker_pane(
+            project_root=session,
+            prompt=part_prompt,
+            agent=agent,
+            role="participant",
+            parent_slug=host_pane.slug,
+            session_root=session,
+        )
+        participant_slugs.append(part_pane.slug)
+
+    ts = datetime.now(timezone.utc).isoformat()
+    emit_event(
+        session,
+        "convo_started",
+        host_pane.slug,
+        agents=list(agents),
+        host_slug=host_pane.slug,
+        participant_slugs=participant_slugs,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "host_slug": host_pane.slug,
+                "pane_id": host_pane.pane_id,
+                "participants": participant_slugs,
+                "status": "started",
+                "ts": ts,
+            }
+        )
+    )
 
 
 @swarm.command("watch")
 @click.option("--session", "-s", required=True, help="Session root directory")
-@click.option("--pattern", "-p", required=True, help="Pattern to watch")
+@click.option("--slug", "-t", required=True, help="Target slug to watch")
+@click.option("--pattern", "-p", required=True, help="Event pattern to match")
 @click.option("--threshold", type=float, default=0.8, help="Alert threshold")
-def watch(session: str, pattern: str, threshold: float) -> None:
+@click.option("--interval", type=float, default=1.0, help="Polling interval in seconds")
+def watch(session: str, slug: str, pattern: str, threshold: float, interval: float) -> None:
     """Start watching for events matching a pattern."""
     from datetime import datetime, timezone
 
-    backend = get_backend()
-    pane_id = backend.create_pane(
-        f"[watch] {pattern}",
-        f"Watching for: {pattern} (threshold: {threshold})",
-        cwd=session,
+    from dgov.lifecycle import create_worker_pane
+    from dgov.persistence import emit_event, read_events
+
+    # Create watcher pane
+    watcher_prompt = (
+        f"You are monitoring events for the target slug '{slug}'.\n"
+        f"Watch for events matching pattern: {pattern}\n"
+        f"Alert threshold: {threshold}\n\n"
+        "Poll periodically and report any matching events."
     )
+    watcher_pane = create_worker_pane(
+        project_root=session,
+        prompt=watcher_prompt,
+        agent="qwen-4b",
+        role="watcher",
+        session_root=session,
+    )
+
     ts = datetime.now(timezone.utc).isoformat()
-    backend.send_to_pane(pane_id, f"WATCH_START\n\nPattern: {pattern}\nThreshold: {threshold}")
-    click.echo(f'{{"pane_id": "{pane_id}", "status": "started", "ts": "{ts}"}}')
+    emit_event(
+        session,
+        "watch_started",
+        watcher_pane.slug,
+        target_slug=slug,
+        pattern=pattern,
+        threshold=threshold,
+        interval=interval,
+    )
+    click.echo(
+        json.dumps(
+            {
+                "slug": watcher_pane.slug,
+                "pane_id": watcher_pane.pane_id,
+                "target": slug,
+                "pattern": pattern,
+                "status": "started",
+                "ts": ts,
+            }
+        )
+    )
+
+    # Basic polling loop
+    try:
+        while True:
+            events = read_events(session, slug=slug)
+            for ev in events:
+                if pattern in ev.get("event", ""):
+                    click.echo(f"[WATCH] {ev['ts']} - {ev['event']}: {ev.get('data', '')}")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        emit_event(session, "watch_stopped", watcher_pane.slug, target_slug=slug)
+        click.echo("\n[WATCH] Stopped.")
