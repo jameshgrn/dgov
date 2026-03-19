@@ -19,19 +19,28 @@ def swarm():
 @click.option("--agent", "-a", default="qwen-35b", help="Agent to orchestrate")
 @click.option("--prompt", "-p", required=True, help="Think prompt")
 @click.option("--max-steps", type=int, default=10, help="Max thinking steps")
-def think(session: str, agent: str, prompt: str, max_steps: int) -> None:
+@click.option("--parent", "-P", default="", help="Parent pane slug (for chaining)")
+def think(session: str, agent: str, prompt: str, max_steps: int, parent: str) -> None:
     """Start a think session for structured reasoning."""
     from datetime import datetime, timezone
 
-    backend = get_backend()
-    pane_id = backend.create_pane(
-        f"[think] {agent}",
-        f"Think about: {prompt[:50]}...",
-        cwd=session,
+    from dgov.lifecycle import create_worker_pane
+    from dgov.persistence import emit_event
+
+    pane = create_worker_pane(
+        project_root=session,
+        prompt=f"{prompt}\n\nMax steps: {max_steps}",
+        agent=agent,
+        role="reasoner",
+        parent_slug=parent,
+        session_root=session,
     )
     ts = datetime.now(timezone.utc).isoformat()
-    backend.send_to_pane(pane_id, f"THINK_START\n\n{prompt}\n\nMax steps: {max_steps}")
-    click.echo(f'{{"pane_id": "{pane_id}", "status": "started", "ts": "{ts}"}}')
+    emit_event(session, "think_started", pane.slug, agent=agent, prompt=prompt[:200])
+    click.echo(
+        f'{{"slug": "{pane.slug}", "pane_id": "{pane.pane_id}", '
+        f'"status": "started", "ts": "{ts}"}}'
+    )
 
 
 @swarm.command("convo")
