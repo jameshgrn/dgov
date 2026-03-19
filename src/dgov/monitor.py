@@ -555,17 +555,6 @@ def run_monitor(
                                     exc_info=True,
                                 )
 
-                # Periodic garbage collection every 200 ticks (~17 min at 5s interval)
-                if tick % 200 == 100:
-                    try:
-                        from dgov.status import prune_stale_panes
-
-                        pruned = prune_stale_panes(project_root, session_root)
-                        if pruned:
-                            logger.info("Monitor: gc pruned %d entries: %s", len(pruned), pruned)
-                    except Exception:
-                        logger.warning("Monitor: gc failed", exc_info=True)
-
                 workers = poll_workers(project_root, session_root, hooks=hooks)
                 actions = []
 
