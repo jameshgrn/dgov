@@ -1,9 +1,9 @@
 """Administrative and diagnostic commands."""
 
 from __future__ import annotations
-import os
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -286,6 +286,28 @@ def terrain_cmd(refresh):
     from dgov.terrain_pane import run_terrain
 
     run_terrain(refresh)
+
+
+@click.command("tunnel")
+def tunnel_cmd():
+    """Establish or refresh the River SSH tunnel."""
+    click.echo("Refreshing River multiplexed tunnel...")
+    try:
+        # We use zsh -c so we can pick up the function from .zshrc
+        result = subprocess.run(
+            ["zsh", "-c", "source ~/.zshrc && river-tunnel"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            click.echo(json.dumps({"river_tunnel": "up", "detail": result.stdout.strip()}))
+        else:
+            click.echo(json.dumps({"river_tunnel": "failed", "error": result.stderr.strip()}))
+            sys.exit(1)
+    except Exception as e:
+        click.echo(json.dumps({"river_tunnel": "error", "message": str(e)}))
+        sys.exit(1)
 
 
 @click.command("init")

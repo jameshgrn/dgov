@@ -45,6 +45,8 @@ ESCALATION_CHAIN: dict[str, str] = {
     # Physical names (backward compat for panes that stored physical agent)
     "river-4b": "qwen-9b",
     "river-9b": "qwen-35b",
+    "river-9b-2": "qwen-35b",
+    "river-9b-3": "qwen-35b",
     "river-35b": "qwen-122b",
     "river-35b-2": "qwen-122b",
     "qwen35-9b": "qwen-35b",

@@ -415,6 +415,55 @@ def check_agent_health(
 # ---------------------------------------------------------------------------
 
 
+def check_river_tunnel() -> CheckResult:
+    """Check if the multiplexed River SSH tunnel is active."""
+    socket = Path.home() / ".dgov" / "river.sock"
+    if not socket.exists():
+        # Fallback to /tmp/river.sock
+        socket = Path("/tmp/river.sock")
+
+    if not socket.exists():
+        return CheckResult(
+            name="river_tunnel",
+            passed=False,
+            critical=False,
+            message="River SSH tunnel socket not found",
+            fixable=True,
+        )
+
+    # Check if the socket is alive
+    try:
+        result = subprocess.run(
+            ["ssh", "-S", str(socket), "-O", "check", "river.emes.unc.edu"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode == 0:
+            return CheckResult(
+                name="river_tunnel",
+                passed=True,
+                critical=False,
+                message="River multiplexed tunnel is alive",
+            )
+        else:
+            return CheckResult(
+                name="river_tunnel",
+                passed=False,
+                critical=False,
+                message="River tunnel socket exists but connection is dead",
+                fixable=True,
+            )
+    except (subprocess.TimeoutExpired, OSError):
+        return CheckResult(
+            name="river_tunnel",
+            passed=False,
+            critical=False,
+            message="Timed out checking river tunnel",
+            fixable=True,
+        )
+
+
 def run_preflight(
     project_root: str,
     agent: str = "claude",
@@ -436,6 +485,8 @@ def run_preflight(
     checks: list[CheckResult] = []
 
     checks.append(check_agent_cli(agent, registry=registry))
+    if agent.startswith("river-") or "river" in agent:
+        checks.append(check_river_tunnel())
     checks.append(check_git_clean(project_root))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
@@ -489,7 +540,7 @@ def _fix_stale_worktrees(project_root: str) -> bool:
         return False
 
 
-_FIXER_NAMES = {"deps", "stale_worktrees", "agent_health"}
+_FIXER_NAMES = {"deps", "stale_worktrees", "agent_health", "river_tunnel"}
 
 
 def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
@@ -548,6 +599,13 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
             elif check.name == "deps":
                 if _fix_deps(project_root):
                     recheck.append(check.name)
+
+            elif check.name == "river_tunnel":
+                try:
+                    subprocess.run(["zsh", "-c", "source ~/.zshrc && river-tunnel"], timeout=30)
+                    recheck.append(check.name)
+                except Exception:
+                    pass
             elif check.name == "agent_health":
                 if _fix_agent_health(project_root):
                     recheck.append(check.name)
@@ -563,6 +621,16 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
                 new_checks.append(check_deps(project_root))
             elif check.name == "stale_worktrees":
                 new_checks.append(check_stale_worktrees(project_root))
+            elif check.name == "river_tunnel":
+                new_checks.append(check_river_tunnel())
+                new_checks.append(check_stale_worktrees(project_root))
+
+            elif check.name == "river_tunnel":
+                try:
+                    subprocess.run(["zsh", "-c", "source ~/.zshrc && river-tunnel"], timeout=30)
+                    recheck.append(check.name)
+                except Exception:
+                    pass
             elif check.name == "agent_health":
                 # Re-run all agent health checks
                 from dgov.agents import load_registry

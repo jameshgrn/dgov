@@ -360,6 +360,7 @@ from dgov.cli.admin import (  # noqa: E402
     stats,
     status,
     terrain_cmd,
+    tunnel_cmd,
     version_cmd,
 )
 from dgov.cli.batch_cmd import batch, checkpoint  # noqa: E402
@@ -400,6 +401,7 @@ cli.add_command(dag)
 cli.add_command(merge_queue)
 cli.add_command(briefing_cmd)
 cli.add_command(terrain_cmd)
+cli.add_command(tunnel_cmd)
 cli.add_command(worker)
 cli.add_command(monitor_cmd)
 cli.add_command(gc_cmd)
