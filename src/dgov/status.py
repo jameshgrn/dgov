@@ -183,6 +183,7 @@ def list_worker_panes(
     *,
     include_freshness: bool = True,
     include_prompt: bool = True,
+    include_output: bool = False,
 ) -> list[dict]:
     """List worker panes with live status from tmux.
 
@@ -193,6 +194,11 @@ def list_worker_panes(
     When *include_prompt* is False, use a slim DB query that only loads the
     first 200 characters of each prompt. Use False in hot paths like the
     dashboard where full prompts are not needed.
+
+    When *include_output* is False, skip loading worker logs and deriving
+    summaries from them. This avoids disk I/O for large logs. In this guarded
+    path, last_output is set to empty string and summary is derived from recent
+    progress JSON (prefer message, then phase, else empty string).
 
     Automatically prunes stale panes (terminal state + no worktree, or
     terminal state older than 1 hour) before returning results.
@@ -270,10 +276,21 @@ def list_worker_panes(
             elif cmd_lower:
                 activity = cmd_lower[:15]
 
-        last_output = tail_worker_log(session_root, slug, lines=10) or ""
         duration_s = round(time.time() - (p.get("created_at") or time.time()))
 
-        summary = _extract_summary_from_log(session_root, slug, pre_read=last_output)
+        if include_output:
+            # Opt-in path: load worker output and derive summary from log text
+            last_output = tail_worker_log(session_root, slug, lines=10) or ""
+            summary = _extract_summary_from_log(session_root, slug, pre_read=last_output)
+        else:
+            # Guarded path: skip log ingestion entirely
+            last_output = ""
+            progress = _read_progress_json(session_root, slug)
+            if progress:
+                summary = progress.get("message", "") or progress.get("phase", "")
+            else:
+                summary = ""
+
         phase = _compute_phase(state, alive, done, duration_s, summary)
         progress = _read_progress_json(session_root, slug)
 
