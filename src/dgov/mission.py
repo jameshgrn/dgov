@@ -7,6 +7,7 @@ import os
 import time
 from dataclasses import dataclass
 
+from dgov.context_packet import build_context_packet
 from dgov.persistence import emit_event
 
 logger = logging.getLogger(__name__)
@@ -63,10 +64,9 @@ def run_mission(
     Synchronous state machine: PENDING -> RUNNING -> WAITING -> REVIEWING
     -> MERGING -> COMPLETED (or FAILED / REVIEW_PENDING at any step).
     """
-    from dgov.inspection import review_worker_pane
+    from dgov.executor import review_merge_gate, run_dispatch_preflight
     from dgov.lifecycle import close_worker_pane, create_worker_pane
     from dgov.merger import merge_worker_pane
-    from dgov.preflight import run_preflight
     from dgov.recovery import escalate_worker_pane
     from dgov.strategy import _generate_slug
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
@@ -86,7 +86,13 @@ def run_mission(
     # -- PENDING: preflight --
     emit_event(session_root, "mission_pending", slug_s, agent=policy.agent)
     logger.info("Mission %s: preflight (%s)", slug_s, policy.agent)
-    report = run_preflight(project_root, agent=policy.agent, session_root=session_root)
+    packet = build_context_packet(prompt)
+    report = run_dispatch_preflight(
+        project_root,
+        policy.agent,
+        packet=packet,
+        session_root=session_root,
+    )
     if not report.passed:
         failed_checks = [c.message for c in report.checks if not c.passed and c.critical]
         return _fail(f"Preflight failed: {'; '.join(failed_checks)}")
@@ -102,6 +108,7 @@ def run_mission(
             permission_mode=policy.permission_mode,
             slug=slug_s,
             session_root=session_root,
+            context_packet=packet,
         )
         slug_s = pane.slug
     except Exception as e:
@@ -163,16 +170,23 @@ def run_mission(
     # -- REVIEWING: review the diff --
     emit_event(session_root, "mission_reviewing", slug_s)
     logger.info("Mission %s: reviewing diff", slug_s)
-    review = review_worker_pane(project_root, slug_s, session_root=session_root)
-    if review.get("error"):
+    gate = review_merge_gate(
+        project_root,
+        slug_s,
+        session_root=session_root,
+        require_safe=False,
+        require_commits=False,
+    )
+    review = gate.review
+    if gate.error:
         close_worker_pane(project_root, slug_s, session_root=session_root)
-        return _fail(f"Review failed: {review['error']}")
+        return _fail(f"Review failed: {gate.error}")
 
     issues = review.get("issues")
     finding_dicts = [{"description": f} for f in issues] if issues else None
     verdict = review.get("verdict", "safe")
 
-    if verdict != "safe" and not policy.auto_merge:
+    if verdict != "safe":
         emit_event(session_root, "mission_reviewing", slug_s, verdict="review_pending")
         return MissionResult(
             state="review_pending",
@@ -186,7 +200,6 @@ def run_mission(
     logger.info("Mission %s: merging", slug_s)
     merge = merge_worker_pane(project_root, slug_s, session_root=session_root)
     if merge.get("error"):
-        close_worker_pane(project_root, slug_s, session_root=session_root)
         return _fail(f"Merge failed: {merge['error']}")
 
     # -- COMPLETED --

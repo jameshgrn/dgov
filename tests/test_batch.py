@@ -144,8 +144,12 @@ permission_mode = "bypassPermissions"
             "dgov.batch._transitive_dependents",
             lambda tasks, failed_ids: set(),
         )
+        monkeypatch.setattr(
+            "dgov.preflight.run_preflight",
+            lambda *args, **kwargs: type("R", (), {"passed": True})(),
+        )
 
-        # Mock create_worker_pane and merge_worker_pane (from lifecycle/merger)
+        # Mock create_worker_pane, review_worker_pane, and merge_worker_pane.
         class Pane:
             def __init__(self, slug: str) -> None:
                 self.slug = slug
@@ -156,10 +160,14 @@ permission_mode = "bypassPermissions"
             created.append(kwargs)
             return Pane(slug=kwargs["slug"])
 
+        def fake_review_worker_pane(project_root_arg, slug, session_root=None):  # noqa: ANN001, ANN002, ANN003
+            return {"slug": slug, "verdict": "safe", "commit_count": 1}
+
         def fake_merge_worker_pane(project_root_arg, slug, session_root=None):  # noqa: ANN001, ANN002, ANN003
             return {"merged": True, "slug": slug}
 
         monkeypatch.setattr("dgov.lifecycle.create_worker_pane", fake_create_worker_pane)
+        monkeypatch.setattr("dgov.inspection.review_worker_pane", fake_review_worker_pane)
         monkeypatch.setattr("dgov.merger.merge_worker_pane", fake_merge_worker_pane)
 
         # Avoid real waits
@@ -168,16 +176,101 @@ permission_mode = "bypassPermissions"
         result = batch_dispatch(str(spec_path), session_root=str(session_root))
 
         assert result["merged"] == ["t1"]
-        assert created == [
-            {
-                "project_root": ".",
-                "prompt": "do a thing",
-                "agent": "agent-one",
-                "permission_mode": "bypassPermissions",
-                "slug": "t1",
-                "session_root": str(session_root),
-            }
-        ]
+        assert len(created) == 1
+        assert created[0]["project_root"] == "."
+        assert created[0]["prompt"] == "do a thing"
+        assert created[0]["agent"] == "agent-one"
+        assert created[0]["permission_mode"] == "bypassPermissions"
+        assert created[0]["slug"] == "t1"
+        assert created[0]["session_root"] == str(session_root)
+        assert created[0]["context_packet"].file_claims == ("a.py",)
+
+    def test_batch_dispatch_skips_non_safe_review(self, tmp_path, monkeypatch):
+        spec_path = self._write_spec(
+            tmp_path,
+            """
+project_root = "."
+
+[tasks.t1]
+prompt = "do a thing"
+agent = "agent-one"
+touches = ["a.py"]
+""",
+        )
+
+        session_root = tmp_path / "session"
+        session_root.mkdir()
+
+        monkeypatch.setattr("dgov.batch._compute_tiers", lambda tasks: [[tasks["t1"]]])
+        monkeypatch.setattr("dgov.batch._transitive_dependents", lambda tasks, failed_ids: set())
+
+        class Pane:
+            def __init__(self, slug: str) -> None:
+                self.slug = slug
+
+        merge_calls: list[str] = []
+
+        monkeypatch.setattr(
+            "dgov.lifecycle.create_worker_pane",
+            lambda **kwargs: Pane(slug=kwargs["slug"]),
+        )
+        monkeypatch.setattr(
+            "dgov.preflight.run_preflight",
+            lambda *args, **kwargs: type("R", (), {"passed": True})(),
+        )
+        monkeypatch.setattr(
+            "dgov.inspection.review_worker_pane",
+            lambda project_root_arg, slug, session_root=None: {
+                "slug": slug,
+                "verdict": "review",
+                "commit_count": 1,
+            },
+        )
+        monkeypatch.setattr(
+            "dgov.merger.merge_worker_pane",
+            lambda project_root_arg, slug, session_root=None: merge_calls.append(slug),
+        )
+        monkeypatch.setattr("dgov.batch.wait_for_slugs", lambda sr, slugs, timeout=600: [])
+
+        result = batch_dispatch(str(spec_path), session_root=str(session_root))
+
+        assert result["merged"] == []
+        assert result["failed"] == ["t1"]
+        assert merge_calls == []
+
+    def test_batch_dispatch_blocks_preflight_failure(self, tmp_path, monkeypatch):
+        spec_path = self._write_spec(
+            tmp_path,
+            """
+project_root = "."
+
+[tasks.t1]
+prompt = "do a thing"
+agent = "agent-one"
+touches = ["a.py"]
+""",
+        )
+
+        session_root = tmp_path / "session"
+        session_root.mkdir()
+
+        monkeypatch.setattr("dgov.batch._compute_tiers", lambda tasks: [[tasks["t1"]]])
+        monkeypatch.setattr("dgov.batch._transitive_dependents", lambda tasks, failed_ids: set())
+        monkeypatch.setattr(
+            "dgov.preflight.run_preflight",
+            lambda *args, **kwargs: type("R", (), {"passed": False})(),
+        )
+        create_calls: list[str] = []
+        monkeypatch.setattr(
+            "dgov.lifecycle.create_worker_pane",
+            lambda **kwargs: create_calls.append(kwargs["slug"]),
+        )
+
+        result = batch_dispatch(str(spec_path), session_root=str(session_root))
+
+        assert result["merged"] == []
+        assert result["failed"] == ["t1"]
+        assert create_calls == []
 
     def test_batch_dispatch_invalid_toml_raises(self, tmp_path):
         spec = tmp_path / "bad.toml"

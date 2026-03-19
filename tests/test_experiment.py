@@ -296,6 +296,39 @@ class TestRunExperiment:
         assert result["error"] == "timeout"
         mock_close.assert_called_once()
 
+    @patch("dgov.experiment._read_result_file")
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.experiment.emit_event")
+    def test_merge_failure_keeps_worker_open(
+        self, mock_emit, mock_create, mock_wait, mock_merge, mock_close, mock_read_result, tmp_path
+    ):
+        mock_create.return_value = MagicMock(slug="exp-test05")
+        mock_wait.return_value = {"done": "exp-test05", "method": "signal"}
+        mock_merge.return_value = {"error": "merge failed"}
+        mock_read_result.return_value = {
+            "metric_name": "val_bpb",
+            "metric_value": 1.30,
+            "hypothesis": "deeper net",
+            "follow_ups": [],
+        }
+
+        result = run_experiment(
+            project_root=str(tmp_path),
+            program_text="Try deeper net",
+            metric_name="val_bpb",
+            metric_baseline=1.42,
+            agent="pi",
+            session_root=str(tmp_path),
+            exp_id="exp-test05",
+        )
+
+        assert result["status"] == "error"
+        assert result["error"] == "merge failed"
+        mock_close.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # _compute_tiers (experiments are sequential = 1 per tier)

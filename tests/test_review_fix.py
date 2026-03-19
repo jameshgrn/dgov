@@ -364,7 +364,6 @@ class TestPipelineParseError:
 
 
 class TestPipelineFull:
-    @patch("subprocess.run")
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.status.capture_worker_output")
@@ -381,7 +380,6 @@ class TestPipelineFull:
         mock_capture,
         mock_merge,
         mock_close,
-        mock_subproc,
         tmp_path: Path,
     ):
         # create_worker_pane returns different slugs for review vs fix
@@ -407,8 +405,11 @@ class TestPipelineFull:
                 }
             ]
         )
-        mock_merge.return_value = {"merged": "fix-foo", "branch": "fix-foo"}
-        mock_subproc.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_merge.return_value = {
+            "merged": "fix-foo",
+            "branch": "fix-foo",
+            "tests_passed": True,
+        }
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
         (tmp_path / "src" / "foo.py").touch()
@@ -426,6 +427,10 @@ class TestPipelineFull:
         assert result["merged_count"] == 1
         assert result["failed_count"] == 0
         assert result["test_status"] == "pass"
+        assert mock_close.call_args_list == [
+            ((str(tmp_path), "review-000-foo"), {"session_root": str(tmp_path), "force": True}),
+            ((str(tmp_path), "fix-foo"), {"session_root": str(tmp_path), "force": True}),
+        ]
 
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.status.capture_worker_output")
@@ -463,7 +468,6 @@ class TestPipelineFull:
         assert result["fixed_count"] == 0
         assert result["test_status"] == "skipped"
 
-    @patch("subprocess.run")
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.status.capture_worker_output")
@@ -480,7 +484,6 @@ class TestPipelineFull:
         mock_capture,
         mock_merge,
         mock_close,
-        mock_subproc,
         tmp_path: Path,
     ):
         call_count = {"n": 0}
@@ -520,6 +523,122 @@ class TestPipelineFull:
         assert result["phase"] == "complete"
         assert result["failed_count"] == 1
         assert result["merged_count"] == 0
+        mock_close.assert_called_once_with(
+            str(tmp_path), "review-000-foo", session_root=str(tmp_path), force=True
+        )
+
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
+    @patch("dgov.persistence.get_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.review_fix.emit_event")
+    def test_full_pipeline_keeps_failed_fix_worker_open(
+        self,
+        mock_emit,
+        mock_create,
+        mock_get_pane,
+        mock_is_done,
+        mock_capture,
+        mock_merge,
+        mock_close,
+        tmp_path: Path,
+    ):
+        call_count = {"n": 0}
+
+        def create_side_effect(**kwargs):
+            call_count["n"] += 1
+            slug = kwargs.get("slug", f"worker-{call_count['n']}")
+            return MagicMock(slug=slug)
+
+        mock_create.side_effect = create_side_effect
+        mock_is_done.return_value = True
+        mock_get_pane.return_value = {"slug": "test", "pane_id": "%1"}
+        mock_capture.return_value = json.dumps(
+            [
+                {
+                    "file": "src/foo.py",
+                    "line": 1,
+                    "severity": "critical",
+                    "category": "bug",
+                    "description": "crash",
+                    "suggested_fix": "fix",
+                }
+            ]
+        )
+        mock_merge.return_value = {"error": "Merge failed"}
+
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "foo.py").touch()
+
+        result = run_review_fix_pipeline(
+            project_root=str(tmp_path),
+            targets=["src/foo.py"],
+            session_root=str(tmp_path),
+            auto_approve=True,
+        )
+
+        assert result["phase"] == "complete"
+        assert result["failed_count"] == 1
+        assert result["merged_count"] == 0
+        # Review worker closes after capture; failed fix worker stays open for recovery.
+        mock_close.assert_called_once_with(
+            str(tmp_path), "review-000-foo", session_root=str(tmp_path), force=True
+        )
+
+    @patch("dgov.lifecycle.close_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.status.capture_worker_output")
+    @patch("dgov.waiter._is_done")
+    @patch("dgov.persistence.get_pane")
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.review_fix.emit_event")
+    def test_full_pipeline_surfaces_merge_validation_failure(
+        self,
+        mock_emit,
+        mock_create,
+        mock_get_pane,
+        mock_is_done,
+        mock_capture,
+        mock_merge,
+        mock_close,
+        tmp_path: Path,
+    ):
+        mock_create.side_effect = lambda **kwargs: MagicMock(slug=kwargs.get("slug", "worker"))
+        mock_is_done.return_value = True
+        mock_get_pane.return_value = {"slug": "test", "pane_id": "%1"}
+        mock_capture.return_value = json.dumps(
+            [
+                {
+                    "file": "src/foo.py",
+                    "line": 1,
+                    "severity": "critical",
+                    "category": "bug",
+                    "description": "crash",
+                    "suggested_fix": "fix",
+                }
+            ]
+        )
+        mock_merge.return_value = {
+            "merged": "fix-foo",
+            "branch": "fix-foo",
+            "tests_passed": False,
+        }
+
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "src" / "foo.py").touch()
+
+        result = run_review_fix_pipeline(
+            project_root=str(tmp_path),
+            targets=["src/foo.py"],
+            session_root=str(tmp_path),
+            auto_approve=True,
+        )
+
+        assert result["phase"] == "complete"
+        assert result["merged_count"] == 1
+        assert result["test_status"] == "failures:fix-foo"
 
 
 # ---------------------------------------------------------------------------

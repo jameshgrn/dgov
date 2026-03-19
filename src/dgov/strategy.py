@@ -176,7 +176,12 @@ def extract_task_context(prompt: str) -> dict:
     }
 
 
-def _structure_pi_prompt(raw_prompt: str, files: list[str] | None = None) -> str:
+def _structure_pi_prompt(
+    raw_prompt: str,
+    files: list[str] | tuple[str, ...] | None = None,
+    *,
+    commit_message: str | None = None,
+) -> str:
     """Wrap a raw task description into pi's numbered-step format.
 
     Takes a freeform prompt and returns a structured prompt with:
@@ -229,10 +234,9 @@ def _structure_pi_prompt(raw_prompt: str, files: list[str] | None = None) -> str
 
     # 5. git commit
     # Infer commit message from first line of prompt
-    first_line = raw_prompt.strip().split("\n")[0]
-    commit_msg = first_line[:50].strip().rstrip(".")
-    if not commit_msg:
-        commit_msg = "Worker changes"
+    from dgov.context_packet import infer_commit_message
+
+    commit_msg = infer_commit_message(raw_prompt, explicit=commit_message)
 
     # Use double quotes for the commit message in the step text
     steps.append(f'{step_num}. git commit -m "{commit_msg}"')

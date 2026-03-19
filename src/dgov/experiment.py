@@ -231,6 +231,7 @@ def run_experiment(
     if improved:
         merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
         commit_sha = None
+        error = None
         if "merged" in merge_result:
             # Get the merge SHA
             import subprocess
@@ -245,10 +246,11 @@ def run_experiment(
             emit_event(session_root, "experiment_accepted", slug, metric_after=metric_after)
         else:
             status = "error"
-            close_worker_pane(project_root, slug, session_root=session_root, force=True)
+            error = merge_result.get("error", "merge_failed")
     else:
         status = "rejected"
         commit_sha = None
+        error = None
         emit_event(session_root, "experiment_rejected", slug, metric_after=metric_after)
         close_worker_pane(project_root, slug, session_root=session_root, force=True)
 
@@ -263,6 +265,7 @@ def run_experiment(
         "duration_s": round(duration_s, 1),
         "follow_ups": follow_ups,
         "commit_sha": commit_sha,
+        "error": error if status == "error" else None,
     }
 
 

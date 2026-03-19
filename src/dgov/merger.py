@@ -389,45 +389,52 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
 
     fixed = []
     unfixable = []
-
-    # ruff check --fix
-    check = subprocess.run(
-        ["uv", "run", "ruff", "check", "--fix", "--quiet", *abs_files],
-        capture_output=True,
-        text=True,
-        cwd=project_root,
-    )
-    if check.returncode != 0 and check.stdout.strip():
-        unfixable.extend(check.stdout.strip().splitlines()[:10])
-
-    # ruff format
-    subprocess.run(
-        ["uv", "run", "ruff", "format", "--quiet", *abs_files],
-        capture_output=True,
-        text=True,
-        cwd=project_root,
-    )
-
-    # Check if lint changed anything
-    diff = subprocess.run(
-        ["git", "-C", project_root, "diff", "--name-only"],
-        capture_output=True,
-        text=True,
-    )
-    lint_changed = [f for f in diff.stdout.strip().splitlines() if f]
-    if lint_changed:
-        fixed = lint_changed
-        # Amend merge commit with lint fixes
-        subprocess.run(
-            ["git", "-C", project_root, "add", *lint_changed],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "-C", project_root, "commit", "--amend", "--no-edit"],
-            capture_output=True,
-        )
-
     result = {}
+
+    # Isolate post-merge linting from unrelated dirty files on main.
+    # Otherwise an amend can accidentally absorb the user's restored worktree edits.
+    with _stash_guard(project_root, "lint-fix") as (_stashed, warnings):
+        # ruff check --fix
+        check = subprocess.run(
+            ["uv", "run", "ruff", "check", "--fix", "--quiet", *abs_files],
+            capture_output=True,
+            text=True,
+            cwd=project_root,
+        )
+        if check.returncode != 0 and check.stdout.strip():
+            unfixable.extend(check.stdout.strip().splitlines()[:10])
+
+        # ruff format
+        subprocess.run(
+            ["uv", "run", "ruff", "format", "--quiet", *abs_files],
+            capture_output=True,
+            text=True,
+            cwd=project_root,
+        )
+
+        # Restrict amend scope to the merged Python files only.
+        diff = subprocess.run(
+            ["git", "-C", project_root, "diff", "--name-only", "HEAD", "--", *py_files],
+            capture_output=True,
+            text=True,
+        )
+        lint_changed = [f for f in diff.stdout.strip().splitlines() if f]
+        if lint_changed:
+            fixed = lint_changed
+            subprocess.run(
+                ["git", "-C", project_root, "add", "--", *lint_changed],
+                capture_output=True,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", project_root, "commit", "--amend", "--no-edit"],
+                capture_output=True,
+                check=True,
+            )
+
+        if warnings:
+            result["lint_warnings"] = warnings
+
     if fixed:
         result["lint_fixed"] = fixed
     if unfixable:
@@ -802,23 +809,6 @@ def merge_worker_pane(
                 pre_rebase.stderr,
             )
             rebase_fallback = True
-
-    # Dispatch merge strategy
-    # Remove existing worktree before merge to avoid 'already used by worktree' errors
-    wt_path = target.get("worktree_path")
-    if wt_path and Path(wt_path).exists():
-        subprocess.run(
-            ["git", "-C", project_root, "worktree", "remove", "--force", wt_path],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "-C", project_root, "branch", "-d", branch_name],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "-C", project_root, "worktree", "prune"],
-            capture_output=True,
-        )
 
     if rebase:
         merge = _rebase_merge(pane_project_root, branch_name, message=message)

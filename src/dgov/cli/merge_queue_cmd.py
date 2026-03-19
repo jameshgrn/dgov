@@ -56,7 +56,20 @@ def process_merge(project_root, session_root, resolve, squash, rebase, timeout):
     signal.alarm(timeout)
 
     try:
+        from dgov.executor import review_merge_gate
         from dgov.merger import merge_worker_pane
+
+        gate = review_merge_gate(project_root, slug, session_root=session_root)
+        if gate.review.get("error"):
+            result = {"error": f"Review failed: {gate.review['error']}"}
+            complete_merge(session_root_abs, ticket, False, json.dumps(result))
+            click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
+            sys.exit(1)
+        if not gate.passed:
+            result = {"error": gate.error or "Review failed"}
+            complete_merge(session_root_abs, ticket, False, json.dumps(result))
+            click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
+            sys.exit(1)
 
         result = merge_worker_pane(
             project_root,

@@ -215,6 +215,36 @@ class TestReviewWorkerPane:
         assert "diff --git" in result["diff"]
         assert "+line from full diff" in result["diff"]
 
+    def test_review_runs_related_tests_in_worker_worktree(
+        self,
+        tmp_path: Path,
+        inspection_mocks: dict[str, MagicMock],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "src/dgov/feature.py", "def feature():\n    return 1\n", "Add feature")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        run_related = MagicMock(return_value={})
+        monkeypatch.setattr("dgov.inspection._run_related_tests", run_related)
+
+        review_worker_pane(
+            str(tmp_path / "different-project-root"),
+            "worker-a",
+            session_root=str(tmp_path),
+        )
+
+        run_related.assert_called_once_with(
+            str(repo),
+            ["src/dgov/feature.py"],
+        )
+
 
 class TestDiffWorkerPane:
     def test_happy_path(self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]) -> None:

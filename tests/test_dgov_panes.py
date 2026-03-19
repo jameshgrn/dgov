@@ -2779,6 +2779,14 @@ class TestStructurePiPrompt:
         assert "Read" not in structured
         assert "git add" not in structured
 
+    def test_structure_pi_prompt_uses_explicit_commit_message(self) -> None:
+        structured = _structure_pi_prompt(
+            "Fix src/foo.py",
+            ["src/foo.py"],
+            commit_message="Fix foo worker path",
+        )
+        assert 'git commit -m "Fix foo worker path"' in structured
+
     @patch("dgov.lifecycle._structure_pi_prompt", wraps=_structure_pi_prompt)
     def test_create_worker_pane_calls_structure_for_pi(
         self, mock_structure: Mock, tmp_path: Path, mock_backend: MagicMock
@@ -2808,6 +2816,10 @@ class TestStructurePiPrompt:
         ):
 
             def _fake_run(cmd, **kwargs):
+                if cmd[-3:] == ["rev-parse", "--verify", "pi-test"]:
+                    m = Mock(returncode=1, stderr="")
+                    m.stdout = ""
+                    return m
                 m = Mock(returncode=0, stderr="")
                 m.stdout = "abc123\n"
                 return m
@@ -2819,7 +2831,11 @@ class TestStructurePiPrompt:
                 agent="pi",
                 session_root=str(tmp_path),
             )
-        mock_structure.assert_called_once_with("Fix src/foo.py")
+        mock_structure.assert_called_once_with(
+            "Fix src/foo.py",
+            ["src/foo.py"],
+            commit_message="Fix src/foo.py",
+        )
 
 
 def test_create_worker_pane_waits_for_shell_before_startup_commands(

@@ -340,57 +340,12 @@ def run_review_fix_pipeline(
         merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
         if "merged" in merge_result:
             merged_count += 1
-            # Run targeted tests after each merge (only on changed files)
-            import subprocess
-
-            # Get files changed in this merge
-            changed_r = subprocess.run(
-                ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
-                cwd=project_root,
-                capture_output=True,
-                text=True,
-            )
-            changed_files = (
-                [ln for ln in changed_r.stdout.strip().splitlines() if ln]
-                if changed_r.returncode == 0
-                else []
-            )
-
-            # Map changed source files to their test counterparts
-            test_files: list[str] = []
-            for cf in changed_files:
-                p = Path(cf)
-                if not p.parts or p.parts[0] != "src":
-                    continue
-                # src/dgov/foo.py -> tests/test_foo.py, tests/test_dgov_foo.py
-                stem = p.stem
-                pkg = p.parts[1] if len(p.parts) > 2 else ""
-                candidates = [
-                    Path("tests") / f"test_{stem}.py",
-                    Path("tests") / f"test_{pkg}_{stem}.py",
-                ]
-                for c in candidates:
-                    if c.exists():
-                        test_files.append(str(c))
-                        break
-
-            if test_files:
-                test_result = subprocess.run(
-                    ["uv", "run", "pytest", "-q", "--tb=short", "-x", *test_files],
-                    cwd=project_root,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-            else:
-                test_result = None
-            if test_result is not None and test_result.returncode != 0:
+            if merge_result.get("tests_passed") is False:
                 test_failures.append(slug)
+            # Successful merge already cleaned up the worker; this is a no-op fallback.
+            close_worker_pane(project_root, slug, session_root=session_root, force=True)
         else:
             failed_count += 1
-
-        # Close fix worker
-        close_worker_pane(project_root, slug, session_root=session_root, force=True)
 
     test_status = "pass" if not test_failures else f"failures:{','.join(test_failures)}"
 

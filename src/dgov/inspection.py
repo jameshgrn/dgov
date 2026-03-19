@@ -120,7 +120,7 @@ def review_worker_pane(
 
     # Run smoke tests on related test files
     changed_file_list = list(changed_files)
-    test_result = _run_related_tests(project_root, changed_file_list)
+    test_result = _run_related_tests(wt, changed_file_list)
 
     result = {
         "slug": slug,

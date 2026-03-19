@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -75,39 +76,35 @@ def test_check_agent_cli_with_custom_registry(monkeypatch: pytest.MonkeyPatch) -
 # ---------------------------------------------------------------------------
 
 
-def _mock_git_diff(monkeypatch, unstaged_rc: int = 0, staged_rc: int = 0) -> None:
+def _mock_git_diff(monkeypatch, *, status_output: str = "", returncode: int = 0) -> None:
     def fake_run(cmd, **kwargs):
         mock = MagicMock()
-        if "diff" in cmd and "--cached" in cmd:
-            mock.returncode = staged_rc
-        elif "diff" in cmd and "HEAD" in cmd:
-            mock.returncode = unstaged_rc
-        else:
-            mock.returncode = 0
+        mock.returncode = returncode
+        mock.stdout = status_output
         return mock
 
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
 
 
 def test_check_git_clean_pass(monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_git_diff(monkeypatch, unstaged_rc=0, staged_rc=0)
+    _mock_git_diff(monkeypatch)
     r = check_git_clean("/tmp/repo")
     assert r.passed is True
 
 
 def test_check_git_clean_dirty(monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_git_diff(monkeypatch, unstaged_rc=1)
+    _mock_git_diff(monkeypatch, status_output=" M src/app.py\n")
     r = check_git_clean("/tmp/repo")
     assert r.passed is False
     assert r.critical is True
-    assert "unstaged" in r.message
+    assert "tracked changes" in r.message
 
 
 def test_check_git_clean_staged(monkeypatch: pytest.MonkeyPatch) -> None:
-    _mock_git_diff(monkeypatch, unstaged_rc=0, staged_rc=1)
+    _mock_git_diff(monkeypatch, status_output="M  src/app.py\n")
     r = check_git_clean("/tmp/repo")
     assert r.passed is False
-    assert "staged" in r.message
+    assert "tracked changes" in r.message
 
 
 # ---------------------------------------------------------------------------
@@ -230,11 +227,66 @@ def test_check_file_locks_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
     wt_path.mkdir(parents=True)
 
     def fake_panes(*a, **kw):
-        return [{"slug": "task-1", "worktree_path": str(wt_path)}]
+        return [{"slug": "task-1", "worktree_path": str(wt_path), "base_sha": "abc123"}]
 
     def fake_run(cmd, **kwargs):
         mock = MagicMock()
-        mock.stdout = "src/foo.py\n"
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            mock.stdout = "src/foo.py\n"
+        else:
+            mock.stdout = ""
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr("dgov.status.list_worker_panes", fake_panes)
+    monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+    r = check_file_locks(str(tmp_path), ["src/foo.py"])
+    assert r.passed is False
+    assert "task-1" in r.message
+
+
+def test_check_file_locks_conflict_for_touch_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    wt_path = tmp_path / "worktrees" / "task-1"
+    wt_path.mkdir(parents=True)
+
+    def fake_panes(*a, **kw):
+        return [{"slug": "task-1", "worktree_path": str(wt_path), "base_sha": "abc123"}]
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            mock.stdout = "src/foo.py\n"
+        else:
+            mock.stdout = ""
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr("dgov.status.list_worker_panes", fake_panes)
+    monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+    r = check_file_locks(str(tmp_path), ["src"])
+    assert r.passed is False
+    assert "src/foo.py" in r.message
+
+
+def test_check_file_locks_detects_committed_worker_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    wt_path = tmp_path / "worktrees" / "task-1"
+    wt_path.mkdir(parents=True)
+
+    def fake_panes(*a, **kw):
+        return [{"slug": "task-1", "worktree_path": str(wt_path), "base_sha": "abc123"}]
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            mock.stdout = "src/foo.py\n"
+        elif cmd[:3] == ["git", "status", "--porcelain"]:
+            mock.stdout = ""
+        else:
+            mock.stdout = ""
         mock.returncode = 0
         return mock
 
@@ -248,6 +300,63 @@ def test_check_file_locks_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
 def test_check_file_locks_no_touches() -> None:
     r = check_file_locks("/tmp/repo", [])
     assert r.passed is True
+
+
+def test_check_git_clean_allows_disjoint_touches(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / "src").mkdir()
+    (repo / "src" / "dirty.py").write_text("x = 1\n")
+    (repo / "src" / "clean.py").write_text("y = 1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    (repo / "src" / "dirty.py").write_text("x = 2\n")
+
+    report = check_git_clean(str(repo), touches=["src/clean.py"])
+
+    assert report.passed is True
+    assert "outside declared touches" in report.message
+
+
+def test_check_git_clean_blocks_overlapping_touches(tmp_path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / "src").mkdir()
+    (repo / "src" / "dirty.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=repo, check=True, capture_output=True)
+    (repo / "src" / "dirty.py").write_text("x = 2\n")
+
+    report = check_git_clean(str(repo), touches=["src"])
+
+    assert report.passed is False
+    assert "src/dirty.py" in report.message
 
 
 # ---------------------------------------------------------------------------

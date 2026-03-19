@@ -361,19 +361,19 @@ class TestPaneCreate:
             "worktree": "/tmp/lint-fix",
             "branch": "lint-fix",
         }
-        assert mock_create.call_args.kwargs == {
-            "project_root": "/repo",
-            "prompt": "Fix tests",
-            "agent": "claude",
-            "permission_mode": "bypassPermissions",
-            "slug": None,
-            "env_vars": {"FOO": "bar", "BAZ": "qux"},
-            "extra_flags": "--verbose",
-            "session_root": "/session",
-            "skip_auto_structure": False,
-            "role": "worker",
-            "parent_slug": "",
-        }
+        kwargs = mock_create.call_args.kwargs
+        assert kwargs["project_root"] == "/repo"
+        assert kwargs["prompt"] == "Fix tests"
+        assert kwargs["agent"] == "claude"
+        assert kwargs["permission_mode"] == "bypassPermissions"
+        assert kwargs["slug"] is None
+        assert kwargs["env_vars"] == {"FOO": "bar", "BAZ": "qux"}
+        assert kwargs["extra_flags"] == "--verbose"
+        assert kwargs["session_root"] == "/session"
+        assert kwargs["skip_auto_structure"] is False
+        assert kwargs["role"] == "worker"
+        assert kwargs["parent_slug"] == ""
+        assert kwargs["context_packet"].prompt == "Fix tests"
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
         with (
@@ -448,6 +448,40 @@ class TestPaneCreate:
 
         assert result.exit_code == 0
         mock_fix.assert_called_once_with(failing, ".")
+
+    def test_preflight_uses_prompt_derived_touches(self, runner: CliRunner) -> None:
+        report = MagicMock()
+        report.passed = True
+
+        with (
+            patch("dgov.strategy.extract_task_context") as mock_context,
+            patch("dgov.preflight.run_preflight", return_value=report) as mock_preflight,
+            patch("dgov.lifecycle.create_worker_pane", return_value=_pane("merge-fix")),
+        ):
+            mock_context.return_value = {
+                "primary_files": ["src/dgov/merger.py"],
+                "also_check": ["src/dgov/inspection.py"],
+                "tests": ["tests/test_merger_coverage.py"],
+                "hints": [],
+            }
+            result = runner.invoke(
+                cli,
+                ["pane", "create", "--agent", "claude", "--prompt", "Fix merge boundary bug"],
+            )
+
+        assert result.exit_code == 0
+        mock_preflight.assert_called_once_with(
+            project_root=".",
+            agent="claude",
+            touches=[
+                "src/dgov/merger.py",
+                "src/dgov/inspection.py",
+                "tests/test_merger_coverage.py",
+            ],
+            expected_branch=None,
+            session_root=None,
+            skip_deps=True,
+        )
 
 
 class TestPaneCommands:
@@ -593,6 +627,13 @@ class TestPaneCommands:
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
+                "dgov.inspection.review_worker_pane",
+                side_effect=[
+                    {"slug": "a", "verdict": "safe", "commit_count": 1},
+                    {"slug": "b", "verdict": "safe", "commit_count": 1},
+                ],
+            ),
+            patch(
                 "dgov.merger.merge_worker_pane",
                 side_effect=[
                     {"merged": "a", "files_changed": 2},
@@ -618,6 +659,10 @@ class TestPaneCommands:
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "a", "verdict": "safe", "commit_count": 1},
+            ),
+            patch(
                 "dgov.merger.merge_worker_pane",
                 return_value={"merged": "a", "branch": "a"},
             ) as mock_merge,
@@ -628,6 +673,57 @@ class TestPaneCommands:
         mock_merge.assert_called_once_with(
             ".", "a", session_root=None, resolve="manual", squash=True, rebase=False
         )
+
+    def test_merge_all_blocks_non_safe_review(self, runner: CliRunner) -> None:
+        panes = [{"slug": "a", "done": True}]
+
+        with (
+            patch("dgov.status.list_worker_panes", return_value=panes),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "a", "verdict": "review", "commit_count": 1},
+            ),
+            patch("dgov.merger.merge_worker_pane") as mock_merge,
+        ):
+            result = runner.invoke(cli, ["pane", "merge-all"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "merged_count": 0,
+            "failed_count": 1,
+            "total_files_changed": 0,
+            "merged": [],
+            "failed": ["a"],
+            "warnings": ["a: review verdict is review; refusing to merge"],
+        }
+        mock_merge.assert_not_called()
+
+    def test_pane_batch_blocks_preflight_failure(self, runner: CliRunner, tmp_path: Path) -> None:
+        spec_path = tmp_path / "pane-batch.toml"
+        spec_path.write_text(
+            """
+[tasks.fix-parser]
+agent = "claude"
+prompt = "Fix parser bug in src/parser.py"
+"""
+        )
+        report = MagicMock()
+        report.passed = False
+
+        with (
+            patch("dgov.preflight.run_preflight", return_value=report),
+            patch("dgov.lifecycle.create_worker_pane") as mock_create,
+        ):
+            result = runner.invoke(cli, ["pane", "batch", str(spec_path)])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "dispatched": 0,
+            "failed": 1,
+            "panes": [],
+            "errors": [{"slug": "fix-parser", "error": "preflight failed"}],
+        }
+        mock_create.assert_not_called()
 
     def test_land_all_summarizes_results(self, runner: CliRunner) -> None:
         panes = [
@@ -663,6 +759,31 @@ class TestPaneCommands:
             "failed": ["b"],
             "warnings": ["b: no commits to merge"],
         }
+
+    def test_land_all_skips_non_safe_review(self, runner: CliRunner) -> None:
+        panes = [{"slug": "a", "done": True}]
+        with (
+            patch("dgov.status.list_worker_panes", return_value=panes),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "a", "verdict": "review", "commit_count": 1},
+            ),
+            patch("dgov.merger.merge_worker_pane") as mock_merge,
+        ):
+            result = runner.invoke(cli, ["pane", "land-all"])
+
+        assert result.exit_code == 1
+        lines = result.output.strip().splitlines()
+        assert json.loads(lines[0]) == {"review": "review", "commits": 1, "slug": "a"}
+        assert json.loads("\n".join(lines[1:])) == {
+            "landed_count": 0,
+            "failed_count": 1,
+            "total_files_changed": 0,
+            "landed": [],
+            "failed": ["a"],
+            "warnings": ["a: review verdict is review; refusing to merge"],
+        }
+        mock_merge.assert_not_called()
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
         with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
@@ -815,6 +936,31 @@ class TestTopLevelCommands:
         assert json.loads(batch_ok.output)["dry_run"] is True
         assert batch_fail.exit_code == 1
         assert json.loads(batch_fail.output)["failed"] == ["a"]
+
+    def test_merge_queue_process_blocks_non_safe_review(self, runner: CliRunner) -> None:
+        with (
+            patch(
+                "dgov.persistence.claim_next_merge",
+                return_value={"branch": "task", "ticket": 7},
+            ),
+            patch("dgov.persistence.complete_merge") as mock_complete,
+            patch("dgov.persistence.emit_event") as mock_emit,
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "task", "verdict": "review", "commit_count": 1},
+            ),
+            patch("dgov.merger.merge_worker_pane") as mock_merge,
+        ):
+            result = runner.invoke(cli, ["merge-queue", "process", "-r", "."])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["ticket"] == 7
+        assert payload["slug"] == "task"
+        assert "refusing to merge" in payload["result"]["error"]
+        mock_merge.assert_not_called()
+        mock_complete.assert_called_once()
+        mock_emit.assert_not_called()
 
 
 class TestDagCliCommand:

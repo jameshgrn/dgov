@@ -48,6 +48,18 @@ class PreflightReport:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_touch_path(path: str) -> str:
+    return path.strip().lstrip("./").rstrip("/")
+
+
+def _paths_overlap(path: str, touch: str) -> bool:
+    norm_path = _normalize_touch_path(path)
+    norm_touch = _normalize_touch_path(touch)
+    if not norm_path or not norm_touch:
+        return False
+    return norm_path == norm_touch or norm_path.startswith(norm_touch + "/")
+
+
 def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
     """Check that the agent CLI binary is on PATH."""
     reg = registry or AGENT_REGISTRY
@@ -69,42 +81,30 @@ def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
     )
 
 
-def check_git_clean(project_root: str) -> CheckResult:
+def check_git_clean(project_root: str, touches: list[str] | None = None) -> CheckResult:
     """Check for uncommitted changes to tracked files."""
     root = Path(project_root).resolve()
     try:
-        unstaged = subprocess.run(
-            ["git", "diff", "--quiet", "HEAD"],
+        dirty = subprocess.run(
+            ["git", "status", "--porcelain"],
             cwd=root,
             capture_output=True,
+            text=True,
             timeout=10,
         )
-        if unstaged.returncode == 128:
+        if dirty.returncode == 128:
             return CheckResult(
                 name="git_clean",
                 passed=True,
                 critical=True,
                 message="Not a git repo or no commits -- skipped",
             )
-        if unstaged.returncode != 0:
+        if dirty.returncode != 0:
             return CheckResult(
                 name="git_clean",
                 passed=False,
                 critical=True,
-                message="Repo has unstaged changes to tracked files",
-            )
-        staged = subprocess.run(
-            ["git", "diff", "--quiet", "--cached"],
-            cwd=root,
-            capture_output=True,
-            timeout=10,
-        )
-        if staged.returncode != 0:
-            return CheckResult(
-                name="git_clean",
-                passed=False,
-                critical=True,
-                message="Repo has staged but uncommitted changes",
+                message="git status failed",
             )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return CheckResult(
@@ -113,11 +113,45 @@ def check_git_clean(project_root: str) -> CheckResult:
             critical=True,
             message=f"git check failed: {exc}",
         )
+    dirty_files: set[str] = set()
+    for line in dirty.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        if line.startswith("??"):
+            continue
+        dirty_files.add(line[3:])
+
+    if not dirty_files:
+        return CheckResult(
+            name="git_clean",
+            passed=True,
+            critical=True,
+            message="Working tree clean",
+        )
+
+    if touches:
+        overlapping = sorted(
+            f for f in dirty_files if any(_paths_overlap(f, touch) for touch in touches)
+        )
+        if not overlapping:
+            return CheckResult(
+                name="git_clean",
+                passed=True,
+                critical=True,
+                message="Repo has unrelated tracked changes outside declared touches",
+            )
+        return CheckResult(
+            name="git_clean",
+            passed=False,
+            critical=True,
+            message=f"Repo has tracked changes overlapping touches: {', '.join(overlapping[:5])}",
+        )
+
     return CheckResult(
         name="git_clean",
-        passed=True,
+        passed=False,
         critical=True,
-        message="Working tree clean",
+        message="Repo has tracked changes",
     )
 
 
@@ -282,18 +316,41 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
 
     for pane in panes:
         wt = pane.get("worktree_path")
+        base_sha = pane.get("base_sha", "")
         if not wt or not Path(wt).exists():
             continue
         try:
-            result = subprocess.run(
-                ["git", "diff", "--name-only", "HEAD"],
+            changed: set[str] = set()
+
+            if base_sha:
+                committed = subprocess.run(
+                    ["git", "diff", "--name-only", f"{base_sha}..HEAD"],
+                    cwd=wt,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if committed.returncode == 0:
+                    changed.update(
+                        path for path in committed.stdout.strip().splitlines() if path.strip()
+                    )
+
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
                 cwd=wt,
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
-            changed = set(result.stdout.strip().splitlines())
-            overlap = changed & set(touches)
+            if status.returncode == 0:
+                for line in status.stdout.splitlines():
+                    if len(line) < 4:
+                        continue
+                    changed.add(line[3:])
+
+            overlap = {
+                path for path in changed if any(_paths_overlap(path, touch) for touch in touches)
+            }
             if overlap:
                 conflicts.append(f"{pane['slug']}: {', '.join(sorted(overlap))}")
         except (subprocess.TimeoutExpired, OSError):
@@ -487,7 +544,7 @@ def run_preflight(
     checks.append(check_agent_cli(agent, registry=registry))
     if agent.startswith("river-") or "river" in agent:
         checks.append(check_river_tunnel())
-    checks.append(check_git_clean(project_root))
+    checks.append(check_git_clean(project_root, touches=touches))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
     # Config-driven health check for agents with custom health_check

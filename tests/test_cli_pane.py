@@ -140,3 +140,14 @@ class TestPaneLand:
             result = runner.invoke(cli, ["pane", "land", "task"])
 
         assert result.exit_code == 1
+
+    def test_land_review_verdict_blocks_merge(self, runner: CliRunner) -> None:
+        review_data = {"slug": "task", "verdict": "review", "commit_count": 2}
+
+        with patch("dgov.inspection.review_worker_pane", return_value=review_data):
+            result = runner.invoke(cli, ["pane", "land", "task"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output.splitlines()[-1]) == {
+            "error": "Review verdict is review; refusing to merge"
+        }

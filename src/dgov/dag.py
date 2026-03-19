@@ -8,6 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from dgov.context_packet import build_context_packet
 from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
     compute_tiers,
     render_dry_run,
@@ -23,6 +24,7 @@ from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
     DagTaskSpec,
     parse_dag_file,
 )
+from dgov.executor import review_merge_gate, run_dispatch_preflight
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,22 @@ def _dispatch_task(
     from dgov.lifecycle import create_worker_pane
     from dgov.persistence import emit_event, upsert_dag_task
 
+    touches = [*task.files.create, *task.files.edit, *task.files.delete]
+    packet = build_context_packet(
+        task.prompt,
+        file_claims=touches,
+        commit_message=task.commit_message,
+    )
+    report = run_dispatch_preflight(
+        dag.project_root,
+        task.agent,
+        session_root=session_root,
+        packet=packet,
+    )
+    if not report.passed:
+        failed_checks = [c.message for c in report.checks if not c.passed and c.critical]
+        raise RuntimeError(f"Preflight failed: {'; '.join(failed_checks)}")
+
     logger.info("Dispatching task %s with agent %s", task.slug, task.agent)
     pane = create_worker_pane(
         project_root=dag.project_root,
@@ -57,6 +75,7 @@ def _dispatch_task(
         permission_mode=task.permission_mode,
         slug=task.slug,
         session_root=session_root,
+        context_packet=packet,
     )
     pane_slug = pane.slug
     upsert_dag_task(
@@ -118,24 +137,23 @@ def _review_task(
     session_root: str,
 ) -> dict:
     """Review a completed task. Returns review result dict."""
-    from dgov.inspection import review_worker_pane
     from dgov.persistence import update_pane_state
 
-    result = review_worker_pane(
+    result = review_merge_gate(
         dag.project_root,
         pane_slug,
         session_root=session_root,
         full=False,
     )
-    if result.get("error"):
-        return result
+    if result.review.get("error"):
+        return result.review
 
-    if result.get("verdict") == "safe":
+    if result.passed:
         update_pane_state(session_root, pane_slug, "reviewed_pass", force=True)
-        return {"passed": True, **result}
-    else:
-        update_pane_state(session_root, pane_slug, "reviewed_fail", force=True)
-        return {"passed": False, **result}
+        return {"passed": True, **result.review}
+
+    update_pane_state(session_root, pane_slug, "reviewed_fail", force=True)
+    return {"passed": False, **result.review}
 
 
 def _merge_tasks_in_order(
@@ -204,22 +222,41 @@ def _merge_tasks_in_order(
                 env=check_env,
             )
             if check_result.returncode != 0:
-                # Roll back the merge commit
-                subprocess.run(
-                    ["git", "-C", dag.project_root, "reset", "--hard", "HEAD~1"],
+                rollback = subprocess.run(
+                    ["git", "-C", dag.project_root, "reset", "--keep", "HEAD~1"],
                     capture_output=True,
+                    text=True,
                 )
-                _progress(f"  post_merge_check FAILED for {task_slug}, rolled back")
                 logger.error(
                     "Post-merge check failed for %s: %s",
                     task_slug,
                     check_result.stderr or check_result.stdout,
                 )
-                return merged[:-1], {
+                if rollback.returncode == 0:
+                    _progress(f"  post_merge_check FAILED for {task_slug}, rolled back")
+                    return merged[:-1], {
+                        "error": f"Post-merge check failed for {task_slug}",
+                        "check_command": check_cmd,
+                        "check_stderr": check_result.stderr.strip(),
+                        "check_stdout": check_result.stdout.strip(),
+                        "rollback_performed": True,
+                    }
+
+                upsert_dag_task(
+                    session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent
+                )
+                emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
+                _progress(
+                    f"  post_merge_check FAILED for {task_slug}, rollback skipped;"
+                    " merge commit preserved"
+                )
+                return merged, {
                     "error": f"Post-merge check failed for {task_slug}",
                     "check_command": check_cmd,
                     "check_stderr": check_result.stderr.strip(),
                     "check_stdout": check_result.stdout.strip(),
+                    "rollback_performed": False,
+                    "rollback_error": rollback.stderr.strip() or rollback.stdout.strip(),
                 }
 
         upsert_dag_task(session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent)

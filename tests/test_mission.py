@@ -113,6 +113,33 @@ class TestHappyPath:
         assert "mission_merging" in event_calls
         assert "mission_completed" in event_calls
 
+    def test_preflight_uses_prompt_derived_touches(self, monkeypatch, tmp_path):
+        mocks = _apply_patches(monkeypatch)
+        extract_context = MagicMock(
+            return_value={
+                "primary_files": ["src/dgov/merger.py"],
+                "also_check": ["src/dgov/inspection.py"],
+                "tests": ["tests/test_merger_coverage.py"],
+                "hints": [],
+            }
+        )
+        monkeypatch.setattr("dgov.strategy.extract_task_context", extract_context)
+
+        run_mission(str(tmp_path), "fix the bug", slug="test-slug")
+
+        mocks["run_preflight"].assert_called_once_with(
+            project_root=str(tmp_path),
+            agent="claude",
+            touches=[
+                "src/dgov/merger.py",
+                "src/dgov/inspection.py",
+                "tests/test_merger_coverage.py",
+            ],
+            expected_branch=None,
+            session_root=str(tmp_path),
+            skip_deps=True,
+        )
+
 
 @pytest.mark.unit
 class TestReviewPending:
@@ -144,8 +171,8 @@ class TestReviewPending:
         policy = MissionPolicy(auto_merge=True)
         result = run_mission(str(tmp_path), "fix the bug", policy, slug="test-slug")
 
-        assert result.state == "completed"
-        mocks["merge_worker_pane"].assert_called_once()
+        assert result.state == "review_pending"
+        mocks["merge_worker_pane"].assert_not_called()
 
 
 @pytest.mark.unit
@@ -239,7 +266,7 @@ class TestMergeConflict:
 
         assert result.state == "failed"
         assert "Merge failed" in result.error
-        mocks["close_worker_pane"].assert_called()
+        mocks["close_worker_pane"].assert_not_called()
 
 
 @pytest.mark.unit

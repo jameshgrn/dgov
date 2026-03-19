@@ -16,6 +16,27 @@ You are the **governor**. You orchestrate; you do not implement.
 - **Always use `dgov pane land <slug>`** for review+merge+close — never manual git merge.
 - If a dgov command exists for the operation, use it. Do not work around your own tools.
 
+## Policy Core
+
+These are architecture rules, not optional style preferences.
+
+- **One canonical executor pipeline.** dgov must have exactly one policy owner for `preflight -> dispatch -> wait -> review -> merge -> cleanup -> recovery`. Governors and LT-GOVs should invoke that pipeline, not reimplement pieces of it in parallel entrypoints.
+- **No policy drift across surfaces.** `pane`, `mission`, `batch`, `dag`, `monitor`, dashboard actions, and merge-queue must enforce the same merge, cleanup, and recovery rules. If one path gets stricter, the others must converge.
+- **Execution graph != merge graph.** Work may run in parallel whenever dependencies, file claims, and agent capacity allow it. Merge/land may still need strict serialization on `main`. Do not couple worker utilization to merge order.
+- **File claims are first-class and exact.** Declarative task file sets are the source of truth for scheduling, preflight, conflict checks, and targeted validation. Prompt-derived touches are a fallback for freeform pane prompts, not the preferred control plane.
+- **Event-driven progression beats polling.** State transitions should advance from emitted events and persisted pane state, not tier barriers, `sleep` loops, or governor polling when a direct signal exists.
+- **Preserve recovery artifacts.** Failed review/merge/post-merge validation paths should default to leaving the pane, worktree, branch, and failure context inspectable. Do not auto-clean evidence unless the failure is fully recoverable and intentionally handled.
+
+## DAG Principles
+
+- DAG is not a separate execution engine. A DAG should compile into the canonical executor pipeline.
+- DAG scheduling should be readiness-based, not tier-blocked:
+  - dependency-ready
+  - file-claim-ready
+  - agent-capacity-ready
+- DAG merges should use a separate serialization policy from task execution so workers stay busy while `main` stays disciplined.
+- DAG tasks should prefer explicit file specs over prompt heuristics for lock scope, preflight scope, and test scope.
+
 ## Workflow
 
 ```
@@ -127,6 +148,7 @@ Don't block on `dgov pane wait`. Use idle time productively:
 - Poll with `dgov pane list`, not blocking `dgov pane wait`
 - Dispatch independent work — don't serialize when tasks are parallel
 - Plan ahead — read files for the next task, draft prompts
+- Audit for policy drift — if a new path bypasses preflight/review/recovery rules, treat it as a bug
 
 ## After every merge
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from dgov.agents import AgentDef, build_launch_command, load_registry
 from dgov.backend import get_backend
+from dgov.context_packet import ContextPacket, build_context_packet, render_start_here_section
 from dgov.done import _wrap_exit_signal
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
@@ -33,7 +34,6 @@ from dgov.strategy import (
     _generate_slug,
     _structure_pi_prompt,
     _validate_slug,
-    extract_task_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,11 @@ def _find_unique_slug(project_root: str, session_root: str, base_slug: str) -> t
 
 
 def _write_worktree_instructions(
-    worktree_path: str, slug: str, role: str, prompt: str | None = None
+    worktree_path: str,
+    slug: str,
+    role: str,
+    prompt: str | None = None,
+    context_packet: ContextPacket | None = None,
 ) -> None:
     """Prepend role-appropriate instructions to CLAUDE.md in the worktree.
 
@@ -193,31 +197,10 @@ def _write_worktree_instructions(
         codebase_hint = "- Read CODEBASE.md for module map, task routing, and test mapping\n"
 
     # Extract routed task context if prompt provided
-    start_here_section = ""
-    if prompt:
-        context = extract_task_context(prompt)
-        if any(context.values()):
-            lines = ["## Start here\n"]
-            if context["primary_files"]:
-                lines.append("Primary files:\n")
-                for f in context["primary_files"]:
-                    lines.append(f"- {f}\n")
-                lines.append("\n")
-            if context["also_check"]:
-                for f in context["also_check"]:
-                    lines.append(f"- **Also check:** {f}\n")
-                lines.append("\n")
-            if context["tests"]:
-                lines.append("Tests:\n")
-                for f in context["tests"]:
-                    lines.append(f"- {f}\n")
-                lines.append("\n")
-            if context["hints"]:
-                lines.append("Hints:\n")
-                for h in context["hints"]:
-                    lines.append(f"- {h}\n")
-                lines.append("\n")
-            start_here_section = "".join(lines)
+    packet = context_packet
+    if packet is None and prompt:
+        packet = build_context_packet(prompt)
+    start_here_section = render_start_here_section(packet) if packet is not None else ""
 
     if role == "lt-gov":
         preamble = (
@@ -376,6 +359,7 @@ def _setup_and_launch_agent(
     skip_auto_structure: bool = False,
     clear_done_signal: bool = False,
     role: str = "worker",
+    context_packet: ContextPacket | None = None,
 ) -> None:
     """Lock pane, inject env, trigger hook, rewrite prompt, launch agent."""
 
@@ -419,7 +403,14 @@ def _setup_and_launch_agent(
             logger.warning("Shell prompt not detected after env setup for %s", slug)
 
     # 4. Write role-appropriate CLAUDE.md into the worktree
-    _write_worktree_instructions(worktree_path, slug, role, prompt=prompt)
+    packet = context_packet or build_context_packet(prompt)
+    _write_worktree_instructions(
+        worktree_path,
+        slug,
+        role,
+        prompt=prompt,
+        context_packet=packet,
+    )
 
     # 4b. Install pre-merge-commit hook to block branch integration in worktrees
     if owns_worktree:
@@ -427,7 +418,11 @@ def _setup_and_launch_agent(
 
     # 5. Auto-structure pi prompts
     if agent_id == "pi" and not skip_auto_structure:
-        prompt = _structure_pi_prompt(prompt)
+        prompt = _structure_pi_prompt(
+            prompt,
+            list(packet.edit_files),
+            commit_message=packet.commit_message,
+        )
 
     # 6. Rewrite absolute paths so agent edits worktree, not main repo
     rewritten_prompt = re.sub(
@@ -541,6 +536,7 @@ def create_worker_pane(
     skip_auto_structure: bool = False,
     role: str = "worker",
     parent_slug: str = "",
+    context_packet: ContextPacket | None = None,
 ) -> WorkerPane:
     """Create a worker pane: worktree + tmux split + agent launch.
 
@@ -695,6 +691,7 @@ def create_worker_pane(
                 base_sha=base_sha,
                 skip_auto_structure=skip_auto_structure,
                 role=role,
+                context_packet=context_packet,
             )
 
             # 5. Build pane record and save to state

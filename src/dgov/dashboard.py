@@ -464,9 +464,19 @@ def _switch_to_worker_window(pane_id: str) -> None:
 
 def _execute_action(state: DashboardState, action: str, slug: str) -> None:
     if action == "merge":
+        from dgov.executor import review_merge_gate
         from dgov.merger import merge_worker_pane
 
         try:
+            gate = review_merge_gate(state.project_root, slug, session_root=state.session_root)
+            if gate.review.get("error"):
+                with state.lock:
+                    state.error = f"Review failed for {slug}: {gate.review['error']}"
+                return
+            if not gate.passed:
+                with state.lock:
+                    state.error = gate.error or f"Review failed for {slug}"
+                return
             merge_worker_pane(state.project_root, slug, session_root=state.session_root)
         except Exception:
             logger.exception("Dashboard merge failed for %s", slug)

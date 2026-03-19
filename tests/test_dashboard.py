@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 from rich.console import Console
 from rich.text import Text
@@ -83,6 +85,22 @@ class TestImports:
 
         assert callable(render_terrain)
         assert ErosionModel is not None
+
+
+@pytest.mark.unit
+class TestExecuteAction:
+    @patch("dgov.inspection.review_worker_pane")
+    @patch("dgov.merger.merge_worker_pane")
+    def test_merge_blocks_non_safe_review(self, mock_merge, mock_review):
+        from dgov.dashboard import DashboardState, _execute_action
+
+        mock_review.return_value = {"slug": "task", "verdict": "review", "commit_count": 1}
+        state = DashboardState(project_root="/tmp/repo", session_root="/tmp/repo")
+
+        _execute_action(state, "merge", "task")
+
+        assert "refusing to merge" in state.error
+        mock_merge.assert_not_called()
 
 
 @pytest.mark.unit

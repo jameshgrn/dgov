@@ -24,6 +24,15 @@ from dgov.dag import (
 
 pytestmark = pytest.mark.unit
 
+
+@pytest.fixture(autouse=True)
+def stub_dispatch_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "dgov.dag.run_dispatch_preflight",
+        lambda *args, **kwargs: type("R", (), {"passed": True, "checks": []})(),
+    )
+
+
 MINIMAL_TOML = textwrap.dedent("""\
     [dag]
     version = 1
@@ -461,6 +470,36 @@ class TestRunSingleTier:
                 ),
             },
         )
+
+    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.persistence.emit_event")
+    @patch("dgov.persistence.upsert_dag_task")
+    def test_dispatch_task_preflight_uses_exact_file_claims(
+        self, mock_upsert, mock_emit, mock_create, monkeypatch
+    ):
+        from dgov.dag import _dispatch_task
+
+        mock_create.return_value = _FakePane("T0")
+        recorded: dict[str, object] = {}
+
+        def fake_preflight(project_root, agent, **kwargs):  # noqa: ANN001, ANN201
+            recorded["project_root"] = project_root
+            recorded["agent"] = agent
+            recorded.update(kwargs)
+            return type("R", (), {"passed": True, "checks": []})()
+
+        monkeypatch.setattr("dgov.dag.run_dispatch_preflight", fake_preflight)
+
+        pane_info = _dispatch_task(self._dag(), self._dag().tasks["T0"], 1, "/tmp/proj")
+
+        assert pane_info["pane_slug"] == "T0"
+        assert recorded["project_root"] == "/tmp/proj"
+        assert recorded["agent"] == "hunter"
+        assert recorded["session_root"] == "/tmp/proj"
+        packet = recorded["packet"]
+        assert packet.prompt == "Do it"
+        assert packet.file_claims == ("a.py",)
+        assert packet.commit_message == "c"
 
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.persistence.update_pane_state")
@@ -1040,6 +1079,79 @@ class TestPostMergeCheck:
             post_merge_check="echo ok",
         )
         assert task.post_merge_check == "echo ok"
+
+    @patch("dgov.persistence.emit_event")
+    @patch("dgov.persistence.upsert_dag_task")
+    @patch("dgov.merger.merge_worker_pane")
+    def test_post_merge_check_preserves_merge_when_safe_rollback_fails(
+        self, mock_merge, mock_upsert, mock_emit, tmp_path
+    ):
+        from dgov.dag import _merge_tasks_in_order
+
+        dag = DagDefinition(
+            name="check-test",
+            dag_file=str(tmp_path / "dag.toml"),
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            default_max_retries=1,
+            merge_resolve="skip",
+            merge_squash=True,
+            max_concurrent=0,
+            tasks={
+                "T0": DagTaskSpec(
+                    slug="T0",
+                    summary="A",
+                    prompt="do A",
+                    commit_message="A",
+                    agent="pi",
+                    escalation=(),
+                    depends_on=(),
+                    files=DagFileSpec(edit=("a.py",)),
+                    permission_mode="bypassPermissions",
+                    timeout_s=900,
+                    post_merge_check="uv run pytest tests/test_dag.py -q",
+                )
+            },
+        )
+        mock_merge.return_value = {"merged": "pane-0", "branch": "pane-0"}
+
+        calls: list[list[str]] = []
+
+        def fake_run(args, capture_output=False, text=False, shell=False, cwd=None, env=None):  # noqa: ANN001, ANN201, FBT002
+            if shell:
+                return type("R", (), {"returncode": 1, "stderr": "check failed", "stdout": ""})()
+            calls.append(list(args))
+            if args[-2:] == ["rev-parse", "HEAD"]:
+                return type("R", (), {"returncode": 0, "stderr": "", "stdout": "abc123\n"})()
+            if args[-4:] == ["diff", "--name-only", "HEAD~1", "HEAD"]:
+                return type("R", (), {"returncode": 0, "stderr": "", "stdout": "a.py\n"})()
+            if args[-3:] == ["reset", "--keep", "HEAD~1"]:
+                return type(
+                    "R",
+                    (),
+                    {
+                        "returncode": 1,
+                        "stderr": "local changes would be overwritten",
+                        "stdout": "",
+                    },
+                )()
+            raise AssertionError(args)
+
+        with patch("dgov.dag.subprocess.run", side_effect=fake_run):
+            merged, error = _merge_tasks_in_order(
+                dag,
+                ["T0"],
+                {"T0": "pane-0"},
+                str(tmp_path),
+                run_id=7,
+            )
+
+        assert merged == ["T0"]
+        assert error is not None
+        assert error["rollback_performed"] is False
+        assert "overwritten" in error["rollback_error"]
+        mock_upsert.assert_called_once_with(str(tmp_path), 7, "T0", "merged", "pi")
+        mock_emit.assert_called_once_with(str(tmp_path), "dag_task_completed", "T0", dag_run_id=7)
 
 
 class TestUnhappyPathVerification:

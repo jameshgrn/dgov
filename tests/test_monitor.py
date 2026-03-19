@@ -376,17 +376,17 @@ class TestTryAutoMerge:
     """Test _try_auto_merge auto-merge logic."""
 
     @patch("dgov.monitor.merge_worker_pane")
-    @patch("dgov.monitor.review_worker_pane")
+    @patch("dgov.inspection.review_worker_pane")
     def test_auto_merge_safe_verdict(self, mock_review, mock_merge):
         from dgov.monitor import _try_auto_merge
 
-        mock_review.return_value = {"verdict": "safe", "slug": "test-1"}
+        mock_review.return_value = {"verdict": "safe", "slug": "test-1", "commit_count": 1}
         mock_merge.return_value = {"merged": "test-1", "branch": "dgov-test-1"}
         result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
         assert result == "auto_merge"
         mock_merge.assert_called_once()
 
-    @patch("dgov.monitor.review_worker_pane")
+    @patch("dgov.inspection.review_worker_pane")
     def test_auto_merge_review_verdict(self, mock_review):
         from dgov.monitor import _try_auto_merge
 
@@ -394,7 +394,7 @@ class TestTryAutoMerge:
         result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
 
-    @patch("dgov.monitor.review_worker_pane")
+    @patch("dgov.inspection.review_worker_pane")
     def test_auto_merge_review_error(self, mock_review):
         from dgov.monitor import _try_auto_merge
 

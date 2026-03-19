@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 from dgov.agents import load_registry
 from dgov.backend import get_backend
 from dgov.done import _has_new_commits
-from dgov.inspection import review_worker_pane
 from dgov.merger import merge_worker_pane
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.openrouter import chat_completion_local_first
@@ -466,16 +465,18 @@ def _mark_idle_failed(
 
 def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | None:
     """Attempt to auto-merge a done pane if review verdict is safe."""
-    review = review_worker_pane(project_root, slug, session_root=session_root)
-    if review.get("error"):
-        logger.warning("Auto-merge review error for %s: %s", slug, review["error"])
+    from dgov.executor import review_merge_gate
+
+    gate = review_merge_gate(project_root, slug, session_root=session_root)
+    if gate.review.get("error"):
+        logger.warning("Auto-merge review error for %s: %s", slug, gate.review["error"])
         return None
-    if review.get("verdict") != "safe":
+    if not gate.passed:
         logger.info(
             "Skip auto-merge %s: verdict=%s issues=%s",
             slug,
-            review.get("verdict"),
-            review.get("issues"),
+            gate.verdict,
+            gate.review.get("issues"),
         )
         return None
     result = merge_worker_pane(project_root, slug, session_root=session_root)

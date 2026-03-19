@@ -7,6 +7,7 @@ import os
 import subprocess
 from pathlib import Path
 
+from dgov.context_packet import build_context_packet
 from dgov.dag import (
     DagFileSpec,
     DagTaskSpec,
@@ -249,6 +250,7 @@ def run_batch(
     Tasks are ordered by explicit depends_on and implicit touch overlap.
     On failure, transitive dependents are skipped; unrelated branches continue.
     """
+    from dgov.executor import review_merge_gate, run_dispatch_preflight
     from dgov.lifecycle import create_worker_pane
     from dgov.merger import merge_worker_pane
 
@@ -282,6 +284,22 @@ def run_batch(
                 results["skipped"].append(task["id"])
                 continue
 
+            packet = build_context_packet(task["prompt"], file_claims=task.get("touches", []))
+            report = run_dispatch_preflight(
+                project_root,
+                task.get("agent", "claude"),
+                packet=packet,
+                session_root=session_root,
+            )
+            if not report.passed:
+                task_id = task["id"]
+                failed_ids.add(task_id)
+                results["failed"].append(task_id)
+                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
+                skipped_ids.update(new_skips)
+                tier_result["tasks"].append({"id": task_id, "status": "preflight_failed"})
+                continue
+
             try:
                 pane = create_worker_pane(
                     project_root=project_root,
@@ -290,6 +308,7 @@ def run_batch(
                     permission_mode=task.get("permission_mode", "bypassPermissions"),
                     slug=task["id"],
                     session_root=session_root,
+                    context_packet=packet,
                 )
                 slugs.append(pane.slug)
                 slug_to_task_id[pane.slug] = task["id"]
@@ -313,7 +332,7 @@ def run_batch(
         timeout = max(t.get("timeout", 600) for t in tier) if tier else 600
         pending = wait_for_slugs(session_root, slugs, timeout=timeout)
 
-        # Merge completed panes
+        # Review and merge completed panes
         for slug in slugs:
             if slug in pending:
                 tier_result["tasks"] = [
@@ -325,6 +344,22 @@ def run_batch(
                 results["failed"].append(task_id)
                 new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
                 skipped_ids.update(new_skips)
+                continue
+
+            gate = review_merge_gate(project_root, slug, session_root=session_root)
+            if not gate.passed:
+                task_id = slug_to_task_id.get(slug, slug)
+                failed_ids.add(task_id)
+                results["failed"].append(task_id)
+                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
+                skipped_ids.update(new_skips)
+                status = "review_failed"
+                if gate.review.get("error"):
+                    status = "review_error"
+                tier_result["tasks"] = [
+                    {**t, "status": status} if t.get("slug") == slug else t
+                    for t in tier_result["tasks"]
+                ]
                 continue
 
             merge_result = merge_worker_pane(project_root, slug, session_root=session_root)

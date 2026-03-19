@@ -10,6 +10,7 @@ import sys
 import click
 
 from dgov.cli import SESSION_ROOT_OPTION
+from dgov.context_packet import build_context_packet
 
 
 def _autocorrect_roots(
@@ -187,7 +188,8 @@ def pane_create(
             sys.exit(1)
 
     if preflight:
-        from dgov.preflight import fix_preflight, run_preflight
+        from dgov.executor import run_dispatch_preflight
+        from dgov.preflight import fix_preflight
         from dgov.router import is_routable
         from dgov.router import resolve_agent as _resolve
 
@@ -198,10 +200,12 @@ def pane_create(
                 preflight_agent = "pi"
         else:
             preflight_agent = agent if agent in registry else "pi"
-        report = run_preflight(
-            project_root=project_root,
-            agent=preflight_agent,
+        packet = build_context_packet(prompt)
+        report = run_dispatch_preflight(
+            project_root,
+            preflight_agent,
             session_root=session_root,
+            packet=packet,
         )
         if not report.passed and fix:
             report = fix_preflight(report, project_root)
@@ -222,6 +226,7 @@ def pane_create(
         env_vars["DGOV_PROJECT_ROOT"] = os.path.abspath(project_root)
 
     try:
+        packet = build_context_packet(prompt)
         pane_obj = create_worker_pane(
             project_root=project_root,
             prompt=prompt,
@@ -234,6 +239,7 @@ def pane_create(
             skip_auto_structure=skip_auto_structure,
             role=role,
             parent_slug=parent or "",
+            context_packet=packet,
         )
     except (ValueError, RuntimeError) as exc:
         click.echo(str(exc), err=True)
@@ -284,6 +290,7 @@ def pane_batch(toml_file, project_root, session_root):
     import tomllib
 
     from dgov.agents import get_default_agent, load_registry
+    from dgov.executor import run_dispatch_preflight
     from dgov.lifecycle import create_worker_pane
 
     project_root = os.path.abspath(project_root)
@@ -313,6 +320,17 @@ def pane_batch(toml_file, project_root, session_root):
             continue
 
         mode = task.get("mode", "bypassPermissions")
+        packet = build_context_packet(prompt)
+
+        report = run_dispatch_preflight(
+            project_root,
+            agent,
+            packet=packet,
+            session_root=session_root,
+        )
+        if not report.passed:
+            errors.append({"slug": slug, "error": "preflight failed"})
+            continue
 
         try:
             pane_obj = create_worker_pane(
@@ -322,6 +340,7 @@ def pane_batch(toml_file, project_root, session_root):
                 permission_mode=mode,
                 slug=slug,
                 session_root=session_root,
+                context_packet=packet,
             )
             results.append(
                 {
@@ -458,7 +477,7 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close a worker pane in one step."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.inspection import review_worker_pane
+    from dgov.executor import review_merge_gate
     from dgov.merger import merge_worker_pane
 
     if rebase and not squash:
@@ -466,7 +485,8 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
         sys.exit(1)
 
     # Review
-    review = review_worker_pane(project_root, slug, session_root=session_root)
+    gate = review_merge_gate(project_root, slug, session_root=session_root)
+    review = gate.review
     if review.get("error"):
         click.echo(json.dumps({"error": review["error"]}), err=True)
         sys.exit(1)
@@ -475,8 +495,8 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     commit_count = review.get("commit_count", 0)
     click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
 
-    if commit_count == 0:
-        click.echo(json.dumps({"error": "No commits to merge"}), err=True)
+    if not gate.passed:
+        click.echo(json.dumps({"error": gate.error}), err=True)
         sys.exit(1)
 
     # Merge (this also runs cleanup automatically)
@@ -640,6 +660,7 @@ def pane_merge_all(project_root, session_root, resolve, squash, rebase):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
+    from dgov.executor import review_merge_gate
     from dgov.merger import merge_worker_pane
     from dgov.status import list_worker_panes
 
@@ -662,6 +683,11 @@ def pane_merge_all(project_root, session_root, resolve, squash, rebase):
 
     for p in done_panes:
         slug = p["slug"]
+        gate = review_merge_gate(project_root, slug, session_root=session_root)
+        if not gate.passed:
+            failed_slugs.append(slug)
+            warnings.append(f"{slug}: {(gate.error or 'review failed').lower()}")
+            continue
         result = merge_fn(
             project_root,
             slug,
@@ -726,7 +752,7 @@ def pane_land_all(project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close ALL done worker panes sequentially. Prints combined summary."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.inspection import review_worker_pane
+    from dgov.executor import review_merge_gate
     from dgov.merger import merge_worker_pane
     from dgov.status import list_worker_panes
 
@@ -749,7 +775,8 @@ def pane_land_all(project_root, session_root, resolve, squash, rebase):
         slug = p["slug"]
 
         # Review
-        review = review_worker_pane(project_root, slug, session_root=session_root)
+        gate = review_merge_gate(project_root, slug, session_root=session_root)
+        review = gate.review
         if review.get("error"):
             failed_slugs.append(slug)
             warnings.append(f"{slug}: review error - {review['error']}")
@@ -759,9 +786,9 @@ def pane_land_all(project_root, session_root, resolve, squash, rebase):
         commit_count = review.get("commit_count", 0)
         click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
 
-        if commit_count == 0:
+        if not gate.passed:
             failed_slugs.append(slug)
-            warnings.append(f"{slug}: no commits to merge")
+            warnings.append(f"{slug}: {gate.error.lower()}")
             continue
 
         # Merge

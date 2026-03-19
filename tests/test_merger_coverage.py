@@ -219,6 +219,49 @@ def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
     _mock_backend.destroy.assert_called_once_with("%1")
 
 
+def test_merge_worker_pane_does_not_amend_unrelated_dirty_main_files(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    repo = _init_repo(tmp_path, "merge-dirty-main")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-dirty-main")
+
+    (worktree / "worker.py").write_text("def worker( ):\n  return 1\n")
+    _git(worktree, "add", "worker.py")
+    _git(worktree, "commit", "-m", "add worker module")
+
+    (repo / "README.md").write_text("dirty main\n")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="dirty-main",
+        branch_name="dgov-dirty-main",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state"),
+        patch("dgov.persistence.emit_event"),
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane"),
+        patch("dgov.inspection._run_related_tests", return_value={}),
+    ):
+        result = merge_worker_pane(str(repo), "dirty-main", session_root=str(repo))
+
+    assert result["merged"] == "dirty-main"
+    assert result["lint_fixed"] == ["worker.py"]
+    assert (repo / "worker.py").read_text() == "def worker():\n    return 1\n"
+    assert (repo / "README.md").read_text() == "dirty main\n"
+    assert _git(repo, "show", "HEAD:README.md").stdout == "initial\n"
+    assert _git(repo, "show", "HEAD:worker.py").stdout == "def worker():\n    return 1\n"
+    assert _git(repo, "status", "--porcelain").stdout.splitlines() == [" M README.md"]
+
+
 def test_merge_worker_pane_returns_error_when_pane_missing(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, "missing-pane")
 
@@ -634,7 +677,7 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
         patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": ["worker.py"]}),
-        patch("dgov.merger._run_related_tests", return_value={}),
+        patch("dgov.inspection._run_related_tests", return_value={}),
         patch("dgov.merger._restore_protected_files"),
     ):
         result = merge_worker_pane(str(repo), "post-merge", session_root=str(repo))
