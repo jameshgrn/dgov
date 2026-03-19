@@ -696,6 +696,109 @@ def pane_merge_all(project_root, session_root, resolve, squash, rebase):
         sys.exit(1)
 
 
+@pane.command("land-all")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+@click.option(
+    "--resolve",
+    type=click.Choice(["skip", "agent", "manual"]),
+    default="skip",
+    help="Conflict resolution strategy",
+)
+@click.option(
+    "--squash/--no-squash",
+    default=True,
+    help="Squash worker commits",
+)
+@click.option(
+    "--rebase",
+    is_flag=True,
+    default=False,
+    help="Rebase merge (linear history, original commits)",
+)
+def pane_land_all(project_root, session_root, resolve, squash, rebase):
+    """Review, merge, and close ALL done worker panes sequentially. Prints combined summary."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
+    from dgov.inspection import review_worker_pane
+    from dgov.merger import merge_worker_pane
+    from dgov.status import list_worker_panes
+
+    if rebase and not squash:
+        click.echo("Cannot use --rebase with --no-squash", err=True)
+        sys.exit(1)
+
+    panes = list_worker_panes(project_root, session_root=session_root)
+    done_panes = [p for p in panes if p["done"]]
+    if not done_panes:
+        click.echo(json.dumps({"landed": [], "failed": [], "summary": "no done panes"}))
+        return
+
+    landed_slugs = []
+    failed_slugs = []
+    total_files = 0
+    warnings = []
+
+    for p in done_panes:
+        slug = p["slug"]
+
+        # Review
+        review = review_worker_pane(project_root, slug, session_root=session_root)
+        if review.get("error"):
+            failed_slugs.append(slug)
+            warnings.append(f"{slug}: review error - {review['error']}")
+            continue
+
+        verdict = review.get("verdict", "unknown")
+        commit_count = review.get("commit_count", 0)
+        click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
+
+        if commit_count == 0:
+            failed_slugs.append(slug)
+            warnings.append(f"{slug}: no commits to merge")
+            continue
+
+        # Merge
+        result = merge_worker_pane(
+            project_root,
+            slug,
+            session_root=session_root,
+            resolve=resolve,
+            squash=squash,
+            rebase=rebase,
+        )
+        if "merged" in result:
+            landed_slugs.append(slug)
+            total_files += result.get("files_changed", 0)
+            if result.get("warning"):
+                warnings.append(f"{slug}: {result['warning']}")
+        else:
+            failed_slugs.append(slug)
+            err = result.get("error") or result.get("hint", "unknown")
+            warnings.append(f"{slug}: {err}")
+
+    summary = {
+        "landed_count": len(landed_slugs),
+        "failed_count": len(failed_slugs),
+        "total_files_changed": total_files,
+        "landed": landed_slugs,
+    }
+    if failed_slugs:
+        summary["failed"] = failed_slugs
+    if warnings:
+        summary["warnings"] = warnings
+
+    click.echo(json.dumps(summary, indent=2))
+    if failed_slugs:
+        sys.exit(1)
+
+
 @pane.command("list")
 @click.option(
     "--project-root",
