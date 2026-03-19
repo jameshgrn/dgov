@@ -77,6 +77,21 @@ VALID_EVENTS = frozenset(
         "monitor_tick",
         "convo_message",
         "think_entry",
+        "think_started",
+        "think_step",
+        "think_concluded",
+        "think_aborted",
+        "convo_started",
+        "convo_message_sent",
+        "convo_message_received",
+        "convo_turn",
+        "convo_ended",
+        "convo_escalated",
+        "watch_started",
+        "watch_event",
+        "watch_alert",
+        "watch_summary",
+        "watch_stopped",
     }
 )
 
