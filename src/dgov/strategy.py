@@ -67,6 +67,115 @@ def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str
         return "claude"
 
 
+def extract_task_context(prompt: str) -> dict:
+    """Extract relevant files and hints from a task prompt via keyword matching.
+
+    Returns a dict with keys: primary_files, also_check, tests, hints.
+    All values are lists. Empty lists if nothing matches.
+    """
+    p = prompt.lower()
+
+    primary_files: list[str] = []
+    also_check: list[str] = []
+    tests: list[str] = []
+    hints: list[str] = []
+
+    # -- Merge / review --
+    if any(kw in p for kw in ("merge", "review", "conflict", "verdict")):
+        primary_files.extend(["src/dgov/merger.py", "src/dgov/inspection.py"])
+        also_check.append("src/dgov/persistence.py")
+        tests.extend(
+            [
+                "tests/test_merger_coverage.py",
+                "tests/test_merger_conflicts.py",
+                "tests/test_dgov_merger.py",
+            ]
+        )
+        hints.append("Run post-merge lint and related tests after changes.")
+
+    # -- Retry / escalation / recovery --
+    if any(kw in p for kw in ("retry", "escalat", "recovery", "bounded retry")):
+        primary_files.append("src/dgov/recovery.py")
+        also_check.extend(["src/dgov/responder.py", "src/dgov/monitor.py"])
+        tests.extend(
+            [
+                "tests/test_retry.py",
+                "tests/test_bounded_retry.py",
+                "tests/test_recovery_dogfood.py",
+            ]
+        )
+        hints.append("Check monitor auto-retry hooks.")
+
+    # -- Monitor daemon --
+    if any(kw in p for kw in ("monitor", "daemon", "auto-merge", "auto-retry")):
+        primary_files.append("src/dgov/monitor.py")
+        also_check.extend(["src/dgov/monitor_hooks.py", "src/dgov/recovery.py"])
+        tests.append("tests/test_monitor.py")
+        hints.append("Monitor hooks are TOML-configured.")
+
+    # -- Worker complete / done --
+    if any(kw in p for kw in ("worker complete", "worker done", "done signal", "done strategy")):
+        primary_files.extend(["src/dgov/cli/worker_cmd.py", "src/dgov/done.py"])
+        also_check.append("src/dgov/waiter.py")
+        tests.extend(["tests/test_done_strategy.py", "tests/test_dgov_panes.py"])
+
+    # -- Lifecycle / pane create, close, resume --
+    if any(kw in p for kw in ("pane create", "pane close", "pane resume", "cleanup", "lifecycle")):
+        primary_files.append("src/dgov/lifecycle.py")
+        also_check.extend(["src/dgov/done.py", "src/dgov/gitops.py"])
+        tests.extend(["tests/test_lifecycle.py", "tests/test_dgov_panes.py"])
+
+    # -- Agent routing / selection --
+    if any(kw in p for kw in ("router", "agent routing", "agent selection", "resolve agent")):
+        primary_files.extend(["src/dgov/router.py", "src/dgov/agents.py"])
+        also_check.append("src/dgov/strategy.py")
+        tests.extend(["tests/test_router.py", "tests/test_dgov_agents.py"])
+
+    # -- Prompt templates --
+    if any(kw in p for kw in ("template", "prompt template")):
+        primary_files.extend(["src/dgov/templates.py", "src/dgov/strategy.py"])
+        also_check.append("src/dgov/lifecycle.py")
+        tests.append("tests/test_templates.py")
+
+    # -- Dashboard / terrain TUI --
+    if any(kw in p for kw in ("dashboard", "terrain", "tui", "spim")):
+        primary_files.extend(["src/dgov/dashboard.py", "src/dgov/terrain.py"])
+        also_check.append("src/dgov/terrain_pane.py")
+        tests.extend(["tests/test_dashboard.py", "tests/test_terrain_events.py"])
+
+    # -- DAG / batch / mission --
+    if any(kw in p for kw in ("dag", "batch", "mission")):
+        primary_files.extend(["src/dgov/dag.py", "src/dgov/batch.py", "src/dgov/mission.py"])
+        also_check.extend(["src/dgov/dag_parser.py", "src/dgov/dag_graph.py"])
+        tests.extend(["tests/test_dag.py", "tests/test_batch.py", "tests/test_mission.py"])
+
+    # -- Persistence / state DB --
+    if any(kw in p for kw in ("persistence", "state db", "event journal", "sqlite")):
+        primary_files.append("src/dgov/persistence.py")
+        also_check.extend(["src/dgov/status.py", "src/dgov/metrics.py"])
+        tests.extend(["tests/test_dgov_state.py", "tests/test_persistence_pane.py"])
+
+    # -- CLI commands --
+    if any(kw in p for kw in ("cli command", "cli subcommand", "add_command", "cli init")):
+        primary_files.append("src/dgov/cli/__init__.py")
+        also_check.append("src/dgov/cli/pane.py")
+        tests.extend(["tests/test_cli_admin.py", "tests/test_dgov_cli.py"])
+        hints.append("Register top-level commands in cli/__init__.py after imports.")
+
+    # -- Preflight / doctor --
+    if any(kw in p for kw in ("preflight", "doctor", "health check")):
+        primary_files.extend(["src/dgov/preflight.py", "src/dgov/cli/admin.py"])
+        also_check.append("src/dgov/agents.py")
+        tests.extend(["tests/test_dgov_preflight.py", "tests/test_init_doctor.py"])
+
+    return {
+        "primary_files": list(dict.fromkeys(primary_files)),
+        "also_check": list(dict.fromkeys(also_check)),
+        "tests": list(dict.fromkeys(tests)),
+        "hints": list(dict.fromkeys(hints)),
+    }
+
+
 def _structure_pi_prompt(raw_prompt: str, files: list[str] | None = None) -> str:
     """Wrap a raw task description into pi's numbered-step format.
 
