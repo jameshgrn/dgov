@@ -479,6 +479,9 @@ def detect_installed_agents(
 # Preferred fallback order when no default is configured.
 _DEFAULT_AGENT_CHAIN = ("pi", "claude", "codex", "gemini")
 
+# Logical Qwen worker routes (preferred over installed-agent chain)
+_QWEN_WORKER_ROUTES = ("qwen-9b", "qwen-35b", "qwen-122b", "qwen-397b", "qwen-4b")
+
 
 def _load_dgov_config() -> dict:
     """Load [dgov] section from ~/.dgov/config.toml."""
@@ -565,14 +568,33 @@ def get_default_agent(registry: dict[str, AgentDef] | None = None) -> str:
 
     Priority:
     1. User config: [dgov] default_agent in ~/.dgov/config.toml
-    2. First installed from: claude → codex → gemini
-    3. First installed agent in registry
-    4. "claude" (ultimate fallback)
+    2. Logical Qwen worker routes (if available): qwen-9b → qwen-35b → qwen-122b → qwen-397b → qwen-4b
+    3. First installed from: claude → codex → gemini
+    4. First installed agent in registry
+    5. "claude" (ultimate fallback)
     """
     config = _load_dgov_config()
     configured = config.get("default_agent")
     if configured:
         return configured
+
+    # Try logical Qwen worker routes first (uses router.resolve_agent internally)
+    try:
+        from dgov.router import resolve_agent
+
+        session_root = str(Path.home() / ".dgov/sessions")
+        project_root = "."
+        for route in _QWEN_WORKER_ROUTES:
+            try:
+                physical, _ = resolve_agent(route, session_root, project_root)
+                # If we got here without exception, the backend resolved successfully
+                if physical != route or any(backend in route for backend in ["river", "qwen35"]):
+                    # Physical backend was found and routed successfully
+                    return route
+            except RuntimeError:
+                continue
+    except ImportError:
+        pass  # Router not available, skip logical routes
 
     reg = registry or AGENT_REGISTRY
     installed = detect_installed_agents(reg)
