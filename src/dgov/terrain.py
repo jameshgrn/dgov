@@ -33,7 +33,7 @@ def _build_dgov_bitmap():
     return bitmap
 
 
-def _stamp_dgov(grid, rows, cols):
+def _stamp_dgov(grid, erodibility, rows, cols):
     bitmap = _build_dgov_bitmap()
     bh = len(bitmap)
     bw = len(bitmap[0])
@@ -50,7 +50,7 @@ def _stamp_dgov(grid, rows, cols):
                         gr = start_r + br * scale + dr
                         gc = start_c + bc * scale + dc
                         if 1 <= gr < rows - 1 and 1 <= gc < cols - 1:
-                            grid[gr][gc] *= 0.97
+                            erodibility[gr][gc] = 5.0
 
 
 # Hillshade light direction: azimuth=315° (upper-left), altitude=45°
@@ -89,6 +89,7 @@ class ErosionModel:
         self.n = n
         self.uplift = uplift
         self._rng = random.Random(seed)
+        self.erodibility = [[1.0] * width for _ in range(height)]
 
         # Random base [0.25, 0.65] + center-high bias so terrain drains to all edges.
         grid: list[list[float]] = []
@@ -119,7 +120,7 @@ class ErosionModel:
             grid = self._box_blur(grid, height, width)
 
         # All outer edges are drains at 0.0.
-        _stamp_dgov(grid, height, width)
+        _stamp_dgov(grid, self.erodibility, height, width)
         self._apply_boundary_drains(grid)
 
         self.height = grid
@@ -197,7 +198,7 @@ class ErosionModel:
 
         self.area = area
 
-        # 4. Erosion: E = K * A^m * S^n, subtract, clamp at 0
+        # 4. Erosion: E = K * Erodibility * A^m * S^n, subtract, clamp at 0
         K, m, n = self.K, self.m, self.n
         for _, r, c in cells:
             if r in (0, rows - 1) or c in (0, cols - 1):
@@ -205,7 +206,7 @@ class ErosionModel:
             a = area[r][c]
             s = slope[r][c]
             if s > 0:
-                erosion = K * (a**m) * (s**n)
+                erosion = (K * self.erodibility[r][c]) * (a**m) * (s**n)
                 h[r][c] = max(0.0, h[r][c] - erosion)
 
         # 5. Uplift: add constant to all non-drain cells
