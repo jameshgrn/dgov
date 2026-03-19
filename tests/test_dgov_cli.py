@@ -158,9 +158,11 @@ class TestPaneHelp:
             "create",
             "close",
             "merge",
+            "land",
             "wait",
             "wait-all",
             "merge-all",
+            "land-all",
             "list",
             "prune",
             "classify",
@@ -494,6 +496,41 @@ class TestPaneCommands:
         mock_merge.assert_called_once_with(
             ".", "a", session_root=None, resolve="manual", squash=True, rebase=False
         )
+
+    def test_land_all_summarizes_results(self, runner: CliRunner) -> None:
+        panes = [
+            {"slug": "a", "done": True},
+            {"slug": "b", "done": True},
+            {"slug": "c", "done": False},
+        ]
+        with (
+            patch("dgov.status.list_worker_panes", return_value=panes),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                side_effect=[
+                    {"slug": "a", "verdict": "safe", "commit_count": 1},
+                    {"slug": "b", "verdict": "safe", "commit_count": 0},
+                ],
+            ),
+            patch(
+                "dgov.merger.merge_worker_pane",
+                return_value={"merged": "a", "files_changed": 2},
+            ),
+        ):
+            result = runner.invoke(cli, ["pane", "land-all"])
+
+        assert result.exit_code == 1
+        lines = result.output.strip().splitlines()
+        assert json.loads(lines[0]) == {"review": "safe", "commits": 1, "slug": "a"}
+        assert json.loads(lines[1]) == {"review": "safe", "commits": 0, "slug": "b"}
+        assert json.loads("\n".join(lines[2:])) == {
+            "landed_count": 1,
+            "failed_count": 1,
+            "total_files_changed": 2,
+            "landed": ["a"],
+            "failed": ["b"],
+            "warnings": ["b: no commits to merge"],
+        }
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
         with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
