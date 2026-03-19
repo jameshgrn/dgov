@@ -8,6 +8,7 @@ import logging
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -438,6 +439,13 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
     if target_window is not None:
         list_panes_args.extend(["-t", target_window])
     existing = _run(list_panes_args, silent=True).splitlines()
+    argv0 = Path(sys.argv[0]).expanduser()
+    if argv0.name.startswith("dgov") and argv0.exists():
+        dgov_exe = str(argv0.resolve())
+    else:
+        sibling = Path(sys.executable).resolve().with_name("dgov")
+        dgov_exe = str(sibling) if sibling.exists() else "dgov"
+    dgov_cmd = shlex.quote(dgov_exe)
 
     panes: list[str] = []
 
@@ -445,7 +453,7 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
         try:
             ter_id = split_pane(target=target_window)
             _wait_for_shell(ter_id)
-            cmd = "dgov terrain"
+            cmd = f"{dgov_cmd} terrain"
             if os.environ.get("DGOV_ISOMETRIC") == "1":
                 cmd += " --iso"
             send_command(ter_id, cmd)
@@ -459,7 +467,7 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
         try:
             dash_id = split_pane(target=target_window)
             _wait_for_shell(dash_id)
-            send_command(dash_id, f"dgov dashboard -r {shlex.quote(project_root)}")
+            send_command(dash_id, f"{dgov_cmd} dashboard -r {shlex.quote(project_root)}")
             set_title(dash_id, "[gov] dashboard")
             _style_pane(dash_id, "colour39")
             panes.append(dash_id)
@@ -487,7 +495,7 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
             pid_file.unlink(missing_ok=True)
     if not _already_running:
         proc = subprocess.Popen(
-            ["dgov", "monitor", "-r", project_root],
+            [dgov_exe, "monitor", "-r", project_root],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
