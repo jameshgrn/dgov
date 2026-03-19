@@ -332,57 +332,62 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
     Additionally prunes panes in terminal states (abandoned, closed, merged)
     that are older than 1 hour.
     """
+    from dgov.lifecycle import _pane_lock
+
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root or project_root)
-    panes = all_panes(session_root)
-    pruned: list[str] = []
-    pruned_slugs: set[str] = set()
+    with _pane_lock(project_root):
+        panes = all_panes(session_root)
+        pruned: list[str] = []
+        pruned_slugs: set[str] = set()
 
-    # Pass 1: prune stale state entries
-    for p in panes:
-        pane_id = p.get("pane_id", "")
-        slug = p["slug"]
-        alive = get_backend().is_alive(pane_id) if pane_id else False
-        wt = p.get("worktree_path", "")
-        wt_exists = bool(wt) and Path(wt).exists()
-        if not alive and not wt_exists:
-            remove_pane(session_root, slug)
-            done_path = Path(session_root) / STATE_DIR / "done" / slug
-            done_path.unlink(missing_ok=True)
-            pruned.append(slug)
-            pruned_slugs.add(slug)
+        # Pass 1: prune stale state entries
+        for p in panes:
+            pane_id = p.get("pane_id", "")
+            slug = p["slug"]
+            alive = get_backend().is_alive(pane_id) if pane_id else False
+            wt = p.get("worktree_path", "")
+            wt_exists = bool(wt) and Path(wt).exists()
+            if not alive and not wt_exists:
+                remove_pane(session_root, slug)
+                done_path = Path(session_root) / STATE_DIR / "done" / slug
+                done_path.unlink(missing_ok=True)
+                pruned.append(slug)
+                pruned_slugs.add(slug)
 
-    # Pass 2: prune terminal-state panes older than 1 hour
-    now = time.time()
-    for p in panes:
-        slug = p["slug"]
-        if slug in pruned_slugs:
-            continue
-        state = p.get("state", "")
-        created_at = p.get("created_at", 0) or 0
-        age_s = now - created_at
-        if state in _TERMINAL_PRUNE_STATES and age_s > _TERMINAL_PRUNE_AGE_S:
-            remove_pane(session_root, slug)
-            done_path = Path(session_root) / STATE_DIR / "done" / slug
-            done_path.unlink(missing_ok=True)
-            pruned.append(slug)
-            pruned_slugs.add(slug)
-
-    # Pass 3: remove orphaned worktree dirs
-    worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
-    if worktrees_dir.is_dir():
-        known_worktrees = {p.get("worktree_path") for p in panes if p["slug"] not in pruned_slugs}
-        for entry in worktrees_dir.iterdir():
-            if not entry.is_dir():
+        # Pass 2: prune terminal-state panes older than 1 hour
+        now = time.time()
+        for p in panes:
+            slug = p["slug"]
+            if slug in pruned_slugs:
                 continue
-            entry_str = str(entry)
-            if entry_str in known_worktrees:
-                continue
-            branch_name = entry.name
-            _remove_worktree(project_root, entry_str, branch_name)
-            pruned.append(f"orphan:{branch_name}")
+            state = p.get("state", "")
+            created_at = p.get("created_at", 0) or 0
+            age_s = now - created_at
+            if state in _TERMINAL_PRUNE_STATES and age_s > _TERMINAL_PRUNE_AGE_S:
+                remove_pane(session_root, slug)
+                done_path = Path(session_root) / STATE_DIR / "done" / slug
+                done_path.unlink(missing_ok=True)
+                pruned.append(slug)
+                pruned_slugs.add(slug)
 
-    return pruned
+        # Pass 3: remove orphaned worktree dirs
+        worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
+        if worktrees_dir.is_dir():
+            known_worktrees = {
+                p.get("worktree_path") for p in panes if p["slug"] not in pruned_slugs
+            }
+            for entry in worktrees_dir.iterdir():
+                if not entry.is_dir():
+                    continue
+                entry_str = str(entry)
+                if entry_str in known_worktrees:
+                    continue
+                branch_name = entry.name
+                _remove_worktree(project_root, entry_str, branch_name)
+                pruned.append(f"orphan:{branch_name}")
+
+        return pruned
 
 
 def capture_worker_output(
