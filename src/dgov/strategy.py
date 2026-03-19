@@ -152,7 +152,7 @@ def extract_task_context(prompt: str) -> dict:
     # -- Persistence / state DB --
     if any(kw in p for kw in ("persistence", "state db", "event journal", "sqlite")):
         primary_files.append("src/dgov/persistence.py")
-        also_check.extend(["src/dgov/status.py", "src/dgov/metrics.py"])
+        also_check.append("src/dgov/status.py")
         tests.extend(["tests/test_dgov_state.py", "tests/test_persistence_pane.py"])
 
     # -- CLI commands --

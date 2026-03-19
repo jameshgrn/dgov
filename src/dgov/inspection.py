@@ -274,7 +274,7 @@ def rebase_governor(project_root: str, onto: str | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Metrics (moved from metrics.py)
+# Aggregate statistics
 # ---------------------------------------------------------------------------
 _FAILURE_STATES = frozenset({"failed", "abandoned", "escalated"})
 _SUCCESS_STATES = frozenset({"merged"})
