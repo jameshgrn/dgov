@@ -7,7 +7,6 @@ from __future__ import annotations
 import hashlib
 import math
 import random
-from typing import Any
 
 from rich.text import Text
 
@@ -101,6 +100,19 @@ class ErosionModel:
                 edge_bias = max(0.0, min(1.0, edge_dist / max_edge_dist))
                 row.append(self._rng.uniform(0.25, 0.65) + 0.35 * edge_bias)
             grid.append(row)
+
+        # Add a few random hills for interesting base terrain variety
+        num_hills = self._rng.randint(2, 5)
+        for _ in range(num_hills):
+            hr = self._rng.randint(2, height - 3)
+            hc = self._rng.randint(2, width - 3)
+            radius = self._rng.uniform(3.0, 8.0)
+            amp = self._rng.uniform(0.2, 0.5)
+            for r in range(height):
+                for c in range(width):
+                    dsq = (r - hr) ** 2 + (c - hc) ** 2
+                    if dsq < radius * radius:
+                        grid[r][c] += amp * math.exp(-dsq / (2.0 * (radius / 2.0) ** 2))
 
         # 2 passes of 3x3 box blur
         for _ in range(2):
@@ -219,6 +231,8 @@ class ErosionModel:
             "erode": (3, -0.06),
             "deposit": (3, 0.04),
             "tremor": (4, 0.02),
+            "meteor": (6, -0.15),
+            "volcano": (4, 0.12),
         }
         if event_type not in event_specs:
             raise ValueError(f"Unknown terrain event type: {event_type!r}")
@@ -266,9 +280,9 @@ class EventTranslator:
             "pane_merged": ("erode", 1.2),
             "pane_closed": ("deposit", 0.8),
             "pane_timed_out": ("deposit", 0.8),
-            "pane_circuit_breaker": ("deposit", 1.5),
-            "mission_failed": ("deposit", 1.5),
-            "dag_failed": ("deposit", 1.5),
+            "pane_circuit_breaker": ("volcano", 1.5),
+            "mission_failed": ("meteor", 1.5),
+            "dag_failed": ("meteor", 1.5),
             "checkpoint_created": ("tremor", 0.5),
             "pane_escalated": ("uplift", 0.6),
             "pane_retry_spawned": ("uplift", 0.6),
@@ -400,210 +414,6 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
     return text
 
 
-# Pixel-art sprites: 5 cols x 3 char-rows per agent.
-# [top_row, mid_row, bot_row]; each row = 5 cells.
-# Each cell = (fg, bg) | (fg, bg, char) | None (transparent).
-# 2-tuple -> default half-block.  3-tuple -> custom glyph.
-# Layout: top = head/hat, mid = eyes+arms, bot = body/feet.
-_AGENT_SPRITES: dict[str, list[list]] = {
-    # Claude -- purple, friendly antenna, round eyes
-    "claude": [
-        [
-            None,
-            ((180, 80, 180), (130, 50, 130)),
-            ((255, 200, 255), (180, 80, 180), "\u25b3"),  # △ antenna
-            ((180, 80, 180), (130, 50, 130)),
-            None,
-        ],
-        [
-            ((180, 80, 180), (130, 50, 130), "\u2576"),  # ╶ left arm
-            ((255, 255, 255), (200, 100, 200), "\u25ce"),  # ◎ eye
-            ((200, 100, 200), (130, 50, 130)),
-            ((255, 255, 255), (200, 100, 200), "\u25ce"),  # ◎ eye
-            ((180, 80, 180), (130, 50, 130), "\u2574"),  # ╴ right arm
-        ],
-        [
-            None,
-            ((130, 50, 130), (80, 20, 80), "\u25be"),  # ▾ foot
-            ((130, 50, 130), (80, 20, 80)),
-            ((130, 50, 130), (80, 20, 80), "\u25be"),  # ▾ foot
-            None,
-        ],
-    ],
-    # Pi -- green, flower on head, nature spirit
-    "pi": [
-        [
-            None,
-            ((100, 220, 160), (30, 140, 80)),
-            ((200, 255, 220), (60, 180, 120), "\u273f"),  # ✿ flower
-            ((100, 220, 160), (30, 140, 80)),
-            None,
-        ],
-        [
-            ((60, 180, 120), (30, 140, 80), "\u2576"),  # ╶ arm
-            ((20, 50, 30), (80, 200, 140), "\u25d2"),  # ◒ eye (dark on bright)
-            ((80, 200, 140), (30, 140, 80)),
-            ((20, 50, 30), (80, 200, 140), "\u25d3"),  # ◓ eye (mirrored)
-            ((60, 180, 120), (30, 140, 80), "\u2574"),  # ╴ arm
-        ],
-        [
-            None,
-            ((30, 140, 80), (20, 100, 50), "\u25be"),  # ▾ foot
-            ((30, 140, 80), (20, 100, 50)),
-            ((30, 140, 80), (20, 100, 50), "\u25be"),  # ▾ foot
-            None,
-        ],
-    ],
-    # Cursor -- blue, sleek arrow head, precise target eyes
-    "cursor": [
-        [
-            None,
-            None,
-            ((220, 240, 255), (80, 120, 220), "\u25bc"),  # ▼ cursor tip
-            None,
-            None,
-        ],
-        [
-            ((120, 160, 255), (40, 60, 150), "\u25c1"),  # ◁ left wing
-            ((255, 255, 255), (80, 120, 220), "\u25a3"),  # ▣ eye (reticle)
-            ((160, 200, 255), (80, 120, 220)),
-            ((255, 255, 255), (80, 120, 220), "\u25a3"),  # ▣ eye (reticle)
-            ((120, 160, 255), (40, 60, 150), "\u25b7"),  # ▷ right wing
-        ],
-        [
-            None,
-            ((40, 60, 150), (20, 30, 100), "\u25be"),  # ▾ foot
-            ((80, 120, 220), (40, 60, 150)),
-            ((40, 60, 150), (20, 30, 100), "\u25be"),  # ▾ foot
-            None,
-        ],
-    ],
-    # Codex -- gold, scholar hat, wise eyes
-    "codex": [
-        [
-            ((200, 160, 30), (160, 120, 10), "\u2581"),  # ▁ hat brim
-            ((200, 160, 30), (160, 120, 10)),
-            ((255, 240, 150), (200, 160, 30)),
-            ((200, 160, 30), (160, 120, 10)),
-            ((200, 160, 30), (160, 120, 10), "\u2581"),  # ▁ hat brim
-        ],
-        [
-            ((200, 160, 30), (160, 120, 10), "\u2576"),  # ╶ arm
-            ((70, 45, 0), (220, 180, 40), "\u25d0"),  # ◐ eye (dark on bright)
-            ((220, 180, 40), (180, 140, 20)),
-            ((70, 45, 0), (220, 180, 40), "\u25d1"),  # ◑ eye (mirrored)
-            ((200, 160, 30), (160, 120, 10), "\u2574"),  # ╴ arm
-        ],
-        [
-            None,
-            ((160, 120, 10), (120, 90, 10), "\u25be"),  # ▾ foot
-            ((180, 140, 20), (120, 90, 10)),
-            ((160, 120, 10), (120, 90, 10), "\u25be"),  # ▾ foot
-            None,
-        ],
-    ],
-    # Gemini -- indigo/blue, twin stars, cosmic
-    "gemini": [
-        [
-            None,
-            ((200, 220, 255), (60, 80, 200), "\u2726"),  # ✦ star
-            ((200, 220, 255), (100, 120, 200)),
-            ((200, 220, 255), (60, 80, 200), "\u2726"),  # ✦ star
-            None,
-        ],
-        [
-            ((100, 120, 200), (30, 40, 130), "\u2576"),  # ╶ arm
-            ((255, 255, 255), (60, 80, 200), "\u25c8"),  # ◈ eye (faceted)
-            ((140, 170, 255), (60, 80, 200)),
-            ((255, 255, 255), (60, 80, 200), "\u25c8"),  # ◈ eye (faceted)
-            ((100, 120, 200), (30, 40, 130), "\u2574"),  # ╴ arm
-        ],
-        [
-            None,
-            ((30, 40, 130), (15, 20, 80), "\u25be"),  # ▾ foot
-            ((60, 80, 200), (30, 40, 130)),
-            ((30, 40, 130), (15, 20, 80), "\u25be"),  # ▾ foot
-            None,
-        ],
-    ],
-}
-
-# Done -- green, sparkle crown, arms raised in celebration
-_DONE_SPRITE: list[list[Any]] = [
-    [
-        None,
-        None,
-        ((180, 255, 180), (80, 220, 100), "\u2726"),  # ✦ sparkle
-        None,
-        None,
-    ],
-    [
-        ((255, 255, 255), (80, 220, 100), "\u2572"),  # ╲ arm raised left
-        ((255, 255, 255), (80, 220, 100), "\u25d5"),  # ◕ happy eye
-        ((80, 220, 100), (40, 160, 50)),
-        ((255, 255, 255), (80, 220, 100), "\u25d5"),  # ◕ happy eye
-        ((255, 255, 255), (80, 220, 100), "\u2571"),  # ╱ arm raised right
-    ],
-    [
-        None,
-        ((40, 160, 50), (20, 100, 30), "\u25be"),  # ▾ foot
-        ((40, 160, 50), (20, 100, 30)),
-        ((40, 160, 50), (20, 100, 30), "\u25be"),  # ▾ foot
-        None,
-    ],
-]
-
-# Failed -- red, skull mark, x-eyes, collapsed
-_FAILED_SPRITE: list[list[Any]] = [
-    [
-        None,
-        ((220, 60, 60), (160, 30, 30)),
-        ((255, 120, 120), (220, 60, 60), "\u2716"),  # ✖ skull mark
-        ((220, 60, 60), (160, 30, 30)),
-        None,
-    ],
-    [
-        None,
-        ((255, 80, 80), (220, 60, 60), "\u00d7"),  # × dead eye
-        ((220, 60, 60), (160, 30, 30)),
-        ((255, 80, 80), (220, 60, 60), "\u00d7"),  # × dead eye
-        None,
-    ],
-    [
-        None,
-        None,
-        ((160, 30, 30), (100, 15, 15)),
-        None,
-        None,
-    ],
-]
-
-# LT-GOV -- gold/royal, crown, scepter sparkles
-_LTGOV_SPRITE: list[list[Any]] = [
-    [
-        ((255, 220, 60), (220, 180, 30), "\u2727"),  # ✧ ornament
-        ((255, 220, 60), (220, 180, 30)),
-        ((255, 255, 220), (255, 220, 60), "\u265b"),  # ♛ crown
-        ((255, 220, 60), (220, 180, 30)),
-        ((255, 220, 60), (220, 180, 30), "\u2727"),  # ✧ ornament
-    ],
-    [
-        ((220, 180, 30), (180, 140, 10), "\u2576"),  # ╶ arm
-        ((70, 45, 0), (255, 220, 60), "\u25c8"),  # ◈ eye (regal, dark on gold)
-        ((255, 220, 60), (220, 180, 30)),
-        ((70, 45, 0), (255, 220, 60), "\u25c8"),  # ◈ eye (regal, dark on gold)
-        ((220, 180, 30), (180, 140, 10), "\u2574"),  # ╴ arm
-    ],
-    [
-        None,
-        ((220, 180, 30), (180, 140, 10), "\u25be"),  # ▾ foot
-        ((220, 180, 30), (180, 140, 10)),
-        ((220, 180, 30), (180, 140, 10), "\u25be"),  # ▾ foot
-        None,
-    ],
-]
-
-
 class AgentSim:
     """Lightweight agent-based model overlay for the terrain display.
 
@@ -724,55 +534,25 @@ class AgentSim:
             r += vr
             c += vc
 
-            # Boundary clamp (stay off edges for 5x3 sprites)
+            # Boundary clamp (stay off edges)
             r = max(2.0, min(rows - 2.0, r))
             c = max(3.0, min(cols - 3.0, c))
 
             self._pos[slug] = [r, c]
             self._vel[slug] = [vr, vc]
 
-            # Pixel-art sprite: 5 wide x 3 tall, centered on agent position
+            # Render agent as a single character
             ir, ic = int(round(r)), int(round(c))
-            sprite: list[list[Any]]
-            if role == "lt-gov":
-                sprite = _LTGOV_SPRITE
-            elif state in ("done", "merged"):
-                sprite = _DONE_SPRITE
-            elif state == "failed":
-                sprite = _FAILED_SPRITE
-            else:
-                agent_name = ag.get("agent", "").split("-")[0]
-                sprite = _AGENT_SPRITES.get(agent_name) or _AGENT_SPRITES["claude"]
-
-            sprite_h = len(sprite)
-            sprite_w = len(sprite[0]) if sprite else 0
-            for row_offset in range(sprite_h):
-                sr = ir - 1 + row_offset
-                if sr < 0 or sr >= rows:
-                    continue
-                sprite_row = sprite[row_offset]
-                for dx in range(sprite_w):
-                    sc = ic - sprite_w // 2 + dx
-                    if sc < 0 or sc >= cols:
-                        continue
-                    cell = sprite_row[dx]
-                    if cell is None:
-                        continue
-                    if len(cell) == 3:
-                        fg, bg, char = cell
-                    else:
-                        fg, bg = cell
-                        char = "\u2580"
-                    # Head decoration pulse
-                    if row_offset == 0 and dx == sprite_w // 2 and self._tick % 4 < 2:
-                        fg = (min(fg[0] + 30, 255), min(fg[1] + 30, 255), min(fg[2] + 30, 255))
-                    # Eye glow
-                    if row_offset == 1 and dx in (1, sprite_w - 2) and self._tick % 8 < 2:
-                        fg = (min(fg[0] + 40, 255), min(fg[1] + 40, 255), min(fg[2] + 40, 255))
-                    stamps[(sr, sc)] = (
-                        char,
-                        f"rgb({fg[0]},{fg[1]},{fg[2]}) on rgb({bg[0]},{bg[1]},{bg[2]})",
-                    )
+            if ir >= 0 and ir < rows and ic >= 0 and ic < cols:
+                if role == "lt-gov":
+                    char, color = "★", "bold yellow"
+                elif state in ("done", "merged"):
+                    char, color = "●", "dim white"
+                elif state == "failed":
+                    char, color = "✖", "bold red"
+                else:
+                    char, color = "@", "bold green"
+                stamps[(ir, ic)] = (char, color)
 
         # Interaction sparks: adjacent agents get a lightning bolt between them
         pos_list = [
