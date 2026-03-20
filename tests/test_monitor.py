@@ -234,12 +234,12 @@ class TestTakeAction:
         mock_complete.assert_called_once()
 
     @patch("dgov.monitor.get_pane")
-    @patch("dgov.monitor.emit_event")
-    @patch("dgov.monitor.update_pane_state")
+    @patch("dgov.executor.run_complete_pane")
     @patch("dgov.monitor._has_new_commits", return_value=True)
     def test_auto_complete_touches_done_signal(
-        self, mock_has_commits, mock_update, mock_event, mock_get_pane, tmp_path
+        self, mock_has_commits, mock_complete, mock_get_pane, tmp_path
     ):
+        from dgov.executor import StateTransitionResult
         from dgov.monitor import _auto_complete
 
         mock_get_pane.return_value = {
@@ -248,19 +248,20 @@ class TestTakeAction:
             "base_sha": "abc123",
             "project_root": str(tmp_path),
         }
+        mock_complete.return_value = StateTransitionResult(
+            slug="w1", new_state="done", changed=True
+        )
         (tmp_path / ".dgov" / "done").mkdir(parents=True)
         _auto_complete(str(tmp_path), str(tmp_path), "w1")
         assert (tmp_path / ".dgov" / "done" / "w1").exists()
-        mock_update.assert_called_once()
-        mock_event.assert_called_once()
+        mock_complete.assert_called_once()
         mock_has_commits.assert_called_once_with(str(tmp_path), "w1", "abc123")
 
     @patch("dgov.monitor.get_pane")
-    @patch("dgov.monitor.emit_event")
-    @patch("dgov.monitor.update_pane_state")
+    @patch("dgov.executor.run_complete_pane")
     @patch("dgov.monitor._has_new_commits", return_value=False)
     def test_auto_complete_skips_done_signal_without_commits(
-        self, mock_has_commits, mock_update, mock_event, mock_get_pane, tmp_path
+        self, mock_has_commits, mock_complete, mock_get_pane, tmp_path
     ):
         from dgov.monitor import _auto_complete
 
@@ -273,8 +274,7 @@ class TestTakeAction:
         (tmp_path / ".dgov" / "done").mkdir(parents=True)
         _auto_complete(str(tmp_path), str(tmp_path), "w1")
         assert not (tmp_path / ".dgov" / "done" / "w1").exists()
-        mock_update.assert_not_called()
-        mock_event.assert_not_called()
+        mock_complete.assert_not_called()
         mock_has_commits.assert_called_once_with(str(tmp_path), "w1", "abc123")
 
 
@@ -560,31 +560,34 @@ class TestMonitorEventState:
 class TestTryAutoRetry:
     """Test _try_auto_retry auto-retry logic."""
 
-    @patch("dgov.monitor.maybe_auto_retry")
+    @patch("dgov.executor.run_retry_or_escalate")
     def test_auto_retry_success(self, mock_retry):
+        from dgov.executor import RetryResult
         from dgov.monitor import _try_auto_retry
 
-        mock_retry.return_value = {"retried": "test-1", "new_slug": "test-1-2", "attempt": 1}
+        mock_retry.return_value = RetryResult(slug="test-1", new_slug="test-1-2")
         result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
         assert result == "auto_retry"
 
-    @patch("dgov.monitor.maybe_auto_retry")
+    @patch("dgov.executor.run_retry_or_escalate")
     def test_auto_escalate(self, mock_retry):
+        from dgov.executor import EscalateResult
         from dgov.monitor import _try_auto_retry
 
-        mock_retry.return_value = {
-            "escalated": "test-1",
-            "to": "qwen35-122b",
-            "new_slug": "test-1-esc-1",
-        }
+        mock_retry.return_value = EscalateResult(
+            slug="test-1", new_slug="test-1-esc-1", target_agent="qwen35-122b"
+        )
         result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
         assert result == "auto_escalate"
 
-    @patch("dgov.monitor.maybe_auto_retry")
+    @patch("dgov.executor.run_retry_or_escalate")
     def test_no_retry_policy(self, mock_retry):
+        from dgov.executor import RetryResult
         from dgov.monitor import _try_auto_retry
 
-        mock_retry.return_value = None
+        mock_retry.return_value = RetryResult(
+            slug="test-1", error="No retry/escalation action taken"
+        )
         result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
 

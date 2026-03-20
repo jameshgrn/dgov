@@ -922,16 +922,16 @@ touches = ["src/parser.py", "tests/test_parser.py"]
         ):
             diff = runner.invoke(cli, ["pane", "diff", "task", "--name-only"])
         with patch(
-            "dgov.recovery.escalate_worker_pane",
-            return_value={"escalated": True, "agent": "claude"},
+            "dgov.executor.run_escalate_only",
+            return_value=MagicMock(error=None, new_slug="task-esc", target_agent="claude"),
         ):
             escalate = runner.invoke(
                 cli,
                 ["pane", "escalate", "task", "--agent", "claude", "--permission-mode", "plan"],
             )
         with patch(
-            "dgov.recovery.retry_worker_pane",
-            return_value={"retried": True, "new_slug": "task-2"},
+            "dgov.executor.run_retry_only",
+            return_value=MagicMock(error=None, new_slug="task-2"),
         ):
             retry = runner.invoke(
                 cli,
@@ -944,8 +944,8 @@ touches = ["src/parser.py", "tests/test_parser.py"]
         assert retry.exit_code == 0
         assert json.loads(review.output)["verdict"] == "safe"
         assert json.loads(diff.output)["diff"] == "patch"
-        assert json.loads(escalate.output)["escalated"] is True
-        assert json.loads(retry.output)["retried"] is True
+        assert json.loads(escalate.output)["new_slug"] == "task-esc"
+        assert json.loads(retry.output)["new_slug"] == "task-2"
 
 
 class TestTopLevelCommands:
