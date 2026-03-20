@@ -190,8 +190,8 @@ def run_review_fix_pipeline(
 
     Returns summary dict with findings_count, fixed_count, etc.
     """
-    from dgov.executor import run_review_merge
-    from dgov.lifecycle import close_worker_pane, create_worker_pane
+    from dgov.executor import run_close_only, run_review_merge
+    from dgov.lifecycle import create_worker_pane
     from dgov.status import capture_worker_output
 
     project_root = os.path.abspath(project_root)
@@ -264,7 +264,9 @@ def run_review_fix_pipeline(
 
     # Close review workers
     for slug in review_slugs:
-        close_worker_pane(project_root, slug, session_root=session_root, force=True)
+        result = run_close_only(project_root, slug, session_root=session_root, force=True)
+        if not result.closed:
+            logger.warning("Failed to close review worker %s", slug)
 
     # Deduplicate and filter
     all_findings = _deduplicate(all_findings)

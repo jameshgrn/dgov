@@ -525,10 +525,13 @@ def _execute_action(state: DashboardState, action: str, slug: str) -> None:
             with state.lock:
                 state.error = f"Merge failed for {slug}"
     elif action == "close":
-        from dgov.lifecycle import close_worker_pane
+        from dgov.executor import run_close_only
 
         try:
-            close_worker_pane(state.project_root, slug, session_root=state.session_root)
+            result = run_close_only(state.project_root, slug, session_root=state.session_root)
+            if not result.closed:
+                with state.lock:
+                    state.error = f"Close failed for {slug}"
         except Exception:
             logger.exception("Dashboard close failed for %s", slug)
             with state.lock:

@@ -17,6 +17,7 @@ from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
     transitive_dependents,
     validate_dag,
 )
+from dgov.executor import run_close_only
 from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
     DagDefinition,
     DagFileSpec,
@@ -545,7 +546,6 @@ def _reconcile_orphan_panes(
     session_root: str,
 ) -> None:
     """Scan for orphan panes from a previous governor crash and reconcile."""
-    from dgov.lifecycle import close_worker_pane
     from dgov.persistence import list_dag_tasks, list_panes_slim, upsert_dag_task
 
     dag_tasks = list_dag_tasks(session_root, run_id)
@@ -577,9 +577,7 @@ def _reconcile_orphan_panes(
         else:
             # Dead pane, close it
             try:
-                close_worker_pane(
-                    dag.project_root, pane_slug, session_root=session_root, force=True
-                )
+                run_close_only(dag.project_root, pane_slug, session_root=session_root, force=True)
             except Exception:
                 pass
 
@@ -681,7 +679,6 @@ def run_dag_definition(
     max_concurrent: int = 0,
 ) -> DagRunSummary:
     """Execute an already-built DAG definition through the canonical scheduler."""
-    from dgov.lifecycle import close_worker_pane
     from dgov.persistence import (
         emit_event,
         get_dag_task,
@@ -726,9 +723,7 @@ def run_dag_definition(
             for s in list(task_states.keys()):
                 if s in skipped and task_states.get(s) == "dispatched":
                     try:
-                        close_worker_pane(
-                            dag.project_root, s, session_root=session_root, force=True
-                        )
+                        run_close_only(dag.project_root, s, session_root=session_root, force=True)
                     except Exception:
                         pass
 

@@ -387,7 +387,8 @@ def gc_retained_panes(
     states: tuple[str, ...] = (),
 ) -> dict[str, list[str]]:
     """Explicitly garbage-collect preserved evidence and old terminal panes."""
-    from dgov.lifecycle import _pane_lock, close_worker_pane
+    from dgov.executor import run_close_only
+    from dgov.lifecycle import _pane_lock
 
     if older_than_s < 0:
         raise ValueError("older_than_s must be non-negative")
@@ -423,8 +424,8 @@ def gc_retained_panes(
             candidates.append(slug)
 
         for slug in candidates:
-            closed = close_worker_pane(project_root, slug, session_root=session_root, force=True)
-            if closed and get_pane(session_root, slug) is None:
+            result = run_close_only(project_root, slug, session_root=session_root, force=True)
+            if result.closed and get_pane(session_root, slug) is None:
                 pruned.append(slug)
             else:
                 skipped.append(slug)
