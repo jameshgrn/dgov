@@ -60,14 +60,17 @@ def _wrap_done_signal(cmd: str, done_signal: str) -> str:
 
 
 def _wrap_exit_signal(cmd: str, done_signal: str) -> str:
-    """Wrap *cmd* so .exit file is written on failure but nothing on success.
+    """Wrap *cmd* so .exit file is written on any exit unless done-signal already exists.
 
-    Unlike _wrap_done_signal, this does NOT write the done signal on success.
-    It only records non-zero exit codes via the .exit file for detection by
-    _is_done().
+    Writes the exit code (0 or non-zero) to the .exit file whenever the
+    wrapped command exits AND the agent hasn't already written its own done
+    signal via ``dgov worker complete``.  This ensures interactive/TUI agents
+    that drop back to a shell prompt without signalling are detected immediately
+    by _is_done() Signal 1b rather than hanging in ``active`` state indefinitely.
     """
+    ok = shlex.quote(done_signal)
     fail = shlex.quote(done_signal + ".exit")
-    return f"{cmd} || echo $? > {fail}"
+    return f"{cmd}; __rc=$?; [ -f {ok} ] || echo $__rc > {fail}"
 
 
 # -- Commit detection --
