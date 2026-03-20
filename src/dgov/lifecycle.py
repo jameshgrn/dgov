@@ -16,7 +16,7 @@ from pathlib import Path
 from dgov.agents import AgentDef, build_launch_command, load_registry
 from dgov.backend import get_backend
 from dgov.context_packet import ContextPacket, build_context_packet, render_start_here_section
-from dgov.done import _wrap_exit_signal
+from dgov.done import _wrap_done_signal, _wrap_exit_signal
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
@@ -163,7 +163,42 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
         descendant_pids = _collect_descendant_pids(root_pid, snapshot_after)
         time.sleep(0.25)
 
+    # SIGTERM didn't kill everything — escalate to SIGKILL for process groups
     still_running = list(descendant_pids)
+    if still_running:
+        still_pgids = {
+            pgid
+            for pid in still_running
+            if (entry := snapshot_after.get(pid)) is not None
+            for pgid in [entry[1]]
+            if pgid > 0
+        }
+        # Fallback to root process group if snapshots fail or no pgids found
+        if not still_pgids:
+            try:
+                still_pgids = {os.getpgid(root_pid)}
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        for pgid in sorted(still_pgids, reverse=True):
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                continue
+
+        # Brief wait after SIGKILL
+        time.sleep(0.5)
+
+        # Final check — only report processes that survived SIGKILL too
+        final_dead = []
+        for pid in still_running:
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                final_dead.append(pid)
+
+        still_running = [pid for pid in still_running if pid not in final_dead]
+
     return {"terminated": False, "still_running": still_running}
 
 
@@ -579,6 +614,8 @@ def _setup_and_launch_agent(
             backend.send_keys(pane_id, [key])
         backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
     else:
+        # Headless workers with prompt embedded in launch command.
+        # Use success-path wrapper so successful runs touch done file directly.
         force_headless = not use_interactive and agent_def.interactive
         launch_cmd = build_launch_command(
             agent_id,
@@ -590,7 +627,7 @@ def _setup_and_launch_agent(
             registry=registry,
             force_headless=force_headless,
         )
-        wrapped_cmd = _wrap_exit_signal(launch_cmd, done_signal)
+        wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
         backend.send_shell_command(pane_id, wrapped_cmd)
 
         # Cursor headless: accept workspace trust dialog (send twice for reliability)
