@@ -18,6 +18,7 @@ from dgov.agents import load_registry
 from dgov.backend import get_backend
 from dgov.decision import MonitorOutputRequest, ProviderError
 from dgov.done import _has_new_commits
+from dgov.executor import EscalateResult, RetryResult
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.persistence import (
     STATE_DIR,
@@ -28,10 +29,8 @@ from dgov.persistence import (
     read_events,
     set_pane_metadata,
     take_dispatch_queue,
-    update_pane_state,
     wait_for_events,
 )
-from dgov.recovery import maybe_auto_retry
 from dgov.status import list_worker_panes, prune_stale_panes, tail_worker_log
 
 if TYPE_CHECKING:
@@ -631,8 +630,14 @@ def _auto_complete(project_root: str, session_root: str, slug: str) -> None:
     done_dir.mkdir(parents=True, exist_ok=True)
     (done_dir / slug).touch()
 
-    update_pane_state(session_root, slug, "done", force=True)
-    emit_event(session_root, "monitor_auto_complete", slug, reason="monitor_auto_complete")
+    from dgov.executor import run_complete_pane
+
+    result = run_complete_pane(
+        project_root, slug, session_root=session_root, reason="auto_complete"
+    )
+    if not result.changed:
+        logger.debug("Monitor: pane %s already in done state", slug)
+        return
     logger.info("Monitor: auto-completed %s", slug)
 
 
@@ -686,10 +691,15 @@ def _mark_idle_failed(
     project_root: str, session_root: str, slug: str, reason: str | None = None
 ) -> None:
     """Mark an idle worker as failed."""
-    update_pane_state(session_root, slug, "failed", force=True)
+    from dgov.executor import run_fail_pane
+
+    result = run_fail_pane(
+        project_root, slug, session_root=session_root, reason=reason or "idle_timeout"
+    )
+    if not result.changed:
+        logger.debug("Monitor: pane %s already in failed state", slug)
+        return
     set_pane_metadata(session_root, slug, monitor_reason=reason or "idle_timeout")
-    emit_event(session_root, "pane_failed", slug, reason=reason or "monitor_idle_timeout")
-    emit_event(session_root, "monitor_idle_timeout", slug, reason=reason or "monitor_idle_timeout")
     logger.info("Monitor: timed out idle worker %s (reason=%s)", slug, reason)
 
 
@@ -712,27 +722,29 @@ def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | No
 
 def _try_auto_retry(project_root: str, session_root: str, slug: str) -> str | None:
     """Attempt to auto-retry a failed pane using its agent retry policy."""
-    result = maybe_auto_retry(session_root, slug, project_root)
-    if not result:
+    from dgov.executor import run_retry_or_escalate
+
+    result = run_retry_or_escalate(project_root, slug, session_root=session_root)
+    if not hasattr(result, "new_slug") or not result.new_slug:
         return None
-    if result.get("retried"):
+    if isinstance(result, RetryResult):
         emit_event(
             session_root,
             "monitor_auto_retry",
             slug,
-            new_slug=result.get("new_slug", ""),
+            new_slug=result.new_slug,
         )
-        logger.info("Monitor: auto-retried %s -> %s", slug, result.get("new_slug"))
+        logger.info("Monitor: auto-retried %s -> %s", slug, result.new_slug)
         return "auto_retry"
-    if result.get("escalated"):
+    if isinstance(result, EscalateResult):
         emit_event(
             session_root,
             "monitor_auto_retry",
             slug,
-            escalated_to=result.get("to", ""),
-            new_slug=result.get("new_slug", ""),
+            escalated_to=result.target_agent,
+            new_slug=result.new_slug or "",
         )
-        logger.info("Monitor: auto-escalated %s -> %s", slug, result.get("to"))
+        logger.info("Monitor: auto-escalated %s -> %s", slug, result.target_agent)
         return "auto_escalate"
     return None
 
