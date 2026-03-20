@@ -402,7 +402,11 @@ def _build_layout(
         # Show up to 3 slugs in the banner
         display_slugs = done_slugs[:3]
         slug_str = ", ".join(display_slugs)
-        more = f" (+{len(done_slugs) - len(display_slugs)})" if len(done_slugs) > len(display_slugs) else ""
+        more = (
+            f" (+{len(done_slugs) - len(display_slugs)})"
+            if len(done_slugs) > len(display_slugs)
+            else ""
+        )
         header_text.append(f"\u2713 {slug_str}{more}", style="bold green")
         # Ring bell once per batch of new done events
         if not bell_rung and not error:
