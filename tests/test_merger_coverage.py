@@ -1074,6 +1074,8 @@ def test_merge_worker_pane_fails_when_post_merge_tests_fail(
     assert result["slug"] == "post-test-fail"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-post-test").returncode == 0
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
+    assert not (repo / "worker.py").exists()
     # Should NOT have updated pane state to merged
     mock_update_state.assert_not_called()
     # Should emit failure event
