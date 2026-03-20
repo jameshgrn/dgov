@@ -13,7 +13,7 @@ from dgov.dag import (
     DagFileSpec,
     DagRunSummary,
     DagTaskSpec,
-    run_dag_definition,
+    run_dag_via_kernel,
 )
 from dgov.dag import (
     compute_tiers as _dag_compute_tiers,
@@ -334,11 +334,10 @@ def run_batch(
         }
 
     dag = _batch_to_dag_definition(spec_path, project_root, session_root, tasks)
-    summary = run_dag_definition(
+    summary = run_dag_via_kernel(
         dag,
         dag_key=str(Path(spec_path).resolve()),
         definition_hash=_spec_hash(spec_path),
-        max_retries=0,
         auto_merge=True,
     )
     task_rows = list_dag_tasks(session_root, summary.run_id)
