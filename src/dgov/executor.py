@@ -994,3 +994,182 @@ def run_merge_only(
         slug=slug,
         merge_result=merge_result,
     )
+
+
+# -- New executor syscalls: close, retry, escalate, complete, fail --
+
+
+@dataclass(frozen=True)
+class RetryResult:
+    slug: str
+    new_slug: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class EscalateResult:
+    slug: str
+    new_slug: str | None = None
+    target_agent: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class StateTransitionResult:
+    slug: str
+    new_state: str
+    changed: bool = True
+    error: str | None = None
+
+
+def run_close_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    force: bool = False,
+) -> CleanupOnlyResult:
+    """Executor syscall: close a pane and reclaim resources."""
+    from dgov.lifecycle import close_worker_pane
+
+    closed = close_worker_pane(project_root, slug, session_root=session_root, force=force)
+    return CleanupOnlyResult(
+        slug=slug,
+        action="close",
+        reason="explicit_close",
+        closed=closed,
+        force=force,
+        error=None if closed else f"Failed to close pane: {slug}",
+    )
+
+
+def run_retry_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    agent: str | None = None,
+    permission_mode: str = "bypassPermissions",
+) -> RetryResult:
+    """Executor syscall: retry a failed pane with a new worker."""
+    from dgov.recovery import retry_worker_pane
+
+    result = retry_worker_pane(
+        project_root,
+        slug,
+        session_root=session_root,
+        agent=agent,
+    )
+    if result.get("error"):
+        return RetryResult(slug=slug, error=result["error"])
+    return RetryResult(slug=slug, new_slug=result.get("new_slug"))
+
+
+def run_escalate_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    target_agent: str | None = None,
+    permission_mode: str = "bypassPermissions",
+) -> EscalateResult:
+    """Executor syscall: escalate a pane to a stronger agent."""
+    from dgov.recovery import escalate_worker_pane
+
+    if target_agent is None:
+        from dgov.recovery import _resolve_escalation_target
+
+        pane = None
+        if session_root:
+            from dgov.persistence import get_pane
+
+            pane = get_pane(session_root, slug)
+        current_agent = pane.get("agent", "") if pane else ""
+        target_agent = _resolve_escalation_target(current_agent, project_root)
+        if target_agent == current_agent:
+            return EscalateResult(
+                slug=slug,
+                error=f"No escalation target for agent {current_agent}",
+            )
+
+    result = escalate_worker_pane(
+        project_root,
+        slug,
+        target_agent=target_agent,
+        session_root=session_root,
+        permission_mode=permission_mode,
+    )
+    if result.get("error"):
+        return EscalateResult(slug=slug, error=result["error"])
+    return EscalateResult(
+        slug=slug,
+        new_slug=result.get("new_slug"),
+        target_agent=target_agent,
+    )
+
+
+def run_retry_or_escalate(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    permission_mode: str = "bypassPermissions",
+) -> RetryResult | EscalateResult:
+    """Executor syscall: auto-retry, escalating if retries exhausted."""
+    import os
+
+    from dgov.recovery import maybe_auto_retry
+
+    session_root = os.path.abspath(session_root or project_root)
+    result = maybe_auto_retry(session_root, slug, project_root)
+    if result is None:
+        return RetryResult(slug=slug, error="No retry/escalation action taken")
+    if result.get("error"):
+        return RetryResult(slug=slug, error=result["error"])
+    return RetryResult(slug=slug, new_slug=result.get("new_slug"))
+
+
+def run_complete_pane(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    reason: str = "auto_complete",
+) -> StateTransitionResult:
+    """Executor syscall: mark a pane as done (e.g., monitor auto-complete)."""
+    import os
+
+    from dgov.persistence import emit_event, settle_completion_state
+
+    session_root = os.path.abspath(session_root or project_root)
+    transition = settle_completion_state(session_root, slug, "done")
+    if transition.changed:
+        emit_event(session_root, "pane_done", slug, reason=reason)
+    return StateTransitionResult(
+        slug=slug,
+        new_state="done",
+        changed=transition.changed,
+    )
+
+
+def run_fail_pane(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    reason: str = "idle_timeout",
+) -> StateTransitionResult:
+    """Executor syscall: mark a pane as failed (e.g., monitor idle timeout)."""
+    import os
+
+    from dgov.persistence import emit_event, settle_completion_state
+
+    session_root = os.path.abspath(session_root or project_root)
+    transition = settle_completion_state(session_root, slug, "failed")
+    if transition.changed:
+        emit_event(session_root, "pane_failed", slug, reason=reason)
+    return StateTransitionResult(
+        slug=slug,
+        new_state="failed",
+        changed=transition.changed,
+    )
