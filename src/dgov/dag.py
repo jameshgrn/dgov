@@ -322,7 +322,8 @@ def _persist_task_lifecycle_result(
     task_states: dict[str, str],
 ) -> str:
     """Persist the canonical executor lifecycle outcome for a DAG task."""
-    from dgov.persistence import update_pane_state, upsert_dag_task
+    from dgov.executor import run_mark_reviewed
+    from dgov.persistence import upsert_dag_task
 
     task = dag.tasks[task_slug]
     pane_slug = lifecycle.slug
@@ -331,38 +332,21 @@ def _persist_task_lifecycle_result(
 
     task_states[task_slug] = status
     if status == "merged":
-        upsert_dag_task(
-            session_root,
-            run_id,
-            task_slug,
-            "merged",
-            task.agent,
-            pane_slug=pane_slug,
-        )
+        upsert_dag_task(session_root, run_id, task_slug, "merged", task.agent, pane_slug=pane_slug)
         return status
 
     if status == "reviewed_pass":
-        update_pane_state(session_root, pane_slug, "reviewed_pass", force=True)
+        run_mark_reviewed(session_root, pane_slug, session_root=session_root, passed=True)
         upsert_dag_task(
-            session_root,
-            run_id,
-            task_slug,
-            "reviewed_pass",
-            task.agent,
-            pane_slug=pane_slug,
+            session_root, run_id, task_slug, "reviewed_pass", task.agent, pane_slug=pane_slug
         )
         _progress(f"  reviewed {task_slug}: pass")
         return status
 
     if status == "reviewed_fail":
-        update_pane_state(session_root, pane_slug, "reviewed_fail", force=True)
+        run_mark_reviewed(session_root, pane_slug, session_root=session_root, passed=False)
         upsert_dag_task(
-            session_root,
-            run_id,
-            task_slug,
-            "reviewed_fail",
-            task.agent,
-            pane_slug=pane_slug,
+            session_root, run_id, task_slug, "reviewed_fail", task.agent, pane_slug=pane_slug
         )
         _progress(f"  reviewed {task_slug}: fail")
         return status

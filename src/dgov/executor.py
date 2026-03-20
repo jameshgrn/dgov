@@ -1173,3 +1173,21 @@ def run_fail_pane(
         new_state="failed",
         changed=transition.changed,
     )
+
+
+def run_mark_reviewed(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    passed: bool,
+) -> StateTransitionResult:
+    """Executor syscall: transition pane to reviewed_pass or reviewed_fail."""
+    import os
+
+    from dgov.persistence import update_pane_state
+
+    session_root = os.path.abspath(session_root or project_root)
+    target = "reviewed_pass" if passed else "reviewed_fail"
+    update_pane_state(session_root, slug, target, force=True)
+    return StateTransitionResult(slug=slug, new_state=target, changed=True)
