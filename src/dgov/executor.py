@@ -1098,8 +1098,6 @@ def run_land_only(
     rebase: bool = False,
 ) -> LandResult:
     """Run the canonical review, merge, and cleanup flow for a pane."""
-    from dgov.lifecycle import close_worker_pane
-
     result = run_review_merge(
         project_root,
         slug,
@@ -1118,15 +1116,22 @@ def run_land_only(
             error=result.error,
         )
 
-    closed = close_worker_pane(project_root, slug, session_root=session_root)
-    cleanup = CleanupOnlyResult(
-        slug=slug,
-        action="close" if closed else "preserve",
-        reason="landed",
-        closed=closed,
-        force=False,
-        error=None if closed else f"Failed to close pane: {slug}",
-    )
+    # Delegate cleanup to run_cleanup_only with state='completed'
+    # Note: run_cleanup_only preserves on completed (for lifecycle),
+    # so we override with actual close logic for land-only context
+    from dgov.lifecycle import close_worker_pane
+
+    cleanup = run_cleanup_only(project_root, slug, session_root=session_root, state="completed")
+    if cleanup.action == "preserve":
+        closed = close_worker_pane(project_root, slug, session_root=session_root)
+        cleanup = CleanupOnlyResult(
+            slug=slug,
+            action="close",
+            reason="landed",
+            closed=closed,
+            force=False,
+            error=None if closed else f"Failed to close pane: {slug}",
+        )
     return LandResult(
         slug=slug,
         review=result.review,
