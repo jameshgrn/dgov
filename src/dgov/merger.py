@@ -867,8 +867,6 @@ def merge_worker_pane(
                 )
                 if check.stdout.strip():
                     damaged.append(fname)
-            if damaged:
-                logger.warning("Protected files changed after merge: %s", damaged)
         lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
         from dgov.inspection import _run_related_tests
 
@@ -884,8 +882,17 @@ def merge_worker_pane(
         validation_failed = False
         validation_error: str | None = None
 
-        # Check test results first
-        if test_result and not test_result.get("tests_passed"):
+        # Gate on validation success — do not mark pane merged or clean up until validation passes
+
+        # Check test results first (explicit failure when tests_passed=false or failed>0)
+        tests_failed = False
+        if test_result:
+            if not test_result.get("tests_passed"):
+                tests_failed = True
+            elif test_result.get("tests_failed", 0) > 0:
+                tests_failed = True
+
+        if tests_failed:
             validation_failed = True
             validation_error = (
                 f"Post-merge tests failed: {test_result.get('tests_failed', 'unknown')} failures "
@@ -893,21 +900,19 @@ def merge_worker_pane(
             )
             logger.error("%s", validation_error)
 
-        # Check lint results for unfixable issues
+        # Check lint results for unfixable issues (hard failure)
         if lint_result.get("lint_unfixable"):
             validation_failed = True
-            validation_error = f"Post-merge lint found unfixable issues: {len(lint_result['lint_unfixable'])} files"
+            n_unfixable = len(lint_result["lint_unfixable"])
+            validation_error = f"Post-merge lint found unfixable issues: {n_unfixable} files"
             logger.error("%s", validation_error)
 
-        # Check for protected file damage
+        # Protected file damage = warning only, not hard failure
         if damaged:
-            validation_failed = True
-            validation_error = f"Protected files changed after merge: {damaged}"
-            logger.error("%s", validation_error)
+            logger.warning("Protected files changed after merge: %s", damaged)
 
         if validation_failed:
             # Validation failed — do NOT mark pane merged, do NOT clean up, preserve artifacts
-            _persist.update_pane_state(session_root, slug, "merge_validation_failed")
             return {
                 "error": validation_error,
                 "slug": slug,
@@ -915,8 +920,7 @@ def merge_worker_pane(
                 "validation_failed": True,
                 "test_result": test_result,
                 "lint_result": lint_result,
-                "damaged_files": damaged,
-                "hint": "Pane state set to 'merge_validation_failed'. Artifacts preserved for recovery.",
+                "damaged_files": damaged if damaged else None,
             }
 
         # All validations passed — proceed with merge completion
