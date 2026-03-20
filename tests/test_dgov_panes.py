@@ -42,6 +42,16 @@ def mock_backend(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return mock
 
 
+@pytest.fixture(autouse=True)
+def stub_wait_for_shell_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub dgov.tmux.wait_for_shell_ready to return True immediately.
+
+    This keeps tmux polling from hitting the real binary and avoids 5-second delays
+    in pane tests that use create_worker_pane or resume_worker_pane.
+    """
+    monkeypatch.setattr("dgov.tmux.wait_for_shell_ready", lambda pane_id=None, timeout=None: True)
+
+
 class TestWorkerPane:
     def test_defaults(self) -> None:
         wp = WorkerPane(
