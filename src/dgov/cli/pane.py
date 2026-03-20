@@ -668,12 +668,8 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
         if wait_result.state == "completed":
             click.echo(json.dumps(wait_result.wait_result or {"done": True, "slug": s}))
         else:
-            session_root_abs = os.path.abspath(session_root or project_root)
-            from dgov.persistence import get_pane
-
-            rec = get_pane(session_root_abs, s)
             timeout_result = {"error": wait_result.error or "Worker failed", "slug": s}
-            if rec and rec.get("agent") == "pi":
+            if wait_result.suggest_escalate:
                 timeout_result["suggest_escalate"] = True
             click.echo(json.dumps(timeout_result), err=True)
             exit_code = 1
@@ -727,7 +723,9 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
                 "slug": p["slug"],
                 "agent": p["agent"],
             }
-            if p["agent"] == "pi":
+            from dgov.recovery import _resolve_escalation_target
+
+            if _resolve_escalation_target(p["agent"], project_root) != p["agent"]:
                 timeout_result["suggest_escalate"] = True
             click.echo(json.dumps(timeout_result), err=True)
         sys.exit(1)

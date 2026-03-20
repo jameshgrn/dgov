@@ -620,12 +620,12 @@ class TestPaneCommands:
         assert json.loads(empty.output) == {"done": "all", "count": 0}
         assert failed.exit_code == 1
         lines = [json.loads(line) for line in failed.output.strip().splitlines()]
+        # Neither pi nor claude are in ESCALATION_CHAIN, so suggest_escalate is False
         assert lines == [
             {
                 "error": "Timeout after 10s",
                 "slug": "a",
                 "agent": "pi",
-                "suggest_escalate": True,
             },
             {
                 "error": "Timeout after 10s",

@@ -81,6 +81,7 @@ class WaitOnlyResult:
     pane_state: str | None = None
     error: str | None = None
     failure_stage: str | None = None
+    suggest_escalate: bool = False
 
 
 @dataclass(frozen=True)
@@ -323,6 +324,18 @@ def run_wait_only(
     retries_left = max_retries
     wait_result: dict | None = None
 
+    def _should_suggest_escalate(slug: str) -> bool:
+        from dgov.recovery import _resolve_escalation_target
+
+        try:
+            rec = get_pane(session_root, slug)
+        except Exception:  # noqa: BLE001
+            return False
+        if not rec:
+            return False
+        agent = rec.get("agent", "")
+        return bool(agent) and _resolve_escalation_target(agent, project_root) != agent
+
     _phase("waiting", current_slug)
     while True:
         try:
@@ -344,6 +357,7 @@ def run_wait_only(
                     slug=current_slug,
                     error=f"Worker timed out after {timeout}s (retries exhausted)",
                     failure_stage="timeout",
+                    suggest_escalate=_should_suggest_escalate(current_slug),
                 )
 
             if escalate_to:
@@ -361,6 +375,7 @@ def run_wait_only(
                         slug=current_slug,
                         error=f"Escalation failed: {esc_result['error']}",
                         failure_stage="recovery",
+                        suggest_escalate=_should_suggest_escalate(current_slug),
                     )
                 current_slug = esc_result["new_slug"]
                 retries_left -= 1
@@ -380,6 +395,7 @@ def run_wait_only(
                     slug=current_slug,
                     error=f"Retry failed: {retry_result['error']}",
                     failure_stage="recovery",
+                    suggest_escalate=_should_suggest_escalate(current_slug),
                 )
             current_slug = retry_result["new_slug"]
             retries_left -= 1
@@ -415,6 +431,7 @@ def run_wait_only(
                         slug=current_slug,
                         error=f"Retried pane timed out after {timeout}s",
                         failure_stage="timeout",
+                        suggest_escalate=_should_suggest_escalate(current_slug),
                     )
                 pane = get_pane(session_root, current_slug)
                 pane_state = pane.get("state") if pane else None
@@ -427,6 +444,7 @@ def run_wait_only(
                 pane_state=pane_state,
                 error="Worker exited with an error (check logs with: dgov pane logs)",
                 failure_stage="worker_failed",
+                suggest_escalate=_should_suggest_escalate(current_slug),
             )
     if pane_state in ("timed_out", "abandoned"):
         _phase("failed", current_slug)
@@ -437,6 +455,7 @@ def run_wait_only(
             pane_state=pane_state,
             error=f"Worker ended in {pane_state} state",
             failure_stage="worker_failed",
+            suggest_escalate=_should_suggest_escalate(current_slug),
         )
 
     return WaitOnlyResult(
