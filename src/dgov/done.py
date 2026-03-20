@@ -52,10 +52,28 @@ _CIRCUIT_BREAKER_LINES = 20
 # -- Done-signal wrapper --
 
 
-def _wrap_done_signal(cmd: str, done_signal: str) -> str:
-    """Wrap *cmd* so done-signal is only touched on success."""
+def _wrap_done_signal(
+    cmd: str,
+    done_signal: str,
+    *,
+    worktree_path: str | None = None,
+) -> str:
+    """Wrap *cmd* so done-signal is only touched on success.
+
+    When *worktree_path* is provided, auto-commits any uncommitted changes
+    before touching the done signal. This ensures headless workers that
+    forget to commit still have their work product captured.
+    """
     ok = shlex.quote(done_signal)
     fail = shlex.quote(done_signal + ".exit")
+    if worktree_path:
+        wt = shlex.quote(worktree_path)
+        auto_commit = (
+            f"git -C {wt} add -A"
+            f" && {{ git -C {wt} diff --cached --quiet"
+            f" || git -C {wt} commit -m 'Auto-commit on agent exit'; }}"
+        )
+        return f"if {cmd}; then {auto_commit}; touch {ok}; else echo $? > {fail}; fi"
     return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
 
 

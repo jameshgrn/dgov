@@ -725,7 +725,7 @@ def _setup_and_launch_agent(
             registry=registry,
             force_headless=force_headless,
         )
-        wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal)
+        wrapped_cmd = _wrap_done_signal(launch_cmd, done_signal, worktree_path=worktree_path)
         backend.send_shell_command(pane_id, wrapped_cmd)
 
         # Cursor headless: accept workspace trust dialog (send twice for reliability)

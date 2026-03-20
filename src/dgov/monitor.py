@@ -14,7 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dgov.agents import load_registry
 from dgov.backend import get_backend
 from dgov.decision import MonitorOutputRequest, ProviderError
 from dgov.done import _has_new_commits
@@ -661,16 +660,13 @@ def _nudge_stuck(
     if not pane_id:
         return
 
-    # Headless workers (interactive agents forced to non-interactive mode)
-    # don't read stdin — nudging them is a no-op.
-    agent_id = pane.get("agent", "")
+    # Workers run headless (prompt embedded in launch command) — they don't
+    # read stdin, so send-keys nudging is a no-op.  Only LT-GOVs in
+    # interactive TUI mode can receive typed input.
     role = pane.get("role", "worker")
-    if role == "worker" and agent_id:
-        registry = load_registry(project_root)
-        agent_def = registry.get(agent_id)
-        if agent_def and agent_def.interactive:
-            logger.info("Monitor: skipping nudge for headless worker %s (%s)", slug, agent_id)
-            return
+    if role == "worker":
+        logger.debug("Monitor: skipping nudge for headless worker %s", slug)
+        return
 
     backend = get_backend()
     if keystroke:
