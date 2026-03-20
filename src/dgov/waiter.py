@@ -369,7 +369,8 @@ def wait_all_worker_panes(
 def interact_with_pane(session_root: str, slug: str, message: str) -> bool:
     """Send a message to a worker pane.
 
-    Returns True if the message was sent, False if the pane wasn't found or dead.
+    Returns True if the message was sent, False if the pane wasn't found, dead,
+    or has already dropped back to a shell prompt.
     """
     import dgov.persistence as _persist
 
@@ -379,6 +380,9 @@ def interact_with_pane(session_root: str, slug: str, message: str) -> bool:
 
     pane_id = target.get("pane_id", "")
     if not pane_id or not get_backend().is_alive(pane_id):
+        return False
+
+    if not _agent_still_running(pane_id):
         return False
 
     get_backend().send_input(pane_id, message)
@@ -403,6 +407,9 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
     pane_id = target.get("pane_id", "")
     if not pane_id or not get_backend().is_alive(pane_id):
         return {"response": "error", "output": "Pane dead"}
+
+    if not _agent_still_running(pane_id):
+        return {"response": "error", "output": "Agent not attached"}
 
     # Send the nudge
     get_backend().send_input(pane_id, "Are you done? Reply YES or NO.")

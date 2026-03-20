@@ -110,6 +110,7 @@ class TestInteract:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input") as mock_send,
         ):
             result = interact_with_pane(session_root, "test-worker", "hello agent")
@@ -127,6 +128,17 @@ class TestInteract:
             result = interact_with_pane(session_root, "test-worker", "hello")
             assert result is False
 
+    def test_returns_false_when_agent_has_fallen_back_to_shell(self, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        with (
+            patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="zsh"),
+            patch("dgov.tmux.send_text_input") as mock_send,
+        ):
+            result = interact_with_pane(session_root, "test-worker", "hello")
+        assert result is False
+        mock_send.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # nudge_pane
@@ -139,6 +151,7 @@ class TestNudge:
         with (
             patch("dgov.done._has_completion_commit", return_value=True),
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="Are you done?\nYES"),
             patch("dgov.waiter.time.sleep"),
@@ -154,6 +167,7 @@ class TestNudge:
         with (
             patch("dgov.done._has_completion_commit", return_value=False),
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="Are you done?\nYES"),
             patch("dgov.waiter.time.sleep"),
@@ -167,6 +181,7 @@ class TestNudge:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="NO, still working."),
             patch("dgov.waiter.time.sleep"),
@@ -180,6 +195,7 @@ class TestNudge:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="I'm processing files..."),
             patch("dgov.waiter.time.sleep"),
@@ -191,6 +207,18 @@ class TestNudge:
         session_root = str(tmp_path)
         result = nudge_pane(session_root, "nonexistent", wait_seconds=1)
         assert result["response"] == "error"
+
+    def test_nudge_refuses_shell_fallback(self, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        with (
+            patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="zsh"),
+            patch("dgov.tmux.send_text_input") as mock_send,
+        ):
+            result = nudge_pane(session_root, "test-worker", wait_seconds=1)
+        assert result["response"] == "error"
+        assert result["output"] == "Agent not attached"
+        mock_send.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +440,7 @@ class TestRespondCLI:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input"),
         ):
             result = runner.invoke(
@@ -428,6 +457,20 @@ class TestRespondCLI:
             ["pane", "respond", "nope", "hello", "-S", str(tmp_path)],
         )
         assert result.exit_code == 1
+
+    def test_message_cli_rejects_shell_fallback(self, runner: CliRunner, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        with (
+            patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="zsh"),
+        ):
+            result = runner.invoke(
+                cli,
+                ["pane", "message", "test-worker", "hello", "-S", session_root],
+            )
+        assert result.exit_code == 1
+        data = json.loads(result.output)
+        assert data["error"] == "Pane test-worker agent not attached"
 
 
 class TestSignalCLI:
@@ -469,6 +512,7 @@ class TestNudgeCLI:
         session_root = _setup_pane(tmp_path)
         with (
             patch("dgov.tmux.pane_exists", return_value=True),
+            patch("dgov.tmux.current_command", return_value="claude"),
             patch("dgov.tmux.send_text_input"),
             patch("dgov.tmux.capture_pane", return_value="YES I'm done"),
             patch("dgov.waiter.time.sleep"),
