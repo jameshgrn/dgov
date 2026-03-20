@@ -387,6 +387,7 @@ class TestPostDispatchLifecycle:
                 return_value={"done": "task", "method": "signal"},
             ),
             patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "failed"}),
+            patch("dgov.recovery.maybe_auto_retry", return_value=None),
             patch(
                 "dgov.lifecycle.close_worker_pane",
                 return_value=True,
