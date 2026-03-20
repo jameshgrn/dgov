@@ -245,6 +245,15 @@ def _is_done(
             return False
 
         current_state = pane_record.get("state", "") if pane_record else ""
+        # Late success signal after terminal non-success state: reconcile without re-emitting
+        late_success_states = {"failed", "reviewed_fail", "merged", "closed", "superseded"}
+        if current_state in late_success_states and current_state != "abandoned":
+            logger.debug(
+                "late done_signal slug=%s already in terminal state %s - reconcile as done",
+                slug, current_state
+            )
+            return True
+
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
         _persist.update_pane_state(session_root, slug, "done", force=force)
@@ -255,6 +264,15 @@ def _is_done(
     # Signal 1b: exit-code file (agent crashed / nonzero exit) - always checked
     if exit_path.exists():
         current_state = pane_record.get("state", "") if pane_record else ""
+        # Late failure signal after terminal success state: reconcile without re-emitting
+        late_failure_states = {"done", "merged", "closed"}
+        if current_state in late_failure_states:
+            logger.debug(
+                "late exit_signal slug=%s already in terminal state %s - reconcile as failed",
+                slug, current_state
+            )
+            return True
+
         force = current_state == "abandoned"
         logger.debug("state=%s slug=%s reason=exit_signal", "failed", slug)
         _persist.update_pane_state(session_root, slug, "failed", force=force)
