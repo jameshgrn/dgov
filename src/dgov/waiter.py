@@ -460,7 +460,13 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
         if not _has_completion_commit(target):
             return False
         (done_dir / slug).touch()
+        current_state = target.get("state", "")
+        # If already in a terminal state where done would be illegal,
+        # keep the signal file but preserve the existing state.
+        if current_state not in ("pending", "running"):
+            return True
         _persist.update_pane_state(session_root, slug, "done")
+
     elif signal == "failed":
         (done_dir / f"{slug}.exit").write_text("manual")
         _persist.update_pane_state(session_root, slug, "failed")
