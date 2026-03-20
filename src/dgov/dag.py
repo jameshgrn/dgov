@@ -17,7 +17,6 @@ from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
     transitive_dependents,
     validate_dag,
 )
-from dgov.executor import run_close_only
 from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
     DagDefinition,
     DagFileSpec,
@@ -26,7 +25,7 @@ from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
     DagTaskSpec,
     parse_dag_file,
 )
-from dgov.executor import PostDispatchResult
+from dgov.executor import PostDispatchResult, run_close_only
 
 logger = logging.getLogger(__name__)
 
