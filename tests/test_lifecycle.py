@@ -663,6 +663,43 @@ class TestFullCleanup:
         assert remaining_pane is not None
         assert remaining_pane["state"] == "active"
 
+    def test_close_worker_pane_preserves_timed_out_state_when_worktree_kept(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.lifecycle import close_worker_pane
+
+        sr = str(tmp_path)
+        wt_path = tmp_path / "timed-out-pane"
+        wt_path.mkdir()
+        _add_pane(
+            tmp_path,
+            "timed-out-pane",
+            state="timed_out",
+            owns_worktree=True,
+            worktree_path=str(wt_path),
+            branch_name="timed-out-branch",
+        )
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = "M waiter.py\n"
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        with (
+            patch("subprocess.run", fake_run),
+            patch("dgov.tmux._run", return_value=""),
+        ):
+            result = close_worker_pane(sr, "timed-out-pane", session_root=sr)
+
+        assert result is True
+        remaining_pane = get_pane(sr, "timed-out-pane")
+        assert remaining_pane is not None
+        assert remaining_pane["state"] == "timed_out"
+
     def test_removes_worktree_when_clean_and_force_applied(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:

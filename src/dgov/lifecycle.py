@@ -1009,8 +1009,8 @@ def close_worker_pane(
 
     For LT-GOV or parent panes, cascades to close all child panes first.
 
-    When worktree is preserved (dirty pane without force), the pane transitions
-    to 'done' state so it remains inspectable but marked as completed.
+    When worktree is preserved, the pane record remains inspectable and keeps
+    its current state.
 
     When worktree is removed, pane transitions to 'closed' and record is deleted.
     """
@@ -1053,9 +1053,7 @@ def close_worker_pane(
                 "Worktree removal failed for %s — pane state preserved for inspection",
                 slug,
             )
-        # Transition to 'done' state to indicate completed but evidence preserved.
-        # This keeps the pane inspectable in a non-closed state.
-        update_pane_state(session_root, slug, "done")
+        logger.info("Pane %s preserved for inspection in state %s", slug, target.get("state", ""))
     else:
         # Normal close - worktree removed, transition to closed and delete record
         update_pane_state(session_root, slug, "closed")
