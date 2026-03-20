@@ -485,3 +485,86 @@ class TestListWorkerPanesPassesDoneStrategy:
             assert strategy is not None, "done_strategy was not passed to _is_done"
             assert strategy.type == "api", f"Expected 'api', got '{strategy.type}'"
             assert call_kwargs.kwargs.get("alive") is True
+
+
+@pytest.mark.unit
+class TestShellReturnDoneDetection:
+    """Test shell-return terminal state detection for api strategy."""
+
+    @pytest.mark.unit
+    def test_shell_return_no_commits_fails(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        """Shell return case: pane alive, agent not running, no commits -> failed."""
+        from dgov.persistence import get_pane
+
+        session_root = str(tmp_path)
+        slug = "test-shell-return-fail"
+        _setup_pane(tmp_path, slug=slug)
+
+        pane_record = {
+            "pane_id": "%1",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",
+        }
+
+        mock_backend.is_alive.return_value = True
+
+        with (
+            patch("dgov.done._has_new_commits", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
+            patch("dgov.done.get_backend") as mock_be,
+        ):
+            mock_be.return_value.is_alive.return_value = True
+
+            result = _is_done(
+                session_root,
+                slug,
+                pane_record=pane_record,
+                done_strategy=DoneStrategy(type="api"),
+                alive=True,
+                current_command="bash",
+                _stable_state={},
+            )
+
+        assert result is True
+        updated = get_pane(session_root, slug)
+        assert updated["state"] == "failed"
+
+    @pytest.mark.unit
+    def test_shell_return_with_commits_done(self, tmp_path: Path, mock_backend: MagicMock) -> None:
+        """Shell return case: pane alive, agent not running, commits exist -> done."""
+        from dgov.persistence import get_pane
+
+        session_root = str(tmp_path)
+        slug = "test-shell-return-done"
+        _setup_pane(tmp_path, slug=slug)
+
+        pane_record = {
+            "pane_id": "%1",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",
+        }
+
+        mock_backend.is_alive.return_value = True
+
+        with (
+            patch("dgov.done._has_new_commits", return_value=True),
+            patch("dgov.done._agent_still_running", return_value=False),
+            patch("dgov.done.get_backend") as mock_be,
+        ):
+            mock_be.return_value.is_alive.return_value = True
+
+            result = _is_done(
+                session_root,
+                slug,
+                pane_record=pane_record,
+                done_strategy=DoneStrategy(type="api"),
+                alive=True,
+                current_command="bash",
+                _stable_state={},
+            )
+
+        assert result is True
+        updated = get_pane(session_root, slug)
+        assert updated["state"] == "done"
