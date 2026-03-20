@@ -880,6 +880,44 @@ class TestResumeWorkerPane:
 
 
 class TestWriteWorktreeInstructions:
+    def test_instructions_written_to_dgov_file_only(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Worker instructions are written to .dgov/DGOV_WORKER_INSTRUCTIONS.md only.
+
+        Main behavior: CLAUDE.md and AGENTS.md are NOT written by this function.
+        The generated instructions live at .dgov/DGOV_WORKER_INSTRUCTIONS.md.
+        """
+        from dgov.lifecycle import _write_worktree_instructions
+
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+
+        _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser bug")
+
+        # Instructions file exists at .dgov/DGOV_WORKER_INSTRUCTIONS.md
+        instructions_file = wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md"
+        assert instructions_file.is_file()
+
+        content = instructions_file.read_text(encoding="utf-8")
+
+        # Verify worker preamble IS present
+        assert "# Worker Instructions — test-task" in content
+        assert "You are a **worker**" in content
+        assert "Complete the task, commit, and signal done" in content
+
+        # CLAUDE.md should NOT be written by this function
+        claude_file = wt / "CLAUDE.md"
+        assert not claude_file.exists() or "You are a **worker**" not in claude_file.read_text(
+            encoding="utf-8"
+        )
+
+        # AGENTS.md should NOT be written by this function
+        agents_file = wt / "AGENTS.md"
+        assert not agents_file.exists() or "You are a **worker**" not in agents_file.read_text(
+            encoding="utf-8"
+        )
+
     def test_worker_instructions_isolate_governor_body(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
@@ -902,17 +940,19 @@ class TestWriteWorktreeInstructions:
         # Write worker instructions
         _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser bug")
 
-        claude_content = (wt / "CLAUDE.md").read_text(encoding="utf-8")
+        instructions_content = (wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md").read_text(
+            encoding="utf-8"
+        )
 
         # Verify isolation: governor body must NOT appear in worker instructions
-        assert "You are the **governor**" not in claude_content
-        assert "Stay on `main`" not in claude_content
-        assert "Delegate ALL implementation" not in claude_content
+        assert "You are the **governor**" not in instructions_content
+        assert "Stay on `main`" not in instructions_content
+        assert "Delegate ALL implementation" not in instructions_content
 
         # Verify worker preamble IS present
-        assert "# Worker Instructions — test-task" in claude_content
-        assert "You are a **worker**" in claude_content
-        assert "Complete the task, commit, and signal done" in claude_content
+        assert "# Worker Instructions — test-task" in instructions_content
+        assert "You are a **worker**" in instructions_content
+        assert "Complete the task, commit, and signal done" in instructions_content
 
     def test_lt_gov_instructions_isolate_governor_body(
         self, tmp_path: Path, mock_backend: MagicMock
@@ -937,36 +977,23 @@ class TestWriteWorktreeInstructions:
             str(wt), "orchestration-task", "lt-gov", prompt="Dispatch workers"
         )
 
-        claude_content = (wt / "CLAUDE.md").read_text(encoding="utf-8")
+        instructions_content = (wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md").read_text(
+            encoding="utf-8"
+        )
 
         # Verify isolation: governor body must NOT appear in LT-GOV instructions
-        assert "You are the **governor**" not in claude_content
-        assert "Stay on `main`" not in claude_content
+        assert "You are the **governor**" not in instructions_content
+        assert "Stay on `main`" not in instructions_content
 
         # Verify LT-GOV preamble IS present
-        assert "# LT-GOV Instructions — orchestration-task" in claude_content
-        assert "You are a **lieutenant governor**" in claude_content
-        assert "You orchestrate workers, you do NOT edit code" in claude_content
+        assert "# LT-GOV Instructions — orchestration-task" in instructions_content
+        assert "You are a **lieutenant governor**" in instructions_content
+        assert "You orchestrate workers, you do NOT edit code" in instructions_content
 
-    def test_agents_md_also_written(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        """AGENTS.md counterpart is also written with same isolated content."""
-        from dgov.lifecycle import _write_worktree_instructions
-
-        wt = tmp_path / "worktree"
-        wt.mkdir()
-
-        _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser")
-
-        # Both files should exist and have identical content
-        claude_content = (wt / "CLAUDE.md").read_text(encoding="utf-8")
-        agents_content = (wt / "AGENTS.md").read_text(encoding="utf-8")
-
-        assert claude_content == agents_content
-        assert "# Worker Instructions — test-task" in claude_content
-        assert "# Worker Instructions — test-task" in agents_content
-
-    def test_git_excludes_claude_and_agents(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        """CLAUDE.md and AGENTS.md are git-excluded via .git/info/exclude."""
+    def test_git_excludes_dgov_worker_instructions(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """.dgov/DGOV_WORKER_INSTRUCTIONS.md is git-excluded via .git/info/exclude."""
         from dgov.lifecycle import _write_worktree_instructions
 
         wt = tmp_path / "worktree"
@@ -981,12 +1008,11 @@ class TestWriteWorktreeInstructions:
 
         _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser")
 
-        # Check .git/info/exclude contains both files
+        # Check .git/info/exclude contains DGOV_WORKER_INSTRUCTIONS.md
         exclude_file = wt / ".git" / "info" / "exclude"
         exclude_content = exclude_file.read_text(encoding="utf-8")
 
-        assert "CLAUDE.md" in exclude_content
-        assert "AGENTS.md" in exclude_content
+        assert ".dgov/DGOV_WORKER_INSTRUCTIONS.md" in exclude_content
 
 
 # ──────────────────────────────────────────────────────────────
