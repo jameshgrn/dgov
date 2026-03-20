@@ -14,6 +14,13 @@ logger = logging.getLogger(__name__)
 
 # Severity ordering (shared with review_fix)
 _SEVERITY_LEVELS = {"critical": 0, "medium": 1, "low": 2}
+_MISSION_PHASE_EVENTS = {
+    "waiting": "mission_waiting",
+    "reviewing": "mission_reviewing",
+    "merging": "mission_merging",
+    "completed": "mission_completed",
+    "failed": "mission_failed",
+}
 
 
 @dataclass
@@ -24,7 +31,6 @@ class MissionPolicy:
     permission_mode: str = "bypassPermissions"
     auto_merge: bool = True
     touches: tuple[str, ...] = ()
-    review_severity: str = "medium"
     timeout: int = 600
     max_retries: int = 1
     escalate_to: str | None = None
@@ -51,6 +57,62 @@ def _has_blocking_findings(findings: list[dict], threshold: str) -> bool:
 def _make_failed(slug: str, error: str, session_root: str, duration_s: float) -> MissionResult:
     emit_event(session_root, "mission_failed", slug, error=error[:200])
     return MissionResult(state="failed", slug=slug, error=error, duration_s=duration_s)
+
+
+def _mission_phase_callback(session_root: str):
+    """Build the mission event callback for canonical executor phase updates."""
+
+    def _callback(phase: str, current_slug: str) -> None:
+        event = _MISSION_PHASE_EVENTS.get(phase)
+        if event is not None:
+            emit_event(session_root, event, current_slug)
+
+    return _callback
+
+
+def _findings_from_review(review: dict | None) -> list[dict] | None:
+    """Convert review issues into mission findings."""
+    issues = (review or {}).get("issues")
+    return [{"description": issue} for issue in issues] if issues else None
+
+
+def _mission_result_from_lifecycle(
+    lifecycle,
+    *,
+    duration_s: float,
+) -> MissionResult:
+    """Project canonical executor output into the mission result surface."""
+    findings = _findings_from_review(lifecycle.review)
+    if lifecycle.state == "failed":
+        return MissionResult(
+            state="failed",
+            slug=lifecycle.slug,
+            findings=findings,
+            error=lifecycle.error,
+            merge_result=lifecycle.merge_result,
+            duration_s=duration_s,
+        )
+    if lifecycle.state == "review_pending":
+        return MissionResult(
+            state="review_pending",
+            slug=lifecycle.slug,
+            findings=findings,
+            duration_s=duration_s,
+        )
+    if lifecycle.state == "reviewed_pass":
+        return MissionResult(
+            state="reviewed_pass",
+            slug=lifecycle.slug,
+            findings=findings,
+            duration_s=duration_s,
+        )
+    return MissionResult(
+        state="completed",
+        slug=lifecycle.slug,
+        merge_result=lifecycle.merge_result,
+        findings=findings,
+        duration_s=duration_s,
+    )
 
 
 def run_mission(
@@ -80,18 +142,6 @@ def run_mission(
 
     def _fail(error: str) -> MissionResult:
         return _make_failed(slug_s, error, session_root, _elapsed())
-
-    def _mission_phase(phase: str, current_slug: str) -> None:
-        if phase == "waiting":
-            emit_event(session_root, "mission_waiting", current_slug)
-        elif phase == "reviewing":
-            emit_event(session_root, "mission_reviewing", current_slug)
-        elif phase == "merging":
-            emit_event(session_root, "mission_merging", current_slug)
-        elif phase == "completed":
-            emit_event(session_root, "mission_completed", current_slug)
-        elif phase == "failed":
-            emit_event(session_root, "mission_failed", current_slug)
 
     # -- PENDING: preflight --
     emit_event(session_root, "mission_pending", slug_s, agent=policy.agent)
@@ -138,44 +188,9 @@ def run_mission(
         permission_mode=policy.permission_mode,
         retry_agent=policy.agent,
         escalate_to=policy.escalate_to,
-        phase_callback=_mission_phase,
+        phase_callback=_mission_phase_callback(session_root),
     )
-    slug_s = lifecycle.slug
-    review = lifecycle.review or {}
-    issues = review.get("issues")
-    finding_dicts = [{"description": f} for f in issues] if issues else None
-
-    if lifecycle.state == "failed":
-        return MissionResult(
-            state="failed",
-            slug=slug_s,
-            findings=finding_dicts,
-            error=lifecycle.error,
-            merge_result=lifecycle.merge_result,
-            duration_s=_elapsed(),
-        )
-
-    if lifecycle.state == "review_pending":
-        return MissionResult(
-            state="review_pending",
-            slug=slug_s,
-            findings=finding_dicts,
-            duration_s=_elapsed(),
-        )
-
-    if lifecycle.state == "reviewed_pass":
-        return MissionResult(
-            state="reviewed_pass",
-            slug=slug_s,
-            findings=finding_dicts,
-            duration_s=_elapsed(),
-        )
-
-    logger.info("Mission %s: completed in %.1fs", slug_s, _elapsed())
-    return MissionResult(
-        state="completed",
-        slug=slug_s,
-        merge_result=lifecycle.merge_result,
-        findings=finding_dicts,
-        duration_s=_elapsed(),
-    )
+    result = _mission_result_from_lifecycle(lifecycle, duration_s=_elapsed())
+    if result.state == "completed":
+        logger.info("Mission %s: completed in %.1fs", result.slug, result.duration_s)
+    return result

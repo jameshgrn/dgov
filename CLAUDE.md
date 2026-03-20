@@ -43,7 +43,7 @@ These are architecture rules, not optional style preferences.
 dgov pane create -a <agent> -p "<task>" -r .    # dispatch
 dgov pane wait <slug>                           # wait
 dgov pane review <slug>                         # inspect diff
-dgov pane merge <slug>                          # integrate
+dgov pane land <slug>                           # integrate + cleanup
 dgov pane close <slug>                          # cleanup
 ```
 

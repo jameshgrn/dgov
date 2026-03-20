@@ -93,6 +93,147 @@ class CleanupOnlyResult:
     error: str | None = None
 
 
+@dataclass
+class PaneFinalizeResult:
+    slug: str
+    review: dict
+    merge_result: dict | None
+    error: str | None
+    cleanup_error: str | None
+
+
+@dataclass
+class PostDispatchActionExecutor:
+    project_root: str
+    session_root: str
+    timeout: int = 600
+    max_retries: int = 1
+    permission_mode: str = "bypassPermissions"
+    retry_agent: str | None = None
+    escalate_to: str | None = None
+    resolve: str = "skip"
+    squash: bool = True
+    rebase: bool = False
+    message: str | None = None
+    phase_callback: Callable[[str, str], None] | None = None
+    wait: WaitOnlyResult | None = None
+    review: ReviewOnlyResult | None = None
+    merge: MergeOnlyResult | None = None
+    cleanup: CleanupOnlyResult | None = None
+
+    def _phase(self, name: str, slug: str) -> None:
+        if self.phase_callback is not None:
+            self.phase_callback(name, slug)
+
+    def execute(self, action):  # noqa: ANN001
+        from dgov.kernel import (
+            CleanupCompleted,
+            CleanupPane,
+            MergeCompleted,
+            MergePane,
+            ReviewCompleted,
+            ReviewPane,
+            WaitCompleted,
+            WaitForPane,
+        )
+
+        if isinstance(action, WaitForPane):
+            self.wait = run_wait_only(
+                self.project_root,
+                action.slug,
+                session_root=self.session_root,
+                timeout=self.timeout,
+                max_retries=self.max_retries,
+                permission_mode=self.permission_mode,
+                retry_agent=self.retry_agent,
+                escalate_to=self.escalate_to,
+                phase_callback=self.phase_callback,
+            )
+            return WaitCompleted(self.wait)
+
+        if isinstance(action, ReviewPane):
+            self._phase("reviewing", action.slug)
+            self.review = run_review_only(
+                self.project_root,
+                action.slug,
+                session_root=self.session_root,
+                require_safe=False,
+                require_commits=False,
+            )
+            return ReviewCompleted(self.review)
+
+        if isinstance(action, MergePane):
+            self._phase("merging", action.slug)
+            if self.message is None:
+                self.merge = run_merge_only(
+                    self.project_root,
+                    action.slug,
+                    session_root=self.session_root,
+                    resolve=self.resolve,
+                    squash=self.squash,
+                    rebase=self.rebase,
+                )
+            else:
+                self.merge = run_merge_only(
+                    self.project_root,
+                    action.slug,
+                    session_root=self.session_root,
+                    resolve=self.resolve,
+                    squash=self.squash,
+                    rebase=self.rebase,
+                    message=self.message,
+                )
+            return MergeCompleted(self.merge)
+
+        if isinstance(action, CleanupPane):
+            if action.state == "failed" and (self.wait is None or self.wait.state == "completed"):
+                self._phase("failed", action.slug)
+            elif action.state == "completed":
+                self._phase("completed", action.slug)
+            self.cleanup = run_cleanup_only(
+                self.project_root,
+                action.slug,
+                session_root=self.session_root,
+                state=action.state,
+                failure_stage=action.failure_stage,
+            )
+            return CleanupCompleted(self.cleanup)
+
+        raise RuntimeError(f"Unhandled kernel action: {action!r}")
+
+    def final_slug(self, initial_slug: str) -> str:
+        return (
+            self.cleanup.slug
+            if self.cleanup is not None
+            else self.merge.slug
+            if self.merge is not None
+            else self.review.slug
+            if self.review is not None
+            else self.wait.slug
+            if self.wait is not None
+            else initial_slug
+        )
+
+
+def _drive_post_dispatch_kernel(
+    kernel,
+    actions,
+    runtime: PostDispatchActionExecutor,
+    *,
+    execute_cleanup: bool,
+):
+    from dgov.kernel import CleanupPane
+
+    pending = list(actions)
+    while pending:
+        action = pending.pop(0)
+        if isinstance(action, CleanupPane) and not execute_cleanup:
+            runtime.cleanup = None
+            break
+        event = runtime.execute(action)
+        pending.extend(kernel.handle(event))
+
+
 def run_cleanup_only(
     project_root: str,
     slug: str,
@@ -457,7 +598,10 @@ def run_wait_only(
     *,
     session_root: str | None = None,
     timeout: int = 600,
+    poll: int = 3,
+    stable: int = 15,
     max_retries: int = 1,
+    auto_retry: bool = True,
     permission_mode: str = "bypassPermissions",
     retry_agent: str | None = None,
     escalate_to: str | None = None,
@@ -488,7 +632,9 @@ def run_wait_only(
                 current_slug,
                 session_root=session_root,
                 timeout=timeout,
-                auto_retry=False,
+                poll=poll,
+                stable=stable,
+                auto_retry=auto_retry,
             )
             break
         except PaneTimeoutError:
@@ -571,6 +717,29 @@ def run_wait_only(
     )
 
 
+def run_wait_all(
+    project_root: str,
+    *,
+    session_root: str | None = None,
+    timeout: int = 600,
+    poll: int = 3,
+    stable: int = 15,
+):
+    """Yield completion results for every active worker pane."""
+    import os
+
+    from dgov.waiter import wait_all_worker_panes
+
+    session_root = os.path.abspath(session_root or project_root)
+    yield from wait_all_worker_panes(
+        project_root,
+        session_root=session_root,
+        timeout=timeout,
+        poll=poll,
+        stable=stable,
+    )
+
+
 def run_post_dispatch_lifecycle(
     project_root: str,
     slug: str,
@@ -579,6 +748,9 @@ def run_post_dispatch_lifecycle(
     timeout: int = 600,
     max_retries: int = 1,
     auto_merge: bool = True,
+    resolve: str = "skip",
+    squash: bool = True,
+    rebase: bool = False,
     permission_mode: str = "bypassPermissions",
     retry_agent: str | None = None,
     escalate_to: str | None = None,
@@ -600,152 +772,87 @@ def run_post_dispatch_lifecycle(
 
     session_root = os.path.abspath(session_root or project_root)
 
-    def _phase(name: str, current_slug: str) -> None:
-        if phase_callback is not None:
-            phase_callback(name, current_slug)
+    from dgov.kernel import (
+        KernelState,
+        PostDispatchKernel,
+    )
 
-    wait = run_wait_only(
-        project_root,
-        slug,
+    kernel = PostDispatchKernel(auto_merge=auto_merge)
+    actions = kernel.start(slug)
+    runtime = PostDispatchActionExecutor(
+        project_root=project_root,
         session_root=session_root,
         timeout=timeout,
         max_retries=max_retries,
         permission_mode=permission_mode,
         retry_agent=retry_agent,
         escalate_to=escalate_to,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
         phase_callback=phase_callback,
     )
-    if wait.state != "completed":
-        cleanup = run_cleanup_only(
-            project_root,
-            wait.slug,
-            session_root=session_root,
-            state="failed",
-            failure_stage=wait.failure_stage,
-        )
-        return PostDispatchResult(
-            state="failed",
-            slug=wait.slug,
-            cleanup=cleanup,
-            error=wait.error,
-            failure_stage=wait.failure_stage,
-        )
+    _drive_post_dispatch_kernel(kernel, actions, runtime, execute_cleanup=True)
 
-    current_slug = wait.slug
+    current_slug = runtime.final_slug(slug)
+    wait = runtime.wait
+    review = runtime.review
+    merge = runtime.merge
+    cleanup = runtime.cleanup
 
-    _phase("reviewing", current_slug)
-    review = run_review_only(
-        project_root,
-        current_slug,
-        session_root=session_root,
-        require_safe=False,
-        require_commits=False,
-    )
-    if review.error:
-        _phase("failed", current_slug)
-        cleanup = run_cleanup_only(
-            project_root,
-            current_slug,
-            session_root=session_root,
-            state="failed",
-            failure_stage="review",
-        )
+    if kernel.state is KernelState.FAILED:
+        failure_stage = wait.failure_stage if wait and wait.state != "completed" else None
+        error = wait.error if wait and wait.state != "completed" else None
+        if review is not None and review.error is not None:
+            failure_stage = "review"
+            error = f"Review failed: {review.error}"
+        elif review is not None and review.commit_count == 0:
+            failure_stage = "review"
+            error = "Review failed: No commits to merge"
+        elif merge is not None and merge.error is not None:
+            failure_stage = "merge"
+            error = f"Merge failed: {merge.error}"
+
         return PostDispatchResult(
             state="failed",
             slug=current_slug,
-            review=review.review,
-            review_record=review.review_record,
+            review=None if review is None else review.review,
+            review_record=None if review is None else review.review_record,
+            merge_result=None if merge is None else merge.merge_result,
             cleanup=cleanup,
-            error=f"Review failed: {review.error}",
-            failure_stage="review",
+            error=error,
+            failure_stage=failure_stage,
         )
 
-    if review.verdict != "safe":
-        cleanup = run_cleanup_only(
-            project_root,
-            current_slug,
-            session_root=session_root,
-            state="review_pending",
-        )
+    if kernel.state is KernelState.REVIEW_PENDING:
         return PostDispatchResult(
             state="review_pending",
             slug=current_slug,
-            review=review.review,
-            review_record=review.review_record,
+            review=None if review is None else review.review,
+            review_record=None if review is None else review.review_record,
             cleanup=cleanup,
         )
 
-    if review.commit_count == 0:
-        _phase("failed", current_slug)
-        cleanup = run_cleanup_only(
-            project_root,
-            current_slug,
-            session_root=session_root,
-            state="failed",
-            failure_stage="review",
-        )
-        return PostDispatchResult(
-            state="failed",
-            slug=current_slug,
-            review=review.review,
-            review_record=review.review_record,
-            cleanup=cleanup,
-            error="Review failed: No commits to merge",
-            failure_stage="review",
-        )
-
-    if not auto_merge:
-        cleanup = run_cleanup_only(
-            project_root,
-            current_slug,
-            session_root=session_root,
-            state="review_pending",
-        )
+    if kernel.state is KernelState.REVIEWED_PASS:
         return PostDispatchResult(
             state="reviewed_pass",
             slug=current_slug,
-            review=review.review,
-            review_record=review.review_record,
+            review=None if review is None else review.review,
+            review_record=None if review is None else review.review_record,
             cleanup=cleanup,
         )
 
-    _phase("merging", current_slug)
-    merge = run_merge_only(project_root, current_slug, session_root=session_root)
-    if merge.error:
-        _phase("failed", current_slug)
-        cleanup = run_cleanup_only(
-            project_root,
-            current_slug,
-            session_root=session_root,
-            state="failed",
-            failure_stage="merge",
-        )
+    if kernel.state is KernelState.COMPLETED:
         return PostDispatchResult(
-            state="failed",
+            state="completed",
             slug=current_slug,
-            review=review.review,
-            review_record=review.review_record,
-            merge_result=merge.merge_result,
+            review=None if review is None else review.review,
+            review_record=None if review is None else review.review_record,
+            merge_result=None if merge is None else merge.merge_result,
             cleanup=cleanup,
-            error=f"Merge failed: {merge.error}",
-            failure_stage="merge",
         )
 
-    _phase("completed", current_slug)
-    cleanup = run_cleanup_only(
-        project_root,
-        current_slug,
-        session_root=session_root,
-        state="completed",
-    )
-    return PostDispatchResult(
-        state="completed",
-        slug=current_slug,
-        review=review.review,
-        review_record=review.review_record,
-        merge_result=merge.merge_result,
-        cleanup=cleanup,
-    )
+    raise RuntimeError(f"Unexpected terminal kernel state: {kernel.state}")
 
 
 def _dedupe_paths(paths: list[str]) -> list[str]:
@@ -799,11 +906,11 @@ def run_dispatch_preflight(
     )
 
 
-def get_review_provider():
+def get_review_provider(session_root: str | None = None):
     """Return the active provider for pane review decisions."""
-    from dgov.decision_providers import InspectionReviewProvider
+    from dgov.provider_registry import get_review_provider as _get_provider
 
-    return InspectionReviewProvider()
+    return _get_provider(session_root=session_root)
 
 
 def review_merge_gate(
@@ -849,7 +956,7 @@ def run_review_only(
     require_commits: bool = True,
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
-    provider = get_review_provider()
+    provider = get_review_provider(session_root=session_root)
     record = provider.review_output(
         ReviewOutputRequest(
             project_root=project_root,
@@ -901,47 +1008,83 @@ def run_review_merge(
     rebase: bool = False,
 ) -> ReviewMergeResult:
     """Run the canonical review gate followed by merge."""
-    review = run_review_only(project_root, slug, session_root=session_root)
-    if review.review_record and review.review_record.decision.reason is not None:
-        return ReviewMergeResult(
-            slug=slug,
-            review=review.review,
-            review_record=review.review_record,
-            failure_stage="review_error",
-            error=review.error,
-        )
-    if not review.passed:
-        return ReviewMergeResult(
-            slug=slug,
-            review=review.review,
-            review_record=review.review_record,
-            failure_stage="review_failed",
-            error=review.error or "Review failed",
-        )
+    import os
 
-    merge = run_merge_only(
-        project_root,
-        slug,
+    from dgov.kernel import KernelState, PostDispatchKernel
+
+    session_root = os.path.abspath(session_root or project_root)
+    kernel = PostDispatchKernel(auto_merge=True)
+    runtime = PostDispatchActionExecutor(
+        project_root=project_root,
         session_root=session_root,
         resolve=resolve,
         squash=squash,
         rebase=rebase,
+        phase_callback=None,
     )
-    if merge.error:
+    _drive_post_dispatch_kernel(
+        kernel,
+        kernel.start_review(slug),
+        runtime,
+        execute_cleanup=False,
+    )
+
+    current_slug = runtime.final_slug(slug)
+    review = runtime.review
+    merge_result = runtime.merge.merge_result if runtime.merge is not None else None
+
+    if review is None:
         return ReviewMergeResult(
-            slug=slug,
+            slug=current_slug,
+            review={"slug": current_slug, "error": "review not executed"},
+            failure_stage="review_error",
+            error="Review failed",
+        )
+
+    if kernel.state is KernelState.FAILED:
+        if review.error is not None:
+            return ReviewMergeResult(
+                slug=current_slug,
+                review=review.review,
+                review_record=review.review_record,
+                failure_stage="review_error",
+                error=review.error,
+            )
+        if review.commit_count == 0:
+            return ReviewMergeResult(
+                slug=current_slug,
+                review=review.review,
+                review_record=review.review_record,
+                failure_stage="review_failed",
+                error="No commits to merge",
+            )
+        if runtime.merge is not None and runtime.merge.error is not None:
+            return ReviewMergeResult(
+                slug=current_slug,
+                review=review.review,
+                review_record=review.review_record,
+                merge_result=merge_result,
+                failure_stage="merge_failed",
+                error=runtime.merge.error,
+            )
+
+    if kernel.state is KernelState.REVIEW_PENDING:
+        error = review.error
+        if error is None:
+            error = f"Review verdict is {review.verdict}; refusing to merge"
+        return ReviewMergeResult(
+            slug=current_slug,
             review=review.review,
             review_record=review.review_record,
-            merge_result=merge.merge_result,
-            failure_stage="merge_failed",
-            error=merge.error,
+            failure_stage="review_failed",
+            error=error,
         )
 
     return ReviewMergeResult(
-        slug=slug,
+        slug=current_slug,
         review=review.review,
         review_record=review.review_record,
-        merge_result=merge.merge_result,
+        merge_result=merge_result,
     )
 
 
@@ -991,6 +1134,79 @@ def run_land_only(
         merge_result=result.merge_result,
         cleanup=cleanup,
     )
+
+
+def run_finalize_panes(
+    project_root: str,
+    slugs: list[str],
+    *,
+    session_root: str | None = None,
+    resolve: str = "skip",
+    squash: bool = True,
+    rebase: bool = False,
+    timeout: int = 600,
+    max_retries: int = 1,
+    permission_mode: str = "bypassPermissions",
+    retry_agent: str | None = None,
+    escalate_to: str | None = None,
+    close: bool = True,
+) -> list[PaneFinalizeResult]:
+    """Run lifecycle operations (review+merge +/- cleanup) for multiple panes."""
+    if not slugs:
+        return []
+
+    import os
+
+    session_root = os.path.abspath(session_root or project_root)
+    results: list[PaneFinalizeResult] = []
+
+    for slug in slugs:
+        if close:
+            lifecycle = run_post_dispatch_lifecycle(
+                project_root,
+                slug,
+                session_root=session_root,
+                timeout=timeout,
+                max_retries=max_retries,
+                permission_mode=permission_mode,
+                retry_agent=retry_agent,
+                escalate_to=escalate_to,
+                resolve=resolve,
+                squash=squash,
+                rebase=rebase,
+            )
+            cleanup_error = (
+                lifecycle.cleanup.error if lifecycle.cleanup and lifecycle.cleanup.error else None
+            )
+            results.append(
+                PaneFinalizeResult(
+                    slug=lifecycle.slug,
+                    review=lifecycle.review or {},
+                    merge_result=lifecycle.merge_result,
+                    error=lifecycle.error,
+                    cleanup_error=cleanup_error,
+                )
+            )
+        else:
+            result = run_review_merge(
+                project_root,
+                slug,
+                session_root=session_root,
+                resolve=resolve,
+                squash=squash,
+                rebase=rebase,
+            )
+            results.append(
+                PaneFinalizeResult(
+                    slug=result.slug,
+                    review=result.review,
+                    merge_result=result.merge_result,
+                    error=result.error,
+                    cleanup_error=None,
+                )
+            )
+
+    return results
 
 
 def run_merge_only(

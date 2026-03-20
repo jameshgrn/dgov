@@ -144,11 +144,11 @@ DETERMINISTIC_PATTERNS = {
 }
 
 
-def get_output_classification_provider():
+def get_output_classification_provider(*, session_root: str | None = None):
     """Return the active provider for ambiguous monitor output classification."""
-    from dgov.decision_providers import LocalOutputClassificationProvider
+    from dgov.provider_registry import get_output_classification_provider as _get_provider
 
-    return LocalOutputClassificationProvider()
+    return _get_provider(session_root=session_root)
 
 
 def _classify_deterministic(output: str) -> str | None:
@@ -178,7 +178,10 @@ def _regex_match(pattern: str, text: str) -> bool:
 
 
 def classify_output(
-    output: str, hooks: list[MonitorHook] | None = None
+    output: str,
+    hooks: list[MonitorHook] | None = None,
+    *,
+    session_root: str | None = None,
 ) -> str | tuple[str, MonitorHook]:
     """Classify agent output into working, done, stuck, idle, waiting_input, or committing.
 
@@ -205,7 +208,7 @@ def classify_output(
 
     # Layer 2: LLM classification for ambiguous cases
     try:
-        provider = get_output_classification_provider()
+        provider = get_output_classification_provider(session_root=session_root)
         result = provider.classify_output(MonitorOutputRequest(output=output))
         return result.decision.classification
     except ProviderError as exc:
@@ -241,7 +244,7 @@ def poll_workers(
         if not output:
             classification = "idle"
         else:
-            result = classify_output(output, hooks)
+            result = classify_output(output, hooks, session_root=session_root)
             classification = result if isinstance(result, str) else result[0]
 
         # list_worker_panes now includes base_sha; if not, we fallback to get_pane
@@ -398,27 +401,35 @@ def _process_auto_merge_candidates(
     merge_attempted: set[str],
 ) -> list[dict]:
     """Attempt auto-merge for slugs marked done by the event journal."""
-    actions: list[dict] = []
-    for slug in sorted(state.merge_candidates):
-        pane = get_pane(session_root, slug)
-        if not pane or pane.get("state") != "done" or slug in merge_attempted:
-            state.merge_candidates.discard(slug)
-            continue
-        try:
-            act = _try_auto_merge(project_root, session_root, slug)
-            if act:
-                actions.append({"slug": slug, "action": act})
-                print(f"[{time.strftime('%H:%M:%S')}] {act}: {slug}")
-                state.merge_candidates.discard(slug)
-                state.active_slugs.discard(slug)
-            else:
-                merge_attempted.add(slug)
-                state.merge_candidates.discard(slug)
-        except Exception:
-            logger.warning("Auto-merge error for %s", slug, exc_info=True)
-            merge_attempted.add(slug)
-            state.merge_candidates.discard(slug)
-    return actions
+    return _process_candidate_set(
+        project_root,
+        session_root,
+        candidates=state.merge_candidates,
+        attempted=merge_attempted,
+        valid_states={"done"},
+        action_fn=_try_auto_merge,
+        on_success=lambda slug: state.active_slugs.discard(slug),
+    )
+
+
+def _resolve_retry_successor_slug(session_root: str, slug: str) -> str | None:
+    """Resolve the new pane slug created by retry/escalation side effects."""
+    pane_after = get_pane(session_root, slug) or {}
+    new_slug = str(pane_after.get("superseded_by", ""))
+    if new_slug:
+        return new_slug
+    for event in reversed(read_events(session_root, slug=slug, limit=5)):
+        candidate = str(event.get("new_slug", ""))
+        if candidate:
+            return candidate
+    return None
+
+
+def _track_retry_successor(state: MonitorLoopState, session_root: str, slug: str) -> None:
+    """Track the new active pane created by an auto-retry or escalation."""
+    new_slug = _resolve_retry_successor_slug(session_root, slug)
+    if new_slug:
+        state.active_slugs.add(new_slug)
 
 
 def _process_auto_retry_candidates(
@@ -428,35 +439,48 @@ def _process_auto_retry_candidates(
     retry_attempted: set[str],
 ) -> list[dict]:
     """Attempt auto-retry for failed panes tracked from journal events."""
+    return _process_candidate_set(
+        project_root,
+        session_root,
+        candidates=state.retry_candidates,
+        attempted=retry_attempted,
+        valid_states={"failed", "abandoned"},
+        action_fn=_try_auto_retry,
+        on_success=lambda slug: _track_retry_successor(state, session_root, slug),
+    )
+
+
+def _process_candidate_set(
+    project_root: str,
+    session_root: str,
+    *,
+    candidates: set[str],
+    attempted: set[str],
+    valid_states: set[str],
+    action_fn,
+    on_success,
+) -> list[dict]:
+    """Process a monitor candidate set through a single policy loop."""
     actions: list[dict] = []
-    for slug in sorted(state.retry_candidates):
+    for slug in sorted(candidates):
         pane = get_pane(session_root, slug)
-        if not pane or pane.get("state") not in {"failed", "abandoned"} or slug in retry_attempted:
-            state.retry_candidates.discard(slug)
+        if not pane or pane.get("state") not in valid_states or slug in attempted:
+            candidates.discard(slug)
             continue
         try:
-            act = _try_auto_retry(project_root, session_root, slug)
+            act = action_fn(project_root, session_root, slug)
             if act:
                 actions.append({"slug": slug, "action": act})
                 print(f"[{time.strftime('%H:%M:%S')}] {act}: {slug}")
-                state.retry_candidates.discard(slug)
-                pane_after = get_pane(session_root, slug) or {}
-                new_slug = str(pane_after.get("superseded_by", ""))
-                if not new_slug:
-                    for event in reversed(read_events(session_root, slug=slug, limit=5)):
-                        candidate = str(event.get("new_slug", ""))
-                        if candidate:
-                            new_slug = candidate
-                            break
-                if new_slug:
-                    state.active_slugs.add(new_slug)
+                candidates.discard(slug)
+                on_success(slug)
             else:
-                retry_attempted.add(slug)
-                state.retry_candidates.discard(slug)
+                attempted.add(slug)
+                candidates.discard(slug)
         except Exception:
-            logger.warning("Auto-retry error for %s", slug, exc_info=True)
-            retry_attempted.add(slug)
-            state.retry_candidates.discard(slug)
+            logger.warning("Auto-action error for %s", slug, exc_info=True)
+            attempted.add(slug)
+            candidates.discard(slug)
     return actions
 
 

@@ -26,7 +26,7 @@ Use this skill when the task is happening inside the dgov repository and you are
 4. Review the result before merging:
    `dgov pane review <slug>`
 5. Merge the worker branch:
-   `dgov pane merge <slug>`
+   `dgov pane land <slug>`
 6. Close the pane if needed:
    `dgov pane close <slug>`
 

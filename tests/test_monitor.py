@@ -461,6 +461,27 @@ class TestTryAutoMerge:
         result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
 
+    @patch("dgov.monitor._try_auto_merge", return_value="auto_merge")
+    @patch("dgov.monitor.get_pane", return_value={"slug": "test-1", "state": "done"})
+    def test_process_auto_merge_candidates_clears_active_slug(
+        self,
+        mock_get_pane,
+        mock_try_merge,
+    ):
+        from dgov.monitor import MonitorLoopState, _process_auto_merge_candidates
+
+        state = MonitorLoopState(
+            event_cursor=0,
+            active_slugs={"test-1"},
+            merge_candidates={"test-1"},
+        )
+
+        actions = _process_auto_merge_candidates("/tmp/proj", "/tmp/proj", state, set())
+
+        assert actions == [{"slug": "test-1", "action": "auto_merge"}]
+        assert "test-1" not in state.merge_candidates
+        assert "test-1" not in state.active_slugs
+
 
 class TestMonitorWakeup:
     def test_wait_for_monitor_wakeup_uses_event_waiter(self):
@@ -566,6 +587,52 @@ class TestTryAutoRetry:
         mock_retry.return_value = None
         result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
+
+    @patch("dgov.monitor.read_events", return_value=[])
+    @patch("dgov.monitor.get_pane", return_value={"superseded_by": "test-1-2"})
+    def test_resolve_retry_successor_prefers_pane_metadata(self, mock_get_pane, mock_read_events):
+        from dgov.monitor import _resolve_retry_successor_slug
+
+        result = _resolve_retry_successor_slug("/tmp/proj", "test-1")
+
+        assert result == "test-1-2"
+        mock_read_events.assert_not_called()
+
+    @patch("dgov.monitor.read_events", return_value=[{"new_slug": "test-1-2"}])
+    @patch("dgov.monitor.get_pane", return_value={})
+    def test_resolve_retry_successor_falls_back_to_events(self, mock_get_pane, mock_read_events):
+        from dgov.monitor import _resolve_retry_successor_slug
+
+        result = _resolve_retry_successor_slug("/tmp/proj", "test-1")
+
+        assert result == "test-1-2"
+        mock_read_events.assert_called_once_with("/tmp/proj", slug="test-1", limit=5)
+
+    @patch("dgov.monitor._try_auto_retry", return_value="auto_retry")
+    @patch("dgov.monitor.read_events", return_value=[])
+    @patch("dgov.monitor.get_pane")
+    def test_process_auto_retry_candidates_tracks_new_active_slug(
+        self,
+        mock_get_pane,
+        mock_read_events,
+        mock_try_retry,
+    ):
+        from dgov.monitor import MonitorLoopState, _process_auto_retry_candidates
+
+        mock_get_pane.side_effect = [
+            {"slug": "test-1", "state": "failed"},
+            {"superseded_by": "test-1-2"},
+        ]
+        state = MonitorLoopState(
+            event_cursor=0,
+            retry_candidates={"test-1"},
+        )
+
+        actions = _process_auto_retry_candidates("/tmp/proj", "/tmp/proj", state, set())
+
+        assert actions == [{"slug": "test-1", "action": "auto_retry"}]
+        assert "test-1" not in state.retry_candidates
+        assert "test-1-2" in state.active_slugs
 
 
 class TestRunMonitorAutoMergePolicy:

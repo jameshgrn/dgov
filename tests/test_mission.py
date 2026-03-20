@@ -7,7 +7,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dgov.mission import MissionPolicy, _has_blocking_findings, run_mission
+from dgov.mission import (
+    MissionPolicy,
+    _findings_from_review,
+    _has_blocking_findings,
+    _mission_result_from_lifecycle,
+    run_mission,
+)
 from dgov.waiter import PaneTimeoutError
 
 
@@ -367,6 +373,30 @@ class TestBlockingFindings:
     @pytest.mark.unit
     def test_empty_does_not_block(self):
         assert _has_blocking_findings([], "medium") is False
+
+
+@pytest.mark.unit
+class TestMissionLifecycleProjection:
+    def test_findings_from_review_issues(self):
+        assert _findings_from_review({"issues": ["one", "two"]}) == [
+            {"description": "one"},
+            {"description": "two"},
+        ]
+
+    def test_lifecycle_projection_preserves_review_pending(self):
+        lifecycle = MagicMock(
+            state="review_pending",
+            slug="test-slug",
+            review={"issues": ["needs review"]},
+            error=None,
+            merge_result=None,
+        )
+
+        result = _mission_result_from_lifecycle(lifecycle, duration_s=3.0)
+
+        assert result.state == "review_pending"
+        assert result.slug == "test-slug"
+        assert result.findings == [{"description": "needs review"}]
 
 
 @pytest.mark.unit

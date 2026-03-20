@@ -9,6 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
+from dgov.executor import PaneFinalizeResult
 
 pytestmark = pytest.mark.unit
 
@@ -86,14 +87,18 @@ class TestPaneClose:
 
 class TestPaneReview:
     def test_review_shows_verdict(self, runner: CliRunner) -> None:
-        review_data = {
-            "slug": "fix-parser",
-            "verdict": "safe",
-            "commit_count": 3,
-            "files_changed": 2,
-            "diff_stat": "src/parser.py | 10 +++---",
-        }
-        with patch("dgov.inspection.review_worker_pane", return_value=review_data):
+        with patch(
+            "dgov.executor.run_review_only",
+            return_value=MagicMock(
+                review={
+                    "slug": "fix-parser",
+                    "verdict": "safe",
+                    "commit_count": 3,
+                    "files_changed": 2,
+                    "diff_stat": "src/parser.py | 10 +++---",
+                }
+            ),
+        ):
             result = runner.invoke(cli, ["pane", "review", "fix-parser"])
 
         assert result.exit_code == 0
@@ -103,8 +108,8 @@ class TestPaneReview:
 
     def test_review_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.inspection.review_worker_pane",
-            return_value={"error": "Pane not found: missing"},
+            "dgov.executor.run_review_only",
+            return_value=MagicMock(review={"error": "Pane not found: missing"}),
         ):
             result = runner.invoke(cli, ["pane", "review", "missing"])
 
@@ -115,12 +120,16 @@ class TestPaneReview:
 class TestPaneLand:
     def test_land_success(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.executor.run_land_only",
-            return_value=MagicMock(
-                review={"slug": "task", "verdict": "safe", "commit_count": 2},
-                merge_result={"merged": "task", "branch": "task", "files_changed": 1},
-                error=None,
-            ),
+            "dgov.executor.run_finalize_panes",
+            return_value=[
+                PaneFinalizeResult(
+                    slug="task",
+                    review={"slug": "task", "verdict": "safe", "commit_count": 2},
+                    merge_result={"merged": "task", "branch": "task", "files_changed": 1},
+                    error=None,
+                    cleanup_error=None,
+                )
+            ],
         ) as mock_land:
             result = runner.invoke(cli, ["pane", "land", "task"])
 
@@ -135,21 +144,26 @@ class TestPaneLand:
         assert merge_line["merged"] == "task"
         mock_land.assert_called_once_with(
             ".",
-            "task",
+            ["task"],
             session_root=None,
             resolve="skip",
             squash=True,
             rebase=False,
+            close=True,
         )
 
     def test_land_no_commits_exits(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.executor.run_land_only",
-            return_value=MagicMock(
-                review={"slug": "task", "verdict": "safe", "commit_count": 0},
-                merge_result=None,
-                error="No commits to merge",
-            ),
+            "dgov.executor.run_finalize_panes",
+            return_value=[
+                PaneFinalizeResult(
+                    slug="task",
+                    review={"slug": "task", "verdict": "safe", "commit_count": 0},
+                    merge_result=None,
+                    error="No commits to merge",
+                    cleanup_error=None,
+                )
+            ],
         ):
             result = runner.invoke(cli, ["pane", "land", "task"])
 
@@ -157,12 +171,16 @@ class TestPaneLand:
 
     def test_land_review_verdict_blocks_merge(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.executor.run_land_only",
-            return_value=MagicMock(
-                review={"slug": "task", "verdict": "review", "commit_count": 2},
-                merge_result=None,
-                error="Review verdict is review; refusing to merge",
-            ),
+            "dgov.executor.run_finalize_panes",
+            return_value=[
+                PaneFinalizeResult(
+                    slug="task",
+                    review={"slug": "task", "verdict": "review", "commit_count": 2},
+                    merge_result=None,
+                    error="Review verdict is review; refusing to merge",
+                    cleanup_error=None,
+                )
+            ],
         ):
             result = runner.invoke(cli, ["pane", "land", "task"])
 
@@ -170,34 +188,3 @@ class TestPaneLand:
         assert json.loads(result.output.splitlines()[-1]) == {
             "error": "Review verdict is review; refusing to merge"
         }
-
-
-class TestPaneMerge:
-    def test_merge_uses_canonical_merge_only(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.executor.run_merge_only",
-            return_value=MagicMock(
-                merge_result={"merged": "task", "branch": "task"},
-            ),
-        ) as mock_merge:
-            result = runner.invoke(cli, ["pane", "merge", "task", "--resolve", "manual"])
-
-        assert result.exit_code == 0
-        mock_merge.assert_called_once_with(
-            ".",
-            "task",
-            session_root=None,
-            resolve="manual",
-            squash=True,
-            rebase=False,
-        )
-
-    def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.executor.run_merge_only",
-            return_value=MagicMock(merge_result={"error": "conflicts"}),
-        ):
-            result = runner.invoke(cli, ["pane", "merge", "task"])
-
-        assert result.exit_code == 1
-        assert json.loads(result.output)["error"] == "conflicts"

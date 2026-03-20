@@ -10,7 +10,7 @@ import logging
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from pathlib import Path
 
 from dgov.backend import get_backend
@@ -419,6 +419,20 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     processed_at TIMESTAMP
 )"""
 
+_CREATE_DECISION_JOURNAL_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS decision_journal (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    trace_id TEXT,
+    request_json TEXT NOT NULL,
+    result_json TEXT,
+    error TEXT,
+    duration_ms REAL NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+)"""
+
 _CREATE_SLUG_HISTORY_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS slug_history (
     slug TEXT PRIMARY KEY,
@@ -458,6 +472,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
     conn.execute(_CREATE_MERGE_QUEUE_TABLE_SQL)
+    conn.execute(_CREATE_DECISION_JOURNAL_TABLE_SQL)
     conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
 
     # Migrate: add hierarchy columns if missing
@@ -1218,3 +1233,158 @@ def append_idea(session_root: str, text: str, summary: str) -> None:
         _os.write(fd, (json.dumps(entry) + "\n").encode())
     finally:
         _os.close(fd)
+
+
+def _json_default(value: object) -> object:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple | set):
+        return list(value)
+    if hasattr(value, "value"):
+        return getattr(value, "value")
+    return str(value)
+
+
+def _decision_kind_name(request: object) -> str:
+    from dgov.decision import (
+        ClarifyRequest,
+        CompletionParseRequest,
+        DecisionKind,
+        MonitorOutputRequest,
+        ReviewOutputRequest,
+        RouteTaskRequest,
+    )
+
+    if isinstance(request, RouteTaskRequest):
+        return DecisionKind.ROUTE_TASK.value
+    if isinstance(request, MonitorOutputRequest):
+        return DecisionKind.CLASSIFY_OUTPUT.value
+    if isinstance(request, ReviewOutputRequest):
+        return DecisionKind.REVIEW_OUTPUT.value
+    if isinstance(request, CompletionParseRequest):
+        return DecisionKind.PARSE_COMPLETION.value
+    if isinstance(request, ClarifyRequest):
+        return DecisionKind.DISAMBIGUATE.value
+    raise ValueError(f"Unsupported decision request type: {type(request).__name__}")
+
+
+def record_decision_audit(session_root: str, entry) -> None:  # noqa: ANN001
+    """Persist a DecisionAuditEntry to SQLite."""
+    from datetime import datetime, timezone
+
+    request_json = json.dumps(entry.request, default=_json_default)
+    result_json = (
+        json.dumps(entry.result, default=_json_default) if entry.result is not None else None
+    )
+    trace_id = None
+    metadata: dict[str, object] = {}
+    kind = _decision_kind_name(entry.request)
+
+    if entry.result is not None:
+        trace_id = entry.result.trace_id
+        metadata = {
+            "model_id": entry.result.model_id,
+            "confidence": entry.result.confidence,
+            "latency_ms": entry.result.latency_ms,
+            "cost_usd": entry.result.cost_usd,
+            "evidence_refs": list(entry.result.evidence_refs),
+            "raw_artifact_ref": entry.result.raw_artifact_ref,
+            "record_created_at": entry.result.created_at,
+        }
+        kind = entry.result.kind.value
+
+    if trace_id is None:
+        trace_id = getattr(entry.request, "trace_id", None)
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        conn.execute(
+            "INSERT INTO decision_journal "
+            "(ts, kind, provider_id, trace_id, request_json, result_json, error, duration_ms, "
+            " metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                datetime.now(timezone.utc).isoformat(),
+                kind,
+                entry.provider_id,
+                trace_id,
+                request_json,
+                result_json,
+                entry.error,
+                entry.duration_ms,
+                json.dumps(metadata, default=_json_default),
+            ),
+        )
+        conn.commit()
+
+    try:
+        _retry_on_lock(_do)
+    except (OSError, sqlite3.OperationalError):
+        logger.warning(
+            "record_decision_audit(%s, %s) dropped",
+            kind,
+            entry.provider_id,
+        )
+
+
+def read_decision_journal(
+    session_root: str,
+    *,
+    kind: str | None = None,
+    limit: int | None = None,
+) -> list[dict]:
+    """Read decision journal rows in chronological order."""
+    conn = _get_db(session_root)
+    query = (
+        "SELECT ts, kind, provider_id, trace_id, request_json, result_json, error, duration_ms, "
+        "metadata_json FROM decision_journal"
+    )
+    params: list[object] = []
+    if kind is not None:
+        query += " WHERE kind = ?"
+        params.append(kind)
+    if limit is not None:
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+    else:
+        query += " ORDER BY id"
+
+    rows = conn.execute(query, tuple(params)).fetchall()
+    if limit is not None:
+        rows = list(reversed(rows))
+
+    items: list[dict] = []
+    for (
+        ts,
+        row_kind,
+        provider_id,
+        trace_id,
+        request_json,
+        result_json,
+        error,
+        duration_ms,
+        meta,
+    ) in rows:
+        item = {
+            "ts": ts,
+            "kind": row_kind,
+            "provider_id": provider_id,
+            "trace_id": trace_id,
+            "error": error,
+            "duration_ms": duration_ms,
+        }
+        try:
+            item["request"] = json.loads(request_json)
+        except (json.JSONDecodeError, TypeError):
+            item["request"] = request_json
+        try:
+            item["result"] = json.loads(result_json) if result_json is not None else None
+        except (json.JSONDecodeError, TypeError):
+            item["result"] = result_json
+        try:
+            item.update(json.loads(meta))
+        except (json.JSONDecodeError, TypeError):
+            pass
+        items.append(item)
+    return items

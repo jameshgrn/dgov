@@ -19,10 +19,10 @@ stateDiagram-v2
 
     done --> reviewed_pass: dgov pane review (pass)
     done --> reviewed_fail: dgov pane review (fail)
-    done --> merged: dgov pane merge
+    done --> merged: dgov pane land
     done --> merge_conflict: git merge failed
 
-    reviewed_pass --> merged: dgov pane merge
+    reviewed_pass --> merged: dgov pane land
     reviewed_pass --> merge_conflict: git merge failed
 
     merge_conflict --> merged: manual fix + merge
@@ -167,19 +167,16 @@ Read live output from the agent's tmux pane.
 dgov pane capture add-health-check -n 50
 ```
 
-## Merge
+## Land
 
-Merge the worker's branch into `main`.
+Review, merge, and close the worker pane in one command:
 
 ```bash
-# Merge and close worktree (default)
-dgov pane merge add-health-check
-
-# Merge only, keep worktree open
-dgov pane merge add-health-check --no-close
+# Review + merge, automatically clean up
+dgov pane land add-health-check
 
 # Manual conflict resolution
-dgov pane merge add-health-check --resolve manual
+dgov pane land add-health-check --resolve manual
 ```
 
 ## Merge-all

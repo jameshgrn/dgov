@@ -25,7 +25,7 @@ _GOVERNOR_PROMPT = (
     '  dgov pane create -a <agent> -p "<task>" -r .   # dispatch a worker\n'
     "  dgov pane wait <slug>                            # wait for completion\n"
     "  dgov pane review <slug>                          # inspect the diff\n"
-    "  dgov pane merge <slug>                           # merge to main\n"
+    "  dgov pane land <slug>                           # review, merge, close\n"
     "  dgov pane close <slug>                           # cleanup\n"
     "Never edit source files directly. Dispatch workers instead."
 )

@@ -171,14 +171,15 @@ Capture the last N lines of a worker pane's live tmux output.
 |------|-------|------|---------|-------------|
 | `--lines` | `-n` | int | `30` | Number of lines to capture |
 
-### dgov pane merge
+### dgov pane land
 
-Merge a worker branch into main with configurable conflict resolution.
+Review, merge, and close a worker pane in one step.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|
-| `--close` | | bool | `True` | Close worker pane after merge |
-| `--resolve` | | string | `agent` | Conflict resolution: `agent` or `manual` |
+| `--resolve` | | string | `skip` | Conflict resolution: `skip`, `agent`, or `manual` |
+| `--squash/--no-squash` | | bool | `True` | Squash worker commits (default: squash) |
+| `--rebase` | | bool | `False` | Rebase merge (requires `--squash`) |
 
 ### dgov pane merge-all
 

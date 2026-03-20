@@ -65,7 +65,7 @@ If the changes look good, merge the worker branch into `main` and clean up:
 
 ```bash
 # Merge into main and remove the worker worktree
-dgov pane merge add-health-check
+dgov pane land add-health-check
 ```
 
 ## 7. Verify status
@@ -101,5 +101,5 @@ dgov pane wait refactor-parser
 dgov pane review refactor-parser
 
 # Merge
-dgov pane merge refactor-parser
+dgov pane land refactor-parser
 ```

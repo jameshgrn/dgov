@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
 from pathlib import Path
 
-from dgov.context_packet import build_context_packet
 from dgov.dag import (
+    DagDefinition,
     DagFileSpec,
+    DagRunSummary,
     DagTaskSpec,
+    run_dag_definition,
 )
 from dgov.dag import (
     compute_tiers as _dag_compute_tiers,
@@ -233,9 +236,74 @@ def _render_dry_run(tiers: list[list[dict]], tasks: dict[str, dict]) -> str:
     return "\n".join(lines)
 
 
+def _spec_hash(spec_path: str) -> str:
+    """SHA-256 of the raw batch spec bytes."""
+    return hashlib.sha256(Path(spec_path).read_bytes()).hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Batch execution
 # ---------------------------------------------------------------------------
+def _batch_to_dag_definition(
+    spec_path: str,
+    project_root: str,
+    session_root: str,
+    tasks: dict[str, dict],
+) -> DagDefinition:
+    """Compile a batch spec into a DAG definition for canonical execution."""
+    return DagDefinition(
+        name=Path(spec_path).stem,
+        dag_file=str(Path(spec_path).resolve()),
+        project_root=project_root,
+        session_root=session_root,
+        default_max_retries=0,
+        merge_resolve="skip",
+        merge_squash=True,
+        max_concurrent=0,
+        tasks=_to_dag_specs(tasks),
+    )
+
+
+def _build_batch_tier_results(
+    tiers: list[list[dict]],
+    task_rows: list[dict],
+) -> list[dict]:
+    """Reconstruct batch tier output from canonical DAG task records."""
+    rows_by_slug = {row["slug"]: row for row in task_rows}
+    tier_results: list[dict] = []
+    for tier_idx, tier in enumerate(tiers):
+        tasks_out: list[dict] = []
+        for task in tier:
+            row = rows_by_slug.get(task["id"])
+            if row is None:
+                tasks_out.append({"id": task["id"], "status": "skipped"})
+                continue
+            status = "review_pending" if row["status"] == "reviewed_fail" else row["status"]
+            record = {
+                "id": task["id"],
+                "status": status,
+            }
+            if row.get("pane_slug"):
+                record["slug"] = row["pane_slug"]
+            if row.get("error"):
+                record["error"] = row["error"]
+            tasks_out.append(record)
+        tier_results.append({"tier": tier_idx, "tasks": tasks_out})
+    return tier_results
+
+
+def _dag_summary_to_batch_result(
+    summary: DagRunSummary,
+    tiers: list[list[dict]],
+    task_rows: list[dict],
+) -> dict:
+    """Translate canonical DAG output into the legacy batch result shape."""
+    return {
+        "tiers": _build_batch_tier_results(tiers, task_rows),
+        "merged": list(summary.merged),
+        "failed": list(summary.failed),
+        "skipped": list(summary.skipped),
+    }
 
 
 def run_batch(
@@ -243,14 +311,13 @@ def run_batch(
     session_root: str | None = None,
     dry_run: bool = False,
 ) -> dict:
-    """Execute a batch spec: create panes, wait, merge in tier order.
+    """Execute a batch spec by compiling it into the canonical DAG scheduler.
 
     Supports TOML (.toml) and legacy JSON (.json) spec formats.
     Tasks are ordered by explicit depends_on and implicit touch overlap.
     On failure, transitive dependents are skipped; unrelated branches continue.
     """
-    from dgov.executor import run_dispatch_preflight, run_post_dispatch_lifecycle
-    from dgov.lifecycle import create_worker_pane
+    from dgov.persistence import list_dag_tasks
 
     project_root, tasks = _parse_spec(spec_path)
     session_root = os.path.abspath(session_root or project_root)
@@ -266,102 +333,16 @@ def run_batch(
             "ascii_dag": ascii_dag,
         }
 
-    failed_ids: set[str] = set()
-    skipped_ids: set[str] = set()
-    results: dict = {"tiers": [], "merged": [], "failed": [], "skipped": []}
-
-    for tier_idx, tier in enumerate(tiers):
-        tier_result: dict = {"tier": tier_idx, "tasks": []}
-
-        # Create all panes in this tier (skip tasks whose deps failed)
-        slugs = []
-        slug_to_task_id: dict[str, str] = {}
-        for task in tier:
-            if task["id"] in skipped_ids:
-                tier_result["tasks"].append({"id": task["id"], "status": "skipped"})
-                results["skipped"].append(task["id"])
-                continue
-
-            packet = build_context_packet(task["prompt"], file_claims=task.get("touches", []))
-            report = run_dispatch_preflight(
-                project_root,
-                task.get("agent", "claude"),
-                packet=packet,
-                session_root=session_root,
-            )
-            if not report.passed:
-                task_id = task["id"]
-                failed_ids.add(task_id)
-                results["failed"].append(task_id)
-                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
-                skipped_ids.update(new_skips)
-                tier_result["tasks"].append({"id": task_id, "status": "preflight_failed"})
-                continue
-
-            try:
-                pane = create_worker_pane(
-                    project_root=project_root,
-                    prompt=task["prompt"],
-                    agent=task.get("agent", "claude"),
-                    permission_mode=task.get("permission_mode", "bypassPermissions"),
-                    slug=task["id"],
-                    session_root=session_root,
-                    context_packet=packet,
-                )
-                slugs.append(pane.slug)
-                slug_to_task_id[pane.slug] = task["id"]
-                tier_result["tasks"].append(
-                    {"id": task["id"], "slug": pane.slug, "status": "created"}
-                )
-            except (subprocess.TimeoutExpired, OSError, RuntimeError) as exc:
-                tier_result["tasks"].append(
-                    {
-                        "id": task["id"],
-                        "status": "failed",
-                        "error": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-                failed_ids.add(task["id"])
-                results["failed"].append(task["id"])
-                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
-                skipped_ids.update(new_skips)
-
-        # Run the canonical post-dispatch lifecycle for each created pane.
-        for slug in slugs:
-            task_id = slug_to_task_id.get(slug, slug)
-            task = tasks[task_id]
-            lifecycle = run_post_dispatch_lifecycle(
-                project_root,
-                slug,
-                session_root=session_root,
-                timeout=task.get("timeout", 600),
-                max_retries=0,
-                permission_mode=task.get("permission_mode", "bypassPermissions"),
-            )
-            if lifecycle.state != "completed":
-                failed_ids.add(task_id)
-                results["failed"].append(task_id)
-                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
-                skipped_ids.update(new_skips)
-                status = lifecycle.failure_stage or lifecycle.state
-                tier_result["tasks"] = [
-                    {**t, "status": status} if t.get("slug") == slug else t
-                    for t in tier_result["tasks"]
-                ]
-                continue
-
-            merge_result = lifecycle.merge_result or {}
-            if "merged" in merge_result:
-                results["merged"].append(task_id)
-                tier_result["tasks"] = [
-                    {**t, "status": "merged"} if t.get("slug") == slug else t
-                    for t in tier_result["tasks"]
-                ]
-
-        results["tiers"].append(tier_result)
-
-    results["skipped"] = list(skipped_ids)
-    return results
+    dag = _batch_to_dag_definition(spec_path, project_root, session_root, tasks)
+    summary = run_dag_definition(
+        dag,
+        dag_key=str(Path(spec_path).resolve()),
+        definition_hash=_spec_hash(spec_path),
+        max_retries=0,
+        auto_merge=True,
+    )
+    task_rows = list_dag_tasks(session_root, summary.run_id)
+    return _dag_summary_to_batch_result(summary, tiers, task_rows)
 
 
 def batch_dispatch(

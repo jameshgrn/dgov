@@ -9,6 +9,7 @@ import dgov.lifecycle as _lifecycle  # noqa: F401 - bind real persistence symbol
 from dgov.executor import (
     CleanupOnlyResult,
     ExecutorLifecycle,
+    PostDispatchActionExecutor,
     derive_prompt_touches,
     review_merge_gate,
     run_cleanup_only,
@@ -99,6 +100,25 @@ def test_run_review_only_returns_typed_review_result():
     assert result.review_record.decision.commit_count == 2
 
 
+def test_run_review_only_persists_decision_journal(tmp_path):
+    from dgov.persistence import read_decision_journal
+
+    session_root = str(tmp_path)
+
+    with patch(
+        "dgov.inspection.review_worker_pane",
+        return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+    ):
+        result = run_review_only("/repo", "task", session_root=session_root)
+
+    journal = read_decision_journal(session_root)
+    assert result.passed is True
+    assert len(journal) == 1
+    assert journal[0]["kind"] == "review_output"
+    assert journal[0]["provider_id"] == "inspection-review"
+    assert journal[0]["result"]["decision"]["verdict"] == "safe"
+
+
 def test_run_wait_only_returns_worker_failed_state():
     with (
         patch(
@@ -174,6 +194,28 @@ def test_run_cleanup_only_force_closes_worker_failed():
         session_root="/session",
         force=True,
     )
+
+
+def test_post_dispatch_action_executor_executes_review_action(tmp_path):
+    phases: list[tuple[str, str]] = []
+
+    with patch(
+        "dgov.inspection.review_worker_pane",
+        return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+    ):
+        runtime = PostDispatchActionExecutor(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            phase_callback=lambda phase, slug: phases.append((phase, slug)),
+        )
+        from dgov.kernel import ReviewPane
+
+        event = runtime.execute(ReviewPane("task"))
+
+    assert runtime.review is not None
+    assert runtime.review.slug == "task"
+    assert phases == [("reviewing", "task")]
+    assert event.result.slug == "task"
 
 
 # -- ExecutorLifecycle tests --

@@ -21,6 +21,7 @@ from dgov.dag import (
     transitive_dependents,
     validate_dag,
 )
+from dgov.executor import PostDispatchResult
 
 pytestmark = pytest.mark.unit
 
@@ -627,8 +628,8 @@ class TestRunDag:
         dag = parse_dag_file(path)
 
         monkeypatch.setattr(
-            "dgov.dag._start_or_resume_run",
-            lambda *args, **kwargs: (7, dag, {"T0": "dispatched"}),
+            "dgov.dag._start_or_resume_run_definition",
+            lambda **kwargs: (7, dag, {"T0": "dispatched"}),
         )
         monkeypatch.setattr("dgov.persistence.get_dag_task", lambda *args, **kwargs: None)
 
@@ -720,6 +721,22 @@ class TestEscalation:
 
         assert _task_failure_reason(None, {"commit_count": 1, "passed": False}) == "review_failed"
 
+    def test_dag_task_status_uses_executor_states(self):
+        from dgov.dag import _dag_task_status_for_lifecycle
+
+        assert (
+            _dag_task_status_for_lifecycle(PostDispatchResult(state="reviewed_pass", slug="T0"))
+            == "reviewed_pass"
+        )
+        assert (
+            _dag_task_status_for_lifecycle(PostDispatchResult(state="review_pending", slug="T0"))
+            == "reviewed_fail"
+        )
+        assert (
+            _dag_task_status_for_lifecycle(PostDispatchResult(state="failed", slug="T0"))
+            == "failed"
+        )
+
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.persistence.update_pane_state")
     @patch("dgov.inspection.review_worker_pane")
@@ -748,6 +765,7 @@ class TestEscalation:
 
         result = run_task_until_terminal(self._dag(), self._task(), 1, 1, "/tmp/proj")
         assert result["status"] == "reviewed_pass"
+        assert any(call.args[3] == "reviewed_pass" for call in mock_upsert.call_args_list)
 
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.persistence.update_pane_state")
@@ -786,6 +804,7 @@ class TestEscalation:
         )
         assert result["status"] == "failed"
         assert mock_create.call_count >= 2
+        assert any(call.args[3] == "failed" for call in mock_upsert.call_args_list)
 
     @patch("dgov.merger.merge_worker_pane")
     @patch("dgov.persistence.update_pane_state")

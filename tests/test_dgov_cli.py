@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 from dgov import __version__
 from dgov.cli import _check_governor_context, _ensure_governor_session, cli
+from dgov.executor import PaneFinalizeResult
 
 pytestmark = pytest.mark.unit
 
@@ -546,77 +547,39 @@ class TestPaneCommands:
         assert missing.exit_code == 0
         assert json.loads(missing.output) == {"already_closed": "missing"}
 
-    def test_merge_uses_selected_strategy(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.executor.run_merge_only",
-            return_value=MagicMock(merge_result={"merged": "task", "branch": "task"}),
-        ) as mock_merge_skip:
-            skip_result = runner.invoke(cli, ["pane", "merge", "task"])
-
-        with patch(
-            "dgov.executor.run_merge_only",
-            return_value=MagicMock(merge_result={"merged": "task", "branch": "task"}),
-        ) as mock_merge_agent:
-            agent_result = runner.invoke(
-                cli,
-                ["pane", "merge", "task", "--resolve", "agent"],
-            )
-
-        with patch(
-            "dgov.executor.run_merge_only",
-            return_value=MagicMock(merge_result={"merged": "task", "branch": "task"}),
-        ) as mock_merge_manual:
-            manual_result = runner.invoke(
-                cli,
-                ["pane", "merge", "task", "--resolve", "manual"],
-            )
-
-        assert skip_result.exit_code == 0
-        assert agent_result.exit_code == 0
-        assert manual_result.exit_code == 0
-        mock_merge_skip.assert_called_once_with(
-            ".", "task", session_root=None, resolve="skip", squash=True, rebase=False
-        )
-        mock_merge_agent.assert_called_once_with(
-            ".", "task", session_root=None, resolve="agent", squash=True, rebase=False
-        )
-        mock_merge_manual.assert_called_once_with(
-            ".", "task", session_root=None, resolve="manual", squash=True, rebase=False
-        )
-
-    def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.executor.run_merge_only",
-            return_value=MagicMock(merge_result={"error": "conflicts"}),
-        ):
-            result = runner.invoke(cli, ["pane", "merge", "task"])
-
-        assert result.exit_code == 1
-        assert json.loads(result.output)["error"] == "conflicts"
-
     def test_wait_success_and_timeout(self, runner: CliRunner) -> None:
         with (
             patch(
-                "dgov.waiter.wait_worker_pane",
-                return_value={"done": "task", "method": "stable"},
+                "dgov.executor.run_wait_only",
+                return_value=MagicMock(
+                    state="completed",
+                    slug="task",
+                    wait_result={"done": "task", "method": "stable"},
+                    pane_state="done",
+                ),
             ),
             patch(
                 "dgov.status.list_worker_panes",
-                return_value=[{"slug": "task", "done": False}],
+                return_value=[{"slug": "task", "done": False, "agent": "pi"}],
             ),
         ):
             ok = runner.invoke(cli, ["pane", "wait", "task"])
 
-        timeout = __import__("dgov.waiter", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
-            "task",
-            30,
-            "pi",
-        )
         with (
-            patch("dgov.waiter.wait_worker_pane", side_effect=timeout),
+            patch(
+                "dgov.executor.run_wait_only",
+                return_value=MagicMock(
+                    state="failed",
+                    slug="task",
+                    wait_result=None,
+                    pane_state=None,
+                    error="Worker timed out after 30s (retries exhausted)",
+                    failure_stage="timeout",
+                ),
+            ),
             patch(
                 "dgov.status.list_worker_panes",
-                return_value=[{"slug": "task", "done": False}],
+                return_value=[{"slug": "task", "done": False, "agent": "pi"}],
             ),
         ):
             failed = runner.invoke(cli, ["pane", "wait", "task"])
@@ -625,7 +588,7 @@ class TestPaneCommands:
         assert json.loads(ok.output) == {"done": "task", "method": "stable"}
         assert failed.exit_code == 1
         assert json.loads(failed.output) == {
-            "error": "Timeout after 30s",
+            "error": "Worker timed out after 30s (retries exhausted)",
             "slug": "task",
             "agent": "pi",
             "suggest_escalate": True,
@@ -677,17 +640,22 @@ class TestPaneCommands:
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
-                "dgov.inspection.review_worker_pane",
-                side_effect=[
-                    {"slug": "a", "verdict": "safe", "commit_count": 1},
-                    {"slug": "b", "verdict": "safe", "commit_count": 1},
-                ],
-            ),
-            patch(
-                "dgov.merger.merge_worker_pane",
-                side_effect=[
-                    {"merged": "a", "files_changed": 2},
-                    {"error": "conflict"},
+                "dgov.executor.run_finalize_panes",
+                return_value=[
+                    PaneFinalizeResult(
+                        slug="a",
+                        review={"slug": "a", "verdict": "safe", "commit_count": 1},
+                        merge_result={"merged": "a", "files_changed": 2},
+                        error=None,
+                        cleanup_error=None,
+                    ),
+                    PaneFinalizeResult(
+                        slug="b",
+                        review={"slug": "b", "verdict": "safe", "commit_count": 1},
+                        merge_result=None,
+                        error="conflict",
+                        cleanup_error=None,
+                    ),
                 ],
             ),
         ):
@@ -709,19 +677,23 @@ class TestPaneCommands:
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
-                "dgov.executor.run_review_merge",
-                return_value=MagicMock(
-                    error=None,
-                    review={"slug": "a", "verdict": "safe", "commit_count": 1},
-                    merge_result={"merged": "a", "branch": "a"},
-                ),
+                "dgov.executor.run_finalize_panes",
+                return_value=[
+                    PaneFinalizeResult(
+                        slug="a",
+                        review={"slug": "a", "verdict": "safe", "commit_count": 1},
+                        merge_result={"merged": "a", "branch": "a"},
+                        error=None,
+                        cleanup_error=None,
+                    )
+                ],
             ) as mock_merge,
         ):
             result = runner.invoke(cli, ["pane", "merge-all", "--resolve", "manual"])
 
         assert result.exit_code == 0
         mock_merge.assert_called_once_with(
-            ".", "a", session_root=None, resolve="manual", squash=True, rebase=False
+            ".", ["a"], session_root=None, resolve="manual", squash=True, rebase=False, close=False
         )
 
     def test_merge_all_blocks_non_safe_review(self, runner: CliRunner) -> None:
@@ -730,10 +702,17 @@ class TestPaneCommands:
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
-                "dgov.inspection.review_worker_pane",
-                return_value={"slug": "a", "verdict": "review", "commit_count": 1},
-            ),
-            patch("dgov.merger.merge_worker_pane") as mock_merge,
+                "dgov.executor.run_finalize_panes",
+                return_value=[
+                    PaneFinalizeResult(
+                        slug="a",
+                        review={"slug": "a", "verdict": "review", "commit_count": 1},
+                        merge_result=None,
+                        error="Review verdict is review; refusing to merge",
+                        cleanup_error=None,
+                    )
+                ],
+            ) as mock_merge,
         ):
             result = runner.invoke(cli, ["pane", "merge-all"])
 
@@ -746,7 +725,15 @@ class TestPaneCommands:
             "failed": ["a"],
             "warnings": ["a: review verdict is review; refusing to merge"],
         }
-        mock_merge.assert_not_called()
+        mock_merge.assert_called_once_with(
+            ".",
+            "a",
+            None,
+            resolve="skip",
+            squash=True,
+            rebase=False,
+            close=False,
+        )
 
     def test_pane_batch_blocks_preflight_failure(self, runner: CliRunner, tmp_path: Path) -> None:
         spec_path = tmp_path / "pane-batch.toml"
@@ -812,17 +799,21 @@ touches = ["src/parser.py", "tests/test_parser.py"]
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
-                "dgov.executor.run_land_only",
-                side_effect=[
-                    MagicMock(
+                "dgov.executor.run_finalize_panes",
+                return_value=[
+                    PaneFinalizeResult(
+                        slug="a",
                         review={"slug": "a", "verdict": "safe", "commit_count": 1},
                         merge_result={"merged": "a", "files_changed": 2},
                         error=None,
+                        cleanup_error=None,
                     ),
-                    MagicMock(
+                    PaneFinalizeResult(
+                        slug="b",
                         review={"slug": "b", "verdict": "safe", "commit_count": 0},
                         merge_result=None,
                         error="No commits to merge",
+                        cleanup_error=None,
                     ),
                 ],
             ) as mock_land,
@@ -841,19 +832,23 @@ touches = ["src/parser.py", "tests/test_parser.py"]
             "failed": ["b"],
             "warnings": ["b: no commits to merge"],
         }
-        assert mock_land.call_count == 2
+        assert mock_land.call_count == 1
 
     def test_land_all_skips_non_safe_review(self, runner: CliRunner) -> None:
         panes = [{"slug": "a", "done": True}]
         with (
             patch("dgov.status.list_worker_panes", return_value=panes),
             patch(
-                "dgov.executor.run_land_only",
-                return_value=MagicMock(
-                    review={"slug": "a", "verdict": "review", "commit_count": 1},
-                    merge_result=None,
-                    error="Review verdict is review; refusing to merge",
-                ),
+                "dgov.executor.run_finalize_panes",
+                return_value=[
+                    PaneFinalizeResult(
+                        slug="a",
+                        review={"slug": "a", "verdict": "review", "commit_count": 1},
+                        merge_result=None,
+                        error="Review verdict is review; refusing to merge",
+                        cleanup_error=None,
+                    ),
+                ],
             ) as mock_land,
         ):
             result = runner.invoke(cli, ["pane", "land-all"])
@@ -869,7 +864,15 @@ touches = ["src/parser.py", "tests/test_parser.py"]
             "failed": ["a"],
             "warnings": ["a: review verdict is review; refusing to merge"],
         }
-        mock_land.assert_called_once()
+        mock_land.assert_called_once_with(
+            ".",
+            ["a"],
+            session_root=None,
+            resolve="skip",
+            squash=True,
+            rebase=False,
+            close=True,
+        )
 
     def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
         with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
@@ -911,8 +914,8 @@ touches = ["src/parser.py", "tests/test_parser.py"]
 
     def test_review_diff_escalate_and_retry(self, runner: CliRunner) -> None:
         with patch(
-            "dgov.inspection.review_worker_pane",
-            return_value={"slug": "task", "verdict": "safe"},
+            "dgov.executor.run_review_only",
+            return_value=MagicMock(review={"slug": "task", "verdict": "safe"}),
         ):
             review = runner.invoke(cli, ["pane", "review", "task", "--full"])
         with patch(

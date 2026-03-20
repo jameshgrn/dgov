@@ -24,10 +24,10 @@ stateDiagram-v2
 
     done --> reviewed_pass: dgov pane review (pass)
     done --> reviewed_fail: dgov pane review (fail)
-    done --> merged: dgov pane merge
+    done --> merged: dgov pane land
     done --> merge_conflict: git merge failed
 
-    reviewed_pass --> merged: dgov pane merge
+    reviewed_pass --> merged: dgov pane land
     reviewed_pass --> merge_conflict: git merge failed
 
     merge_conflict --> merged: manual fix + merge
@@ -110,13 +110,6 @@ Or dispatch a worker directly:
 dgov pane create -a claude -p "Add retry logic to the HTTP client"
 dgov pane wait <slug>
 dgov pane review <slug>
-dgov pane merge <slug>
-```
-
-Or do it in one step:
-
-```bash
-dgov pane create -a claude -p "Add retry logic to the HTTP client"
 dgov pane land <slug>          # review + merge + close
 ```
 
@@ -143,7 +136,6 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 | `dgov pane wait` | Block until one or more panes finish |
 | `dgov pane wait-all` | Block until all active panes finish |
 | `dgov pane review` | Inspect a pane's diff, commit count, and verdict |
-| `dgov pane merge` | Merge a pane's branch into main (squash by default, `--no-squash` or `--rebase`) |
 | `dgov pane land` | Review + merge + close in one step |
 | `dgov pane merge-all` | Merge all done panes sequentially |
 | `dgov pane land-all` | Review + merge + close all done panes sequentially |

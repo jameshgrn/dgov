@@ -13,9 +13,9 @@ logger = logging.getLogger(__name__)
 
 def get_task_routing_provider():
     """Return the active provider for route-task decisions."""
-    from dgov.decision_providers import OpenRouterRoutingProvider
+    from dgov.provider_registry import get_route_task_provider
 
-    return OpenRouterRoutingProvider()
+    return get_route_task_provider()
 
 
 def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str:

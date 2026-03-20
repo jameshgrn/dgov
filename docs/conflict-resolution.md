@@ -12,7 +12,7 @@ By default, dgov uses `git merge-tree` (a low-level "plumbing" command) to compu
 
 ## Resolution strategies
 
-Use the `--resolve` flag during `dgov pane merge` to specify how conflicts should be handled.
+Use the `--resolve` flag during `dgov pane land` to specify how conflicts should be handled.
 
 | Strategy | Flag | Description |
 |----------|------|-------------|

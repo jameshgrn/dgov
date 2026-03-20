@@ -27,7 +27,7 @@ dgov uses SQLite in WAL mode, but if multiple processes are stuck, you can safel
 If you manually delete worktrees or tmux panes, `dgov pane list` might show stale entries. Run `dgov pane prune` to cleanup the database and `dgov preflight --fix` to prune git worktrees.
 
 **Merge conflicts**
-dgov tries to auto-resolve conflicts with an agent. If this fails, use `dgov pane merge --resolve manual` and resolve them in your editor.
+dgov tries to auto-resolve conflicts with an agent. If this fails, use `dgov pane land --resolve manual` and resolve them in your editor.
 
 **Protected files clobbered**
 Workers (like `claude`) often overwrite `CLAUDE.md`. This is expected. dgov's `pre_merge` step automatically restores these files before the merge happens.

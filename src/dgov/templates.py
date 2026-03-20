@@ -106,7 +106,6 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "## Rules\n"
             "- NEVER push to remote\n"
             "- NEVER edit files directly\n"
-            "- NEVER run dgov pane merge directly — use dgov pane merge-request\n"
             "- If a worker fails twice on the same task, escalate to claude\n"
             "- If you hit a structural problem, write to .dgov/progress/{ltgov_slug}.json:\n"
             '  {{"status": "escalation", "reason": "..."}}\n'
