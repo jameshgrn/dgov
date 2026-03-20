@@ -919,11 +919,10 @@ def _full_cleanup(
             )
             if pid_str.strip():
                 terminate_result = _terminate_pane_process_tree(int(pid_str.strip()))
-                if not terminate_result.get("terminated"):
-                    still = terminate_result.get("still_running", [])
+                still = terminate_result.get("still_running", [])
+                if not terminate_result.get("terminated") and still:
                     logger.warning(
-                        "Pane %s: %d process(es) did not exit after SIGTERM; "
-                        "continuing with cleanup.",
+                        "Pane %s: %d process(es) survived termination; continuing with cleanup.",
                         slug,
                         len(still),
                     )

@@ -447,6 +447,55 @@ class TestFullCleanup:
         mock_terminate.assert_called_once_with(123)
         mock_backend.destroy.assert_called_once_with("%42")
 
+    def test_full_cleanup_warns_with_actual_survivor_count(
+        self, tmp_path: Path, mock_backend: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from dgov.lifecycle import _full_cleanup
+
+        sr = str(tmp_path)
+        _add_pane(tmp_path, "warn-pane", pane_id="%42")
+
+        pane = get_pane(sr, "warn-pane")
+        assert pane is not None
+
+        with (
+            patch("dgov.tmux._run", return_value="123"),
+            patch(
+                "dgov.lifecycle._terminate_pane_process_tree",
+                return_value={"terminated": False, "still_running": [111, 222]},
+            ),
+            patch("dgov.lifecycle.subprocess.run"),
+            caplog.at_level("WARNING"),
+        ):
+            _full_cleanup(sr, sr, "warn-pane", pane)
+
+        assert "2 process(es) survived termination" in caplog.text
+        assert "SIGTERM" not in caplog.text
+
+    def test_full_cleanup_skips_warning_when_no_survivors(
+        self, tmp_path: Path, mock_backend: MagicMock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from dgov.lifecycle import _full_cleanup
+
+        sr = str(tmp_path)
+        _add_pane(tmp_path, "quiet-pane", pane_id="%42")
+
+        pane = get_pane(sr, "quiet-pane")
+        assert pane is not None
+
+        with (
+            patch("dgov.tmux._run", return_value="123"),
+            patch(
+                "dgov.lifecycle._terminate_pane_process_tree",
+                return_value={"terminated": False, "still_running": []},
+            ),
+            patch("dgov.lifecycle.subprocess.run"),
+            caplog.at_level("WARNING"),
+        ):
+            _full_cleanup(sr, sr, "quiet-pane", pane)
+
+        assert "survived termination" not in caplog.text
+
     def test_removes_worktree_and_branch(self, tmp_path: Path) -> None:
         from dgov.lifecycle import _full_cleanup
 
