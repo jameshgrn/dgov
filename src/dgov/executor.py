@@ -1454,12 +1454,15 @@ def _dag_wait_any(
     task_timeouts: dict[str, int],
     poll_interval: float,
 ) -> object:
-    """Poll active panes round-robin until one completes. Returns TaskWaitDone."""
+    """Poll active panes round-robin until one completes. Returns TaskWaitDone.
+
+    Uses the unified WorkerObservation to check completion — same model
+    the monitor uses for classification.
+    """
     import time
 
-    from dgov.done import _is_done
-    from dgov.kernel import TaskWaitDone
-    from dgov.persistence import get_pane
+    from dgov.kernel import TaskWaitDone, WorkerPhase
+    from dgov.monitor import observe_worker
 
     start = time.monotonic()
     max_timeout = max(task_timeouts.get(s, 600) for s in task_slugs)
@@ -1470,32 +1473,13 @@ def _dag_wait_any(
             if not pane_slug:
                 continue
 
-            if task_slug not in stable_states:
-                stable_states[task_slug] = {}
-
-            pane_record = get_pane(session_root, pane_slug)
-            pane_state = pane_record.get("state", "") if pane_record else ""
-
-            # Already terminal?
-            if pane_state in ("done", "failed", "timed_out", "abandoned"):
+            obs = observe_worker(project_root, session_root, pane_slug)
+            if obs.phase in (WorkerPhase.DONE, WorkerPhase.FAILED):
+                pane_state = "done" if obs.phase == WorkerPhase.DONE else "failed"
                 return TaskWaitDone(task_slug, pane_slug, pane_state)
 
-            # Check via _is_done (non-blocking single poll)
-            done = _is_done(
-                session_root,
-                pane_slug,
-                pane_record=pane_record,
-                _stable_state=stable_states[task_slug],
-            )
-            if done:
-                pane_record = get_pane(session_root, pane_slug)
-                pane_state = pane_record.get("state", "") if pane_record else "done"
-                return TaskWaitDone(task_slug, pane_slug, pane_state)
-
-        # Timeout check
         elapsed = time.monotonic() - start
         if elapsed > max_timeout:
-            # Return the longest-waiting task as timed out
             return TaskWaitDone(task_slugs[0], pane_map.get(task_slugs[0], ""), "timed_out")
 
         time.sleep(poll_interval)

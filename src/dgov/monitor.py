@@ -18,6 +18,7 @@ from dgov.backend import get_backend
 from dgov.decision import MonitorOutputRequest, ProviderError
 from dgov.done import _has_new_commits
 from dgov.executor import EscalateResult, RetryResult
+from dgov.kernel import WorkerObservation, WorkerPhase
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.persistence import (
     STATE_DIR,
@@ -279,6 +280,82 @@ def poll_workers(
         )
 
     return results
+
+
+def observe_worker(
+    project_root: str,
+    session_root: str,
+    slug: str,
+    *,
+    hooks: list[MonitorHook] | None = None,
+) -> WorkerObservation:
+    """Produce a unified WorkerObservation for a single pane.
+
+    Combines structural signals (done file, exit code, commits, liveness)
+    with behavioral classification (output analysis).
+    """
+
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return WorkerObservation(slug=slug, phase=WorkerPhase.UNKNOWN, alive=False)
+
+    pane_state = pane.get("state", "")
+    pane_id = pane.get("pane_id", "")
+    alive = get_backend().is_alive(pane_id) if pane_id else False
+    branch = pane.get("branch_name", "")
+    base_sha = pane.get("base_sha", "")
+    has_commits = (
+        _has_new_commits(project_root, branch, base_sha) if branch and base_sha else False
+    )
+
+    done_path = Path(session_root, STATE_DIR, "done", slug)
+    exit_path = Path(session_root, STATE_DIR, "done", slug + ".exit")
+    has_done = done_path.exists()
+    has_exit = exit_path.exists()
+    exit_code = None
+    if has_exit:
+        try:
+            exit_code = int(exit_path.read_text().strip())
+        except (ValueError, OSError):
+            exit_code = -1
+
+    # Structural phase (from signals)
+    if pane_state in ("done", "merged"):
+        phase = WorkerPhase.DONE
+    elif pane_state == "failed":
+        phase = WorkerPhase.FAILED
+    elif has_done and has_commits:
+        phase = WorkerPhase.DONE
+    elif has_exit and exit_code == 0 and has_commits:
+        phase = WorkerPhase.DONE
+    elif has_exit:
+        phase = WorkerPhase.FAILED
+    elif not alive:
+        phase = WorkerPhase.DONE if has_commits else WorkerPhase.FAILED
+    else:
+        # Alive, no terminal signal — classify output
+        output = tail_worker_log(session_root, slug, lines=50)
+        if output:
+            result = classify_output(output, hooks, session_root=session_root)
+            classification = result if isinstance(result, str) else result[0]
+        else:
+            classification = "idle"
+        phase = (
+            WorkerPhase(classification)
+            if classification in WorkerPhase.__members__.values()
+            else WorkerPhase.UNKNOWN
+        )
+
+    return WorkerObservation(
+        slug=slug,
+        phase=phase,
+        alive=alive,
+        has_commits=has_commits,
+        has_done_signal=has_done,
+        has_exit_signal=has_exit,
+        exit_code=exit_code,
+        classification=phase.value,
+    )
 
 
 def _bootstrap_monitor_state(

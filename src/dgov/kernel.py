@@ -501,6 +501,48 @@ class DagKernel:
 # -- Utilities --
 
 
+# ---------------------------------------------------------------------------
+# Unified worker observation — shared vocabulary for completion + classification
+# ---------------------------------------------------------------------------
+
+
+class WorkerPhase(StrEnum):
+    """What the worker is doing right now.
+
+    Produced by both completion detection (_is_done) and output
+    classification (classify_output). This is the shared vocabulary.
+    """
+
+    WORKING = "working"
+    COMMITTING = "committing"
+    DONE = "done"
+    FAILED = "failed"
+    STUCK = "stuck"
+    IDLE = "idle"
+    WAITING_INPUT = "waiting_input"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class WorkerObservation:
+    """Unified observation of a worker's state.
+
+    Combines structural signals (done file, exit code, commits, liveness)
+    with behavioral classification (output analysis). This is the single
+    source of truth for "what state is this worker in?"
+    """
+
+    slug: str
+    phase: WorkerPhase
+    alive: bool = True
+    has_commits: bool = False
+    has_done_signal: bool = False
+    has_exit_signal: bool = False
+    exit_code: int | None = None
+    classification: str = "unknown"
+    reason: str | None = None
+
+
 def _topo_sort(deps: dict[str, tuple[str, ...]]) -> list[str]:
     """Stable topological sort for merge ordering."""
     visited: set[str] = set()
