@@ -11,6 +11,7 @@ import click
 
 from dgov.cli import SESSION_ROOT_OPTION
 from dgov.context_packet import build_context_packet
+from dgov.executor import run_wait_all
 
 
 def _autocorrect_roots(
@@ -35,6 +36,38 @@ def _declared_touches(task: dict) -> list[str]:
     return list(touches) if isinstance(touches, list | tuple) else []
 
 
+def _review_summary(review: dict, slug: str) -> dict[str, str | int]:
+    return {
+        "review": review.get("verdict", "unknown"),
+        "commits": review.get("commit_count", 0),
+        "slug": slug,
+    }
+
+
+def _finalize_slugs(
+    project_root: str,
+    session_root: str | None,
+    slugs: list[str],
+    *,
+    resolve: str,
+    squash: bool,
+    rebase: bool,
+    land: bool,
+) -> list:
+    """Run the canonical post-dispatch pipeline for a set of slugs."""
+    from dgov.executor import run_finalize_panes
+
+    return run_finalize_panes(
+        project_root,
+        slugs,
+        session_root=session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
+        close=land,
+    )
+
+
 def _process_done_panes(
     project_root: str,
     session_root: str | None,
@@ -44,7 +77,6 @@ def _process_done_panes(
     rebase: bool,
     land: bool,
 ) -> tuple[list[str], list[str], int, list[str], list[dict]]:
-    from dgov.executor import run_land_only, run_review_merge
     from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
@@ -57,52 +89,41 @@ def _process_done_panes(
     warnings: list[str] = []
     review_lines: list[dict] = []
     total_files = 0
+    slugs = [pane["slug"] for pane in done_panes]
 
-    for pane in done_panes:
-        slug = pane["slug"]
-        result = (
-            run_land_only(
-                project_root,
-                slug,
-                session_root=session_root,
-                resolve=resolve,
-                squash=squash,
-                rebase=rebase,
-            )
-            if land
-            else run_review_merge(
-                project_root,
-                slug,
-                session_root=session_root,
-                resolve=resolve,
-                squash=squash,
-                rebase=rebase,
-            )
-        )
-        review = result.review
-        review_lines.append(
-            {
-                "review": review.get("verdict", "unknown"),
-                "commits": review.get("commit_count", 0),
-                "slug": slug,
-            }
-        )
+    results = _finalize_slugs(
+        project_root,
+        session_root,
+        slugs,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
+        land=land,
+    )
+
+    for pane, result in zip(done_panes, results):
+        final_slug = result.slug
+        review_lines.append(_review_summary(result.review or {}, final_slug))
         if result.error:
-            failed.append(slug)
-            warnings.append(f"{slug}: {result.error.lower()}")
+            failed.append(final_slug)
+            warnings.append(f"{final_slug}: {result.error.lower()}")
+            continue
+        if result.cleanup_error:
+            failed.append(final_slug)
+            warnings.append(f"{final_slug}: {result.cleanup_error.lower()}")
             continue
 
         merge_result = result.merge_result or {}
         if merge_result.get("merged"):
-            succeeded.append(slug)
+            succeeded.append(final_slug)
             total_files += merge_result.get("files_changed", 0)
             if merge_result.get("warning"):
-                warnings.append(f"{slug}: {merge_result['warning']}")
+                warnings.append(f"{final_slug}: {merge_result['warning']}")
             continue
 
-        failed.append(slug)
-        err = result.error or merge_result.get("hint", "unknown")
-        warnings.append(f"{slug}: {str(err).lower()}")
+        failed.append(final_slug)
+        err = merge_result.get("hint", "unknown")
+        warnings.append(f"{final_slug}: {str(err).lower()}")
 
     return succeeded, failed, total_files, warnings, review_lines
 
@@ -564,30 +585,34 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close a worker pane in one step."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.executor import run_land_only
-
     if rebase and not squash:
         click.echo("Cannot use --rebase with --no-squash", err=True)
         sys.exit(1)
 
-    result = run_land_only(
+    results = _finalize_slugs(
         project_root,
-        slug,
-        session_root=session_root,
+        session_root,
+        [slug],
         resolve=resolve,
         squash=squash,
         rebase=rebase,
+        land=True,
     )
-    review = result.review
-    verdict = review.get("verdict", "unknown")
-    commit_count = review.get("commit_count", 0)
-    click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
-
-    if result.error:
-        click.echo(json.dumps({"error": result.error}), err=True)
+    if not results:
+        click.echo(json.dumps({"error": f"Pane not found: {slug}"}), err=True)
         sys.exit(1)
 
-    click.echo(json.dumps(result.merge_result, indent=2))
+    final = results[0]
+    click.echo(json.dumps(_review_summary(final.review or {}, slug)))
+
+    if final.error:
+        click.echo(json.dumps({"error": final.error}), err=True)
+        sys.exit(1)
+    if final.cleanup_error:
+        click.echo(json.dumps({"error": final.cleanup_error}), err=True)
+        sys.exit(1)
+
+    click.echo(json.dumps(final.merge_result, indent=2))
 
 
 @pane.command("wait")
@@ -673,7 +698,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.status import list_worker_panes
-    from dgov.waiter import PaneTimeoutError, wait_all_worker_panes
+    from dgov.waiter import PaneTimeoutError
 
     session_root_abs = os.path.abspath(session_root or project_root)
     panes = list_worker_panes(project_root, session_root=session_root_abs)
@@ -684,7 +709,7 @@ def pane_wait_all(project_root, session_root, timeout, poll, stable):
 
     try:
         count = 0
-        for result in wait_all_worker_panes(
+        for result in run_wait_all(
             project_root,
             session_root=session_root,
             timeout=timeout,
