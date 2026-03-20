@@ -1,8 +1,12 @@
-"""Deterministic kernel primitives for the single-pane lifecycle."""
+"""Deterministic kernel primitives for pane and DAG lifecycle.
+
+All kernel classes are pure state machines: (state, event) → (new_state, actions).
+No I/O, no blocking, no imports of executor/lifecycle/waiter at module level.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -138,3 +142,378 @@ class PostDispatchKernel:
 
             case _:
                 raise ValueError(f"Illegal kernel transition: state={self.state} event={event!r}")
+
+
+# ---------------------------------------------------------------------------
+# DAG Kernel — multi-pane orchestration with dependency tracking
+# ---------------------------------------------------------------------------
+
+
+class DagTaskState(StrEnum):
+    PENDING = "pending"
+    DISPATCHED = "dispatched"
+    WAITING = "waiting"
+    REVIEWING = "reviewing"
+    MERGE_READY = "merge_ready"
+    MERGING = "merging"
+    MERGED = "merged"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+_DAG_TERMINAL = frozenset({DagTaskState.MERGED, DagTaskState.FAILED, DagTaskState.SKIPPED})
+
+
+class DagState(StrEnum):
+    IDLE = "idle"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+
+# -- DAG Actions (kernel → runtime) --
+
+
+@dataclass(frozen=True)
+class DispatchTask:
+    task_slug: str
+
+
+@dataclass(frozen=True)
+class WaitForAny:
+    """Wait for any of these tasks' panes to complete."""
+
+    task_slugs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReviewTask:
+    task_slug: str
+    pane_slug: str
+
+
+@dataclass(frozen=True)
+class MergeTask:
+    task_slug: str
+    pane_slug: str
+
+
+@dataclass(frozen=True)
+class SkipTask:
+    task_slug: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class CloseTask:
+    task_slug: str
+    pane_slug: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class DagDone:
+    status: str
+    merged: tuple[str, ...]
+    failed: tuple[str, ...]
+    skipped: tuple[str, ...]
+
+
+DagAction = DispatchTask | WaitForAny | ReviewTask | MergeTask | SkipTask | CloseTask | DagDone
+
+
+# -- DAG Events (runtime → kernel) --
+
+
+@dataclass(frozen=True)
+class TaskDispatched:
+    task_slug: str
+    pane_slug: str
+
+
+@dataclass(frozen=True)
+class TaskDispatchFailed:
+    task_slug: str
+    error: str
+
+
+@dataclass(frozen=True)
+class TaskWaitDone:
+    task_slug: str
+    pane_slug: str
+    pane_state: str  # "done", "failed", "timed_out", etc.
+
+
+@dataclass(frozen=True)
+class TaskReviewDone:
+    task_slug: str
+    passed: bool
+    verdict: str
+    commit_count: int
+
+
+@dataclass(frozen=True)
+class TaskMergeDone:
+    task_slug: str
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskClosed:
+    task_slug: str
+
+
+DagEvent = (
+    TaskDispatched
+    | TaskDispatchFailed
+    | TaskWaitDone
+    | TaskReviewDone
+    | TaskMergeDone
+    | TaskClosed
+)
+
+
+@dataclass
+class DagKernel:
+    """Pure state machine for multi-pane DAG orchestration.
+
+    The kernel tracks per-task state and the dependency graph. It emits
+    actions for the runtime to execute and consumes events reporting
+    outcomes. The execution graph (parallel dispatch by readiness) is
+    separate from the merge graph (serial integration in topo order).
+
+    Usage::
+
+        kernel = DagKernel(deps={"b": ("a",), "c": ("a",), "a": ()}, max_concurrent=2)
+        actions = kernel.start()
+        while not kernel.done:
+            for action in actions:
+                event = runtime.execute(action)
+                actions = kernel.handle(event)
+    """
+
+    deps: dict[str, tuple[str, ...]]
+    auto_merge: bool = True
+    max_concurrent: int = 0  # 0 = unlimited
+
+    # -- internal state --
+    state: DagState = DagState.IDLE
+    task_states: dict[str, DagTaskState] = field(default_factory=dict)  # noqa: RUF009
+    pane_slugs: dict[str, str] = field(default_factory=dict)  # noqa: RUF009
+    merge_order: tuple[str, ...] = ()
+    _merge_cursor: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.task_states:
+            self.task_states = {slug: DagTaskState.PENDING for slug in self.deps}
+        if not self.merge_order:
+            self.merge_order = tuple(_topo_sort(self.deps))
+
+    @property
+    def done(self) -> bool:
+        return self.state in (DagState.COMPLETED, DagState.FAILED, DagState.PARTIAL)
+
+    # -- public interface --
+
+    def start(self) -> list[DagAction]:
+        if self.state != DagState.IDLE:
+            raise ValueError(f"DagKernel already started in state {self.state}")
+        self.state = DagState.RUNNING
+        return self._schedule()
+
+    def handle(self, event: DagEvent) -> list[DagAction]:
+        actions: list[DagAction] = []
+
+        if isinstance(event, TaskDispatched):
+            self.task_states[event.task_slug] = DagTaskState.WAITING
+            self.pane_slugs[event.task_slug] = event.pane_slug
+            # After dispatch confirmed, check if we should wait
+            actions.extend(self._maybe_wait())
+            return actions
+
+        if isinstance(event, TaskDispatchFailed):
+            self.task_states[event.task_slug] = DagTaskState.FAILED
+            actions.extend(self._skip_dependents(event.task_slug))
+            actions.extend(self._schedule())
+            actions.extend(self._check_done())
+            return actions
+
+        if isinstance(event, TaskWaitDone):
+            task = event.task_slug
+            if event.pane_state in ("done", "reviewed_pass", "merged"):
+                self.task_states[task] = DagTaskState.REVIEWING
+                actions.append(ReviewTask(task, event.pane_slug))
+            else:
+                self.task_states[task] = DagTaskState.FAILED
+                actions.extend(self._skip_dependents(task))
+                actions.append(CloseTask(task, event.pane_slug, reason="worker_failed"))
+                actions.extend(self._schedule())
+                actions.extend(self._check_done())
+            return actions
+
+        if isinstance(event, TaskReviewDone):
+            task = event.task_slug
+            if event.passed and event.commit_count > 0:
+                self.task_states[task] = DagTaskState.MERGE_READY
+                if self.auto_merge:
+                    actions.extend(self._try_merge())
+                actions.extend(self._schedule())
+                actions.extend(self._check_done())
+            else:
+                self.task_states[task] = DagTaskState.FAILED
+                actions.extend(self._skip_dependents(task))
+                pane = self.pane_slugs.get(task, "")
+                if pane:
+                    actions.append(CloseTask(task, pane, reason="review_failed"))
+                actions.extend(self._schedule())
+                actions.extend(self._check_done())
+            return actions
+
+        if isinstance(event, TaskMergeDone):
+            task = event.task_slug
+            if event.error:
+                self.task_states[task] = DagTaskState.FAILED
+                actions.extend(self._skip_dependents(task))
+                pane = self.pane_slugs.get(task, "")
+                if pane:
+                    actions.append(CloseTask(task, pane, reason="merge_failed"))
+            else:
+                self.task_states[task] = DagTaskState.MERGED
+                self._merge_cursor += 1
+                pane = self.pane_slugs.get(task, "")
+                if pane:
+                    actions.append(CloseTask(task, pane, reason="merged"))
+                # Merged task may unblock dependents
+                actions.extend(self._schedule())
+                # Try merging next in topo order
+                actions.extend(self._try_merge())
+            actions.extend(self._check_done())
+            return actions
+
+        if isinstance(event, TaskClosed):
+            actions.extend(self._check_done())
+            return actions
+
+        raise ValueError(f"Unknown DagEvent: {event!r}")
+
+    # -- internal scheduling --
+
+    def _deps_met(self, slug: str) -> bool:
+        for dep in self.deps.get(slug, ()):
+            if self.task_states.get(dep) != DagTaskState.MERGED:
+                return False
+        return True
+
+    def _active_count(self) -> int:
+        active = {DagTaskState.DISPATCHED, DagTaskState.WAITING, DagTaskState.REVIEWING}
+        return sum(1 for s in self.task_states.values() if s in active)
+
+    def _schedule(self) -> list[DagAction]:
+        """Emit DispatchTask for ready tasks within concurrency limit."""
+        actions: list[DagAction] = []
+        active = self._active_count()
+        for slug in self.merge_order:
+            if self.task_states[slug] != DagTaskState.PENDING:
+                continue
+            if not self._deps_met(slug):
+                continue
+            if self.max_concurrent > 0 and active >= self.max_concurrent:
+                break
+            self.task_states[slug] = DagTaskState.DISPATCHED
+            actions.append(DispatchTask(slug))
+            active += 1
+        return actions
+
+    def _maybe_wait(self) -> list[DagAction]:
+        """Emit WaitForAny if there are waiting tasks."""
+        waiting = [
+            slug for slug, state in self.task_states.items() if state == DagTaskState.WAITING
+        ]
+        if waiting:
+            return [WaitForAny(tuple(waiting))]
+        return []
+
+    def _try_merge(self) -> list[DagAction]:
+        """Merge next task in topo order if it's merge-ready."""
+        actions: list[DagAction] = []
+        while self._merge_cursor < len(self.merge_order):
+            slug = self.merge_order[self._merge_cursor]
+            state = self.task_states[slug]
+            if state == DagTaskState.MERGE_READY:
+                self.task_states[slug] = DagTaskState.MERGING
+                pane = self.pane_slugs.get(slug, "")
+                actions.append(MergeTask(slug, pane))
+                break
+            if state in _DAG_TERMINAL:
+                # Skip past already-terminal tasks in merge order
+                self._merge_cursor += 1
+                continue
+            # Not yet ready to merge — wait
+            break
+        return actions
+
+    def _skip_dependents(self, failed_slug: str) -> list[DagAction]:
+        """Skip all tasks that transitively depend on the failed task."""
+        actions: list[DagAction] = []
+        failed = {
+            s
+            for s, st in self.task_states.items()
+            if st in (DagTaskState.FAILED, DagTaskState.SKIPPED)
+        }
+        failed.add(failed_slug)
+        changed = True
+        while changed:
+            changed = False
+            for slug, deps in self.deps.items():
+                if self.task_states[slug] in _DAG_TERMINAL:
+                    continue
+                if self.task_states[slug] != DagTaskState.PENDING:
+                    continue
+                if any(d in failed for d in deps):
+                    self.task_states[slug] = DagTaskState.SKIPPED
+                    failed.add(slug)
+                    actions.append(SkipTask(slug, reason=f"dependency {failed_slug} failed"))
+                    changed = True
+        return actions
+
+    def _check_done(self) -> list[DagAction]:
+        """Check if the DAG is complete and emit DagDone if so."""
+        if self.state != DagState.RUNNING:
+            return []
+
+        non_terminal = [s for s, st in self.task_states.items() if st not in _DAG_TERMINAL]
+        if non_terminal:
+            return []
+
+        merged = tuple(s for s, st in self.task_states.items() if st == DagTaskState.MERGED)
+        failed = tuple(s for s, st in self.task_states.items() if st == DagTaskState.FAILED)
+        skipped = tuple(s for s, st in self.task_states.items() if st == DagTaskState.SKIPPED)
+
+        if failed or skipped:
+            self.state = DagState.PARTIAL if merged else DagState.FAILED
+        else:
+            self.state = DagState.COMPLETED
+
+        return [DagDone(status=self.state, merged=merged, failed=failed, skipped=skipped)]
+
+
+# -- Utilities --
+
+
+def _topo_sort(deps: dict[str, tuple[str, ...]]) -> list[str]:
+    """Stable topological sort for merge ordering."""
+    visited: set[str] = set()
+    order: list[str] = []
+
+    def _visit(node: str) -> None:
+        if node in visited:
+            return
+        visited.add(node)
+        for dep in sorted(deps.get(node, ())):
+            _visit(dep)
+        order.append(node)
+
+    for slug in sorted(deps):
+        _visit(slug)
+    return order
