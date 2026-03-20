@@ -84,6 +84,9 @@ class DashboardState:
     preview_lines: list[str] = field(default_factory=list)
     preview_visible: bool = False
     monitor_alive: bool = False
+    # Done notification tracking
+    recent_done_slugs: list[str] = field(default_factory=list)
+    done_bell_rung: bool = False
 
 
 def _get_branch(project_root: str) -> str:
@@ -172,6 +175,16 @@ def fetch_panes(state: DashboardState) -> None:
 
         events = read_events(session_root, limit=12)
 
+        # Track new pane_done events for notifications
+        new_done_slugs: list[str] = []
+        with state.lock:
+            known_slugs = set(state.recent_done_slugs)
+        for ev in events:
+            if ev.get("event") == "pane_done":
+                slug = ev.get("pane", "")
+                if slug and slug not in known_slugs:
+                    new_done_slugs.append(slug)
+
         # Capture preview lines for the selected pane
         preview: list[str] = []
         with state.lock:
@@ -193,6 +206,12 @@ def fetch_panes(state: DashboardState) -> None:
             # Add monitor health info to state for header
             m_ts = monitor_status.get("timestamp", 0)
             state.monitor_alive = (time.time() - m_ts < 45) if m_ts else False
+            # Update done notification tracking
+            if new_done_slugs:
+                # Keep only recent slugs (last 5)
+                state.recent_done_slugs = (new_done_slugs + state.recent_done_slugs)[:5]
+                # Reset bell flag so we ring for this new batch
+                state.done_bell_rung = False
 
     except Exception as exc:
         with state.lock:
@@ -372,6 +391,28 @@ def _build_layout(
     mon_color = "green" if monitor_alive else "red"
     header_text.append(" \u2502 ", style="dim")
     header_text.append("\u25cf", style=mon_color)
+
+    # Show done notification banner
+    with state.lock:
+        done_slugs = list(state.recent_done_slugs)
+        bell_rung = state.done_bell_rung
+
+    if done_slugs:
+        header_text.append(" \u2502 ", style="dim")
+        # Show up to 3 slugs in the banner
+        display_slugs = done_slugs[:3]
+        slug_str = ", ".join(display_slugs)
+        more = f" (+{len(done_slugs) - len(display_slugs)})" if len(done_slugs) > len(display_slugs) else ""
+        header_text.append(f"\u2713 {slug_str}{more}", style="bold green")
+        # Ring bell once per batch of new done events
+        if not bell_rung and not error:
+            try:
+                sys.stdout.write("\x07")
+                sys.stdout.flush()
+            except Exception:
+                pass
+            with state.lock:
+                state.done_bell_rung = True
 
     if error:
         header_text.append(f"  err: {error}", style="red")
