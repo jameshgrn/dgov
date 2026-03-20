@@ -980,7 +980,7 @@ def test_merge_worker_pane_falls_back_when_rebase_fails(
 def test_rebase_skips_attached_worktree_branch(tmp_path: Path) -> None:
     """Rebase on attached worktree branch returns success (no fake failure)."""
     repo = _init_repo(tmp_path, "attached-rebase")
-    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "rev-parse", "HEAD").stdout.strip()
 
     # Add a commit on main after the branch is created
     (repo / "other.py").write_text("main change\n")
@@ -1025,3 +1025,158 @@ def test_rebase_onto_head_skips_attached_worktree(tmp_path: Path) -> None:
     # This should return success, not failure (attached branch = no rebase needed)
     result = _rebase_onto_head(str(repo), "dgov-attached-head")
     assert result.success is True
+
+
+def test_merge_worker_pane_fails_when_post_merge_tests_fail(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """Post-merge test failure blocks merge completion and preserves artifacts."""
+    repo = _init_repo(tmp_path, "post-test-fail")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-post-test")
+
+    (worktree / "worker.py").write_text("def worker():\n    return 1\n")
+    _git(worktree, "add", "worker.py")
+    _git(worktree, "commit", "-m", "add worker module")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="post-test-fail",
+        branch_name="dgov-post-test",
+        base_sha=base_sha,
+    )
+
+    # Simulate post-merge test failure
+    fake_test_result = {"tests_ran": 5, "tests_failed": 2, "tests_passed": False}
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane"),
+        patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": []}),
+        patch(
+            "dgov.inspection._run_related_tests",
+            return_value=fake_test_result,
+        ),
+    ):
+        result = merge_worker_pane(str(repo), "post-test-fail", session_root=str(repo))
+
+    # Validation failed — should NOT be marked merged, worktree preserved
+    assert "error" in result
+    assert "validation_failed" in result
+    assert result["validation_failed"] is True
+    assert result["slug"] == "post-test-fail"
+    assert worktree.exists()
+    assert _git(repo, "rev-parse", "--verify", "dgov-post-test").returncode == 0
+    # Should NOT have updated pane state to merged
+    mock_update_state.assert_not_called()
+    # Should emit failure event
+    mock_emit_event.assert_any_call(
+        str(repo),
+        "pane_merge_failed",
+        "post-test-fail",
+        error="Post-merge tests failed: 2 failures in 5 tests ran",
+    )
+
+
+def test_lint_unfixable_issues_block_merge_completion(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """Lint unfixable issues block merge completion."""
+    repo = _init_repo(tmp_path, "lint-unfixable")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-lint-unfixable")
+
+    # Create file with unfixable lint issue (syntax error)
+    (worktree / "broken.py").write_text("def broken(\n")
+    _git(worktree, "add", "broken.py")
+    _git(worktree, "commit", "-m", "add broken module")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="lint-unfixable",
+        branch_name="dgov-lint-unfixable",
+        base_sha=base_sha,
+    )
+
+    fake_lint_result = {"lint_fixed": [], "lint_unfixable": ["broken.py"]}
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event"),
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane"),
+        patch(
+            "dgov.merger._lint_fix_merged_files",
+            return_value=fake_lint_result,
+        ),
+        patch("dgov.inspection._run_related_tests", return_value={}),
+    ):
+        result = merge_worker_pane(str(repo), "lint-unfixable", session_root=str(repo))
+
+    # Validation failed — should NOT be marked merged, worktree preserved
+    assert "error" in result
+    assert "validation_failed" in result
+    assert result["validation_failed"] is True
+    assert "unfixable issues" in result["error"]
+    assert worktree.exists()
+    mock_update_state.assert_not_called()
+
+
+def test_both_tests_and_lint_fail_show_first_error(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """When both tests and lint fail, first error is reported."""
+    repo = _init_repo(tmp_path, "both-fail")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-both-fail")
+
+    (worktree / "worker.py").write_text("def worker():\n    return 1\n")
+    _git(worktree, "add", "worker.py")
+    _git(worktree, "commit", "-m", "add worker module")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="both-fail",
+        branch_name="dgov-both-fail",
+        base_sha=base_sha,
+    )
+
+    fake_test_result = {"tests_ran": 3, "tests_failed": 1}
+    fake_lint_result = {"lint_fixed": [], "lint_unfixable": ["worker.py"]}
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state"),
+        patch("dgov.persistence.emit_event"),
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane"),
+        patch(
+            "dgov.merger._lint_fix_merged_files",
+            return_value=fake_lint_result,
+        ),
+        patch(
+            "dgov.inspection._run_related_tests",
+            return_value=fake_test_result,
+        ),
+    ):
+        result = merge_worker_pane(str(repo), "both-fail", session_root=str(repo))
+
+    # Test failure comes first in validation order
+    assert "error" in result
+    assert "tests failed" in result["error"]
