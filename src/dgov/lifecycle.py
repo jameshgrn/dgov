@@ -54,6 +54,82 @@ def _pane_lock(project_root: str):
         os.close(fd)
 
 
+def _overlay_dirty_claims_into_worktree(
+    project_root: str, worktree_path: str, packet: ContextPacket
+) -> None:
+    """Overlay tracked dirty files from governor repo into worktree.
+
+    When create_worker_pane creates a new owned worktree, tracked dirty files
+    from the governor repo are overlaid into that worktree before launch;
+    unrelated dirty files and untracked files are ignored; tracked deletions
+    are removed in the worktree.
+
+    Args:
+        project_root: Path to the governor git repo.
+        worktree_path: Path to the worker worktree where files should be overlaid.
+        packet: ContextPacket containing file_claims that specify which files
+                to overlay from the governor repo.
+    """
+    proj = Path(project_root)
+    wt = Path(worktree_path)
+
+    # Get list of tracked dirty files (modified or deleted but not committed)
+    dirty_result = subprocess.run(
+        ["git", "-C", str(proj), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    # Build set of files to overlay based on file_claims and git status
+    files_to_overlay: dict[str, str] = {}  # rel_path -> "modified" | "deleted"
+    lines = dirty_result.stdout.strip().splitlines() if dirty_result.stdout.strip() else []
+
+    for line in lines:
+        if not line:
+            continue
+        # Format: "XY filename" where X=index status, Y=work tree status
+        # Examples:
+        # " M file.py" - modified in working tree
+        # "M  file.py" - staged modification
+        # "D  file.py" - deleted (both index and wt)
+        # "AD file.py" - added then deleted
+        parts = line.split(maxsplit=1)
+        if len(parts) < 2:
+            continue
+        statuses, rel_path = parts[0], parts[1]
+
+        # Only consider files in file_claims
+        if packet.file_claims and rel_path not in packet.file_claims:
+            continue
+
+        is_deleted = "D" in statuses
+        files_to_overlay[rel_path] = "deleted" if is_deleted else "modified"
+
+    # Apply overlays to worktree
+    for rel_path, status in files_to_overlay.items():
+        src_file = proj / rel_path
+        dst_file = wt / rel_path
+
+        if status == "deleted":
+            # Remove tracked deletion from worktree
+            if dst_file.exists():
+                dst_file.unlink()
+                # Remove empty parent directories
+                parent = dst_file.parent
+                while parent != wt and parent.is_dir():
+                    try:
+                        parent.rmdir()
+                        parent = parent.parent
+                    except OSError:
+                        break
+        else:
+            # Overlay modified content from governor repo
+            if src_file.exists():
+                dst_file.parent.mkdir(parents=True, exist_ok=True)
+                dst_file.write_bytes(src_file.read_bytes())
+
+
 def ensure_dgov_gitignored(project_root: str) -> None:
     """Add .dgov/ to .gitignore if not already present."""
     gitignore = Path(project_root) / ".gitignore"
@@ -720,6 +796,9 @@ def create_worker_pane(
     )
     base_sha = base_sha_result.stdout.strip() if base_sha_result.returncode == 0 else ""
 
+    # Compute context packet early for overlay logic
+    packet_for_overlay = context_packet or build_context_packet(prompt)
+
     # From here on, side effects need cleanup on failure
     pane_id: str | None = None
     try:
@@ -737,6 +816,9 @@ def create_worker_pane(
                 _wt_venv = Path(worktree_path) / ".venv"
                 if _main_venv.is_dir() and not _wt_venv.exists():
                     _wt_venv.symlink_to(_main_venv)
+
+                # Overlay dirty tracked files from governor repo into the new worktree
+                _overlay_dirty_files(project_root, worktree_path, packet_for_overlay)
 
             # Re-resolve logical agent name -> physical backend after lock
             # River-first then OpenRouter fallback preserved by router order
@@ -844,7 +926,7 @@ def create_worker_pane(
                 base_sha=base_sha,
                 skip_auto_structure=skip_auto_structure,
                 role=role,
-                context_packet=context_packet,
+                context_packet=packet_for_overlay,
             )
 
             # 5. Build pane record and save to state
@@ -880,6 +962,83 @@ def create_worker_pane(
         if owns_worktree and Path(worktree_path).exists():
             _remove_worktree(project_root, worktree_path, branch_name)
         raise
+
+
+def _overlay_dirty_files(
+    project_root: str,
+    worktree_path: str,
+    context_packet: ContextPacket | None,
+) -> None:
+    """Overlay dirty tracked files from governor repo into a newly created worktree.
+
+    Only considers tracked dirty files (modifications and deletions), ignores
+    untracked ?? entries. Copies current file contents for modified files and
+    removes the file in worktree for tracked deletions. Scope is determined by
+    context_packet.file_claims when present, otherwise context_packet.edit_files.
+
+    No-op when owns_worktree=False or existing_worktree path provided.
+    """
+    from pathlib import Path
+
+    if not context_packet:
+        return
+
+    # Determine editable scope
+    edit_scope = (
+        context_packet.file_claims if context_packet.file_claims else context_packet.edit_files
+    )
+    if not edit_scope:
+        return
+
+    project_root = Path(project_root).resolve()
+    worktree_path = Path(worktree_path).resolve()
+
+    # Get dirty tracked files from governor repo: M (modified) and D (deleted)
+    result = subprocess.run(
+        ["git", "-C", str(project_root), "status", "--porcelain=v1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+
+        # Git porcelain format: XX YYY filename
+        # XX: status index, working tree; YYY: upstream (renamed)
+        status_prefix = line[:3]
+        working_status = status_prefix[1]
+        filepath = line[3:].strip()
+
+        if not filepath:
+            continue
+
+        # Only handle modifications (M) and deletions (D) in working tree
+        if working_status not in ("M", "D"):
+            continue
+
+        # Check if file overlaps the task's editable scope
+        matches_scope = any(
+            Path(filepath).resolve().is_relative_to(worktree_path / relpath.lstrip("./"))
+            or relpath.is_relative_to(Path(filepath).parent)
+            for relpath in edit_scope
+        )
+        if not matches_scope:
+            continue
+
+        worktree_file = worktree_path / filepath
+        project_file = project_root / filepath
+
+        if working_status == "D":
+            # Tracked deletion: remove file in worktree if it exists
+            if worktree_file.exists():
+                worktree_file.unlink()
+        else:
+            # Modified: copy current contents from governor repo
+            if project_file.exists():
+                worktree_file.parent.mkdir(parents=True, exist_ok=True)
+                worktree_file.write_bytes(project_file.read_bytes())
 
 
 def _full_cleanup(
