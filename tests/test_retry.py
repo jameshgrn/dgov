@@ -314,12 +314,13 @@ class TestWaitWithAutoRetry:
         # Second call: retried pane completes successfully.
         mock_is_done.side_effect = [True, True]
 
-        # wait_worker_pane only inspects the current pane record once per poll
-        # before consulting maybe_auto_retry, so the first record must already
-        # be terminal to trigger retry.
+        # wait_worker_pane calls get_pane twice per loop iteration: once at the
+        # top and once after _is_done returns True (to get the fresh state).
         mock_get_pane.side_effect = [
-            {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "failed"},
-            {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "done"},
+            {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "failed"},  # iter 1 top
+            {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "failed"},  # iter 1 re-read
+            {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "done"},  # iter 2 top
+            {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "done"},  # iter 2 re-read
         ]
 
         mock_maybe_retry.return_value = {
@@ -377,9 +378,13 @@ class TestWaitWithAutoRetry:
 
 class TestCLINoAutoRetry:
     @patch("dgov.status.list_worker_panes", return_value=[{"slug": "w1"}])
-    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.executor.run_wait_only")
     def test_no_auto_retry_passed(self, mock_wait, mock_list, runner: CliRunner) -> None:
-        mock_wait.return_value = {"done": "w1", "method": "signal_or_commit"}
+        from dgov.executor import WaitOnlyResult
+
+        mock_wait.return_value = WaitOnlyResult(
+            state="completed", slug="w1", wait_result={"done": "w1", "method": "signal_or_commit"}
+        )
 
         result = runner.invoke(
             cli,
@@ -393,14 +398,17 @@ class TestCLINoAutoRetry:
         )
 
     @patch("dgov.status.list_worker_panes", return_value=[{"slug": "w1"}])
-    @patch("dgov.waiter.wait_worker_pane")
+    @patch("dgov.executor.run_wait_only")
     def test_auto_retry_default_on(self, mock_wait, mock_list, runner: CliRunner) -> None:
-        mock_wait.return_value = {"done": "w1", "method": "signal_or_commit"}
+        from dgov.executor import WaitOnlyResult
+
+        mock_wait.return_value = WaitOnlyResult(
+            state="completed", slug="w1", wait_result={"done": "w1", "method": "signal_or_commit"}
+        )
 
         result = runner.invoke(cli, ["pane", "wait", "w1", "-r", "/fake"])
         assert result.exit_code == 0
         mock_wait.assert_called_once()
-        # auto_retry should default to True
         call_kwargs = mock_wait.call_args
         assert call_kwargs.kwargs.get("auto_retry") is True
 
