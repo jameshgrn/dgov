@@ -158,9 +158,7 @@ class TestHappyPath:
 
 @pytest.mark.unit
 class TestReviewPending:
-    def test_safe_review_without_auto_merge_returns_reviewed_pass(
-        self, monkeypatch, tmp_path
-    ):
+    def test_safe_review_without_auto_merge_returns_reviewed_pass(self, monkeypatch, tmp_path):
         mocks = _apply_patches(monkeypatch)
         policy = MissionPolicy(auto_merge=False)
 

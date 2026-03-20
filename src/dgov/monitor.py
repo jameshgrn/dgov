@@ -782,8 +782,8 @@ def run_monitor(
                 if state.queue_dirty:
                     queue_actions = _drain_dispatch_queue(project_root, session_root)
                     actions.extend(queue_actions)
-                    for action in queue_actions:
-                        state.active_slugs.add(action["slug"])
+                    for queue_action in queue_actions:
+                        state.active_slugs.add(queue_action["slug"])
                     state.queue_dirty = False
 
                 tracked_workers = _tracked_worker_records(

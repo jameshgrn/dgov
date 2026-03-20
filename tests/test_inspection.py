@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -627,64 +628,53 @@ class TestComputeStatsRecentFailures:
 class TestRunRelatedTestsTimeout:
     """Unit tests for _run_related_tests timeout handling and cleanup."""
 
-    def test_timeout_exception_propagates_currently(self, tmp_path):
-        """
-        Verify current behavior: subprocess.TimeoutExpired propagates without handling.
-
-        This documents the leak: when related tests exceed 120s, the exception
-        crashes review_worker_pane instead of returning timeout metadata.
-        """
+    def test_timeout_returns_failure_metadata(self, tmp_path):
         test_file = tmp_path / "tests" / "test_feature.py"
         test_file.parent.mkdir()
         test_file.write_text("# empty test")
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(
-                cmd=["uv", "run", "pytest"], timeout=120
-            )
+        proc = MagicMock()
+        proc.pid = 4321
+        proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd=["uv", "run", "pytest"], timeout=120
+        )
 
-            with pytest.raises(subprocess.TimeoutExpired):
-                _run_related_tests(str(tmp_path), ["src/dgov/feature.py"])
+        with (
+            patch("subprocess.Popen", return_value=proc),
+            patch("os.killpg") as mock_killpg,
+        ):
+            result = _run_related_tests(str(tmp_path), ["src/dgov/feature.py"])
 
-    def test_timeout_no_process_group_cleanup(self, tmp_path):
-        """
-        Verify current behavior: no attempt to terminate process group on timeout.
+        assert result["tests_ran"] == ["tests/test_feature.py"]
+        assert result["tests_passed"] is False
+        assert result["timed_out"] is True
+        assert "timed out" in result["test_output"].lower()
+        mock_killpg.assert_called_once()
+        proc.wait.assert_called_once_with(timeout=5)
 
-        The subprocess runs with default args (no start_new_session), so there's
-        no explicit cleanup of a spawned process group when TimeoutExpired fires.
-        """
+    def test_timeout_kills_process_group(self, tmp_path):
         test_file = tmp_path / "tests" / "test_feature.py"
         test_file.parent.mkdir()
         test_file.write_text("# empty test")
 
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired(
-                cmd=["uv", "run", "pytest"], timeout=120
-            )
+        proc = MagicMock()
+        proc.pid = 9876
+        proc.communicate.side_effect = subprocess.TimeoutExpired(
+            cmd=["uv", "run", "pytest"], timeout=120
+        )
 
-            # Call and verify exception propagates
-            with pytest.raises(subprocess.TimeoutExpired):
-                _run_related_tests(str(tmp_path), ["src/dgov/feature.py"])
+        with (
+            patch("subprocess.Popen", return_value=proc),
+            patch("os.killpg") as mock_killpg,
+        ):
+            _run_related_tests(str(tmp_path), ["src/dgov/feature.py"])
 
-            # Mock was called once for the subprocess.run
-            assert mock_run.call_count == 1
-            # Since we never reached return, no process cleanup occurs
-            # (the bug: no kill() call on a leaked process group)
+        mock_killpg.assert_called_once_with(9876, signal.SIGKILL)
 
     def test_timeout_path_should_return_failure_metadata(self, tmp_path):
         """
         Expected behavior: timeout should return failure metadata, not crash.
-
-        This test documents the desired behavior that review_worker_pane expects:
-        when tests timeout, _run_related_tests should return dict with:
-          - tests_ran: list of test file paths (relative to project_root)
-          - tests_passed: False (timeout is a failure)
-          - test_output: error message describing the timeout
-
-        Currently this path crashes due to unhandled TimeoutExpired.
         """
-        # This test would pass if _run_related_tests caught TimeoutExpired properly.
-        # As written, it fails with TimeoutExpired propagation, documenting the leak.
         test_file = tmp_path / "tests" / "test_feature.py"
         test_file.parent.mkdir()
         test_file.write_text("# empty test")
@@ -704,7 +694,6 @@ class TestRunRelatedTestsTimeout:
             "test_output": f"{expected_output}[-500:]",
         }
 
-        # Verify the structure of expected timeout result (metadata that should be returned)
         assert isinstance(expected_result["tests_ran"], list)
         assert expected_result["tests_ran"][0].startswith("tests/")
         assert expected_result["tests_passed"] is False
@@ -720,20 +709,18 @@ class TestRunRelatedTestsTimeout:
         test_file.parent.mkdir()
         test_file.write_text("# empty test")
 
-        # When test file exists, should discover and run it
-        with patch("subprocess.run") as mock_run:
-            mock_result = MagicMock()
-            mock_result.returncode = 0
-            mock_result.stdout = "2 passed"
-            mock_result.stderr = ""
-            mock_run.return_value = mock_result
+        proc = MagicMock()
+        proc.communicate.return_value = ("2 passed", "")
+        proc.returncode = 0
 
+        # When test file exists, should discover and run it
+        with patch("subprocess.Popen", return_value=proc) as mock_popen:
             result = _run_related_tests(str(tmp_path), ["src/dgov/feature.py"])
 
             assert result["tests_ran"] == ["tests/test_feature.py"]
             assert result["tests_passed"] is True
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]  # First positional arg (the command list)
+            mock_popen.assert_called_once()
+            call_args = mock_popen.call_args[0][0]
             assert "pytest" in call_args
             assert str(test_file) in call_args
 

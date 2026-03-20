@@ -236,14 +236,14 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
     snapshot_after = _process_snapshot() if snapshot else {}
 
     while time.time() < deadline:
-        still_alive = set()
+        still_alive_pids: set[int] = set()
         for pid in descendant_pids:
             try:
                 os.kill(pid, 0)
-                still_alive.add(pid)
+                still_alive_pids.add(pid)
             except OSError:
                 pass
-        if not still_alive:
+        if not still_alive_pids:
             return {"terminated": True, "still_running": []}
         # Re-resolve descendants since PIDs may have changed
         snapshot_after = _process_snapshot()
@@ -251,7 +251,7 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
         time.sleep(0.25)
 
     # Step 3-4: SIGTERM didn't kill everything — check for still-living descendants
-    still_alive = []
+    still_alive: list[int] = []
     for pid in descendant_pids:
         try:
             os.kill(pid, 0)

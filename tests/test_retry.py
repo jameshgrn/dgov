@@ -310,15 +310,15 @@ class TestWaitWithAutoRetry:
 
         session_root = str(tmp_path)
 
-        # First call: original pane is done (failed)
-        # Second call: retry pane is done (done)
+        # First call: original pane is already in failed state.
+        # Second call: retried pane completes successfully.
         mock_is_done.side_effect = [True, True]
 
-        # First get_pane: failed state; second: for retry check; third: retried pane done
+        # wait_worker_pane only inspects the current pane record once per poll
+        # before consulting maybe_auto_retry, so the first record must already
+        # be terminal to trigger retry.
         mock_get_pane.side_effect = [
-            {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "active"},
             {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "failed"},
-            {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "active"},
             {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "done"},
         ]
 

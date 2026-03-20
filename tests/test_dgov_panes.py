@@ -6,6 +6,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -1569,15 +1570,16 @@ class TestMergeWorkerPane:
     @patch("dgov.lifecycle._full_cleanup")
     @patch("dgov.merger._plumbing_merge")
     @patch("dgov.merger._restore_protected_files")
-    @patch("dgov.merger._commit_worktree", return_value={"committed": False})
+    @patch("dgov.merger._advance_current_branch_to_commit")
     @patch("dgov.merger.subprocess.run")
     def test_successful_merge(
-        self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
+        self, mock_run, mock_advance, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
         from dgov.inspection import MergeResult
         from dgov.merger import merge_worker_pane
 
         mock_merge.return_value = MergeResult(success=True)
+        mock_advance.return_value = MergeResult(success=True)
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
         pane = WorkerPane(
             slug="mergeable",
@@ -1598,16 +1600,17 @@ class TestMergeWorkerPane:
     @patch("dgov.lifecycle._full_cleanup")
     @patch("dgov.merger._plumbing_merge")
     @patch("dgov.merger._restore_protected_files")
-    @patch("dgov.merger._commit_worktree", return_value={"committed": False})
+    @patch("dgov.merger._advance_current_branch_to_commit")
     @patch("dgov.merger.subprocess.run")
     def test_successful_merge_ignores_stale_abandoned_state(
-        self, mock_run, mock_commit, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
+        self, mock_run, mock_advance, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
     ) -> None:
         from dgov.inspection import MergeResult
         from dgov.merger import merge_worker_pane
         from dgov.persistence import IllegalTransitionError
 
         mock_merge.return_value = MergeResult(success=True)
+        mock_advance.return_value = MergeResult(success=True)
         mock_run.return_value = Mock(returncode=0, stdout="", stderr="")
         pane = WorkerPane(
             slug="mergeable",
@@ -1935,9 +1938,18 @@ class TestEmitEvent:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._generate_slug", return_value="test-slug"),
+            patch("dgov.lifecycle._setup_and_launch_agent"),
             patch("dgov.lifecycle._write_worktree_instructions"),
         ):
-            mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
+
+            def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN201
+                if "--verify" in cmd:
+                    return Mock(returncode=128, stdout="", stderr="")
+                if cmd[-1] == "HEAD":
+                    return Mock(returncode=0, stdout="abc123\n", stderr="")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = fake_run
             create_worker_pane(
                 project_root=str(tmp_path),
                 prompt="Fix the thing",
@@ -1973,7 +1985,15 @@ class TestBlockTitleOverride:
             patch("dgov.lifecycle._generate_slug", return_value="title-test"),
             patch("dgov.lifecycle._write_worktree_instructions"),
         ):
-            mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
+
+            def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN201
+                if "--verify" in cmd:
+                    return Mock(returncode=128, stdout="", stderr="")
+                if cmd[-1] == "HEAD":
+                    return Mock(returncode=0, stdout="abc123\n", stderr="")
+                return Mock(returncode=0, stdout="", stderr="")
+
+            mock_run.side_effect = fake_run
             create_worker_pane(
                 project_root=str(tmp_path),
                 prompt="Test title block",
@@ -2922,6 +2942,7 @@ class TestStructurePiPrompt:
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle._generate_slug", return_value="pi-test"),
             patch("dgov.lifecycle.load_registry", return_value=pi_registry),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
             patch("dgov.lifecycle._write_worktree_instructions"),
         ):
 
@@ -2964,13 +2985,22 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
     with (
         patch("dgov.lifecycle.subprocess.run") as mock_run,
         patch("dgov.lifecycle._generate_slug", return_value="delay-test"),
+        patch("dgov.tmux.wait_for_shell_ready", return_value=True),
         patch(
             "dgov.lifecycle.time.sleep",
             side_effect=lambda seconds: events.append(("sleep", seconds)),
         ),
         patch("dgov.lifecycle._write_worktree_instructions"),
     ):
-        mock_run.return_value = Mock(returncode=0, stdout="abc123\n", stderr="")
+
+        def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN201
+            if "--verify" in cmd:
+                return Mock(returncode=128, stdout="", stderr="")
+            if cmd[-1] == "HEAD":
+                return Mock(returncode=0, stdout="abc123\n", stderr="")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
         create_worker_pane(
             project_root=str(tmp_path),
             prompt="Fix the thing",
@@ -3030,6 +3060,7 @@ class TestResumeWorkerPane:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle.load_registry", return_value=registry),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             result = resume_worker_pane(str(tmp_path), "fix-it", session_root=str(tmp_path))
@@ -3096,6 +3127,7 @@ class TestResumeWorkerPane:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle.load_registry", return_value=registry),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
             patch(
                 "dgov.lifecycle.time.sleep",
                 side_effect=lambda seconds: events.append(("sleep", seconds)),
@@ -3149,6 +3181,7 @@ class TestResumeWorkerPane:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle.load_registry", return_value=registry),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
         ):
             mock_run.return_value = MagicMock(returncode=0, stdout="abc\n", stderr="")
             result = resume_worker_pane(
@@ -3201,6 +3234,7 @@ class TestResumeWorkerPane:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle.load_registry", return_value=registry),
+            patch("dgov.tmux.wait_for_shell_ready", return_value=True),
             patch(
                 "dgov.lifecycle.build_launch_command", return_value="claude 'prompt'"
             ) as mock_blc,
@@ -3578,21 +3612,18 @@ class TestRunBatchLiveWait:
                 branch_name=kw["slug"],
             )
 
-        def fake_get_pane(sr, slug):
-            return {"slug": slug, "state": "done"}
-
-        def fake_is_done(sr, slug, pane_record=None, **_kw):
-            return True
-
         with (
             patch("dgov.lifecycle.create_worker_pane", side_effect=fake_create),
-            patch("dgov.persistence.get_pane", side_effect=fake_get_pane),
-            patch("dgov.waiter._is_done", side_effect=fake_is_done),
+            patch("dgov.preflight.run_preflight", return_value=SimpleNamespace(passed=True)),
             patch(
-                "dgov.merger.merge_worker_pane",
-                return_value={"merged": "t1", "branch": "t1"},
+                "dgov.executor.run_post_dispatch_lifecycle",
+                side_effect=lambda project_root, slug, **kwargs: SimpleNamespace(
+                    state="completed",
+                    slug=slug,
+                    merge_result={"merged": True, "slug": slug},
+                    failure_stage=None,
+                ),
             ),
-            patch("dgov.waiter.time.sleep"),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 

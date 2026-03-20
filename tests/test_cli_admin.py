@@ -182,7 +182,7 @@ class TestListAgentsCmd:
 
 class TestStatsCmd:
     def test_stats_outputs_json(self, runner: CliRunner, tmp_path: Path) -> None:
-        with patch("dgov.metrics.compute_stats", return_value={"total": 5}) as mock_stats:
+        with patch("dgov.inspection.compute_stats", return_value={"total": 5}) as mock_stats:
             result = runner.invoke(cli, ["stats", "-r", str(tmp_path)])
 
         assert result.exit_code == 0

@@ -33,7 +33,7 @@ class TestInit:
         assert config.is_file()
         content = config.read_text()
         assert 'governor_agent = "claude"' in content
-        assert 'governor_permissions = "acceptEdits"' in content
+        assert 'governor_permissions = "bypassPermissions"' in content
 
         assert (tmp_path / ".dgov" / "hooks").is_dir()
         assert (tmp_path / ".dgov" / "templates").is_dir()

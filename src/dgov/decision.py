@@ -7,7 +7,7 @@ import time
 from abc import ABC
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Callable, Generic, TypeVar, overload
+from typing import Callable, Generic, TypeVar, cast, overload
 
 
 class DecisionKind(StrEnum):
@@ -302,41 +302,42 @@ def _call_kind[TDecision](
     raise ProviderError(f"Unsupported decision request: {type(request).__name__}")
 
 
-def _run_with_timeout(
-    fn: Callable[[], DecisionRecord[DecisionPayload]],
+def _run_with_timeout[TDecision](
+    fn: Callable[[], DecisionRecord[TDecision]],
     timeout_s: float,
-) -> DecisionRecord[DecisionPayload]:
-    result: dict[str, object] = {}
+) -> DecisionRecord[TDecision]:
+    value: DecisionRecord[TDecision] | None = None
+    error: BaseException | None = None
 
     def _target() -> None:
+        nonlocal error, value
         try:
-            result["value"] = fn()
+            value = fn()
         except BaseException as exc:  # noqa: BLE001
-            result["error"] = exc
+            error = exc
 
     thread = threading.Thread(target=_target, daemon=True)
     thread.start()
     thread.join(timeout_s)
     if thread.is_alive():
         raise ProviderTimeoutError(f"Decision provider timed out after {timeout_s}s")
-    if "error" in result:
-        error = result["error"]
-        if isinstance(error, BaseException):
-            raise error
+    if error is not None:
+        raise error
+    if value is None:
         raise ProviderError("Decision provider failed without an exception")
-    return result["value"]  # type: ignore[return-value]
+    return value
 
 
 @dataclass
 class AuditProvider(DecisionProvider):
     """Wrapper that records every request/result boundary."""
 
+    provider_id: str = field(init=False)
     inner: DecisionProvider
     sink: Callable[[DecisionAuditEntry], None]
 
-    @property
-    def provider_id(self) -> str:
-        return f"audit:{self.inner.provider_id}"
+    def __post_init__(self) -> None:
+        self.provider_id = f"audit:{self.inner.provider_id}"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return self.inner.capabilities()
@@ -394,18 +395,21 @@ class AuditProvider(DecisionProvider):
 class TimeoutProvider(DecisionProvider):
     """Wrapper that bounds provider latency."""
 
+    provider_id: str = field(init=False)
     inner: DecisionProvider
     timeout_s: float
 
-    @property
-    def provider_id(self) -> str:
-        return f"timeout:{self.inner.provider_id}"
+    def __post_init__(self) -> None:
+        self.provider_id = f"timeout:{self.inner.provider_id}"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return self.inner.capabilities()
 
     def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
-        return _run_with_timeout(lambda: _call_kind(self.inner, request), self.timeout_s)
+        return cast(
+            DecisionRecord[DecisionPayload],
+            _run_with_timeout(lambda: _call_kind(self.inner, request), self.timeout_s),
+        )
 
     def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
         return self._call(request)  # type: ignore[return-value]
@@ -431,13 +435,13 @@ class TimeoutProvider(DecisionProvider):
 class ShadowProvider(DecisionProvider):
     """Wrapper that runs a shadow provider for comparison without affecting control."""
 
+    provider_id: str = field(init=False)
     primary: DecisionProvider
     shadow: DecisionProvider
     sink: Callable[[ShadowDecisionResult], None] | None = None
 
-    @property
-    def provider_id(self) -> str:
-        return f"shadow:{self.primary.provider_id}"
+    def __post_init__(self) -> None:
+        self.provider_id = f"shadow:{self.primary.provider_id}"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return self.primary.capabilities()

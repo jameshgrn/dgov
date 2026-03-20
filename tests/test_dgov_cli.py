@@ -99,6 +99,7 @@ class TestBareCli:
         monkeypatch.setenv("TMUX", "1")
 
         with (
+            patch("dgov.tmux.setup_governor_workspace"),
             patch("dgov.tmux.style_dgov_session") as mock_style_session,
             patch("dgov.tmux.style_governor_pane") as mock_style_governor,
             patch(

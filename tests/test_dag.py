@@ -501,6 +501,7 @@ class TestDispatchTask:
         assert packet.file_claims == ("a.py",)
         assert packet.commit_message == "c"
 
+
 class TestRunDag:
     """Tests for multi-tier orchestration."""
 

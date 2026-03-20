@@ -452,11 +452,12 @@ class TestRespondCLI:
     ) -> None:
         session_root = _setup_pane(tmp_path)
         mock_backend.is_alive.return_value = True
-        result = runner.invoke(
-            cli,
-            ["pane", "respond", "test-worker", "yes", "-S", session_root],
-        )
-        assert result.exit_code == 0
+        with patch("dgov.waiter._agent_still_running", return_value=True):
+            result = runner.invoke(
+                cli,
+                ["pane", "respond", "test-worker", "yes", "-S", session_root],
+            )
+        assert result.exit_code == 0, result.output
         data = json.loads(result.output)
         assert data["sent"] is True
         mock_backend.send_input.assert_called_once_with("%99", "yes")
