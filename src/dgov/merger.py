@@ -892,6 +892,12 @@ def merge_worker_pane(
             elif test_result.get("tests_failed", 0) > 0:
                 tests_failed = True
 
+        # Protected file damage = warning only, not hard failure
+        warning_msg: str | None = None
+        if damaged:
+            warning_msg = f"protected files changed: {', '.join(damaged)}"
+            logger.warning("Protected files changed after merge: %s", damaged)
+
         if tests_failed:
             validation_failed = True
             validation_error = (
@@ -907,10 +913,6 @@ def merge_worker_pane(
             validation_error = f"Post-merge lint found unfixable issues: {n_unfixable} files"
             logger.error("%s", validation_error)
 
-        # Protected file damage = warning only, not hard failure
-        if damaged:
-            logger.warning("Protected files changed after merge: %s", damaged)
-
         if validation_failed:
             # Validation failed — do NOT mark pane merged, do NOT clean up, preserve artifacts
             return {
@@ -920,7 +922,6 @@ def merge_worker_pane(
                 "validation_failed": True,
                 "test_result": test_result,
                 "lint_result": lint_result,
-                "damaged_files": damaged if damaged else None,
             }
 
         # All validations passed — proceed with merge completion
@@ -952,6 +953,8 @@ def merge_worker_pane(
             result.update(lint_result)
         if test_result:
             result.update(test_result)
+        if warning_msg:
+            result["warning"] = warning_msg
         return result
 
     # Plumbing merge failed — detect conflicts for resolution
