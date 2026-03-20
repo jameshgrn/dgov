@@ -44,6 +44,7 @@ def run_post_dispatch_lifecycle(*args, **kwargs):  # noqa: ANN002, ANN003, ANN20
     """Resolve lifecycle execution dynamically to preserve test patch points."""
     return _executor.run_post_dispatch_lifecycle(*args, **kwargs)
 
+
 _DAG_PROGRESS_EVENTS = (
     "dag_task_dispatched",
     "dag_task_completed",
