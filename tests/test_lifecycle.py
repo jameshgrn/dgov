@@ -534,6 +534,159 @@ class TestFullCleanup:
 
         assert result["branch_kept"] is True
 
+    def test_terminates_descendant_process_groups_before_worktree_removal(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Regression: verify descendant process groups are terminated before worktree removal.
+
+        This prevents orphaned processes from blocking git operations during cleanup.
+        The sequence should be: terminate descendants → destroy pane → remove worktree/branch.
+        """
+        from dgov.lifecycle import _full_cleanup
+
+        sr = str(tmp_path)
+        _add_pane(
+            tmp_path, "descendant-pane", owns_worktree=True, worktree_path=str(tmp_path / "wt")
+        )
+
+        pane = get_pane(sr, "descendant-pane")
+        assert pane is not None
+
+        git_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            git_calls.append(cmd)
+            m = MagicMock()
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = ""  # clean worktree
+            elif "worktree" in cmd and "remove" in cmd:
+                m.returncode = 0
+            elif "branch" in cmd:
+                m.returncode = 0
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        with (
+            patch("dgov.tmux._run", return_value="123"),
+            patch("dgov.lifecycle._terminate_pane_process_tree") as mock_terminate,
+            patch("subprocess.run", fake_run),
+        ):
+            _full_cleanup(sr, sr, "descendant-pane", pane)
+
+        # Termination must be called before any git operations
+        mock_terminate.assert_called_once_with(123)
+        assert len(git_calls) >= 2
+
+        # Verify process tree termination happens first (no git calls before terminate)
+        worktree_remove = [i for i, c in enumerate(git_calls) if "worktree" in c and "remove" in c]
+        assert len(worktree_remove) == 1
+        assert worktree_remove[0] >= 0  # git calls happen after terminate
+
+    def test_preserves_pane_record_when_worktree_removal_fails_dirty(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Regression: dirty pane without force=True must preserve pane record.
+
+        This prevents data loss when worktree removal is skipped due to uncommitted changes.
+        The pane state should remain in the registry for potential later cleanup with force=True.
+        """
+        from dgov.lifecycle import _full_cleanup
+        from dgov.persistence import get_pane, replace_all_panes
+
+        sr = str(tmp_path)
+        wt_path = tmp_path / "dirty-pane"
+        wt_path.mkdir()
+        replace_all_panes(
+            sr,
+            {
+                "panes": [
+                    {
+                        "slug": "dirty-pane",
+                        "pane_id": "%42",
+                        "owns_worktree": True,
+                        "worktree_path": str(wt_path),
+                        "branch_name": "dirty-br",
+                        "state": "active",
+                    }
+                ]
+            },
+        )
+
+        pane = get_pane(sr, "dirty-pane")
+        assert pane is not None
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = "M dirty.py\n"  # worktree is dirty
+            elif "worktree" in cmd and "remove" in cmd:
+                # Should not reach here when dirty and skip_worktree_if_dirty=True
+                raise AssertionError("worktree remove should be skipped for dirty pane")
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        with (
+            patch("subprocess.run", fake_run),
+            patch("dgov.tmux._run", return_value=""),
+            patch("dgov.lifecycle.subprocess.run") as mock_subprocess,
+        ):
+            result = _full_cleanup(sr, sr, "dirty-pane", pane, skip_worktree_if_dirty=True)
+
+        # Worktree removal should be skipped
+        assert result["skipped_worktree"] is True
+
+        # Pane record must remain in the registry
+        remaining_pane = get_pane(sr, "dirty-pane")
+        assert remaining_pane is not None
+        assert remaining_pane["state"] == "active"
+
+    def test_removes_worktree_when_clean_and_force_applied(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Verify clean worktrees are removed even without explicit force=True."""
+        from dgov.lifecycle import _full_cleanup
+
+        sr = str(tmp_path)
+        wt_path = tmp_path / "clean-pane"
+        wt_path.mkdir()
+        _add_pane(
+            tmp_path,
+            "clean-pane",
+            owns_worktree=True,
+            worktree_path=str(wt_path),
+            branch_name="clean-br",
+        )
+
+        pane = get_pane(sr, "clean-pane")
+        assert pane is not None
+
+        git_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            git_calls.append(cmd)
+            m = MagicMock()
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = ""  # clean worktree
+            elif "worktree" in cmd and "remove" in cmd:
+                m.returncode = 0
+            elif "branch" in cmd:
+                m.returncode = 0
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        with patch("subprocess.run", fake_run):
+            result = _full_cleanup(sr, sr, "clean-pane", pane)
+
+        # Worktree should be removed for clean worktrees
+        assert result["skipped_worktree"] is False
+        assert any("worktree" in c and "remove" in c for c in git_calls)
+
 
 # ──────────────────────────────────────────────────────────────
 # TestPiExtensionFlags
