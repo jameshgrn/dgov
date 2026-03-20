@@ -254,6 +254,9 @@ def _stash_and_rebase(
 
     The caller must use _stash_guard to manage stashing; this handles the
     rebase execution and error recovery.
+
+    Special handling: when git refuses to rebase an attached worktree branch,
+    we treat it as success since we can't rebase an attached branch anyway.
     """
     # Remember current branch to restore after rebase
     current = subprocess.run(
@@ -276,6 +279,18 @@ def _stash_and_rebase(
         text=True,
     )
     if rebase.returncode != 0:
+        # Special case: git refuses to rebase an attached worktree branch
+        # Error message pattern: 'fatal: \<branch\> is already used by worktree at \<path\>'
+        stderr_lower = rebase.stderr.lower()
+        if "already used by worktree" in stderr_lower or "attached" in stderr_lower:
+            # This branch is attached to a worktree — we can't rebase it anyway,
+            # but this isn't a real failure. The plumbing merge will handle it.
+            logger.info(
+                "Skipping rebase for %s (attached to worktree)",
+                branch_to_rebase,
+            )
+            return (MergeResult(success=True), current_branch)
+
         subprocess.run(
             ["git", "-C", project_root, "rebase", "--abort"],
             capture_output=True,

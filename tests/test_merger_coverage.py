@@ -975,3 +975,53 @@ def test_merge_worker_pane_falls_back_when_rebase_fails(
     assert "error" not in result, f"Unexpected error: {result}"
     assert result["merged"] == "rebase-fb"
     assert result.get("rebase_fallback") is True
+
+
+def test_rebase_skips_attached_worktree_branch(tmp_path: Path) -> None:
+    """Rebase on attached worktree branch returns success (no fake failure)."""
+    repo = _init_repo(tmp_path, "attached-rebase")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    # Add a commit on main after the branch is created
+    (repo / "other.py").write_text("main change\n")
+    _git(repo, "add", "other.py")
+    _git(repo, "commit", "-m", "diverge main")
+
+    # Create worktree with branch — git will refuse to rebase attached branches
+    worktree = _add_worktree(repo, tmp_path, "dgov-attached-rebase")
+
+    (worktree / "worker.py").write_text("worker change\n")
+    _git(worktree, "add", "worker.py")
+    _git(worktree, "commit", "-m", "worker commit")
+
+    # Test _stash_and_rebase directly with attached branch
+    from dgov.merger import _stash_and_rebase
+
+    # This should NOT fail — it's a known limitation of git worktrees
+    result, current_branch = _stash_and_rebase(
+        str(repo), "test-rebase", "HEAD", "dgov-attached-rebase"
+    )
+
+    assert result.success is True
+    assert current_branch == "main"
+
+
+def test_rebase_onto_head_skips_attached_worktree(tmp_path: Path) -> None:
+    """_rebase_onto_head returns success for attached worktree branches."""
+    repo = _init_repo(tmp_path, "attached-head-rebase")
+
+    # Create divergent history
+    (repo / "main.py").write_text("main change\n")
+    _git(repo, "add", "main.py")
+    _git(repo, "commit", "-m", "main commit after branch point")
+
+    worktree = _add_worktree(repo, tmp_path, "dgov-attached-head")
+    (worktree / "worker.txt").write_text("worker change\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "worker commit")
+
+    from dgov.merger import _rebase_onto_head
+
+    # This should return success, not failure (attached branch = no rebase needed)
+    result = _rebase_onto_head(str(repo), "dgov-attached-head")
+    assert result.success is True
