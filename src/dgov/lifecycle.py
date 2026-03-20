@@ -278,15 +278,18 @@ def _write_worktree_instructions(
     prompt: str | None = None,
     context_packet: ContextPacket | None = None,
 ) -> None:
-    """Write role-appropriate instructions to CLAUDE.md in the worktree.
+    """Write role-appropriate instructions to .dgov/DGOV_WORKER_INSTRUCTIONS.md.
 
     Generated files contain only the role-specific preamble plus any
     start-here/codebase hints. Do not inherit the governor/repo CLAUDE.md body.
-    Also git-excludes CLAUDE.md and AGENTS.md so they can never be staged
-    by ``git add -A``.
+    Writes to worktree-local path .dgov/DGOV_WORKER_INSTRUCTIONS.md which is
+    excluded via worktree's git exclude file so it cannot be staged by commits.
     """
     wt = Path(worktree_path)
-    claude_md = wt / "CLAUDE.md"
+    instructions_file = wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md"
+
+    # Ensure .dgov directory exists in worktree
+    instructions_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Codebase map reference
     codebase_hint = ""
@@ -326,12 +329,11 @@ def _write_worktree_instructions(
             "and signal done.\n\n"
             "## Rules\n"
             "- Edit ONLY the files specified in your task\n"
-            "- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml\n"
+            "- Do NOT modify .gitignore, pyproject.toml\n"
             "- Do NOT create new files unless the task requires it\n"
             "- Do NOT push to remote\n"
             "- You are in a git worktree, not the main repo\n"
-            "- CLAUDE.md/AGENTS.md are git-excluded and cannot "
-            "be committed\n"
+            "- Read .dgov/DGOV_WORKER_INSTRUCTIONS.md for instructions and commit checklist\n"
         )
         # Inject Start here section before codebase hint when routed context exists
         if start_here_section:
@@ -351,11 +353,10 @@ def _write_worktree_instructions(
     # Write only the role-specific preamble (no repo context inheritance)
     content = preamble
 
-    claude_md.write_text(content, encoding="utf-8")
-    (wt / "AGENTS.md").write_text(content, encoding="utf-8")
+    instructions_file.write_text(content, encoding="utf-8")
 
-    # Git-exclude CLAUDE.md and AGENTS.md so no `git add` can stage them
-    _git_exclude_files(worktree_path, ["CLAUDE.md", "AGENTS.md"])
+    # Git-exclude DGOV_WORKER_INSTRUCTIONS.md so no `git add` can stage it
+    _git_exclude_files(worktree_path, [".dgov/DGOV_WORKER_INSTRUCTIONS.md"])
 
 
 def _git_exclude_files(worktree_path: str, filenames: list[str]) -> None:
