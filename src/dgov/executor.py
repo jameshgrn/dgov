@@ -655,13 +655,6 @@ def run_dispatch_preflight(
     )
 
 
-def get_review_provider(session_root: str | None = None):
-    """Return the active provider for pane review decisions."""
-    from dgov.provider_registry import get_review_provider as _get_provider
-
-    return _get_provider(session_root=session_root)
-
-
 def review_merge_gate(
     project_root: str,
     slug: str,
@@ -705,7 +698,11 @@ def run_review_only(
     require_commits: bool = True,
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
-    provider = get_review_provider(session_root=session_root)
+    from dgov.decision import DecisionKind
+
+    from dgov.provider_registry import get_provider
+
+    provider = get_provider(DecisionKind.REVIEW_OUTPUT, session_root=session_root)
     record = provider.review_output(
         ReviewOutputRequest(
             project_root=project_root,

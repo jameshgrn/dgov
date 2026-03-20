@@ -34,15 +34,3 @@ def get_provider(kind: DecisionKind, *, session_root: str | None = None) -> Deci
         inner=provider,
         sink=lambda entry: record_decision_audit(session_root, entry),
     )
-
-
-def get_route_task_provider(*, session_root: str | None = None) -> DecisionProvider:
-    return get_provider(DecisionKind.ROUTE_TASK, session_root=session_root)
-
-
-def get_output_classification_provider(*, session_root: str | None = None) -> DecisionProvider:
-    return get_provider(DecisionKind.CLASSIFY_OUTPUT, session_root=session_root)
-
-
-def get_review_provider(*, session_root: str | None = None) -> DecisionProvider:
-    return get_provider(DecisionKind.REVIEW_OUTPUT, session_root=session_root)

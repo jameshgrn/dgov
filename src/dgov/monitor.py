@@ -144,13 +144,6 @@ DETERMINISTIC_PATTERNS = {
 }
 
 
-def get_output_classification_provider(*, session_root: str | None = None):
-    """Return the active provider for ambiguous monitor output classification."""
-    from dgov.provider_registry import get_output_classification_provider as _get_provider
-
-    return _get_provider(session_root=session_root)
-
-
 def _classify_deterministic(output: str) -> str | None:
     """Try to classify output using deterministic regex patterns first.
 
@@ -208,7 +201,11 @@ def classify_output(
 
     # Layer 2: LLM classification for ambiguous cases
     try:
-        provider = get_output_classification_provider(session_root=session_root)
+        from dgov.decision import DecisionKind
+
+        from dgov.provider_registry import get_provider
+
+        provider = get_provider(DecisionKind.CLASSIFY_OUTPUT, session_root=session_root)
         result = provider.classify_output(MonitorOutputRequest(output=output))
         return result.decision.classification
     except ProviderError as exc:

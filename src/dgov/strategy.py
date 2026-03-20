@@ -11,13 +11,6 @@ logger = logging.getLogger(__name__)
 # -- Task routing --
 
 
-def get_task_routing_provider(*, session_root: str | None = None):
-    """Return the active provider for route-task decisions."""
-    from dgov.provider_registry import get_route_task_provider
-
-    return get_route_task_provider(session_root=session_root)
-
-
 def classify_task(
     prompt: str,
     installed_agents: list[str] | None = None,
@@ -29,12 +22,14 @@ def classify_task(
     Uses OpenRouter (high-powered free models) for classification — this
     benefits from real intelligence. Falls back to Qwen 4B then "claude".
     """
+    from dgov.decision import DecisionKind, ProviderError
+    from dgov.provider_registry import get_provider
 
     agents = installed_agents or ["pi", "claude"]
     try:
-        from dgov.decision import ProviderError, RouteTaskRequest
+        from dgov.decision import RouteTaskRequest
 
-        provider = get_task_routing_provider(session_root=session_root)
+        provider = get_provider(DecisionKind.ROUTE_TASK, session_root=session_root)
         result = provider.route_task(
             RouteTaskRequest(
                 prompt=prompt,
