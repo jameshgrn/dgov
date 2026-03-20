@@ -279,7 +279,7 @@ def pane_create(
         agent = get_default_agent(registry)
 
     if agent == "auto":
-        agent = classify_task(prompt)
+        agent = classify_task(prompt, session_root=session_root)
         click.echo(json.dumps({"auto_classified": agent}), err=True)
 
     if agent not in registry:

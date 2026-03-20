@@ -11,14 +11,19 @@ logger = logging.getLogger(__name__)
 # -- Task routing --
 
 
-def get_task_routing_provider():
+def get_task_routing_provider(*, session_root: str | None = None):
     """Return the active provider for route-task decisions."""
     from dgov.provider_registry import get_route_task_provider
 
-    return get_route_task_provider()
+    return get_route_task_provider(session_root=session_root)
 
 
-def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str:
+def classify_task(
+    prompt: str,
+    installed_agents: list[str] | None = None,
+    *,
+    session_root: str | None = None,
+) -> str:
     """Classify a task prompt and recommend an agent.
 
     Uses OpenRouter (high-powered free models) for classification — this
@@ -29,7 +34,7 @@ def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str
     try:
         from dgov.decision import ProviderError, RouteTaskRequest
 
-        provider = get_task_routing_provider()
+        provider = get_task_routing_provider(session_root=session_root)
         result = provider.route_task(
             RouteTaskRequest(
                 prompt=prompt,

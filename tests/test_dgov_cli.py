@@ -388,7 +388,8 @@ class TestPaneCreate:
             )
 
         assert result.exit_code == 0
-        mock_classify.assert_called_once_with("Fix lint")
+        mock_classify.assert_called_once()
+        assert mock_classify.call_args[0] == ("Fix lint",)
         assert json.loads(result.stderr)["auto_classified"] == "claude"
 
     def test_invalid_env_var_exits(self, runner: CliRunner) -> None:

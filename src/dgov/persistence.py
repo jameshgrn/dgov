@@ -426,6 +426,9 @@ CREATE TABLE IF NOT EXISTS decision_journal (
     kind TEXT NOT NULL,
     provider_id TEXT NOT NULL,
     trace_id TEXT,
+    model_id TEXT,
+    confidence REAL,
+    pane_slug TEXT,
     request_json TEXT NOT NULL,
     result_json TEXT,
     error TEXT,
@@ -479,6 +482,13 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
         try:
             conn.execute(f"ALTER TABLE panes ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
+    # Migrate: add decision journal columns if missing
+    for col, coltype in [("model_id", "TEXT"), ("confidence", "REAL"), ("pane_slug", "TEXT")]:
+        try:
+            conn.execute(f"ALTER TABLE decision_journal ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
             pass  # column already exists
 
@@ -1293,22 +1303,32 @@ def record_decision_audit(session_root: str, entry) -> None:  # noqa: ANN001
             "raw_artifact_ref": entry.result.raw_artifact_ref,
             "record_created_at": entry.result.created_at,
         }
-        kind = entry.result.kind.value
+        if hasattr(entry.result, "kind"):
+            kind = entry.result.kind.value
 
     if trace_id is None:
         trace_id = getattr(entry.request, "trace_id", None)
+
+    # Extract new columns from result/request
+    model_id = entry.result.model_id if entry.result is not None else None
+    confidence = entry.result.confidence if entry.result is not None else None
+    pane_slug = getattr(entry.request, "pane_slug", None)
 
     def _do() -> None:
         conn = _get_db(session_root)
         conn.execute(
             "INSERT INTO decision_journal "
-            "(ts, kind, provider_id, trace_id, request_json, result_json, error, duration_ms, "
-            " metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(ts, kind, provider_id, trace_id, model_id, confidence, pane_slug,"
+            " request_json, result_json, error, duration_ms, metadata_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 datetime.now(timezone.utc).isoformat(),
                 kind,
                 entry.provider_id,
                 trace_id,
+                model_id,
+                confidence,
+                pane_slug,
                 request_json,
                 result_json,
                 entry.error,
@@ -1332,18 +1352,34 @@ def read_decision_journal(
     session_root: str,
     *,
     kind: str | None = None,
+    pane_slug: str | None = None,
     limit: int | None = None,
 ) -> list[dict]:
-    """Read decision journal rows in chronological order."""
+    """Read decision journal rows in chronological order.
+
+    Args:
+        session_root: Path to session root directory.
+        kind: Optional filter by decision kind.
+        pane_slug: Optional filter by pane slug.
+        limit: Optional limit on number of results (returns newest first).
+    """
     conn = _get_db(session_root)
     query = (
-        "SELECT ts, kind, provider_id, trace_id, request_json, result_json, error, duration_ms, "
-        "metadata_json FROM decision_journal"
+        "SELECT ts, kind, provider_id, trace_id, model_id, confidence, pane_slug, request_json, "
+        " result_json, error, duration_ms, metadata_json FROM decision_journal"
     )
     params: list[object] = []
+    clauses = []
     if kind is not None:
-        query += " WHERE kind = ?"
+        clauses.append("kind = ?")
         params.append(kind)
+    if pane_slug is not None:
+        clauses.append("pane_slug = ?")
+        params.append(pane_slug)
+
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+
     if limit is not None:
         query += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
@@ -1360,6 +1396,9 @@ def read_decision_journal(
         row_kind,
         provider_id,
         trace_id,
+        model_id,
+        confidence,
+        pane_slug,
         request_json,
         result_json,
         error,
@@ -1371,6 +1410,9 @@ def read_decision_journal(
             "kind": row_kind,
             "provider_id": provider_id,
             "trace_id": trace_id,
+            "model_id": model_id,
+            "confidence": confidence,
+            "pane_slug": pane_slug,
             "error": error,
             "duration_ms": duration_ms,
         }

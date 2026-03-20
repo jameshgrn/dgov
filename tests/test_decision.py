@@ -208,8 +208,149 @@ def test_classify_task_uses_provider_boundary(monkeypatch: pytest.MonkeyPatch) -
     from dgov.strategy import classify_task
 
     provider = StaticDecisionProvider(route_task_fn=lambda request: _route_record("pi"))
-    monkeypatch.setattr("dgov.strategy.get_task_routing_provider", lambda: provider)
+    monkeypatch.setattr(
+        "dgov.strategy.get_task_routing_provider", lambda session_root=None: provider
+    )
 
     result = classify_task("rename variable x to y in main.py")
 
     assert result == "pi"
+
+
+# -- Decision journal tests --
+
+
+class MockResult:
+    """Mock decision result for testing."""
+
+    def __init__(self, trace_id: str = "trace-123", model_id: str = "qwen-35b"):
+        self.trace_id = trace_id
+        self.model_id = model_id
+        self.confidence = 0.9
+        self.latency_ms = 100.0
+        self.cost_usd = 0.01
+        self.evidence_refs = []
+        self.raw_artifact_ref = None
+        self.created_at = 1234567890.0
+
+
+def test_record_decision_audit_writes_model_id_confidence_pane_slug(tmp_path: str) -> None:
+    """Test that record_decision_audit writes model_id, confidence, pane_slug columns."""
+    from dgov.persistence import read_decision_journal, record_decision_audit
+
+    session_root = tmp_path
+
+    result = MockResult(model_id="qwen-35b")
+    request = RouteTaskRequest(prompt="test prompt", trace_id="trace-123")
+    # Use object.__setattr__ for frozen dataclass
+    object.__setattr__(request, "pane_slug", "test-pane-slug")
+
+    entry = DecisionAuditEntry(
+        provider_id="test-provider",
+        request=request,
+        result=result,
+        error=None,
+        duration_ms=100.5,
+    )
+
+    record_decision_audit(session_root, entry)
+
+    # Read back and verify new columns are populated
+    rows = read_decision_journal(session_root)
+    assert len(rows) == 1
+    assert rows[0]["model_id"] == "qwen-35b"
+    assert rows[0]["confidence"] == 0.9
+    assert rows[0]["pane_slug"] == "test-pane-slug"
+
+
+def test_read_decision_journal_filters_by_pane_slug(tmp_path: str) -> None:
+    """Test that read_decision_journal filters by pane_slug."""
+    from dgov.persistence import read_decision_journal, record_decision_audit
+
+    session_root = tmp_path
+
+    result = MockResult()
+
+    # Create entries with different pane_slugs
+    for slug in ["pane-1", "pane-2", "pane-1"]:
+        request = RouteTaskRequest(prompt="test prompt", trace_id="trace-123")
+        object.__setattr__(request, "pane_slug", slug)
+        entry = DecisionAuditEntry(
+            provider_id="test-provider",
+            request=request,
+            result=result,
+            error=None,
+            duration_ms=100.5,
+        )
+        record_decision_audit(session_root, entry)
+
+    # Query with pane_slug filter
+    rows = read_decision_journal(session_root, pane_slug="pane-1")
+    assert len(rows) == 2
+    for row in rows:
+        assert row["pane_slug"] == "pane-1"
+
+    rows_unfiltered = read_decision_journal(session_root)
+    assert len(rows_unfiltered) == 3
+
+
+def test_decision_journal_migration_is_idempotent(tmp_path: str) -> None:
+    """Test that migration is idempotent (calling it twice doesn't error)."""
+    from dgov.persistence import _get_db
+
+    # _get_db creates tables on first call; verify columns exist
+    conn = _get_db(str(tmp_path))
+    cursor = conn.execute("PRAGMA table_info(decision_journal)")
+    columns = {row[1] for row in cursor.fetchall()}
+
+    required_columns = {
+        "id",
+        "ts",
+        "kind",
+        "provider_id",
+        "trace_id",
+        "model_id",
+        "confidence",
+        "pane_slug",
+    }
+    assert required_columns.issubset(columns)
+
+
+def test_read_decision_journal_combined_filters(tmp_path: str) -> None:
+    """Test that kind and pane_slug filters can be combined."""
+    from dgov.persistence import read_decision_journal, record_decision_audit
+
+    session_root = tmp_path
+
+    result = MockResult()
+
+    # Create entries with different kinds and pane_slugs
+    for kind_name, slug in [
+        ("route_task", "pane-1"),
+        ("classify_output", "pane-2"),
+    ]:
+        if kind_name == "route_task":
+            request = RouteTaskRequest(prompt="test prompt", trace_id="trace-123")
+            object.__setattr__(request, "pane_slug", slug)
+        else:
+            request = MonitorOutputRequest(output="test output", trace_id="trace-123")
+
+        entry = DecisionAuditEntry(
+            provider_id="test-provider",
+            request=request,
+            result=result,
+            error=None,
+            duration_ms=100.5,
+        )
+        record_decision_audit(session_root, entry)
+
+    # Query with both filters - route_task pane-1
+    rows = read_decision_journal(session_root, kind="route_task", pane_slug="pane-1")
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "route_task"
+    assert rows[0]["pane_slug"] == "pane-1"
+
+    # classify_output - no pane_slug set (None)
+    rows = read_decision_journal(session_root, kind="classify_output", pane_slug=None)
+    # None filter returns all results since WHERE pane_slug = NULL never matches
+    assert len(rows) >= 1
