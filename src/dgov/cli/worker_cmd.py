@@ -41,7 +41,7 @@ def worker_complete(message):
     import subprocess
     from pathlib import Path
 
-    from dgov.persistence import emit_event, update_pane_state
+    from dgov.persistence import emit_event, settle_completion_state
 
     session_root, slug = _require_worker_env()
     worktree = os.environ.get("DGOV_WORKTREE_PATH", "")
@@ -93,8 +93,9 @@ def worker_complete(message):
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.parent.mkdir(parents=True, exist_ok=True)
     done_path.touch()
-    update_pane_state(session_root, slug, "done")
-    emit_event(session_root, "pane_done", slug, message=message)
+    transition = settle_completion_state(session_root, slug, "done", allow_abandoned=True)
+    if transition.changed:
+        emit_event(session_root, "pane_done", slug, message=message)
     click.echo(json.dumps({"status": "complete", "slug": slug}))
 
 
@@ -104,14 +105,15 @@ def worker_fail(reason):
     """Signal that this worker has failed."""
     from pathlib import Path
 
-    from dgov.persistence import emit_event, update_pane_state
+    from dgov.persistence import emit_event, settle_completion_state
 
     session_root, slug = _require_worker_env()
     exit_path = Path(session_root) / STATE_DIR / "done" / f"{slug}.exit"
     exit_path.parent.mkdir(parents=True, exist_ok=True)
     exit_path.write_text(reason, encoding="utf-8")
-    update_pane_state(session_root, slug, "failed")
-    emit_event(session_root, "pane_failed", slug, reason=reason)
+    transition = settle_completion_state(session_root, slug, "failed", allow_abandoned=True)
+    if transition.changed:
+        emit_event(session_root, "pane_failed", slug, reason=reason)
     click.echo(json.dumps({"status": "failed", "slug": slug, "reason": reason}))
 
 
