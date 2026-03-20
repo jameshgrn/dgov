@@ -699,7 +699,6 @@ def run_review_only(
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
     from dgov.decision import DecisionKind
-
     from dgov.provider_registry import get_provider
 
     provider = get_provider(DecisionKind.REVIEW_OUTPUT, session_root=session_root)

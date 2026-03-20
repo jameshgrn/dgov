@@ -202,7 +202,6 @@ def classify_output(
     # Layer 2: LLM classification for ambiguous cases
     try:
         from dgov.decision import DecisionKind
-
         from dgov.provider_registry import get_provider
 
         provider = get_provider(DecisionKind.CLASSIFY_OUTPUT, session_root=session_root)
