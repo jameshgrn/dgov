@@ -643,8 +643,8 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
     """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
+    from dgov.executor import run_wait_only
     from dgov.status import list_worker_panes
-    from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     panes = list_worker_panes(project_root, session_root=session_root)
     known = {p.get("slug") for p in panes}
@@ -655,24 +655,25 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
             click.echo(json.dumps({"error": f"Pane not found: {s}"}), err=True)
             exit_code = 1
             continue
-        try:
-            result = wait_worker_pane(
-                project_root,
-                s,
-                session_root=session_root,
-                timeout=timeout,
-                poll=poll,
-                stable=stable,
-                auto_retry=auto_retry,
-            )
-            click.echo(json.dumps(result))
-        except PaneTimeoutError as exc:
-            timeout_result = {
-                "error": f"Timeout after {exc.timeout}s",
-                "slug": exc.slug,
-                "agent": exc.agent,
-            }
-            if exc.agent == "pi":
+        wait_result = run_wait_only(
+            project_root,
+            s,
+            session_root=session_root,
+            timeout=timeout,
+            poll=poll,
+            stable=stable,
+            max_retries=0,
+            auto_retry=auto_retry,
+        )
+        if wait_result.state == "completed":
+            click.echo(json.dumps(wait_result.wait_result or {"done": True, "slug": s}))
+        else:
+            session_root_abs = os.path.abspath(session_root or project_root)
+            from dgov.persistence import get_pane
+
+            rec = get_pane(session_root_abs, s)
+            timeout_result = {"error": wait_result.error or "Worker failed", "slug": s}
+            if rec and rec.get("agent") == "pi":
                 timeout_result["suggest_escalate"] = True
             click.echo(json.dumps(timeout_result), err=True)
             exit_code = 1
