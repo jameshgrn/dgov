@@ -347,7 +347,17 @@ class TestFullCleanup:
         pane = get_pane(sr, "test-pane")
         assert pane is not None
 
-        with patch("dgov.lifecycle.subprocess.run"):
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "status" in cmd and "--porcelain" in cmd:
+                m.stdout = ""  # clean worktree
+            else:
+                m.returncode = 0
+                m.stdout = ""
+                m.stderr = ""
+            return m
+
+        with patch("dgov.lifecycle.subprocess.run", fake_run):
             result = _full_cleanup(sr, sr, "test-pane", pane)
 
         assert (done_dir / "test-pane").exists() is False
@@ -382,16 +392,22 @@ class TestFullCleanup:
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
             patch("dgov.lifecycle.os.killpg") as mock_killpg,
+            patch("time.sleep"),
         ):
+            # First call during init, second during bounded wait loop
             mock_run.return_value = MagicMock(stdout=ps_output)
-            _terminate_pane_process_tree(123)
+            _terminate_pane_process_tree(123, wait_timeout=0.01)  # Very short timeout
 
-        mock_run.assert_called_once_with(
-            ["ps", "-axo", "pid=,ppid=,pgid="],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
+        # Should be called at least twice (initial + retry loop)
+        assert mock_run.call_count >= 2
+
+        ps_calls = [
+            call
+            for call in mock_run.call_args_list
+            if len(call.args) > 0 and "ps" in str(call.args[0])
+        ]
+        assert len(ps_calls) >= 1
+
         killed_pgids = [call.args[0] for call in mock_killpg.call_args_list]
         assert killed_pgids == [900, 456, 123]
 
@@ -457,10 +473,12 @@ class TestFullCleanup:
         with patch("dgov.lifecycle.subprocess.run") as mock_run:
             _full_cleanup(sr, sr, "borrowed-pane", pane)
 
-        # No worktree remove or branch delete should be called
+        # Worktree prune is still called even when not owning worktree
         calls_args = [c[0][0] for c in mock_run.call_args_list]
         worktree_remove = [a for a in calls_args if "worktree" in a and "remove" in a]
+        branch_delete = [a for a in calls_args if "branch" in a and "-d" in a]
         assert len(worktree_remove) == 0
+        assert len(branch_delete) == 0
 
     def test_skip_worktree_if_dirty(self, tmp_path: Path) -> None:
         from dgov.lifecycle import _full_cleanup
@@ -632,7 +650,6 @@ class TestFullCleanup:
         with (
             patch("subprocess.run", fake_run),
             patch("dgov.tmux._run", return_value=""),
-            patch("dgov.lifecycle.subprocess.run") as mock_subprocess,
         ):
             result = _full_cleanup(sr, sr, "dirty-pane", pane, skip_worktree_if_dirty=True)
 
