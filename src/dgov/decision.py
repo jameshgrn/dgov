@@ -1,0 +1,482 @@
+"""Typed decision requests, records, and provider wrappers."""
+
+from __future__ import annotations
+
+import threading
+import time
+from abc import ABC
+from dataclasses import dataclass, field
+from enum import StrEnum
+from typing import Callable, Generic, TypeVar, overload
+
+
+class DecisionKind(StrEnum):
+    ROUTE_TASK = "route_task"
+    CLASSIFY_OUTPUT = "classify_output"
+    REVIEW_OUTPUT = "review_output"
+    PARSE_COMPLETION = "parse_completion"
+    DISAMBIGUATE = "disambiguate"
+
+
+@dataclass(frozen=True)
+class RouteTaskRequest:
+    prompt: str
+    installed_agents: tuple[str, ...] = ()
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class MonitorOutputRequest:
+    output: str
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewOutputRequest:
+    project_root: str | None = None
+    slug: str | None = None
+    session_root: str | None = None
+    full: bool = False
+    diff: str = ""
+    task_prompt: str | None = None
+    file_claims: tuple[str, ...] = ()
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CompletionParseRequest:
+    raw_output: str
+    pane_slug: str | None = None
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ClarifyRequest:
+    raw_input: str
+    context: str | None = None
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RouteTaskDecision:
+    agent: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class MonitorOutputDecision:
+    classification: str
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewOutputDecision:
+    verdict: str
+    commit_count: int = 0
+    issues: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CompletionParseDecision:
+    status: str
+    files_modified: tuple[str, ...] = ()
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ClarifyDecision:
+    task_prompt: str | None = None
+    requires_clarification: bool = False
+    clarification_question: str | None = None
+
+
+DecisionRequest = (
+    RouteTaskRequest
+    | MonitorOutputRequest
+    | ReviewOutputRequest
+    | CompletionParseRequest
+    | ClarifyRequest
+)
+DecisionPayload = (
+    RouteTaskDecision
+    | MonitorOutputDecision
+    | ReviewOutputDecision
+    | CompletionParseDecision
+    | ClarifyDecision
+)
+
+TDecision = TypeVar("TDecision")
+
+
+@dataclass(frozen=True)
+class DecisionRecord(Generic[TDecision]):
+    kind: DecisionKind
+    provider_id: str
+    decision: TDecision
+    artifact: object | None = None
+    model_id: str | None = None
+    confidence: float | None = None
+    latency_ms: float | None = None
+    cost_usd: float | None = None
+    trace_id: str | None = None
+    evidence_refs: tuple[str, ...] = ()
+    raw_artifact_ref: str | None = None
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class DecisionAuditEntry:
+    request: DecisionRequest
+    result: DecisionRecord[DecisionPayload] | None
+    error: str | None
+    provider_id: str
+    duration_ms: float
+    created_at: float = field(default_factory=time.time)
+
+
+@dataclass(frozen=True)
+class ShadowDecisionResult:
+    request: DecisionRequest
+    primary: DecisionRecord[DecisionPayload]
+    shadow: DecisionRecord[DecisionPayload] | None
+    shadow_error: str | None = None
+    created_at: float = field(default_factory=time.time)
+
+
+class ProviderError(RuntimeError):
+    """Base error for decision provider failures."""
+
+
+class UnsupportedDecisionError(ProviderError):
+    """Raised when a provider does not implement a capability."""
+
+
+class ProviderTimeoutError(ProviderError):
+    """Raised when a provider exceeds its allowed latency budget."""
+
+
+class DecisionProvider(ABC):
+    """Base decision provider with typed capability methods."""
+
+    provider_id = "decision-provider"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return frozenset()
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        raise UnsupportedDecisionError(
+            f"{self.provider_id} does not support {DecisionKind.ROUTE_TASK}"
+        )
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        raise UnsupportedDecisionError(
+            f"{self.provider_id} does not support {DecisionKind.CLASSIFY_OUTPUT}"
+        )
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        raise UnsupportedDecisionError(
+            f"{self.provider_id} does not support {DecisionKind.REVIEW_OUTPUT}"
+        )
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        raise UnsupportedDecisionError(
+            f"{self.provider_id} does not support {DecisionKind.PARSE_COMPLETION}"
+        )
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        raise UnsupportedDecisionError(
+            f"{self.provider_id} does not support {DecisionKind.DISAMBIGUATE}"
+        )
+
+
+@dataclass
+class StaticDecisionProvider(DecisionProvider):
+    """Testing and bootstrap provider with preconfigured callables."""
+
+    provider_id: str = "static"
+    route_task_fn: Callable[[RouteTaskRequest], DecisionRecord[RouteTaskDecision]] | None = None
+    classify_output_fn: (
+        Callable[[MonitorOutputRequest], DecisionRecord[MonitorOutputDecision]] | None
+    ) = None
+    review_output_fn: (
+        Callable[[ReviewOutputRequest], DecisionRecord[ReviewOutputDecision]] | None
+    ) = None
+    parse_completion_fn: (
+        Callable[[CompletionParseRequest], DecisionRecord[CompletionParseDecision]] | None
+    ) = None
+    disambiguate_fn: Callable[[ClarifyRequest], DecisionRecord[ClarifyDecision]] | None = None
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        kinds: set[DecisionKind] = set()
+        if self.route_task_fn is not None:
+            kinds.add(DecisionKind.ROUTE_TASK)
+        if self.classify_output_fn is not None:
+            kinds.add(DecisionKind.CLASSIFY_OUTPUT)
+        if self.review_output_fn is not None:
+            kinds.add(DecisionKind.REVIEW_OUTPUT)
+        if self.parse_completion_fn is not None:
+            kinds.add(DecisionKind.PARSE_COMPLETION)
+        if self.disambiguate_fn is not None:
+            kinds.add(DecisionKind.DISAMBIGUATE)
+        return frozenset(kinds)
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        if self.route_task_fn is None:
+            return super().route_task(request)
+        return self.route_task_fn(request)
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        if self.classify_output_fn is None:
+            return super().classify_output(request)
+        return self.classify_output_fn(request)
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        if self.review_output_fn is None:
+            return super().review_output(request)
+        return self.review_output_fn(request)
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        if self.parse_completion_fn is None:
+            return super().parse_completion(request)
+        return self.parse_completion_fn(request)
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        if self.disambiguate_fn is None:
+            return super().disambiguate(request)
+        return self.disambiguate_fn(request)
+
+
+@overload
+def _call_kind(
+    provider: DecisionProvider, request: RouteTaskRequest
+) -> DecisionRecord[RouteTaskDecision]: ...
+
+
+@overload
+def _call_kind(
+    provider: DecisionProvider, request: MonitorOutputRequest
+) -> DecisionRecord[MonitorOutputDecision]: ...
+
+
+@overload
+def _call_kind(
+    provider: DecisionProvider, request: ReviewOutputRequest
+) -> DecisionRecord[ReviewOutputDecision]: ...
+
+
+@overload
+def _call_kind(
+    provider: DecisionProvider, request: CompletionParseRequest
+) -> DecisionRecord[CompletionParseDecision]: ...
+
+
+@overload
+def _call_kind(
+    provider: DecisionProvider, request: ClarifyRequest
+) -> DecisionRecord[ClarifyDecision]: ...
+
+
+def _call_kind[TDecision](
+    provider: DecisionProvider,
+    request: DecisionRequest,
+) -> DecisionRecord[TDecision]:
+    if isinstance(request, RouteTaskRequest):
+        return provider.route_task(request)  # type: ignore[return-value]
+    if isinstance(request, MonitorOutputRequest):
+        return provider.classify_output(request)  # type: ignore[return-value]
+    if isinstance(request, ReviewOutputRequest):
+        return provider.review_output(request)  # type: ignore[return-value]
+    if isinstance(request, CompletionParseRequest):
+        return provider.parse_completion(request)  # type: ignore[return-value]
+    if isinstance(request, ClarifyRequest):
+        return provider.disambiguate(request)  # type: ignore[return-value]
+    raise ProviderError(f"Unsupported decision request: {type(request).__name__}")
+
+
+def _run_with_timeout(
+    fn: Callable[[], DecisionRecord[DecisionPayload]],
+    timeout_s: float,
+) -> DecisionRecord[DecisionPayload]:
+    result: dict[str, object] = {}
+
+    def _target() -> None:
+        try:
+            result["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001
+            result["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise ProviderTimeoutError(f"Decision provider timed out after {timeout_s}s")
+    if "error" in result:
+        error = result["error"]
+        if isinstance(error, BaseException):
+            raise error
+        raise ProviderError("Decision provider failed without an exception")
+    return result["value"]  # type: ignore[return-value]
+
+
+@dataclass
+class AuditProvider(DecisionProvider):
+    """Wrapper that records every request/result boundary."""
+
+    inner: DecisionProvider
+    sink: Callable[[DecisionAuditEntry], None]
+
+    @property
+    def provider_id(self) -> str:
+        return f"audit:{self.inner.provider_id}"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return self.inner.capabilities()
+
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        started = time.perf_counter()
+        try:
+            result = _call_kind(self.inner, request)
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - started) * 1000
+            self.sink(
+                DecisionAuditEntry(
+                    request=request,
+                    result=None,
+                    error=str(exc),
+                    provider_id=self.inner.provider_id,
+                    duration_ms=duration_ms,
+                )
+            )
+            raise
+
+        duration_ms = (time.perf_counter() - started) * 1000
+        self.sink(
+            DecisionAuditEntry(
+                request=request,
+                result=result,  # type: ignore[arg-type]
+                error=None,
+                provider_id=self.inner.provider_id,
+                duration_ms=duration_ms,
+            )
+        )
+        return result  # type: ignore[return-value]
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+
+@dataclass
+class TimeoutProvider(DecisionProvider):
+    """Wrapper that bounds provider latency."""
+
+    inner: DecisionProvider
+    timeout_s: float
+
+    @property
+    def provider_id(self) -> str:
+        return f"timeout:{self.inner.provider_id}"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return self.inner.capabilities()
+
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        return _run_with_timeout(lambda: _call_kind(self.inner, request), self.timeout_s)
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+
+@dataclass
+class ShadowProvider(DecisionProvider):
+    """Wrapper that runs a shadow provider for comparison without affecting control."""
+
+    primary: DecisionProvider
+    shadow: DecisionProvider
+    sink: Callable[[ShadowDecisionResult], None] | None = None
+
+    @property
+    def provider_id(self) -> str:
+        return f"shadow:{self.primary.provider_id}"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return self.primary.capabilities()
+
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        primary = _call_kind(self.primary, request)
+        shadow_result: DecisionRecord[DecisionPayload] | None = None
+        shadow_error: str | None = None
+        try:
+            shadow_result = _call_kind(self.shadow, request)  # type: ignore[assignment]
+        except Exception as exc:
+            shadow_error = str(exc)
+
+        if self.sink is not None:
+            self.sink(
+                ShadowDecisionResult(
+                    request=request,
+                    primary=primary,  # type: ignore[arg-type]
+                    shadow=shadow_result,
+                    shadow_error=shadow_error,
+                )
+            )
+        return primary  # type: ignore[return-value]
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
