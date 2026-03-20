@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
-from dgov.persistence import STATE_DIR
+from dgov.persistence import STATE_DIR, VALID_TRANSITIONS
 
 if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
@@ -239,46 +239,59 @@ def _is_done(
     done_path = Path(session_root, STATE_DIR, "done", slug)
     exit_path = Path(session_root, STATE_DIR, "done", slug + ".exit")
 
+    def _current_state() -> str:
+        latest = _persist.get_pane(session_root, slug)
+        if latest is not None:
+            return latest.get("state", "")
+        return pane_record.get("state", "") if pane_record else ""
+
+    def _complete_terminal_state(
+        target_state: str,
+        reason: str,
+        *,
+        allow_abandoned: bool = False,
+        touch_done_file: bool = False,
+        emit_reason: str | None = None,
+    ) -> bool:
+        current_state = _current_state()
+        if current_state == target_state:
+            _set_done_reason(_stable_state, reason)
+            return True
+
+        force = allow_abandoned and current_state == "abandoned"
+        if not force and target_state not in VALID_TRANSITIONS.get(current_state, frozenset()):
+            logger.debug(
+                "late terminal signal slug=%s reason=%s current=%s target=%s",
+                slug,
+                reason,
+                current_state,
+                target_state,
+            )
+            _set_done_reason(_stable_state, reason)
+            return True
+
+        logger.debug("state=%s slug=%s reason=%s", target_state, slug, reason)
+        _persist.update_pane_state(session_root, slug, target_state, force=force)
+        if touch_done_file:
+            done_path.parent.mkdir(parents=True, exist_ok=True)
+            done_path.touch()
+        if emit_reason is None:
+            _persist.emit_event(session_root, "pane_done", slug)
+        else:
+            _persist.emit_event(session_root, "pane_done", slug, reason=emit_reason)
+        _set_done_reason(_stable_state, reason)
+        return True
+
     # Signal 1a: done-signal file (clean exit) — always checked
     if done_path.exists():
         if pane_record is None or not _has_completion_commit(pane_record):
             return False
 
-        current_state = pane_record.get("state", "") if pane_record else ""
-        # Late success signal after terminal non-success state: reconcile without re-emitting
-        late_success_states = {"failed", "reviewed_fail", "merged", "closed", "superseded"}
-        if current_state in late_success_states and current_state != "abandoned":
-            logger.debug(
-                "late done_signal slug=%s already in terminal state %s - reconcile as done",
-                slug, current_state
-            )
-            return True
-
-        force = current_state == "abandoned"
-        logger.debug("state=%s slug=%s reason=done_signal", "done", slug)
-        _persist.update_pane_state(session_root, slug, "done", force=force)
-        _persist.emit_event(session_root, "pane_done", slug)
-        _set_done_reason(_stable_state, "done_signal")
-        return True
+        return _complete_terminal_state("done", "done_signal", allow_abandoned=True)
 
     # Signal 1b: exit-code file (agent crashed / nonzero exit) - always checked
     if exit_path.exists():
-        current_state = pane_record.get("state", "") if pane_record else ""
-        # Late failure signal after terminal success state: reconcile without re-emitting
-        late_failure_states = {"done", "merged", "closed"}
-        if current_state in late_failure_states:
-            logger.debug(
-                "late exit_signal slug=%s already in terminal state %s - reconcile as failed",
-                slug, current_state
-            )
-            return True
-
-        force = current_state == "abandoned"
-        logger.debug("state=%s slug=%s reason=exit_signal", "failed", slug)
-        _persist.update_pane_state(session_root, slug, "failed", force=force)
-        _persist.emit_event(session_root, "pane_done", slug)
-        _set_done_reason(_stable_state, "exit_signal")
-        return True
+        return _complete_terminal_state("failed", "exit_signal", allow_abandoned=True)
 
     if pane_record is None:
         return False
@@ -299,12 +312,11 @@ def _is_done(
         if stype == "api" and not has_commits and pane_id and _stable_state is not None:
             if not _agent_still_running(pane_id, current_command):
                 logger.debug("shell_return_no_commits slug=%s agent exited - failed", slug)
-                current_state = pane_record.get("state", "")
-                force = current_state == "abandoned"
-                _persist.update_pane_state(session_root, slug, "failed", force=force)
-                _persist.emit_event(session_root, "pane_done", slug)
-                _set_done_reason(_stable_state, "shell_return_no_commits")
-                return True
+                return _complete_terminal_state(
+                    "failed",
+                    "shell_return_no_commits",
+                    allow_abandoned=True,
+                )
 
         # api strategy without _stable_state: commit check result would be discarded
         if stype == "api" and _stable_state is None:
@@ -314,14 +326,12 @@ def _is_done(
                 # If agent is dead but shell is alive, and we have commits, we are done.
                 if pane_id and not _agent_still_running(pane_id, current_command):
                     logger.debug("new_commits slug=%s agent exited - done", slug)
-                    current_state = pane_record.get("state", "")
-                    force = current_state == "abandoned"
-                    _persist.update_pane_state(session_root, slug, "done", force=force)
-                    _persist.emit_event(session_root, "pane_done", slug)
-                    done_path.parent.mkdir(parents=True, exist_ok=True)
-                    done_path.touch()
-                    _set_done_reason(_stable_state, "commit")
-                    return True
+                    return _complete_terminal_state(
+                        "done",
+                        "commit",
+                        allow_abandoned=True,
+                        touch_done_file=True,
+                    )
                 elif _stable_state is not None:
                     _stable_state["commits_detected"] = True
                     return False
@@ -361,15 +371,12 @@ def _is_done(
                             slug,
                         )
                         # Fall through - blocking forever is worse
-                current_state = pane_record.get("state", "")
-                force = current_state == "abandoned"
-                _persist.update_pane_state(session_root, slug, "done", force=force)
-                _persist.emit_event(session_root, "pane_done", slug)
-                # Touch done-signal so we don't re-emit
-                done_path.parent.mkdir(parents=True, exist_ok=True)
-                done_path.touch()
-                _set_done_reason(_stable_state, "commit")
-                return True
+                return _complete_terminal_state(
+                    "done",
+                    "commit",
+                    allow_abandoned=True,
+                    touch_done_file=True,
+                )
 
     # Signal 3: pane no longer alive with no done file and no commits → abandoned
     if pane_id:
@@ -426,12 +433,13 @@ def _is_done(
                 logger.info(
                     "api fallback: %s has commits and stable output for 60s, marking done", slug
                 )
-                _persist.update_pane_state(session_root, slug, "done", force=True)
-                done_path.parent.mkdir(parents=True, exist_ok=True)
-                done_path.touch()
-                _persist.emit_event(session_root, "pane_done", slug, reason="api_fallback_stable")
-                _set_done_reason(_stable_state, "api_fallback_stable")
-                return True
+                return _complete_terminal_state(
+                    "done",
+                    "api_fallback_stable",
+                    allow_abandoned=True,
+                    touch_done_file=True,
+                    emit_reason="api_fallback_stable",
+                )
         return False
 
     # Signal 4 (optional): output stabilization - skipped for "commit" strategy
@@ -457,11 +465,11 @@ def _is_done(
                     else:
                         if not _has_completion_commit(pane_record):
                             return False
-                        done_path.parent.mkdir(parents=True, exist_ok=True)
-                        done_path.touch()
-                        _persist.update_pane_state(session_root, slug, "done")
-                        _set_done_reason(_stable_state, "stable")
-                        return True
+                        return _complete_terminal_state(
+                            "done",
+                            "stable",
+                            touch_done_file=True,
+                        )
             else:
                 _stable_state["last_output"] = current_output
                 _stable_state["stable_since"] = None

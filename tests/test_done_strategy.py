@@ -17,7 +17,7 @@ from dgov.agents import (
 )
 from dgov.backend import set_backend
 from dgov.done import _is_done, _resolve_strategy
-from dgov.persistence import STATE_DIR, WorkerPane, add_pane
+from dgov.persistence import STATE_DIR, WorkerPane, add_pane, get_pane
 
 pytestmark = pytest.mark.unit
 
@@ -36,7 +36,7 @@ def mock_backend():
     _be._backend = prev
 
 
-def _setup_pane(tmp_path: Path, slug: str = "test-slug") -> None:
+def _setup_pane(tmp_path: Path, slug: str = "test-slug", state: str = "active") -> None:
     """Register a pane in persistence so _is_done can update state."""
     session_root = str(tmp_path)
     add_pane(
@@ -49,6 +49,7 @@ def _setup_pane(tmp_path: Path, slug: str = "test-slug") -> None:
             project_root=str(tmp_path),
             worktree_path=str(tmp_path / slug),
             branch_name=slug,
+            state=state,
         ),
     )
 
@@ -568,3 +569,80 @@ class TestShellReturnDoneDetection:
         assert result is True
         updated = get_pane(session_root, slug)
         assert updated["state"] == "done"
+
+
+@pytest.mark.unit
+class TestLateTerminalSignals:
+    def test_late_done_signal_after_failed_preserves_failed(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        session_root = str(tmp_path)
+        slug = "test-late-done-signal"
+        _setup_pane(tmp_path, slug=slug, state="failed")
+        done_dir = Path(session_root) / STATE_DIR / "done"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        (done_dir / slug).touch()
+
+        with (
+            patch("dgov.done._has_completion_commit", return_value=True),
+            patch("dgov.persistence.emit_event") as mock_emit,
+        ):
+            result = _is_done(session_root, slug, _stable_state={})
+
+        assert result is True
+        assert get_pane(session_root, slug)["state"] == "failed"
+        mock_emit.assert_not_called()
+
+    def test_late_commit_completion_after_failed_preserves_failed(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        session_root = str(tmp_path)
+        slug = "test-late-commit-done"
+        _setup_pane(tmp_path, slug=slug, state="failed")
+
+        pane_record = {
+            "pane_id": "%1",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",
+        }
+
+        mock_backend.is_alive.return_value = True
+
+        with (
+            patch("dgov.done._has_new_commits", return_value=True),
+            patch("dgov.done._agent_still_running", return_value=False),
+            patch("dgov.done.get_backend") as mock_be,
+            patch("dgov.persistence.emit_event") as mock_emit,
+        ):
+            mock_be.return_value.is_alive.return_value = True
+            result = _is_done(
+                session_root,
+                slug,
+                pane_record=pane_record,
+                done_strategy=DoneStrategy(type="api"),
+                alive=True,
+                current_command="bash",
+                _stable_state={},
+            )
+
+        assert result is True
+        assert get_pane(session_root, slug)["state"] == "failed"
+        mock_emit.assert_not_called()
+
+    def test_late_exit_signal_after_done_preserves_done(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        session_root = str(tmp_path)
+        slug = "test-late-exit"
+        _setup_pane(tmp_path, slug=slug, state="done")
+        done_dir = Path(session_root) / STATE_DIR / "done"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        (done_dir / f"{slug}.exit").write_text("1")
+
+        with patch("dgov.persistence.emit_event") as mock_emit:
+            result = _is_done(session_root, slug, _stable_state={})
+
+        assert result is True
+        assert get_pane(session_root, slug)["state"] == "done"
+        mock_emit.assert_not_called()

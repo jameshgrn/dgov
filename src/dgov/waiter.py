@@ -14,7 +14,7 @@ from dgov.done import (
     _agent_still_running,
     _is_done,
 )
-from dgov.persistence import STATE_DIR
+from dgov.persistence import STATE_DIR, VALID_TRANSITIONS
 
 if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
@@ -275,8 +275,6 @@ def wait_worker_pane(
                     if new_slug:
                         # Continue waiting on the new pane
                         slug = new_slug
-                        pane_record = _persist.get_pane(session_root, slug)
-                        strategy = _strategy_for_pane(pane_record)
                         stable_state = {}
                         continue
 
@@ -460,15 +458,30 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
             return False
         (done_dir / slug).touch()
         current_state = target.get("state", "")
-        # If already in a terminal state where done would be illegal,
-        # keep the signal file but preserve the existing state.
-        if current_state not in ("pending", "running"):
+        if current_state != "abandoned" and "done" not in VALID_TRANSITIONS.get(
+            current_state, frozenset()
+        ):
             return True
-        _persist.update_pane_state(session_root, slug, "done")
+        _persist.update_pane_state(
+            session_root,
+            slug,
+            "done",
+            force=current_state == "abandoned",
+        )
 
     elif signal == "failed":
         (done_dir / f"{slug}.exit").write_text("manual")
-        _persist.update_pane_state(session_root, slug, "failed")
+        current_state = target.get("state", "")
+        if current_state != "abandoned" and "failed" not in VALID_TRANSITIONS.get(
+            current_state, frozenset()
+        ):
+            return True
+        _persist.update_pane_state(
+            session_root,
+            slug,
+            "failed",
+            force=current_state == "abandoned",
+        )
     else:
         raise ValueError(f"Unknown signal: {signal!r}. Must be 'done' or 'failed'.")
 

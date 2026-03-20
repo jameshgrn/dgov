@@ -12,12 +12,13 @@ from click.testing import CliRunner
 
 from dgov.cli import cli
 from dgov.done import _is_done
-from dgov.persistence import STATE_DIR, VALID_EVENTS
+from dgov.persistence import STATE_DIR, VALID_EVENTS, get_pane
 from dgov.waiter import (
     _detect_blocked,
     interact_with_pane,
     nudge_pane,
     signal_pane,
+    wait_worker_pane,
 )
 
 pytestmark = pytest.mark.unit
@@ -205,6 +206,7 @@ class TestSignal:
         assert result is True
         done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
         assert done_path.exists()
+        assert get_pane(session_root, "test-worker")["state"] == "done"
 
     def test_signal_done_requires_commit(self, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
@@ -221,6 +223,15 @@ class TestSignal:
         exit_path = Path(session_root) / STATE_DIR / "done" / "test-worker.exit"
         assert exit_path.exists()
         assert exit_path.read_text() == "manual"
+
+    def test_late_signal_done_on_failed_pane_is_successful_noop(self, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path, state="failed")
+        with patch("dgov.done._has_completion_commit", return_value=True):
+            result = signal_pane(session_root, "test-worker", "done")
+        assert result is True
+        done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
+        assert done_path.exists()
+        assert get_pane(session_root, "test-worker")["state"] == "failed"
 
     def test_returns_false_for_missing_pane(self, tmp_path: Path) -> None:
         session_root = str(tmp_path)
@@ -241,6 +252,51 @@ class TestSignal:
 class TestPaneBlockedEvent:
     def test_pane_blocked_in_valid_events(self) -> None:
         assert "pane_blocked" in VALID_EVENTS
+
+
+class TestWaitWorkerPane:
+    def test_wait_worker_pane_reloads_pane_state_each_poll(self, tmp_path: Path) -> None:
+        session_root = _setup_pane(tmp_path)
+        pane = get_pane(session_root, "test-worker")
+        assert pane is not None
+
+        poll_states: list[str] = []
+        get_calls = {"count": 0}
+
+        def fake_get_pane(_session_root: str, _slug: str) -> dict:
+            get_calls["count"] += 1
+            state = "active" if get_calls["count"] == 1 else "failed"
+            return {**pane, "state": state}
+
+        def fake_poll_once(
+            _session_root: str,
+            _project_root: str,
+            _slug: str,
+            pane_record: dict | None,
+            _stable_state: dict,
+            _stable: int,
+            done_strategy=None,
+            alive=None,
+        ) -> tuple[bool, str]:
+            poll_states.append(pane_record["state"] if pane_record else "")
+            return (len(poll_states) > 1, "exit_signal" if len(poll_states) > 1 else "")
+
+        with (
+            patch("dgov.persistence.get_pane", side_effect=fake_get_pane),
+            patch("dgov.waiter._poll_once", side_effect=fake_poll_once),
+            patch("dgov.waiter._strategy_for_pane", return_value=None),
+            patch("dgov.waiter.time.sleep"),
+        ):
+            result = wait_worker_pane(
+                session_root,
+                "test-worker",
+                session_root=session_root,
+                poll=0,
+                auto_retry=False,
+            )
+
+        assert result == {"done": "test-worker", "method": "exit_signal"}
+        assert poll_states == ["active", "failed"]
 
 
 # ---------------------------------------------------------------------------
