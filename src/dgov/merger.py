@@ -853,21 +853,8 @@ def merge_worker_pane(
             text=True,
         )
         merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
-        try:
-            _persist.update_pane_state(session_root, slug, "merged")
-        except IllegalTransitionError as e:
-            if e.current == "abandoned":
-                logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
-            else:
-                raise
-        target["state"] = "merged"
-        _full_cleanup(pane_project_root, session_root, slug, target)
-        _persist.remove_pane(session_root, slug)
-        _persist.emit_event(
-            session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
-        )
 
-        # Post-merge: lint + verify protected files
+        # Post-merge: lint + verify protected files BEFORE marking pane merged
         damaged: list[str] = []
         lint_result: dict = {}
         test_result: dict = {}
@@ -893,6 +880,60 @@ def merge_worker_pane(
                 test_result.get("tests_ran"),
             )
 
+        # Gate on validation success — do not mark pane merged or clean up until validation passes
+        validation_failed = False
+        validation_error: str | None = None
+
+        # Check test results first
+        if test_result and not test_result.get("tests_passed"):
+            validation_failed = True
+            validation_error = (
+                f"Post-merge tests failed: {test_result.get('tests_failed', 'unknown')} failures "
+                f"in {test_result.get('tests_ran', 0)} tests ran"
+            )
+            logger.error("%s", validation_error)
+
+        # Check lint results for unfixable issues
+        if lint_result.get("lint_unfixable"):
+            validation_failed = True
+            validation_error = f"Post-merge lint found unfixable issues: {len(lint_result['lint_unfixable'])} files"
+            logger.error("%s", validation_error)
+
+        # Check for protected file damage
+        if damaged:
+            validation_failed = True
+            validation_error = f"Protected files changed after merge: {damaged}"
+            logger.error("%s", validation_error)
+
+        if validation_failed:
+            # Validation failed — do NOT mark pane merged, do NOT clean up, preserve artifacts
+            _persist.update_pane_state(session_root, slug, "merge_validation_failed")
+            return {
+                "error": validation_error,
+                "slug": slug,
+                "branch": branch_name,
+                "validation_failed": True,
+                "test_result": test_result,
+                "lint_result": lint_result,
+                "damaged_files": damaged,
+                "hint": "Pane state set to 'merge_validation_failed'. Artifacts preserved for recovery.",
+            }
+
+        # All validations passed — proceed with merge completion
+        try:
+            _persist.update_pane_state(session_root, slug, "merged")
+        except IllegalTransitionError as e:
+            if e.current == "abandoned":
+                logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
+            else:
+                raise
+        target["state"] = "merged"
+        _full_cleanup(pane_project_root, session_root, slug, target)
+        _persist.remove_pane(session_root, slug)
+        _persist.emit_event(
+            session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
+        )
+
         result = {
             "merged": slug,
             "branch": branch_name,
@@ -901,8 +942,6 @@ def merge_worker_pane(
         }
         if rebase_fallback:
             result["rebase_fallback"] = True
-        if damaged:
-            result["warning"] = f"protected files changed: {damaged}"
         if merge.warnings:
             result["stash_warnings"] = merge.warnings
         if lint_result:
