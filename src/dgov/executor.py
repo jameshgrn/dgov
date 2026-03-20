@@ -333,7 +333,7 @@ def run_wait_only(
                 timeout=timeout,
                 poll=poll,
                 stable=stable,
-                auto_retry=auto_retry,
+                auto_retry=False,
             )
             break
         except PaneTimeoutError:
@@ -388,15 +388,46 @@ def run_wait_only(
     pane = get_pane(session_root, current_slug)
     pane_state = pane.get("state") if pane else None
     if pane_state == "failed":
-        _phase("failed", current_slug)
-        return WaitOnlyResult(
-            state="failed",
-            slug=current_slug,
-            wait_result=wait_result,
-            pane_state=pane_state,
-            error="Worker exited with an error (check logs with: dgov pane logs)",
-            failure_stage="worker_failed",
-        )
+        if auto_retry and retries_left > 0:
+            from dgov.recovery import maybe_auto_retry
+
+            retry_result = maybe_auto_retry(session_root, current_slug, project_root)
+            if retry_result and retry_result.get("new_slug"):
+                current_slug = retry_result["new_slug"]
+                retries_left -= 1
+                wait_result = None
+                _phase("waiting", current_slug)
+                # loop back to wait on the new pane
+                try:
+                    wait_result = wait_worker_pane(
+                        project_root,
+                        current_slug,
+                        session_root=session_root,
+                        timeout=timeout,
+                        poll=poll,
+                        stable=stable,
+                        auto_retry=False,
+                    )
+                except PaneTimeoutError:
+                    _phase("failed", current_slug)
+                    return WaitOnlyResult(
+                        state="failed",
+                        slug=current_slug,
+                        error=f"Retried pane timed out after {timeout}s",
+                        failure_stage="timeout",
+                    )
+                pane = get_pane(session_root, current_slug)
+                pane_state = pane.get("state") if pane else None
+        if pane_state == "failed":
+            _phase("failed", current_slug)
+            return WaitOnlyResult(
+                state="failed",
+                slug=current_slug,
+                wait_result=wait_result,
+                pane_state=pane_state,
+                error="Worker exited with an error (check logs with: dgov pane logs)",
+                failure_stage="worker_failed",
+            )
     if pane_state in ("timed_out", "abandoned"):
         _phase("failed", current_slug)
         return WaitOnlyResult(
