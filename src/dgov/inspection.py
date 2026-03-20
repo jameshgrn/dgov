@@ -86,7 +86,7 @@ def review_worker_pane(
     # Filter out protected files and worker instruction files.
     # CLAUDE.md and AGENTS.md are worktree-local and should not downgrade safe verdicts.
     porcelain_lines = []
-    for ln in porcelain.stdout.strip().splitlines():
+    for ln in porcelain.stdout.splitlines():
         filename = ln[3:]
         # Skip protected files
         if any(filename.startswith(pf) for pf in PROTECTED_FILES):
