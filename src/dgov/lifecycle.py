@@ -186,11 +186,14 @@ def _find_unique_slug(project_root: str, session_root: str, base_slug: str) -> t
     worktree paths. Returns (unique_slug, worktree_path).
     """
 
-    from dgov.persistence import all_panes
+    from dgov.persistence import all_panes, get_slug_history
 
     # Get existing panes and their branches/worktrees
     existing_panes = all_panes(session_root)
     existing_slugs = {p["slug"] for p in existing_panes}
+    # Also include historical slugs (closed/removed panes)
+    historical_slugs = get_slug_history(session_root)
+    existing_slugs.update(historical_slugs)
     existing_branches = {p["branch_name"] for p in existing_panes if p.get("branch_name")}
     existing_worktrees = {p["worktree_path"] for p in existing_panes if p.get("worktree_path")}
 

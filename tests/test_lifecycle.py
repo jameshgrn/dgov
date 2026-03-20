@@ -817,3 +817,157 @@ class TestWriteWorktreeInstructions:
 
         assert "CLAUDE.md" in exclude_content
         assert "AGENTS.md" in exclude_content
+
+
+# ──────────────────────────────────────────────────────────────
+# TestSlugAllocationHistory
+# ──────────────────────────────────────────────────────────────
+
+
+class TestSlugAllocationHistory:
+    """Tests for session-unique pane slug allocation with historical tracking."""
+
+    def test_historical_slug_remains_reserved_after_close(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """A previously used slug remains reserved after pane close.
+
+        When a pane is closed and removed from active panes, its slug
+        should still be tracked in history so subsequent allocations
+        avoid collision.
+        """
+        from dgov.lifecycle import _find_unique_slug
+        from dgov.persistence import all_panes, get_pane, remove_pane
+
+        # Create initial pane with base slug
+        project_root = str(tmp_path / "proj")
+        session_root = str(tmp_path / "session")
+        Path(project_root).mkdir(parents=True)
+        Path(session_root).mkdir(parents=True)
+
+        # Simulate existing pane state by directly manipulating the database
+        from dgov.persistence import WorkerPane, add_pane
+
+        pane = WorkerPane(
+            slug="fix-parser",
+            prompt="test",
+            pane_id="%1",
+            agent="claude",
+            project_root=project_root,
+            worktree_path=str(tmp_path / "worktrees" / "fix-parser"),
+            branch_name="fix-parser",
+            owns_worktree=True,
+            role="worker",
+            parent_slug="",
+            created_at=time.time(),
+            state="active",
+        )
+        add_pane(session_root, pane)
+
+        # Verify pane exists
+        assert get_pane(session_root, "fix-parser") is not None
+
+        # Close the pane (removes from active panes)
+        remove_pane(session_root, "fix-parser")
+
+        # Pane should no longer be in active panes
+        assert get_pane(session_root, "fix-parser") is None
+        assert "fix-parser" not in {p["slug"] for p in all_panes(session_root)}
+
+        # But slug should still be reserved - new allocation should increment
+        unique_slug, _worktree_path = _find_unique_slug(project_root, session_root, "fix-parser")
+        assert unique_slug != "fix-parser"
+        assert unique_slug.startswith("fix-parser-")
+
+    def test_slug_allocation_increments_numeric_suffix(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Allocation increments to the next numeric suffix for historical slugs.
+
+        When multiple panes have used the same base slug over time,
+        each new allocation should increment the numeric suffix.
+        """
+        from dgov.lifecycle import _find_unique_slug
+        from dgov.persistence import WorkerPane, add_pane, remove_pane
+
+        project_root = str(tmp_path / "proj")
+        session_root = str(tmp_path / "session")
+        Path(project_root).mkdir(parents=True)
+        Path(session_root).mkdir(parents=True)
+
+        # Simulate historical usage of "add-feature" slug
+        # First pane: fix-parser (no suffix needed)
+        pane1 = WorkerPane(
+            slug="add-feature",
+            prompt="test 1",
+            pane_id="%1",
+            agent="claude",
+            project_root=project_root,
+            worktree_path=str(tmp_path / "worktrees" / "add-feature"),
+            branch_name="add-feature",
+            owns_worktree=True,
+            role="worker",
+            parent_slug="",
+            created_at=time.time(),
+            state="active",
+        )
+        add_pane(session_root, pane1)
+        remove_pane(session_root, "add-feature")
+
+        # Second pane: add-feature-1 (first suffix)
+        pane2 = WorkerPane(
+            slug="add-feature-1",
+            prompt="test 2",
+            pane_id="%2",
+            agent="claude",
+            project_root=project_root,
+            worktree_path=str(tmp_path / "worktrees" / "add-feature-1"),
+            branch_name="add-feature-1",
+            owns_worktree=True,
+            role="worker",
+            parent_slug="",
+            created_at=time.time(),
+            state="active",
+        )
+        add_pane(session_root, pane2)
+        remove_pane(session_root, "add-feature-1")
+
+        # Third allocation should get add-feature-2
+        unique_slug, _worktree_path = _find_unique_slug(project_root, session_root, "add-feature")
+        assert unique_slug == "add-feature-2"
+
+    def test_active_slug_collision_also_increments(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Active pane slug collision also triggers numeric suffix increment.
+
+        This verifies the existing behavior for active panes still works.
+        """
+        from dgov.lifecycle import _find_unique_slug
+        from dgov.persistence import WorkerPane, add_pane
+
+        project_root = str(tmp_path / "proj")
+        session_root = str(tmp_path / "session")
+        Path(project_root).mkdir(parents=True)
+        Path(session_root).mkdir(parents=True)
+
+        # Create active pane
+        pane = WorkerPane(
+            slug="active-task",
+            prompt="test",
+            pane_id="%1",
+            agent="claude",
+            project_root=project_root,
+            worktree_path=str(tmp_path / "worktrees" / "active-task"),
+            branch_name="active-task",
+            owns_worktree=True,
+            role="worker",
+            parent_slug="",
+            created_at=time.time(),
+            state="active",
+        )
+        add_pane(session_root, pane)
+
+        # New allocation should increment since slug is in use
+        unique_slug, _worktree_path = _find_unique_slug(project_root, session_root, "active-task")
+        assert unique_slug == "active-task-1"

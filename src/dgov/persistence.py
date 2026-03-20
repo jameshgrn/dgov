@@ -323,6 +323,12 @@ CREATE TABLE IF NOT EXISTS merge_queue (
     processed_at TIMESTAMP
 )"""
 
+_CREATE_SLUG_HISTORY_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS slug_history (
+    slug TEXT PRIMARY KEY,
+    used_at TEXT NOT NULL)
+"""
+
 
 CIRCUIT_BREAKER_THRESHOLD = 3
 
@@ -356,6 +362,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
     conn.execute(_CREATE_MERGE_QUEUE_TABLE_SQL)
+    conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
 
     # Migrate: add hierarchy columns if missing
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
@@ -456,9 +463,21 @@ def remove_pane(session_root: str, slug: str) -> None:
     def _do() -> None:
         conn = _get_db(session_root)
         conn.execute("DELETE FROM panes WHERE slug = ?", (slug,))
+        # Record slug in history for unique allocation tracking
+        conn.execute(
+            "INSERT OR IGNORE INTO slug_history (slug, used_at) VALUES (?, ?)",
+            (slug, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+        )
         conn.commit()
 
     _retry_on_lock(_do)
+
+
+def get_slug_history(session_root: str) -> set[str]:
+    """Return all slugs that have ever been used (including closed/removed panes)."""
+    conn = _get_db(session_root)
+    rows = conn.execute("SELECT slug FROM slug_history").fetchall()
+    return {row[0] for row in rows}
 
 
 def get_pane(session_root: str, slug: str) -> dict | None:
