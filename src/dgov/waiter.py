@@ -263,7 +263,8 @@ def wait_worker_pane(
             done_strategy=strategy,
         )
         if done:
-            # Check if it failed and we should auto-retry
+            # Re-read: _poll_once/_is_done may have just transitioned the state
+            pane_record = _persist.get_pane(session_root, slug)
             current_state = pane_record.get("state", "") if pane_record else ""
 
             if auto_retry and current_state in ("failed", "abandoned"):
