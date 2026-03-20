@@ -12,7 +12,9 @@ import click
 @click.option("--interval", "-i", default=5, type=int, help="Poll interval seconds")
 @click.option("--dry-run", is_flag=True, help="One poll cycle then exit")
 @click.option(
-    "--auto-merge/--no-auto-merge", default=False, help="Auto-merge done panes with safe verdict"
+    "--auto-merge/--no-auto-merge",
+    default=True,
+    help="Auto-land done panes with safe verdict (default: on)",
 )
 @click.option(
     "--auto-retry/--no-auto-retry", default=True, help="Auto-retry failed panes per agent policy"
