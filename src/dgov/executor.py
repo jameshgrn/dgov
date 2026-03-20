@@ -1191,3 +1191,385 @@ def run_mark_reviewed(
     target = "reviewed_pass" if passed else "reviewed_fail"
     update_pane_state(session_root, slug, target, force=True)
     return StateTransitionResult(slug=slug, new_state=target, changed=True)
+
+
+# ---------------------------------------------------------------------------
+# DagKernel runtime adapter
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DagRunResult:
+    status: str
+    merged: list[str]
+    failed: list[str]
+    skipped: list[str]
+    run_id: int | None = None
+    error: str | None = None
+
+
+def run_dag_kernel(
+    project_root: str,
+    dag_definition: object,
+    *,
+    session_root: str | None = None,
+    run_id: int = 0,
+    auto_merge: bool = True,
+    max_concurrent: int = 0,
+    poll_interval: float = 3.0,
+    task_timeout: int = 600,
+    progress: Callable[[str], None] | None = None,
+) -> DagRunResult:
+    """Drive a DAG through the DagKernel state machine.
+
+    This is the runtime adapter: it translates kernel actions into executor
+    syscalls and feeds events back. The kernel owns scheduling, readiness,
+    merge ordering, and failure propagation. This function owns I/O.
+
+    Args:
+        project_root: Git repo root.
+        dag_definition: A DagDefinition with .tasks and .project_root.
+        session_root: Session root (defaults to project_root).
+        run_id: DAG run ID for persistence.
+        auto_merge: Whether to auto-merge reviewed_pass tasks.
+        max_concurrent: Max concurrent workers (0=unlimited).
+        poll_interval: Seconds between completion polls.
+        task_timeout: Per-task wait timeout in seconds.
+        progress: Optional callback for progress messages.
+    """
+    import os
+
+    from dgov.kernel import (
+        CloseTask,
+        DagDone,
+        DagKernel,
+        DispatchTask,
+        MergeTask,
+        ReviewTask,
+        SkipTask,
+        TaskClosed,
+        TaskDispatched,
+        WaitForAny,
+    )
+
+    session_root = os.path.abspath(session_root or project_root)
+    dag = dag_definition
+
+    def _progress(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    # Build dependency map from DagDefinition
+    deps: dict[str, tuple[str, ...]] = {}
+    task_timeouts: dict[str, int] = {}
+    for slug, task in dag.tasks.items():
+        deps[slug] = tuple(task.depends_on)
+        task_timeouts[slug] = getattr(task, "timeout_s", task_timeout)
+
+    kernel = DagKernel(
+        deps=deps,
+        auto_merge=auto_merge,
+        max_concurrent=max_concurrent,
+    )
+    actions = kernel.start()
+
+    # Pane slug tracking (task_slug → pane_slug)
+    pane_map: dict[str, str] = {}
+
+    # Stable state tracking per pane for poll_once
+    stable_states: dict[str, dict] = {}
+
+    while True:
+        for action in actions:
+            if isinstance(action, DagDone):
+                _progress(
+                    f"DAG {action.status}: "
+                    f"{len(action.merged)} merged, "
+                    f"{len(action.failed)} failed, "
+                    f"{len(action.skipped)} skipped"
+                )
+                return DagRunResult(
+                    status=action.status,
+                    merged=list(action.merged),
+                    failed=list(action.failed),
+                    skipped=list(action.skipped),
+                    run_id=run_id,
+                )
+
+            if isinstance(action, DispatchTask):
+                event = _dag_dispatch(dag, action.task_slug, run_id, session_root, _progress)
+                if isinstance(event, TaskDispatched):
+                    pane_map[action.task_slug] = event.pane_slug
+                actions = kernel.handle(event)
+                break  # Re-enter loop with new actions
+
+            if isinstance(action, WaitForAny):
+                event = _dag_wait_any(
+                    project_root,
+                    session_root,
+                    action.task_slugs,
+                    pane_map,
+                    stable_states,
+                    task_timeouts,
+                    poll_interval,
+                )
+                actions = kernel.handle(event)
+                break
+
+            if isinstance(action, ReviewTask):
+                event = _dag_review(
+                    project_root,
+                    session_root,
+                    action.task_slug,
+                    action.pane_slug,
+                    _progress,
+                )
+                actions = kernel.handle(event)
+                break
+
+            if isinstance(action, MergeTask):
+                event = _dag_merge(
+                    project_root,
+                    session_root,
+                    action.task_slug,
+                    action.pane_slug,
+                    _progress,
+                )
+                actions = kernel.handle(event)
+                break
+
+            if isinstance(action, SkipTask):
+                _dag_skip(
+                    session_root,
+                    run_id,
+                    action.task_slug,
+                    dag,
+                    action.reason,
+                    _progress,
+                )
+                actions = kernel.handle(TaskClosed(action.task_slug))
+                break
+
+            if isinstance(action, CloseTask):
+                _dag_close(
+                    project_root,
+                    session_root,
+                    action.task_slug,
+                    action.pane_slug,
+                    action.reason,
+                    _progress,
+                )
+                actions = kernel.handle(TaskClosed(action.task_slug))
+                break
+        else:
+            # No actions left and no DagDone — shouldn't happen
+            return DagRunResult(
+                status="failed",
+                merged=[],
+                failed=list(kernel.task_states.keys()),
+                skipped=[],
+                run_id=run_id,
+                error="Kernel produced no actions",
+            )
+
+
+def _dag_dispatch(
+    dag: object,
+    task_slug: str,
+    run_id: int,
+    session_root: str,
+    progress: Callable[[str], None],
+) -> object:
+    """Execute a DispatchTask action. Returns TaskDispatched or TaskDispatchFailed."""
+    from dgov.kernel import TaskDispatched, TaskDispatchFailed
+    from dgov.lifecycle import create_worker_pane
+    from dgov.persistence import emit_event, upsert_dag_task
+
+    task = dag.tasks[task_slug]
+    touches = [*task.files.create, *task.files.edit, *task.files.delete]
+    packet = build_context_packet(
+        task.prompt,
+        file_claims=touches,
+        commit_message=task.commit_message,
+    )
+
+    try:
+        report = run_dispatch_preflight(
+            dag.project_root,
+            task.agent,
+            session_root=session_root,
+            packet=packet,
+        )
+        if not report.passed:
+            failed_checks = [c.message for c in report.checks if not c.passed and c.critical]
+            raise RuntimeError(f"Preflight failed: {'; '.join(failed_checks)}")
+
+        pane = create_worker_pane(
+            project_root=dag.project_root,
+            prompt=task.prompt,
+            agent=task.agent,
+            permission_mode=task.permission_mode,
+            slug=task.slug,
+            session_root=session_root,
+            context_packet=packet,
+        )
+        pane_slug = pane.slug
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            "dispatched",
+            task.agent,
+            pane_slug=pane_slug,
+        )
+        emit_event(
+            session_root,
+            "dag_task_dispatched",
+            f"dag/{run_id}",
+            task=task_slug,
+            pane=pane_slug,
+        )
+        progress(f"  dispatched {task_slug} ({task.agent})")
+        return TaskDispatched(task_slug, pane_slug)
+
+    except Exception as exc:
+        logger.error("Dispatch failed for %s: %s", task_slug, exc)
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            "failed",
+            task.agent,
+            error=str(exc),
+        )
+        return TaskDispatchFailed(task_slug, str(exc))
+
+
+def _dag_wait_any(
+    project_root: str,
+    session_root: str,
+    task_slugs: tuple[str, ...],
+    pane_map: dict[str, str],
+    stable_states: dict[str, dict],
+    task_timeouts: dict[str, int],
+    poll_interval: float,
+) -> object:
+    """Poll active panes round-robin until one completes. Returns TaskWaitDone."""
+    import time
+
+    from dgov.done import _is_done
+    from dgov.kernel import TaskWaitDone
+    from dgov.persistence import get_pane
+
+    start = time.monotonic()
+    max_timeout = max(task_timeouts.get(s, 600) for s in task_slugs)
+
+    while True:
+        for task_slug in task_slugs:
+            pane_slug = pane_map.get(task_slug, "")
+            if not pane_slug:
+                continue
+
+            if task_slug not in stable_states:
+                stable_states[task_slug] = {}
+
+            pane_record = get_pane(session_root, pane_slug)
+            pane_state = pane_record.get("state", "") if pane_record else ""
+
+            # Already terminal?
+            if pane_state in ("done", "failed", "timed_out", "abandoned"):
+                return TaskWaitDone(task_slug, pane_slug, pane_state)
+
+            # Check via _is_done (non-blocking single poll)
+            done = _is_done(
+                session_root,
+                pane_slug,
+                pane_record=pane_record,
+                _stable_state=stable_states[task_slug],
+            )
+            if done:
+                pane_record = get_pane(session_root, pane_slug)
+                pane_state = pane_record.get("state", "") if pane_record else "done"
+                return TaskWaitDone(task_slug, pane_slug, pane_state)
+
+        # Timeout check
+        elapsed = time.monotonic() - start
+        if elapsed > max_timeout:
+            # Return the longest-waiting task as timed out
+            return TaskWaitDone(task_slugs[0], pane_map.get(task_slugs[0], ""), "timed_out")
+
+        time.sleep(poll_interval)
+
+
+def _dag_review(
+    project_root: str,
+    session_root: str,
+    task_slug: str,
+    pane_slug: str,
+    progress: Callable[[str], None],
+) -> object:
+    """Execute a ReviewTask action. Returns TaskReviewDone."""
+    from dgov.kernel import TaskReviewDone
+
+    result = run_review_only(
+        project_root,
+        pane_slug,
+        session_root=session_root,
+        require_safe=True,
+        require_commits=True,
+    )
+    progress(f"  reviewed {task_slug}: {result.verdict}")
+    return TaskReviewDone(
+        task_slug,
+        passed=result.passed,
+        verdict=result.verdict,
+        commit_count=result.commit_count,
+    )
+
+
+def _dag_merge(
+    project_root: str,
+    session_root: str,
+    task_slug: str,
+    pane_slug: str,
+    progress: Callable[[str], None],
+) -> object:
+    """Execute a MergeTask action. Returns TaskMergeDone."""
+    from dgov.kernel import TaskMergeDone
+
+    result = run_merge_only(project_root, pane_slug, session_root=session_root)
+    if result.error:
+        progress(f"  merge failed {task_slug}: {result.error}")
+    else:
+        progress(f"  merged {task_slug}")
+    return TaskMergeDone(task_slug, error=result.error)
+
+
+def _dag_skip(
+    session_root: str,
+    run_id: int,
+    task_slug: str,
+    dag: object,
+    reason: str,
+    progress: Callable[[str], None],
+) -> None:
+    """Persist a SkipTask action."""
+    from dgov.persistence import upsert_dag_task
+
+    task = dag.tasks[task_slug]
+    upsert_dag_task(session_root, run_id, task_slug, "skipped", task.agent)
+    progress(f"  skipped {task_slug}: {reason}")
+
+
+def _dag_close(
+    project_root: str,
+    session_root: str,
+    task_slug: str,
+    pane_slug: str,
+    reason: str,
+    progress: Callable[[str], None],
+) -> None:
+    """Execute a CloseTask action."""
+    if pane_slug:
+        run_close_only(project_root, pane_slug, session_root=session_root, force=True)
+    progress(f"  closed {task_slug}: {reason}")

@@ -328,7 +328,7 @@ def test_dag_kernel_merge_serialization_follows_topo_order() -> None:
     kernel.handle(TaskWaitDone("a", "pane-a", "done"))
     kernel.handle(TaskReviewDone("a", True, "safe", 1))
     kernel.handle(TaskMergeDone("a"))
-    kernel.handle(TaskClosed("a"))
+    actions = kernel.handle(TaskClosed("a"))
 
     # Dispatch and review both b and c
     kernel.handle(TaskDispatched("b", "pane-b"))
