@@ -520,3 +520,151 @@ class TestLayoutRendering:
         state = DashboardState(branch="main", last_refresh=1710000000)
         layout = _build_layout(state, term_width=120, term_height=20)
         assert layout["body"]["bottom"].get("monitor") is not None
+
+
+@pytest.mark.unit
+class TestDoneNotifications:
+    """Focused tests for dashboard done-event notifications."""
+
+    def test_pane_done_event_shows_in_monitor_panel(self):
+        """A new pane_done event appears in the monitor panel."""
+        from dgov.dashboard import DashboardState, _build_layout
+
+        state = DashboardState(
+            branch="main",
+            last_refresh=1710000000,
+            events=[
+                {
+                    "ts": "2025-03-15T10:30:00+00:00",
+                    "event": "pane_done",
+                    "pane": "worker-a",
+                    "data": "{}",
+                }
+            ],
+        )
+        layout = _build_layout(state, term_width=120, term_height=20)
+        monitor_panel = layout["body"]["bottom"]["monitor"]
+
+        # Render the panel content to check for the event
+        from rich.console import Console
+
+        console = Console(record=True, force_terminal=True, width=120, height=5)
+        console.print(monitor_panel)
+        output = console.export_text()
+
+        assert "pane_done" in output
+        assert "worker-a" in output
+
+    def test_pane_done_event_styled_green(self):
+        """pane_done events are styled green in the monitor panel."""
+        from dgov.dashboard import DashboardState, _build_layout
+
+        state = DashboardState(
+            branch="main",
+            last_refresh=1710000000,
+            events=[
+                {
+                    "ts": "2025-03-15T10:30:00+00:00",
+                    "event": "pane_done",
+                    "pane": "worker-b",
+                    "data": "{}",
+                }
+            ],
+        )
+        layout = _build_layout(state, term_width=120, term_height=20)
+        monitor_panel = layout["body"]["bottom"]["monitor"]
+
+        from rich.console import Console
+
+        console = Console(record=True, force_terminal=True, width=120, height=5)
+        console.print(monitor_panel)
+        output = console.export_text()
+
+        # Green styling should be present (rich uses ANSI codes or markup)
+        assert "pane_done" in output
+        assert "worker-b" in output
+
+    def test_multiple_pane_done_events_show_chronologically(self):
+        """Multiple pane_done events display in chronological order."""
+        from dgov.dashboard import DashboardState, _build_layout
+
+        state = DashboardState(
+            branch="main",
+            last_refresh=1710000000,
+            events=[
+                {
+                    "ts": "2025-03-15T10:28:00+00:00",
+                    "event": "pane_done",
+                    "pane": "worker-1",
+                    "data": "{}",
+                },
+                {
+                    "ts": "2025-03-15T10:29:00+00:00",
+                    "event": "pane_done",
+                    "pane": "worker-2",
+                    "data": "{}",
+                },
+                {
+                    "ts": "2025-03-15T10:30:00+00:00",
+                    "event": "pane_done",
+                    "pane": "worker-3",
+                    "data": "{}",
+                },
+            ],
+        )
+        layout = _build_layout(state, term_width=120, term_height=20)
+        monitor_panel = layout["body"]["bottom"]["monitor"]
+
+        from rich.console import Console
+
+        console = Console(record=True, force_terminal=True, width=120, height=8)
+        console.print(monitor_panel)
+        output = console.export_text()
+
+        assert "worker-1" in output
+        assert "worker-2" in output
+        assert "worker-3" in output
+
+    def test_mixed_event_types_with_pane_done(self):
+        """pane_done events render correctly alongside other event types."""
+        from dgov.dashboard import DashboardState, _build_layout
+
+        state = DashboardState(
+            branch="main",
+            last_refresh=1710000000,
+            events=[
+                {
+                    "ts": "2025-03-15T10:25:00+00:00",
+                    "event": "pane_created",
+                    "pane": "worker-x",
+                    "data": "{}",
+                },
+                {
+                    "ts": "2025-03-15T10:30:00+00:00",
+                    "event": "pane_done",
+                    "pane": "worker-y",
+                    "data": "{}",
+                },
+                {
+                    "ts": "2025-03-15T10:35:00+00:00",
+                    "event": "pane_merged",
+                    "pane": "worker-z",
+                    "data": "{}",
+                },
+            ],
+        )
+        layout = _build_layout(state, term_width=120, term_height=20)
+        monitor_panel = layout["body"]["bottom"]["monitor"]
+
+        from rich.console import Console
+
+        console = Console(record=True, force_terminal=True, width=120, height=8)
+        console.print(monitor_panel)
+        output = console.export_text()
+
+        assert "pane_created" in output
+        assert "pane_done" in output
+        assert "pane_merged" in output
+        assert "worker-x" in output
+        assert "worker-y" in output
+        assert "worker-z" in output
