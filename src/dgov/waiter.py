@@ -247,12 +247,12 @@ def wait_worker_pane(
 
     logger.debug("wait_for_pane slug=%s timeout=%ds", slug, timeout)
     session_root = os.path.abspath(session_root or project_root)
-    pane_record = _persist.get_pane(session_root, slug)
-    strategy = _strategy_for_pane(pane_record)
     start = time.monotonic()
     stable_state: dict = {}
 
     while True:
+        pane_record = _persist.get_pane(session_root, slug)
+        strategy = _strategy_for_pane(pane_record)
         done, method = _poll_once(
             session_root,
             project_root,
@@ -264,8 +264,7 @@ def wait_worker_pane(
         )
         if done:
             # Check if it failed and we should auto-retry
-            rec = _persist.get_pane(session_root, slug)
-            current_state = rec.get("state", "") if rec else ""
+            current_state = pane_record.get("state", "") if pane_record else ""
 
             if auto_retry and current_state in ("failed", "abandoned"):
                 from dgov.recovery import maybe_auto_retry
