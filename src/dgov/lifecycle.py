@@ -107,8 +107,16 @@ def _collect_descendant_pids(root_pid: int, snapshot: dict[int, tuple[int, int]]
     return descendants
 
 
-def _terminate_pane_process_tree(root_pid: int) -> None:
-    """Terminate the pane process group and any descendant process groups."""
+def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> dict:
+    """Terminate the pane process group and any descendant process groups.
+
+    Args:
+        root_pid: PID to terminate (will kill all descendants).
+        wait_timeout: Seconds to wait for processes to exit before returning.
+
+    Returns:
+        {"terminated": bool, "still_running": list[int] or []}.
+    """
     try:
         snapshot = _process_snapshot()
     except (subprocess.SubprocessError, OSError):
@@ -126,13 +134,37 @@ def _terminate_pane_process_tree(root_pid: int) -> None:
         try:
             pgids = {os.getpgid(root_pid)}
         except (ProcessLookupError, PermissionError):
-            return
+            return {"terminated": False, "still_running": []}
 
     for pgid in sorted(pgids, reverse=True):
         try:
             os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             continue
+
+    # Wait bounded time for processes to actually exit
+    import time
+
+    deadline = time.time() + wait_timeout
+    snapshot_after = _process_snapshot() if snapshot else {}
+
+    while time.time() < deadline:
+        still_alive = set()
+        for pid in descendant_pids:
+            try:
+                os.kill(pid, 0)
+                still_alive.add(pid)
+            except OSError:
+                pass
+        if not still_alive:
+            return {"terminated": True, "still_running": []}
+        # Re-resolve descendants since PIDs may have changed
+        snapshot_after = _process_snapshot()
+        descendant_pids = _collect_descendant_pids(root_pid, snapshot_after)
+        time.sleep(0.25)
+
+    still_running = list(descendant_pids)
+    return {"terminated": False, "still_running": still_running}
 
 
 # -- Git worktree helpers --
@@ -806,7 +838,8 @@ def _full_cleanup(
     Handles: kill tmux pane, remove from state, delete done signal,
     remove git worktree + branch.
 
-    Returns {"cleaned": True, "skipped_worktree": bool}.
+    Returns {"cleaned": bool, "skipped_worktree": bool, "branch_kept": bool,
+             "worktree_removal_failed": bool or None}.
     """
     # 1. Delete done signal, exit signal, and log file
     done_path = Path(session_root) / STATE_DIR / "done" / slug
@@ -816,10 +849,9 @@ def _full_cleanup(
     log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     log_path.unlink(missing_ok=True)
 
-    # 2. Kill process group then tmux pane
+    # 2. Kill process group with bounded wait, then tmux pane
     pane_id = pane_record.get("pane_id")
     if pane_id:
-        # Kill the pane shell plus any descendant process groups it spawned.
         try:
             from dgov.tmux import _run as tmux_run
 
@@ -828,7 +860,15 @@ def _full_cleanup(
                 silent=True,
             )
             if pid_str.strip():
-                _terminate_pane_process_tree(int(pid_str.strip()))
+                terminate_result = _terminate_pane_process_tree(int(pid_str.strip()))
+                if not terminate_result.get("terminated"):
+                    still = terminate_result.get("still_running", [])
+                    logger.warning(
+                        "Pane %s: %d process(es) did not exit after SIGTERM; "
+                        "continuing with cleanup.",
+                        slug,
+                        len(still),
+                    )
         except (RuntimeError, ValueError):
             pass  # pane already dead or bad PID, skip PGID kill
         get_backend().destroy(pane_id)
@@ -836,6 +876,7 @@ def _full_cleanup(
     # 3. Remove worktree + branch
     skipped_worktree = False
     branch_kept = False
+    worktree_removal_failed = None
     if remove_worktree and pane_record.get("owns_worktree", False):
         wt = pane_record.get("worktree_path")
         branch = pane_record.get("branch_name")
@@ -853,11 +894,20 @@ def _full_cleanup(
                 skipped_worktree = True
 
         if not skipped_worktree and wt:
-            subprocess.run(
+            remove_result = subprocess.run(
                 ["git", "-C", project_root, "worktree", "remove", "--force", wt],
                 capture_output=True,
+                text=True,
             )
-            if branch:
+            if remove_result.returncode != 0:
+                logger.error(
+                    "Failed to remove worktree %s: %s",
+                    wt,
+                    remove_result.stderr.strip(),
+                )
+                worktree_removal_failed = True
+
+            if branch and not worktree_removal_failed:
                 pane_state = pane_record.get("state", "")
                 delete_flag = "-D" if pane_state == "merged" else "-d"
                 br_result = subprocess.run(
@@ -873,13 +923,25 @@ def _full_cleanup(
                         branch,
                     )
                     branch_kept = True
-        if not skipped_worktree:
+
+            if not skipped_worktree and not worktree_removal_failed:
+                subprocess.run(
+                    ["git", "-C", project_root, "worktree", "prune"],
+                    capture_output=True,
+                )
+        elif worktree_removal_failed:
+            # Still prune to clean stale metadata even if remove failed
             subprocess.run(
                 ["git", "-C", project_root, "worktree", "prune"],
                 capture_output=True,
             )
 
-    return {"cleaned": True, "skipped_worktree": skipped_worktree, "branch_kept": branch_kept}
+    return {
+        "cleaned": not worktree_removal_failed or skipped_worktree,
+        "skipped_worktree": skipped_worktree,
+        "branch_kept": branch_kept,
+        "worktree_removal_failed": worktree_removal_failed,
+    }
 
 
 def close_worker_pane(
@@ -918,7 +980,16 @@ def close_worker_pane(
         target,
         skip_worktree_if_dirty=not force,
     )
-    if not result.get("skipped_worktree"):
+    # Preserve evidence when worktree removal fails
+    if result.get("skipped_worktree") or result.get("worktree_removal_failed"):
+        # Don't remove pane state; leave it inspectable for debugging
+        if result.get("worktree_removal_failed"):
+            logger.warning(
+                "Worktree removal failed for %s — pane state preserved for inspection",
+                slug,
+            )
+        update_pane_state(session_root, slug, "closed")
+    else:
         update_pane_state(session_root, slug, "closed")
         emit_event(session_root, "pane_closed", slug)
         remove_pane(session_root, slug)
