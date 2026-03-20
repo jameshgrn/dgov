@@ -201,7 +201,6 @@ def cli(ctx, governor):
         "agents",
         "blame",
         "checkpoint",
-        "experiment",
         "template",
         "openrouter",
         "dashboard",
@@ -465,7 +464,6 @@ from dgov.cli.admin import (  # noqa: E402
 from dgov.cli.batch_cmd import batch, checkpoint  # noqa: E402
 from dgov.cli.briefing_cmd import briefing_cmd  # noqa: E402
 from dgov.cli.dag_cmd import dag  # noqa: E402
-from dgov.cli.experiment import experiment  # noqa: E402
 from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
 from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
 from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
@@ -489,7 +487,6 @@ cli.add_command(dashboard)
 cli.add_command(template)
 cli.add_command(checkpoint)
 cli.add_command(batch)
-cli.add_command(experiment)
 cli.add_command(review_fix)
 cli.add_command(openrouter)
 cli.add_command(init_cmd)

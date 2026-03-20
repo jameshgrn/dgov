@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 from dgov.context_packet import ContextPacket, build_context_packet
+from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,134 @@ class ReviewGate:
     verdict: str
     commit_count: int
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class PostDispatchResult:
+    state: str
+    slug: str
+    review: dict | None = None
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    merge_result: dict | None = None
+    cleanup: CleanupOnlyResult | None = None
+    error: str | None = None
+    failure_stage: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewMergeResult:
+    slug: str
+    review: dict
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    merge_result: dict | None = None
+    failure_stage: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class MergeOnlyResult:
+    slug: str
+    merge_result: dict | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class LandResult:
+    slug: str
+    review: dict
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    merge_result: dict | None = None
+    cleanup: CleanupOnlyResult | None = None
+    failure_stage: str | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewOnlyResult:
+    slug: str
+    review: dict
+    passed: bool
+    verdict: str
+    commit_count: int
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class WaitOnlyResult:
+    state: str
+    slug: str
+    wait_result: dict | None = None
+    pane_state: str | None = None
+    error: str | None = None
+    failure_stage: str | None = None
+
+
+@dataclass(frozen=True)
+class CleanupOnlyResult:
+    slug: str
+    action: str
+    reason: str
+    closed: bool = False
+    force: bool = False
+    error: str | None = None
+
+
+def run_cleanup_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    state: str,
+    failure_stage: str | None = None,
+) -> CleanupOnlyResult:
+    """Run the canonical cleanup policy for a terminal lifecycle outcome."""
+    from dgov.lifecycle import close_worker_pane
+    from dgov.persistence import mark_preserved_artifacts
+
+    preserve = CleanupOnlyResult(
+        slug=slug,
+        action="preserve",
+        reason=failure_stage or state,
+    )
+
+    if state == "failed" and failure_stage in {"timeout", "recovery", "review"}:
+        force = False
+    elif state == "failed" and failure_stage == "worker_failed":
+        force = True
+    else:
+        if session_root:
+            try:
+                mark_preserved_artifacts(
+                    session_root,
+                    slug,
+                    reason=failure_stage or state,
+                    recoverable=False,
+                    state=state,
+                    failure_stage=failure_stage,
+                )
+            except (OSError, sqlite3.Error):
+                logger.debug(
+                    "Skipping preserved-artifact metadata for %s; session root unavailable",
+                    slug,
+                    exc_info=True,
+                )
+        return preserve
+
+    closed = close_worker_pane(
+        project_root,
+        slug,
+        session_root=session_root,
+        force=force,
+    )
+    return CleanupOnlyResult(
+        slug=slug,
+        action="close",
+        reason=failure_stage or state,
+        closed=closed,
+        force=force,
+        error=None if closed else f"Failed to close pane: {slug}",
+    )
 
 
 class HandleResult(TypedDict):
@@ -110,7 +240,6 @@ class ExecutorLifecycle:
 
         Transitions pane to 'review_pending' and returns verdict details.
         """
-        from dgov.inspection import review_worker_pane
         from dgov.persistence import emit_event, get_pane, update_pane_state
 
         rec = get_pane(self.session_root, slug)
@@ -131,7 +260,13 @@ class ExecutorLifecycle:
         current_state = rec.get("state", "")
         if current_state in ("review_pending", "failed", "abandoned"):
             # Already in review_pending or terminal state — just return verdict
-            review = review_worker_pane(self.session_root, slug)
+            review = run_review_only(
+                self.session_root,
+                slug,
+                session_root=self.session_root,
+                require_safe=False,
+                require_commits=False,
+            ).review
             return {
                 "slug": slug,
                 "method": None,
@@ -146,7 +281,13 @@ class ExecutorLifecycle:
             }
 
         # Review the pane to get verdict details
-        review = review_worker_pane(self.session_root, slug)
+        review = run_review_only(
+            self.session_root,
+            slug,
+            session_root=self.session_root,
+            require_safe=False,
+            require_commits=False,
+        ).review
         verdict = review.get("verdict", "unknown")
         issues = review.get("issues", [])
 
@@ -302,18 +443,309 @@ class ExecutorLifecycle:
 
         Returns True only if review passes (safe verdict, commits present).
         """
-        from dgov.inspection import review_worker_pane
+        review = run_review_only(
+            self.session_root,
+            slug,
+            session_root=self.session_root,
+        )
+        return review.passed
 
-        review = review_worker_pane(self.session_root, slug)
-        verdict = review.get("verdict", "unknown")
-        commit_count = review.get("commit_count", 0)
 
-        if commit_count == 0:
-            return False
-        if verdict != "safe":
-            return False
+def run_wait_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    timeout: int = 600,
+    max_retries: int = 1,
+    permission_mode: str = "bypassPermissions",
+    retry_agent: str | None = None,
+    escalate_to: str | None = None,
+    phase_callback: Callable[[str, str], None] | None = None,
+) -> WaitOnlyResult:
+    """Run the canonical wait and recovery loop without review or merge."""
+    import os
 
-        return True
+    from dgov.persistence import get_pane
+    from dgov.recovery import escalate_worker_pane, retry_worker_pane
+    from dgov.waiter import PaneTimeoutError, wait_worker_pane
+
+    session_root = os.path.abspath(session_root or project_root)
+
+    def _phase(name: str, current_slug: str) -> None:
+        if phase_callback is not None:
+            phase_callback(name, current_slug)
+
+    current_slug = slug
+    retries_left = max_retries
+    wait_result: dict | None = None
+
+    _phase("waiting", current_slug)
+    while True:
+        try:
+            wait_result = wait_worker_pane(
+                project_root,
+                current_slug,
+                session_root=session_root,
+                timeout=timeout,
+                auto_retry=False,
+            )
+            break
+        except PaneTimeoutError:
+            if retries_left <= 0:
+                _phase("failed", current_slug)
+                return WaitOnlyResult(
+                    state="failed",
+                    slug=current_slug,
+                    error=f"Worker timed out after {timeout}s (retries exhausted)",
+                    failure_stage="timeout",
+                )
+
+            if escalate_to:
+                esc_result = escalate_worker_pane(
+                    project_root,
+                    current_slug,
+                    target_agent=escalate_to,
+                    session_root=session_root,
+                    permission_mode=permission_mode,
+                )
+                if esc_result.get("error"):
+                    _phase("failed", current_slug)
+                    return WaitOnlyResult(
+                        state="failed",
+                        slug=current_slug,
+                        error=f"Escalation failed: {esc_result['error']}",
+                        failure_stage="recovery",
+                    )
+                current_slug = esc_result["new_slug"]
+                retries_left -= 1
+                _phase("waiting", current_slug)
+                continue
+
+            retry_result = retry_worker_pane(
+                project_root,
+                current_slug,
+                session_root=session_root,
+                agent=retry_agent,
+            )
+            if retry_result.get("error"):
+                _phase("failed", current_slug)
+                return WaitOnlyResult(
+                    state="failed",
+                    slug=current_slug,
+                    error=f"Retry failed: {retry_result['error']}",
+                    failure_stage="recovery",
+                )
+            current_slug = retry_result["new_slug"]
+            retries_left -= 1
+            _phase("waiting", current_slug)
+
+    pane = get_pane(session_root, current_slug)
+    pane_state = pane.get("state") if pane else None
+    if pane_state == "failed":
+        _phase("failed", current_slug)
+        return WaitOnlyResult(
+            state="failed",
+            slug=current_slug,
+            wait_result=wait_result,
+            pane_state=pane_state,
+            error="Worker exited with an error (check logs with: dgov pane logs)",
+            failure_stage="worker_failed",
+        )
+    if pane_state in ("timed_out", "abandoned"):
+        _phase("failed", current_slug)
+        return WaitOnlyResult(
+            state="failed",
+            slug=current_slug,
+            wait_result=wait_result,
+            pane_state=pane_state,
+            error=f"Worker ended in {pane_state} state",
+            failure_stage="worker_failed",
+        )
+
+    return WaitOnlyResult(
+        state="completed",
+        slug=current_slug,
+        wait_result=wait_result,
+        pane_state=pane_state,
+    )
+
+
+def run_post_dispatch_lifecycle(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    timeout: int = 600,
+    max_retries: int = 1,
+    auto_merge: bool = True,
+    permission_mode: str = "bypassPermissions",
+    retry_agent: str | None = None,
+    escalate_to: str | None = None,
+    phase_callback: Callable[[str, str], None] | None = None,
+) -> PostDispatchResult:
+    """Run the canonical post-dispatch wait/review/merge lifecycle.
+
+    This owns the policy for:
+    - waiting for worker completion
+    - retry/escalation on timeout
+    - worker failure detection
+    - review gating
+    - merge execution
+
+    Callers can map phase transitions to their own event vocabulary via
+    *phase_callback* without re-implementing the lifecycle itself.
+    """
+    import os
+
+    session_root = os.path.abspath(session_root or project_root)
+
+    def _phase(name: str, current_slug: str) -> None:
+        if phase_callback is not None:
+            phase_callback(name, current_slug)
+
+    wait = run_wait_only(
+        project_root,
+        slug,
+        session_root=session_root,
+        timeout=timeout,
+        max_retries=max_retries,
+        permission_mode=permission_mode,
+        retry_agent=retry_agent,
+        escalate_to=escalate_to,
+        phase_callback=phase_callback,
+    )
+    if wait.state != "completed":
+        cleanup = run_cleanup_only(
+            project_root,
+            wait.slug,
+            session_root=session_root,
+            state="failed",
+            failure_stage=wait.failure_stage,
+        )
+        return PostDispatchResult(
+            state="failed",
+            slug=wait.slug,
+            cleanup=cleanup,
+            error=wait.error,
+            failure_stage=wait.failure_stage,
+        )
+
+    current_slug = wait.slug
+
+    _phase("reviewing", current_slug)
+    review = run_review_only(
+        project_root,
+        current_slug,
+        session_root=session_root,
+        require_safe=False,
+        require_commits=False,
+    )
+    if review.error:
+        _phase("failed", current_slug)
+        cleanup = run_cleanup_only(
+            project_root,
+            current_slug,
+            session_root=session_root,
+            state="failed",
+            failure_stage="review",
+        )
+        return PostDispatchResult(
+            state="failed",
+            slug=current_slug,
+            review=review.review,
+            review_record=review.review_record,
+            cleanup=cleanup,
+            error=f"Review failed: {review.error}",
+            failure_stage="review",
+        )
+
+    if review.verdict != "safe":
+        cleanup = run_cleanup_only(
+            project_root,
+            current_slug,
+            session_root=session_root,
+            state="review_pending",
+        )
+        return PostDispatchResult(
+            state="review_pending",
+            slug=current_slug,
+            review=review.review,
+            review_record=review.review_record,
+            cleanup=cleanup,
+        )
+
+    if review.commit_count == 0:
+        _phase("failed", current_slug)
+        cleanup = run_cleanup_only(
+            project_root,
+            current_slug,
+            session_root=session_root,
+            state="failed",
+            failure_stage="review",
+        )
+        return PostDispatchResult(
+            state="failed",
+            slug=current_slug,
+            review=review.review,
+            review_record=review.review_record,
+            cleanup=cleanup,
+            error="Review failed: No commits to merge",
+            failure_stage="review",
+        )
+
+    if not auto_merge:
+        cleanup = run_cleanup_only(
+            project_root,
+            current_slug,
+            session_root=session_root,
+            state="review_pending",
+        )
+        return PostDispatchResult(
+            state="reviewed_pass",
+            slug=current_slug,
+            review=review.review,
+            review_record=review.review_record,
+            cleanup=cleanup,
+        )
+
+    _phase("merging", current_slug)
+    merge = run_merge_only(project_root, current_slug, session_root=session_root)
+    if merge.error:
+        _phase("failed", current_slug)
+        cleanup = run_cleanup_only(
+            project_root,
+            current_slug,
+            session_root=session_root,
+            state="failed",
+            failure_stage="merge",
+        )
+        return PostDispatchResult(
+            state="failed",
+            slug=current_slug,
+            review=review.review,
+            review_record=review.review_record,
+            merge_result=merge.merge_result,
+            cleanup=cleanup,
+            error=f"Merge failed: {merge.error}",
+            failure_stage="merge",
+        )
+
+    _phase("completed", current_slug)
+    cleanup = run_cleanup_only(
+        project_root,
+        current_slug,
+        session_root=session_root,
+        state="completed",
+    )
+    return PostDispatchResult(
+        state="completed",
+        slug=current_slug,
+        review=review.review,
+        review_record=review.review_record,
+        merge_result=merge.merge_result,
+        cleanup=cleanup,
+    )
 
 
 def _dedupe_paths(paths: list[str]) -> list[str]:
@@ -367,6 +799,13 @@ def run_dispatch_preflight(
     )
 
 
+def get_review_provider():
+    """Return the active provider for pane review decisions."""
+    from dgov.decision_providers import InspectionReviewProvider
+
+    return InspectionReviewProvider()
+
+
 def review_merge_gate(
     project_root: str,
     slug: str,
@@ -376,51 +815,216 @@ def review_merge_gate(
     require_safe: bool = True,
     require_commits: bool = True,
 ) -> ReviewGate:
-    from dgov.inspection import review_worker_pane
-
-    if full:
-        review = review_worker_pane(
-            project_root,
-            slug,
-            session_root=session_root,
-            full=True,
-        )
-    else:
-        review = review_worker_pane(
-            project_root,
-            slug,
-            session_root=session_root,
-        )
-    verdict = review.get("verdict", "unknown")
-    commit_count = review.get("commit_count", 0)
-    error = review.get("error")
-    if error:
+    review = run_review_only(
+        project_root,
+        slug,
+        session_root=session_root,
+        full=full,
+        require_safe=require_safe,
+        require_commits=require_commits,
+    )
+    if review.error:
         return ReviewGate(
-            review=review,
+            review=review.review,
             passed=False,
-            verdict=verdict,
-            commit_count=commit_count,
-            error=error,
-        )
-    if require_commits and commit_count == 0:
-        return ReviewGate(
-            review=review,
-            passed=False,
-            verdict=verdict,
-            commit_count=commit_count,
-            error="No commits to merge",
-        )
-    if require_safe and verdict != "safe":
-        return ReviewGate(
-            review=review,
-            passed=False,
-            verdict=verdict,
-            commit_count=commit_count,
-            error=f"Review verdict is {verdict}; refusing to merge",
+            verdict=review.verdict,
+            commit_count=review.commit_count,
+            error=review.error,
         )
     return ReviewGate(
+        review=review.review,
+        passed=review.passed,
+        verdict=review.verdict,
+        commit_count=review.commit_count,
+    )
+
+
+def run_review_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    full: bool = False,
+    require_safe: bool = True,
+    require_commits: bool = True,
+) -> ReviewOnlyResult:
+    """Run the canonical review operation without merging."""
+    provider = get_review_provider()
+    record = provider.review_output(
+        ReviewOutputRequest(
+            project_root=project_root,
+            slug=slug,
+            session_root=session_root,
+            full=full,
+        )
+    )
+    artifact = record.artifact if isinstance(record.artifact, dict) else None
+    review = artifact or {
+        "slug": slug,
+        "verdict": record.decision.verdict,
+        "commit_count": record.decision.commit_count,
+    }
+    if record.decision.issues:
+        review.setdefault("issues", list(record.decision.issues))
+    if record.decision.reason and "error" not in review:
+        review["error"] = record.decision.reason
+
+    verdict = record.decision.verdict
+    commit_count = record.decision.commit_count
+    error = record.decision.reason
+    passed = error is None
+    if passed and require_commits and commit_count == 0:
+        passed = False
+        error = "No commits to merge"
+    if passed and require_safe and verdict != "safe":
+        passed = False
+        error = f"Review verdict is {verdict}; refusing to merge"
+
+    return ReviewOnlyResult(
+        slug=slug,
         review=review,
-        passed=True,
+        passed=passed,
         verdict=verdict,
         commit_count=commit_count,
+        review_record=record,
+        error=error,
+    )
+
+
+def run_review_merge(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    resolve: str = "skip",
+    squash: bool = True,
+    rebase: bool = False,
+) -> ReviewMergeResult:
+    """Run the canonical review gate followed by merge."""
+    review = run_review_only(project_root, slug, session_root=session_root)
+    if review.review_record and review.review_record.decision.reason is not None:
+        return ReviewMergeResult(
+            slug=slug,
+            review=review.review,
+            review_record=review.review_record,
+            failure_stage="review_error",
+            error=review.error,
+        )
+    if not review.passed:
+        return ReviewMergeResult(
+            slug=slug,
+            review=review.review,
+            review_record=review.review_record,
+            failure_stage="review_failed",
+            error=review.error or "Review failed",
+        )
+
+    merge = run_merge_only(
+        project_root,
+        slug,
+        session_root=session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
+    )
+    if merge.error:
+        return ReviewMergeResult(
+            slug=slug,
+            review=review.review,
+            review_record=review.review_record,
+            merge_result=merge.merge_result,
+            failure_stage="merge_failed",
+            error=merge.error,
+        )
+
+    return ReviewMergeResult(
+        slug=slug,
+        review=review.review,
+        review_record=review.review_record,
+        merge_result=merge.merge_result,
+    )
+
+
+def run_land_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    resolve: str = "skip",
+    squash: bool = True,
+    rebase: bool = False,
+) -> LandResult:
+    """Run the canonical review, merge, and cleanup flow for a pane."""
+    from dgov.lifecycle import close_worker_pane
+
+    result = run_review_merge(
+        project_root,
+        slug,
+        session_root=session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
+    )
+    if result.error:
+        return LandResult(
+            slug=slug,
+            review=result.review,
+            review_record=result.review_record,
+            merge_result=result.merge_result,
+            failure_stage=result.failure_stage,
+            error=result.error,
+        )
+
+    closed = close_worker_pane(project_root, slug, session_root=session_root)
+    cleanup = CleanupOnlyResult(
+        slug=slug,
+        action="close" if closed else "preserve",
+        reason="landed",
+        closed=closed,
+        force=False,
+        error=None if closed else f"Failed to close pane: {slug}",
+    )
+    return LandResult(
+        slug=slug,
+        review=result.review,
+        review_record=result.review_record,
+        merge_result=result.merge_result,
+        cleanup=cleanup,
+    )
+
+
+def run_merge_only(
+    project_root: str,
+    slug: str,
+    *,
+    session_root: str | None = None,
+    resolve: str = "skip",
+    squash: bool = True,
+    rebase: bool = False,
+    message: str | None = None,
+) -> MergeOnlyResult:
+    """Run the canonical merge operation for an already-approved pane."""
+    from dgov.merger import merge_worker_pane
+
+    if resolve == "skip" and squash is True and not rebase and message is None:
+        merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
+    else:
+        merge_result = merge_worker_pane(
+            project_root,
+            slug,
+            session_root=session_root,
+            resolve=resolve,
+            squash=squash,
+            message=message,
+            rebase=rebase,
+        )
+    if merge_result.get("error"):
+        return MergeOnlyResult(
+            slug=slug,
+            merge_result=merge_result,
+            error=merge_result["error"],
+        )
+    return MergeOnlyResult(
+        slug=slug,
+        merge_result=merge_result,
     )

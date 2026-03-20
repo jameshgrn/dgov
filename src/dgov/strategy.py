@@ -11,6 +11,13 @@ logger = logging.getLogger(__name__)
 # -- Task routing --
 
 
+def get_task_routing_provider():
+    """Return the active provider for route-task decisions."""
+    from dgov.decision_providers import OpenRouterRoutingProvider
+
+    return OpenRouterRoutingProvider()
+
+
 def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str:
     """Classify a task prompt and recommend an agent.
 
@@ -19,51 +26,18 @@ def classify_task(prompt: str, installed_agents: list[str] | None = None) -> str
     """
 
     agents = installed_agents or ["pi", "claude"]
-    use_multi = len(agents) > 2
-
-    if use_multi:
-        agent_list = ", ".join(f"'{a}'" for a in agents)
-        system_msg = (
-            f"Classify this task to one of these agents: {agent_list}.\n"
-            "pi = mechanical: run a command, edit a specific line, "
-            "add a comment, format files, simple find-and-replace.\n"
-            "claude = analytical: debug why something fails, read and "
-            "understand complex code, refactor architecture, fix flaky "
-            "tests, multi-file reasoning, rework/redesign a system.\n"
-            "codex = batch code changes, large-scale refactors, "
-            "tasks that benefit from parallel execution.\n"
-            "gemini = research, summarization, documentation tasks.\n"
-            f"Reply with ONLY one of: {agent_list}. Nothing else."
-        )
-    else:
-        system_msg = (
-            "Classify this task as either 'pi' or 'claude'.\n"
-            "pi = mechanical: run a command, edit a specific line, "
-            "add a comment, format files, simple find-and-replace.\n"
-            "claude = analytical: debug why something fails, read and "
-            "understand complex code, refactor architecture, fix flaky "
-            "tests, multi-file reasoning, rework/redesign a system, "
-            "add a new feature with multiple moving parts, "
-            "anything involving scheduler.py or panes.py.\n"
-            "Reply with ONLY 'pi' or 'claude', nothing else."
-        )
-
-    messages = [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": prompt[:300]},
-    ]
-
     try:
-        from dgov.openrouter import chat_completion
+        from dgov.decision import ProviderError, RouteTaskRequest
 
-        result = chat_completion(messages, max_tokens=5, temperature=0)
-        answer = result["choices"][0]["message"]["content"].strip().lower()
-        # Match against known agents
-        for agent in agents:
-            if agent in answer:
-                return agent
-        return "claude"
-    except RuntimeError:
+        provider = get_task_routing_provider()
+        result = provider.route_task(
+            RouteTaskRequest(
+                prompt=prompt,
+                installed_agents=tuple(agents),
+            )
+        )
+        return result.decision.agent
+    except ProviderError:
         return "claude"
 
 

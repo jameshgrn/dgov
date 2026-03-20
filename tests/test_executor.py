@@ -5,11 +5,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import dgov.lifecycle as _lifecycle  # noqa: F401 - bind real persistence symbols before patches
 from dgov.executor import (
+    CleanupOnlyResult,
     ExecutorLifecycle,
     derive_prompt_touches,
     review_merge_gate,
+    run_cleanup_only,
     run_dispatch_preflight,
+    run_land_only,
+    run_post_dispatch_lifecycle,
+    run_review_merge,
+    run_review_only,
+    run_wait_only,
 )
 
 pytestmark = pytest.mark.unit
@@ -72,6 +80,100 @@ def test_review_merge_gate_blocks_non_safe_verdict():
 
     assert gate.passed is False
     assert gate.error == "Review verdict is review; refusing to merge"
+
+
+def test_run_review_only_returns_typed_review_result():
+    with patch(
+        "dgov.inspection.review_worker_pane",
+        return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+    ):
+        result = run_review_only("/repo", "task", session_root="/session")
+
+    assert result.slug == "task"
+    assert result.passed is True
+    assert result.verdict == "safe"
+    assert result.commit_count == 2
+    assert result.error is None
+    assert result.review_record is not None
+    assert result.review_record.provider_id == "inspection-review"
+    assert result.review_record.decision.commit_count == 2
+
+
+def test_run_wait_only_returns_worker_failed_state():
+    with (
+        patch(
+            "dgov.waiter.wait_worker_pane",
+            return_value={"done": "task", "method": "signal"},
+        ),
+        patch("dgov.persistence.get_pane", return_value={"state": "failed"}),
+    ):
+        result = run_wait_only("/repo", "task", session_root="/session", max_retries=0)
+
+    assert result.state == "failed"
+    assert result.slug == "task"
+    assert result.failure_stage == "worker_failed"
+
+
+def test_run_wait_only_returns_timeout_when_retries_exhausted():
+    from dgov.waiter import PaneTimeoutError
+
+    with patch(
+        "dgov.waiter.wait_worker_pane",
+        side_effect=PaneTimeoutError("task", 30, "claude"),
+    ):
+        result = run_wait_only("/repo", "task", session_root="/session", timeout=30, max_retries=0)
+
+    assert result.state == "failed"
+    assert result.failure_stage == "timeout"
+    assert result.error == "Worker timed out after 30s (retries exhausted)"
+
+
+def test_run_cleanup_only_preserves_inspectable_outcomes():
+    with patch("dgov.persistence.mark_preserved_artifacts") as mock_mark:
+        result = run_cleanup_only(
+            "/repo",
+            "task",
+            session_root="/session",
+            state="review_pending",
+        )
+
+    assert result == CleanupOnlyResult(
+        slug="task",
+        action="preserve",
+        reason="review_pending",
+    )
+    mock_mark.assert_called_once_with(
+        "/session",
+        "task",
+        reason="review_pending",
+        recoverable=False,
+        state="review_pending",
+        failure_stage=None,
+    )
+
+
+def test_run_cleanup_only_force_closes_worker_failed():
+    with patch(
+        "dgov.lifecycle.close_worker_pane",
+        return_value=True,
+    ) as mock_close:
+        result = run_cleanup_only(
+            "/repo",
+            "task",
+            session_root="/session",
+            state="failed",
+            failure_stage="worker_failed",
+        )
+
+    assert result.action == "close"
+    assert result.closed is True
+    assert result.force is True
+    mock_close.assert_called_once_with(
+        "/repo",
+        "task",
+        session_root="/session",
+        force=True,
+    )
 
 
 # -- ExecutorLifecycle tests --
@@ -263,3 +365,277 @@ class TestExecutorLifecycle:
         assert result["from_agent"] == agent
         assert result["to_agent"] == "qwen-9b"
         assert result["new_slug"] == f"{slug}-esc-1"
+
+
+class TestPostDispatchLifecycle:
+    def test_completed_lifecycle_merges_after_safe_review(self):
+        phases: list[tuple[str, str]] = []
+
+        with (
+            patch(
+                "dgov.waiter.wait_worker_pane", return_value={"done": "task", "method": "signal"}
+            ),
+            patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "task", "verdict": "safe", "commit_count": 1},
+            ),
+            patch(
+                "dgov.merger.merge_worker_pane",
+                return_value={"merged": "task", "branch": "task"},
+            ),
+        ):
+            result = run_post_dispatch_lifecycle(
+                "/repo",
+                "task",
+                session_root="/session",
+                phase_callback=lambda phase, slug: phases.append((phase, slug)),
+            )
+
+        assert result.state == "completed"
+        assert result.slug == "task"
+        assert result.merge_result == {"merged": "task", "branch": "task"}
+        assert result.cleanup == CleanupOnlyResult(
+            slug="task",
+            action="preserve",
+            reason="completed",
+        )
+        assert phases == [
+            ("waiting", "task"),
+            ("reviewing", "task"),
+            ("merging", "task"),
+            ("completed", "task"),
+        ]
+
+    def test_reviewed_pass_preserves_artifacts_when_auto_merge_disabled(self):
+        phases: list[tuple[str, str]] = []
+
+        with (
+            patch(
+                "dgov.waiter.wait_worker_pane", return_value={"done": "task", "method": "signal"}
+            ),
+            patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "task", "verdict": "safe", "commit_count": 1},
+            ),
+            patch("dgov.merger.merge_worker_pane") as mock_merge,
+        ):
+            result = run_post_dispatch_lifecycle(
+                "/repo",
+                "task",
+                session_root="/session",
+                auto_merge=False,
+                phase_callback=lambda phase, slug: phases.append((phase, slug)),
+            )
+
+        assert result.state == "reviewed_pass"
+        assert result.slug == "task"
+        assert result.merge_result is None
+        assert result.cleanup == CleanupOnlyResult(
+            slug="task",
+            action="preserve",
+            reason="review_pending",
+        )
+        mock_merge.assert_not_called()
+        assert phases == [
+            ("waiting", "task"),
+            ("reviewing", "task"),
+        ]
+
+    def test_timeout_retry_restarts_wait_on_new_slug(self):
+        phases: list[tuple[str, str]] = []
+        wait_calls: list[str] = []
+
+        def _wait_side_effect(project_root, slug, **kwargs):
+            from dgov.waiter import PaneTimeoutError
+
+            wait_calls.append(slug)
+            if slug == "task":
+                raise PaneTimeoutError("task", 30, "claude")
+            return {"done": slug, "method": "signal"}
+
+        with (
+            patch("dgov.waiter.wait_worker_pane", side_effect=_wait_side_effect),
+            patch(
+                "dgov.recovery.retry_worker_pane",
+                return_value={"retried": True, "new_slug": "task-2"},
+            ) as mock_retry,
+            patch("dgov.persistence.get_pane", return_value={"slug": "task-2", "state": "done"}),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "task-2", "verdict": "safe", "commit_count": 1},
+            ),
+            patch(
+                "dgov.merger.merge_worker_pane",
+                return_value={"merged": "task-2", "branch": "task-2"},
+            ),
+        ):
+            result = run_post_dispatch_lifecycle(
+                "/repo",
+                "task",
+                session_root="/session",
+                max_retries=1,
+                retry_agent="claude",
+                phase_callback=lambda phase, slug: phases.append((phase, slug)),
+            )
+
+        assert result.state == "completed"
+        assert result.slug == "task-2"
+        assert wait_calls == ["task", "task-2"]
+        mock_retry.assert_called_once_with(
+            "/repo",
+            "task",
+            session_root="/session",
+            agent="claude",
+        )
+        assert phases == [
+            ("waiting", "task"),
+            ("waiting", "task-2"),
+            ("reviewing", "task-2"),
+            ("merging", "task-2"),
+            ("completed", "task-2"),
+        ]
+
+    def test_review_pending_returns_without_merge(self):
+        phases: list[tuple[str, str]] = []
+
+        with (
+            patch(
+                "dgov.waiter.wait_worker_pane", return_value={"done": "task", "method": "signal"}
+            ),
+            patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "task", "verdict": "review", "commit_count": 1},
+            ),
+            patch("dgov.merger.merge_worker_pane") as mock_merge,
+        ):
+            result = run_post_dispatch_lifecycle(
+                "/repo",
+                "task",
+                session_root="/session",
+                phase_callback=lambda phase, slug: phases.append((phase, slug)),
+            )
+
+        assert result.state == "review_pending"
+        assert result.slug == "task"
+        assert result.cleanup == CleanupOnlyResult(
+            slug="task",
+            action="preserve",
+            reason="review_pending",
+        )
+        mock_merge.assert_not_called()
+        assert phases == [
+            ("waiting", "task"),
+            ("reviewing", "task"),
+        ]
+
+    def test_worker_failed_lifecycle_closes_forcefully(self):
+        with (
+            patch(
+                "dgov.waiter.wait_worker_pane",
+                return_value={"done": "task", "method": "signal"},
+            ),
+            patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "failed"}),
+            patch(
+                "dgov.lifecycle.close_worker_pane",
+                return_value=True,
+            ) as mock_close,
+        ):
+            result = run_post_dispatch_lifecycle(
+                "/repo",
+                "task",
+                session_root="/session",
+            )
+
+        assert result.state == "failed"
+        assert result.failure_stage == "worker_failed"
+        assert result.cleanup == CleanupOnlyResult(
+            slug="task",
+            action="close",
+            reason="worker_failed",
+            closed=True,
+            force=True,
+        )
+        mock_close.assert_called_once_with(
+            "/repo",
+            "task",
+            session_root="/session",
+            force=True,
+        )
+
+
+class TestReviewMerge:
+    def test_run_review_merge_blocks_non_safe_review(self):
+        with patch(
+            "dgov.inspection.review_worker_pane",
+            return_value={"slug": "task", "verdict": "review", "commit_count": 1},
+        ):
+            result = run_review_merge("/repo", "task", session_root="/session")
+
+        assert result.slug == "task"
+        assert result.error == "Review verdict is review; refusing to merge"
+        assert result.merge_result is None
+
+    def test_run_review_merge_returns_merge_result(self):
+        with (
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+            ),
+            patch(
+                "dgov.executor.run_merge_only",
+                return_value=MagicMock(
+                    error=None,
+                    merge_result={"merged": "task", "branch": "task"},
+                ),
+            ) as mock_merge,
+        ):
+            result = run_review_merge(
+                "/repo",
+                "task",
+                session_root="/session",
+                resolve="agent",
+                squash=False,
+                rebase=False,
+            )
+
+        assert result.error is None
+        assert result.merge_result == {"merged": "task", "branch": "task"}
+        mock_merge.assert_called_once_with(
+            "/repo",
+            "task",
+            session_root="/session",
+            resolve="agent",
+            squash=False,
+            rebase=False,
+        )
+
+    def test_run_land_only_closes_after_successful_merge(self):
+        with (
+            patch(
+                "dgov.executor.run_review_merge",
+                return_value=MagicMock(
+                    slug="task",
+                    review={"slug": "task", "verdict": "safe", "commit_count": 2},
+                    review_record=None,
+                    merge_result={"merged": "task", "branch": "task"},
+                    failure_stage=None,
+                    error=None,
+                ),
+            ),
+            patch("dgov.lifecycle.close_worker_pane", return_value=True) as mock_close,
+        ):
+            result = run_land_only("/repo", "task", session_root="/session")
+
+        assert result.error is None
+        assert result.merge_result == {"merged": "task", "branch": "task"}
+        assert result.cleanup == CleanupOnlyResult(
+            slug="task",
+            action="close",
+            reason="landed",
+            closed=True,
+            force=False,
+        )
+        mock_close.assert_called_once_with("/repo", "task", session_root="/session")

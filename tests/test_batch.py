@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -149,7 +150,7 @@ permission_mode = "bypassPermissions"
             lambda *args, **kwargs: type("R", (), {"passed": True})(),
         )
 
-        # Mock create_worker_pane, review_worker_pane, and merge_worker_pane.
+        # Mock create_worker_pane and canonical post-dispatch lifecycle.
         class Pane:
             def __init__(self, slug: str) -> None:
                 self.slug = slug
@@ -160,18 +161,16 @@ permission_mode = "bypassPermissions"
             created.append(kwargs)
             return Pane(slug=kwargs["slug"])
 
-        def fake_review_worker_pane(project_root_arg, slug, session_root=None):  # noqa: ANN001, ANN002, ANN003
-            return {"slug": slug, "verdict": "safe", "commit_count": 1}
-
-        def fake_merge_worker_pane(project_root_arg, slug, session_root=None):  # noqa: ANN001, ANN002, ANN003
-            return {"merged": True, "slug": slug}
-
         monkeypatch.setattr("dgov.lifecycle.create_worker_pane", fake_create_worker_pane)
-        monkeypatch.setattr("dgov.inspection.review_worker_pane", fake_review_worker_pane)
-        monkeypatch.setattr("dgov.merger.merge_worker_pane", fake_merge_worker_pane)
-
-        # Avoid real waits
-        monkeypatch.setattr("dgov.batch.wait_for_slugs", lambda sr, slugs, timeout=600: [])
+        monkeypatch.setattr(
+            "dgov.executor.run_post_dispatch_lifecycle",
+            lambda project_root, slug, **kwargs: SimpleNamespace(
+                state="completed",
+                slug=slug,
+                merge_result={"merged": True, "slug": slug},
+                failure_stage=None,
+            ),
+        )
 
         result = batch_dispatch(str(spec_path), session_root=str(session_root))
 
@@ -208,8 +207,6 @@ touches = ["a.py"]
             def __init__(self, slug: str) -> None:
                 self.slug = slug
 
-        merge_calls: list[str] = []
-
         monkeypatch.setattr(
             "dgov.lifecycle.create_worker_pane",
             lambda **kwargs: Pane(slug=kwargs["slug"]),
@@ -219,24 +216,19 @@ touches = ["a.py"]
             lambda *args, **kwargs: type("R", (), {"passed": True})(),
         )
         monkeypatch.setattr(
-            "dgov.inspection.review_worker_pane",
-            lambda project_root_arg, slug, session_root=None: {
-                "slug": slug,
-                "verdict": "review",
-                "commit_count": 1,
-            },
+            "dgov.executor.run_post_dispatch_lifecycle",
+            lambda project_root, slug, **kwargs: SimpleNamespace(
+                state="review_pending",
+                slug=slug,
+                merge_result=None,
+                failure_stage=None,
+            ),
         )
-        monkeypatch.setattr(
-            "dgov.merger.merge_worker_pane",
-            lambda project_root_arg, slug, session_root=None: merge_calls.append(slug),
-        )
-        monkeypatch.setattr("dgov.batch.wait_for_slugs", lambda sr, slugs, timeout=600: [])
 
         result = batch_dispatch(str(spec_path), session_root=str(session_root))
 
         assert result["merged"] == []
         assert result["failed"] == ["t1"]
-        assert merge_calls == []
 
     def test_batch_dispatch_blocks_preflight_failure(self, tmp_path, monkeypatch):
         spec_path = self._write_spec(

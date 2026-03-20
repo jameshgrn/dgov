@@ -22,7 +22,8 @@ class MissionPolicy:
 
     agent: str = "claude"
     permission_mode: str = "bypassPermissions"
-    auto_merge: bool = False
+    auto_merge: bool = True
+    touches: tuple[str, ...] = ()
     review_severity: str = "medium"
     timeout: int = 600
     max_retries: int = 1
@@ -33,7 +34,7 @@ class MissionPolicy:
 class MissionResult:
     """Final mission outcome."""
 
-    state: str  # "completed" | "failed" | "review_pending"
+    state: str  # "completed" | "failed" | "review_pending" | "reviewed_pass"
     slug: str
     findings: list[dict] | None = None
     error: str | None = None
@@ -64,12 +65,9 @@ def run_mission(
     Synchronous state machine: PENDING -> RUNNING -> WAITING -> REVIEWING
     -> MERGING -> COMPLETED (or FAILED / REVIEW_PENDING at any step).
     """
-    from dgov.executor import review_merge_gate, run_dispatch_preflight
-    from dgov.lifecycle import close_worker_pane, create_worker_pane
-    from dgov.merger import merge_worker_pane
-    from dgov.recovery import escalate_worker_pane
+    from dgov.executor import run_dispatch_preflight, run_post_dispatch_lifecycle
+    from dgov.lifecycle import create_worker_pane
     from dgov.strategy import _generate_slug
-    from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     policy = policy or MissionPolicy()
     project_root = os.path.abspath(project_root)
@@ -83,10 +81,25 @@ def run_mission(
     def _fail(error: str) -> MissionResult:
         return _make_failed(slug_s, error, session_root, _elapsed())
 
+    def _mission_phase(phase: str, current_slug: str) -> None:
+        if phase == "waiting":
+            emit_event(session_root, "mission_waiting", current_slug)
+        elif phase == "reviewing":
+            emit_event(session_root, "mission_reviewing", current_slug)
+        elif phase == "merging":
+            emit_event(session_root, "mission_merging", current_slug)
+        elif phase == "completed":
+            emit_event(session_root, "mission_completed", current_slug)
+        elif phase == "failed":
+            emit_event(session_root, "mission_failed", current_slug)
+
     # -- PENDING: preflight --
     emit_event(session_root, "mission_pending", slug_s, agent=policy.agent)
     logger.info("Mission %s: preflight (%s)", slug_s, policy.agent)
-    packet = build_context_packet(prompt)
+    packet = build_context_packet(
+        prompt,
+        file_claims=list(policy.touches) if policy.touches else None,
+    )
     report = run_dispatch_preflight(
         project_root,
         policy.agent,
@@ -114,80 +127,35 @@ def run_mission(
     except Exception as e:
         return _fail(f"Create failed: {e}")
 
-    # -- WAITING: wait for worker to finish --
-    emit_event(session_root, "mission_waiting", slug_s)
-    logger.info("Mission %s: waiting for worker (timeout=%ds)", slug_s, policy.timeout)
-    retries_left = policy.max_retries
-    while True:
-        try:
-            wait_worker_pane(
-                project_root,
-                slug_s,
-                session_root=session_root,
-                timeout=policy.timeout,
-                auto_retry=False,
-            )
-            break
-        except PaneTimeoutError:
-            if retries_left > 0 and policy.escalate_to:
-                esc_result = escalate_worker_pane(
-                    project_root,
-                    slug_s,
-                    target_agent=policy.escalate_to,
-                    session_root=session_root,
-                    permission_mode=policy.permission_mode,
-                )
-                if esc_result.get("error"):
-                    close_worker_pane(project_root, slug_s, session_root=session_root)
-                    return _fail(f"Escalation failed: {esc_result['error']}")
-                slug_s = esc_result["new_slug"]
-                retries_left -= 1
-                continue
-            elif retries_left > 0:
-                from dgov.recovery import retry_worker_pane
-
-                retry_result = retry_worker_pane(
-                    project_root, slug_s, session_root=session_root, agent=policy.agent
-                )
-                if retry_result.get("error"):
-                    close_worker_pane(project_root, slug_s, session_root=session_root)
-                    return _fail(f"Retry failed: {retry_result['error']}")
-                slug_s = retry_result["new_slug"]
-                retries_left -= 1
-                continue
-            else:
-                close_worker_pane(project_root, slug_s, session_root=session_root)
-                return _fail(f"Worker timed out after {policy.timeout}s (retries exhausted)")
-
-    # Check if worker failed (exit file written, nonzero exit code)
-    from dgov.persistence import get_pane
-
-    pane_state = get_pane(session_root, slug_s)
-    if pane_state and pane_state.get("state") == "failed":
-        close_worker_pane(project_root, slug_s, session_root=session_root, force=True)
-        return _fail("Worker exited with an error (check logs with: dgov pane logs)")
-
-    # -- REVIEWING: review the diff --
-    emit_event(session_root, "mission_reviewing", slug_s)
-    logger.info("Mission %s: reviewing diff", slug_s)
-    gate = review_merge_gate(
+    logger.info("Mission %s: executing canonical post-dispatch lifecycle", slug_s)
+    lifecycle = run_post_dispatch_lifecycle(
         project_root,
         slug_s,
         session_root=session_root,
-        require_safe=False,
-        require_commits=False,
+        timeout=policy.timeout,
+        max_retries=policy.max_retries,
+        auto_merge=policy.auto_merge,
+        permission_mode=policy.permission_mode,
+        retry_agent=policy.agent,
+        escalate_to=policy.escalate_to,
+        phase_callback=_mission_phase,
     )
-    review = gate.review
-    if gate.error:
-        close_worker_pane(project_root, slug_s, session_root=session_root)
-        return _fail(f"Review failed: {gate.error}")
-
+    slug_s = lifecycle.slug
+    review = lifecycle.review or {}
     issues = review.get("issues")
     finding_dicts = [{"description": f} for f in issues] if issues else None
-    verdict = review.get("verdict", "safe")
 
-    if verdict != "safe":
-        emit_event(session_root, "mission_reviewing", slug_s, verdict="review_pending")
+    if lifecycle.state == "failed":
+        return MissionResult(
+            state="failed",
+            slug=slug_s,
+            findings=finding_dicts,
+            error=lifecycle.error,
+            merge_result=lifecycle.merge_result,
+            duration_s=_elapsed(),
+        )
+
+    if lifecycle.state == "review_pending":
         return MissionResult(
             state="review_pending",
             slug=slug_s,
@@ -195,20 +163,19 @@ def run_mission(
             duration_s=_elapsed(),
         )
 
-    # -- MERGING --
-    emit_event(session_root, "mission_merging", slug_s)
-    logger.info("Mission %s: merging", slug_s)
-    merge = merge_worker_pane(project_root, slug_s, session_root=session_root)
-    if merge.get("error"):
-        return _fail(f"Merge failed: {merge['error']}")
+    if lifecycle.state == "reviewed_pass":
+        return MissionResult(
+            state="reviewed_pass",
+            slug=slug_s,
+            findings=finding_dicts,
+            duration_s=_elapsed(),
+        )
 
-    # -- COMPLETED --
-    emit_event(session_root, "mission_completed", slug_s)
     logger.info("Mission %s: completed in %.1fs", slug_s, _elapsed())
     return MissionResult(
         state="completed",
         slug=slug_s,
-        merge_result=merge,
+        merge_result=lifecycle.merge_result,
         findings=finding_dicts,
         duration_s=_elapsed(),
     )

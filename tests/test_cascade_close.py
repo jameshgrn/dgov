@@ -1,4 +1,4 @@
-"""Tests for cascading close and terminal-state pruning."""
+"""Tests for cascading close and explicit terminal garbage collection."""
 
 from __future__ import annotations
 
@@ -126,22 +126,45 @@ class TestCascadingClose:
 
 
 class TestTerminalStatePruning:
-    def test_prunes_old_terminal_panes(self, tmp_path: Path) -> None:
+    def test_prune_keeps_old_terminal_panes_until_gc(self, tmp_path: Path) -> None:
         sr = str(tmp_path)
         old_time = time.time() - 7200  # 2 hours ago
         _add_pane(tmp_path, "old-merged", created_at=old_time)
+        (tmp_path / "old-merged").mkdir()
         update_pane_state(sr, "old-merged", "done")
         update_pane_state(sr, "old-merged", "merged")
 
         _add_pane(tmp_path, "old-closed", created_at=old_time)
+        (tmp_path / "old-closed").mkdir()
         update_pane_state(sr, "old-closed", "closed")
 
         from dgov.status import prune_stale_panes
 
         pruned = prune_stale_panes(sr, sr)
 
-        assert "old-merged" in pruned
-        assert "old-closed" in pruned
+        assert pruned == []
+        assert get_pane(sr, "old-merged") is not None
+        assert get_pane(sr, "old-closed") is not None
+
+    @patch("dgov.lifecycle._full_cleanup", return_value={"cleaned": True})
+    @patch("dgov.lifecycle.emit_event")
+    def test_gc_prunes_old_terminal_panes(self, mock_event, mock_cleanup, tmp_path: Path) -> None:
+        sr = str(tmp_path)
+        old_time = time.time() - 7200
+        _add_pane(tmp_path, "old-merged", created_at=old_time)
+        (tmp_path / "old-merged").mkdir()
+        update_pane_state(sr, "old-merged", "done")
+        update_pane_state(sr, "old-merged", "merged")
+
+        _add_pane(tmp_path, "old-closed", created_at=old_time)
+        (tmp_path / "old-closed").mkdir()
+        update_pane_state(sr, "old-closed", "closed")
+
+        from dgov.status import gc_retained_panes
+
+        result = gc_retained_panes(sr, sr, older_than_s=3600)
+
+        assert result == {"pruned": ["old-merged", "old-closed"], "skipped": []}
         assert get_pane(sr, "old-merged") is None
         assert get_pane(sr, "old-closed") is None
 

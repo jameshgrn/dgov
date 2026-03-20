@@ -357,10 +357,15 @@ class TestIsDone:
             "branch_name": "test-slug",
             "base_sha": "abc",
         }
-        with patch("dgov.persistence.update_pane_state") as mock_state:
+        with patch("dgov.persistence.settle_completion_state") as mock_state:
             with patch("dgov.done._has_new_commits", return_value=True):
                 assert _is_done(str(tmp_path), "test-slug", pane_record=record) is True
-        mock_state.assert_called_once_with(str(tmp_path), "test-slug", "done", force=False)
+        mock_state.assert_called_once_with(
+            str(tmp_path),
+            "test-slug",
+            "done",
+            allow_abandoned=True,
+        )
 
     def test_no_pane_record_no_signal(self, tmp_path: Path) -> None:
         assert _is_done(str(tmp_path), "test-slug") is False
@@ -397,7 +402,7 @@ class TestIsDone:
         mock_backend.is_alive.return_value = False
         with (
             patch("dgov.done._has_new_commits", return_value=False),
-            patch("dgov.persistence.update_pane_state") as mock_state,
+            patch("dgov.persistence.settle_completion_state") as mock_state,
         ):
             assert _is_done(str(tmp_path), "slug", pane_record=record) is True
             mock_state.assert_called_once_with(str(tmp_path), "slug", "abandoned")
@@ -406,9 +411,14 @@ class TestIsDone:
         done_dir = tmp_path / ".dgov" / "done"
         done_dir.mkdir(parents=True)
         (done_dir / "test-slug.exit").write_text("1")
-        with patch("dgov.persistence.update_pane_state") as mock_state:
+        with patch("dgov.persistence.settle_completion_state") as mock_state:
             assert _is_done(str(tmp_path), "test-slug") is True
-            mock_state.assert_called_once_with(str(tmp_path), "test-slug", "failed", force=False)
+            mock_state.assert_called_once_with(
+                str(tmp_path),
+                "test-slug",
+                "failed",
+                allow_abandoned=True,
+            )
 
     def test_alive_pane_no_commits(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         record = {
@@ -465,6 +475,44 @@ class TestIsDone:
                 is True
             )
         assert get_pane(str(tmp_path), "stale")["state"] == "done"
+
+
+class TestSignalPane:
+    def test_stale_done_signal_after_failed_does_not_raise(self, tmp_path: Path) -> None:
+        from dgov.waiter import signal_pane
+
+        add_pane(
+            str(tmp_path),
+            WorkerPane(
+                slug="stale-done",
+                prompt="done",
+                pane_id="%1",
+                agent="claude",
+                project_root=str(tmp_path),
+                worktree_path=str(tmp_path / "wt"),
+                branch_name="stale-done",
+                base_sha="abc123",
+                state="failed",
+            ),
+        )
+
+        stale_record = {
+            "slug": "stale-done",
+            "state": "active",
+            "pane_id": "%1",
+            "project_root": str(tmp_path),
+            "worktree_path": str(tmp_path / "wt"),
+            "branch_name": "stale-done",
+            "base_sha": "abc123",
+        }
+
+        with (
+            patch("dgov.persistence.get_pane", return_value=stale_record),
+            patch("dgov.done._has_completion_commit", return_value=True),
+        ):
+            assert signal_pane(str(tmp_path), "stale-done", "done") is True
+
+        assert get_pane(str(tmp_path), "stale-done")["state"] == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -693,6 +741,44 @@ class TestListWorkerPanes:
 
         assert result[0]["last_output"] == ""
         mock_backend.capture_output.assert_not_called()
+
+    def test_exposes_preserved_artifact_metadata(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.persistence import mark_preserved_artifacts
+
+        replace_all_panes(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "kept-pane",
+                        "agent": "pi",
+                        "pane_id": "%3",
+                        "project_root": str(tmp_path),
+                        "worktree_path": str(tmp_path / "kept-pane"),
+                        "branch_name": "kept-pane",
+                        "prompt": "Do something",
+                        "state": "timed_out",
+                    }
+                ]
+            },
+        )
+        (tmp_path / "kept-pane").mkdir()
+        mark_preserved_artifacts(
+            str(tmp_path),
+            "kept-pane",
+            reason="dirty_worktree",
+            recoverable=True,
+            state="timed_out",
+        )
+        mock_backend.bulk_info.return_value = {}
+
+        result = list_worker_panes(str(tmp_path))
+
+        assert result[0]["preserved_reason"] == "dirty_worktree"
+        assert result[0]["preserved_recoverable"] is True
+        assert result[0]["preserved_artifacts"]["state"] == "timed_out"
 
 
 # ---------------------------------------------------------------------------
@@ -1986,8 +2072,10 @@ class TestValidEvents:
         from dgov.persistence import VALID_EVENTS
 
         expected = {
+            "dispatch_queued",
             "pane_created",
             "pane_done",
+            "pane_failed",
             "pane_resumed",
             "pane_timed_out",
             "pane_merged",
@@ -1998,12 +2086,10 @@ class TestValidEvents:
             "pane_retry_spawned",
             "pane_auto_retried",
             "pane_blocked",
+            "pane_review_pending",
             "checkpoint_created",
             "review_pass",
             "review_fail",
-            "experiment_started",
-            "experiment_accepted",
-            "experiment_rejected",
             "review_fix_started",
             "review_fix_finding",
             "review_fix_completed",
@@ -2554,7 +2640,7 @@ class TestWaitWorkerPane:
             patch("dgov.persistence.get_pane", return_value={"slug": "s1", "agent": "pi"}),
             patch("dgov.waiter._is_done", return_value=False),
             patch("dgov.status.capture_worker_output", return_value=None),
-            patch("dgov.persistence.update_pane_state"),
+            patch("dgov.persistence.settle_completion_state"),
             patch("dgov.persistence.emit_event"),
             patch("dgov.waiter.time.sleep"),
             patch("dgov.waiter.time.monotonic") as mock_mono,

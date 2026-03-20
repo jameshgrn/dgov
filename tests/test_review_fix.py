@@ -365,7 +365,7 @@ class TestPipelineParseError:
 
 class TestPipelineFull:
     @patch("dgov.lifecycle.close_worker_pane")
-    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
     @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
@@ -405,11 +405,10 @@ class TestPipelineFull:
                 }
             ]
         )
-        mock_merge.return_value = {
-            "merged": "fix-foo",
-            "branch": "fix-foo",
-            "tests_passed": True,
-        }
+        mock_merge.return_value = MagicMock(
+            error=None,
+            merge_result={"merged": "fix-foo", "branch": "fix-foo", "tests_passed": True},
+        )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
         (tmp_path / "src" / "foo.py").touch()
@@ -429,7 +428,6 @@ class TestPipelineFull:
         assert result["test_status"] == "pass"
         assert mock_close.call_args_list == [
             ((str(tmp_path), "review-000-foo"), {"session_root": str(tmp_path), "force": True}),
-            ((str(tmp_path), "fix-foo"), {"session_root": str(tmp_path), "force": True}),
         ]
 
     @patch("dgov.lifecycle.close_worker_pane")
@@ -469,7 +467,7 @@ class TestPipelineFull:
         assert result["test_status"] == "skipped"
 
     @patch("dgov.lifecycle.close_worker_pane")
-    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
     @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
@@ -508,7 +506,10 @@ class TestPipelineFull:
                 }
             ]
         )
-        mock_merge.return_value = {"error": "Merge failed"}
+        mock_merge.return_value = MagicMock(
+            error="Merge failed",
+            merge_result={"error": "Merge failed"},
+        )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
         (tmp_path / "src" / "foo.py").touch()
@@ -528,7 +529,7 @@ class TestPipelineFull:
         )
 
     @patch("dgov.lifecycle.close_worker_pane")
-    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
     @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
@@ -567,7 +568,10 @@ class TestPipelineFull:
                 }
             ]
         )
-        mock_merge.return_value = {"error": "Merge failed"}
+        mock_merge.return_value = MagicMock(
+            error="Merge failed",
+            merge_result={"error": "Merge failed"},
+        )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
         (tmp_path / "src" / "foo.py").touch()
@@ -588,7 +592,7 @@ class TestPipelineFull:
         )
 
     @patch("dgov.lifecycle.close_worker_pane")
-    @patch("dgov.merger.merge_worker_pane")
+    @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
     @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
@@ -620,11 +624,10 @@ class TestPipelineFull:
                 }
             ]
         )
-        mock_merge.return_value = {
-            "merged": "fix-foo",
-            "branch": "fix-foo",
-            "tests_passed": False,
-        }
+        mock_merge.return_value = MagicMock(
+            error=None,
+            merge_result={"merged": "fix-foo", "branch": "fix-foo", "tests_passed": False},
+        )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
         (tmp_path / "src" / "foo.py").touch()

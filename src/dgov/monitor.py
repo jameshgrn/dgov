@@ -10,24 +10,26 @@ import json
 import logging
 import re
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dgov.agents import load_registry
 from dgov.backend import get_backend
+from dgov.decision import MonitorOutputRequest, ProviderError
 from dgov.done import _has_new_commits
-from dgov.merger import merge_worker_pane
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
-from dgov.openrouter import chat_completion_local_first
 from dgov.persistence import (
     STATE_DIR,
     all_panes,
-    clear_dispatch_queue,
     emit_event,
     get_pane,
-    read_dispatch_queue,
+    latest_event_id,
+    read_events,
     set_pane_metadata,
+    take_dispatch_queue,
     update_pane_state,
+    wait_for_events,
 )
 from dgov.recovery import maybe_auto_retry
 from dgov.status import list_worker_panes, prune_stale_panes, tail_worker_log
@@ -36,6 +38,87 @@ if TYPE_CHECKING:
     from dgov.monitor_hooks import MonitorHook
 
 logger = logging.getLogger(__name__)
+
+_MONITOR_WAKE_EVENTS = (
+    "dispatch_queued",
+    "pane_created",
+    "pane_done",
+    "pane_failed",
+    "pane_timed_out",
+    "pane_merged",
+    "pane_merge_failed",
+    "pane_escalated",
+    "pane_superseded",
+    "pane_closed",
+    "pane_retry_spawned",
+    "pane_auto_retried",
+    "pane_review_pending",
+    "mission_pending",
+    "mission_running",
+    "mission_waiting",
+    "mission_reviewing",
+    "mission_merging",
+    "mission_completed",
+    "mission_failed",
+    "dag_started",
+    "dag_task_dispatched",
+    "dag_task_completed",
+    "dag_task_failed",
+    "dag_task_escalated",
+    "dag_completed",
+    "dag_failed",
+    "merge_completed",
+    "monitor_auto_complete",
+    "monitor_idle_timeout",
+    "monitor_blocked",
+    "monitor_auto_merge",
+    "monitor_auto_retry",
+)
+
+_ACTIVE_ADD_EVENTS = frozenset({"pane_created", "pane_resumed"})
+_ACTIVE_REMOVE_EVENTS = frozenset(
+    {
+        "pane_done",
+        "pane_failed",
+        "pane_timed_out",
+        "pane_merged",
+        "pane_merge_failed",
+        "pane_escalated",
+        "pane_superseded",
+        "pane_closed",
+    }
+)
+_MERGE_CLEAR_EVENTS = frozenset(
+    {
+        "pane_failed",
+        "pane_review_pending",
+        "pane_timed_out",
+        "pane_merged",
+        "pane_merge_failed",
+        "pane_escalated",
+        "pane_superseded",
+        "pane_closed",
+    }
+)
+_RETRY_CLEAR_EVENTS = frozenset(
+    {
+        "pane_done",
+        "pane_merged",
+        "pane_merge_failed",
+        "pane_escalated",
+        "pane_superseded",
+        "pane_closed",
+    }
+)
+
+
+@dataclass
+class MonitorLoopState:
+    event_cursor: int
+    active_slugs: set[str] = field(default_factory=set)
+    merge_candidates: set[str] = field(default_factory=set)
+    retry_candidates: set[str] = field(default_factory=set)
+    queue_dirty: bool = False
 
 
 # Deterministic regex patterns for classification
@@ -59,6 +142,13 @@ DETERMINISTIC_PATTERNS = {
         r"\b(no[ \t]+work|pause[d]?|idling)\b",
     ],
 }
+
+
+def get_output_classification_provider():
+    """Return the active provider for ambiguous monitor output classification."""
+    from dgov.decision_providers import LocalOutputClassificationProvider
+
+    return LocalOutputClassificationProvider()
 
 
 def _classify_deterministic(output: str) -> str | None:
@@ -114,68 +204,11 @@ def classify_output(
         return deterministic_result
 
     # Layer 2: LLM classification for ambiguous cases
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Classify the coding agent output into exactly one category. "
-                "Reply with ONE word only: "
-                "working, done, stuck, idle, waiting_input, or committing.\n"
-                "\n"
-                "Categories:\n"
-                "- working: actively writing code, running commands, exploring\n"
-                "- done: task complete, ready to commit, successful finish message\n"
-                "- stuck: error messages, exceptions, repeated failed attempts, frozen state\n"
-                "- idle: no activity, paused without work, silent for extended period\n"
-                "- waiting_input: explicitly waiting for user confirmation/input/feedback\n"
-                "- committing: running git commands, preparing to push changes\n"
-                "\n"
-                "Few-shot examples:\n"
-                "\n"
-                "Example 1:\n"
-                'Output: "Let me create the database schema first."\n'
-                "Classification: working\n"
-                "\n"
-                "Example 2:\n"
-                'Output: "I\'ve finished implementing the feature. All tests pass."\n'
-                "Classification: done\n"
-                "\n"
-                "Example 3:\n"
-                'Output: "Connection failed again after 3 attempts. Error: '
-                'ConnectionRefusedError"\n'
-                "Classification: stuck\n"
-                "\n"
-                "Example 4:\n"
-                'Output: "No active work detected in last 60 seconds"\n'
-                "Classification: idle\n"
-                "\n"
-                "Example 5:\n"
-                'Output: "Waiting for your confirmation before proceeding with the refactoring."\n'
-                "Classification: waiting_input\n"
-                "\n"
-                "Example 6:\n"
-                "Output: \"git add src/ && git commit -m 'Add new feature'\"\n"
-                "Classification: committing\n"
-                "\n"
-                "Respond with ONLY the category name, nothing else."
-            ),
-        },
-        {"role": "user", "content": output[-2000:]},
-    ]
-
     try:
-        resp = chat_completion_local_first(messages, max_tokens=10, temperature=0)
-        choices = resp.get("choices") or []
-        if not choices:
-            return "unknown"
-        content = choices[0].get("message", {}).get("content") or ""
-        choice = content.strip().lower()
-        # Recognized classifications now include waiting_input and committing
-        if choice in {"working", "done", "stuck", "idle", "waiting_input", "committing"}:
-            return choice
-        logger.debug("Unknown classification from LLM: %s", choice)
-        return "unknown"
-    except Exception as exc:
+        provider = get_output_classification_provider()
+        result = provider.classify_output(MonitorOutputRequest(output=output))
+        return result.decision.classification
+    except ProviderError as exc:
         logger.debug("Classification failed: %s", exc)
         return "unknown"
 
@@ -249,6 +282,182 @@ def poll_workers(
         )
 
     return results
+
+
+def _bootstrap_monitor_state(
+    session_root: str, *, auto_merge: bool, auto_retry: bool
+) -> MonitorLoopState:
+    """Seed monitor state from persisted pane records once at startup."""
+    panes = all_panes(session_root)
+    return MonitorLoopState(
+        event_cursor=latest_event_id(session_root),
+        active_slugs={pane["slug"] for pane in panes if pane.get("state") == "active"},
+        merge_candidates={
+            pane["slug"] for pane in panes if auto_merge and pane.get("state") == "done"
+        },
+        retry_candidates={
+            pane["slug"]
+            for pane in panes
+            if auto_retry and pane.get("state") in {"failed", "abandoned"}
+        },
+        queue_dirty=(Path(session_root) / ".dgov" / "dispatch_queue.jsonl").is_file(),
+    )
+
+
+def _apply_monitor_events(
+    state: MonitorLoopState,
+    events: list[dict],
+    *,
+    auto_merge: bool,
+    auto_retry: bool,
+) -> None:
+    """Update monitor candidate sets from journal events."""
+    for event in events:
+        state.event_cursor = max(state.event_cursor, int(event.get("id", state.event_cursor)))
+        kind = str(event.get("event", ""))
+        slug = str(event.get("pane", ""))
+
+        if kind == "dispatch_queued":
+            state.queue_dirty = True
+            continue
+
+        if not slug or slug in {"monitor", "dispatch-queue"}:
+            continue
+
+        if kind in _ACTIVE_ADD_EVENTS:
+            state.active_slugs.add(slug)
+        elif kind in _ACTIVE_REMOVE_EVENTS:
+            state.active_slugs.discard(slug)
+
+        if kind == "pane_done":
+            state.retry_candidates.discard(slug)
+            if auto_merge:
+                state.merge_candidates.add(slug)
+        elif kind in _MERGE_CLEAR_EVENTS:
+            state.merge_candidates.discard(slug)
+
+        if kind == "pane_failed":
+            state.merge_candidates.discard(slug)
+            if auto_retry:
+                state.retry_candidates.add(slug)
+        elif kind == "monitor_idle_timeout":
+            if auto_retry:
+                state.retry_candidates.add(slug)
+        elif kind in _RETRY_CLEAR_EVENTS:
+            state.retry_candidates.discard(slug)
+
+
+def _tracked_worker_records(
+    project_root: str, session_root: str, active_slugs: set[str]
+) -> list[dict]:
+    """Fetch current pane records for the active slugs the monitor owns."""
+    if not active_slugs:
+        return []
+    workers = list_worker_panes(
+        project_root, session_root, include_freshness=False, include_prompt=False
+    )
+    return [
+        worker
+        for worker in workers
+        if worker.get("slug") in active_slugs and worker.get("state") == "active"
+    ]
+
+
+def _drain_dispatch_queue(project_root: str, session_root: str) -> list[dict]:
+    """Dispatch all currently queued prompts once the queue is marked dirty."""
+    queued = take_dispatch_queue(session_root)
+    actions: list[dict] = []
+    for item in queued:
+        summary = item.get("summary", "queued task")
+        agent = item.get("agent_hint") or "qwen-35b"
+        try:
+            from dgov.lifecycle import create_worker_pane
+
+            pane = create_worker_pane(
+                project_root=project_root,
+                prompt=summary,
+                agent=agent,
+                permission_mode="bypassPermissions",
+                session_root=session_root,
+            )
+            logger.info("Monitor: drained queue -> %s (%s)", pane.slug, agent)
+            actions.append({"slug": pane.slug, "action": "queue_dispatch"})
+        except Exception:
+            logger.warning(
+                "Monitor: queue dispatch failed for: %s",
+                summary,
+                exc_info=True,
+            )
+    return actions
+
+
+def _process_auto_merge_candidates(
+    project_root: str,
+    session_root: str,
+    state: MonitorLoopState,
+    merge_attempted: set[str],
+) -> list[dict]:
+    """Attempt auto-merge for slugs marked done by the event journal."""
+    actions: list[dict] = []
+    for slug in sorted(state.merge_candidates):
+        pane = get_pane(session_root, slug)
+        if not pane or pane.get("state") != "done" or slug in merge_attempted:
+            state.merge_candidates.discard(slug)
+            continue
+        try:
+            act = _try_auto_merge(project_root, session_root, slug)
+            if act:
+                actions.append({"slug": slug, "action": act})
+                print(f"[{time.strftime('%H:%M:%S')}] {act}: {slug}")
+                state.merge_candidates.discard(slug)
+                state.active_slugs.discard(slug)
+            else:
+                merge_attempted.add(slug)
+                state.merge_candidates.discard(slug)
+        except Exception:
+            logger.warning("Auto-merge error for %s", slug, exc_info=True)
+            merge_attempted.add(slug)
+            state.merge_candidates.discard(slug)
+    return actions
+
+
+def _process_auto_retry_candidates(
+    project_root: str,
+    session_root: str,
+    state: MonitorLoopState,
+    retry_attempted: set[str],
+) -> list[dict]:
+    """Attempt auto-retry for failed panes tracked from journal events."""
+    actions: list[dict] = []
+    for slug in sorted(state.retry_candidates):
+        pane = get_pane(session_root, slug)
+        if not pane or pane.get("state") not in {"failed", "abandoned"} or slug in retry_attempted:
+            state.retry_candidates.discard(slug)
+            continue
+        try:
+            act = _try_auto_retry(project_root, session_root, slug)
+            if act:
+                actions.append({"slug": slug, "action": act})
+                print(f"[{time.strftime('%H:%M:%S')}] {act}: {slug}")
+                state.retry_candidates.discard(slug)
+                pane_after = get_pane(session_root, slug) or {}
+                new_slug = str(pane_after.get("superseded_by", ""))
+                if not new_slug:
+                    for event in reversed(read_events(session_root, slug=slug, limit=5)):
+                        candidate = str(event.get("new_slug", ""))
+                        if candidate:
+                            new_slug = candidate
+                            break
+                if new_slug:
+                    state.active_slugs.add(new_slug)
+            else:
+                retry_attempted.add(slug)
+                state.retry_candidates.discard(slug)
+        except Exception:
+            logger.warning("Auto-retry error for %s", slug, exc_info=True)
+            retry_attempted.add(slug)
+            state.retry_candidates.discard(slug)
+    return actions
 
 
 def _take_action(project_root: str, session_root: str, worker: dict, history: dict) -> str | None:
@@ -459,32 +668,25 @@ def _mark_idle_failed(
     """Mark an idle worker as failed."""
     update_pane_state(session_root, slug, "failed", force=True)
     set_pane_metadata(session_root, slug, monitor_reason=reason or "idle_timeout")
+    emit_event(session_root, "pane_failed", slug, reason=reason or "monitor_idle_timeout")
     emit_event(session_root, "monitor_idle_timeout", slug, reason=reason or "monitor_idle_timeout")
     logger.info("Monitor: timed out idle worker %s (reason=%s)", slug, reason)
 
 
 def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | None:
     """Attempt to auto-merge a done pane if review verdict is safe."""
-    from dgov.executor import review_merge_gate
+    from dgov.executor import run_land_only
 
-    gate = review_merge_gate(project_root, slug, session_root=session_root)
-    if gate.review.get("error"):
-        logger.warning("Auto-merge review error for %s: %s", slug, gate.review["error"])
+    result = run_land_only(project_root, slug, session_root=session_root)
+    if result.error:
+        log = logger.warning if result.failure_stage == "review_error" else logger.info
+        log("Skip auto-merge %s: %s", slug, result.error)
         return None
-    if not gate.passed:
-        logger.info(
-            "Skip auto-merge %s: verdict=%s issues=%s",
-            slug,
-            gate.verdict,
-            gate.review.get("issues"),
-        )
-        return None
-    result = merge_worker_pane(project_root, slug, session_root=session_root)
-    if result.get("merged"):
+    if result.merge_result and result.merge_result.get("merged"):
         emit_event(session_root, "monitor_auto_merge", slug)
         logger.info("Monitor: auto-merged %s", slug)
         return "auto_merge"
-    logger.warning("Auto-merge failed for %s: %s", slug, result.get("error"))
+    logger.warning("Auto-merge failed for %s: %s", slug, result.error)
     return None
 
 
@@ -515,6 +717,16 @@ def _try_auto_retry(project_root: str, session_root: str, slug: str) -> str | No
     return None
 
 
+def _wait_for_monitor_wakeup(session_root: str, after_id: int, timeout_s: int) -> list[dict]:
+    """Wait for journal activity that should wake the monitor early."""
+    return wait_for_events(
+        session_root,
+        after_id=after_id,
+        event_types=_MONITOR_WAKE_EVENTS,
+        timeout_s=float(timeout_s),
+    )
+
+
 def run_monitor(
     project_root: str,
     session_root: str | None = None,
@@ -526,9 +738,11 @@ def run_monitor(
 ) -> None:
     """Run the monitor loop."""
     session_root = session_root or project_root
+    state = _bootstrap_monitor_state(session_root, auto_merge=auto_merge, auto_retry=auto_retry)
     history: dict[str, dict] = {}
     merge_attempted: set[str] = set()
     retry_attempted: set[str] = set()
+    pending_events: list[dict] = []
 
     # Ensure logging is configured for console output
     logging.basicConfig(
@@ -547,6 +761,13 @@ def run_monitor(
     try:
         while True:
             try:
+                _apply_monitor_events(
+                    state,
+                    pending_events,
+                    auto_merge=auto_merge,
+                    auto_retry=auto_retry,
+                )
+
                 # Reload hooks each tick for live updates
                 hooks = load_monitor_hooks(session_root)
 
@@ -556,69 +777,62 @@ def run_monitor(
                     if pruned:
                         logger.info("Monitor: pruned stale panes: %s", ", ".join(pruned))
 
-                # Drain dispatch queue every 12 ticks (~1 min at 5s interval)
-                if tick % 12 == 6:
-                    queued = read_dispatch_queue(session_root)
-                    if queued:
-                        clear_dispatch_queue(session_root)
-                        for item in queued:
-                            summary = item.get("summary", "queued task")
-                            agent = item.get("agent_hint") or "qwen-35b"
-                            try:
-                                from dgov.lifecycle import create_worker_pane
-
-                                pane = create_worker_pane(
-                                    project_root=project_root,
-                                    prompt=summary,
-                                    agent=agent,
-                                    permission_mode="bypassPermissions",
-                                    session_root=session_root,
-                                )
-                                logger.info("Monitor: drained queue -> %s (%s)", pane.slug, agent)
-                            except Exception:
-                                logger.warning(
-                                    "Monitor: queue dispatch failed for: %s",
-                                    summary,
-                                    exc_info=True,
-                                )
-
-                workers = poll_workers(project_root, session_root, hooks=hooks)
                 actions = []
+
+                if state.queue_dirty:
+                    queue_actions = _drain_dispatch_queue(project_root, session_root)
+                    actions.extend(queue_actions)
+                    for action in queue_actions:
+                        state.active_slugs.add(action["slug"])
+                    state.queue_dirty = False
+
+                tracked_workers = _tracked_worker_records(
+                    project_root, session_root, state.active_slugs
+                )
+                workers = poll_workers(
+                    project_root,
+                    session_root,
+                    panes=tracked_workers,
+                    hooks=hooks,
+                )
 
                 for w in workers:
                     action = _take_action(project_root, session_root, w, history)
                     if action:
                         actions.append({"slug": w["slug"], "action": action})
                         print(f"[{time.strftime('%H:%M:%S')}] Action: {action} -> {w['slug']}")
+                        if action in {
+                            "auto_complete",
+                            "stale_auto_complete",
+                            "proactive_auto_complete",
+                            "hook_auto_complete",
+                        }:
+                            state.active_slugs.discard(w["slug"])
+                            if auto_merge:
+                                state.merge_candidates.add(w["slug"])
+                        elif action in {"stale_fail", "idle_timeout", "hook_fail"}:
+                            state.active_slugs.discard(w["slug"])
+                            if auto_retry:
+                                state.retry_candidates.add(w["slug"])
 
-                # Auto-merge done panes and auto-retry failed panes
-                if auto_merge or auto_retry:
-                    all_recs = all_panes(session_root)
-                    for rec in all_recs:
-                        s = rec.get("slug", "")
-                        st = rec.get("state", "")
-                        if auto_merge and st == "done" and s not in merge_attempted:
-                            try:
-                                act = _try_auto_merge(project_root, session_root, s)
-                                if act:
-                                    actions.append({"slug": s, "action": act})
-                                    print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
-                                else:
-                                    merge_attempted.add(s)
-                            except Exception:
-                                logger.warning("Auto-merge error for %s", s, exc_info=True)
-                                merge_attempted.add(s)
-                        elif auto_retry and st == "failed" and s not in retry_attempted:
-                            try:
-                                act = _try_auto_retry(project_root, session_root, s)
-                                if act:
-                                    actions.append({"slug": s, "action": act})
-                                    print(f"[{time.strftime('%H:%M:%S')}] {act}: {s}")
-                                else:
-                                    retry_attempted.add(s)
-                            except Exception:
-                                logger.warning("Auto-retry error for %s", s, exc_info=True)
-                                retry_attempted.add(s)
+                if auto_merge:
+                    actions.extend(
+                        _process_auto_merge_candidates(
+                            project_root,
+                            session_root,
+                            state,
+                            merge_attempted,
+                        )
+                    )
+                if auto_retry:
+                    actions.extend(
+                        _process_auto_retry_candidates(
+                            project_root,
+                            session_root,
+                            state,
+                            retry_attempted,
+                        )
+                    )
 
                 status = {
                     "timestamp": time.time(),
@@ -646,7 +860,12 @@ def run_monitor(
             if dry_run:
                 return
 
-            time.sleep(poll_interval)
+            state.event_cursor = latest_event_id(session_root)
+            pending_events = _wait_for_monitor_wakeup(
+                session_root,
+                state.event_cursor,
+                poll_interval,
+            )
             tick += 1
     except KeyboardInterrupt:
         logger.info("Monitor stopped by user")

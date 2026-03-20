@@ -6,67 +6,85 @@ from unittest.mock import patch
 
 import pytest
 
+from dgov.decision import (
+    DecisionKind,
+    DecisionRecord,
+    MonitorOutputDecision,
+    ProviderError,
+    StaticDecisionProvider,
+)
+
 pytestmark = pytest.mark.unit
 
 
 class TestClassifyOutput:
     """Test classify_output() 4B classification."""
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_working(self, mock_llm):
+    def _provider(self, classification: str) -> StaticDecisionProvider:
+        return StaticDecisionProvider(
+            classify_output_fn=lambda request: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="static-monitor",
+                decision=MonitorOutputDecision(classification=classification),
+            )
+        )
+
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_working(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.return_value = {"choices": [{"message": {"content": "working"}}]}
+        mock_provider.return_value = self._provider("working")
         assert classify_output("Reading src/dgov/agents.py") == "working"
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_done(self, mock_llm):
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_done(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.return_value = {"choices": [{"message": {"content": "done"}}]}
+        mock_provider.return_value = self._provider("done")
         # Use a string that doesn't hit DETERMINISTIC_PATTERNS
         result = classify_output("I have completed the requested changes and verified them.")
         assert result == "done"
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_stuck(self, mock_llm):
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_stuck(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.return_value = {"choices": [{"message": {"content": "stuck"}}]}
+        mock_provider.return_value = self._provider("stuck")
         # Use a string that doesn't hit DETERMINISTIC_PATTERNS
         assert (
             classify_output("I am trying to find the issue but I keep looking at the same files.")
             == "stuck"
         )
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_idle(self, mock_llm):
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_idle(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.return_value = {"choices": [{"message": {"content": "idle"}}]}
+        mock_provider.return_value = self._provider("idle")
         assert classify_output("$ ") == "idle"
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_fallback_on_error(self, mock_llm):
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_fallback_on_error(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.side_effect = RuntimeError("4B unreachable")
+        def _fail(request):  # noqa: ANN001
+            raise ProviderError("4B unreachable")
+
+        mock_provider.return_value = StaticDecisionProvider(classify_output_fn=_fail)
         assert classify_output("anything") == "unknown"
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_normalizes_response(self, mock_llm):
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_normalizes_response(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.return_value = {"choices": [{"message": {"content": "  Working  \n"}}]}
+        mock_provider.return_value = self._provider("working")
         assert classify_output("test") == "working"
 
-    @patch("dgov.monitor.chat_completion_local_first")
-    def test_classify_invalid_response_returns_unknown(self, mock_llm):
+    @patch("dgov.monitor.get_output_classification_provider")
+    def test_classify_invalid_response_returns_unknown(self, mock_provider):
         from dgov.monitor import classify_output
 
-        mock_llm.return_value = {
-            "choices": [{"message": {"content": "I think the agent is working"}}]
-        }
+        mock_provider.return_value = self._provider("unknown")
         assert classify_output("test") == "unknown"
 
     def test_classify_empty_output_returns_idle(self):
@@ -287,6 +305,23 @@ class TestRunMonitor:
         assert "workers" in data
         assert "actions" in data
 
+    @patch("dgov.monitor.latest_event_id", return_value=12)
+    @patch("dgov.monitor._wait_for_monitor_wakeup", side_effect=KeyboardInterrupt)
+    @patch("dgov.monitor._take_action")
+    @patch("dgov.monitor.poll_workers")
+    def test_non_dry_run_waits_on_event_boundary(
+        self, mock_poll, mock_action, mock_wait, mock_latest_event_id, tmp_path
+    ):
+        from dgov.monitor import run_monitor
+
+        mock_poll.return_value = []
+        mock_action.return_value = None
+
+        run_monitor(str(tmp_path), dry_run=False, poll_interval=7)
+
+        mock_wait.assert_called_once_with(str(tmp_path), 12, 7)
+        assert mock_latest_event_id.call_count >= 1
+
 
 class TestNudgeStuck:
     """Test _nudge_stuck edge cases."""
@@ -375,32 +410,130 @@ class TestTakeActionBugFixes:
 class TestTryAutoMerge:
     """Test _try_auto_merge auto-merge logic."""
 
-    @patch("dgov.monitor.merge_worker_pane")
-    @patch("dgov.inspection.review_worker_pane")
-    def test_auto_merge_safe_verdict(self, mock_review, mock_merge):
+    @patch("dgov.executor.run_land_only")
+    def test_auto_merge_safe_verdict(self, mock_run_land_only):
         from dgov.monitor import _try_auto_merge
 
-        mock_review.return_value = {"verdict": "safe", "slug": "test-1", "commit_count": 1}
-        mock_merge.return_value = {"merged": "test-1", "branch": "dgov-test-1"}
+        mock_run_land_only.return_value = type(
+            "R",
+            (),
+            {
+                "review": {"verdict": "safe", "slug": "test-1", "commit_count": 1},
+                "merge_result": {"merged": "test-1", "branch": "dgov-test-1"},
+                "error": None,
+            },
+        )()
         result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
         assert result == "auto_merge"
-        mock_merge.assert_called_once()
+        mock_run_land_only.assert_called_once()
 
-    @patch("dgov.inspection.review_worker_pane")
-    def test_auto_merge_review_verdict(self, mock_review):
+    @patch("dgov.executor.run_land_only")
+    def test_auto_merge_review_verdict(self, mock_run_land_only):
         from dgov.monitor import _try_auto_merge
 
-        mock_review.return_value = {"verdict": "review", "issues": ["uncommitted changes"]}
+        mock_run_land_only.return_value = type(
+            "R",
+            (),
+            {
+                "review": {"verdict": "review", "issues": ["uncommitted changes"]},
+                "merge_result": None,
+                "failure_stage": "review_failed",
+                "error": "Review verdict is review; refusing to merge",
+            },
+        )()
         result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
 
-    @patch("dgov.inspection.review_worker_pane")
-    def test_auto_merge_review_error(self, mock_review):
+    @patch("dgov.executor.run_land_only")
+    def test_auto_merge_review_error(self, mock_run_land_only):
         from dgov.monitor import _try_auto_merge
 
-        mock_review.return_value = {"error": "Pane not found"}
+        mock_run_land_only.return_value = type(
+            "R",
+            (),
+            {
+                "review": {"error": "Pane not found"},
+                "merge_result": None,
+                "failure_stage": "review_error",
+                "error": "Pane not found",
+            },
+        )()
         result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
+
+
+class TestMonitorWakeup:
+    def test_wait_for_monitor_wakeup_uses_event_waiter(self):
+        from dgov.monitor import _wait_for_monitor_wakeup
+
+        with (
+            patch("dgov.monitor.wait_for_events", return_value=[{"id": 13}]) as mock_wait,
+        ):
+            events = _wait_for_monitor_wakeup("/tmp/proj", 12, 9)
+
+        assert events == [{"id": 13}]
+        mock_wait.assert_called_once_with(
+            "/tmp/proj",
+            after_id=12,
+            event_types=(
+                "dispatch_queued",
+                "pane_created",
+                "pane_done",
+                "pane_failed",
+                "pane_timed_out",
+                "pane_merged",
+                "pane_merge_failed",
+                "pane_escalated",
+                "pane_superseded",
+                "pane_closed",
+                "pane_retry_spawned",
+                "pane_auto_retried",
+                "pane_review_pending",
+                "mission_pending",
+                "mission_running",
+                "mission_waiting",
+                "mission_reviewing",
+                "mission_merging",
+                "mission_completed",
+                "mission_failed",
+                "dag_started",
+                "dag_task_dispatched",
+                "dag_task_completed",
+                "dag_task_failed",
+                "dag_task_escalated",
+                "dag_completed",
+                "dag_failed",
+                "merge_completed",
+                "monitor_auto_complete",
+                "monitor_idle_timeout",
+                "monitor_blocked",
+                "monitor_auto_merge",
+                "monitor_auto_retry",
+            ),
+            timeout_s=9.0,
+        )
+
+
+class TestMonitorEventState:
+    def test_apply_monitor_events_tracks_candidates_incrementally(self):
+        from dgov.monitor import MonitorLoopState, _apply_monitor_events
+
+        state = MonitorLoopState(event_cursor=4)
+        events = [
+            {"id": 5, "event": "dispatch_queued", "pane": "dispatch-queue"},
+            {"id": 6, "event": "pane_created", "pane": "worker-1"},
+            {"id": 7, "event": "pane_done", "pane": "worker-1"},
+            {"id": 8, "event": "pane_failed", "pane": "worker-2"},
+            {"id": 9, "event": "pane_review_pending", "pane": "worker-1"},
+        ]
+
+        _apply_monitor_events(state, events, auto_merge=True, auto_retry=True)
+
+        assert state.event_cursor == 9
+        assert state.queue_dirty is True
+        assert "worker-1" not in state.active_slugs
+        assert "worker-1" not in state.merge_candidates
+        assert "worker-2" in state.retry_candidates
 
 
 class TestTryAutoRetry:
@@ -491,7 +624,13 @@ class TestRunMonitorAutoMergePolicy:
                 }
             ]
 
-            with patch("dgov.monitor._try_auto_merge") as mock_try_merge:
+            with (
+                patch(
+                    "dgov.monitor.get_pane",
+                    return_value={"slug": "done-worker", "state": "done"},
+                ),
+                patch("dgov.monitor._try_auto_merge") as mock_try_merge,
+            ):
                 mock_try_merge.return_value = "auto_merge"
                 # Call with auto_merge=True (the default)
                 run_monitor(str(tmp_path), dry_run=True, auto_merge=True)

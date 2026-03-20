@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -114,13 +114,14 @@ class TestPaneReview:
 
 class TestPaneLand:
     def test_land_success(self, runner: CliRunner) -> None:
-        review_data = {"slug": "task", "verdict": "safe", "commit_count": 2}
-        merge_data = {"merged": "task", "branch": "task", "files_changed": 1}
-
-        with (
-            patch("dgov.inspection.review_worker_pane", return_value=review_data),
-            patch("dgov.merger.merge_worker_pane", return_value=merge_data),
-        ):
+        with patch(
+            "dgov.executor.run_land_only",
+            return_value=MagicMock(
+                review={"slug": "task", "verdict": "safe", "commit_count": 2},
+                merge_result={"merged": "task", "branch": "task", "files_changed": 1},
+                error=None,
+            ),
+        ) as mock_land:
             result = runner.invoke(cli, ["pane", "land", "task"])
 
         assert result.exit_code == 0
@@ -132,22 +133,71 @@ class TestPaneLand:
         assert review_line["review"] == "safe"
         assert review_line["commits"] == 2
         assert merge_line["merged"] == "task"
+        mock_land.assert_called_once_with(
+            ".",
+            "task",
+            session_root=None,
+            resolve="skip",
+            squash=True,
+            rebase=False,
+        )
 
     def test_land_no_commits_exits(self, runner: CliRunner) -> None:
-        review_data = {"slug": "task", "verdict": "safe", "commit_count": 0}
-
-        with patch("dgov.inspection.review_worker_pane", return_value=review_data):
+        with patch(
+            "dgov.executor.run_land_only",
+            return_value=MagicMock(
+                review={"slug": "task", "verdict": "safe", "commit_count": 0},
+                merge_result=None,
+                error="No commits to merge",
+            ),
+        ):
             result = runner.invoke(cli, ["pane", "land", "task"])
 
         assert result.exit_code == 1
 
     def test_land_review_verdict_blocks_merge(self, runner: CliRunner) -> None:
-        review_data = {"slug": "task", "verdict": "review", "commit_count": 2}
-
-        with patch("dgov.inspection.review_worker_pane", return_value=review_data):
+        with patch(
+            "dgov.executor.run_land_only",
+            return_value=MagicMock(
+                review={"slug": "task", "verdict": "review", "commit_count": 2},
+                merge_result=None,
+                error="Review verdict is review; refusing to merge",
+            ),
+        ):
             result = runner.invoke(cli, ["pane", "land", "task"])
 
         assert result.exit_code == 1
         assert json.loads(result.output.splitlines()[-1]) == {
             "error": "Review verdict is review; refusing to merge"
         }
+
+
+class TestPaneMerge:
+    def test_merge_uses_canonical_merge_only(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.executor.run_merge_only",
+            return_value=MagicMock(
+                merge_result={"merged": "task", "branch": "task"},
+            ),
+        ) as mock_merge:
+            result = runner.invoke(cli, ["pane", "merge", "task", "--resolve", "manual"])
+
+        assert result.exit_code == 0
+        mock_merge.assert_called_once_with(
+            ".",
+            "task",
+            session_root=None,
+            resolve="manual",
+            squash=True,
+            rebase=False,
+        )
+
+    def test_merge_error_exits_nonzero(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.executor.run_merge_only",
+            return_value=MagicMock(merge_result={"error": "conflicts"}),
+        ):
+            result = runner.invoke(cli, ["pane", "merge", "task"])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output)["error"] == "conflicts"

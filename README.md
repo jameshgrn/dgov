@@ -61,21 +61,9 @@ Done detection uses a prioritized fallback strategy:
 - **Stabilization:** No output for N seconds (TUI agents).
 - **Liveness:** Tmux pane is dead or process is gone.
 
-## Yapper Interface
-
-The Yapper is a conversational front-end that classifies natural language into actionable dgov tasks.
-
-```bash
-dgov yap "Fix the overflow bug in the footer using claude"
-```
-
-It classifies input into:
-- **COMMAND:** Dispatches a worker immediately.
-- **IDEA:** Noted in the event log for later.
-- **QUESTION:** Answers from the codebase or state DB.
-- **CHATTER:** Acknowledged without side effects.
-
----
+For API-style agents, the preferred completion path is `dgov worker complete` or
+`dgov worker fail` from inside the worker pane rather than relying on
+stabilization heuristics.
 
 ## Design
 
@@ -84,6 +72,20 @@ It classifies input into:
 - **Developer-friendly** — git worktrees, tmux panes, CLI commands; no new paradigm to learn
 - **Composable** — DAGs, missions, and batch specs compose from the same primitives
 - **Opinionated where it matters** — governor stays on `main`, workers get worktrees, protected files are restored before merge
+
+## Architecture
+
+Three internal layers carry most of the current policy:
+
+- **Executor pipeline** — `src/dgov/executor.py` owns dispatch preflight, wait/review/merge gates, and cleanup. `pane`, `mission`, `batch`, `dag`, `merge-queue`, and monitor-driven landing call the same lifecycle entrypoints.
+- **Context packets** — `src/dgov/context_packet.py` compiles prompt-derived file touches, tests, hints, and commit messages into one packet used by preflight, worker instructions, and worktree setup.
+- **Decision providers** — `src/dgov/decision.py` and `src/dgov/decision_providers.py` wrap task routing, monitor classification, and pane review as typed decisions so callers do not need to know which backend transport produced the answer.
+
+Related behavior:
+
+- **Worker completion API** — API-oriented agents finish by calling `dgov worker complete` or `dgov worker fail`, which records pane state and writes the done or exit signal file.
+- **Validated merges** — worker branches are merged and checked in a temporary candidate worktree before `main` is advanced.
+- **Monitor** — `dgov monitor` persists status under `.dgov/monitor/`, watches the event journal, and can auto-complete, auto-land, or retry panes based on output and commit state.
 
 ## Install
 
@@ -143,7 +145,8 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 | `dgov pane review` | Inspect a pane's diff, commit count, and verdict |
 | `dgov pane merge` | Merge a pane's branch into main (squash by default, `--no-squash` or `--rebase`) |
 | `dgov pane land` | Review + merge + close in one step |
-| `dgov pane merge-all` | Merge all reviewed-pass panes |
+| `dgov pane merge-all` | Merge all done panes sequentially |
+| `dgov pane land-all` | Review + merge + close all done panes sequentially |
 | `dgov pane close` | Close a pane and clean up worktree (idempotent) |
 | `dgov pane resume` | Re-launch agent in existing worktree |
 | `dgov pane retry` | Fresh attempt with new worktree |
@@ -163,7 +166,9 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 
 ### DAG runner
 
-Run multi-task workflows defined in TOML. Tasks declare dependencies and file touches; dgov computes execution tiers via topological sort with file-overlap detection.
+Run multi-task workflows defined in TOML. Tasks declare dependencies and file
+touches; dgov persists run state in SQLite and schedules work from dependency
+readiness plus file claims.
 
 ```bash
 dgov dag run TASKS.toml                    # execute all tiers
@@ -171,10 +176,14 @@ dgov dag run TASKS.toml --dry-run          # show tier plan without executing
 dgov dag run TASKS.toml --tier 0           # execute only tier 0
 dgov dag run TASKS.toml --skip slow-task   # skip a task and its dependents
 dgov dag run TASKS.toml --no-auto-merge    # hold merges for manual review
+dgov dag resume TASKS.toml                 # resume the most recent failed/partial run
+dgov dag status TASKS.toml                 # inspect persisted DAG task state
 dgov dag merge TASKS.toml                  # merge held tasks from a prior run
 ```
 
-Features: retry with augmented prompts on failure, agent escalation chains, per-agent concurrency limits, crash-safe resume via SQLite, `commit_message` from TOML used as merge commit message.
+Features: retry with augmented prompts on failure, agent escalation chains,
+per-agent concurrency limits, crash-safe resume via `dag_runs` and `dag_tasks`,
+and `commit_message` from TOML used as the merge commit message.
 
 ### Orchestration
 
@@ -182,9 +191,8 @@ Features: retry with augmented prompts on failure, agent escalation chains, per-
 |---------|-------------|
 | `dgov mission` | Single-prompt orchestration: dispatch, wait, review, merge |
 | `dgov batch` | Execute a batch spec with DAG-ordered parallelism |
-| `dgov experiment` | Iterative experiments with accept/reject loop |
+| `dgov monitor` | Run the worker monitor daemon or launch it in a utility pane |
 | `dgov review-fix` | Review-then-fix pipeline with severity filtering |
-| `dgov yap` | Classify agent output (actionable vs chatter) |
 
 ### LT-GOV (delegation)
 
@@ -220,21 +228,23 @@ dgov merge-queue process                                 # claim and execute
 
 | Agent | CLI | Done detection |
 |-------|-----|----------------|
-| `claude` | Claude Code | commit (30s grace after last commit) |
-| `codex` | Codex CLI | exit |
-| `gemini` | Gemini CLI | exit |
-| `cursor` | Cursor CLI | stable |
-| `opencode` | OpenCode | exit |
+| `claude` | Claude Code | api |
+| `codex` | Codex CLI | api |
+| `gemini` | Gemini CLI | api |
+| `cursor` | Cursor CLI | api |
+| `opencode` | OpenCode | api |
 | `cline` | Cline CLI | stable |
-| `qwen` | Qwen CLI | exit |
-| `amp` | Amp CLI | exit |
-| `pi` | pi CLI | exit |
-| `copilot` | Copilot CLI | exit |
+| `qwen` | Qwen CLI | api |
+| `amp` | Amp CLI | api |
+| `pi` | pi CLI | api |
+| `copilot` | Copilot CLI | api |
 | `crush` | Crush CLI | stable |
 
 User agents: `~/.dgov/agents.toml` (global) or `.dgov/agents.toml` (per-project). See `dgov agents` for what's installed.
 
-Done strategies: `exit` (process exits), `commit` (watches for git commits), `stable` (output stabilization), `signal` (done file touched).
+Done strategies: `api` (agent reports completion through `dgov worker complete`
+or `dgov worker fail`), `exit` (process exits), `commit` (watches for git
+commits), `stable` (output stabilization), `signal` (done file touched).
 
 ## Hooks
 

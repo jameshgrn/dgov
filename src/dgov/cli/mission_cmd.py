@@ -15,6 +15,7 @@ from dgov.cli import SESSION_ROOT_OPTION
 @click.option("--agent", "-a", default="claude", help="Agent to dispatch")
 @click.option("--auto-merge", is_flag=True, default=False, help="Merge on review pass")
 @click.option("--slug", "-s", default=None, help="Custom slug")
+@click.option("--touches", multiple=True, help="Files the mission will touch (repeatable)")
 @click.option("--timeout", "-t", default=600, type=int, help="Timeout per phase (seconds)")
 @click.option(
     "--permission-mode", "-m", default="bypassPermissions", help="Permission mode for worker"
@@ -28,6 +29,7 @@ def mission_cmd(
     agent,
     auto_merge,
     slug,
+    touches,
     timeout,
     permission_mode,
     max_retries,
@@ -41,6 +43,7 @@ def mission_cmd(
     policy = MissionPolicy(
         agent=agent,
         auto_merge=auto_merge,
+        touches=tuple(touches),
         timeout=timeout,
         permission_mode=permission_mode,
         max_retries=max_retries,
@@ -53,6 +56,8 @@ def mission_cmd(
         click.secho(f"Mission {result.slug} completed in {result.duration_s:.1f}s", fg="green")
     elif result.state == "failed":
         click.secho(f"Mission {result.slug} failed: {result.error}", fg="red")
+    elif result.state == "reviewed_pass":
+        click.secho(f"Mission {result.slug} is ready to merge", fg="yellow")
     elif result.state == "review_pending":
         click.secho(
             f"Mission {result.slug} needs review ({len(result.findings or [])} findings)",

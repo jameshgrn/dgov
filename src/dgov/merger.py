@@ -717,6 +717,9 @@ def _check_dirty_worktree(worktree_path: str, exclude_protected: bool = True) ->
     Returns a list of dirty file paths (relative to the worktree).
     If exclude_protected=True, protected files are excluded from the list.
     """
+    if not worktree_path:
+        return []
+
     if not Path(worktree_path).exists():
         return []
 

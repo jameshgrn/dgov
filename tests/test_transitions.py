@@ -7,10 +7,12 @@ import pytest
 from dgov.persistence import (
     PANE_STATES,
     VALID_TRANSITIONS,
+    CompletionTransitionResult,
     IllegalTransitionError,
     WorkerPane,
     add_pane,
     get_pane,
+    settle_completion_state,
     update_pane_state,
 )
 
@@ -86,6 +88,41 @@ class TestTimedOutTransitions:
         update_pane_state(state_dir, "test", "merged")
         rec = get_pane(state_dir, "test")
         assert rec["state"] == "merged"
+
+
+class TestCompletionTransitions:
+    def test_settle_completion_updates_legal_transition(self, state_dir, monkeypatch):
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
+        _seed_pane(state_dir, state="timed_out")
+
+        result = settle_completion_state(state_dir, "test", "done")
+
+        assert result == CompletionTransitionResult(state="done", changed=True)
+        assert get_pane(state_dir, "test")["state"] == "done"
+
+    def test_settle_completion_preserves_existing_terminal_state(self, state_dir, monkeypatch):
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
+        _seed_pane(state_dir, state="failed")
+
+        result = settle_completion_state(state_dir, "test", "done")
+
+        assert result == CompletionTransitionResult(state="failed", changed=False)
+        assert get_pane(state_dir, "test")["state"] == "failed"
+
+    def test_settle_completion_allows_abandoned_override(self, state_dir, monkeypatch):
+        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
+        _seed_pane(state_dir, state="abandoned")
+
+        result = settle_completion_state(state_dir, "test", "done", allow_abandoned=True)
+
+        assert result == CompletionTransitionResult(state="done", changed=True)
+        assert get_pane(state_dir, "test")["state"] == "done"
+
+    def test_settle_completion_still_raises_for_non_completion_target(self, state_dir):
+        _seed_pane(state_dir)
+
+        with pytest.raises(ValueError):
+            settle_completion_state(state_dir, "test", "merged")
 
 
 class TestIllegalTransition:

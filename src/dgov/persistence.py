@@ -26,8 +26,10 @@ _conn_lock = threading.Lock()
 
 VALID_EVENTS = frozenset(
     {
+        "dispatch_queued",
         "pane_created",
         "pane_done",
+        "pane_failed",
         "pane_resumed",
         "pane_timed_out",
         "pane_merged",
@@ -39,12 +41,10 @@ VALID_EVENTS = frozenset(
         "pane_auto_retried",
         "pane_blocked",
         "pane_auto_responded",
+        "pane_review_pending",
         "checkpoint_created",
         "review_pass",
         "review_fail",
-        "experiment_started",
-        "experiment_accepted",
-        "experiment_rejected",
         "review_fix_started",
         "review_fix_finding",
         "review_fix_completed",
@@ -149,6 +149,67 @@ def read_events(
     return events
 
 
+def latest_event_id(session_root: str) -> int:
+    """Return the latest event row id, or 0 if the journal is empty."""
+    conn = _get_db(session_root)
+    row = conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def wait_for_events(
+    session_root: str,
+    *,
+    after_id: int,
+    panes: tuple[str, ...] = (),
+    event_types: tuple[str, ...] = (),
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.1,
+) -> list[dict]:
+    """Wait for new events after *after_id*, optionally filtered by pane and type."""
+    if timeout_s < 0:
+        raise ValueError("timeout_s must be non-negative")
+    if poll_interval_s <= 0:
+        raise ValueError("poll_interval_s must be positive")
+
+    conn = _get_db(session_root)
+    pane_filters = tuple(dict.fromkeys(p for p in panes if p))
+    event_filters = tuple(dict.fromkeys(e for e in event_types if e))
+
+    query = ["SELECT id, ts, event, pane, data FROM events WHERE id > ?"]
+    params: list[object] = [after_id]
+
+    if pane_filters:
+        placeholders = ", ".join("?" for _ in pane_filters)
+        query.append(f"AND pane IN ({placeholders})")
+        params.extend(pane_filters)
+    if event_filters:
+        placeholders = ", ".join("?" for _ in event_filters)
+        query.append(f"AND event IN ({placeholders})")
+        params.extend(event_filters)
+
+    query.append("ORDER BY id")
+    sql = " ".join(query)
+    deadline = time.monotonic() + timeout_s
+
+    while True:
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        if rows:
+            events: list[dict] = []
+            for event_id, ts, event, pane, data_str in rows:
+                ev = {"id": event_id, "ts": ts, "event": event, "pane": pane}
+                try:
+                    ev.update(json.loads(data_str))
+                except (json.JSONDecodeError, TypeError):
+                    pass
+                events.append(ev)
+            return events
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return []
+        time.sleep(min(poll_interval_s, remaining))
+
+
 # -- Pane record --
 
 
@@ -207,6 +268,12 @@ class IllegalTransitionError(ValueError):
         super().__init__(f"Illegal state transition for '{slug}': {current} -> {target}")
 
 
+@dataclass(frozen=True)
+class CompletionTransitionResult:
+    state: str
+    changed: bool
+
+
 def _validate_state(state: str) -> str:
     """Validate and return a canonical pane state. Raises ValueError for unknown states."""
     if state not in PANE_STATES:
@@ -259,6 +326,35 @@ _PANE_COLUMNS = frozenset(
         "state",
     }
 )
+
+_COMPLETION_TARGET_STATES = frozenset({"done", "failed", "abandoned", "timed_out"})
+_SETTLED_PANE_STATES = PANE_STATES - {"active"}
+
+
+def _maybe_update_pane_title(session_root: str, slug: str, new_state: str) -> None:
+    """Update the pane title after a persisted state change."""
+    # Skip for terminal states — pane is dead, title update would fork tmux for nothing.
+    if new_state in ("merged", "closed", "superseded"):
+        return
+
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return
+
+    pane_id = pane.get("pane_id", "")
+    agent = pane.get("agent", "")
+    project_root = pane.get("project_root", "")
+    if not pane_id:
+        return
+
+    from dgov.lifecycle import _build_pane_title
+
+    try:
+        title = _build_pane_title(agent, slug, project_root, state=pane.get("state", new_state))
+        get_backend().set_title(pane_id, title)
+    except (RuntimeError, OSError):
+        pass  # pane may already be dead
+
 
 _CREATE_TABLE_SQL = """\
 CREATE TABLE IF NOT EXISTS panes (
@@ -566,25 +662,75 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
         conn.commit()
 
     _retry_on_lock(_do)
+    _maybe_update_pane_title(session_root, slug, new_state)
 
-    # Update the pane title after the persisted state changes.
-    # Skip for terminal states — pane is dead, title update would fork tmux for nothing.
-    if new_state not in ("merged", "closed", "superseded"):
-        pane = get_pane(session_root, slug)
-        if pane:
-            pane_id = pane.get("pane_id", "")
-            agent = pane.get("agent", "")
-            project_root = pane.get("project_root", "")
-            if pane_id:
-                from dgov.lifecycle import _build_pane_title
 
-                try:
-                    title = _build_pane_title(
-                        agent, slug, project_root, state=pane.get("state", new_state)
-                    )
-                    get_backend().set_title(pane_id, title)
-                except (RuntimeError, OSError):
-                    pass  # pane may already be dead
+def settle_completion_state(
+    session_root: str,
+    slug: str,
+    new_state: str,
+    *,
+    allow_abandoned: bool = False,
+) -> CompletionTransitionResult:
+    """Set a completion state without raising on late terminal races.
+
+    This helper is intentionally narrow: it only applies to completion-path
+    states that may race across wait, done detection, manual signals, and
+    timeout handling. Normal transition enforcement remains in
+    ``update_pane_state()``.
+
+    Returns the persisted state and whether this call changed it.
+    """
+    _validate_state(new_state)
+    if new_state not in _COMPLETION_TARGET_STATES:
+        raise ValueError(
+            f"settle_completion_state only supports {_COMPLETION_TARGET_STATES}, got {new_state!r}"
+        )
+
+    changed = False
+
+    def _do() -> CompletionTransitionResult:
+        nonlocal changed
+
+        conn = _get_db(session_root)
+        conn.row_factory = sqlite3.Row
+
+        allowed_from = {
+            state for state, targets in VALID_TRANSITIONS.items() if new_state in targets
+        }
+        if allow_abandoned:
+            allowed_from.add("abandoned")
+
+        placeholders = ", ".join("?" * len(allowed_from))
+        cur = conn.execute(
+            f"UPDATE panes SET state = ? WHERE slug = ? AND state IN ({placeholders})",
+            [new_state, slug, *sorted(allowed_from)],
+        )
+
+        if cur.rowcount:
+            conn.commit()
+            changed = True
+            return CompletionTransitionResult(state=new_state, changed=True)
+
+        row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
+        conn.commit()
+
+        if row is None:
+            return CompletionTransitionResult(state=new_state, changed=False)
+
+        current_state = row["state"]
+        if current_state == new_state:
+            return CompletionTransitionResult(state=current_state, changed=False)
+
+        if current_state in _SETTLED_PANE_STATES:
+            return CompletionTransitionResult(state=current_state, changed=False)
+
+        raise IllegalTransitionError(current_state, new_state, slug)
+
+    result = _retry_on_lock(_do)
+    if changed:
+        _maybe_update_pane_title(session_root, slug, new_state)
+    return result
 
 
 def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
@@ -602,13 +748,84 @@ def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
         expr = "COALESCE(metadata, '{}')"
         vals: list[object] = []
         for k, v in kwargs.items():
-            expr = f"json_set({expr}, '$.{k}', ?)"
-            vals.append(v)
+            if isinstance(v, dict | list):
+                expr = f"json_set({expr}, '$.{k}', json(?))"
+                vals.append(json.dumps(v))
+            else:
+                expr = f"json_set({expr}, '$.{k}', ?)"
+                vals.append(v)
         vals.append(slug)
         conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", vals)
         conn.commit()
 
     _retry_on_lock(_do)
+
+
+def clear_pane_metadata_keys(session_root: str, slug: str, *keys: str) -> None:
+    """Remove metadata keys from a pane atomically."""
+    clean_keys = tuple(dict.fromkeys(key for key in keys if key))
+    if not clean_keys:
+        return
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        expr = "COALESCE(metadata, '{}')"
+        for key in clean_keys:
+            expr = f"json_remove({expr}, '$.{key}')"
+        conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", (slug,))
+        conn.commit()
+
+    _retry_on_lock(_do)
+
+
+def get_preserved_artifacts(pane_record: dict | None) -> dict | None:
+    """Return preserved-artifact metadata when present."""
+    if not pane_record:
+        return None
+    artifacts = pane_record.get("preserved_artifacts")
+    return artifacts if isinstance(artifacts, dict) else None
+
+
+def mark_preserved_artifacts(
+    session_root: str,
+    slug: str,
+    *,
+    reason: str,
+    recoverable: bool,
+    state: str | None = None,
+    failure_stage: str | None = None,
+    preserved_paths: list[str] | tuple[str, ...] = (),
+) -> None:
+    """Persist preserved-artifact metadata for a pane kept for inspection."""
+    pane = get_pane(session_root, slug)
+    if pane is None:
+        return
+
+    paths: list[str] = []
+    for candidate in (
+        *preserved_paths,
+        str(pane.get("worktree_path", "")),
+        str(Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"),
+    ):
+        if candidate and candidate not in paths:
+            paths.append(candidate)
+
+    payload = {
+        "policy": "preserve_evidence",
+        "reason": reason,
+        "recoverable": recoverable,
+        "state": state or str(pane.get("state", "")),
+        "failure_stage": failure_stage,
+        "preserved_at": time.time(),
+        "paths": paths,
+        "last_inspected_at": None,
+    }
+    set_pane_metadata(session_root, slug, preserved_artifacts=payload)
+
+
+def clear_preserved_artifacts(session_root: str, slug: str) -> None:
+    """Remove preserved-artifact metadata once a pane is resumed or cleaned."""
+    clear_pane_metadata_keys(session_root, slug, "preserved_artifacts")
 
 
 def record_failure(session_root: str, slug: str, failure_hash: str) -> int:
@@ -834,6 +1051,26 @@ def list_dag_tasks(session_root: str, dag_run_id: int) -> list[dict]:
     ]
 
 
+def get_dag_task(session_root: str, dag_run_id: int, slug: str) -> dict | None:
+    """Return one DAG task row for a DAG run, or None if missing."""
+    conn = _get_db(session_root)
+    row = conn.execute(
+        "SELECT slug, status, agent, attempt, pane_slug, error"
+        " FROM dag_tasks WHERE dag_run_id = ? AND slug = ?",
+        (dag_run_id, slug),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "slug": row[0],
+        "status": row[1],
+        "agent": row[2],
+        "attempt": row[3],
+        "pane_slug": row[4],
+        "error": row[5],
+    }
+
+
 # -- Merge queue --
 
 
@@ -920,7 +1157,16 @@ def queue_dispatch(session_root: str, entry: dict) -> int:
         _os.write(fd, row.encode())
     finally:
         _os.close(fd)
-    return sum(1 for _ in queue_path.open())
+    depth = sum(1 for _ in queue_path.open())
+    emit_event(
+        session_root,
+        "dispatch_queued",
+        "dispatch-queue",
+        depth=depth,
+        summary=str(entry.get("summary", ""))[:200],
+        agent_hint=entry.get("agent_hint"),
+    )
+    return depth
 
 
 def read_dispatch_queue(session_root: str) -> list[dict]:
@@ -947,6 +1193,17 @@ def clear_dispatch_queue(session_root: str) -> int:
     count = sum(1 for _ in queue_path.open())
     queue_path.unlink()
     return count
+
+
+def take_dispatch_queue(session_root: str) -> list[dict]:
+    """Read and clear queued dispatches as one logical operation."""
+    queue_path = Path(session_root) / ".dgov" / "dispatch_queue.jsonl"
+    if not queue_path.is_file():
+        return []
+
+    items = read_dispatch_queue(session_root)
+    queue_path.unlink()
+    return items
 
 
 def append_idea(session_root: str, text: str, summary: str) -> None:

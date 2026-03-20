@@ -16,6 +16,7 @@ from dgov.persistence import (
     STATE_DIR,
     all_panes,
     get_pane,
+    get_preserved_artifacts,
     remove_pane,
 )
 
@@ -195,9 +196,6 @@ def list_worker_panes(
     dashboard where full prompts are not needed.
 
     Always reads worker logs and derives summary from them.
-
-    Automatically prunes stale panes (terminal state + no worktree, or
-    terminal state older than 1 hour) before returning results.
     """
     from dgov.agents import load_registry
     from dgov.persistence import list_panes_slim
@@ -280,6 +278,7 @@ def list_worker_panes(
 
         phase = _compute_phase(state, alive, done, duration_s, summary)
         progress = _read_progress_json(session_root, slug)
+        preserved_artifacts = get_preserved_artifacts(p)
 
         entry: dict = {
             "slug": slug,
@@ -302,6 +301,11 @@ def list_worker_panes(
             "parent_slug": p.get("parent_slug", ""),
             "tier_id": p.get("tier_id", ""),
             "duration_s": duration_s,
+            "preserved_artifacts": preserved_artifacts,
+            "preserved_reason": preserved_artifacts.get("reason") if preserved_artifacts else None,
+            "preserved_recoverable": (
+                bool(preserved_artifacts.get("recoverable")) if preserved_artifacts else False
+            ),
             **freshness,
         }
         result.append(entry)
@@ -327,14 +331,11 @@ _TERMINAL_PRUNE_AGE_S = 3600  # 1 hour
 
 
 def prune_stale_panes(project_root: str, session_root: str | None = None) -> list[str]:
-    """Remove state entries for panes that are dead and have no worktree.
+    """Remove mechanically stale pane entries and orphaned worktrees.
 
     Also removes orphaned worktree directories in ``.dgov/worktrees/`` that
     have no matching pane entry in state (e.g. left behind after ``pane close``
     skipped a dirty worktree).
-
-    Additionally prunes panes in terminal states (abandoned, closed, merged)
-    that are older than 1 hour.
     """
     from dgov.lifecycle import _pane_lock
 
@@ -359,23 +360,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 pruned.append(slug)
                 pruned_slugs.add(slug)
 
-        # Pass 2: prune terminal-state panes older than 1 hour
-        now = time.time()
-        for p in panes:
-            slug = p["slug"]
-            if slug in pruned_slugs:
-                continue
-            state = p.get("state", "")
-            created_at = p.get("created_at", 0) or 0
-            age_s = now - created_at
-            if state in _TERMINAL_PRUNE_STATES and age_s > _TERMINAL_PRUNE_AGE_S:
-                remove_pane(session_root, slug)
-                done_path = Path(session_root) / STATE_DIR / "done" / slug
-                done_path.unlink(missing_ok=True)
-                pruned.append(slug)
-                pruned_slugs.add(slug)
-
-        # Pass 3: remove orphaned worktree dirs
+        # Pass 2: remove orphaned worktree dirs
         worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
         if worktrees_dir.is_dir():
             known_worktrees = {
@@ -392,6 +377,59 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 pruned.append(f"orphan:{branch_name}")
 
         return pruned
+
+
+def gc_retained_panes(
+    project_root: str,
+    session_root: str | None = None,
+    *,
+    older_than_s: float = _TERMINAL_PRUNE_AGE_S,
+    states: tuple[str, ...] = (),
+) -> dict[str, list[str]]:
+    """Explicitly garbage-collect preserved evidence and old terminal panes."""
+    from dgov.lifecycle import _pane_lock, close_worker_pane
+
+    if older_than_s < 0:
+        raise ValueError("older_than_s must be non-negative")
+
+    project_root = os.path.abspath(project_root)
+    session_root = os.path.abspath(session_root or project_root)
+    state_filter = set(states)
+    now = time.time()
+    pruned: list[str] = []
+    skipped: list[str] = []
+    candidates: list[str] = []
+
+    with _pane_lock(project_root):
+        for pane in all_panes(session_root):
+            slug = str(pane.get("slug", ""))
+            state = str(pane.get("state", ""))
+            if not slug or state == "active":
+                continue
+            if state_filter and state not in state_filter:
+                continue
+
+            artifacts = get_preserved_artifacts(pane)
+            if artifacts is None and state not in _TERMINAL_PRUNE_STATES:
+                continue
+
+            age_anchor = (
+                float(artifacts.get("preserved_at", 0))
+                if artifacts
+                else float(pane.get("created_at", 0))
+            )
+            if now - age_anchor < older_than_s:
+                continue
+            candidates.append(slug)
+
+        for slug in candidates:
+            closed = close_worker_pane(project_root, slug, session_root=session_root, force=True)
+            if closed and get_pane(session_root, slug) is None:
+                pruned.append(slug)
+            else:
+                skipped.append(slug)
+
+    return {"pruned": pruned, "skipped": skipped}
 
 
 def capture_worker_output(

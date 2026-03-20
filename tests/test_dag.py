@@ -442,8 +442,8 @@ class _FakePane:
         self.slug = slug
 
 
-class TestRunSingleTier:
-    """Tests for single-tier execution."""
+class TestDispatchTask:
+    """Tests for task dispatch packet construction."""
 
     def _dag(self):
         return DagDefinition(
@@ -500,104 +500,6 @@ class TestRunSingleTier:
         assert packet.prompt == "Do it"
         assert packet.file_claims == ("a.py",)
         assert packet.commit_message == "c"
-
-    @patch("dgov.merger.merge_worker_pane")
-    @patch("dgov.persistence.update_pane_state")
-    @patch("dgov.inspection.review_worker_pane")
-    @patch("dgov.waiter.wait_worker_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
-    @patch("dgov.persistence.emit_event")
-    @patch("dgov.persistence.upsert_dag_task")
-    @patch("dgov.persistence.get_pane")
-    def test_single_task_success(
-        self,
-        mock_get_pane,
-        mock_upsert,
-        mock_emit,
-        mock_create,
-        mock_wait,
-        mock_review,
-        mock_update_state,
-        mock_merge,
-    ):
-        from dgov.dag import run_single_tier
-
-        mock_create.return_value = _FakePane("T0")
-        mock_wait.return_value = {"done": "T0", "method": "exit"}
-        mock_get_pane.return_value = {"state": "done"}
-        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
-        mock_merge.return_value = {"merged": "T0", "branch": "T0"}
-
-        dag = self._dag()
-        opts = DagRunOptions(auto_merge=True)
-        states: dict[str, str] = {}
-        result = run_single_tier(dag, ["T0"], 1, states, opts, "/tmp/proj")
-
-        assert "T0" in result["reviewed_pass"]
-        assert "T0" in result["merged"]
-        assert result["merge_error"] is None
-
-    @patch("dgov.persistence.update_pane_state")
-    @patch("dgov.inspection.review_worker_pane")
-    @patch("dgov.waiter.wait_worker_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
-    @patch("dgov.persistence.emit_event")
-    @patch("dgov.persistence.upsert_dag_task")
-    @patch("dgov.persistence.get_pane")
-    def test_merge_error_stops(
-        self,
-        mock_get_pane,
-        mock_upsert,
-        mock_emit,
-        mock_create,
-        mock_wait,
-        mock_review,
-        mock_update_state,
-    ):
-        from dgov.dag import run_single_tier
-
-        mock_create.return_value = _FakePane("T0")
-        mock_wait.return_value = {"done": "T0", "method": "exit"}
-        mock_get_pane.return_value = {"state": "done"}
-        mock_review.return_value = {"verdict": "safe", "commit_count": 1}
-
-        dag = self._dag()
-        opts = DagRunOptions(auto_merge=True)
-        states: dict[str, str] = {}
-
-        with patch("dgov.merger.merge_worker_pane") as mock_merge:
-            mock_merge.return_value = {"error": "Merge conflict", "conflicts": ["a.py"]}
-            result = run_single_tier(dag, ["T0"], 1, states, opts, "/tmp/proj")
-
-        assert result["merge_error"] is not None
-
-    @patch("dgov.waiter.wait_worker_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
-    @patch("dgov.persistence.emit_event")
-    @patch("dgov.persistence.upsert_dag_task")
-    @patch("dgov.persistence.get_pane")
-    def test_failed_pane_skips_review(
-        self,
-        mock_get_pane,
-        mock_upsert,
-        mock_emit,
-        mock_create,
-        mock_wait,
-    ):
-        from dgov.dag import run_single_tier
-
-        mock_create.return_value = _FakePane("T0")
-        mock_wait.return_value = {"done": "T0", "method": "exit"}
-        mock_get_pane.return_value = {"state": "failed"}
-
-        dag = self._dag()
-        opts = DagRunOptions(auto_merge=True)
-        states: dict[str, str] = {}
-        result = run_single_tier(dag, ["T0"], 1, states, opts, "/tmp/proj")
-
-        assert "T0" in result["failed"]
-        assert result["reviewed_pass"] == []
-
 
 class TestRunDag:
     """Tests for multi-tier orchestration."""
@@ -716,6 +618,42 @@ class TestRunDag:
         assert summary.status == "awaiting_merge"
         assert summary.merged == []
         mock_merge.assert_not_called()
+
+    def test_stalled_run_waits_on_event_journal_then_fails(self, monkeypatch, tmp_path):
+        from dgov.dag import run_dag
+
+        path = self._write_dag(tmp_path)
+        dag = parse_dag_file(path)
+
+        monkeypatch.setattr(
+            "dgov.dag._start_or_resume_run",
+            lambda *args, **kwargs: (7, dag, {"T0": "dispatched"}),
+        )
+        monkeypatch.setattr("dgov.persistence.get_dag_task", lambda *args, **kwargs: None)
+
+        waited: dict[str, object] = {}
+
+        def fake_wait_for_events(session_root, **kwargs):  # noqa: ANN001, ANN201
+            waited["session_root"] = session_root
+            waited.update(kwargs)
+            return []
+
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args, **kwargs: 12)
+        monkeypatch.setattr("dgov.persistence.wait_for_events", fake_wait_for_events)
+        monkeypatch.setattr("dgov.persistence.update_dag_run", lambda *args, **kwargs: None)
+        events: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "dgov.persistence.emit_event",
+            lambda session_root, event, pane, **kwargs: events.append((event, pane)),
+        )
+
+        summary = run_dag(path)
+
+        assert summary.status == "failed"
+        assert waited["after_id"] == 12
+        assert waited["panes"] == ("dag/7", "T0", "T1")
+        assert "dag_task_completed" in waited["event_types"]
+        assert ("dag_failed", "dag/7") in events
 
 
 class TestEscalation:

@@ -14,7 +14,7 @@ from dgov.done import (
     _agent_still_running,
     _is_done,
 )
-from dgov.persistence import STATE_DIR, VALID_TRANSITIONS
+from dgov.persistence import STATE_DIR
 
 if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
@@ -285,8 +285,9 @@ def wait_worker_pane(
         elapsed = time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
             logger.warning("wait timed out slug=%s after=%.1fs", slug, elapsed)
-            _persist.update_pane_state(session_root, slug, "timed_out")
-            _persist.emit_event(session_root, "pane_timed_out", slug)
+            transition = _persist.settle_completion_state(session_root, slug, "timed_out")
+            if transition.changed:
+                _persist.emit_event(session_root, "pane_timed_out", slug)
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
             raise PaneTimeoutError(slug, timeout, agent)
         time.sleep(poll)
@@ -439,7 +440,7 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
             done_path = Path(session_root) / STATE_DIR / "done" / slug
             done_path.parent.mkdir(parents=True, exist_ok=True)
             done_path.touch()
-            _persist.update_pane_state(session_root, slug, "done")
+            _persist.settle_completion_state(session_root, slug, "done")
 
     return {"response": response, "output": captured or ""}
 
@@ -464,31 +465,11 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
         if not _has_completion_commit(target):
             return False
         (done_dir / slug).touch()
-        current_state = target.get("state", "")
-        if current_state != "abandoned" and "done" not in VALID_TRANSITIONS.get(
-            current_state, frozenset()
-        ):
-            return True
-        _persist.update_pane_state(
-            session_root,
-            slug,
-            "done",
-            force=current_state == "abandoned",
-        )
+        _persist.settle_completion_state(session_root, slug, "done", allow_abandoned=True)
 
     elif signal == "failed":
         (done_dir / f"{slug}.exit").write_text("manual")
-        current_state = target.get("state", "")
-        if current_state != "abandoned" and "failed" not in VALID_TRANSITIONS.get(
-            current_state, frozenset()
-        ):
-            return True
-        _persist.update_pane_state(
-            session_root,
-            slug,
-            "failed",
-            force=current_state == "abandoned",
-        )
+        _persist.settle_completion_state(session_root, slug, "failed", allow_abandoned=True)
     else:
         raise ValueError(f"Unknown signal: {signal!r}. Must be 'done' or 'failed'.")
 

@@ -190,8 +190,8 @@ def run_review_fix_pipeline(
 
     Returns summary dict with findings_count, fixed_count, etc.
     """
+    from dgov.executor import run_review_merge
     from dgov.lifecycle import close_worker_pane, create_worker_pane
-    from dgov.merger import merge_worker_pane
     from dgov.status import capture_worker_output
 
     project_root = os.path.abspath(project_root)
@@ -337,13 +337,12 @@ def run_review_fix_pipeline(
     test_failures: list[str] = []
 
     for slug in fix_slugs:
-        merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
-        if "merged" in merge_result:
+        review_merge = run_review_merge(project_root, slug, session_root=session_root)
+        merge_result = review_merge.merge_result or {}
+        if not review_merge.error and "merged" in merge_result:
             merged_count += 1
             if merge_result.get("tests_passed") is False:
                 test_failures.append(slug)
-            # Successful merge already cleaned up the worker; this is a no-op fallback.
-            close_worker_pane(project_root, slug, session_root=session_root, force=True)
         else:
             failed_count += 1
 

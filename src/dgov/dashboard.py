@@ -316,6 +316,7 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
         state_text = Text.from_markup(f"[{color}]{pstate}[/{color}]{commit_tag}")
         phase = p.get("phase", "")
         monitor_phase = p.get("monitor_classification", "")
+        preserved_artifacts = p.get("preserved_artifacts")
         nonterminal_monitor_phases = {
             "starting",
             "working",
@@ -329,6 +330,8 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
         }
         if pstate != "active":
             phase = ""
+            if isinstance(preserved_artifacts, dict):
+                phase = "resume" if preserved_artifacts.get("recoverable") else "inspect"
         elif monitor_phase in nonterminal_monitor_phases:
             phase = monitor_phase
         elif phase in {"done", "failed", "merged", "closed", "abandoned"}:
@@ -509,20 +512,14 @@ def _switch_to_worker_window(pane_id: str) -> None:
 
 def _execute_action(state: DashboardState, action: str, slug: str) -> None:
     if action == "merge":
-        from dgov.executor import review_merge_gate
-        from dgov.merger import merge_worker_pane
+        from dgov.executor import run_land_only
 
         try:
-            gate = review_merge_gate(state.project_root, slug, session_root=state.session_root)
-            if gate.review.get("error"):
+            result = run_land_only(state.project_root, slug, session_root=state.session_root)
+            if result.error:
                 with state.lock:
-                    state.error = f"Review failed for {slug}: {gate.review['error']}"
+                    state.error = result.error
                 return
-            if not gate.passed:
-                with state.lock:
-                    state.error = gate.error or f"Review failed for {slug}"
-                return
-            merge_worker_pane(state.project_root, slug, session_root=state.session_root)
         except Exception:
             logger.exception("Dashboard merge failed for %s", slug)
             with state.lock:

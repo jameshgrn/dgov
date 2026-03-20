@@ -24,9 +24,11 @@ from dgov.persistence import (
     _get_db,
     _retry_on_lock,
     add_pane,
+    clear_preserved_artifacts,
     emit_event,
     get_child_panes,
     get_pane,
+    mark_preserved_artifacts,
     remove_pane,
     update_pane_state,
 )
@@ -978,8 +980,6 @@ def _overlay_dirty_files(
 
     No-op when owns_worktree=False or existing_worktree path provided.
     """
-    from pathlib import Path
-
     if not context_packet:
         return
 
@@ -990,12 +990,12 @@ def _overlay_dirty_files(
     if not edit_scope:
         return
 
-    project_root = Path(project_root).resolve()
-    worktree_path = Path(worktree_path).resolve()
+    project_root_path = Path(project_root).resolve()
+    worktree_root = Path(worktree_path).resolve()
 
     # Get dirty tracked files from governor repo: M (modified) and D (deleted)
     result = subprocess.run(
-        ["git", "-C", str(project_root), "status", "--porcelain=v1"],
+        ["git", "-C", str(project_root_path), "status", "--porcelain=v1"],
         capture_output=True,
         text=True,
         check=True,
@@ -1019,16 +1019,18 @@ def _overlay_dirty_files(
             continue
 
         # Check if file overlaps the task's editable scope
+        norm_path = filepath.strip().lstrip("./").rstrip("/")
         matches_scope = any(
-            Path(filepath).resolve().is_relative_to(worktree_path / relpath.lstrip("./"))
-            or relpath.is_relative_to(Path(filepath).parent)
+            norm_path == relpath.strip().lstrip("./").rstrip("/")
+            or norm_path.startswith(relpath.strip().lstrip("./").rstrip("/") + "/")
             for relpath in edit_scope
+            if relpath
         )
         if not matches_scope:
             continue
 
-        worktree_file = worktree_path / filepath
-        project_file = project_root / filepath
+        worktree_file = worktree_root / filepath
+        project_file = project_root_path / filepath
 
         if working_status == "D":
             # Tracked deletion: remove file in worktree if it exists
@@ -1205,6 +1207,13 @@ def close_worker_pane(
 
     # Preserve evidence when worktree removal fails or is skipped (dirty pane)
     if result.get("skipped_worktree") or result.get("worktree_removal_failed"):
+        mark_preserved_artifacts(
+            session_root,
+            slug,
+            reason="dirty_worktree" if result.get("skipped_worktree") else "cleanup_failed",
+            recoverable=bool(result.get("skipped_worktree")),
+            state=str(target.get("state", "")),
+        )
         # Don't remove pane state; leave it inspectable for debugging
         if result.get("worktree_removal_failed"):
             logger.warning(
@@ -1248,6 +1257,8 @@ def resume_worker_pane(
 
     if not target:
         return {"error": f"Pane not found: {slug}"}
+
+    clear_preserved_artifacts(session_root, slug)
 
     worktree_path = target.get("worktree_path", "")
     branch_name = target.get("branch_name", "")

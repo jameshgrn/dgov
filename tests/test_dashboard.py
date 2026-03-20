@@ -89,18 +89,25 @@ class TestImports:
 
 @pytest.mark.unit
 class TestExecuteAction:
-    @patch("dgov.inspection.review_worker_pane")
-    @patch("dgov.merger.merge_worker_pane")
-    def test_merge_blocks_non_safe_review(self, mock_merge, mock_review):
+    @patch("dgov.executor.run_land_only")
+    def test_merge_blocks_non_safe_review(self, mock_land):
         from dgov.dashboard import DashboardState, _execute_action
 
-        mock_review.return_value = {"slug": "task", "verdict": "review", "commit_count": 1}
+        mock_land.return_value = type(
+            "R",
+            (),
+            {
+                "review": {"slug": "task", "verdict": "review", "commit_count": 1},
+                "merge_result": None,
+                "error": "Review verdict is review; refusing to merge",
+            },
+        )()
         state = DashboardState(project_root="/tmp/repo", session_root="/tmp/repo")
 
         _execute_action(state, "merge", "task")
 
         assert "refusing to merge" in state.error
-        mock_merge.assert_not_called()
+        mock_land.assert_called_once()
 
 
 @pytest.mark.unit
@@ -243,6 +250,38 @@ class TestWorkerTable:
         )
 
         assert text.count("done") == 1
+
+    def test_preserved_recoverable_terminal_pane_shows_resume_phase(self):
+        text = self._render_table_text(
+            [
+                {
+                    "slug": "worker-c",
+                    "agent": "river-9b",
+                    "state": "timed_out",
+                    "preserved_artifacts": {"recoverable": True, "reason": "dirty_worktree"},
+                    "duration_s": 43,
+                }
+            ]
+        )
+
+        assert "timed_out" in text
+        assert "resume" in text
+
+    def test_preserved_nonrecoverable_terminal_pane_shows_inspect_phase(self):
+        text = self._render_table_text(
+            [
+                {
+                    "slug": "worker-d",
+                    "agent": "river-9b",
+                    "state": "failed",
+                    "preserved_artifacts": {"recoverable": False, "reason": "review_pending"},
+                    "duration_s": 43,
+                }
+            ]
+        )
+
+        assert "failed" in text
+        assert "inspect" in text
 
 
 @pytest.mark.unit

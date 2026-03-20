@@ -140,9 +140,36 @@ class TestHappyPath:
             skip_deps=True,
         )
 
+    def test_preflight_prefers_explicit_touches(self, monkeypatch, tmp_path):
+        mocks = _apply_patches(monkeypatch)
+        policy = MissionPolicy(touches=("src/exact.py", "tests/test_exact.py"))
+
+        run_mission(str(tmp_path), "fix the bug", policy, slug="test-slug")
+
+        mocks["run_preflight"].assert_called_once_with(
+            project_root=str(tmp_path),
+            agent="claude",
+            touches=["src/exact.py", "tests/test_exact.py"],
+            expected_branch=None,
+            session_root=str(tmp_path),
+            skip_deps=True,
+        )
+
 
 @pytest.mark.unit
 class TestReviewPending:
+    def test_safe_review_without_auto_merge_returns_reviewed_pass(
+        self, monkeypatch, tmp_path
+    ):
+        mocks = _apply_patches(monkeypatch)
+        policy = MissionPolicy(auto_merge=False)
+
+        result = run_mission(str(tmp_path), "fix the bug", policy, slug="test-slug")
+
+        assert result.state == "reviewed_pass"
+        assert result.findings is None
+        mocks["merge_worker_pane"].assert_not_called()
+
     def test_review_issues_no_auto_merge(self, monkeypatch, tmp_path):
         review_with_issues = MagicMock(
             return_value={
@@ -246,6 +273,24 @@ class TestTimeout:
         assert result.state == "failed"
         assert "timed out" in result.error
         mocks["close_worker_pane"].assert_called()
+
+    def test_worker_failed_cleanup_is_executor_owned(self, monkeypatch, tmp_path):
+        mocks = _apply_patches(monkeypatch)
+        monkeypatch.setattr(
+            "dgov.persistence.get_pane",
+            MagicMock(return_value={"slug": "test-slug", "state": "failed"}),
+        )
+
+        result = run_mission(str(tmp_path), "fix the bug", slug="test-slug")
+
+        assert result.state == "failed"
+        assert "Worker exited with an error" in result.error
+        mocks["close_worker_pane"].assert_called_once_with(
+            str(tmp_path),
+            "test-slug",
+            session_root=str(tmp_path),
+            force=True,
+        )
 
 
 @pytest.mark.unit
@@ -365,3 +410,35 @@ class TestMissionCLI:
         assert result.exit_code == 0
         assert "fail-slug" in result.output
         assert "boom" in result.output
+
+    def test_mission_cmd_passes_explicit_touches(self, monkeypatch, tmp_path):
+        from click.testing import CliRunner
+
+        from dgov.cli.mission_cmd import mission_cmd
+        from dgov.mission import MissionResult
+
+        calls: list[object] = []
+
+        def fake_run_mission(*args, **kwargs):  # noqa: ANN001, ANN201
+            calls.append((args, kwargs))
+            return MissionResult(state="completed", slug="test-slug", duration_s=1.0)
+
+        monkeypatch.setattr("dgov.mission.run_mission", fake_run_mission)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            mission_cmd,
+            [
+                "test prompt",
+                "-r",
+                str(tmp_path),
+                "--touches",
+                "src/a.py",
+                "--touches",
+                "tests/test_a.py",
+            ],
+        )
+
+        assert result.exit_code == 0
+        policy = calls[0][0][2]
+        assert policy.touches == ("src/a.py", "tests/test_a.py")

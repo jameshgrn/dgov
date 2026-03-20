@@ -30,6 +30,83 @@ def _fmt_duration(seconds: int) -> str:
     return fmt_duration(seconds)
 
 
+def _declared_touches(task: dict) -> list[str]:
+    touches = task.get("touches", [])
+    return list(touches) if isinstance(touches, list | tuple) else []
+
+
+def _process_done_panes(
+    project_root: str,
+    session_root: str | None,
+    *,
+    resolve: str,
+    squash: bool,
+    rebase: bool,
+    land: bool,
+) -> tuple[list[str], list[str], int, list[str], list[dict]]:
+    from dgov.executor import run_land_only, run_review_merge
+    from dgov.status import list_worker_panes
+
+    panes = list_worker_panes(project_root, session_root=session_root)
+    done_panes = [p for p in panes if p["done"]]
+    if not done_panes:
+        return [], [], 0, [], []
+
+    succeeded: list[str] = []
+    failed: list[str] = []
+    warnings: list[str] = []
+    review_lines: list[dict] = []
+    total_files = 0
+
+    for pane in done_panes:
+        slug = pane["slug"]
+        result = (
+            run_land_only(
+                project_root,
+                slug,
+                session_root=session_root,
+                resolve=resolve,
+                squash=squash,
+                rebase=rebase,
+            )
+            if land
+            else run_review_merge(
+                project_root,
+                slug,
+                session_root=session_root,
+                resolve=resolve,
+                squash=squash,
+                rebase=rebase,
+            )
+        )
+        review = result.review
+        review_lines.append(
+            {
+                "review": review.get("verdict", "unknown"),
+                "commits": review.get("commit_count", 0),
+                "slug": slug,
+            }
+        )
+        if result.error:
+            failed.append(slug)
+            warnings.append(f"{slug}: {result.error.lower()}")
+            continue
+
+        merge_result = result.merge_result or {}
+        if merge_result.get("merged"):
+            succeeded.append(slug)
+            total_files += merge_result.get("files_changed", 0)
+            if merge_result.get("warning"):
+                warnings.append(f"{slug}: {merge_result['warning']}")
+            continue
+
+        failed.append(slug)
+        err = result.error or merge_result.get("hint", "unknown")
+        warnings.append(f"{slug}: {str(err).lower()}")
+
+    return succeeded, failed, total_files, warnings, review_lines
+
+
 @click.group()
 def pane():
     """Manage worker panes."""
@@ -81,6 +158,12 @@ def pane_util(command, title, cwd):
     help="Environment variable as KEY=VALUE (repeatable)",
 )
 @click.option(
+    "--touches",
+    "-t",
+    multiple=True,
+    help="Files the task will touch (repeatable)",
+)
+@click.option(
     "--preflight/--no-preflight", default=True, help="Run pre-flight checks (default: on)"
 )
 @click.option(
@@ -115,6 +198,7 @@ def pane_create(
     slug,
     extra_flags,
     env,
+    touches,
     preflight,
     fix,
     max_retries,
@@ -200,7 +284,7 @@ def pane_create(
                 preflight_agent = "pi"
         else:
             preflight_agent = agent if agent in registry else "pi"
-        packet = build_context_packet(prompt)
+        packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
         report = run_dispatch_preflight(
             project_root,
             preflight_agent,
@@ -226,7 +310,7 @@ def pane_create(
         env_vars["DGOV_PROJECT_ROOT"] = os.path.abspath(project_root)
 
     try:
-        packet = build_context_packet(prompt)
+        packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
         pane_obj = create_worker_pane(
             project_root=project_root,
             prompt=prompt,
@@ -320,7 +404,10 @@ def pane_batch(toml_file, project_root, session_root):
             continue
 
         mode = task.get("mode", "bypassPermissions")
-        packet = build_context_packet(prompt)
+        packet = build_context_packet(
+            prompt,
+            file_claims=_declared_touches(task) or None,
+        )
 
         report = run_dispatch_preflight(
             project_root,
@@ -425,24 +512,24 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
     """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.merger import merge_worker_pane
+    from dgov.executor import run_merge_only
 
     if rebase and not squash:
         click.echo("Cannot use --rebase with --no-squash", err=True)
         sys.exit(1)
 
-    result = merge_worker_pane(
+    result = run_merge_only(
         project_root,
         slug,
         session_root=session_root,
         resolve=resolve,
         squash=squash,
         rebase=rebase,
-    )
+    ).merge_result
 
     click.echo(json.dumps(result, indent=2))
 
-    if "error" in result:
+    if result and "error" in result:
         sys.exit(1)
 
 
@@ -477,30 +564,13 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close a worker pane in one step."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.executor import review_merge_gate
-    from dgov.merger import merge_worker_pane
+    from dgov.executor import run_land_only
 
     if rebase and not squash:
         click.echo("Cannot use --rebase with --no-squash", err=True)
         sys.exit(1)
 
-    # Review
-    gate = review_merge_gate(project_root, slug, session_root=session_root)
-    review = gate.review
-    if review.get("error"):
-        click.echo(json.dumps({"error": review["error"]}), err=True)
-        sys.exit(1)
-
-    verdict = review.get("verdict", "unknown")
-    commit_count = review.get("commit_count", 0)
-    click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
-
-    if not gate.passed:
-        click.echo(json.dumps({"error": gate.error}), err=True)
-        sys.exit(1)
-
-    # Merge (this also runs cleanup automatically)
-    result = merge_worker_pane(
+    result = run_land_only(
         project_root,
         slug,
         session_root=session_root,
@@ -508,9 +578,16 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase):
         squash=squash,
         rebase=rebase,
     )
-    click.echo(json.dumps(result, indent=2))
-    if "error" in result:
+    review = result.review
+    verdict = review.get("verdict", "unknown")
+    commit_count = review.get("commit_count", 0)
+    click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
+
+    if result.error:
+        click.echo(json.dumps({"error": result.error}), err=True)
         sys.exit(1)
+
+    click.echo(json.dumps(result.merge_result, indent=2))
 
 
 @pane.command("wait")
@@ -660,51 +737,21 @@ def pane_merge_all(project_root, session_root, resolve, squash, rebase):
     """Merge ALL done worker panes sequentially. Prints combined summary."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.executor import review_merge_gate
-    from dgov.merger import merge_worker_pane
-    from dgov.status import list_worker_panes
-
     if rebase and not squash:
         click.echo("Cannot use --rebase with --no-squash", err=True)
         sys.exit(1)
 
-    panes = list_worker_panes(project_root, session_root=session_root)
-    done_panes = [p for p in panes if p["done"]]
-    if not done_panes:
+    merged_slugs, failed_slugs, total_files, warnings, _ = _process_done_panes(
+        project_root,
+        session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
+        land=False,
+    )
+    if not merged_slugs and not failed_slugs:
         click.echo(json.dumps({"merged": [], "skipped": "no done panes"}))
         return
-
-    merge_fn = merge_worker_pane
-
-    merged_slugs = []
-    failed_slugs = []
-    total_files = 0
-    warnings = []
-
-    for p in done_panes:
-        slug = p["slug"]
-        gate = review_merge_gate(project_root, slug, session_root=session_root)
-        if not gate.passed:
-            failed_slugs.append(slug)
-            warnings.append(f"{slug}: {(gate.error or 'review failed').lower()}")
-            continue
-        result = merge_fn(
-            project_root,
-            slug,
-            session_root=session_root,
-            resolve=resolve,
-            squash=squash,
-            rebase=rebase,
-        )
-        if "merged" in result:
-            merged_slugs.append(slug)
-            total_files += result.get("files_changed", 0)
-            if result.get("warning"):
-                warnings.append(f"{slug}: {result['warning']}")
-        else:
-            failed_slugs.append(slug)
-            err = result.get("error") or result.get("hint", "unknown")
-            warnings.append(f"{slug}: {err}")
 
     summary = {
         "merged_count": len(merged_slugs),
@@ -752,63 +799,24 @@ def pane_land_all(project_root, session_root, resolve, squash, rebase):
     """Review, merge, and close ALL done worker panes sequentially. Prints combined summary."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.executor import review_merge_gate
-    from dgov.merger import merge_worker_pane
-    from dgov.status import list_worker_panes
-
     if rebase and not squash:
         click.echo("Cannot use --rebase with --no-squash", err=True)
         sys.exit(1)
 
-    panes = list_worker_panes(project_root, session_root=session_root)
-    done_panes = [p for p in panes if p["done"]]
-    if not done_panes:
+    landed_slugs, failed_slugs, total_files, warnings, review_lines = _process_done_panes(
+        project_root,
+        session_root,
+        resolve=resolve,
+        squash=squash,
+        rebase=rebase,
+        land=True,
+    )
+    if not landed_slugs and not failed_slugs:
         click.echo(json.dumps({"landed": [], "failed": [], "summary": "no done panes"}))
         return
 
-    landed_slugs = []
-    failed_slugs = []
-    total_files = 0
-    warnings = []
-
-    for p in done_panes:
-        slug = p["slug"]
-
-        # Review
-        gate = review_merge_gate(project_root, slug, session_root=session_root)
-        review = gate.review
-        if review.get("error"):
-            failed_slugs.append(slug)
-            warnings.append(f"{slug}: review error - {review['error']}")
-            continue
-
-        verdict = review.get("verdict", "unknown")
-        commit_count = review.get("commit_count", 0)
-        click.echo(json.dumps({"review": verdict, "commits": commit_count, "slug": slug}))
-
-        if not gate.passed:
-            failed_slugs.append(slug)
-            warnings.append(f"{slug}: {gate.error.lower()}")
-            continue
-
-        # Merge
-        result = merge_worker_pane(
-            project_root,
-            slug,
-            session_root=session_root,
-            resolve=resolve,
-            squash=squash,
-            rebase=rebase,
-        )
-        if "merged" in result:
-            landed_slugs.append(slug)
-            total_files += result.get("files_changed", 0)
-            if result.get("warning"):
-                warnings.append(f"{slug}: {result['warning']}")
-        else:
-            failed_slugs.append(slug)
-            err = result.get("error") or result.get("hint", "unknown")
-            warnings.append(f"{slug}: {err}")
+    for line in review_lines:
+        click.echo(json.dumps(line))
 
     summary = {
         "landed_count": len(landed_slugs),
@@ -884,13 +892,50 @@ def pane_list(project_root, session_root, as_json, verbose):
 )
 @SESSION_ROOT_OPTION
 def pane_prune(project_root, session_root):
-    """Remove stale pane entries (dead pane + no worktree)."""
+    """Remove stale pane entries and orphaned worktree dirs."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.status import prune_stale_panes
 
     pruned = prune_stale_panes(project_root, session_root=session_root)
     click.echo(json.dumps({"pruned": pruned}))
+
+
+@pane.command("gc")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+@click.option(
+    "--older-than-hours",
+    default=24.0,
+    type=float,
+    show_default=True,
+    help="Only collect preserved or terminal panes older than this many hours",
+)
+@click.option(
+    "--state",
+    "states",
+    multiple=True,
+    help="Only collect panes in these states (repeatable)",
+)
+def pane_gc(project_root, session_root, older_than_hours, states):
+    """Explicitly garbage-collect preserved evidence and old terminal panes."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
+    from dgov.status import gc_retained_panes
+
+    result = gc_retained_panes(
+        project_root,
+        session_root=session_root,
+        older_than_s=older_than_hours * 3600.0,
+        states=tuple(states),
+    )
+    click.echo(json.dumps(result))
 
 
 @pane.command("classify")
@@ -943,9 +988,16 @@ def pane_review(slug, project_root, session_root, full, show_diff):
     """Preview a worker pane's changes before merging."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.inspection import review_worker_pane
+    from dgov.executor import run_review_only
 
-    result = review_worker_pane(project_root, slug, session_root=session_root, full=full)
+    result = run_review_only(
+        project_root,
+        slug,
+        session_root=session_root,
+        full=full,
+        require_safe=False,
+        require_commits=False,
+    ).review
     if show_diff and "error" not in result:
         from dgov.inspection import diff_worker_pane
 

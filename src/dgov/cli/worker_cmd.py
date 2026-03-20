@@ -111,7 +111,7 @@ def worker_fail(reason):
     exit_path.parent.mkdir(parents=True, exist_ok=True)
     exit_path.write_text(reason, encoding="utf-8")
     update_pane_state(session_root, slug, "failed")
-    emit_event(session_root, "pane_done", slug, reason=reason)
+    emit_event(session_root, "pane_failed", slug, reason=reason)
     click.echo(json.dumps({"status": "failed", "slug": slug, "reason": reason}))
 
 

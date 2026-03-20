@@ -24,9 +24,27 @@ from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
     DagTaskSpec,
     parse_dag_file,
 )
-from dgov.executor import review_merge_gate, run_dispatch_preflight
+from dgov.executor import run_dispatch_preflight, run_merge_only, run_post_dispatch_lifecycle
 
 logger = logging.getLogger(__name__)
+
+_DAG_PROGRESS_EVENTS = (
+    "dag_task_dispatched",
+    "dag_task_completed",
+    "dag_task_failed",
+    "dag_task_escalated",
+    "dag_completed",
+    "dag_failed",
+    "pane_done",
+    "pane_timed_out",
+    "pane_merged",
+    "pane_merge_failed",
+    "pane_auto_retried",
+    "pane_retry_spawned",
+    "pane_escalated",
+    "pane_superseded",
+    "pane_closed",
+)
 
 
 def _progress(msg: str) -> None:
@@ -34,6 +52,27 @@ def _progress(msg: str) -> None:
     import sys
 
     print(f"[dag] {msg}", file=sys.stderr, flush=True)
+
+
+def _wait_for_dag_progress_event(
+    session_root: str,
+    run_id: int,
+    task_slugs: tuple[str, ...],
+    *,
+    after_id: int,
+    timeout_s: float = 1.0,
+) -> list[dict]:
+    """Wait for a new event that could advance DAG scheduling state."""
+    from dgov.persistence import wait_for_events
+
+    panes = (f"dag/{run_id}", *task_slugs)
+    return wait_for_events(
+        session_root,
+        after_id=after_id,
+        panes=panes,
+        event_types=_DAG_PROGRESS_EVENTS,
+        timeout_s=timeout_s,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -103,30 +142,22 @@ def _wait_for_tier(
     active_panes: dict[str, dict],
     session_root: str,
 ) -> dict[str, dict]:
-    """Wait for all active panes in a tier. Returns {task_slug: wait_result}.
-
-    NOTE: Waits sequentially per pane. wait_all_worker_panes / wait_for_slugs
-    don't support per-task timeouts or per-slug error results, so parallel
-    waiting requires a new API.  See known bug #11 in MEMORY.md.
-    """
-    from dgov.waiter import wait_worker_pane
-
+    """Run the canonical post-dispatch lifecycle for each pane in a tier."""
     results: dict[str, dict] = {}
     for task_slug, pane_info in active_panes.items():
         pane_slug = pane_info["pane_slug"]
         task = dag.tasks[task_slug]
-        try:
-            result = wait_worker_pane(
-                dag.project_root,
-                pane_slug,
-                session_root=session_root,
-                timeout=task.timeout_s,
-                auto_retry=False,
-            )
-            results[task_slug] = {"ok": True, "result": result, "pane_slug": pane_slug}
-        except Exception as exc:
-            logger.warning("Wait failed for %s: %s", task_slug, exc)
-            results[task_slug] = {"ok": False, "error": str(exc), "pane_slug": pane_slug}
+        result = run_post_dispatch_lifecycle(
+            dag.project_root,
+            pane_slug,
+            session_root=session_root,
+            timeout=task.timeout_s,
+            max_retries=0,
+            auto_merge=False,
+        )
+        results[task_slug] = {"result": result, "pane_slug": result.slug}
+
+    return results
 
 
 def _is_task_terminal_success(
@@ -230,113 +261,84 @@ def _wait_for_any_completion(
     Returns dict mapping task_slug to new state.
     This enables event-driven progression instead of blocking on entire tiers.
     """
-    from dgov.persistence import upsert_dag_task
-    from dgov.waiter import wait_worker_pane
-
     results: dict[str, str] = {}
 
     # Wait for each pane individually (sequential wait for simplicity)
     for task_slug, pane_slug in active_pane_slugs.items():
         task = dag.tasks[task_slug]
-        try:
-            wait_worker_pane(
-                dag.project_root,
-                pane_slug,
-                session_root=session_root,
-                timeout=task.timeout_s,
-                auto_retry=False,
-            )
-        except Exception as exc:
-            logger.warning("Wait failed for %s: %s", task_slug, exc)
-            task_states[task_slug] = "failed"
-            upsert_dag_task(session_root, run_id, task_slug, "failed", task.agent, error=str(exc))
-            results[task_slug] = "failed"
-            continue
-
-        # Check pane state
-        pane_state = _get_pane_state(session_root, pane_slug)
-        if pane_state in ("failed", "timed_out", "abandoned"):
-            task_states[task_slug] = "failed"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "failed",
-                task.agent,
-                error=f"pane ended in {pane_state}",
-            )
-            results[task_slug] = "failed"
-            continue
-
-        # Review
-        review = _review_task(dag, task_slug, pane_slug, session_root)
-        if review.get("error"):
-            task_states[task_slug] = "failed"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "failed",
-                task.agent,
-                error=review["error"],
-            )
-            results[task_slug] = "failed"
-            continue
-
-        if review.get("passed"):
-            task_states[task_slug] = "reviewed_pass"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "reviewed_pass",
-                task.agent,
-                pane_slug=pane_slug,
-            )
-            results[task_slug] = "reviewed_pass"
-            _progress(f"  reviewed {task_slug}: pass")
-        else:
-            task_states[task_slug] = "reviewed_fail"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "reviewed_fail",
-                task.agent,
-                pane_slug=pane_slug,
-            )
-            results[task_slug] = "reviewed_fail"
-            _progress(f"  reviewed {task_slug}: fail")
-
-    return results
+        lifecycle = run_post_dispatch_lifecycle(
+            dag.project_root,
+            pane_slug,
+            session_root=session_root,
+            timeout=task.timeout_s,
+            max_retries=0,
+            auto_merge=False,
+        )
+        results[task_slug] = _record_post_dispatch_result(
+            dag,
+            task_slug,
+            lifecycle,
+            session_root,
+            run_id,
+            task_states,
+        )
 
     return results
 
 
-def _review_task(
+def _record_post_dispatch_result(
     dag: DagDefinition,
     task_slug: str,
-    pane_slug: str,
+    lifecycle,
     session_root: str,
-) -> dict:
-    """Review a completed task. Returns review result dict."""
-    from dgov.persistence import update_pane_state
+    run_id: int,
+    task_states: dict[str, str],
+) -> str:
+    """Persist a post-dispatch lifecycle result into DAG task and pane state."""
+    from dgov.persistence import update_pane_state, upsert_dag_task
 
-    result = review_merge_gate(
-        dag.project_root,
-        pane_slug,
-        session_root=session_root,
-        full=False,
-    )
-    if result.review.get("error"):
-        return result.review
+    task = dag.tasks[task_slug]
+    pane_slug = lifecycle.slug
 
-    if result.passed:
+    if lifecycle.state == "reviewed_pass":
+        task_states[task_slug] = "reviewed_pass"
         update_pane_state(session_root, pane_slug, "reviewed_pass", force=True)
-        return {"passed": True, **result.review}
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            "reviewed_pass",
+            task.agent,
+            pane_slug=pane_slug,
+        )
+        _progress(f"  reviewed {task_slug}: pass")
+        return "reviewed_pass"
 
-    update_pane_state(session_root, pane_slug, "reviewed_fail", force=True)
-    return {"passed": False, **result.review}
+    if lifecycle.state == "review_pending":
+        task_states[task_slug] = "reviewed_fail"
+        update_pane_state(session_root, pane_slug, "reviewed_fail", force=True)
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            "reviewed_fail",
+            task.agent,
+            pane_slug=pane_slug,
+        )
+        _progress(f"  reviewed {task_slug}: fail")
+        return "reviewed_fail"
+
+    task_states[task_slug] = "failed"
+    upsert_dag_task(
+        session_root,
+        run_id,
+        task_slug,
+        "failed",
+        task.agent,
+        pane_slug=pane_slug,
+        error=lifecycle.error or "post-dispatch lifecycle failed",
+    )
+    return "failed"
 
 
 def _merge_tasks_in_order(
@@ -350,7 +352,6 @@ def _merge_tasks_in_order(
 
     Returns (merged_list, error_or_None).
     """
-    from dgov.merger import merge_worker_pane
     from dgov.persistence import emit_event, upsert_dag_task
 
     topo = topological_order(dag.tasks)
@@ -360,7 +361,7 @@ def _merge_tasks_in_order(
     for task_slug in ordered:
         pane_slug = pane_slugs[task_slug]
         logger.info("Merging %s (pane %s)", task_slug, pane_slug)
-        result = merge_worker_pane(
+        result = run_merge_only(
             dag.project_root,
             pane_slug,
             session_root=session_root,
@@ -368,9 +369,9 @@ def _merge_tasks_in_order(
             squash=dag.merge_squash,
             message=dag.tasks[task_slug].commit_message,
         )
-        if "error" in result:
-            logger.error("Merge error for %s: %s", task_slug, result["error"])
-            return merged, result
+        if result.error:
+            logger.error("Merge error for %s: %s", task_slug, result.error)
+            return merged, result.merge_result or {"error": result.error}
 
         merged.append(task_slug)
         _progress(f"  merged {task_slug}")
@@ -448,316 +449,36 @@ def _merge_tasks_in_order(
     return merged, None
 
 
-def _get_pane_state(session_root: str, pane_slug: str) -> str | None:
-    """Get the current state of a pane."""
-    from dgov.persistence import get_pane
-
-    pane = get_pane(session_root, pane_slug)
-    if pane is None:
-        return None
-    return pane.get("state")
-
-
-def run_single_tier(
+def _merge_ready_tasks(
     dag: DagDefinition,
-    tier: list[str],
+    dag_file: str,
     run_id: int,
     task_states: dict[str, str],
-    options: DagRunOptions,
+    ready: list[str],
+    pane_slugs: dict[str, str],
     session_root: str,
-) -> dict:
-    """Execute one tier: dispatch, wait, review, merge.
+    merged_so_far: list[str] | None = None,
+) -> tuple[list[str], DagRunSummary | None]:
+    """Merge reviewed-pass tasks and finalize DAG state on conflict."""
+    from dgov.persistence import emit_event, update_dag_run
 
-    Returns dict with keys: reviewed_pass, failed, merged, merge_error.
-    """
-    from dgov.persistence import upsert_dag_task
+    merged, merge_error = _merge_tasks_in_order(dag, ready, pane_slugs, session_root, run_id)
+    for slug in merged:
+        task_states[slug] = "merged"
 
-    # Dispatch tasks in batches, respecting agent concurrency limits
-    remaining = [
-        slug
-        for slug in tier
-        if task_states.get(slug) not in ("merged", "reviewed_pass", "skipped", "failed")
-    ]
-    all_active_panes: dict[str, dict] = {}
-    wait_results: dict[str, dict] = {}
-
-    while remaining:
-        max_batch = options.max_concurrent if options.max_concurrent > 0 else len(remaining)
-        batch_panes: dict[str, dict] = {}
-        deferred: list[str] = remaining[max_batch:]
-
-        for slug in remaining[:max_batch]:
-            task = dag.tasks[slug]
-            try:
-                pane_info = _dispatch_task(dag, task, run_id, session_root)
-                batch_panes[slug] = pane_info
-                all_active_panes[slug] = pane_info
-                task_states[slug] = "dispatched"
-                _progress(f"  dispatched {slug} ({task.agent})")
-            except RuntimeError as exc:
-                if "Concurrency limit" in str(exc):
-                    logger.info("Deferred %s due to concurrency limit", slug)
-                    deferred.append(slug)
-                else:
-                    logger.error("Dispatch failed for %s: %s", slug, exc)
-                    task_states[slug] = "failed"
-                    upsert_dag_task(
-                        session_root, run_id, slug, "failed", task.agent, error=str(exc)
-                    )
-            except Exception as exc:
-                logger.error("Dispatch failed for %s: %s", slug, exc)
-                task_states[slug] = "failed"
-                upsert_dag_task(session_root, run_id, slug, "failed", task.agent, error=str(exc))
-
-        if batch_panes:
-            batch_results = _wait_for_tier(dag, batch_panes, session_root)
-            wait_results.update(batch_results)
-
-        remaining = deferred
-        if remaining and not batch_panes:
-            # All remaining tasks are deferred but nothing was dispatched —
-            # no progress possible, break to avoid infinite loop.
-            for slug in remaining:
-                logger.error(
-                    "Dispatch failed for %s: concurrency limit with no active batch", slug
-                )
-                task_states[slug] = "failed"
-                upsert_dag_task(
-                    session_root,
-                    run_id,
-                    slug,
-                    "failed",
-                    dag.tasks[slug].agent,
-                    error="Concurrency limit: no active tasks to free capacity",
-                )
-            break
-
-    if not all_active_panes:
-        return {"reviewed_pass": [], "failed": [], "merged": [], "merge_error": None}
-
-    # Review completed tasks (only review panes in done state)
-    reviewed_pass: list[str] = []
-    reviewed_fail: list[str] = []
-    pane_slugs: dict[str, str] = {}
-
-    for task_slug, wait_res in wait_results.items():
-        pane_slug = wait_res["pane_slug"]
-        pane_slugs[task_slug] = pane_slug
-
-        if not wait_res["ok"]:
-            task_states[task_slug] = "failed"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "failed",
-                dag.tasks[task_slug].agent,
-                error=wait_res.get("error"),
-            )
-            continue
-
-        # Check pane state — only review if done
-        pane_state = _get_pane_state(session_root, pane_slug)
-        if pane_state in ("failed", "timed_out", "abandoned"):
-            task_states[task_slug] = "failed"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "failed",
-                dag.tasks[task_slug].agent,
-                error=f"pane ended in {pane_state}",
-            )
-            continue
-
-        review = _review_task(dag, task_slug, pane_slug, session_root)
-        if review.get("error"):
-            task_states[task_slug] = "failed"
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "failed",
-                dag.tasks[task_slug].agent,
-                error=review["error"],
-            )
-            continue
-
-        if review.get("passed"):
-            reviewed_pass.append(task_slug)
-            task_states[task_slug] = "reviewed_pass"
-            _progress(f"  reviewed {task_slug}: pass")
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "reviewed_pass",
-                dag.tasks[task_slug].agent,
-                pane_slug=pane_slug,
-            )
-        else:
-            reviewed_fail.append(task_slug)
-            task_states[task_slug] = "reviewed_fail"
-            _progress(f"  reviewed {task_slug}: fail")
-            upsert_dag_task(
-                session_root,
-                run_id,
-                task_slug,
-                "reviewed_fail",
-                dag.tasks[task_slug].agent,
-                pane_slug=pane_slug,
-            )
-
-    # Retry failed tasks up to max_retries
-    retryable = [s for s in reviewed_fail if task_states.get(s) == "reviewed_fail"]
-    for retry_attempt in range(1, options.max_retries + 1):
-        if not retryable:
-            break
-
-        retry_batch: dict[str, dict] = {}
-        still_failing: list[str] = []
-
-        for task_slug in retryable:
-            task = dag.tasks[task_slug]
-            old_pane = pane_slugs.get(task_slug)
-            # Build augmented prompt with failure context
-            review_info = {"issues": [f"Attempt {retry_attempt} failed"]}
-            augmented = _augment_prompt_with_review(
-                task.prompt, review_info, old_pane or task_slug, session_root
-            )
-            # Close old pane first
-            if old_pane:
-                try:
-                    from dgov.lifecycle import close_worker_pane
-
-                    close_worker_pane(
-                        dag.project_root, old_pane, session_root=session_root, force=True
-                    )
-                except Exception:
-                    pass
-
-            # Re-dispatch with augmented prompt
-            try:
-                retry_task = DagTaskSpec(
-                    slug=task.slug,
-                    summary=task.summary,
-                    prompt=augmented,
-                    commit_message=task.commit_message,
-                    agent=task.agent,
-                    escalation=task.escalation,
-                    depends_on=task.depends_on,
-                    files=task.files,
-                    permission_mode=task.permission_mode,
-                    timeout_s=task.timeout_s,
-                    post_merge_check=task.post_merge_check,
-                )
-                pane_info = _dispatch_task(dag, retry_task, run_id, session_root)
-                retry_batch[task_slug] = pane_info
-                pane_slugs[task_slug] = pane_info["pane_slug"]
-                task_states[task_slug] = "dispatched"
-                upsert_dag_task(
-                    session_root,
-                    run_id,
-                    task_slug,
-                    "dispatched",
-                    task.agent,
-                    attempt=retry_attempt + 1,
-                    pane_slug=pane_info["pane_slug"],
-                )
-            except Exception as exc:
-                logger.error("Retry dispatch failed for %s: %s", task_slug, exc)
-                still_failing.append(task_slug)
-
-        if retry_batch:
-            retry_results = _wait_for_tier(dag, retry_batch, session_root)
-
-            for task_slug, wait_res in retry_results.items():
-                pane_slug = wait_res["pane_slug"]
-                pane_slugs[task_slug] = pane_slug
-                if not wait_res["ok"]:
-                    task_states[task_slug] = "failed"
-                    upsert_dag_task(
-                        session_root,
-                        run_id,
-                        task_slug,
-                        "failed",
-                        dag.tasks[task_slug].agent,
-                        error=wait_res.get("error"),
-                    )
-                    still_failing.append(task_slug)
-                    continue
-
-                pane_state = _get_pane_state(session_root, pane_slug)
-                if pane_state in ("failed", "timed_out", "abandoned"):
-                    task_states[task_slug] = "failed"
-                    upsert_dag_task(
-                        session_root,
-                        run_id,
-                        task_slug,
-                        "failed",
-                        dag.tasks[task_slug].agent,
-                        error=f"pane ended in {pane_state}",
-                    )
-                    still_failing.append(task_slug)
-                    continue
-
-                review = _review_task(dag, task_slug, pane_slug, session_root)
-                if review.get("error") or not review.get("passed"):
-                    still_failing.append(task_slug)
-                    task_states[task_slug] = "reviewed_fail"
-                    upsert_dag_task(
-                        session_root,
-                        run_id,
-                        task_slug,
-                        "reviewed_fail",
-                        dag.tasks[task_slug].agent,
-                        pane_slug=pane_slug,
-                    )
-                else:
-                    reviewed_pass.append(task_slug)
-                    task_states[task_slug] = "reviewed_pass"
-                    upsert_dag_task(
-                        session_root,
-                        run_id,
-                        task_slug,
-                        "reviewed_pass",
-                        dag.tasks[task_slug].agent,
-                        pane_slug=pane_slug,
-                    )
-
-        retryable = still_failing
-
-    # Clean up failed/reviewed_fail panes to prevent resource leaks
-    for task_slug in tier:
-        if task_states.get(task_slug) in ("failed", "reviewed_fail"):
-            pane_slug_val = pane_slugs.get(task_slug)
-            if pane_slug_val:
-                try:
-                    from dgov.lifecycle import close_worker_pane
-
-                    close_worker_pane(
-                        dag.project_root, pane_slug_val, session_root=session_root, force=True
-                    )
-                except Exception:
-                    pass
-
-    # Merge if auto_merge
-    merged: list[str] = []
-    merge_error: dict | None = None
-    if options.auto_merge and reviewed_pass:
-        merged, merge_error = _merge_tasks_in_order(
-            dag, reviewed_pass, pane_slugs, session_root, run_id
+    if merge_error:
+        merged_total = [*(merged_so_far or []), *merged]
+        update_dag_run(session_root, run_id, status="failed")
+        emit_event(
+            session_root,
+            "dag_failed",
+            f"dag/{run_id}",
+            dag_run_id=run_id,
+            error="merge_conflict",
         )
-        for slug in merged:
-            task_states[slug] = "merged"
+        return merged, _build_summary(run_id, dag_file, "failed", task_states, merged_total, dag)
 
-    failed = [s for s in tier if task_states.get(s) in ("failed", "reviewed_fail")]
-    return {
-        "reviewed_pass": reviewed_pass,
-        "failed": failed,
-        "merged": merged,
-        "merge_error": merge_error,
-    }
+    return merged, None
 
 
 # ---------------------------------------------------------------------------
@@ -904,7 +625,14 @@ def run_dag(
     topological order separately from execution.
     """
     from dgov.lifecycle import close_worker_pane
-    from dgov.persistence import emit_event, get_dag_task, update_dag_run, upsert_dag_task
+    from dgov.persistence import (
+        emit_event,
+        get_dag_task,
+        latest_event_id,
+        list_dag_tasks,
+        update_dag_run,
+        upsert_dag_task,
+    )
 
     dag = parse_dag_file(dag_file)
     effective_concurrent = max_concurrent if max_concurrent > 0 else dag.max_concurrent
@@ -964,7 +692,10 @@ def run_dag(
         # Dispatch ready tasks up to concurrency limit
         currently_dispatched = len(active_panes)
         can_dispatch = max_concurrent if max_concurrent > 0 else dag.max_concurrent
-        slots_available = max(0, can_dispatch - currently_dispatched)
+        if can_dispatch <= 0:
+            slots_available = len(ready)
+        else:
+            slots_available = max(0, can_dispatch - currently_dispatched)
 
         if ready and slots_available > 0:
             batch = ready[:slots_available]
@@ -1028,21 +759,19 @@ def run_dag(
                 if task_row and task_row.get("pane_slug"):
                     pane_slugs[slug] = task_row["pane_slug"]
 
-            merged, merge_error = _merge_tasks_in_order(
-                dag, pending_merge, pane_slugs, session_root, run_id
+            merged, failed_summary = _merge_ready_tasks(
+                dag,
+                dag_file,
+                run_id,
+                task_states,
+                pending_merge,
+                pane_slugs,
+                session_root,
+                all_merged,
             )
             all_merged.extend(merged)
-
-            if merge_error:
-                update_dag_run(session_root, run_id, status="failed")
-                emit_event(
-                    session_root,
-                    "dag_failed",
-                    f"dag/{run_id}",
-                    dag_run_id=run_id,
-                    error="merge_conflict",
-                )
-                return _build_summary(run_id, dag_file, "failed", task_states, all_merged, dag)
+            if failed_summary is not None:
+                return failed_summary
 
             pending_merge = []
 
@@ -1058,10 +787,27 @@ def run_dag(
         if no_ready and no_active and not remaining_unprocessed:
             break
 
-        # Small sleep to avoid busy-waiting
-        import time
+        if no_ready and no_active:
+            cursor = latest_event_id(session_root)
+            new_events = _wait_for_dag_progress_event(
+                session_root,
+                run_id,
+                tuple(sorted(dag.tasks)),
+                after_id=cursor,
+            )
+            if not new_events:
+                update_dag_run(session_root, run_id, status="failed")
+                emit_event(
+                    session_root,
+                    "dag_failed",
+                    f"dag/{run_id}",
+                    dag_run_id=run_id,
+                    error="stalled",
+                )
+                return _build_summary(run_id, dag_file, "failed", task_states, all_merged, dag)
 
-        time.sleep(0.1)
+            task_rows = list_dag_tasks(session_root, run_id)
+            task_states = {r["slug"]: r["status"] for r in task_rows}
 
     # Handle non-auto-merge case: tasks may be reviewed_pass but not merged
     if not auto_merge and pending_merge:
@@ -1127,14 +873,12 @@ def _build_summary(
 
 def merge_dag(dag_file: str) -> DagRunSummary:
     """Merge an awaiting_merge DAG run in canonical topological order."""
-    from dgov.merger import merge_worker_pane
     from dgov.persistence import (
         emit_event,
         ensure_dag_tables,
         get_open_dag_run,
         list_dag_tasks,
         update_dag_run,
-        upsert_dag_task,
     )
 
     dag = parse_dag_file(dag_file)
@@ -1160,28 +904,17 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     if not ready:
         raise ValueError("No reviewed_pass tasks to merge")
 
-    topo = topological_order(dag.tasks)
-    ordered = [s for s in topo if s in ready]
-
-    merged: list[str] = []
-    for slug in ordered:
-        pane_slug = pane_slugs.get(slug)
-        if not pane_slug:
-            continue
-        result = merge_worker_pane(
-            dag.project_root,
-            pane_slug,
-            session_root=session_root,
-            resolve=dag.merge_resolve,
-            squash=dag.merge_squash,
-        )
-        if "error" in result:
-            update_dag_run(session_root, run_id, status="failed")
-            emit_event(session_root, "dag_failed", f"dag/{run_id}", dag_run_id=run_id)
-            return _build_summary(run_id, dag_file, "failed", task_states, merged, dag)
-        merged.append(slug)
-        task_states[slug] = "merged"
-        upsert_dag_task(session_root, run_id, slug, "merged", dag.tasks[slug].agent)
+    merged, failed_summary = _merge_ready_tasks(
+        dag,
+        dag_file,
+        run_id,
+        task_states,
+        ready,
+        pane_slugs,
+        session_root,
+    )
+    if failed_summary is not None:
+        return failed_summary
 
     update_dag_run(session_root, run_id, status="completed")
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
@@ -1362,7 +1095,6 @@ def run_task_until_terminal(
     Returns dict with keys: status, agent, attempt, reason.
     """
     from dgov.persistence import emit_event, upsert_dag_task
-    from dgov.waiter import wait_worker_pane
 
     chain = [task.agent] + list(task.escalation)
 
@@ -1389,50 +1121,49 @@ def run_task_until_terminal(
                 break  # try next agent
 
             # Wait
-            try:
-                wait_worker_pane(
-                    dag.project_root,
-                    pane_slug,
-                    session_root=session_root,
-                    timeout=task.timeout_s,
-                    auto_retry=False,
-                )
-            except Exception as exc:
-                reason = _task_failure_reason(exc, None)
-                if reason == "timeout":
+            lifecycle = run_post_dispatch_lifecycle(
+                dag.project_root,
+                pane_slug,
+                session_root=session_root,
+                timeout=task.timeout_s,
+                max_retries=0,
+                auto_merge=False,
+            )
+            review = lifecycle.review or {}
+            commit_count = int(review.get("commit_count", 0))
+
+            if lifecycle.state == "reviewed_pass":
+                return {
+                    "status": "reviewed_pass",
+                    "agent": current_agent,
+                    "attempt": attempt_try + 1,
+                    "pane_slug": lifecycle.slug,
+                }
+
+            if lifecycle.state == "review_pending":
+                if commit_count == 0:
                     emit_event(
                         session_root,
                         "dag_task_escalated",
                         task.slug,
                         dag_run_id=run_id,
-                        reason="timeout",
+                        reason="zero_commit",
                     )
-                    break  # try next agent
-                upsert_dag_task(
-                    session_root,
-                    run_id,
-                    task.slug,
-                    "failed",
-                    current_agent,
-                    error=str(exc),
-                )
-                continue  # retry same agent
-
-            # Check pane state
-            pane_state_val = _get_pane_state(session_root, pane_slug)
-            if pane_state_val in ("failed", "timed_out", "abandoned"):
-                if attempt_try < max_retries:
-                    continue  # retry
-                break  # next agent
-
-            # Review
-            review = _review_task(dag, task.slug, pane_slug, session_root)
-            if review.get("error"):
+                    break
                 if attempt_try < max_retries:
                     continue
                 break
 
-            if review.get("commit_count", 1) == 0:
+            if lifecycle.failure_stage == "timeout":
+                emit_event(
+                    session_root,
+                    "dag_task_escalated",
+                    task.slug,
+                    dag_run_id=run_id,
+                    reason="timeout",
+                )
+                break
+            if commit_count == 0:
                 emit_event(
                     session_root,
                     "dag_task_escalated",
@@ -1440,20 +1171,14 @@ def run_task_until_terminal(
                     dag_run_id=run_id,
                     reason="zero_commit",
                 )
-                break  # next agent immediately
-
-            if review.get("passed"):
-                return {
-                    "status": "reviewed_pass",
-                    "agent": current_agent,
-                    "attempt": attempt_try + 1,
-                    "pane_slug": pane_slug,
-                }
-
-            # Review failed — retry same agent
+                break
+            if lifecycle.failure_stage == "worker_failed":
+                if attempt_try < max_retries:
+                    continue
+                break
             if attempt_try < max_retries:
                 continue
-            break  # next agent
+            break
 
     # All agents exhausted
     upsert_dag_task(

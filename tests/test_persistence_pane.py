@@ -10,12 +10,17 @@ from dgov.persistence import (
     _get_db,
     add_pane,
     all_panes,
+    clear_preserved_artifacts,
     emit_event,
     get_pane,
+    get_preserved_artifacts,
     list_panes_slim,
+    mark_preserved_artifacts,
+    queue_dispatch,
     read_events,
     remove_pane,
     set_pane_metadata,
+    take_dispatch_queue,
     update_pane_state,
 )
 
@@ -110,6 +115,31 @@ class TestPaneMetadata:
         assert updated["key1"] == "value1"
         assert updated["key2"] == 42
 
+    def test_mark_and_clear_preserved_artifacts(self, tmp_path: Path) -> None:
+        session = _make_session(tmp_path)
+        pane = _make_pane("pane-meta", session)
+        add_pane(session, pane)
+
+        mark_preserved_artifacts(
+            session,
+            "pane-meta",
+            reason="review_pending",
+            recoverable=False,
+            state="review_pending",
+        )
+
+        updated = get_pane(session, "pane-meta")
+        artifacts = get_preserved_artifacts(updated)
+        assert artifacts is not None
+        assert artifacts["policy"] == "preserve_evidence"
+        assert artifacts["reason"] == "review_pending"
+        assert artifacts["recoverable"] is False
+        assert artifacts["state"] == "review_pending"
+        assert str(Path(session) / ".dgov" / "logs" / "pane-meta.log") in artifacts["paths"]
+
+        clear_preserved_artifacts(session, "pane-meta")
+        assert get_preserved_artifacts(get_pane(session, "pane-meta")) is None
+
 
 class TestRemovePane:
     def test_remove_pane_deletes_record(self, tmp_path: Path) -> None:
@@ -177,3 +207,24 @@ class TestPaneEvents:
         assert second["pane"] == "pane-events"
         assert second["action"] == "done"
         assert second["index"] == 2
+
+    def test_queue_dispatch_emits_event_and_take_dispatch_queue_clears(
+        self, tmp_path: Path
+    ) -> None:
+        session = _make_session(tmp_path)
+
+        depth = queue_dispatch(session, {"summary": "ship it", "agent_hint": "qwen-35b"})
+
+        assert depth == 1
+        events = read_events(session)
+        dispatch_event = [event for event in events if event["event"] == "dispatch_queued"][0]
+        assert dispatch_event["pane"] == "dispatch-queue"
+        assert dispatch_event["summary"] == "ship it"
+        assert dispatch_event["agent_hint"] == "qwen-35b"
+
+        queued = take_dispatch_queue(session)
+        assert len(queued) == 1
+        assert queued[0]["summary"] == "ship it"
+        assert queued[0]["agent_hint"] == "qwen-35b"
+        assert "ts" in queued[0]
+        assert take_dispatch_queue(session) == []

@@ -716,6 +716,7 @@ class TestFullCleanup:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         from dgov.lifecycle import close_worker_pane
+        from dgov.persistence import get_preserved_artifacts
 
         sr = str(tmp_path)
         wt_path = tmp_path / "timed-out-pane"
@@ -748,6 +749,10 @@ class TestFullCleanup:
         remaining_pane = get_pane(sr, "timed-out-pane")
         assert remaining_pane is not None
         assert remaining_pane["state"] == "timed_out"
+        artifacts = get_preserved_artifacts(remaining_pane)
+        assert artifacts is not None
+        assert artifacts["reason"] == "dirty_worktree"
+        assert artifacts["recoverable"] is True
 
     def test_removes_worktree_when_clean_and_force_applied(
         self, tmp_path: Path, mock_backend: MagicMock

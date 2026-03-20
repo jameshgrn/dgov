@@ -630,6 +630,40 @@ class TestLateTerminalSignals:
         assert get_pane(session_root, slug)["state"] == "failed"
         mock_emit.assert_not_called()
 
+    def test_stale_pane_record_done_signal_after_failed_preserves_failed(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        session_root = str(tmp_path)
+        slug = "test-stale-done-signal"
+        _setup_pane(tmp_path, slug=slug, state="failed")
+        done_dir = Path(session_root) / STATE_DIR / "done"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        (done_dir / slug).touch()
+
+        stale_pane_record = {
+            "slug": slug,
+            "state": "active",
+            "pane_id": "%1",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",
+        }
+
+        with (
+            patch("dgov.done._has_completion_commit", return_value=True),
+            patch("dgov.persistence.emit_event") as mock_emit,
+        ):
+            result = _is_done(
+                session_root,
+                slug,
+                pane_record=stale_pane_record,
+                _stable_state={},
+            )
+
+        assert result is True
+        assert get_pane(session_root, slug)["state"] == "failed"
+        mock_emit.assert_not_called()
+
     def test_late_exit_signal_after_done_preserves_done(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:

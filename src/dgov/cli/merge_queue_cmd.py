@@ -56,22 +56,9 @@ def process_merge(project_root, session_root, resolve, squash, rebase, timeout):
     signal.alarm(timeout)
 
     try:
-        from dgov.executor import review_merge_gate
-        from dgov.merger import merge_worker_pane
+        from dgov.executor import run_land_only
 
-        gate = review_merge_gate(project_root, slug, session_root=session_root)
-        if gate.review.get("error"):
-            result = {"error": f"Review failed: {gate.review['error']}"}
-            complete_merge(session_root_abs, ticket, False, json.dumps(result))
-            click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
-            sys.exit(1)
-        if not gate.passed:
-            result = {"error": gate.error or "Review failed"}
-            complete_merge(session_root_abs, ticket, False, json.dumps(result))
-            click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
-            sys.exit(1)
-
-        result = merge_worker_pane(
+        landed = run_land_only(
             project_root,
             slug,
             session_root=session_root,
@@ -79,9 +66,11 @@ def process_merge(project_root, session_root, resolve, squash, rebase, timeout):
             squash=squash,
             rebase=rebase,
         )
+        result = landed.merge_result or {"error": landed.error or "Review failed"}
         success = "error" not in result
         complete_merge(session_root_abs, ticket, success, json.dumps(result))
-        emit_event(session_root_abs, "merge_completed", slug, ticket=ticket, success=success)
+        if success:
+            emit_event(session_root_abs, "merge_completed", slug, ticket=ticket, success=True)
         click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
         if not success:
             sys.exit(1)

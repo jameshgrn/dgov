@@ -26,7 +26,6 @@ from dgov.persistence import (
     all_panes,
     emit_event,
 )
-from dgov.waiter import wait_for_slugs
 
 
 def create_checkpoint(
@@ -250,9 +249,8 @@ def run_batch(
     Tasks are ordered by explicit depends_on and implicit touch overlap.
     On failure, transitive dependents are skipped; unrelated branches continue.
     """
-    from dgov.executor import review_merge_gate, run_dispatch_preflight
+    from dgov.executor import run_dispatch_preflight, run_post_dispatch_lifecycle
     from dgov.lifecycle import create_worker_pane
-    from dgov.merger import merge_worker_pane
 
     project_root, tasks = _parse_spec(spec_path)
     session_root = os.path.abspath(session_root or project_root)
@@ -328,55 +326,35 @@ def run_batch(
                 new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
                 skipped_ids.update(new_skips)
 
-        # Wait for all panes in tier
-        timeout = max(t.get("timeout", 600) for t in tier) if tier else 600
-        pending = wait_for_slugs(session_root, slugs, timeout=timeout)
-
-        # Review and merge completed panes
+        # Run the canonical post-dispatch lifecycle for each created pane.
         for slug in slugs:
-            if slug in pending:
-                tier_result["tasks"] = [
-                    {**t, "status": "timed_out"} if t.get("slug") == slug else t
-                    for t in tier_result["tasks"]
-                ]
-                task_id = slug_to_task_id.get(slug, slug)
+            task_id = slug_to_task_id.get(slug, slug)
+            task = tasks[task_id]
+            lifecycle = run_post_dispatch_lifecycle(
+                project_root,
+                slug,
+                session_root=session_root,
+                timeout=task.get("timeout", 600),
+                max_retries=0,
+                permission_mode=task.get("permission_mode", "bypassPermissions"),
+            )
+            if lifecycle.state != "completed":
                 failed_ids.add(task_id)
                 results["failed"].append(task_id)
                 new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
                 skipped_ids.update(new_skips)
-                continue
-
-            gate = review_merge_gate(project_root, slug, session_root=session_root)
-            if not gate.passed:
-                task_id = slug_to_task_id.get(slug, slug)
-                failed_ids.add(task_id)
-                results["failed"].append(task_id)
-                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
-                skipped_ids.update(new_skips)
-                status = "review_failed"
-                if gate.review.get("error"):
-                    status = "review_error"
+                status = lifecycle.failure_stage or lifecycle.state
                 tier_result["tasks"] = [
                     {**t, "status": status} if t.get("slug") == slug else t
                     for t in tier_result["tasks"]
                 ]
                 continue
 
-            merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
+            merge_result = lifecycle.merge_result or {}
             if "merged" in merge_result:
-                results["merged"].append(slug)
+                results["merged"].append(task_id)
                 tier_result["tasks"] = [
                     {**t, "status": "merged"} if t.get("slug") == slug else t
-                    for t in tier_result["tasks"]
-                ]
-            else:
-                task_id = slug_to_task_id.get(slug, slug)
-                failed_ids.add(task_id)
-                results["failed"].append(task_id)
-                new_skips = _transitive_dependents(tasks, failed_ids) - skipped_ids
-                skipped_ids.update(new_skips)
-                tier_result["tasks"] = [
-                    {**t, "status": "merge_failed"} if t.get("slug") == slug else t
                     for t in tier_result["tasks"]
                 ]
 

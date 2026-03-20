@@ -224,3 +224,42 @@ class TestDagEvents:
         events = read_events(session)
         ev = [e for e in events if e["event"] == "dag_task_completed"][0]
         assert ev["pane"] == "T3"
+
+    def test_latest_event_id_and_wait_for_events(self, tmp_path, monkeypatch):
+        from dgov.persistence import emit_event, latest_event_id, wait_for_events
+
+        session = self._make_session(tmp_path)
+        emit_event(session, "dag_started", "dag/1", dag_run_id=1)
+        cursor = latest_event_id(session)
+
+        def fake_sleep(seconds: float) -> None:
+            emit_event(session, "dag_task_completed", "T0", dag_run_id=1, tier=0)
+
+        monkeypatch.setattr("dgov.persistence.time.sleep", fake_sleep)
+        events = wait_for_events(
+            session,
+            after_id=cursor,
+            panes=("T0",),
+            event_types=("dag_task_completed",),
+            timeout_s=0.5,
+        )
+
+        assert len(events) == 1
+        assert events[0]["id"] > cursor
+        assert events[0]["event"] == "dag_task_completed"
+        assert events[0]["pane"] == "T0"
+
+    def test_wait_for_events_returns_empty_on_timeout(self, tmp_path):
+        from dgov.persistence import latest_event_id, wait_for_events
+
+        session = self._make_session(tmp_path)
+        events = wait_for_events(
+            session,
+            after_id=latest_event_id(session),
+            panes=("T0",),
+            event_types=("dag_task_completed",),
+            timeout_s=0.01,
+            poll_interval_s=0.01,
+        )
+
+        assert events == []

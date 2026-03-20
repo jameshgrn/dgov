@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
-from dgov.persistence import STATE_DIR, VALID_TRANSITIONS
+from dgov.persistence import STATE_DIR
 
 if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
@@ -239,12 +239,6 @@ def _is_done(
     done_path = Path(session_root, STATE_DIR, "done", slug)
     exit_path = Path(session_root, STATE_DIR, "done", slug + ".exit")
 
-    def _current_state() -> str:
-        latest = _persist.get_pane(session_root, slug)
-        if latest is not None:
-            return latest.get("state", "")
-        return pane_record.get("state", "") if pane_record else ""
-
     def _complete_terminal_state(
         target_state: str,
         reason: str,
@@ -253,25 +247,24 @@ def _is_done(
         touch_done_file: bool = False,
         emit_reason: str | None = None,
     ) -> bool:
-        current_state = _current_state()
-        if current_state == target_state:
-            _set_done_reason(_stable_state, reason)
-            return True
-
-        force = allow_abandoned and current_state == "abandoned"
-        if not force and target_state not in VALID_TRANSITIONS.get(current_state, frozenset()):
+        transition = _persist.settle_completion_state(
+            session_root,
+            slug,
+            target_state,
+            allow_abandoned=allow_abandoned,
+        )
+        if not transition.changed:
             logger.debug(
                 "late terminal signal slug=%s reason=%s current=%s target=%s",
                 slug,
                 reason,
-                current_state,
+                transition.state,
                 target_state,
             )
             _set_done_reason(_stable_state, reason)
             return True
 
         logger.debug("state=%s slug=%s reason=%s", target_state, slug, reason)
-        _persist.update_pane_state(session_root, slug, target_state, force=force)
         if touch_done_file:
             done_path.parent.mkdir(parents=True, exist_ok=True)
             done_path.touch()
@@ -391,13 +384,23 @@ def _is_done(
                     _stable_state["dead_since"] = time.monotonic()
                     logger.debug("pane first seen dead slug=%s", slug)
                 elif time.monotonic() - dead_since >= 10:
-                    _persist.update_pane_state(session_root, slug, "abandoned")
-                    _persist.emit_event(session_root, "pane_done", slug)
+                    transition = _persist.settle_completion_state(
+                        session_root,
+                        slug,
+                        "abandoned",
+                    )
+                    if transition.changed:
+                        _persist.emit_event(session_root, "pane_done", slug)
                     _set_done_reason(_stable_state, "abandoned")
                     return True
             else:
-                _persist.update_pane_state(session_root, slug, "abandoned")
-                _persist.emit_event(session_root, "pane_done", slug)
+                transition = _persist.settle_completion_state(
+                    session_root,
+                    slug,
+                    "abandoned",
+                )
+                if transition.changed:
+                    _persist.emit_event(session_root, "pane_done", slug)
                 _set_done_reason(_stable_state, "abandoned")
                 return True
         elif _stable_state is not None:
@@ -490,9 +493,14 @@ def _is_done(
                         output_hash,
                         count,
                     )
-                    _persist.update_pane_state(session_root, slug, "failed")
-                    _persist.set_pane_metadata(session_root, slug, circuit_breaker=True)
-                    _persist.emit_event(session_root, "pane_circuit_breaker", slug)
+                    transition = _persist.settle_completion_state(
+                        session_root,
+                        slug,
+                        "failed",
+                    )
+                    if transition.changed:
+                        _persist.set_pane_metadata(session_root, slug, circuit_breaker=True)
+                        _persist.emit_event(session_root, "pane_circuit_breaker", slug)
                     _set_done_reason(_stable_state, "circuit_breaker")
                     return True
             _stable_state["_cb_prev_hash"] = output_hash
