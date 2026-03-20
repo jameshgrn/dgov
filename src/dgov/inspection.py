@@ -377,8 +377,11 @@ def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
     """Run pytest on test files related to changed source files.
 
     Maps src/dgov/X.py -> tests/test_X.py. Returns empty dict if no
-    related tests found.
+    related tests found. On timeout, terminates the process group and
+    returns structured failed test metadata instead of raising.
     """
+    import signal
+
     test_files: list[str] = []
     for f in changed_files:
         if f.startswith("tests/") and f.endswith(".py"):
@@ -393,16 +396,40 @@ def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
     if not test_files:
         return {}
     test_files = sorted(set(test_files))
-    result = subprocess.run(
-        ["uv", "run", "pytest", "-q", "-m", "unit", *test_files],
-        capture_output=True,
+
+    # Use Popen with process group control so we can kill children on timeout
+    cmd = ["uv", "run", "pytest", "-q", "-m", "unit", *test_files]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         cwd=project_root,
-        timeout=120,
+        start_new_session=True,  # Create new process group
     )
-    output = (result.stdout + result.stderr).strip()
-    return {
-        "tests_ran": [str(Path(f).relative_to(project_root)) for f in test_files],
-        "tests_passed": result.returncode == 0,
-        "test_output": output[-500:] if len(output) > 500 else output,
-    }
+    try:
+        stdout, stderr = proc.communicate(timeout=120)
+        output = (stdout + stderr).strip()
+        return {
+            "tests_ran": [str(Path(f).relative_to(project_root)) for f in test_files],
+            "tests_passed": proc.returncode == 0,
+            "test_output": output[-500:] if len(output) > 500 else output,
+        }
+    except subprocess.TimeoutExpired:
+        # Kill the entire process group to prevent orphans
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        # Wait for process to reap
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+        return {
+            "tests_ran": [str(Path(f).relative_to(project_root)) for f in test_files],
+            "tests_passed": False,
+            "test_output": "Tests timed out after 120s and were terminated",
+            "timed_out": True,
+        }
