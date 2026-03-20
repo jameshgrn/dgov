@@ -581,6 +581,10 @@ class TestPaneCommands:
                 "dgov.status.list_worker_panes",
                 return_value=[{"slug": "task", "done": False, "agent": "pi"}],
             ),
+            patch(
+                "dgov.persistence.get_pane",
+                return_value={"agent": "pi"},
+            ),
         ):
             failed = runner.invoke(cli, ["pane", "wait", "task"])
 
@@ -590,7 +594,6 @@ class TestPaneCommands:
         assert json.loads(failed.output) == {
             "error": "Worker timed out after 30s (retries exhausted)",
             "slug": "task",
-            "agent": "pi",
             "suggest_escalate": True,
         }
 
@@ -726,13 +729,7 @@ class TestPaneCommands:
             "warnings": ["a: review verdict is review; refusing to merge"],
         }
         mock_merge.assert_called_once_with(
-            ".",
-            "a",
-            None,
-            resolve="skip",
-            squash=True,
-            rebase=False,
-            close=False,
+            ".", ["a"], session_root=None, resolve="skip", squash=True, rebase=False, close=False
         )
 
     def test_pane_batch_blocks_preflight_failure(self, runner: CliRunner, tmp_path: Path) -> None:
