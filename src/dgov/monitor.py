@@ -521,7 +521,7 @@ def run_monitor(
     *,
     poll_interval: int = 5,
     dry_run: bool = False,
-    auto_merge: bool = True,
+    auto_merge: bool = False,
     auto_retry: bool = True,
 ) -> None:
     """Run the monitor loop."""
