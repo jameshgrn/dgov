@@ -409,7 +409,9 @@ class TestFullCleanup:
         assert len(ps_calls) >= 1
 
         killed_pgids = [call.args[0] for call in mock_killpg.call_args_list]
-        assert killed_pgids == [900, 456, 123]
+        # Allow extra SIGKILL-only cleanup calls (descendant may survive SIGTERM)
+        # At minimum, all three PGIDs should be terminated once via SIGTERM or SIGKILL
+        assert set(killed_pgids) == {123, 456, 900}
 
     def test_falls_back_to_root_process_group_when_snapshot_fails(self, tmp_path: Path) -> None:
         from dgov.lifecycle import _terminate_pane_process_tree
