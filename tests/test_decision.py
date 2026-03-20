@@ -209,7 +209,8 @@ def test_classify_task_uses_provider_boundary(monkeypatch: pytest.MonkeyPatch) -
 
     provider = StaticDecisionProvider(route_task_fn=lambda request: _route_record("pi"))
     monkeypatch.setattr(
-        "dgov.strategy.get_task_routing_provider", lambda session_root=None: provider
+        "dgov.provider_registry.get_provider",
+        lambda kind, session_root=None: provider,
     )
 
     result = classify_task("rename variable x to y in main.py")

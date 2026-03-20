@@ -29,14 +29,14 @@ class TestClassifyOutput:
             )
         )
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_working(self, mock_provider):
         from dgov.monitor import classify_output
 
         mock_provider.return_value = self._provider("working")
         assert classify_output("Reading src/dgov/agents.py") == "working"
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_done(self, mock_provider):
         from dgov.monitor import classify_output
 
@@ -45,7 +45,7 @@ class TestClassifyOutput:
         result = classify_output("I have completed the requested changes and verified them.")
         assert result == "done"
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_stuck(self, mock_provider):
         from dgov.monitor import classify_output
 
@@ -56,14 +56,14 @@ class TestClassifyOutput:
             == "stuck"
         )
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_idle(self, mock_provider):
         from dgov.monitor import classify_output
 
         mock_provider.return_value = self._provider("idle")
         assert classify_output("$ ") == "idle"
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_fallback_on_error(self, mock_provider):
         from dgov.monitor import classify_output
 
@@ -73,14 +73,14 @@ class TestClassifyOutput:
         mock_provider.return_value = StaticDecisionProvider(classify_output_fn=_fail)
         assert classify_output("anything") == "unknown"
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_normalizes_response(self, mock_provider):
         from dgov.monitor import classify_output
 
         mock_provider.return_value = self._provider("working")
         assert classify_output("test") == "working"
 
-    @patch("dgov.monitor.get_output_classification_provider")
+    @patch("dgov.provider_registry.get_provider")
     def test_classify_invalid_response_returns_unknown(self, mock_provider):
         from dgov.monitor import classify_output
 
