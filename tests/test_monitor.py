@@ -433,3 +433,96 @@ class TestTryAutoRetry:
         mock_retry.return_value = None
         result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
+
+
+class TestRunMonitorAutoMergePolicy:
+    """Test run_monitor() explicit auto-merge policy."""
+
+    @patch("dgov.monitor.poll_workers")
+    @patch("dgov.monitor._take_action")
+    def test_dry_run_does_not_attempt_auto_merge(self, mock_action, mock_poll, tmp_path):
+        """Dry-run mode should exit before attempting any auto-merge.
+
+        When dry_run=True, run_monitor returns immediately after writing status,
+        before entering the auto-merge/auto-retry loop.
+        """
+        from dgov.monitor import run_monitor
+
+        mock_poll.return_value = []
+        mock_action.return_value = None
+
+        # Patch all_panes to return a done pane that would trigger auto-merge
+        with patch("dgov.monitor.all_panes") as mock_all_panes:
+            mock_all_panes.return_value = [
+                {
+                    "slug": "done-worker",
+                    "state": "done",
+                    "branch_name": "done-worker",
+                    "base_sha": "abc123",
+                    "project_root": str(tmp_path),
+                }
+            ]
+
+            # Patch _try_auto_merge to detect if it was called
+            with patch("dgov.monitor._try_auto_merge") as mock_try_merge:
+                mock_try_merge.return_value = "auto_merge"
+                run_monitor(str(tmp_path), dry_run=True)
+
+                # Verify _try_auto_merge was never called during dry-run
+                mock_try_merge.assert_not_called()
+
+    @patch("dgov.monitor.poll_workers")
+    @patch("dgov.monitor._take_action")
+    def test_auto_merge_true_attempts_merge(self, mock_action, mock_poll, tmp_path):
+        """When auto_merge=True, run_monitor should attempt auto-merge on done panes."""
+        from dgov.monitor import run_monitor
+
+        mock_poll.return_value = []
+        mock_action.return_value = None
+
+        with patch("dgov.monitor.all_panes") as mock_all_panes:
+            mock_all_panes.return_value = [
+                {
+                    "slug": "done-worker",
+                    "state": "done",
+                    "branch_name": "done-worker",
+                    "base_sha": "abc123",
+                    "project_root": str(tmp_path),
+                }
+            ]
+
+            with patch("dgov.monitor._try_auto_merge") as mock_try_merge:
+                mock_try_merge.return_value = "auto_merge"
+                # Call with auto_merge=True (the default)
+                run_monitor(str(tmp_path), dry_run=True, auto_merge=True)
+
+                # Verify _try_auto_merge WAS called
+                mock_try_merge.assert_called_once_with(str(tmp_path), str(tmp_path), "done-worker")
+
+    @patch("dgov.monitor.poll_workers")
+    @patch("dgov.monitor._take_action")
+    def test_auto_merge_false_skips_merge(self, mock_action, mock_poll, tmp_path):
+        """When auto_merge=False, run_monitor should skip auto-merge entirely."""
+        from dgov.monitor import run_monitor
+
+        mock_poll.return_value = []
+        mock_action.return_value = None
+
+        with patch("dgov.monitor.all_panes") as mock_all_panes:
+            mock_all_panes.return_value = [
+                {
+                    "slug": "done-worker",
+                    "state": "done",
+                    "branch_name": "done-worker",
+                    "base_sha": "abc123",
+                    "project_root": str(tmp_path),
+                }
+            ]
+
+            with patch("dgov.monitor._try_auto_merge") as mock_try_merge:
+                mock_try_merge.return_value = "auto_merge"
+                # Call with auto_merge=False
+                run_monitor(str(tmp_path), dry_run=True, auto_merge=False)
+
+                # Verify _try_auto_merge was never called
+                mock_try_merge.assert_not_called()
