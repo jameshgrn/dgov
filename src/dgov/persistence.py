@@ -1313,7 +1313,7 @@ def record_decision_audit(session_root: str, entry) -> None:  # noqa: ANN001
     # Extract new columns from result/request
     model_id = entry.result.model_id if entry.result is not None else None
     confidence = entry.result.confidence if entry.result is not None else None
-    pane_slug = getattr(entry.request, "pane_slug", None)
+    pane_slug = getattr(entry.request, "pane_slug", None) or getattr(entry.request, "slug", None)
 
     def _do() -> None:
         conn = _get_db(session_root)
