@@ -110,6 +110,14 @@ def _collect_descendant_pids(root_pid: int, snapshot: dict[int, tuple[int, int]]
 def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> dict:
     """Terminate the pane process group and any descendant process groups.
 
+    Required behavior:
+    1. Send SIGTERM once per discovered process group
+    2. Wait bounded time for processes to exit
+    3. Return terminated=True when descendants are gone
+    4. Only escalate to SIGKILL for process groups that still have live descendants after the wait
+    5. After SIGKILL, re-check and return terminated=True only when nothing survives
+    6. Catch killpg errors instead of raising
+
     Args:
         root_pid: PID to terminate (will kill all descendants).
         wait_timeout: Seconds to wait for processes to exit before returning.
@@ -117,6 +125,8 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
     Returns:
         {"terminated": bool, "still_running": list[int] or []}.
     """
+    import time
+
     try:
         snapshot = _process_snapshot()
     except (subprocess.SubprocessError, OSError):
@@ -136,15 +146,14 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
         except (ProcessLookupError, PermissionError):
             return {"terminated": False, "still_running": []}
 
+    # Step 1: Send SIGTERM once per discovered process group
     for pgid in sorted(pgids, reverse=True):
         try:
             os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             continue
 
-    # Wait bounded time for processes to actually exit
-    import time
-
+    # Step 2: Wait bounded time for processes to exit
     deadline = time.time() + wait_timeout
     snapshot_after = _process_snapshot() if snapshot else {}
 
@@ -163,43 +172,54 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
         descendant_pids = _collect_descendant_pids(root_pid, snapshot_after)
         time.sleep(0.25)
 
-    # SIGTERM didn't kill everything — escalate to SIGKILL for process groups
-    still_running = list(descendant_pids)
-    if still_running:
-        still_pgids = {
-            pgid
-            for pid in still_running
-            if (entry := snapshot_after.get(pid)) is not None
-            for pgid in [entry[1]]
-            if pgid > 0
-        }
-        # Fallback to root process group if snapshots fail or no pgids found
-        if not still_pgids:
-            try:
-                still_pgids = {os.getpgid(root_pid)}
-            except (ProcessLookupError, PermissionError):
-                pass
+    # Step 3-4: SIGTERM didn't kill everything — check for still-living descendants
+    still_alive = []
+    for pid in descendant_pids:
+        try:
+            os.kill(pid, 0)
+            still_alive.append(pid)
+        except OSError:
+            pass
 
-        for pgid in sorted(still_pgids, reverse=True):
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                continue
+    if not still_alive:
+        return {"terminated": True, "still_running": []}
 
-        # Brief wait after SIGKILL
-        time.sleep(0.5)
+    # Step 4: Only escalate to SIGKILL for process groups that have live descendants
+    still_pgids = {
+        pgid
+        for pid in still_alive
+        if (entry := snapshot_after.get(pid)) is not None
+        for pgid in [entry[1]]
+        if pgid > 0
+    }
+    # Fallback to root process group if snapshots fail or no pgids found
+    if not still_pgids:
+        try:
+            still_pgids = {os.getpgid(root_pid)}
+        except (ProcessLookupError, PermissionError):
+            pass
 
-        # Final check — only report processes that survived SIGKILL too
-        final_dead = []
-        for pid in still_running:
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                final_dead.append(pid)
+    for pgid in sorted(still_pgids, reverse=True):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            continue
 
-        still_running = [pid for pid in still_running if pid not in final_dead]
+    # Step 5: Brief wait after SIGKILL, then re-check
+    time.sleep(0.5)
 
-    return {"terminated": False, "still_running": still_running}
+    final_alive = []
+    for pid in still_alive:
+        try:
+            os.kill(pid, 0)
+            final_alive.append(pid)
+        except OSError:
+            pass
+
+    if final_alive:
+        return {"terminated": False, "still_running": final_alive}
+    else:
+        return {"terminated": True, "still_running": []}
 
 
 # -- Git worktree helpers --
