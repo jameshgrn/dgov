@@ -683,7 +683,7 @@ def _setup_and_launch_agent(
             extra_flags=extra_flags,
             registry=registry,
         )
-        wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal)
+        wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal, worktree_path=worktree_path)
         backend.send_shell_command(pane_id, wrapped_cmd)
         ready_delay = agent_def.send_keys_ready_delay_ms or 2000
         time.sleep(ready_delay / 1000)
@@ -704,7 +704,7 @@ def _setup_and_launch_agent(
             extra_flags=extra_flags,
             registry=registry,
         )
-        wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal)
+        wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal, worktree_path=worktree_path)
         backend.send_shell_command(pane_id, wrapped_cmd)
         if agent_def.send_keys_ready_delay_ms > 0:
             time.sleep(agent_def.send_keys_ready_delay_ms / 1000)

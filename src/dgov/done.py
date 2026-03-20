@@ -59,7 +59,12 @@ def _wrap_done_signal(cmd: str, done_signal: str) -> str:
     return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
 
 
-def _wrap_exit_signal(cmd: str, done_signal: str) -> str:
+def _wrap_exit_signal(
+    cmd: str,
+    done_signal: str,
+    *,
+    worktree_path: str | None = None,
+) -> str:
     """Wrap *cmd* so .exit file is written on any exit unless done-signal already exists.
 
     Writes the exit code (0 or non-zero) to the .exit file whenever the
@@ -67,9 +72,22 @@ def _wrap_exit_signal(cmd: str, done_signal: str) -> str:
     signal via ``dgov worker complete``.  This ensures interactive/TUI agents
     that drop back to a shell prompt without signalling are detected immediately
     by _is_done() Signal 1b rather than hanging in ``active`` state indefinitely.
+
+    When *worktree_path* is provided, any uncommitted changes are auto-committed
+    before the exit code is written.  This lets Signal 1b see exit-0-with-commits
+    and auto-promote to done, even when the agent forgot to commit.
     """
     ok = shlex.quote(done_signal)
     fail = shlex.quote(done_signal + ".exit")
+    if worktree_path:
+        wt = shlex.quote(worktree_path)
+        # Auto-commit dirty changes so Signal 1b can detect work product
+        auto_commit = (
+            f"git -C {wt} add -A"
+            f" && {{ git -C {wt} diff --cached --quiet"
+            f" || git -C {wt} commit -m 'Auto-commit on agent exit'; }}"
+        )
+        return f"{cmd}; __rc=$?; [ -f {ok} ] || {{ {auto_commit}; echo $__rc > {fail}; }}"
     return f"{cmd}; __rc=$?; [ -f {ok} ] || echo $__rc > {fail}"
 
 
