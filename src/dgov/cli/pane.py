@@ -490,10 +490,11 @@ def pane_close(slug, project_root, session_root, force):
     """Close a worker pane: kill tmux pane, remove worktree."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.lifecycle import close_worker_pane
+    from dgov.executor import run_close_only
 
     for s in slug:
-        if close_worker_pane(project_root, s, session_root=session_root, force=force):
+        result = run_close_only(project_root, s, session_root=session_root, force=force)
+        if result.closed:
             click.echo(json.dumps({"closed": s}))
         else:
             click.echo(json.dumps({"already_closed": s}))
@@ -1080,20 +1081,26 @@ def pane_escalate(slug, project_root, session_root, agent, permission_mode):
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import get_default_agent, load_registry
-    from dgov.recovery import escalate_worker_pane
+    from dgov.executor import run_escalate_only
 
     if agent is None:
         agent = get_default_agent(load_registry(project_root))
 
-    result = escalate_worker_pane(
+    result = run_escalate_only(
         project_root,
         slug,
-        target_agent=agent,
         session_root=session_root,
+        target_agent=agent,
         permission_mode=permission_mode,
     )
-    click.echo(json.dumps(result, indent=2))
-    if "error" in result:
+    output = {}
+    if result.error:
+        output["error"] = result.error
+    else:
+        output["new_slug"] = result.new_slug
+        output["target_agent"] = result.target_agent
+    click.echo(json.dumps(output, indent=2))
+    if "error" in output:
         sys.exit(1)
 
 
@@ -1115,19 +1122,21 @@ def pane_retry(slug, project_root, session_root, agent, prompt, permission_mode,
     """Retry a failed pane with a new attempt."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.recovery import retry_worker_pane
+    from dgov.executor import run_retry_only
 
-    result = retry_worker_pane(
+    result = run_retry_only(
         project_root,
         slug,
         session_root=session_root,
         agent=agent,
-        prompt=prompt,
-        permission_mode=permission_mode,
-        close=close,
     )
-    click.echo(json.dumps(result, indent=2))
-    if "error" in result:
+    output = {}
+    if result.error:
+        output["error"] = result.error
+    else:
+        output["new_slug"] = result.new_slug
+    click.echo(json.dumps(output, indent=2))
+    if "error" in output:
         sys.exit(1)
 
 
@@ -1147,17 +1156,23 @@ def pane_retry_or_escalate(slug, project_root, session_root, max_retries, permis
     """Retry a failed pane, auto-escalating after N retries at the same tier."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.recovery import retry_or_escalate
+    from dgov.executor import run_retry_or_escalate
 
-    result = retry_or_escalate(
+    result = run_retry_or_escalate(
         project_root,
         slug,
         session_root=session_root,
-        max_retries=max_retries,
-        permission_mode=permission_mode,
     )
-    click.echo(json.dumps(result, indent=2))
-    if "error" in result:
+    # Result is RetryResult | EscalateResult (union type)
+    output = {}
+    if result.error:
+        output["error"] = result.error
+    elif hasattr(result, "new_slug") and result.new_slug:
+        output["new_slug"] = result.new_slug
+        if hasattr(result, "target_agent") and result.target_agent:
+            output["target_agent"] = result.target_agent
+    click.echo(json.dumps(output, indent=2))
+    if "error" in output:
         sys.exit(1)
 
 
