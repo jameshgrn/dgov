@@ -297,6 +297,7 @@ class WorkerPane:
     tier_id: str = ""
     role: str = "worker"
     state: str = "active"
+    file_claims: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _validate_state(self.state)

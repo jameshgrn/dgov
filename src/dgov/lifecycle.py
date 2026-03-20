@@ -944,6 +944,7 @@ def create_worker_pane(
                 base_sha=base_sha,
                 role=role,
                 parent_slug=parent_slug,
+                file_claims=packet_for_overlay.file_claims,
             )
             add_pane(session_root, pane)
 
