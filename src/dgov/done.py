@@ -285,8 +285,28 @@ def _is_done(
 
         return _complete_terminal_state("done", "done_signal", allow_abandoned=True)
 
-    # Signal 1b: exit-code file (agent crashed / nonzero exit) - always checked
+    # Signal 1b: exit-code file — always checked.
+    # Clean exit (code 0) with commits: auto-promote to done so the governor
+    # doesn't have to intervene when an agent forgets to call `dgov worker complete`.
+    # Clean exit with no commits, or non-zero exit: mark failed.
     if exit_path.exists():
+        exit_code = exit_path.read_text().strip()
+        if exit_code == "0" and pane_record is not None:
+            project_root = pane_record.get("project_root", "")
+            branch_name = pane_record.get("branch_name", "")
+            base_sha = pane_record.get("base_sha", "")
+            if (
+                project_root
+                and branch_name
+                and base_sha
+                and _has_new_commits(project_root, branch_name, base_sha)
+            ):
+                return _complete_terminal_state(
+                    "done",
+                    "exit_signal_with_commits",
+                    allow_abandoned=True,
+                    touch_done_file=True,
+                )
         return _complete_terminal_state("failed", "exit_signal", allow_abandoned=True)
 
     if pane_record is None:
