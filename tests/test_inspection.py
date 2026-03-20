@@ -362,6 +362,38 @@ class TestReviewWorkerPane:
         assert result["protected_touched"] == ["THEORY.md"]
         assert "protected files touched" in result.get("issues", [])[0]
 
+    def test_uncommitted_claude_md_porcelain_leading_space_preserved(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """
+        Regression test: prove that CLAUDE.md drift with leading-space porcelain line
+        does not set uncommitted and does not add the uncommitted issue.
+
+        Git porcelain format: "<status><status><space><filename>"
+        Example: " M CLAUDE.md" (modified, index clean)
+        The parsing must correctly slice filename at position 3 after the status prefix.
+        """
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "feature.txt", "committed work\n", "Add committed change")
+
+        # Simulate uncommitted CLAUDE.md modification (worktree hook drift)
+        (repo / "CLAUDE.md").write_text("modified by worktree hook\n")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        # CLAUDE.md is protected and worktree-local — should be filtered out
+        assert result["verdict"] == "safe"
+        assert result["uncommitted"] is False
+        assert "uncommitted changes" not in result.get("issues", [])
+        assert "CLAUDE.md" not in result.get("protected_touched", [])
+
 
 class TestDiffWorkerPane:
     def test_happy_path(self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]) -> None:
