@@ -12,7 +12,7 @@ import click
 @click.option("--interval", "-i", default=5, type=int, help="Poll interval seconds")
 @click.option("--dry-run", is_flag=True, help="One poll cycle then exit")
 @click.option(
-    "--auto-merge/--no-auto-merge", default=True, help="Auto-merge done panes with safe verdict"
+    "--auto-merge/--no-auto-merge", default=False, help="Auto-merge done panes with safe verdict"
 )
 @click.option(
     "--auto-retry/--no-auto-retry", default=True, help="Auto-retry failed panes per agent policy"
@@ -32,6 +32,8 @@ def monitor_cmd(project_root, session_root, interval, dry_run, auto_merge, auto_
             cmd += " --dry-run"
         if not auto_merge:
             cmd += " --no-auto-merge"
+        else:
+            cmd += " --auto-merge"
         if not auto_retry:
             cmd += " --no-auto-retry"
         pane_id = create_utility_pane(cmd, "[gov] monitor", cwd=project_root)
