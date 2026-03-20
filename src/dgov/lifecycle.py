@@ -950,6 +950,11 @@ def close_worker_pane(
     """Close a worker pane: kill tmux pane, remove worktree, update state.
 
     For LT-GOV or parent panes, cascades to close all child panes first.
+
+    When worktree is preserved (dirty pane without force), the pane transitions
+    to 'done' state so it remains inspectable but marked as completed.
+
+    When worktree is removed, pane transitions to 'closed' and record is deleted.
     """
     session_root = os.path.abspath(session_root) if session_root else project_root
     target = get_pane(session_root, slug)
@@ -958,7 +963,8 @@ def close_worker_pane(
         return True  # already cleaned up (e.g. by merge)
 
     # Use persisted pane project_root for cleanup, normalize with abspath
-    clean_project_root = os.path.abspath(target.get("project_root", project_root))
+    pane_project_root = target.get("project_root") or project_root
+    clean_project_root = os.path.abspath(pane_project_root)
 
     # Cascade: close all child panes before closing the parent
     children = get_child_panes(session_root, slug)
@@ -980,7 +986,8 @@ def close_worker_pane(
         target,
         skip_worktree_if_dirty=not force,
     )
-    # Preserve evidence when worktree removal fails
+
+    # Preserve evidence when worktree removal fails or is skipped (dirty pane)
     if result.get("skipped_worktree") or result.get("worktree_removal_failed"):
         # Don't remove pane state; leave it inspectable for debugging
         if result.get("worktree_removal_failed"):
@@ -988,11 +995,15 @@ def close_worker_pane(
                 "Worktree removal failed for %s — pane state preserved for inspection",
                 slug,
             )
-        update_pane_state(session_root, slug, "closed")
+        # Transition to 'done' state to indicate completed but evidence preserved.
+        # This keeps the pane inspectable in a non-closed state.
+        update_pane_state(session_root, slug, "done")
     else:
+        # Normal close - worktree removed, transition to closed and delete record
         update_pane_state(session_root, slug, "closed")
         emit_event(session_root, "pane_closed", slug)
         remove_pane(session_root, slug)
+
     if result.get("branch_kept"):
         logger.info(
             "Branch %s was kept because it has unmerged commits. "
