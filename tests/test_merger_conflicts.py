@@ -3,6 +3,8 @@
 import subprocess
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def make_subprocess_mock(return_code, stdout="", stderr=""):
     """Helper to create a mock CompletedProcess result."""
@@ -332,3 +334,63 @@ def test_lint_fix_calls_ruff(mock_subprocess, tmp_path):
         # Verify subprocess was called with ruff
         call_args_list = mock_subprocess.call_args_list
         assert any("ruff" in str(args) for args, kwargs in call_args_list)
+
+
+@patch("subprocess.run")
+@pytest.mark.unit
+def test_plumbing_merge_tree_exit_code_1_with_valid_hash(mock_run, tmp_path):
+    """Test merge-tree returns 1 with valid tree hash — should still succeed.
+
+    git merge-tree --write-tree returns exit code 1 for conflicts but outputs
+    the tree hash anyway. We need to parse and validate the hash before treating
+    non-zero as failure.
+    """
+    from dgov.merger import _plumbing_merge
+
+    # Simulate merge-tree returning exit code 1 with valid tree hash on stdout
+    valid_40char_hash = "a" * 40
+
+    call_seq = [
+        make_subprocess_mock(0, valid_40char_hash[:7]),  # rev-parse HEAD (short)
+        make_subprocess_mock(1, f"{valid_40char_hash}\n"),
+        make_subprocess_mock(0, valid_40char_hash),  # rev-parse branch_name
+        make_subprocess_mock(0, "commit_hash123\n"),  # commit-tree
+        make_subprocess_mock(0, "main\n"),  # symbolic-ref --short HEAD
+        make_subprocess_mock(0, ""),  # status --porcelain
+        make_subprocess_mock(0),  # update-ref
+        make_subprocess_mock(0),  # reset --hard
+    ]
+
+    idx = [0]
+
+    def side_effect(*args, **kwargs):
+        result = call_seq[idx[0]]
+        idx[0] += 1
+        return result
+
+    mock_run.side_effect = side_effect
+
+    result = _plumbing_merge(str(tmp_path), "test-branch")
+
+    # Should succeed because tree hash was valid, even though exit code was 1
+    assert result.success is True
+
+
+@patch("subprocess.run")
+@pytest.mark.unit
+def test_plumbing_merge_tree_exit_code_1_no_hash(mock_run, tmp_path):
+    """Test merge-tree returns 1 with no stdout — should fail."""
+    from dgov.merger import _plumbing_merge
+
+    call_seq = [
+        make_subprocess_mock(0, "abc123"),  # rev-parse HEAD
+        make_subprocess_mock(1, "", "CONFLICT: genuine failure"),  # merge-tree no output
+        make_subprocess_mock(0),  # rest doesn't matter
+    ]
+
+    mock_run.side_effect = call_seq
+
+    result = _plumbing_merge(str(tmp_path), "test-branch")
+
+    # Should fail because there's no tree hash in stdout
+    assert result.success is False
