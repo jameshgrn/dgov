@@ -142,6 +142,7 @@ For tasks requiring design decisions or multi-file changes, use rich context ins
 - List **files to read** with hints on what to look for ("follow the AuditProvider pattern")
 - State the **principles/constraints** relevant to this task
 - Let the worker make implementation decisions
+- **Never put specific function/class names in prompts** unless you've verified them in the source. Workers discover the real API by reading code. Wrong names cause import errors that crash the worker.
 - Still require the commit checklist at the end
 
 Workers have **256K context windows** — use them. Rich architectural context produces better output than step-by-step hand-holding. CODEBASE.md is auto-read by the worktree hook.
