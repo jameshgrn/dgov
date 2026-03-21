@@ -298,7 +298,7 @@ def run_wait_only(
     *,
     session_root: str | None = None,
     timeout: int = 600,
-    poll: int = 3,
+    poll: int = 1,
     stable: int = 15,
     max_retries: int = 1,
     auto_retry: bool = True,

@@ -113,8 +113,9 @@ class PostDispatchKernel:
                     self.state = KernelState.REVIEW_PENDING
                     return [CleanupPane(result.slug, state="review_pending")]
                 if result.commit_count == 0:
-                    self.state = KernelState.FAILED
-                    return [CleanupPane(result.slug, state="failed", failure_stage="review")]
+                    # 0 commits is valid for verification/already-done tasks
+                    self.state = KernelState.COMPLETED
+                    return [CleanupPane(result.slug, state="closed")]
                 if not self.auto_merge:
                     self.state = KernelState.REVIEWED_PASS
                     return [CleanupPane(result.slug, state="review_pending")]
