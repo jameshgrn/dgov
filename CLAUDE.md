@@ -146,6 +146,24 @@ For tasks requiring design decisions or multi-file changes, use rich context ins
 
 Workers have **256K context windows** — use them. Rich architectural context produces better output than step-by-step hand-holding. CODEBASE.md is auto-read by the worktree hook.
 
+## Testing philosophy
+
+Tests are the primary coordination mechanism of the swarm. Agents do not trust each other — they trust tests.
+
+**Rules for all workers:**
+- **Every code change needs tests.** No merge without test coverage for new/changed behavior.
+- **Test the contract, not the implementation.** Assert observable behavior, edges, and errors — not internal method calls or call counts.
+- **Builders ≠ judges.** For complex features, dispatch a separate test-writing worker on the same spec. They don't see each other's code.
+- **Tests are fast or they don't run.** Unit tests < 1s each. No network, no real filesystem. Use `tmp_path`, mock boundaries. `@pytest.mark.unit` on everything.
+- **Regression tests are permanent.** Every bug fix gets a test. That test never gets deleted.
+- **Edge cases first.** Empty input, None, zero, max size, duplicate keys, concurrent access. The happy path is obvious — edges are where bugs live.
+- **Tests are first-class artifacts.** They have their own file, own structure, own quality bar. Not afterthoughts stapled onto the PR.
+
+**Governor enforcement:**
+- Review gate should flag merges without test changes when source files changed.
+- Post-merge test runner validates changed areas.
+- Dispatch test-writing workers for coverage gaps — don't let debt accumulate.
+
 ## What you CAN do directly
 
 - Run `dgov` commands (dispatch, wait, review, merge, status, preflight)
