@@ -7,6 +7,37 @@ from dgov.context_packet import build_context_packet, render_start_here_section
 pytestmark = pytest.mark.unit
 
 
+def test_architecture_context_renders_in_start_here():
+    """Test that architecture context is rendered in start here section."""
+    packet = build_context_packet(
+        "Fix merge boundary bug",
+        architecture_context=["rule1", "rule2"],
+    )
+    rendered = render_start_here_section(packet)
+
+    assert "Architecture context:" in rendered
+    assert "rule1" in rendered
+    assert "rule2" in rendered
+
+
+def test_architecture_context_empty_skips_section():
+    """Test that empty architecture context does not render the section."""
+    packet = build_context_packet("Fix merge boundary bug", architecture_context=[])
+    rendered = render_start_here_section(packet)
+
+    assert "Architecture context:" not in rendered
+
+
+def test_build_context_packet_passes_architecture_context():
+    """Test that build_context_packet properly passes architecture_context."""
+    packet = build_context_packet(
+        "Fix merge boundary bug",
+        architecture_context=["test"],
+    )
+
+    assert packet.architecture_context == ("test",)
+
+
 def test_build_context_packet_prefers_exact_claims(monkeypatch):
     monkeypatch.setattr(
         "dgov.strategy.extract_task_context",
