@@ -860,8 +860,11 @@ def merge_worker_pane(
         return {"error": f"Pane {slug} is missing branch_name"}
 
     # Precondition 1: Pane state must be exactly "done"
+    # If already merged (e.g., monitor auto-merged), treat as success.
     pane_state = target.get("state", "")
-    if pane_state != "done":
+    if pane_state == "merged":
+        return {"merged": slug, "branch": branch_name, "already_merged": True}
+    if pane_state not in ("done", "reviewed_pass"):
         return {
             "error": f"Pane {slug} is in state '{pane_state}', not 'done'",
             "slug": slug,

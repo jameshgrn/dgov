@@ -343,7 +343,15 @@ class DagKernel:
     def handle(self, event: DagEvent) -> list[DagAction]:
         actions: list[DagAction] = []
 
+        # Guard: ignore events for unknown tasks
+        task_slug = getattr(event, "task_slug", None)
+        if task_slug and task_slug not in self.task_states:
+            return []
+
         if isinstance(event, TaskDispatched):
+            # Reject double dispatch — task must be in DISPATCHED state
+            if self.task_states.get(event.task_slug) != DagTaskState.DISPATCHED:
+                return []
             self.task_states[event.task_slug] = DagTaskState.WAITING
             self.pane_slugs[event.task_slug] = event.pane_slug
             # After dispatch confirmed, check if we should wait
