@@ -94,6 +94,9 @@ def review_worker_pane(
         # Skip worker instruction files (worktree-local, not source changes)
         if filename in ("CLAUDE.md", "AGENTS.md"):
             continue
+        # Skip dgov infrastructure files
+        if filename.startswith(".dgov/"):
+            continue
         porcelain_lines.append(ln)
     uncommitted = bool(porcelain_lines)
 

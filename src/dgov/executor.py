@@ -1319,6 +1319,14 @@ def run_dag_kernel(
     # only block on WaitForAny.
     queue: list = list(actions)
 
+    def _extend_queue(new_actions: list) -> None:
+        # If new actions contain a WaitForAny, drop any existing ones
+        # from the queue — the new one has the latest waiting set.
+        has_new_wait = any(isinstance(a, WaitForAny) for a in new_actions)
+        if has_new_wait:
+            queue[:] = [a for a in queue if not isinstance(a, WaitForAny)]
+        queue.extend(new_actions)
+
     while queue:
         action = queue.pop(0)
 
@@ -1341,7 +1349,7 @@ def run_dag_kernel(
             event = _dag_dispatch(dag, action.task_slug, run_id, session_root, _progress)
             if isinstance(event, TaskDispatched):
                 pane_map[action.task_slug] = event.pane_slug
-            queue.extend(kernel.handle(event))
+            _extend_queue(kernel.handle(event))
             continue
 
         if isinstance(action, WaitForAny):
@@ -1354,7 +1362,7 @@ def run_dag_kernel(
                 task_timeouts,
                 poll_interval,
             )
-            queue.extend(kernel.handle(event))
+            _extend_queue(kernel.handle(event))
             continue
 
         if isinstance(action, ReviewTask):
@@ -1365,7 +1373,7 @@ def run_dag_kernel(
                 action.pane_slug,
                 _progress,
             )
-            queue.extend(kernel.handle(event))
+            _extend_queue(kernel.handle(event))
             continue
 
         if isinstance(action, MergeTask):
@@ -1376,7 +1384,7 @@ def run_dag_kernel(
                 action.pane_slug,
                 _progress,
             )
-            queue.extend(kernel.handle(event))
+            _extend_queue(kernel.handle(event))
             continue
 
         if isinstance(action, SkipTask):
@@ -1388,7 +1396,7 @@ def run_dag_kernel(
                 action.reason,
                 _progress,
             )
-            queue.extend(kernel.handle(TaskClosed(action.task_slug)))
+            _extend_queue(kernel.handle(TaskClosed(action.task_slug)))
             continue
 
         if isinstance(action, CloseTask):
@@ -1400,7 +1408,7 @@ def run_dag_kernel(
                 action.reason,
                 _progress,
             )
-            queue.extend(kernel.handle(TaskClosed(action.task_slug)))
+            _extend_queue(kernel.handle(TaskClosed(action.task_slug)))
             continue
 
     # Queue exhausted without DagDone — shouldn't happen
