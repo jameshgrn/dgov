@@ -117,6 +117,80 @@ def test_run_review_only_persists_decision_journal(tmp_path):
     assert journal[0]["result"]["decision"]["verdict"] == "safe"
 
 
+def test_run_review_only_fails_on_stale_files(tmp_path):
+
+    session_root = str(tmp_path)
+    pane_data = {
+        "base_sha": "abc123",
+        "file_claims": ["src/foo.py"],
+        "worktree_path": "",
+    }
+    with (
+        patch(
+            "dgov.inspection.review_worker_pane",
+            return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+        ),
+        patch("dgov.persistence.get_pane", return_value=pane_data),
+        patch(
+            "dgov.kernel.build_manifest_on_completion",
+            return_value=MagicMock(
+                base_sha="abc123",
+                file_claims=("src/foo.py",),
+                paths_written=("src/foo.py",),
+                claim_violations=(),
+            ),
+        ),
+        patch(
+            "dgov.kernel.validate_manifest_freshness",
+            return_value=(False, ["src/foo.py"]),
+        ),
+    ):
+        result = run_review_only("/repo", "task", session_root=session_root)
+
+    # Stale files are recorded in review dict
+    assert "stale_files" in result.review
+    assert result.review["stale_files"] == ["src/foo.py"]
+    # Currently stale doesn't block merge (passed stays True, error stays None)
+    assert result.passed is True
+    assert result.error is None
+
+
+def test_run_review_only_passes_when_manifest_fresh(tmp_path):
+
+    session_root = str(tmp_path)
+    pane_data = {
+        "base_sha": "abc123",
+        "file_claims": ["src/foo.py"],
+        "worktree_path": "",
+    }
+    with (
+        patch(
+            "dgov.inspection.review_worker_pane",
+            return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+        ),
+        patch("dgov.persistence.get_pane", return_value=pane_data),
+        patch(
+            "dgov.kernel.build_manifest_on_completion",
+            return_value=MagicMock(
+                base_sha="abc123",
+                file_claims=("src/foo.py",),
+                paths_written=("src/foo.py",),
+                claim_violations=(),
+            ),
+        ),
+        patch(
+            "dgov.kernel.validate_manifest_freshness",
+            return_value=(True, []),
+        ),
+    ):
+        result = run_review_only("/repo", "task", session_root=session_root)
+
+    # No stale files in review dict when fresh
+    assert "stale_files" not in result.review
+    assert result.passed is True
+    assert result.error is None
+
+
 def test_run_wait_only_returns_worker_failed_state():
     with (
         patch(
