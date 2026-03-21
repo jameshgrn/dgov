@@ -17,10 +17,18 @@ from dgov.decision_providers import (
 )
 
 
-def _base_provider(kind: DecisionKind) -> DecisionProvider:
+def _base_provider(kind: DecisionKind, *, session_root: str | None = None) -> DecisionProvider:
     match kind:
         case DecisionKind.ROUTE_TASK:
-            return OpenRouterRoutingProvider()
+            # Statistical-first cascade: journal data → LLM fallback
+            from dgov.decision_providers import StatisticalRoutingProvider
+
+            return CascadeProvider(
+                inner_providers=[
+                    StatisticalRoutingProvider(session_root=session_root or ""),
+                    OpenRouterRoutingProvider(),
+                ]
+            )
         case DecisionKind.CLASSIFY_OUTPUT:
             # Deterministic-first cascade: free regex → cheap LLM fallback
             return CascadeProvider(
@@ -37,7 +45,7 @@ def _base_provider(kind: DecisionKind) -> DecisionProvider:
 
 def get_provider(kind: DecisionKind, *, session_root: str | None = None) -> DecisionProvider:
     """Return the provider for a decision kind, wrapped with journaling when requested."""
-    provider = _base_provider(kind)
+    provider = _base_provider(kind, session_root=session_root)
     if not session_root:
         return provider
 
