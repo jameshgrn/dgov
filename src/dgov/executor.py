@@ -702,12 +702,25 @@ def run_review_only(
     from dgov.provider_registry import get_provider
 
     provider = get_provider(DecisionKind.REVIEW_OUTPUT, session_root=session_root)
+
+    # Get agent_id from pane if available
+    agent_id = None
+    if session_root:
+        try:
+            from dgov.persistence import get_pane
+
+            pane = get_pane(session_root, slug)
+            agent_id = pane.get("agent") if pane else None
+        except (OSError, Exception):
+            pass
+
     record = provider.review_output(
         ReviewOutputRequest(
             project_root=project_root,
             slug=slug,
             session_root=session_root,
             full=full,
+            agent_id=agent_id,
         )
     )
     artifact = record.artifact if isinstance(record.artifact, dict) else None

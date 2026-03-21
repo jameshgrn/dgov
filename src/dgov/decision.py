@@ -72,6 +72,7 @@ class ReviewOutputRequest:
     task_prompt: str | None = None
     file_claims: tuple[str, ...] = ()
     trace_id: str | None = None
+    agent_id: str | None = None
 
 
 @dataclass(frozen=True)
