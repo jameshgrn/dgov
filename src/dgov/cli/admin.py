@@ -413,7 +413,13 @@ def regenerate_codebase_md(project_root: str) -> None:
 @click.command("codebase")
 @click.option("--project-root", "-r", default=".", help="Project root")
 @click.option("--dry-run", is_flag=True, help="Print to stdout instead of writing file")
-def codebase_cmd(project_root: str, dry_run: bool) -> None:
+@click.option(
+    "--commit",
+    is_flag=True,
+    default=False,
+    help="Stage and commit CODEBASE.md after regeneration",
+)
+def codebase_cmd(project_root: str, dry_run: bool, commit: bool) -> None:
     """Scan source tree and generate CODEBASE.md."""
     from dgov.cli.pane import _autocorrect_roots
 
@@ -429,6 +435,22 @@ def codebase_cmd(project_root: str, dry_run: bool) -> None:
         click.echo(content)
     else:
         regenerate_codebase_md(project_root)
+        if commit:
+            root_path = Path(project_root).resolve()
+            env = os.environ.copy()
+            env["DGOV_SKIP_GOVERNOR_CHECK"] = "1"
+            subprocess.run(
+                ["git", "add", "CODEBASE.md"],
+                cwd=root_path,
+                check=True,
+                env=env,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "Regenerate CODEBASE.md"],
+                cwd=root_path,
+                check=True,
+                env=env,
+            )
         click.echo(f"Written to {Path(project_root).resolve() / 'CODEBASE.md'}")
 
 

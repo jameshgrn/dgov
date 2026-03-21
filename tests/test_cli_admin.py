@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -264,6 +265,43 @@ class TestCodebaseCmd:
         content = codebase_path.read_text(encoding="utf-8")
         assert "# dgov Codebase Map" in content
         assert "## Module groups" in content
+
+    def test_codebase_commit_flag(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test codebase command with --commit flag."""
+        # Initialize git repo
+        subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+
+        # Create CODEBASE.md file to simulate regeneration
+        codebase_path = tmp_path / "CODEBASE.md"
+        codebase_path.write_text("# dgov Codebase Map\n", encoding="utf-8")
+
+        with patch("subprocess.run") as mock_subprocess:
+            result = runner.invoke(cli, ["codebase", "--commit", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Written to" in result.output
+
+        # Verify git add was called with env containing DGOV_SKIP_GOVERNOR_CHECK=1
+        subprocess_add_calls = [
+            call
+            for call in mock_subprocess.call_args_list
+            if len(call[0]) > 0 and call[0][0] == ["git", "add", "CODEBASE.md"]
+        ]
+        assert len(subprocess_add_calls) == 1
+        env = subprocess_add_calls[0][1]["env"]
+        assert env.get("DGOV_SKIP_GOVERNOR_CHECK") == "1"
+
+        # Verify git commit was called with env containing DGOV_SKIP_GOVERNOR_CHECK=1
+        subprocess_commit_calls = [
+            call
+            for call in mock_subprocess.call_args_list
+            if len(call[0]) > 0 and call[0][0] == ["git", "commit", "-m", "Regenerate CODEBASE.md"]
+        ]
+        assert len(subprocess_commit_calls) == 1
+        env = subprocess_commit_calls[0][1]["env"]
+        assert env.get("DGOV_SKIP_GOVERNOR_CHECK") == "1"
 
 
 class TestTranscriptCmd:
