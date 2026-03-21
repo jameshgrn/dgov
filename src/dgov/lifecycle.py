@@ -1189,7 +1189,7 @@ def _full_cleanup(
         # Transform worktree path to pi session dir format:
         # /Users/jakegearon/projects/dgov/.dgov/worktrees/my-task
         # → --Users-jakegearon-projects-dgov-.dgov-worktrees-my-task--
-        session_dir_name = f"--{worktree_path.replace('/', '-')}--"
+        session_dir_name = f"--{worktree_path.lstrip('/').replace('/', '-')}--"
         pi_sessions_root = Path.home() / ".pi" / "agent" / "sessions"
         session_dir = pi_sessions_root / session_dir_name
 
