@@ -445,14 +445,14 @@ def _drain_dispatch_queue(project_root: str, session_root: str) -> list[dict]:
         summary = item.get("summary", "queued task")
         agent = item.get("agent_hint") or "qwen-35b"
         try:
-            from dgov.lifecycle import create_worker_pane
+            from dgov.executor import run_dispatch_only
 
-            pane = create_worker_pane(
+            pane = run_dispatch_only(
                 project_root=project_root,
                 prompt=summary,
                 agent=agent,
-                permission_mode="bypassPermissions",
                 session_root=session_root,
+                permission_mode="bypassPermissions",
             )
             logger.info("Monitor: drained queue -> %s (%s)", pane.slug, agent)
             actions.append({"slug": pane.slug, "action": "queue_dispatch"})
