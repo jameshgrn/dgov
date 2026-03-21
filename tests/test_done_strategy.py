@@ -680,3 +680,41 @@ class TestLateTerminalSignals:
         assert result is True
         assert get_pane(session_root, slug)["state"] == "done"
         mock_emit.assert_not_called()
+
+
+@pytest.mark.unit
+class TestDoneSignalWithZeroCommits:
+    """Test done-signal detection when pane has 0 commits (db_state=done)."""
+
+    @pytest.mark.unit
+    def test_done_signal_with_zero_commits_and_db_done(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Test done signal path: done file + db state=done triggers detection."""
+        session_root = str(tmp_path)
+        slug = "test-zero-commit-done"
+        _setup_pane(tmp_path, slug=slug, state="done")
+
+        # Create done signal file
+        done_dir = Path(session_root) / STATE_DIR / "done"
+        done_dir.mkdir(parents=True, exist_ok=True)
+        (done_dir / slug).touch()
+
+        pane_record = {
+            "pane_id": "%1",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",  # HEAD is base_sha → 0 commits
+            "state": "done",
+        }
+
+        stable_state = {}
+        result = _is_done(
+            session_root,
+            slug,
+            pane_record=pane_record,
+            _stable_state=stable_state,
+        )
+
+        assert result is True
+        assert stable_state.get("_done_reason") == "done_signal_db_confirmed"
