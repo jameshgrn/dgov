@@ -476,6 +476,7 @@ from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
 from dgov.cli.templates import template  # noqa: E402
+from dgov.cli.trace_cmd import trace_cmd  # noqa: E402
 from dgov.cli.worker_cmd import worker  # noqa: E402
 
 cli.add_command(pane)
@@ -506,6 +507,7 @@ cli.add_command(worker)
 cli.add_command(monitor_cmd)
 cli.add_command(journal_cmd)
 cli.add_command(transcript_cmd)
+cli.add_command(trace_cmd)
 
 
 if __name__ == "__main__":
