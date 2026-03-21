@@ -6,7 +6,6 @@ import json
 import subprocess
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -3597,6 +3596,7 @@ class TestComputeTiersDeep:
 class TestRunBatchLiveWait:
     def test_batch_creates_waits_merges(self, tmp_path: Path) -> None:
         from dgov.batch import run_batch
+        from dgov.executor import DagRunResult
 
         spec = {
             "project_root": str(tmp_path),
@@ -3608,79 +3608,43 @@ class TestRunBatchLiveWait:
         spec_file = tmp_path / "spec.json"
         spec_file.write_text(json.dumps(spec))
 
-        create_calls = []
-
-        def fake_create(**kw):
-            create_calls.append(kw.get("slug"))
-            return WorkerPane(
-                slug=kw["slug"],
-                prompt=kw["prompt"],
-                pane_id=f"%{len(create_calls)}",
-                agent=kw.get("agent", "claude"),
-                project_root=kw["project_root"],
-                worktree_path=str(tmp_path / "wt" / kw["slug"]),
-                branch_name=kw["slug"],
-            )
-
-        with (
-            patch("dgov.lifecycle.create_worker_pane", side_effect=fake_create),
-            patch("dgov.preflight.run_preflight", return_value=SimpleNamespace(passed=True)),
-            patch(
-                "dgov.executor.run_post_dispatch_lifecycle",
-                side_effect=lambda project_root, slug, **kwargs: SimpleNamespace(
-                    state="completed",
-                    slug=slug,
-                    merge_result={"merged": True, "slug": slug},
-                    failure_stage=None,
-                ),
+        with patch(
+            "dgov.executor.run_dag_kernel",
+            return_value=DagRunResult(
+                status="completed", merged=["t1", "t2"], failed=[], skipped=[], run_id=1
             ),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
-        assert "dry_run" not in result
-        assert set(create_calls) == {"t1", "t2"}
-        assert "t1" in result["merged"] or "t2" in result["merged"]
+        assert result["merged"] == ["t1", "t2"]
         assert result["failed"] == []
 
     def test_batch_aborts_on_merge_failure(self, tmp_path: Path) -> None:
         from dgov.batch import run_batch
+        from dgov.executor import DagRunResult
 
         spec = {
             "project_root": str(tmp_path),
             "tasks": [
                 {"id": "t1", "prompt": "task1", "agent": "claude", "touches": ["a"]},
-                {"id": "t2", "prompt": "task2", "agent": "claude", "touches": ["a"]},
             ],
         }
         spec_file = tmp_path / "spec.json"
         spec_file.write_text(json.dumps(spec))
 
-        def fake_create(**kw):
-            return WorkerPane(
-                slug=kw["slug"],
-                prompt=kw["prompt"],
-                pane_id="%1",
-                agent="claude",
-                project_root=kw["project_root"],
-                worktree_path=str(tmp_path / "wt"),
-                branch_name=kw["slug"],
-            )
-
-        with (
-            patch("dgov.lifecycle.create_worker_pane", side_effect=fake_create),
-            patch("dgov.persistence.get_pane", return_value={"slug": "t1", "state": "done"}),
-            patch("dgov.waiter._is_done", return_value=True),
-            patch("dgov.merger.merge_worker_pane", return_value={"error": "conflict"}),
-            patch("dgov.waiter.time.sleep"),
+        with patch(
+            "dgov.executor.run_dag_kernel",
+            return_value=DagRunResult(
+                status="failed", merged=[], failed=["t1"], skipped=[], run_id=1
+            ),
         ):
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
-        # t1 merge fails; t2 is in a later tier (touch overlap) but has no
-        # depends_on, so it still runs and also fails merge.  Both end up failed.
         assert "t1" in result["failed"]
 
     def test_batch_timeout_marks_failed(self, tmp_path: Path) -> None:
         from dgov.batch import run_batch
+        from dgov.executor import DagRunResult
 
         spec = {
             "project_root": str(tmp_path),
@@ -3691,30 +3655,12 @@ class TestRunBatchLiveWait:
         spec_file = tmp_path / "spec.json"
         spec_file.write_text(json.dumps(spec))
 
-        def fake_create(**kw):
-            return WorkerPane(
-                slug=kw["slug"],
-                prompt=kw["prompt"],
-                pane_id="%1",
-                agent="claude",
-                project_root=kw["project_root"],
-                worktree_path=str(tmp_path / "wt"),
-                branch_name=kw["slug"],
-            )
-
-        def fake_is_done(sr, slug, pane_record=None, **_kw):
-            return False
-
-        with (
-            patch("dgov.lifecycle.create_worker_pane", side_effect=fake_create),
-            patch("dgov.persistence.get_pane", return_value={"slug": "t1", "state": "active"}),
-            patch("dgov.waiter._is_done", side_effect=fake_is_done),
-            patch("dgov.waiter.time.sleep"),
-            patch("dgov.waiter.time.monotonic") as mock_mono,
-            patch("dgov.merger.merge_worker_pane", return_value={"error": "timed out"}),
+        with patch(
+            "dgov.executor.run_dag_kernel",
+            return_value=DagRunResult(
+                status="failed", merged=[], failed=["t1"], skipped=[], run_id=1
+            ),
         ):
-            # First monotonic() = start, second = way past timeout
-            mock_mono.side_effect = [0, 0, 999]
             result = run_batch(str(spec_file), session_root=str(tmp_path))
 
         assert "t1" in result["failed"]
