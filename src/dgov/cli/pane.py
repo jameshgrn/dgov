@@ -245,7 +245,7 @@ def pane_create(
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import get_default_agent, load_registry
-    from dgov.lifecycle import create_worker_pane
+    from dgov.executor import run_dispatch_only
     from dgov.strategy import classify_task
 
     registry = load_registry(project_root)
@@ -345,15 +345,15 @@ def pane_create(
 
     try:
         packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
-        pane_obj = create_worker_pane(
+        pane_obj = run_dispatch_only(
             project_root=project_root,
             prompt=prompt,
             agent=agent,
+            session_root=session_root,
             permission_mode=permission_mode,
             slug=slug,
             env_vars=env_vars if env_vars else None,
             extra_flags=extra_flags,
-            session_root=session_root,
             skip_auto_structure=skip_auto_structure,
             role=role,
             parent_slug=parent or "",
@@ -448,8 +448,8 @@ def pane_batch(toml_file, project_root, session_root):
     import tomllib
 
     from dgov.agents import get_default_agent, load_registry
-    from dgov.executor import run_dispatch_preflight
-    from dgov.lifecycle import create_worker_pane
+    from dgov.context_packet import build_context_packet
+    from dgov.executor import run_dispatch_only, run_dispatch_preflight
 
     project_root = os.path.abspath(project_root)
     registry = load_registry(project_root)
@@ -494,7 +494,7 @@ def pane_batch(toml_file, project_root, session_root):
             continue
 
         try:
-            pane_obj = create_worker_pane(
+            pane_obj = run_dispatch_only(
                 project_root=project_root,
                 prompt=prompt,
                 agent=agent,

@@ -243,6 +243,13 @@ def run_dispatch_only(
     session_root: str | None = None,
     permission_mode: str = "bypassPermissions",
     slug: str | None = None,
+    env_vars: dict[str, str] | None = None,
+    extra_flags: str = "",
+    existing_worktree: str | None = None,
+    skip_auto_structure: bool = False,
+    role: str = "worker",
+    parent_slug: str = "",
+    context_packet: object | None = None,
 ) -> object:
     """Executor syscall: dispatch a worker pane without full lifecycle.
 
@@ -256,6 +263,13 @@ def run_dispatch_only(
         session_root: Session root directory.
         permission_mode: Permission mode for the worker.
         slug: Optional custom slug; auto-generated if not provided.
+        env_vars: Environment variables to set in the pane.
+        extra_flags: Extra flags for the agent CLI.
+        existing_worktree: Reuse existing worktree instead of creating new one.
+        skip_auto_structure: Skip pi prompt auto-structure.
+        role: Pane role (worker or lt-gov).
+        parent_slug: Parent pane slug for LT-GOV-created workers.
+        context_packet: Context packet with file claims and task context.
 
     Returns:
         The created pane record (from create_worker_pane).
@@ -268,7 +282,14 @@ def run_dispatch_only(
         agent=agent,
         permission_mode=permission_mode,
         slug=slug,
+        env_vars=env_vars,
+        extra_flags=extra_flags,
         session_root=session_root,
+        existing_worktree=existing_worktree,
+        skip_auto_structure=skip_auto_structure,
+        role=role,
+        parent_slug=parent_slug,
+        context_packet=context_packet,
     )
 
 
