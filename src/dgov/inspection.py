@@ -412,7 +412,11 @@ def compute_reliability_stats(session_root: str) -> dict:
         artifact = result.get("artifact", {}) or {}
 
         pane_slug = rec.get("pane_slug")
-        agent = slug_to_agent.get(pane_slug, "unknown")
+        # First try to get agent_id directly from journal record (new column)
+        agent = rec.get("agent_id")
+        if not agent:
+            # Fall back to pane slug -> agent lookup for historical records
+            agent = slug_to_agent.get(pane_slug, "unknown")
 
         verdict = decision.get("verdict", "")
         retry_count = artifact.get("retry_count", 0)
