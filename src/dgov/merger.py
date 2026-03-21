@@ -878,7 +878,7 @@ def merge_worker_pane(
     if pane_id and _agent_still_running(pane_id):
         import time as _time
 
-        for _ in range(3):
+        for _ in range(10):
             _time.sleep(1)
             if not _agent_still_running(pane_id):
                 break
