@@ -1470,12 +1470,13 @@ def _dag_dispatch(
             failed_checks = [c.message for c in report.checks if not c.passed and c.critical]
             raise RuntimeError(f"Preflight failed: {'; '.join(failed_checks)}")
 
+        dag_slug = f"r{run_id}-{task.slug}" if run_id else task.slug
         pane = create_worker_pane(
             project_root=dag.project_root,
             prompt=task.prompt,
             agent=task.agent,
             permission_mode=task.permission_mode,
-            slug=task.slug,
+            slug=dag_slug,
             session_root=session_root,
             context_packet=packet,
         )
