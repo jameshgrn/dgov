@@ -238,7 +238,7 @@ def test_check_file_locks_conflict(monkeypatch: pytest.MonkeyPatch, tmp_path) ->
         mock.returncode = 0
         return mock
 
-    monkeypatch.setattr("dgov.status.list_worker_panes", fake_panes)
+    monkeypatch.setattr("dgov.persistence.all_panes", fake_panes)
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
     r = check_file_locks(str(tmp_path), ["src/foo.py"])
     assert r.passed is False
@@ -263,7 +263,7 @@ def test_check_file_locks_conflict_for_touch_directory(
         mock.returncode = 0
         return mock
 
-    monkeypatch.setattr("dgov.status.list_worker_panes", fake_panes)
+    monkeypatch.setattr("dgov.persistence.all_panes", fake_panes)
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
     r = check_file_locks(str(tmp_path), ["src"])
     assert r.passed is False
@@ -290,7 +290,7 @@ def test_check_file_locks_detects_committed_worker_changes(
         mock.returncode = 0
         return mock
 
-    monkeypatch.setattr("dgov.status.list_worker_panes", fake_panes)
+    monkeypatch.setattr("dgov.persistence.all_panes", fake_panes)
     monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
     r = check_file_locks(str(tmp_path), ["src/foo.py"])
     assert r.passed is False

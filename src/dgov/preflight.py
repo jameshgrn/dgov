@@ -308,10 +308,10 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
             message="No file touches declared",
         )
 
-    from dgov.status import list_worker_panes
+    from dgov.persistence import all_panes
 
     root = Path(project_root).resolve()
-    panes = list_worker_panes(project_root, include_freshness=False)
+    panes = all_panes(project_root)
     conflicts: list[str] = []
 
     for pane in panes:
