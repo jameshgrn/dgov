@@ -26,16 +26,6 @@ from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Single-tier execution helpers
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Multi-tier orchestration
-# ---------------------------------------------------------------------------
-
-
 def _dag_file_hash(path: str) -> str:
     """SHA-256 of the raw DAG file bytes (before parsing)."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()

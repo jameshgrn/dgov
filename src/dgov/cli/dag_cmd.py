@@ -18,7 +18,6 @@ def dag():
 @click.option("--dry-run", is_flag=True, help="Parse and print execution plan without running")
 @click.option("--tier", type=int, default=None, help="Run only tiers 0..N (inclusive, zero-based)")
 @click.option("--skip", multiple=True, help="Skip a task slug (repeatable)")
-@click.option("--max-retries", type=int, default=1, help="Max retries per task before escalation")
 @click.option("--auto-merge/--no-auto-merge", default=True, help="Auto-merge reviewed-pass tasks")
 @click.option(
     "--max-concurrent",
@@ -26,7 +25,7 @@ def dag():
     default=0,
     help="Max tasks dispatched simultaneously per tier (0=unlimited)",
 )
-def dag_run(dagfile, dry_run, tier, skip, max_retries, auto_merge, max_concurrent):
+def dag_run(dagfile, dry_run, tier, skip, auto_merge, max_concurrent):
     """Execute a TOML DAG file."""
     from dgov.dag import compute_tiers, parse_dag_file, render_dry_run, run_dag
 
@@ -75,9 +74,8 @@ def dag_merge(dagfile):
     default=None,
     help="Specific run ID to resume (default: most recent failed)",
 )
-@click.option("--max-retries", type=int, default=1, help="Max retries per task before escalation")
 @click.option("--max-concurrent", type=int, default=0, help="Max tasks per tier (0=unlimited)")
-def dag_resume(dagfile, run_id, max_retries, max_concurrent):
+def dag_resume(dagfile, run_id, max_concurrent):
     """Resume a failed DAG run, re-executing unmerged tasks."""
     from pathlib import Path
 
