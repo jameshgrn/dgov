@@ -8,22 +8,17 @@ import os
 import subprocess
 from pathlib import Path
 
-from dgov.dag import (
-    DagDefinition,
-    DagFileSpec,
-    DagRunSummary,
-    DagTaskSpec,
-    run_dag_via_kernel,
-)
-from dgov.dag import (
+from dgov.dag import DagDefinition, DagRunSummary, run_dag_via_kernel
+from dgov.dag_graph import (
     compute_tiers as _dag_compute_tiers,
 )
-from dgov.dag import (
+from dgov.dag_graph import (
     transitive_dependents as _dag_transitive_dependents,
 )
-from dgov.dag import (
+from dgov.dag_graph import (
     validate_dag as _dag_validate,
 )
+from dgov.dag_parser import DagFileSpec, DagTaskSpec
 from dgov.persistence import (
     STATE_DIR,
     all_panes,

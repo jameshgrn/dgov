@@ -8,18 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from dgov.dag import (
-    DagDefinition,
-    DagFileSpec,
-    DagRunOptions,
-    DagRunSummary,
-    DagTaskSpec,
-    compute_tiers,
-    parse_dag_file,
-    topological_order,
-    transitive_dependents,
-    validate_dag,
-)
+from dgov.dag import DagDefinition, DagRunOptions, DagRunSummary, parse_dag_file
+from dgov.dag_graph import compute_tiers, topological_order, transitive_dependents, validate_dag
+from dgov.dag_parser import DagFileSpec, DagTaskSpec
 
 pytestmark = pytest.mark.unit
 

@@ -7,21 +7,8 @@ import logging
 import os
 from pathlib import Path
 
-from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
-    compute_tiers,
-    render_dry_run,
-    topological_order,
-    transitive_dependents,
-    validate_dag,
-)
-from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
-    DagDefinition,
-    DagFileSpec,
-    DagRunOptions,
-    DagRunSummary,
-    DagTaskSpec,
-    parse_dag_file,
-)
+from dgov.dag_graph import compute_tiers, render_dry_run, topological_order
+from dgov.dag_parser import DagDefinition, DagRunOptions, DagRunSummary, parse_dag_file
 
 logger = logging.getLogger(__name__)
 
