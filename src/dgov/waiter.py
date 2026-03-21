@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Track which slugs have received an auto-nudge (module lifetime)
-_nudged_slugs: set[str] = set()
 
 
 # -- Blocked / question detection --
@@ -144,24 +143,8 @@ def _poll_once(
         method = stable_state.get("_done_reason", "signal_or_commit")
         return (True, method)
 
-    # Auto-nudge: api strategy panes stable 45s+ without done signal get a reminder
-    if done_strategy is not None and done_strategy.type == "api" and slug not in _nudged_slugs:
-        nudge_stable = stable_state.get("stable_since")
-        if nudge_stable is not None and time.monotonic() - nudge_stable > 45:
-            _pane_id = pane_record.get("pane_id", "") if pane_record else ""
-            if (
-                _pane_id
-                and get_backend().is_alive(_pane_id)
-                and _agent_still_running(_pane_id, _current_cmd)
-            ):
-                get_backend().send_input(
-                    _pane_id,
-                    "# REMINDER: commit your work and signal completion:\n"
-                    "# git add <files> && git commit -m 'message' && "
-                    "dgov worker complete -m 'summary'",
-                )
-                _nudged_slugs.add(slug)
-                logger.info("auto_nudge slug=%s after 45s stable", slug)
+    # Auto-nudge removed: all workers are headless (pi), send_input writes to
+    # stdout as visible text but is never read by the agent process.
 
     # Check for blocked state and auto-respond if possible
     current_output = stable_state.get("current_output")
