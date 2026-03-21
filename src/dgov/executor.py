@@ -1162,6 +1162,12 @@ def run_retry_or_escalate(
         return RetryResult(slug=slug, error="No retry/escalation action taken")
     if result.get("error"):
         return RetryResult(slug=slug, error=result["error"])
+    if result.get("escalated"):
+        return EscalateResult(
+            slug=slug,
+            new_slug=result.get("new_slug"),
+            target_agent=result.get("to"),
+        )
     return RetryResult(slug=slug, new_slug=result.get("new_slug"))
 
 

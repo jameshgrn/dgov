@@ -124,15 +124,21 @@ def dag_resume(dagfile, run_id, max_retries, max_concurrent):
             run_id = row[0]
             click.echo(f"Resuming run {run_id} (status: {row[1]})")
 
-        # Reset run status to running so _start_or_resume_run picks it up
-        update_dag_run(session_root, run_id, status="running")
+        # Collect already-merged tasks so we can skip them in the new run
+        from dgov.persistence import list_dag_tasks
 
-        # Now run_dag will find the open run and resume it
+        task_rows = list_dag_tasks(session_root, run_id)
+        already_done = {r["slug"] for r in task_rows if r.get("status") in ("merged",)}
+        click.echo(f"Skipping {len(already_done)} already-merged tasks: {sorted(already_done)}")
+
+        update_dag_run(session_root, run_id, status="resumed")
+
         from dgov.dag import run_dag
 
         summary = run_dag(
             dagfile,
             dry_run=False,
+            skip=already_done or None,
             auto_merge=True,
             max_concurrent=max_concurrent,
         )
