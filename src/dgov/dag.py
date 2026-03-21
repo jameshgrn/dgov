@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-import subprocess
 from pathlib import Path
 
 from dgov import executor as _executor
@@ -72,156 +71,6 @@ def _progress(msg: str) -> None:
 # ---------------------------------------------------------------------------
 # Single-tier execution helpers
 # ---------------------------------------------------------------------------
-
-
-def _merge_tasks_in_order(
-    dag: DagDefinition,
-    ready: list[str],
-    pane_slugs: dict[str, str],
-    session_root: str,
-    run_id: int,
-) -> tuple[list[str], dict | None]:
-    """Merge reviewed-pass tasks in canonical order.
-
-    Returns (merged_list, error_or_None).
-    """
-    from dgov.persistence import emit_event, upsert_dag_task
-
-    topo = topological_order(dag.tasks)
-    ordered = [s for s in topo if s in ready]
-    merged: list[str] = []
-
-    for task_slug in ordered:
-        pane_slug = pane_slugs[task_slug]
-        logger.info("Merging %s (pane %s)", task_slug, pane_slug)
-        commit_message = dag.tasks[task_slug].commit_message
-        if commit_message:
-            result = run_merge_only(
-                dag.project_root,
-                pane_slug,
-                session_root=session_root,
-                resolve=dag.merge_resolve,
-                squash=dag.merge_squash,
-                message=commit_message,
-            )
-        else:
-            result = run_merge_only(
-                dag.project_root,
-                pane_slug,
-                session_root=session_root,
-                resolve=dag.merge_resolve,
-                squash=dag.merge_squash,
-            )
-        if result.error:
-            logger.error("Merge error for %s: %s", task_slug, result.error)
-            return merged, result.merge_result or {"error": result.error}
-
-        merged.append(task_slug)
-        _progress(f"  merged {task_slug}")
-
-        # Run post-merge check if defined
-        check_cmd = dag.tasks[task_slug].post_merge_check
-        if check_cmd:
-            check_env = os.environ.copy()
-            check_env["DGOV_TASK_SLUG"] = task_slug
-            check_env["DGOV_MERGE_SHA"] = subprocess.run(
-                ["git", "-C", dag.project_root, "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-            check_env["DGOV_CHANGED_FILES"] = "\n".join(
-                f
-                for f in subprocess.run(
-                    ["git", "-C", dag.project_root, "diff", "--name-only", "HEAD~1", "HEAD"],
-                    capture_output=True,
-                    text=True,
-                )
-                .stdout.strip()
-                .splitlines()
-                if f
-            )
-            check_result = subprocess.run(
-                check_cmd,
-                shell=True,
-                cwd=dag.project_root,
-                capture_output=True,
-                text=True,
-                env=check_env,
-            )
-            if check_result.returncode != 0:
-                rollback = subprocess.run(
-                    ["git", "-C", dag.project_root, "reset", "--keep", "HEAD~1"],
-                    capture_output=True,
-                    text=True,
-                )
-                logger.error(
-                    "Post-merge check failed for %s: %s",
-                    task_slug,
-                    check_result.stderr or check_result.stdout,
-                )
-                if rollback.returncode == 0:
-                    _progress(f"  post_merge_check FAILED for {task_slug}, rolled back")
-                    return merged[:-1], {
-                        "error": f"Post-merge check failed for {task_slug}",
-                        "check_command": check_cmd,
-                        "check_stderr": check_result.stderr.strip(),
-                        "check_stdout": check_result.stdout.strip(),
-                        "rollback_performed": True,
-                    }
-
-                upsert_dag_task(
-                    session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent
-                )
-                emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
-                _progress(
-                    f"  post_merge_check FAILED for {task_slug}, rollback skipped;"
-                    " merge commit preserved"
-                )
-                return merged, {
-                    "error": f"Post-merge check failed for {task_slug}",
-                    "check_command": check_cmd,
-                    "check_stderr": check_result.stderr.strip(),
-                    "check_stdout": check_result.stdout.strip(),
-                    "rollback_performed": False,
-                    "rollback_error": rollback.stderr.strip() or rollback.stdout.strip(),
-                }
-
-        upsert_dag_task(session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent)
-        emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
-
-    return merged, None
-
-
-def _merge_ready_tasks(
-    dag: DagDefinition,
-    dag_file: str,
-    run_id: int,
-    task_states: dict[str, str],
-    ready: list[str],
-    pane_slugs: dict[str, str],
-    session_root: str,
-    merged_so_far: list[str] | None = None,
-) -> tuple[list[str], DagRunSummary | None]:
-    """Merge reviewed-pass tasks and finalize DAG state on conflict."""
-    from dgov.persistence import emit_event, update_dag_run
-
-    merged, merge_error = _merge_tasks_in_order(dag, ready, pane_slugs, session_root, run_id)
-    for slug in merged:
-        task_states[slug] = "merged"
-
-    if merge_error:
-        merged_total = [*(merged_so_far or []), *merged]
-        update_dag_run(session_root, run_id, status="failed")
-        emit_event(
-            session_root,
-            "dag_failed",
-            f"dag/{run_id}",
-            dag_run_id=run_id,
-            error="merge_conflict",
-        )
-        return merged, _build_summary(run_id, dag_file, "failed", task_states, merged_total, dag)
-
-    return merged, None
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +161,20 @@ def run_dag_via_kernel(
         progress=lambda msg: logger.info("DAG[%d] %s", run_id, msg),
     )
 
+    # Cleanup orphaned panes from failed/partial runs
+    from dgov.executor import run_close_only
+    from dgov.persistence import list_dag_tasks
+
+    task_rows = list_dag_tasks(session_root, run_id)
+    for row in task_rows:
+        pane_slug = row.get("pane_slug", "")
+        status = row.get("status", "")
+        if pane_slug and status not in ("merged", "closed"):
+            try:
+                run_close_only(dag.project_root, pane_slug, session_root=session_root, force=True)
+            except Exception:
+                logger.debug("Cleanup failed for %s", pane_slug, exc_info=True)
+
     # Finalize DB
     update_dag_run(session_root, run_id, status=result.status)
     emit_event(
@@ -333,30 +196,6 @@ def run_dag_via_kernel(
     )
 
 
-def _build_summary(
-    run_id: int,
-    dag_file: str,
-    status: str,
-    task_states: dict[str, str],
-    merged: list[str],
-    dag: DagDefinition,
-) -> DagRunSummary:
-    succeeded = [s for s, st in task_states.items() if st in ("merged", "reviewed_pass")]
-    failed = [s for s, st in task_states.items() if st in ("failed", "reviewed_fail")]
-    skipped = [s for s, st in task_states.items() if st == "skipped"]
-    unmerged = [s for s, st in task_states.items() if st == "reviewed_pass"]
-    return DagRunSummary(
-        run_id=run_id,
-        dag_file=dag_file,
-        status=status,
-        succeeded=succeeded,
-        failed=failed,
-        skipped=skipped,
-        merged=merged,
-        unmerged=unmerged,
-    )
-
-
 def merge_dag(dag_file: str) -> DagRunSummary:
     """Merge an awaiting_merge DAG run in canonical topological order."""
     from dgov.persistence import (
@@ -365,6 +204,7 @@ def merge_dag(dag_file: str) -> DagRunSummary:
         get_open_dag_run,
         list_dag_tasks,
         update_dag_run,
+        upsert_dag_task,
     )
 
     dag = parse_dag_file(dag_file)
@@ -377,11 +217,6 @@ def merge_dag(dag_file: str) -> DagRunSummary:
         raise ValueError(f"No awaiting_merge run found for {abs_path}")
 
     run_id = existing["id"]
-    file_hash = _dag_file_hash(dag_file)
-    stored_hash = existing.get("state_json", {}).get("dag_sha256", "")
-    if stored_hash and stored_hash != file_hash:
-        raise ValueError("DAG file has changed since the run was created")
-
     task_rows = list_dag_tasks(session_root, run_id)
     task_states = {r["slug"]: r["status"] for r in task_rows}
     pane_slugs = {r["slug"]: r["pane_slug"] for r in task_rows if r["pane_slug"]}
@@ -390,18 +225,54 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     if not ready:
         raise ValueError("No reviewed_pass tasks to merge")
 
-    merged, failed_summary = _merge_ready_tasks(
-        dag,
-        dag_file,
-        run_id,
-        task_states,
-        ready,
-        pane_slugs,
-        session_root,
-    )
-    if failed_summary is not None:
-        return failed_summary
+    # Merge in topological order using executor
+    topo = topological_order(dag.tasks)
+    ordered = [s for s in topo if s in ready]
+    merged: list[str] = []
+
+    for task_slug in ordered:
+        pane_slug = pane_slugs.get(task_slug, "")
+        if not pane_slug:
+            continue
+        result = run_merge_only(
+            dag.project_root,
+            pane_slug,
+            session_root=session_root,
+            resolve=dag.merge_resolve,
+            squash=dag.merge_squash,
+            message=dag.tasks[task_slug].commit_message or None,
+        )
+        if result.error:
+            update_dag_run(session_root, run_id, status="failed")
+            emit_event(
+                session_root,
+                "dag_failed",
+                f"dag/{run_id}",
+                dag_run_id=run_id,
+                error="merge_conflict",
+            )
+            return DagRunSummary(
+                run_id=run_id,
+                dag_file=abs_path,
+                status="failed",
+                merged=merged,
+                failed=[task_slug],
+            )
+        merged.append(task_slug)
+        task_states[task_slug] = "merged"
+        upsert_dag_task(session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent)
+        emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
 
     update_dag_run(session_root, run_id, status="completed")
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
-    return _build_summary(run_id, dag_file, "completed", task_states, merged, dag)
+
+    succeeded = [s for s, st in task_states.items() if st in ("merged", "reviewed_pass")]
+    failed = [s for s, st in task_states.items() if st in ("failed", "reviewed_fail")]
+    return DagRunSummary(
+        run_id=run_id,
+        dag_file=abs_path,
+        status="completed",
+        succeeded=succeeded,
+        merged=merged,
+        failed=failed,
+    )
