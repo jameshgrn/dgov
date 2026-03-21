@@ -61,6 +61,17 @@ def available_names() -> list[str]:
     return sorted(_load_routing_tables())
 
 
+def physical_to_logical(physical_name: str) -> str:
+    """Map a physical backend name back to its logical routing name.
+
+    Returns the physical name unchanged if no mapping is found.
+    """
+    for logical, backends in _load_routing_tables().items():
+        if physical_name in backends:
+            return logical
+    return physical_name
+
+
 def resolve_agent(
     name: str,
     session_root: str,

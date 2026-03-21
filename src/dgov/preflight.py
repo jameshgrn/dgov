@@ -322,6 +322,17 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
         try:
             changed: set[str] = set()
 
+            # Include declared file claims from pane metadata
+            pane_claims = pane.get("file_claims") or []
+            if isinstance(pane_claims, str):
+                import json as _json
+
+                try:
+                    pane_claims = _json.loads(pane_claims)
+                except (ValueError, TypeError):
+                    pane_claims = []
+            changed.update(str(c) for c in pane_claims)
+
             if base_sha:
                 committed = subprocess.run(
                     ["git", "diff", "--name-only", f"{base_sha}..HEAD"],
