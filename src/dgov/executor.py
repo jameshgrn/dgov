@@ -739,8 +739,19 @@ def run_review_only(
     error = record.decision.reason
     passed = error is None
     if passed and require_commits and commit_count == 0:
-        passed = False
-        error = "No commits to merge"
+        # Check if worker explicitly signaled done (0-commit is intentional)
+        _pane_state = None
+        if session_root:
+            try:
+                from dgov.persistence import get_pane as _get_pane
+
+                _p = _get_pane(session_root, slug)
+                _pane_state = _p.get("state") if _p else None
+            except Exception:
+                pass
+        if _pane_state != "done":
+            passed = False
+            error = "No commits to merge"
     if passed and require_safe and verdict != "safe":
         passed = False
         error = f"Review verdict is {verdict}; refusing to merge"
