@@ -460,13 +460,22 @@ def _write_worktree_instructions(
             f"# Worker Instructions — {slug}\n\n"
             "You are a **worker**. Complete the task, commit, "
             "and signal done.\n\n"
+            "## Your tools\n"
+            "You have these tools — USE THEM to do your work:\n"
+            "- **Read** — read file contents before editing\n"
+            "- **Edit** — make exact string replacements in files\n"
+            "- **Write** — create new files (only when task requires it)\n"
+            "- **Bash** — run shell commands (git, ruff, pytest, etc.)\n\n"
+            "Do NOT just describe changes in text. "
+            "You MUST call the Edit tool to modify files "
+            "and the Bash tool to run commands.\n\n"
             "## Rules\n"
+            "- Read files FIRST before editing — understand existing code\n"
             "- Edit ONLY the files specified in your task\n"
             "- Do NOT modify .gitignore, pyproject.toml\n"
             "- Do NOT create new files unless the task requires it\n"
             "- Do NOT push to remote\n"
             "- You are in a git worktree, not the main repo\n"
-            "- Read .dgov/DGOV_WORKER_INSTRUCTIONS.md for instructions and commit checklist\n"
         )
         # Inject Start here section before codebase hint when routed context exists
         if start_here_section:
