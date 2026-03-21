@@ -240,3 +240,27 @@ class TestInitCmd:
         config_content = config_path.read_text(encoding="utf-8")
         assert 'governor_agent = "claude"' in config_content
         assert 'governor_permissions = "bypassPermissions"' in config_content
+
+
+class TestCodebaseCmd:
+    def test_codebase_dry_run(self, runner: CliRunner) -> None:
+        """Test codebase command dry-run mode."""
+        result = runner.invoke(cli, ["codebase", "--dry-run", "-r", "."])
+
+        assert result.exit_code == 0
+        assert "# dgov Codebase Map" in result.output
+        assert "## Task routing — start here" in result.output
+        assert "## Invariants" in result.output
+        assert "Module groups" in result.output
+
+    def test_codebase_write_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test codebase command writes CODEBASE.md."""
+        result = runner.invoke(cli, ["codebase", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        codebase_path = tmp_path / "CODEBASE.md"
+        assert codebase_path.is_file()
+
+        content = codebase_path.read_text(encoding="utf-8")
+        assert "# dgov Codebase Map" in content
+        assert "## Module groups" in content

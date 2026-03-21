@@ -2,17 +2,442 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
 from dgov.agents import detect_installed_agents
 from dgov.cli import SESSION_ROOT_OPTION
 from dgov.cli.pane import _autocorrect_roots
+
+
+def _scan_py_files(src_dirs: list[Path], project_root: Path) -> dict[str, dict[str, Any]]:
+    """Scan Python files and extract metadata.
+
+    Returns a dict mapping module paths to their metadata:
+    - line_count: int
+    - docstring: str or None
+    - size_category: 'S'/'M'/'L'
+    """
+    modules = {}
+    for src_dir in src_dirs:
+        if not src_dir.exists():
+            continue
+        for py_file in src_dir.rglob("*.py"):
+            # Skip __init__.py and test files (they'll be mapped later)
+            if py_file.name == "__init__.py":
+                continue
+            rel_path = py_file.relative_to(project_root)
+            module_key = str(rel_path)
+
+            try:
+                text = py_file.read_text(encoding="utf-8")
+                lines = text.splitlines()
+                line_count = len(lines)
+
+                # Extract docstring using AST
+                tree = ast.parse(text, filename=str(py_file))
+                docstring = ast.get_docstring(tree) or ""
+
+                # Size category
+                if line_count < 200:
+                    size_category = "S"
+                elif line_count <= 500:
+                    size_category = "M"
+                else:
+                    size_category = "L"
+
+                modules[module_key] = {
+                    "line_count": line_count,
+                    "docstring": docstring,
+                    "size_category": size_category,
+                }
+            except (SyntaxError, UnicodeDecodeError) as exc:
+                # Skip files that can't be parsed
+                modules[module_key] = {
+                    "line_count": 0,
+                    "docstring": f"# Error parsing: {exc}",
+                    "size_category": "S",
+                }
+    return modules
+
+
+def _map_test_files(modules: dict[str, dict], tests_dir: Path) -> dict[str, list[str]]:
+    """Map source modules to their test files.
+
+    Returns a dict mapping module paths to lists of test file names.
+    """
+    mappings = {}
+    if not tests_dir.exists():
+        return mappings
+
+    # Find all test files
+    test_files = {}
+    for tf in tests_dir.rglob("test_*.py"):
+        if tf.name == "__init__.py":
+            continue
+        test_rel = tf.relative_to(tests_dir)
+        # Extract module name from test file (e.g., test_merger.py -> merger)
+        stem = tf.stem  # e.g., "test_merger"
+        if stem.startswith("test_"):
+            mod_name = stem[5:]  # Remove "test_" prefix
+            test_files[mod_name] = str(test_rel)
+
+    # Map each module to matching tests
+    for mod_key in modules:
+        # Extract module name from path (e.g., "merger.py" -> "merger")
+        mod_name = Path(mod_key).stem
+        mods_to_match = [mod_name]
+
+        # Also try without .py suffix
+        if mod_name.endswith(".py"):
+            mods_to_match.append(mod_name[:-3])
+
+        matching_tests = []
+        for candidate in mods_to_match:
+            if candidate in test_files:
+                matching_tests.append(test_files[candidate])
+
+        mappings[mod_key] = sorted(matching_tests)
+
+    return mappings
+
+
+def _group_modules(modules: dict[str, dict]) -> dict[str, list[str]]:
+    """Categorize modules into groups."""
+    groups: dict[str, list[str]] = {
+        "orchestration core": [],
+        "merge and review": [],
+        "automation and recovery": [],
+        "agent integration": [],
+        "decision system": [],
+        "higher-level workflows": [],
+        "visualization": [],
+        "cli": [],
+        "other": [],
+    }
+
+    # Define group mappings (module name -> group)
+    # These match the current CODEBASE.md groupings
+    group_map: dict[str, str] = {
+        "lifecycle.py": "orchestration core",
+        "persistence.py": "orchestration core",
+        "done.py": "orchestration core",
+        "gitops.py": "orchestration core",
+        "waiter.py": "orchestration core",
+        "status.py": "orchestration core",
+        "merger.py": "merge and review",
+        "inspection.py": "merge and review",
+        "monitor.py": "automation and recovery",
+        "recovery.py": "automation and recovery",
+        "responder.py": "automation and recovery",
+        "monitor_hooks.py": "automation and recovery",
+        "agents.py": "agent integration",
+        "router.py": "agent integration",
+        "strategy.py": "agent integration",
+        "templates.py": "agent integration",
+        "openrouter.py": "agent integration",
+        "mission.py": "higher-level workflows",
+        "batch.py": "higher-level workflows",
+        "dag.py": "higher-level workflows",
+        "dag_parser.py": "higher-level workflows",
+        "dag_graph.py": "higher-level workflows",
+        "review_fix.py": "higher-level workflows",
+        "experiment.py": "higher-level workflows",
+        "dashboard.py": "visualization",
+        "terrain.py": "visualization",
+        "terrain_pane.py": "visualization",
+    }
+
+    for module_key in sorted(modules.keys()):
+        mod_name = Path(module_key).name
+
+        if module_key.startswith("cli/"):
+            # All cli/* modules go to CLI group
+            groups["cli"].append(module_key)
+        elif mod_name in group_map:
+            groups[group_map[mod_name]].append(module_key)
+        else:
+            groups["other"].append(module_key)
+
+    return groups
+
+
+def _generate_codebase_md(
+    modules: dict[str, dict],
+    test_mappings: dict[str, list[str]],
+    groups: dict[str, list[str]],
+    project_root: Path,
+) -> str:
+    """Generate the CODEBASE.md content."""
+    lines = []
+
+    # Header
+    lines.append("# dgov Codebase Map")
+    lines.append("")
+    lines.append("## Task routing — start here")
+    lines.append("")
+    lines.append("| If your task is about... | Start in | Also check | Tests |")
+    lines.append("|--------------------------|----------|------------|-------|")
+
+    # Generate task routing table from modules
+    routing_table = [
+        (
+            "Pane create/close/resume",
+            "lifecycle.py",
+            ["persistence.py", "done.py", "gitops.py"],
+            "test_lifecycle.py",
+        ),
+        (
+            "Merge/review behavior",
+            "merger.py",
+            ["inspection.py", "persistence.py"],
+            "test_merger*.py",
+        ),
+        (
+            "Review diffs, verdicts, freshness",
+            "inspection.py",
+            ["merger.py"],
+            "test_inspection*.py",
+        ),
+        (
+            "Retry/escalation/recovery",
+            "recovery.py",
+            ["responder.py", "monitor.py"],
+            "test_retry*.py",
+        ),
+        (
+            "Monitor daemon logic",
+            "monitor.py",
+            ["monitor_hooks.py", "recovery.py"],
+            "test_monitor.py",
+        ),
+        (
+            "Worker completion/done",
+            "done.py, waiter.py",
+            ["lifecycle.py"],
+            "test_done_strategy.py",
+        ),
+        (
+            "Agent routing/selection",
+            "router.py, agents.py",
+            ["strategy.py"],
+            "test_router.py",
+        ),
+        (
+            "Decision providers",
+            "decision.py, decision_providers.py",
+            ["provider_registry.py"],
+            "test_decision.py",
+        ),
+        (
+            "Prompt templates",
+            "templates.py, strategy.py",
+            ["lifecycle.py"],
+            "test_templates.py",
+        ),
+        (
+            "Dashboard/terrain TUI",
+            "dashboard.py, terrain.py",
+            ["terrain_pane.py"],
+            "test_dashboard.py",
+        ),
+        (
+            "DAG/batch/mission",
+            "dag.py, batch.py, mission.py",
+            ["dag_parser.py", "dag_graph.py"],
+            "test_dag.py, test_batch.py, test_mission.py",
+        ),
+        (
+            "State DB/events",
+            "persistence.py",
+            ["status.py", "metrics.py"],
+            "test_persistence*.py",
+        ),
+        (
+            "Top-level CLI command",
+            "cli/admin.py, cli/pane.py",
+            ["cli/__init__.py"],
+            "test_cli_admin.py, test_dgov_cli.py",
+        ),
+    ]
+
+    for task_desc, start_mod, check_mods, test_pattern in routing_table:
+        tests = []
+        if test_pattern:
+            # Find matching test files
+            if test_pattern in test_mappings and test_mappings[test_pattern]:
+                tests.extend(test_mappings[test_pattern])
+            else:
+                # Fallback: just show the pattern
+                tests.append(test_pattern)
+        elif start_mod in test_mappings:
+            tests = test_mappings[start_mod]
+
+        tests_str = ", ".join(sorted(set(tests))) if tests else "N/A"
+        check_str = ", ".join(check_mods)
+        lines.append(f"| {task_desc} | `{start_mod}` | {check_str} | {tests_str} |")
+
+    lines.append("")
+
+    # Invariants section (hardcoded from current CODEBASE.md)
+    lines.append("## Invariants — do not break these")
+    lines.append("")
+    lines.append(
+        "- You are in a **git worktree**, not the main repo. Do not merge, rebase, or pull."
+    )
+    lines.append(
+        "- `CLAUDE.md` and `AGENTS.md` are "
+        "**git-excluded** — exist on disk for read, cannot commit."
+    )
+    lines.append(
+        "- `dgov worker complete` will **auto-commit** any unstaged changes before signaling done."
+    )
+    lines.append(
+        "- Protected files (CLAUDE.md, THEORY.md, .napkin.md) "
+        "**restored during merge** — changes discarded."
+    )
+    lines.append("- Do NOT push to remote. Do NOT run the full test suite.")
+    lines.append("")
+
+    # Module groups section
+    lines.append("## Module groups")
+    lines.append("")
+
+    group_order = [
+        "orchestration core",
+        "merge and review",
+        "automation and recovery",
+        "agent integration",
+        "cli",
+        "higher-level workflows",
+        "visualization",
+        "other",
+    ]
+
+    for group_name in group_order:
+        if group_name not in groups or not groups[group_name]:
+            continue
+
+        lines.append(f"### {group_name.capitalize().replace('_', ' ')}")
+        lines.append("| File | Size | Purpose |")
+        lines.append("|------|------|---------|")
+
+        for module_key in sorted(groups[group_name]):
+            mod_info = modules.get(module_key, {})
+            docstring = mod_info.get("docstring", "")
+            size_cat = mod_info.get("size_category", "S")
+
+            # Truncate docstring if too long
+            if len(docstring) > 100:
+                display_docstring = docstring[:97] + "..."
+            else:
+                display_docstring = docstring
+
+            # Escape markdown pipes in docstring
+            display_docstring = display_docstring.replace("|", "\\|")
+
+            lines.append(f"| `{module_key}` | {size_cat} | {display_docstring or 'N/A'} |")
+
+        lines.append("")
+
+    # CLI command registration section (hardcoded from current CODEBASE.md)
+    lines.append("## CLI command registration")
+    lines.append("")
+    lines.append("**Pane subcommands** (no registration needed):")
+    lines.append('1. Add `@pane.command("name")` function to `cli/pane.py`')
+    lines.append("")
+    lines.append("**Top-level commands**:")
+    lines.append(
+        "1. Add function to appropriate `cli/*.py` file (or create a new `cli/foo_cmd.py`)"
+    )
+    lines.append("2. Import in `cli/__init__.py` (alphabetical)")
+    lines.append("3. Add `cli.add_command(your_cmd)` after the import block")
+    lines.append("")
+
+    # Data flow section (hardcoded from current CODEBASE.md)
+    lines.append("## Data flow")
+    lines.append("")
+    lines.append("```")
+    lines.append("create_worker_pane()")
+    lines.append("  → load_registry() + resolve_agent()   # find and route agent")
+    lines.append("  → get_backend().create_worker_pane()   # tmux split-pane")
+    lines.append("  → add_pane()                           # write to state.db")
+    lines.append("  → _write_worktree_instructions()       # inject worker context")
+    lines.append("  → _wrap_done_signal()                  # setup done detection")
+    lines.append("")
+    lines.append("merge_worker_pane()")
+    lines.append("  → get_pane()                           # read pane record")
+    lines.append("  → _restore_protected_files()           # fix CLAUDE.md on branch")
+    lines.append("  → _commit_worktree()                   # auto-commit uncommitted")
+    lines.append("  → _rebase_onto_head()                  # rebase branch")
+    lines.append("  → _plumbing_merge()                    # in-memory git merge")
+    lines.append("  → _full_cleanup()                      # kill pane + remove worktree")
+    lines.append("  → _lint_fix_merged_files()             # ruff check + format")
+    lines.append("  → _run_related_tests()                 # pytest on changed files")
+    lines.append("```")
+    lines.append("")
+
+    # State machine section (hardcoded from current CODEBASE.md)
+    lines.append("## State machine")
+    lines.append("")
+    lines.append("```")
+    lines.append("active → done → merged → (removed)")
+    lines.append("active → timed_out → (retry) → active")
+    lines.append("active → failed → (retry) → active")
+    lines.append("active → abandoned → closed")
+    lines.append("any terminal state → closed")
+    lines.append("```")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+@click.command("codebase")
+@click.option("--project-root", "-r", default=".", help="Project root")
+@click.option("--dry-run", is_flag=True, help="Print to stdout instead of writing file")
+def codebase_cmd(project_root: str, dry_run: bool) -> None:
+    """Scan source tree and generate CODEBASE.md."""
+    from dgov.cli.pane import _autocorrect_roots
+
+    project_root, _ = _autocorrect_roots(project_root, None)
+    root_path = Path(project_root).resolve()
+
+    # Scan source files
+    src_dirs = [
+        root_path / "src" / "dgov",
+        root_path / "src" / "dgov" / "cli",
+    ]
+    modules = _scan_py_files(src_dirs, root_path)
+
+    # Map test files
+    tests_dir = root_path / "tests"
+    test_mappings = _map_test_files(modules, tests_dir)
+
+    # Group modules
+    groups = _group_modules(modules)
+
+    # Generate content
+    content = _generate_codebase_md(modules, test_mappings, groups, root_path)
+
+    # Output
+    if dry_run:
+        click.echo(content)
+    else:
+        codebase_path = root_path / "CODEBASE.md"
+        codebase_path.write_text(content, encoding="utf-8")
+        click.echo(f"Written to {codebase_path}")
+
+
+def _count_lines(file_path: Path) -> int:
+    """Count lines in a file (utility function for scanning)."""
+    return len(file_path.read_text(encoding="utf-8").splitlines())
 
 
 def _scaffold_dgov_dirs(root: Path) -> None:
