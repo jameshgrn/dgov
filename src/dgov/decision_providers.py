@@ -265,3 +265,89 @@ class InspectionReviewProvider(DecisionProvider):
             latency_ms=latency_ms,
             trace_id=request.trace_id,
         )
+
+
+@dataclass
+class StatisticalRoutingProvider(DecisionProvider):
+    """Route tasks using historical success rates from the decision journal.
+
+    Implements the 'statistics before LLM' layer of the intelligence hierarchy.
+    Reads review_output records from the decision journal, computes per-agent pass rates,
+    and picks the best-performing agent with sufficient sample size. Falls through to
+    LLM routing via ProviderError when data is insufficient.
+    """
+
+    provider_id: str = "statistical-routing"
+    session_root: str = ""
+    min_samples: int = 5  # minimum reviews before trusting the data
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return frozenset({DecisionKind.ROUTE_TASK})
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        from collections import defaultdict
+
+        from dgov.persistence import read_decision_journal
+
+        records = read_decision_journal(self.session_root)
+
+        # Compute per-agent stats from review_output records
+        agent_stats: dict[str, dict] = defaultdict(lambda: {"total_reviews": 0, "safe_count": 0})
+
+        for rec in records:
+            if rec.get("kind") != "review_output":
+                continue
+
+            result = rec.get("result", {}) or {}
+            decision = result.get("decision", {}) or {}
+
+            # Extract agent_id from journal record (new column), fall back to slug lookup
+            pane_slug = rec.get("pane_slug")
+            agent = rec.get("agent_id")
+            if not agent and pane_slug:
+                from dgov.persistence import get_pane
+
+                pane = get_pane(self.session_root, pane_slug)
+                if pane:
+                    agent = pane.get("agent", "unknown")
+
+            if not agent or agent == "unknown":
+                continue
+
+            verdict = decision.get("verdict", "")
+            if verdict == "safe":
+                agent_stats[agent]["safe_count"] += 1
+
+            agent_stats[agent]["total_reviews"] += 1
+
+        # Filter to agents with >= min_samples reviews
+        qualifying_agents = {
+            agent: stats
+            for agent, stats in agent_stats.items()
+            if stats["total_reviews"] >= self.min_samples
+        }
+
+        if not qualifying_agents:
+            raise ProviderError("insufficient data")
+
+        # Pick the agent with highest pass_rate
+        def _pass_rate(agent_name: str) -> float:
+            stats = qualifying_agents[agent_name]
+            return stats["safe_count"] / stats["total_reviews"]
+
+        best_agent = max(qualifying_agents.keys(), key=_pass_rate)
+
+        stats = qualifying_agents[best_agent]
+        pass_rate = stats["safe_count"] / stats["total_reviews"]
+
+        review_count = stats["total_reviews"]
+
+        return DecisionRecord(
+            kind=DecisionKind.ROUTE_TASK,
+            provider_id=self.provider_id,
+            decision=RouteTaskDecision(
+                agent=best_agent,
+                reason=f"statistical: {pass_rate:.0%} pass rate over {review_count} reviews",
+            ),
+            trace_id=request.trace_id,
+        )
