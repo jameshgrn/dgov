@@ -8,8 +8,10 @@ import pytest
 from dgov.decision import (
     AuditProvider,
     CascadeProvider,
+    ConsensusProvider,
     DecisionAuditEntry,
     DecisionKind,
+    DecisionPayload,
     DecisionRecord,
     MonitorOutputDecision,
     MonitorOutputRequest,
@@ -487,3 +489,196 @@ def test_deterministic_classification_provider_raises_on_ambiguous() -> None:
     # Unknown output - should fall through to LLM
     with pytest.raises(ProviderError, match="No deterministic pattern matched"):
         provider.classify_output(MonitorOutputRequest(output="I'm working on this now"))
+
+
+# -- ConsensusProvider tests --
+
+
+def test_consensus_provider_returns_a_when_both_agree() -> None:
+    """ConsensusProvider returns provider_a's result when both agree."""
+
+    def _agree_fn(a: DecisionRecord[DecisionPayload], b: DecisionRecord[DecisionPayload]) -> bool:
+        return (
+            a.decision.classification == b.decision.classification  # type: ignore[attr-defined]
+        )
+
+    provider = ConsensusProvider(
+        provider_a=StaticDecisionProvider(
+            provider_id="cheap-a",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-a",
+                decision=MonitorOutputDecision(classification="done"),
+            ),
+        ),
+        provider_b=StaticDecisionProvider(
+            provider_id="cheap-b",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-b",
+                decision=MonitorOutputDecision(classification="done"),
+            ),
+        ),
+        tiebreaker=StaticDecisionProvider(
+            provider_id="expensive-tiebreaker",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="expensive-tiebreaker",
+                decision=MonitorOutputDecision(classification="tiebreaker"),
+            ),
+        ),
+        agree_fn=_agree_fn,
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="task complete"))
+
+    assert result.decision.classification == "done"
+    # Returns provider_a's result when they agree
+    assert result.provider_id == "cheap-a"
+
+
+def test_consensus_provider_escalates_to_tiebreaker_on_disagreement() -> None:
+    """ConsensusProvider escalates to tiebreaker when providers disagree."""
+
+    def _agree_fn(a: DecisionRecord[DecisionPayload], b: DecisionRecord[DecisionPayload]) -> bool:
+        return (
+            a.decision.classification == b.decision.classification  # type: ignore[attr-defined]
+        )
+
+    provider = ConsensusProvider(
+        provider_a=StaticDecisionProvider(
+            provider_id="cheap-a",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-a",
+                decision=MonitorOutputDecision(classification="done"),
+            ),
+        ),
+        provider_b=StaticDecisionProvider(
+            provider_id="cheap-b",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-b",
+                decision=MonitorOutputDecision(classification="working"),
+            ),
+        ),
+        tiebreaker=StaticDecisionProvider(
+            provider_id="expensive-tiebreaker",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="expensive-tiebreaker",
+                decision=MonitorOutputDecision(classification="tiebreaker"),
+            ),
+        ),
+        agree_fn=_agree_fn,
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="ambiguous"))
+
+    assert result.decision.classification == "tiebreaker"
+    # Returns tiebreaker's result on disagreement
+    assert result.provider_id == "expensive-tiebreaker"
+
+
+def test_consensus_provider_degrades_when_a_fails() -> None:
+    """ConsensusProvider degrades to provider_b when provider_a fails."""
+
+    def _agree_fn(a: DecisionRecord[DecisionPayload], b: DecisionRecord[DecisionPayload]) -> bool:
+        return True  # Never reached
+
+    provider = ConsensusProvider(
+        provider_a=StaticDecisionProvider(
+            provider_id="cheap-a",
+            classify_output_fn=lambda _: (_ for _ in ()).throw(ProviderError("provider a failed")),
+        ),
+        provider_b=StaticDecisionProvider(
+            provider_id="cheap-b",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-b",
+                decision=MonitorOutputDecision(classification="working"),
+            ),
+        ),
+        tiebreaker=StaticDecisionProvider(
+            provider_id="expensive-tiebreaker",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="expensive-tiebreaker",
+                decision=MonitorOutputDecision(classification="tiebreaker"),
+            ),
+        ),
+        agree_fn=_agree_fn,
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="test"))
+
+    assert result.decision.classification == "working"
+    # Returns provider_b when a fails
+    assert result.provider_id == "cheap-b"
+
+
+def test_consensus_provider_degrades_when_b_fails() -> None:
+    """ConsensusProvider degrades to provider_a when provider_b fails."""
+
+    def _agree_fn(a: DecisionRecord[DecisionPayload], b: DecisionRecord[DecisionPayload]) -> bool:
+        return True  # Never reached
+
+    provider = ConsensusProvider(
+        provider_a=StaticDecisionProvider(
+            provider_id="cheap-a",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-a",
+                decision=MonitorOutputDecision(classification="done"),
+            ),
+        ),
+        provider_b=StaticDecisionProvider(
+            provider_id="cheap-b",
+            classify_output_fn=lambda _: (_ for _ in ()).throw(ProviderError("provider b failed")),
+        ),
+        tiebreaker=StaticDecisionProvider(
+            provider_id="expensive-tiebreaker",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="expensive-tiebreaker",
+                decision=MonitorOutputDecision(classification="tiebreaker"),
+            ),
+        ),
+        agree_fn=_agree_fn,
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="test"))
+
+    assert result.decision.classification == "done"
+    # Returns provider_a when b fails
+    assert result.provider_id == "cheap-a"
+
+
+def test_consensus_provider_raises_when_both_fail() -> None:
+    """ConsensusProvider raises ProviderError when both providers fail."""
+
+    def _agree_fn(a: DecisionRecord[DecisionPayload], b: DecisionRecord[DecisionPayload]) -> bool:
+        return True  # Never reached
+
+    provider = ConsensusProvider(
+        provider_a=StaticDecisionProvider(
+            provider_id="cheap-a",
+            classify_output_fn=lambda _: (_ for _ in ()).throw(ProviderError("provider a failed")),
+        ),
+        provider_b=StaticDecisionProvider(
+            provider_id="cheap-b",
+            classify_output_fn=lambda _: (_ for _ in ()).throw(ProviderError("provider b failed")),
+        ),
+        tiebreaker=StaticDecisionProvider(
+            provider_id="expensive-tiebreaker",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="expensive-tiebreaker",
+                decision=MonitorOutputDecision(classification="tiebreaker"),
+            ),
+        ),
+        agree_fn=_agree_fn,
+    )
+
+    with pytest.raises(ProviderError, match="Both consensus providers failed"):
+        provider.classify_output(MonitorOutputRequest(output="test"))

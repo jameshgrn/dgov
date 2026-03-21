@@ -38,6 +38,7 @@ __all__ = [
     "TimeoutProvider",
     "ShadowProvider",
     "CascadeProvider",
+    "ConsensusProvider",
 ]
 
 
@@ -573,6 +574,91 @@ class CascadeProvider(DecisionProvider):
         if last_error is not None:
             raise last_error
         raise ProviderError("All cascade providers failed")
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+
+@dataclass
+class ConsensusProvider(DecisionProvider):
+    """Wrapper that runs two providers and escalates to tiebreaker on disagreement.
+
+    Implements the 'disagreement as escalation signal' pattern from Policy Core:
+    Never use LLM confidence scores as escalation signals. Escalation triggers:
+    two cheap providers disagree (consensus), output fails property tests, or
+    historical accuracy is low.
+    """
+
+    provider_id: str = field(init=False)
+    provider_a: DecisionProvider
+    provider_b: DecisionProvider
+    tiebreaker: DecisionProvider
+    agree_fn: Callable[[DecisionRecord[DecisionPayload], DecisionRecord[DecisionPayload]], bool]
+
+    def __post_init__(self) -> None:
+        self.provider_id = f"consensus:{self.provider_a.provider_id}:{self.provider_b.provider_id}"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        """Union of all provider capabilities."""
+        kinds: set[DecisionKind] = set()
+        kinds.update(self.provider_a.capabilities())
+        kinds.update(self.provider_b.capabilities())
+        kinds.update(self.tiebreaker.capabilities())
+        return frozenset(kinds)
+
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        # Run both cheap providers
+        result_a: DecisionRecord[DecisionPayload] | None = None
+        result_b: DecisionRecord[DecisionPayload] | None = None
+        error_a: BaseException | None = None
+        error_b: BaseException | None = None
+
+        try:
+            result_a = _call_kind(self.provider_a, request)
+        except ProviderError as exc:
+            error_a = exc
+
+        try:
+            result_b = _call_kind(self.provider_b, request)
+        except ProviderError as exc:
+            error_b = exc
+
+        # Both failed - raise
+        if result_a is None and result_b is None:
+            raise ProviderError(f"Both consensus providers failed: A={error_a}, B={error_b}")
+
+        # Only A succeeded - return it (graceful degradation)
+        if result_a is not None and result_b is None:
+            return result_a  # type: ignore[return-value]
+
+        # Only B succeeded - return it (graceful degradation)
+        if result_a is None and result_b is not None:
+            return result_b  # type: ignore[return-value]
+
+        # Both succeeded - check agreement
+        if self.agree_fn(result_a, result_b):
+            # Agree - return provider_a's result
+            return result_a  # type: ignore[return-value]
+
+        # Disagree - escalate to tiebreaker
+        tiebreaker_result = _call_kind(self.tiebreaker, request)
+        return tiebreaker_result  # type: ignore[return-value]
 
     def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
         return self._call(request)  # type: ignore[return-value]
