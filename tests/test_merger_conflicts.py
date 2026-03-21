@@ -372,8 +372,8 @@ def test_plumbing_merge_tree_exit_code_1_with_valid_hash(mock_run, tmp_path):
 
     result = _plumbing_merge(str(tmp_path), "test-branch")
 
-    # Should succeed because tree hash was valid, even though exit code was 1
-    assert result.success is True
+    # Exit code 1 with valid hash = real conflicts — should fail
+    assert result.success is False
 
 
 @patch("subprocess.run")

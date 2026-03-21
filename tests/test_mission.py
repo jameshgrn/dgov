@@ -139,7 +139,6 @@ class TestHappyPath:
             touches=[
                 "src/dgov/merger.py",
                 "src/dgov/inspection.py",
-                "tests/test_merger_coverage.py",
             ],
             expected_branch=None,
             session_root=str(tmp_path),

@@ -228,14 +228,14 @@ def _plumbing_merge(
             capture_output=True,
             text=True,
         )
-        # merge-tree returns non-zero for conflicts but still outputs tree hash
+        # merge-tree exit codes: 0=clean, 1=conflicts (tree still created), >1=error
         lines = result.stdout.strip().splitlines()
-        if not lines or not lines[0].strip():
-            # No tree hash at all — genuine failure
+        tree_hash = lines[0].strip() if lines else ""
+        valid_hash = len(tree_hash) >= 40 and all(c in "0123456789abcdef" for c in tree_hash)
+        if not valid_hash:
             return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
-        tree_hash = lines[0].strip()
-        # Validate it looks like a git hash (40 or 64 hex chars)
-        if not all(c in "0123456789abcdef" for c in tree_hash) or len(tree_hash) < 40:
+        if result.returncode != 0:
+            # Non-zero with valid tree = real conflicts — report as failure
             return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
         branch_tip = subprocess.run(
             ["git", "-C", project_root, "rev-parse", branch_name],

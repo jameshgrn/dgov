@@ -2835,12 +2835,14 @@ class TestWaitAllWorkerPanes:
                 ],
             ),
             patch("dgov.persistence.get_pane", side_effect=fake_get_pane),
+            patch("dgov.persistence.wait_for_events", return_value=[]),
+            patch("dgov.persistence.latest_event_id", return_value=0),
             patch("dgov.waiter._is_done", return_value=False),
             patch("dgov.status.capture_worker_output", return_value=None),
             patch("dgov.waiter.time.sleep"),
             patch("dgov.waiter.time.monotonic") as mock_mono,
         ):
-            mock_mono.side_effect = [0, 100]
+            mock_mono.side_effect = [0, 0, 100]
             with pytest.raises(PaneTimeoutError) as exc_info:
                 list(wait_all_worker_panes(str(tmp_path), timeout=10, poll=1))
             assert len(exc_info.value.pending_panes) == 2
@@ -3395,7 +3397,7 @@ class TestPlumbingMerge:
                 m.stdout = "aaa111\n"
             elif "merge-tree" in cmd:
                 m.returncode = 0
-                m.stdout = "tree_hash_abc\n"
+                m.stdout = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             elif "rev-parse" in cmd:
                 m.returncode = 0
                 m.stdout = "bbb222\n"
@@ -3441,7 +3443,7 @@ class TestPlumbingMerge:
                 m.stdout = "aaa111\n"
             elif "merge-tree" in cmd:
                 m.returncode = 0
-                m.stdout = "tree_hash_abc\n"
+                m.stdout = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             elif "rev-parse" in cmd:
                 m.returncode = 0
                 m.stdout = "bbb222\n"
@@ -3474,7 +3476,7 @@ class TestPlumbingMerge:
                 m.stdout = "aaa111\n"
             elif "merge-tree" in cmd:
                 m.returncode = 0
-                m.stdout = "tree_hash_abc\n"
+                m.stdout = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
             elif "rev-parse" in cmd:
                 m.returncode = 0
                 m.stdout = "bbb222\n"

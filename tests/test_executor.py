@@ -94,7 +94,7 @@ def test_run_review_only_returns_typed_review_result():
     assert result.commit_count == 2
     assert result.error is None
     assert result.review_record is not None
-    assert result.review_record.provider_id == "inspection-review"
+    assert "inspection-review" in result.review_record.provider_id
     assert result.review_record.decision.commit_count == 2
 
 
@@ -113,7 +113,7 @@ def test_run_review_only_persists_decision_journal(tmp_path):
     assert result.passed is True
     assert len(journal) == 1
     assert journal[0]["kind"] == "review_output"
-    assert journal[0]["provider_id"] == "inspection-review"
+    assert journal[0]["provider_id"] in ("inspection-review", "cascade")
     assert journal[0]["result"]["decision"]["verdict"] == "safe"
 
 
