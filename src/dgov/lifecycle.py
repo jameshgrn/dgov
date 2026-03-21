@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import time
@@ -1174,6 +1175,29 @@ def _full_cleanup(
                 ["git", "-C", project_root, "worktree", "prune"],
                 capture_output=True,
             )
+
+    # 4. Copy pi session transcript if pane used pi agent
+    agent = pane_record.get("agent", "")
+    if agent == "pi":
+        worktree_path = pane_record.get("worktree_path", "")
+        # Transform worktree path to pi session dir format:
+        # /Users/jakegearon/projects/dgov/.dgov/worktrees/my-task
+        # → --Users-jakegearon-projects-dgov-.dgov-worktrees-my-task--
+        session_dir_name = f"--{worktree_path.replace('/', '-')}--"
+        pi_sessions_root = Path.home() / ".pi" / "agent" / "sessions"
+        session_dir = pi_sessions_root / session_dir_name
+
+        if session_dir.exists():
+            # Find all .jsonl files and get the newest one
+            jsonl_files = list(session_dir.glob("*.jsonl"))
+            if jsonl_files:
+                newest_session = max(jsonl_files, key=lambda p: p.stat().st_mtime)
+                # Ensure .dgov/logs exists in project root
+                logs_dir = Path(project_root) / ".dgov" / "logs"
+                logs_dir.mkdir(parents=True, exist_ok=True)
+                # Copy to .dgov/logs/<slug>.transcript.jsonl
+                dest_path = logs_dir / f"{slug}.transcript.jsonl"
+                shutil.copy2(newest_session, dest_path)
 
     return {
         "cleaned": not worktree_removal_failed or skipped_worktree,
