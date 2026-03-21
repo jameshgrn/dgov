@@ -209,6 +209,17 @@ def pane_util(command, title, cwd):
 )
 @click.option("--role", default="worker", help="Pane role: worker or lt-gov")
 @click.option("--parent", default=None, help="Parent pane slug (for LT-GOV-created workers)")
+@click.option(
+    "--land/--no-land",
+    default=False,
+    help="Run full lifecycle after dispatch: wait, review, merge, close",
+)
+@click.option(
+    "--timeout",
+    default=600,
+    type=int,
+    help="Max seconds to wait when --land is used (default: 600)",
+)
 def pane_create(
     agent,
     prompt,
@@ -227,6 +238,8 @@ def pane_create(
     var,
     role,
     parent,
+    land,
+    timeout,
 ):
     """Create a worker pane: worktree + tmux + agent."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
@@ -367,6 +380,32 @@ def pane_create(
     if max_retries is not None:
         result["max_retries"] = max_retries
     click.echo(json.dumps(result, indent=2))
+
+    if land:
+        from dgov.executor import run_post_dispatch_lifecycle
+
+        lifecycle = run_post_dispatch_lifecycle(
+            project_root=os.path.abspath(project_root),
+            slug=pane_obj.slug,
+            session_root=os.path.abspath(session_root or project_root),
+            timeout=timeout,
+            auto_merge=True,
+            permission_mode=permission_mode,
+        )
+        click.echo(
+            json.dumps(
+                {
+                    "lifecycle": lifecycle.state,
+                    "slug": lifecycle.slug,
+                    "review": lifecycle.review,
+                    "merge": lifecycle.merge_result,
+                    "error": lifecycle.error,
+                },
+                default=str,
+            )
+        )
+        if lifecycle.state == "failed":
+            sys.exit(1)
 
 
 @pane.command("batch")
