@@ -31,14 +31,10 @@
 ### Orchestration core
 | File | Size | Purpose |
 |------|------|---------|
-| `src/dgov/done.py` | L | Done-signal and done-detection helpers.
-
-Extracted from waiter.py to break the import cycle betwe... |
+| `src/dgov/done.py` | L | Done-signal and done-detection helpers. |
 | `src/dgov/gitops.py` | S | Low-level git plumbing helpers for worktree and branch management. |
 | `src/dgov/lifecycle.py` | L | Pane lifecycle: create, close, resume, and cleanup. |
-| `src/dgov/persistence.py` | L | State file management and event journal.
-
-Manages .dgov/state.db (pane records and event log via ... |
+| `src/dgov/persistence.py` | L | State file management and event journal. |
 | `src/dgov/status.py` | L | Pane status: list, freshness, output capture, pruning. |
 | `src/dgov/waiter.py` | M | Wait/poll logic for worker panes. |
 
@@ -51,34 +47,20 @@ Manages .dgov/state.db (pane records and event log via ... |
 ### Automation and recovery
 | File | Size | Purpose |
 |------|------|---------|
-| `src/dgov/monitor.py` | L | Lightweight polling daemon for worker state classification and auto-remediation.
-
-Uses local Qwen... |
-| `src/dgov/monitor_hooks.py` | S | Configurable monitor hooks via TOML configuration files.
-
-Defines MonitorHook dataclass and funct... |
+| `src/dgov/monitor.py` | L | Lightweight polling daemon for worker state classification and auto-remediation. |
+| `src/dgov/monitor_hooks.py` | S | Configurable monitor hooks via TOML configuration files. |
 | `src/dgov/recovery.py` | L | Pane recovery: retry policy, escalation, and bounded retry with auto-escalation. |
-| `src/dgov/responder.py` | S | Auto-respond to blocked worker panes.
-
-Matches captured pane output against response rules and se... |
+| `src/dgov/responder.py` | S | Auto-respond to blocked worker panes. |
 
 ### Agent integration
 | File | Size | Purpose |
 |------|------|---------|
-| `src/dgov/agents.py` | L | Agent registry and launch command builder.
-
-Built-in agents: claude, codex, gemini, opencode, cli... |
+| `src/dgov/agents.py` | L | Agent registry and launch command builder. |
 | `src/dgov/cli/templates.py` | S | Prompt template commands. |
-| `src/dgov/openrouter.py` | M | OpenRouter API client with local Qwen 4B fallback.
-
-Lightweight HTTP client using only urllib.req... |
-| `src/dgov/router.py` | S | Agent router: resolve logical model names to available physical backends.
-
-Maps logical names (qw... |
+| `src/dgov/openrouter.py` | M | OpenRouter API client with local Qwen 4B fallback. |
+| `src/dgov/router.py` | S | Agent router: resolve logical model names to available physical backends. |
 | `src/dgov/strategy.py` | M | Task routing, slug generation, and prompt structuring. |
-| `src/dgov/templates.py` | S | Prompt template system for worker panes.
-
-Templates provide structured, reusable prompts with var... |
+| `src/dgov/templates.py` | S | Prompt template system for worker panes. |
 
 ### Higher-level workflows
 | File | Size | Purpose |
@@ -100,9 +82,7 @@ Templates provide structured, reusable prompts with var... |
 ### Other
 | File | Size | Purpose |
 |------|------|---------|
-| `src/dgov/backend.py` | M | Abstract worker backend interface and tmux implementation.
-
-Decouples pane lifecycle from tmux so... |
+| `src/dgov/backend.py` | M | Abstract worker backend interface and tmux implementation. |
 | `src/dgov/blame.py` | M | Blame: query event journal + git history to attribute file changes to agents. |
 | `src/dgov/cli/admin.py` | L | Administrative and diagnostic commands. |
 | `src/dgov/cli/batch_cmd.py` | S | Checkpoint and batch commands. |
@@ -115,19 +95,13 @@ Decouples pane lifecycle from tmux so... |
 | `src/dgov/cli/openrouter_cmd.py` | S | OpenRouter integration commands. |
 | `src/dgov/cli/pane.py` | L | Pane management commands. |
 | `src/dgov/cli/review_fix_cmd.py` | S | Review-fix pipeline command. |
-| `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands.
-
-Called BY agents running inside worker panes to report progres... |
+| `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
 | `src/dgov/context_packet.py` | S | Compiled task context shared across preflight, prompts, and instructions. |
 | `src/dgov/decision.py` | L | Typed decision requests, records, and provider wrappers. |
 | `src/dgov/decision_providers.py` | M | Concrete decision providers built on existing dgov transports. |
 | `src/dgov/executor.py` | L | Shared executor policy for dispatch preflight and merge review gates. |
-| `src/dgov/kernel.py` | L | Deterministic kernel primitives for pane and DAG lifecycle.
-
-All kernel classes are pure state ma... |
-| `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch.
-
-Runs all checks before spawning worker panes and option... |
+| `src/dgov/kernel.py` | L | Deterministic kernel primitives for pane and DAG lifecycle. |
+| `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch. |
 | `src/dgov/provider_registry.py` | S | Central provider selection and optional decision journaling. |
 | `src/dgov/tmux.py` | L | Thin wrappers around tmux commands. |
 

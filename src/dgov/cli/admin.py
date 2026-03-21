@@ -43,7 +43,7 @@ def _scan_py_files(src_dirs: list[Path], project_root: Path) -> dict[str, dict[s
 
                 # Extract docstring using AST
                 tree = ast.parse(text, filename=str(py_file))
-                docstring = ast.get_docstring(tree) or ""
+                docstring = (ast.get_docstring(tree) or "").split("\n")[0]
 
                 # Size category
                 if line_count < 200:
