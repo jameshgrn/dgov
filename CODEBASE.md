@@ -62,6 +62,14 @@
 | `src/dgov/strategy.py` | M | Task routing, slug generation, and prompt structuring. |
 | `src/dgov/templates.py` | S | Prompt template system for worker panes. |
 
+### Decision system
+| File | Size | Purpose |
+|------|------|---------|
+| `src/dgov/decision.py` | L | Typed decision requests, records, and provider wrappers. |
+| `src/dgov/decision_providers.py` | M | Concrete decision providers built on existing dgov transports. |
+| `src/dgov/provider_registry.py` | S | Central provider selection and optional decision journaling. |
+| `src/dgov/context_packet.py` | S | Compiled task context shared across preflight, prompts, and instructions.
+
 ### Higher-level workflows
 | File | Size | Purpose |
 |------|------|---------|
