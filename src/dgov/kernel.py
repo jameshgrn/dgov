@@ -484,7 +484,8 @@ class DagKernel:
 
         non_terminal = [s for s, st in self.task_states.items() if st not in _DAG_TERMINAL]
         if non_terminal:
-            return []
+            # Not done yet — if there are waiting tasks, emit WaitForAny
+            return self._maybe_wait()
 
         merged = tuple(s for s, st in self.task_states.items() if st == DagTaskState.MERGED)
         failed = tuple(s for s, st in self.task_states.items() if st == DagTaskState.FAILED)
