@@ -82,10 +82,10 @@ def worker_complete(message):
             text=True,
         )
         commits = [c for c in log.stdout.strip().split("\n") if c]
-        if not commits:
+        if not commits and not message:
             click.echo(
                 f"Error: No commits found beyond DGOV_BASE_SHA ({base_sha}). "
-                f"Cannot signal completion without actual repo changes.",
+                f"Pass -m 'reason' if the task requires no changes.",
                 err=True,
             )
             sys.exit(1)
