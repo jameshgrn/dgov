@@ -985,6 +985,22 @@ def create_worker_pane(
                 base_sha=base_sha,
             )
 
+            # Dispatch span (immediate open+close — dispatch is synchronous)
+            try:
+                from dgov.spans import SpanKind, SpanOutcome, close_span, open_span, prompt_hash
+
+                sid = open_span(
+                    session_root,
+                    slug,
+                    SpanKind.DISPATCH,
+                    agent=agent,
+                    prompt_hash=prompt_hash(prompt),
+                    base_sha=base_sha,
+                )
+                close_span(session_root, sid, SpanOutcome.SUCCESS)
+            except Exception:
+                logger.debug("dispatch span failed for %s", slug, exc_info=True)
+
             return pane
 
     except BaseException:
@@ -1231,6 +1247,15 @@ def close_worker_pane(
     if not target:
         return True  # already cleaned up (e.g. by merge)
 
+    # Open close span
+    close_span_id = None
+    try:
+        from dgov.spans import SpanKind, open_span
+
+        close_span_id = open_span(session_root, slug, SpanKind.CLOSE)
+    except Exception:
+        logger.debug("close span open failed for %s", slug, exc_info=True)
+
     # Use persisted pane project_root for cleanup, normalize with abspath
     pane_project_root = target.get("project_root") or project_root
     clean_project_root = os.path.abspath(pane_project_root)
@@ -1256,6 +1281,18 @@ def close_worker_pane(
         skip_worktree_if_dirty=not force,
     )
 
+    # Ingest transcript into tool_traces table
+    transcript_captured = 0
+    transcript_path = Path(clean_project_root) / ".dgov" / "logs" / f"{slug}.transcript.jsonl"
+    if transcript_path.exists():
+        try:
+            from dgov.spans import ingest_transcript
+
+            ingest_transcript(session_root, slug, str(transcript_path))
+            transcript_captured = 1
+        except Exception:
+            logger.debug("transcript ingest failed for %s", slug, exc_info=True)
+
     # Preserve evidence when worktree removal fails or is skipped (dirty pane)
     if result.get("skipped_worktree") or result.get("worktree_removal_failed"):
         mark_preserved_artifacts(
@@ -1277,6 +1314,20 @@ def close_worker_pane(
         update_pane_state(session_root, slug, "closed")
         emit_event(session_root, "pane_closed", slug)
         remove_pane(session_root, slug)
+
+    # Close the close span
+    if close_span_id is not None:
+        try:
+            from dgov.spans import SpanOutcome, close_span
+
+            close_span(
+                session_root,
+                close_span_id,
+                SpanOutcome.SUCCESS,
+                transcript_captured=transcript_captured,
+            )
+        except Exception:
+            logger.debug("close span close failed for %s", slug, exc_info=True)
 
     if result.get("branch_kept"):
         logger.info(

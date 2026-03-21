@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -379,6 +380,15 @@ def run_wait_only(
 
     session_root = os.path.abspath(session_root or project_root)
 
+    # Open wait span
+    _wait_span_id = None
+    try:
+        from dgov.spans import SpanKind, open_span
+
+        _wait_span_id = open_span(session_root, slug, SpanKind.WAIT)
+    except Exception:
+        pass
+
     def _phase(name: str, current_slug: str) -> None:
         if phase_callback is not None:
             phase_callback(name, current_slug)
@@ -521,12 +531,27 @@ def run_wait_only(
             suggest_escalate=_should_suggest_escalate(current_slug),
         )
 
-    return WaitOnlyResult(
+    _wait_result = WaitOnlyResult(
         state="completed",
         slug=current_slug,
         wait_result=wait_result,
         pane_state=pane_state,
     )
+    # Close wait span
+    if _wait_span_id is not None:
+        try:
+            from dgov.spans import SpanOutcome, close_span
+
+            _wo = SpanOutcome.SUCCESS if _wait_result.state == "completed" else SpanOutcome.FAILURE
+            close_span(
+                session_root,
+                _wait_span_id,
+                _wo,
+                wait_method=(_wait_result.wait_result or {}).get("method", ""),
+            )
+        except Exception:
+            pass
+    return _wait_result
 
 
 def run_wait_all(
@@ -793,6 +818,14 @@ def run_review_only(
     require_commits: bool = True,
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
+    _review_span_id = None
+    try:
+        from dgov.spans import SpanKind, open_span
+
+        _review_span_id = open_span(session_root or "", slug, SpanKind.REVIEW)
+    except Exception:
+        pass
+
     from dgov.decision import DecisionKind
     from dgov.provider_registry import get_provider
 
@@ -888,7 +921,7 @@ def run_review_only(
                     stale_files,
                 )
 
-    return ReviewOnlyResult(
+    _review_result = ReviewOnlyResult(
         slug=slug,
         review=review,
         passed=passed,
@@ -897,6 +930,26 @@ def run_review_only(
         review_record=record,
         error=error,
     )
+    if _review_span_id is not None:
+        try:
+            from dgov.spans import SpanOutcome, close_span
+
+            _ro = SpanOutcome.SUCCESS if passed else SpanOutcome.FAILURE
+            close_span(
+                session_root or "",
+                _review_span_id,
+                _ro,
+                verdict=verdict,
+                commit_count=commit_count,
+                tests_passed=1
+                if review.get("tests_passed")
+                else (0 if review.get("tests_passed") is False else -1),
+                stale_files=json.dumps(review.get("stale_files", [])),
+                error=error or "",
+            )
+        except Exception:
+            pass
+    return _review_result
 
 
 def run_review_merge(
@@ -1126,6 +1179,17 @@ def run_merge_only(
     message: str | None = None,
 ) -> MergeOnlyResult:
     """Run the canonical merge operation for an already-approved pane."""
+    _merge_span_id = None
+    try:
+        from dgov.spans import SpanKind, open_span
+
+        open_sr = session_root or ""
+        _merge_span_id = open_span(
+            open_sr, slug, SpanKind.MERGE, merge_strategy="rebase" if rebase else "squash"
+        )
+    except Exception:
+        pass
+
     from dgov.merger import merge_worker_pane
 
     if resolve == "skip" and squash is True and not rebase and message is None:
@@ -1140,16 +1204,30 @@ def run_merge_only(
             message=message,
             rebase=rebase,
         )
-    if merge_result.get("error"):
-        return MergeOnlyResult(
-            slug=slug,
-            merge_result=merge_result,
-            error=merge_result["error"],
-        )
-    return MergeOnlyResult(
+
+    _merge_error = merge_result.get("error", "")
+    _merge_out = MergeOnlyResult(
         slug=slug,
         merge_result=merge_result,
+        error=_merge_error if _merge_error else None,
     )
+
+    if _merge_span_id is not None:
+        try:
+            from dgov.spans import SpanOutcome, close_span
+
+            _mo = SpanOutcome.FAILURE if _merge_error else SpanOutcome.SUCCESS
+            close_span(
+                session_root or "",
+                _merge_span_id,
+                _mo,
+                files_changed=merge_result.get("files_changed", 0),
+                error=_merge_error or "",
+            )
+        except Exception:
+            pass
+
+    return _merge_out
 
 
 # -- New executor syscalls: close, retry, escalate, complete, fail --
@@ -1216,9 +1294,22 @@ def run_retry_only(
         session_root=session_root,
         agent=agent,
     )
-    if result.get("error"):
-        return RetryResult(slug=slug, error=result["error"])
-    return RetryResult(slug=slug, new_slug=result.get("new_slug"))
+    _retry_out = RetryResult(
+        slug=slug,
+        new_slug=result.get("new_slug"),
+        error=result.get("error"),
+    )
+    try:
+        from dgov.spans import SpanKind, SpanOutcome, close_span, open_span
+
+        sid = open_span(
+            session_root or "", slug, SpanKind.RETRY, from_agent=agent or "", to_agent=agent or ""
+        )
+        _ro = SpanOutcome.FAILURE if _retry_out.error else SpanOutcome.SUCCESS
+        close_span(session_root or "", sid, _ro, error=_retry_out.error or "")
+    except Exception:
+        pass
+    return _retry_out
 
 
 def run_escalate_only(
@@ -1255,13 +1346,27 @@ def run_escalate_only(
         session_root=session_root,
         permission_mode=permission_mode,
     )
-    if result.get("error"):
-        return EscalateResult(slug=slug, error=result["error"])
-    return EscalateResult(
+    _esc_out = EscalateResult(
         slug=slug,
         new_slug=result.get("new_slug"),
         target_agent=target_agent,
+        error=result.get("error"),
     )
+    try:
+        from dgov.spans import SpanKind, SpanOutcome, close_span, open_span
+
+        sid = open_span(
+            session_root or "",
+            slug,
+            SpanKind.ESCALATE,
+            from_agent=current_agent if "current_agent" in dir() else "",
+            to_agent=target_agent or "",
+        )
+        _eo = SpanOutcome.FAILURE if _esc_out.error else SpanOutcome.SUCCESS
+        close_span(session_root or "", sid, _eo, error=_esc_out.error or "")
+    except Exception:
+        pass
+    return _esc_out
 
 
 def run_retry_or_escalate(
