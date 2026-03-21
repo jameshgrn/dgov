@@ -317,12 +317,16 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
     for pane in panes:
         wt = pane.get("worktree_path")
         base_sha = pane.get("base_sha", "")
-        if not wt or not Path(wt).exists():
+        pane_state = pane.get("state", "")
+
+        # Skip terminal-state panes — they're no longer working
+        if pane_state in ("merged", "closed", "abandoned"):
             continue
+
         try:
             changed: set[str] = set()
 
-            # Include declared file claims from pane metadata
+            # Include declared file claims from pane metadata (no worktree needed)
             pane_claims = pane.get("file_claims") or []
             if isinstance(pane_claims, str):
                 import json as _json
@@ -333,7 +337,7 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
                     pane_claims = []
             changed.update(str(c) for c in pane_claims)
 
-            if base_sha:
+            if wt and Path(wt).exists() and base_sha:
                 committed = subprocess.run(
                     ["git", "diff", "--name-only", f"{base_sha}..HEAD"],
                     cwd=wt,
@@ -346,18 +350,19 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
                         path for path in committed.stdout.strip().splitlines() if path.strip()
                     )
 
-            status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=wt,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if status.returncode == 0:
-                for line in status.stdout.splitlines():
-                    if len(line) < 4:
-                        continue
-                    changed.add(line[3:])
+            if wt and Path(wt).exists():
+                status = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    cwd=wt,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if status.returncode == 0:
+                    for line in status.stdout.splitlines():
+                        if len(line) < 4:
+                            continue
+                        changed.add(line[3:])
 
             overlap = {
                 path for path in changed if any(_paths_overlap(path, touch) for touch in touches)

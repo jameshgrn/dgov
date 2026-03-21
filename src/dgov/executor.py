@@ -257,6 +257,11 @@ def run_cleanup_only(
         force = False
     elif state == "failed" and failure_stage == "worker_failed":
         force = True
+    elif state == "closed":
+        # 0-commit completed panes: close cleanly (captures transcripts)
+        session_root = session_root or project_root
+        close_worker_pane(project_root, slug, session_root, force=True)
+        return CleanupOnlyResult(slug=slug, action="closed", reason="completed_no_commits")
     else:
         if session_root:
             try:
