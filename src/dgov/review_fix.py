@@ -9,7 +9,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from dgov.persistence import emit_event
-from dgov.waiter import wait_for_slugs
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +189,7 @@ def run_review_fix_pipeline(
 
     Returns summary dict with findings_count, fixed_count, etc.
     """
-    from dgov.executor import run_close_only, run_review_merge
-    from dgov.lifecycle import create_worker_pane
+    from dgov.executor import run_close_only, run_dispatch_only, run_review_merge, run_wait_slugs
     from dgov.status import capture_worker_output
 
     project_root = os.path.abspath(project_root)
@@ -223,7 +221,7 @@ def run_review_fix_pipeline(
         slug = f"review-{i:03d}-{Path(target).stem}"[:50]
         prompt = REVIEW_PROMPT_TEMPLATE.format(targets=target)
         try:
-            pane = create_worker_pane(
+            pane = run_dispatch_only(
                 project_root=project_root,
                 prompt=prompt,
                 agent=review_agent,
@@ -236,7 +234,7 @@ def run_review_fix_pipeline(
             logger.warning("Failed to create review worker for %s: %s", target, e)
 
     # Wait for all review workers
-    wait_for_slugs(session_root, review_slugs, timeout=timeout)
+    run_wait_slugs(session_root, review_slugs, timeout=timeout)
 
     # Capture output and parse findings
     all_findings: list[ReviewFinding] = []
@@ -318,7 +316,7 @@ def run_review_fix_pipeline(
         )
         prompt = FIX_PROMPT_TEMPLATE.format(file_path=file_path, findings_text=findings_text)
         try:
-            pane = create_worker_pane(
+            pane = run_dispatch_only(
                 project_root=project_root,
                 prompt=prompt,
                 agent=fix_agent,
@@ -331,7 +329,7 @@ def run_review_fix_pipeline(
             logger.warning("Failed to create fix worker for %s: %s", file_path, e)
 
     # Wait for all fix workers
-    wait_for_slugs(session_root, fix_slugs, timeout=timeout)
+    run_wait_slugs(session_root, fix_slugs, timeout=timeout)
 
     # -- PHASE 3: VALIDATE (merge + test) --
     merged_count = 0

@@ -230,9 +230,9 @@ class TestGroupByFile:
 class TestPipelineReviewOnly:
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_review_only_returns_findings(
         self,
@@ -277,9 +277,9 @@ class TestPipelineReviewOnly:
 
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_review_only_no_findings(
         self,
@@ -319,9 +319,9 @@ class TestPipelineReviewOnly:
 class TestPipelineParseError:
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_malformed_output_skipped_not_treated_as_clean(
         self,
@@ -367,9 +367,9 @@ class TestPipelineFull:
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_merges(
         self,
@@ -432,9 +432,9 @@ class TestPipelineFull:
 
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_no_findings_skips_fix(
         self,
@@ -469,9 +469,9 @@ class TestPipelineFull:
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_merge_failure(
         self,
@@ -531,9 +531,9 @@ class TestPipelineFull:
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_keeps_failed_fix_worker_open(
         self,
@@ -594,9 +594,9 @@ class TestPipelineFull:
     @patch("dgov.lifecycle.close_worker_pane")
     @patch("dgov.executor.run_review_merge")
     @patch("dgov.status.capture_worker_output")
-    @patch("dgov.waiter._is_done")
+    @patch("dgov.executor.run_wait_slugs")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.lifecycle.create_worker_pane")
+    @patch("dgov.executor.run_dispatch_only")
     @patch("dgov.review_fix.emit_event")
     def test_full_pipeline_surfaces_merge_validation_failure(
         self,

@@ -235,6 +235,43 @@ def _drive_post_dispatch_kernel(
         pending.extend(kernel.handle(event))
 
 
+def run_dispatch_only(
+    project_root: str,
+    prompt: str,
+    agent: str,
+    *,
+    session_root: str | None = None,
+    permission_mode: str = "bypassPermissions",
+    slug: str | None = None,
+) -> object:
+    """Executor syscall: dispatch a worker pane without full lifecycle.
+
+    This is the canonical entrypoint for bare dispatch operations that should
+    not trigger the post-dispatch wait/review/merge pipeline.
+
+    Args:
+        project_root: Git repo root.
+        prompt: Task prompt for the worker.
+        agent: Agent identifier (logical name like qwen-35b).
+        session_root: Session root directory.
+        permission_mode: Permission mode for the worker.
+        slug: Optional custom slug; auto-generated if not provided.
+
+    Returns:
+        The created pane record (from create_worker_pane).
+    """
+    from dgov.lifecycle import create_worker_pane
+
+    return create_worker_pane(
+        project_root=project_root,
+        prompt=prompt,
+        agent=agent,
+        permission_mode=permission_mode,
+        slug=slug,
+        session_root=session_root,
+    )
+
+
 def run_cleanup_only(
     project_root: str,
     slug: str,
@@ -491,6 +528,38 @@ def run_wait_all(
         timeout=timeout,
         poll=poll,
         stable=stable,
+    )
+
+
+def run_wait_slugs(
+    session_root: str,
+    slugs: list[str],
+    timeout: int = 600,
+    poll: int = 3,
+    stable_seconds: int | None = None,
+) -> set[str]:
+    """Executor syscall: wait for a set of slugs to finish.
+
+    Returns the set of slugs still pending at timeout (empty if all completed).
+
+    Args:
+        session_root: Session root directory.
+        slugs: List of pane slugs to wait for.
+        timeout: Maximum seconds to wait.
+        poll: Polling interval in seconds.
+        stable_seconds: Seconds to wait for stable state before marking done.
+
+    Returns:
+        Set of slugs that are still pending after timeout (or empty set).
+    """
+    from dgov.waiter import wait_for_slugs
+
+    return wait_for_slugs(
+        session_root=session_root,
+        slugs=slugs,
+        timeout=timeout,
+        poll=poll,
+        stable_seconds=stable_seconds,
     )
 
 
