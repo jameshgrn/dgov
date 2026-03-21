@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from collections import defaultdict
@@ -21,6 +22,8 @@ from dgov.persistence import (
     read_events,
 )
 from dgov.status import _compute_freshness
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -511,7 +514,8 @@ def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
             if candidate.exists():
                 test_files.append(str(candidate))
     if not test_files:
-        return {}
+        logger.warning("No related tests found for changed files: %s", changed_files)
+        return {"no_tests_found": True, "changed_files": list(changed_files)}
     test_files = sorted(set(test_files))
 
     # Use Popen with process group control so we can kill children on timeout

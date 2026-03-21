@@ -981,7 +981,7 @@ def merge_worker_pane(
                 validation_error: str | None = None
 
                 tests_failed = False
-                if test_result:
+                if test_result and not test_result.get("no_tests_found"):
                     if not test_result.get("tests_passed"):
                         tests_failed = True
                     elif test_result.get("tests_failed", 0) > 0:
