@@ -106,7 +106,8 @@ def review_worker_pane(
         issues.append(f"protected files touched: {protected_touched}")
     if uncommitted:
         issues.append("uncommitted changes (merge refused until committed)")
-    if commit_count == 0:
+    pane_state = target.get("state", "")
+    if commit_count == 0 and pane_state != "done":
         issues.append("no commits — nothing to merge")
 
     verdict = "safe" if not issues else "review"
