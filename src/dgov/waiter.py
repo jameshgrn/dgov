@@ -328,6 +328,11 @@ def wait_all_worker_panes(
 
     Yields ``{"done": slug, "method": ...}`` as each pane completes.
     Raises ``PaneTimeoutError`` (with the first timed-out slug) on timeout.
+
+    Uses event-driven wakeup as primary signal (``pane_done``, ``pane_failed``,
+    ``pane_timed_out`` events from ``dgov worker complete``). Falls back to
+    process-based polling every *poll* seconds to catch edge cases (process death
+    without event).
     """
     import dgov.persistence as _persist
     from dgov.status import list_worker_panes
@@ -342,30 +347,56 @@ def wait_all_worker_panes(
     stable_states: dict[str, dict] = {s: {} for s in pending}
     strategies: dict[str, DoneStrategy | None] = {}
 
-    while pending:
-        # One bulk tmux call per tick — avoids N individual is_alive forks
-        alive_panes = set(get_backend().bulk_info().keys())
+    # Get latest event ID so we only see new events
+    last_event_id = _persist.latest_event_id(session_root)
 
-        for slug in list(pending):
-            rec = _persist.get_pane(session_root, slug)
-            if slug not in strategies:
-                strategies[slug] = _strategy_for_pane(rec)
-            ss = stable_states.setdefault(slug, {})
-            pane_id = rec.get("pane_id", "") if rec else ""
-            done, method = _poll_once(
-                session_root,
-                project_root,
-                slug,
-                rec,
-                ss,
-                stable,
-                done_strategy=strategies[slug],
-                alive=pane_id in alive_panes if pane_id else None,
-            )
-            if done:
+    _TERMINAL_EVENTS: tuple[str, ...] = ("pane_done", "pane_failed", "pane_timed_out")
+
+    while pending:
+        # Primary: block on events for all pending panes
+        events = _persist.wait_for_events(
+            session_root,
+            after_id=last_event_id,
+            panes=tuple(sorted(pending)),
+            event_types=_TERMINAL_EVENTS,
+            timeout_s=float(poll),
+            poll_interval_s=0.1,
+        )
+
+        # Process events first
+        for event in events:
+            last_event_id = event["id"]
+            slug = event.get("pane_slug") or event.get("pane", "")
+            if slug in pending:
                 pending.discard(slug)
+                method = f"event:{event['event']}"
                 yield {"done": slug, "method": method}
 
+        # Fallback: process-based poll for edge cases (process death without event)
+        if pending:
+            alive_panes = set(get_backend().bulk_info().keys())
+
+            for slug in list(pending):
+                rec = _persist.get_pane(session_root, slug)
+                if slug not in strategies:
+                    strategies[slug] = _strategy_for_pane(rec)
+                ss = stable_states.setdefault(slug, {})
+                pane_id = rec.get("pane_id", "") if rec else ""
+                done, method = _poll_once(
+                    session_root,
+                    project_root,
+                    slug,
+                    rec,
+                    ss,
+                    stable,
+                    done_strategy=strategies[slug],
+                    alive=pane_id in alive_panes if pane_id else None,
+                )
+                if done:
+                    pending.discard(slug)
+                    yield {"done": slug, "method": method}
+
+        # Timeout check
         elapsed = time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
             pending_info = []
@@ -384,6 +415,8 @@ def wait_all_worker_panes(
                 first["agent"],
                 pending_panes=pending_info,
             )
+
+        # Sleep only if there are still pending panes and no events were processed
         if pending:
             time.sleep(poll)
 
