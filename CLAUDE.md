@@ -131,6 +131,19 @@ Add a btop shortcut command to the CLI, similar to the existing utility pane sho
 Add tests too.
 ```
 
+### Autonomous mode (qwen-35b, preferred for complex tasks)
+
+For tasks requiring design decisions or multi-file changes, use rich context instead of micro-managed steps. Qwen 35B handles 3-4 file tasks well when given a good world model.
+
+**Pattern:**
+- Describe the **goal** and **why** it matters
+- List **files to read** with hints on what to look for ("follow the AuditProvider pattern")
+- State the **principles/constraints** relevant to this task
+- Let the worker make implementation decisions
+- Still require the commit checklist at the end
+
+Workers have **256K context windows** — use them. Rich architectural context produces better output than step-by-step hand-holding. CODEBASE.md is auto-read by the worktree hook.
+
 ## What you CAN do directly
 
 - Run `dgov` commands (dispatch, wait, review, merge, status, preflight)

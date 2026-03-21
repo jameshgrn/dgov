@@ -11,6 +11,7 @@
 | Monitor daemon logic | `monitor.py` | `monitor_hooks.py`, `recovery.py` | `test_monitor.py` |
 | Worker completion/done | `cli/worker_cmd.py`, `done.py` | `waiter.py` | `test_done_strategy.py`, `test_dgov_panes.py` |
 | Agent routing/selection | `router.py`, `agents.py` | `strategy.py` | `test_router.py`, `test_dgov_agents.py` |
+| Decision providers | `decision.py`, `decision_providers.py` | `provider_registry.py` | `test_decision.py` |
 | Prompt templates | `templates.py`, `strategy.py` | `lifecycle.py` | `test_templates.py` |
 | Dashboard/terrain TUI | `dashboard.py`, `terrain.py` | `terrain_pane.py` | `test_dashboard.py`, `test_terrain_events.py` |
 | DAG/batch/mission | `dag.py`, `batch.py`, `mission.py` | `dag_parser.py`, `dag_graph.py` | `test_dag.py`, `test_batch.py`, `test_mission.py` |
