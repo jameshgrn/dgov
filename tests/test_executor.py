@@ -147,12 +147,11 @@ def test_run_review_only_fails_on_stale_files(tmp_path):
     ):
         result = run_review_only("/repo", "task", session_root=session_root)
 
-    # Stale files are recorded in review dict and block merge
+    # Stale files are recorded in review dict as warning, but don't block merge
     assert "stale_files" in result.review
     assert result.review["stale_files"] == ["src/foo.py"]
-    assert result.passed is False
-    assert result.error is not None
-    assert "stale" in result.error.lower()
+    assert result.review["freshness"] == "warn"
+    assert result.passed is True  # staleness is a warning, merge-tree decides
 
 
 def test_run_review_only_passes_when_manifest_fresh(tmp_path):

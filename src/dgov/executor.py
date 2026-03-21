@@ -860,13 +860,12 @@ def run_review_only(
             is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
             if not is_fresh:
                 review["stale_files"] = stale_files
+                review["freshness"] = "warn"
                 logger.warning(
-                    "Stale dependency for %s: main changed %s since base",
+                    "Stale dependency for %s: main changed %s since base (will attempt merge)",
                     slug,
                     stale_files,
                 )
-                passed = False
-                error = f"Stale files: main changed {stale_files} since base_sha; rebase required"
 
     return ReviewOnlyResult(
         slug=slug,
@@ -1714,10 +1713,11 @@ def _dag_merge(
         )
         is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
         if not is_fresh:
-            error = f"Stale files: main changed {stale_files} since base_sha; rebase required"
-            logger.warning("DAG merge blocked for %s: %s", pane_slug, error)
-            progress(f"  merge blocked {task_slug}: stale")
-            return TaskMergeDone(task_slug, error=error)
+            logger.warning(
+                "Stale dependency for DAG %s: main changed %s (will attempt merge)",
+                pane_slug,
+                stale_files,
+            )
 
     result = run_merge_only(project_root, pane_slug, session_root=session_root)
     if result.error:
