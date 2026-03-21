@@ -1176,10 +1176,9 @@ def _full_cleanup(
                 capture_output=True,
             )
 
-    # 4. Copy pi session transcript if pane used pi agent
-    agent = pane_record.get("agent", "")
-    if agent == "pi":
-        worktree_path = pane_record.get("worktree_path", "")
+    # 4. Copy pi session transcript (all workers run through pi harness)
+    worktree_path = pane_record.get("worktree_path", "")
+    if worktree_path:
         # Transform worktree path to pi session dir format:
         # /Users/jakegearon/projects/dgov/.dgov/worktrees/my-task
         # → --Users-jakegearon-projects-dgov-.dgov-worktrees-my-task--
