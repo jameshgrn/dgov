@@ -480,6 +480,21 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_DECISION_JOURNAL_TABLE_SQL)
     conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
 
+    # Spans + tool traces (Phase 4 observability)
+    from dgov.spans import (
+        CREATE_SPANS_IDX_KIND,
+        CREATE_SPANS_IDX_TRACE,
+        CREATE_SPANS_SQL,
+        CREATE_TOOL_TRACES_IDX,
+        CREATE_TOOL_TRACES_SQL,
+    )
+
+    conn.execute(CREATE_SPANS_SQL)
+    conn.execute(CREATE_SPANS_IDX_TRACE)
+    conn.execute(CREATE_SPANS_IDX_KIND)
+    conn.execute(CREATE_TOOL_TRACES_SQL)
+    conn.execute(CREATE_TOOL_TRACES_IDX)
+
     # Migrate: add hierarchy columns if missing
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
         try:
