@@ -38,7 +38,13 @@ def _base_provider(kind: DecisionKind, *, session_root: str | None = None) -> De
                 ]
             )
         case DecisionKind.REVIEW_OUTPUT:
-            return InspectionReviewProvider()
+            # Future-extensible cascade: deterministic inspection provider
+            # Infrastructure wired for adding additional review providers later
+            return CascadeProvider(
+                inner_providers=[
+                    InspectionReviewProvider(),
+                ]
+            )
         case _:
             raise UnsupportedDecisionError(f"No provider registered for {kind}")
 

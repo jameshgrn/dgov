@@ -28,10 +28,13 @@ class TestGetProvider:
         assert isinstance(provider, CascadeProvider)
 
     @pytest.mark.unit
-    def test_get_provider_returns_inspection_review_for_review_output(self):
-        """get_provider returns InspectionReviewProvider for REVIEW_OUTPUT kind."""
+    def test_get_provider_returns_cascade_for_review_output(self):
+        """get_provider returns CascadeProvider for REVIEW_OUTPUT kind."""
         provider = get_provider(DecisionKind.REVIEW_OUTPUT)
-        assert isinstance(provider, InspectionReviewProvider)
+        assert isinstance(provider, CascadeProvider)
+        # Verify the cascade contains InspectionReviewProvider as inner provider
+        assert len(provider.inner_providers) == 1
+        assert isinstance(provider.inner_providers[0], InspectionReviewProvider)
 
     @pytest.mark.unit
     def test_get_provider_wraps_with_audit_when_session_root_provided(self):
