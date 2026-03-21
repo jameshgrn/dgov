@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import shlex
 import shutil
 import string
 import time
@@ -690,6 +691,12 @@ def build_launch_command(
 
     prompt_file = _write_prompt_file(project_root, slug, prompt)
     snippet = _prompt_read_and_delete_snippet(prompt_file)
+
+    # Inject worker instructions as system prompt for pi workers
+    instructions_path = Path(project_root) / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md"
+    if agent.prompt_command == "pi" and instructions_path.exists():
+        instr = shlex.quote(str(instructions_path))
+        base = f"{base} --append-system-prompt {instr}"
 
     if agent.prompt_transport == "stdin":
         return f"{snippet}; printf '%s\\n' \"$DGOV_PROMPT_CONTENT\" | {base}"
