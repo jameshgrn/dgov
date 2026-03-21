@@ -734,7 +734,8 @@ class TestRunRelatedTestsTimeout:
         with patch("subprocess.run") as mock_run:
             result = _run_related_tests(str(tmp_path), ["src/dgov/feature.py"])
 
-            assert result == {}
+            assert result["no_tests_found"] is True
+            assert "src/dgov/feature.py" in result["changed_files"]
             mock_run.assert_not_called()
 
     def test_existing_test_files_in_changed_list(self, tmp_path):
