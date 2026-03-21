@@ -27,6 +27,8 @@ These are architecture rules, not optional style preferences.
 - **File claims are first-class and exact.** Declarative task file sets are the source of truth for scheduling, preflight, conflict checks, and targeted validation. Prompt-derived touches are a fallback for freeform pane prompts, not the preferred control plane.
 - **Event-driven progression beats polling.** State transitions should advance from emitted events and persisted pane state, not tier barriers, `sleep` loops, or governor polling when a direct signal exists.
 - **Preserve recovery artifacts.** Failed review/merge/post-merge validation paths should default to leaving the pane, worktree, branch, and failure context inspectable. Do not auto-clean evidence unless the failure is fully recoverable and intentionally handled.
+- **Intelligence hierarchy: determinism → statistics → LLM.** Use the cheapest sufficient signal. Deterministic checks first (state machine, file claims, freshness). Statistical data second (reliability scores, latency, retry rates from the decision journal). LLM judgment only when the first two are insufficient.
+- **Separate judgment from execution.** The kernel computes what kind of decision is needed. A provider returns a structured decision. The kernel executes the deterministic consequence. No module should both gather facts and act on them in the same call.
 
 ## DAG Principles
 
