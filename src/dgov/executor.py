@@ -732,6 +732,42 @@ def run_review_only(
         passed = False
         error = f"Review verdict is {verdict}; refusing to merge"
 
+    # Build semantic manifest and check for claim violations / staleness
+    if passed and commit_count > 0 and session_root:
+        import os
+
+        from dgov.kernel import build_manifest_on_completion, validate_manifest_freshness
+        from dgov.persistence import get_pane
+
+        sr = os.path.abspath(session_root)
+        try:
+            pane = get_pane(sr, slug)
+        except (OSError, Exception):
+            pane = None
+        if pane:
+            base_sha = pane.get("base_sha", "")
+            file_claims = tuple(pane.get("file_claims", ()) or ())
+            wt = pane.get("worktree_path", "")
+            manifest_root = wt if wt else project_root
+            manifest = build_manifest_on_completion(
+                manifest_root, slug, base_sha, file_claims=file_claims
+            )
+            if manifest.claim_violations:
+                review["claim_violations"] = list(manifest.claim_violations)
+                logger.info(
+                    "Claim violations for %s: %s",
+                    slug,
+                    manifest.claim_violations,
+                )
+            is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
+            if not is_fresh:
+                review["stale_files"] = stale_files
+                logger.warning(
+                    "Stale dependency for %s: main changed %s since base",
+                    slug,
+                    stale_files,
+                )
+
     return ReviewOnlyResult(
         slug=slug,
         review=review,
