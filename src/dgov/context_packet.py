@@ -22,6 +22,19 @@ class ContextPacket:
     commit_message: str = ""
 
     @property
+    def has_context(self) -> bool:
+        return any(
+            [
+                self.primary_files,
+                self.also_check,
+                self.tests,
+                self.hints,
+                self.file_claims,
+                self.architecture_context,
+            ]
+        )
+
+    @property
     def read_files(self) -> tuple[str, ...]:
         if self.file_claims:
             return _dedupe([*self.file_claims, *self.also_check])
