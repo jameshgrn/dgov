@@ -54,12 +54,14 @@ class DecisionKind(StrEnum):
 class RouteTaskRequest:
     prompt: str
     installed_agents: tuple[str, ...] = ()
+    pane_slug: str | None = None
     trace_id: str | None = None
 
 
 @dataclass(frozen=True)
 class MonitorOutputRequest:
     output: str
+    pane_slug: str | None = None
     trace_id: str | None = None
 
 

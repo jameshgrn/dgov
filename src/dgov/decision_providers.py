@@ -48,6 +48,8 @@ class DeterministicClassificationProvider(DecisionProvider):
             kind=DecisionKind.CLASSIFY_OUTPUT,
             provider_id=self.provider_id,
             decision=MonitorOutputDecision(classification=classification),
+            model_id="deterministic",
+            confidence=1.0,
             trace_id=request.trace_id,
         )
 
@@ -123,6 +125,7 @@ class OpenRouterRoutingProvider(DecisionProvider):
             model_id=response.get("model"),
             decision=RouteTaskDecision(agent=selected),
             latency_ms=(time.perf_counter() - started) * 1000,
+            confidence=1.0,
             trace_id=request.trace_id,
         )
 
@@ -219,6 +222,7 @@ class LocalOutputClassificationProvider(DecisionProvider):
             model_id=response.get("model"),
             decision=MonitorOutputDecision(classification=classification),
             latency_ms=(time.perf_counter() - started) * 1000,
+            confidence=0.7,
             trace_id=request.trace_id,
         )
 
@@ -261,6 +265,8 @@ class InspectionReviewProvider(DecisionProvider):
                 issues=issues,
                 reason=reason,
             ),
+            model_id="deterministic",
+            confidence=1.0,
             artifact=review,
             latency_ms=latency_ms,
             trace_id=request.trace_id,
@@ -356,5 +362,7 @@ class StatisticalRoutingProvider(DecisionProvider):
                 agent=logical_name,
                 reason=f"statistical: {pass_rate:.0%} pass rate over {review_count} reviews",
             ),
+            model_id="statistical",
+            confidence=pass_rate,
             trace_id=request.trace_id,
         )
