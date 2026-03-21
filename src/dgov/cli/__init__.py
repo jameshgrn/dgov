@@ -213,6 +213,7 @@ def cli(ctx, governor):
         "worker",
         "monitor",
         "codebase",
+        "transcript",
     ):
         _check_governor_context()
 
@@ -460,6 +461,7 @@ from dgov.cli.admin import (  # noqa: E402
     stats,
     status,
     terrain_cmd,
+    transcript_cmd,
     tunnel_cmd,
     version_cmd,
 )
@@ -503,6 +505,7 @@ cli.add_command(tunnel_cmd)
 cli.add_command(worker)
 cli.add_command(monitor_cmd)
 cli.add_command(journal_cmd)
+cli.add_command(transcript_cmd)
 
 
 if __name__ == "__main__":

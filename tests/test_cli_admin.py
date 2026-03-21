@@ -264,3 +264,81 @@ class TestCodebaseCmd:
         content = codebase_path.read_text(encoding="utf-8")
         assert "# dgov Codebase Map" in content
         assert "## Module groups" in content
+
+
+class TestTranscriptCmd:
+    def test_transcript_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test transcript command with non-existent file."""
+        result = runner.invoke(cli, ["transcript", "nonexistent", "-r", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "No transcript found" in result.output
+
+    def test_transcript_json_mode(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test transcript command JSON output mode."""
+        logs_dir = tmp_path / ".dgov" / "logs"
+        logs_dir.mkdir(parents=True)
+        transcript_path = logs_dir / "test-task.transcript.jsonl"
+
+        entry = {
+            "type": "message",
+            "id": "test-id",
+            "timestamp": "2026-03-19T18:15:26.203Z",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]},
+        }
+        transcript_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["transcript", "test-task", "--json", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["type"] == "message"
+        assert data["message"]["content"][0]["text"] == "Hello"
+
+    def test_transcript_summary_mode(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test transcript command summary output mode."""
+        logs_dir = tmp_path / ".dgov" / "logs"
+        logs_dir.mkdir(parents=True)
+        transcript_path = logs_dir / "test-task.transcript.jsonl"
+
+        # Add user and assistant message entries
+        lines = [
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": "1",
+                    "timestamp": "2026-03-19T18:15:26.203Z",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "Hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": "2",
+                    "timestamp": "2026-03-19T18:15:27.203Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Hi there!"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "model_change",
+                    "id": "3",
+                    "timestamp": "2026-03-19T18:15:28.203Z",
+                }
+            ),
+        ]
+        transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        result = runner.invoke(cli, ["transcript", "test-task", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Hi there!" in result.output
+        assert "[18:15:27]" in result.output
+        # User message and model_change should be skipped
+        assert "Hello" not in result.output

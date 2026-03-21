@@ -929,6 +929,96 @@ def doctor_cmd(project_root):
     sys.exit(0 if ok else 1)
 
 
+@click.command("transcript")
+@click.argument("slug")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+@click.option("--json", "output_json", is_flag=True, help="Output raw JSONL")
+def transcript_cmd(slug, project_root, session_root, output_json):
+    """View a worker session transcript."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
+    # Default session_root to project_root if not provided
+    session_root = os.path.abspath(session_root) if session_root else os.path.abspath(project_root)
+
+    # Build path to transcript file: .dgov/logs/<slug>.transcript.jsonl
+    logs_dir = Path(session_root) / ".dgov" / "logs"
+    transcript_path = logs_dir / f"{slug}.transcript.jsonl"
+
+    if not transcript_path.exists():
+        click.echo(f"No transcript found for slug '{slug}'", err=True)
+        sys.exit(1)
+
+    lines = transcript_path.read_text(encoding="utf-8").splitlines()
+
+    if output_json:
+        # Raw JSONL output - each line preserved
+        for line in lines:
+            click.echo(line)
+        return
+
+    # Parse and display summary
+    def _format_summary(entry: dict) -> str | None:
+        """Extract summary from a transcript entry."""
+        entry_type = entry.get("type")
+        if entry_type != "message":
+            return None
+
+        message = entry.get("message", {})
+        role = message.get("role")
+        if role != "assistant":
+            return None
+
+        content = message.get("content", [])
+        summary_parts = []
+
+        for item in content:
+            item_type = item.get("type")
+            if item_type == "tool_use":
+                name = item.get("name", "")
+                input_data = item.get("input", {})
+                summary_parts.append(f"🔧 {name}: {json.dumps(input_data)[:50]}")
+            elif item_type == "text":
+                text = item.get("text", "")
+                # Truncate long responses
+                if len(text) > 100:
+                    text = text[:97] + "..."
+                summary_parts.append(f"📝 {text}")
+
+        return " ".join(summary_parts) if summary_parts else None
+
+    def _format_timestamp(ts: str | None) -> str:
+        """Format ISO timestamp to readable form."""
+        if not ts:
+            return ""
+        try:
+            dt = __import__("datetime").datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            return dt.strftime("%H:%M:%S")
+        except (ValueError, TypeError):
+            return ""
+
+    click.echo(f"=== Transcript: {slug} ===\n")
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        summary = _format_summary(entry)
+        if summary is not None:
+            ts = _format_timestamp(entry.get("timestamp"))
+            timestamp_str = f"[{ts}]" if ts else ""
+            click.echo(f"{timestamp_str} {summary}")
+
+    click.echo()
+
+
 @click.command("gc")
 @click.option("--root", "-r", default=".", help="Project root")
 @SESSION_ROOT_OPTION
