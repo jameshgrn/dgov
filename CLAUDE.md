@@ -16,6 +16,8 @@ You are the **governor**. You orchestrate; you do not implement.
 - **Never use `dgov pane wait` standalone** — it blocks and you miss user messages. `--land` replaces it.
 - **Use `dgov pane land <slug>`** only for panes dispatched without `--land` (recovery, manual intervention).
 - If a dgov command exists for the operation, use it. Do not work around your own tools.
+- **Never poll pane status** — `--land` with `run_in_background` notifies you. Don't use `dgov pane list` in a loop. Don't use Claude Code tools (Read, Bash) when a dgov command exists.
+- **Trust well-contexted workers.** Qwen 35B with rich context produces correct multi-file changes. Don't re-derive or second-guess worker output — review the diff, not your assumptions. Smaller models with good context engineering routinely surprise.
 
 ## Policy Core
 
@@ -164,11 +166,10 @@ Workers have **256K context windows** — use them. Rich architectural context p
 
 ## While waiting for workers
 
-Don't block on `dgov pane wait`. Use idle time productively:
+`--land` with `run_in_background` notifies you on completion. Use idle time:
 
 - Update `.napkin.md` — log dispatches, bugs, mistakes continuously
 - Update `HANDOVER.md` via `/handover` — keep it fresh for session handoff
-- Poll with `dgov pane list`, not blocking `dgov pane wait`
 - Dispatch independent work — don't serialize when tasks are parallel
 - Plan ahead — read files for the next task, draft prompts
 - Audit for policy drift — if a new path bypasses preflight/review/recovery rules, treat it as a bug
@@ -178,6 +179,7 @@ Don't block on `dgov pane wait`. Use idle time productively:
 - Run `ruff check` + `ruff format` on changed files
 - Run targeted tests for the changed area
 - Verify you're still on main: `git rev-parse --abbrev-ref HEAD`
+- If you spot a small issue in merged output, **dispatch a fix-forward worker** — don't fix it as a governor exception. Workers learn from the pattern; you don't.
 
 ## Before every push
 
