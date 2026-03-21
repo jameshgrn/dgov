@@ -1403,6 +1403,21 @@ def run_dag_kernel(
             queue.extend(kernel.handle(TaskClosed(action.task_slug)))
             continue
 
+    # Queue exhausted without DagDone — shouldn't happen
+    from dgov.kernel import DagTaskState
+
+    merged = [s for s, st in kernel.task_states.items() if st == DagTaskState.MERGED]
+    failed = [s for s, st in kernel.task_states.items() if st == DagTaskState.FAILED]
+    skipped = [s for s, st in kernel.task_states.items() if st == DagTaskState.SKIPPED]
+    return DagRunResult(
+        status="partial" if merged else "failed",
+        merged=merged,
+        failed=failed,
+        skipped=skipped,
+        run_id=run_id,
+        error="Kernel queue exhausted without DagDone",
+    )
+
 
 def _dag_dispatch(
     dag: object,
