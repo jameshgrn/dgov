@@ -473,15 +473,25 @@ def _write_worktree_instructions(
             preamble += start_here_section + "\n"
         preamble += codebase_hint + "\n"
         preamble += (
+            "## Tooling\n"
+            "- Lint: `uv run ruff check <file>` then `uv run ruff format <file>`\n"
+            "- Test: `uv run pytest <test_file> -q -m unit`\n"
+            "- Never run the full test suite — target specific test files\n\n"
             "## Commit checklist\n"
-            "1. git add <changed files>\n"
-            '2. git commit -m "<message>"\n'
-            "3. Verify at least one commit exists beyond DGOV_BASE_SHA\n"
+            "1. Run ruff check + format on changed files\n"
+            "2. Run relevant tests\n"
+            "3. git add <changed files>\n"
+            '4. git commit -m "<message>"\n'
+            "5. Verify at least one commit exists beyond DGOV_BASE_SHA\n"
             "   with `git log --oneline $DGOV_BASE_SHA..HEAD`\n"
-            "4. Run `dgov worker complete` ONLY after step 3 succeeds\n"
-            "5. If no real repo changes were made, run `dgov worker fail`\n"
+            "6. Run `dgov worker complete` ONLY after step 5 succeeds\n"
+            "7. If no real repo changes were made, run `dgov worker fail`\n"
             "   with a reason instead of `complete`\n"
         )
+
+        # Include the task prompt so workers have it in the instructions file
+        if prompt:
+            preamble += f"\n## Task\n\n{prompt}\n"
 
     # Write only the role-specific preamble (no repo context inheritance)
     content = preamble
