@@ -139,36 +139,57 @@ class TestChatCompletion:
 
 
 class TestClassifyTask:
+    """Tests for classify_task via OpenRouter.
+
+    The ROUTE_TASK cascade is: StatisticalRoutingProvider → OpenRouterRoutingProvider.
+    Mock read_decision_journal to return empty so statistical falls through to OpenRouter.
+    """
+
+    def _patch_journal_empty(self):
+        return patch("dgov.persistence.read_decision_journal", return_value=[])
+
     def test_classify_pi_via_openrouter(self):
         from dgov.strategy import classify_task
 
-        with patch(
-            "dgov.openrouter.chat_completion",
-            return_value={"choices": [{"message": {"content": "pi"}}]},
+        with (
+            self._patch_journal_empty(),
+            patch(
+                "dgov.openrouter.chat_completion",
+                return_value={"choices": [{"message": {"content": "pi"}}]},
+            ),
         ):
             assert classify_task("rename variable x to y in main.py") == "pi"
 
     def test_classify_claude_via_openrouter(self):
         from dgov.strategy import classify_task
 
-        with patch(
-            "dgov.openrouter.chat_completion",
-            return_value={"choices": [{"message": {"content": "claude"}}]},
+        with (
+            self._patch_journal_empty(),
+            patch(
+                "dgov.openrouter.chat_completion",
+                return_value={"choices": [{"message": {"content": "claude"}}]},
+            ),
         ):
             assert classify_task("debug why tests are flaky") == "claude"
 
     def test_classify_falls_back_to_claude_on_error(self):
         from dgov.strategy import classify_task
 
-        with patch("dgov.openrouter.chat_completion", side_effect=RuntimeError("all failed")):
+        with (
+            self._patch_journal_empty(),
+            patch("dgov.openrouter.chat_completion", side_effect=RuntimeError("all failed")),
+        ):
             assert classify_task("anything") == "claude"
 
     def test_classify_multi_agent(self):
         from dgov.strategy import classify_task
 
-        with patch(
-            "dgov.openrouter.chat_completion",
-            return_value={"choices": [{"message": {"content": "codex"}}]},
+        with (
+            self._patch_journal_empty(),
+            patch(
+                "dgov.openrouter.chat_completion",
+                return_value={"choices": [{"message": {"content": "codex"}}]},
+            ),
         ):
             result = classify_task(
                 "refactor all files", installed_agents=["pi", "claude", "codex", "gemini"]

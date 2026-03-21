@@ -239,7 +239,10 @@ class TestAllPanes:
 
 
 class TestClassifyTask:
+    """Mock journal empty so statistical routing falls through to OpenRouter."""
+
     def test_fallback_to_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.persistence.read_decision_journal", lambda *a, **kw: [])
         monkeypatch.setattr(
             "dgov.openrouter.chat_completion",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no llm")),
@@ -247,6 +250,7 @@ class TestClassifyTask:
         assert classify_task("fix the lint error") == "claude"
 
     def test_returns_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.persistence.read_decision_journal", lambda *a, **kw: [])
         monkeypatch.setattr(
             "dgov.openrouter.chat_completion",
             lambda *a, **kw: {"choices": [{"message": {"content": "claude"}}]},
@@ -254,6 +258,7 @@ class TestClassifyTask:
         assert classify_task("debug flaky test") == "claude"
 
     def test_returns_pi_on_pi_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.persistence.read_decision_journal", lambda *a, **kw: [])
         monkeypatch.setattr(
             "dgov.openrouter.chat_completion",
             lambda *a, **kw: {"choices": [{"message": {"content": "pi"}}]},
@@ -2667,14 +2672,14 @@ class TestWaitWorkerPane:
 
         with (
             patch("dgov.persistence.get_pane", return_value={"slug": "s1", "agent": "pi"}),
+            patch("dgov.persistence.latest_event_id", return_value=0),
+            patch("dgov.persistence.wait_for_events", return_value=[]),
             patch("dgov.waiter._is_done", return_value=False),
             patch("dgov.status.capture_worker_output", return_value=None),
             patch("dgov.persistence.settle_completion_state"),
             patch("dgov.persistence.emit_event"),
-            patch("dgov.waiter.time.sleep"),
-            patch("dgov.waiter.time.monotonic") as mock_mono,
+            patch("dgov.waiter.time.monotonic", side_effect=[0, 0, 0, 100]),
         ):
-            mock_mono.side_effect = [0, 100]
             with pytest.raises(PaneTimeoutError) as exc_info:
                 wait_worker_pane(str(tmp_path), "s1", timeout=10, poll=1)
             assert exc_info.value.slug == "s1"
