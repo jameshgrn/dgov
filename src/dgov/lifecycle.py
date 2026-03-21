@@ -494,8 +494,9 @@ def _write_worktree_instructions(
             "5. Verify at least one commit exists beyond DGOV_BASE_SHA\n"
             "   with `git log --oneline $DGOV_BASE_SHA..HEAD`\n"
             "6. Run `dgov worker complete` ONLY after step 5 succeeds\n"
-            "7. If no real repo changes were made, run `dgov worker fail`\n"
-            "   with a reason instead of `complete`\n"
+            "7. If the task is already done or no changes are needed,\n"
+            "   run `dgov worker complete -m 'already implemented'`\n"
+            "   — this is a valid outcome, not a failure\n"
         )
 
         # Include the task prompt so workers have it in the instructions file
