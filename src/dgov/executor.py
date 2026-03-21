@@ -1429,10 +1429,22 @@ def _dag_dispatch(
         commit_message=task.commit_message,
     )
 
+    # Resolve logical agent name (e.g. qwen-35b) to physical backend
+    # for preflight. create_worker_pane resolves again internally.
+    from dgov.router import is_routable
+    from dgov.router import resolve_agent as _resolve
+
+    preflight_agent = task.agent
+    if is_routable(task.agent):
+        try:
+            preflight_agent, _ = _resolve(task.agent, session_root, dag.project_root)
+        except RuntimeError:
+            preflight_agent = "pi"
+
     try:
         report = run_dispatch_preflight(
             dag.project_root,
-            task.agent,
+            preflight_agent,
             session_root=session_root,
             packet=packet,
         )
