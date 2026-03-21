@@ -18,6 +18,7 @@ class ContextPacket:
     tests: tuple[str, ...] = ()
     hints: tuple[str, ...] = ()
     file_claims: tuple[str, ...] = ()
+    architecture_context: tuple[str, ...] = ()
     commit_message: str = ""
 
     @property
@@ -71,6 +72,7 @@ def build_context_packet(
     file_claims: list[str] | tuple[str, ...] | None = None,
     tests: list[str] | tuple[str, ...] | None = None,
     hints: list[str] | tuple[str, ...] | None = None,
+    architecture_context: list[str] | tuple[str, ...] | None = None,
     commit_message: str | None = None,
 ) -> ContextPacket:
     from dgov.strategy import extract_task_context
@@ -83,6 +85,9 @@ def build_context_packet(
     also_check = _dedupe(list(inferred.get("also_check", [])))
     packet_tests = _dedupe([*list(inferred.get("tests", [])), *list(tests or ())])
     packet_hints = _dedupe([*list(inferred.get("hints", [])), *list(hints or ())])
+    packet_architecture_context = _dedupe(
+        list(inferred.get("architecture_context", [])) or list(architecture_context or ())
+    )
 
     return ContextPacket(
         prompt=prompt,
@@ -90,6 +95,7 @@ def build_context_packet(
         also_check=also_check,
         tests=packet_tests,
         hints=packet_hints,
+        architecture_context=packet_architecture_context,
         file_claims=claims,
         commit_message=infer_commit_message(prompt, explicit=commit_message),
     )
@@ -128,6 +134,11 @@ def render_start_here_section(packet: ContextPacket) -> str:
         lines.append("Hints:\n")
         for hint in packet.hints:
             lines.append(f"- {hint}\n")
+        lines.append("\n")
+    if packet.architecture_context:
+        lines.append("Architecture context:\n")
+        for ctx in packet.architecture_context:
+            lines.append(f"- {ctx}\n")
         lines.append("\n")
     if packet.commit_message:
         lines.append(f"Commit message: `{packet.commit_message}`\n\n")
