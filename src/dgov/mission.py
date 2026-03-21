@@ -127,8 +127,11 @@ def run_mission(
     Synchronous state machine: PENDING -> RUNNING -> WAITING -> REVIEWING
     -> MERGING -> COMPLETED (or FAILED / REVIEW_PENDING at any step).
     """
-    from dgov.executor import run_dispatch_preflight, run_post_dispatch_lifecycle
-    from dgov.lifecycle import create_worker_pane
+    from dgov.executor import (
+        run_dispatch_only,
+        run_dispatch_preflight,
+        run_post_dispatch_lifecycle,
+    )
     from dgov.strategy import _generate_slug
 
     policy = policy or MissionPolicy()
@@ -164,14 +167,13 @@ def run_mission(
     emit_event(session_root, "mission_running", slug_s, agent=policy.agent)
     logger.info("Mission %s: dispatching worker", slug_s)
     try:
-        pane = create_worker_pane(
+        pane = run_dispatch_only(
             project_root=project_root,
             prompt=prompt,
             agent=policy.agent,
+            session_root=session_root,
             permission_mode=policy.permission_mode,
             slug=slug_s,
-            session_root=session_root,
-            context_packet=packet,
         )
         slug_s = pane.slug
     except Exception as e:
