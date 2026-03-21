@@ -1315,98 +1315,93 @@ def run_dag_kernel(
     # Stable state tracking per pane for poll_once
     stable_states: dict[str, dict] = {}
 
-    while True:
-        for action in actions:
-            if isinstance(action, DagDone):
-                _progress(
-                    f"DAG {action.status}: "
-                    f"{len(action.merged)} merged, "
-                    f"{len(action.failed)} failed, "
-                    f"{len(action.skipped)} skipped"
-                )
-                return DagRunResult(
-                    status=action.status,
-                    merged=list(action.merged),
-                    failed=list(action.failed),
-                    skipped=list(action.skipped),
-                    run_id=run_id,
-                )
+    # Action queue — process non-blocking actions immediately,
+    # only block on WaitForAny.
+    queue: list = list(actions)
 
-            if isinstance(action, DispatchTask):
-                event = _dag_dispatch(dag, action.task_slug, run_id, session_root, _progress)
-                if isinstance(event, TaskDispatched):
-                    pane_map[action.task_slug] = event.pane_slug
-                actions = kernel.handle(event)
-                break  # Re-enter loop with new actions
+    while queue:
+        action = queue.pop(0)
 
-            if isinstance(action, WaitForAny):
-                event = _dag_wait_any(
-                    project_root,
-                    session_root,
-                    action.task_slugs,
-                    pane_map,
-                    stable_states,
-                    task_timeouts,
-                    poll_interval,
-                )
-                actions = kernel.handle(event)
-                break
-
-            if isinstance(action, ReviewTask):
-                event = _dag_review(
-                    project_root,
-                    session_root,
-                    action.task_slug,
-                    action.pane_slug,
-                    _progress,
-                )
-                actions = kernel.handle(event)
-                break
-
-            if isinstance(action, MergeTask):
-                event = _dag_merge(
-                    project_root,
-                    session_root,
-                    action.task_slug,
-                    action.pane_slug,
-                    _progress,
-                )
-                actions = kernel.handle(event)
-                break
-
-            if isinstance(action, SkipTask):
-                _dag_skip(
-                    session_root,
-                    run_id,
-                    action.task_slug,
-                    dag,
-                    action.reason,
-                    _progress,
-                )
-                actions = kernel.handle(TaskClosed(action.task_slug))
-                break
-
-            if isinstance(action, CloseTask):
-                _dag_close(
-                    project_root,
-                    session_root,
-                    action.task_slug,
-                    action.pane_slug,
-                    action.reason,
-                    _progress,
-                )
-                actions = kernel.handle(TaskClosed(action.task_slug))
-                break
-        else:
-            # No actions left and no DagDone — shouldn't happen
-            return DagRunResult(
-                status="failed",
-                merged=[],
-                failed=list(kernel.task_states.keys()),
-                skipped=[],
-                run_id=run_id,
-                error="Kernel produced no actions",
+        if isinstance(action, DagDone):
+            _progress(
+                f"DAG {action.status}: "
+                f"{len(action.merged)} merged, "
+                f"{len(action.failed)} failed, "
+                f"{len(action.skipped)} skipped"
             )
+            return DagRunResult(
+                status=action.status,
+                merged=list(action.merged),
+                failed=list(action.failed),
+                skipped=list(action.skipped),
+                run_id=run_id,
+            )
+
+        if isinstance(action, DispatchTask):
+            event = _dag_dispatch(dag, action.task_slug, run_id, session_root, _progress)
+            if isinstance(event, TaskDispatched):
+                pane_map[action.task_slug] = event.pane_slug
+            queue.extend(kernel.handle(event))
+            continue
+
+        if isinstance(action, WaitForAny):
+            event = _dag_wait_any(
+                project_root,
+                session_root,
+                action.task_slugs,
+                pane_map,
+                stable_states,
+                task_timeouts,
+                poll_interval,
+            )
+            queue.extend(kernel.handle(event))
+            continue
+
+        if isinstance(action, ReviewTask):
+            event = _dag_review(
+                project_root,
+                session_root,
+                action.task_slug,
+                action.pane_slug,
+                _progress,
+            )
+            queue.extend(kernel.handle(event))
+            continue
+
+        if isinstance(action, MergeTask):
+            event = _dag_merge(
+                project_root,
+                session_root,
+                action.task_slug,
+                action.pane_slug,
+                _progress,
+            )
+            queue.extend(kernel.handle(event))
+            continue
+
+        if isinstance(action, SkipTask):
+            _dag_skip(
+                session_root,
+                run_id,
+                action.task_slug,
+                dag,
+                action.reason,
+                _progress,
+            )
+            queue.extend(kernel.handle(TaskClosed(action.task_slug)))
+            continue
+
+        if isinstance(action, CloseTask):
+            _dag_close(
+                project_root,
+                session_root,
+                action.task_slug,
+                action.pane_slug,
+                action.reason,
+                _progress,
+            )
+            queue.extend(kernel.handle(TaskClosed(action.task_slug)))
+            continue
 
 
 def _dag_dispatch(
