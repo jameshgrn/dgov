@@ -1596,7 +1596,30 @@ def _dag_merge(
     progress: Callable[[str], None],
 ) -> object:
     """Execute a MergeTask action. Returns TaskMergeDone."""
-    from dgov.kernel import TaskMergeDone
+    from dgov.kernel import (
+        TaskMergeDone,
+        build_manifest_on_completion,
+        validate_manifest_freshness,
+    )
+    from dgov.persistence import get_pane
+
+    # Re-check staleness at merge time: review may have passed but main could
+    # have advanced in the window between review and merge.
+    pane = get_pane(session_root, pane_slug)
+    if pane:
+        base_sha = pane.get("base_sha", "")
+        file_claims = tuple(pane.get("file_claims", ()) or ())
+        wt = pane.get("worktree_path", "")
+        manifest_root = wt if wt else project_root
+        manifest = build_manifest_on_completion(
+            manifest_root, pane_slug, base_sha, file_claims=file_claims
+        )
+        is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
+        if not is_fresh:
+            error = f"Stale files: main changed {stale_files} since base_sha; rebase required"
+            logger.warning("DAG merge blocked for %s: %s", pane_slug, error)
+            progress(f"  merge blocked {task_slug}: stale")
+            return TaskMergeDone(task_slug, error=error)
 
     result = run_merge_only(project_root, pane_slug, session_root=session_root)
     if result.error:
