@@ -42,7 +42,6 @@ def dag_run(dagfile, dry_run, tier, skip, max_retries, auto_merge, max_concurren
             dry_run=False,
             tier_limit=tier,
             skip=set(skip) if skip else None,
-            max_retries=max_retries,
             auto_merge=auto_merge,
             max_concurrent=max_concurrent,
         )
@@ -134,7 +133,6 @@ def dag_resume(dagfile, run_id, max_retries, max_concurrent):
         summary = run_dag(
             dagfile,
             dry_run=False,
-            max_retries=max_retries,
             auto_merge=True,
             max_concurrent=max_concurrent,
         )

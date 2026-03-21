@@ -1543,7 +1543,7 @@ def _dag_wait_any(
                 continue
 
             obs = observe_worker(project_root, session_root, pane_slug)
-            if obs.phase in (WorkerPhase.DONE, WorkerPhase.FAILED):
+            if obs.phase in (WorkerPhase.DONE, WorkerPhase.FAILED, WorkerPhase.UNKNOWN):
                 pane_state = "done" if obs.phase == WorkerPhase.DONE else "failed"
                 return TaskWaitDone(task_slug, pane_slug, pane_state)
 

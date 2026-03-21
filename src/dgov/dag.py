@@ -47,7 +47,6 @@ def run_dag(
     dry_run: bool = False,
     tier_limit: int | None = None,
     skip: set[str] | None = None,
-    max_retries: int = 1,
     auto_merge: bool = True,
     max_concurrent: int = 0,
 ) -> DagRunSummary:
@@ -58,11 +57,19 @@ def run_dag(
         print(render_dry_run(tiers, dag.tasks))
         return DagRunSummary(run_id=0, dag_file=dag_file, status="dry_run")
 
+    # Convert tier_limit to skip set: skip all tasks in tiers > tier_limit
+    effective_skip = set(skip or ())
+    if tier_limit is not None:
+        tiers = compute_tiers(dag.tasks)
+        for tier_idx, tier_tasks in enumerate(tiers):
+            if tier_idx > tier_limit:
+                effective_skip.update(tier_tasks)
+
     return run_dag_via_kernel(
         dag,
         dag_key=str(Path(dag_file).resolve()),
         definition_hash=_dag_file_hash(dag_file),
-        skip=skip,
+        skip=effective_skip or None,
         auto_merge=auto_merge,
         max_concurrent=max_concurrent,
     )
