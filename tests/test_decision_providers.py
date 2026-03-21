@@ -1,0 +1,534 @@
+"""Unit tests for decision providers in src/dgov/decision_providers.py.
+
+Tests providers NOT covered in test_decision.py:
+- DeterministicClassificationProvider (done/stuck pattern matching, ambiguous error)
+- StatisticalRoutingProvider (highest pass rate selection, insufficient data error, pane fallback)
+- InspectionReviewProvider (verdict handling, missing project_root/slug error)
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from dgov.decision import (
+    MonitorOutputRequest,
+    ProviderError,
+    ReviewOutputDecision,
+    ReviewOutputRequest,
+    RouteTaskRequest,
+)
+from dgov.decision_providers import (
+    DeterministicClassificationProvider,
+    InspectionReviewProvider,
+    StatisticalRoutingProvider,
+)
+
+pytestmark = pytest.mark.unit
+
+
+# -- DeterministicClassificationProvider tests --
+
+
+def test_deterministic_classification_provider_handles_done_patterns():
+    """DeterministicClassificationProvider returns 'done' for completion patterns."""
+    provider = DeterministicClassificationProvider()
+
+    # "task complete" pattern match
+    result = provider.classify_output(MonitorOutputRequest(output="Task complete"))
+    assert result.decision.classification == "done"
+    assert result.provider_id == "deterministic-classifier"
+
+    # Alternative "done" pattern
+    result = provider.classify_output(MonitorOutputRequest(output="All done here"))
+    assert result.decision.classification == "done"
+
+    # "finished" pattern match
+    result = provider.classify_output(MonitorOutputRequest(output="I've finished implementing"))
+    assert result.decision.classification == "done"
+
+
+def test_deterministic_classification_provider_handles_stuck_patterns():
+    """DeterministicClassificationProvider returns 'stuck' for error patterns."""
+    provider = DeterministicClassificationProvider()
+
+    # Generic error pattern
+    result = provider.classify_output(MonitorOutputRequest(output="Error: ConnectionRefusedError"))
+    assert result.decision.classification == "stuck"
+
+    # Exception/traceback pattern
+    output = "Traceback (most recent call last):\n  ..."
+    result = provider.classify_output(MonitorOutputRequest(output=output))
+    assert result.decision.classification == "stuck"
+
+    # Crash/panic/fatal keywords
+    result = provider.classify_output(MonitorOutputRequest(output="Fatal error occurred"))
+    assert result.decision.classification == "stuck"
+
+
+def test_deterministic_classification_provider_raises_on_ambiguous():
+    """DeterministicClassificationProvider raises ProviderError for ambiguous output."""
+    provider = DeterministicClassificationProvider()
+
+    # Output matching no deterministic pattern should raise ProviderError
+    with pytest.raises(ProviderError, match="No deterministic pattern matched"):
+        provider.classify_output(MonitorOutputRequest(output="Working on this now"))
+
+
+def test_deterministic_classification_provider_handles_committing_pattern():
+    """DeterministicClassificationProvider returns 'committing' for git patterns."""
+    provider = DeterministicClassificationProvider()
+
+    result = provider.classify_output(MonitorOutputRequest(output="Running git add and commit"))
+    assert result.decision.classification == "committing"
+
+
+def test_deterministic_classification_provider_handles_waiting_input_pattern():
+    """DeterministicClassificationProvider returns 'waiting_input' for input-waiting patterns."""
+    provider = DeterministicClassificationProvider()
+
+    result = provider.classify_output(MonitorOutputRequest(output="Waiting for user confirmation"))
+    assert result.decision.classification == "waiting_input"
+
+
+def test_deterministic_classification_provider_handles_idle_pattern():
+    """DeterministicClassificationProvider returns 'idle' for idle patterns."""
+    provider = DeterministicClassificationProvider()
+
+    result = provider.classify_output(MonitorOutputRequest(output="No work detected, pausing"))
+    assert result.decision.classification == "idle"
+
+
+# -- StatisticalRoutingProvider tests --
+
+
+def test_statistical_routing_picks_agent_with_highest_pass_rate(tmp_path):
+    """StatisticalRoutingProvider picks agent with highest pass rate from decision journal."""
+    from dgov.persistence import _get_db
+
+    session_root = str(tmp_path)
+
+    # Create mock journal records with known outcomes
+    conn = _get_db(session_root)
+
+    # Agent "pi": 4 safe out of 5 total (80% pass rate)
+    for i in range(4):
+        conn.execute(
+            """INSERT INTO decision_journal
+            (ts, kind, provider_id,
+            trace_id, pane_slug, agent_id,
+            request_json, result_json, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "2024-01-01T00:00:00+00:00",
+                "review_output",
+                "inspection-review",
+                None,
+                f"pi-task-{i}",
+                "pi",
+                "{}",
+                '{"decision": {"verdict": "safe"}}',
+                100.0,
+            ),
+        )
+
+    conn.execute(
+        """INSERT INTO decision_journal
+        (ts, kind, provider_id,
+            trace_id, pane_slug, agent_id,
+            request_json, result_json, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "2024-01-01T00:00:00+00:00",
+            "review_output",
+            "inspection-review",
+            None,
+            "pi-task-4",
+            "pi",
+            "{}",
+            '{"decision": {"verdict": "stuck"}}',
+            100.0,
+        ),
+    )
+
+    # Agent "claude": 5 safe out of 5 total (100% pass rate)
+    for i in range(5):
+        conn.execute(
+            """INSERT INTO decision_journal
+            (ts, kind, provider_id,
+            trace_id, pane_slug, agent_id,
+            request_json, result_json, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "2024-01-01T00:00:00+00:00",
+                "review_output",
+                "inspection-review",
+                None,
+                f"claude-task-{i}",
+                "claude",
+                "{}",
+                '{"decision": {"verdict": "safe"}}',
+                100.0,
+            ),
+        )
+
+    conn.commit()
+
+    # Test: should pick claude (100% > 80%)
+    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=5)
+    result = provider.route_task(
+        RouteTaskRequest(prompt="debug issue", installed_agents=("pi", "claude"))
+    )
+
+    assert result.decision.agent == "claude"
+    assert "statistical:" in result.decision.reason
+
+
+def test_statistical_routing_raises_on_insufficient_samples(tmp_path):
+    """StatisticalRoutingProvider raises ProviderError when < min_samples reviews exist."""
+    from dgov.persistence import _get_db
+
+    session_root = str(tmp_path)
+    conn = _get_db(session_root)
+
+    # Create only 3 reviews (below min_samples=5)
+    for i in range(3):
+        conn.execute(
+            """INSERT INTO decision_journal
+            (ts, kind, provider_id,
+            trace_id, pane_slug, agent_id,
+            request_json, result_json, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "2024-01-01T00:00:00+00:00",
+                "review_output",
+                "inspection-review",
+                None,
+                f"task-{i}",
+                "pi",
+                "{}",
+                '{"decision": {"verdict": "safe"}}',
+                100.0,
+            ),
+        )
+
+    conn.commit()
+
+    # Test: should raise ProviderError("insufficient data")
+    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=5)
+    with pytest.raises(ProviderError, match="insufficient data"):
+        provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
+
+
+def test_statistical_routing_fallback_to_pane_slug_lookup(tmp_path):
+    """StatisticalRoutingProvider falls back to pane lookup when agent_id is missing."""
+    from dgov.persistence import WorkerPane, add_pane
+
+    session_root = str(tmp_path)
+
+    # Create a pane record with agent="pi"
+    pane = WorkerPane(
+        slug="task-1",
+        prompt="test task",
+        pane_id="pane-1",
+        agent="pi",
+        project_root=str(session_root),
+        worktree_path="/tmp/wt",
+        branch_name="test",
+    )
+    add_pane(str(session_root), pane)
+
+    # Create review record WITHOUT agent_id field (simulating old data)
+    from dgov.persistence import _get_db
+
+    conn = _get_db(str(session_root))
+    for _ in range(5):
+        conn.execute(
+            """INSERT INTO decision_journal
+            (ts, kind, provider_id,
+            trace_id, pane_slug, agent_id,
+            request_json, result_json, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "2024-01-01T00:00:00+00:00",
+                "review_output",
+                "inspection-review",
+                None,
+                "task-1",
+                None,
+                "{}",
+                '{"decision": {"verdict": "safe"}}',
+                100.0,
+            ),
+        )
+
+    conn.commit()
+
+    # Test: should still work - falls back to pane slug lookup for agent_id
+    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=5)
+    request = RouteTaskRequest(prompt="test", installed_agents=("pi", "claude"))
+    result = provider.route_task(request)
+
+    assert result.decision.agent == "pi"
+
+
+def test_statistical_routing_handles_empty_journal(tmp_path):
+    """StatisticalRoutingProvider raises when journal is completely empty."""
+    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=1)
+
+    with pytest.raises(ProviderError, match="insufficient data"):
+        provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
+
+
+def test_statistical_routing_excludes_non_review_output_kind(tmp_path):
+    """StatisticalRoutingProvider only processes review_output records."""
+    from dgov.persistence import _get_db
+
+    session_root = str(tmp_path)
+    conn = _get_db(session_root)
+
+    # Add route_task records (should be ignored)
+    conn.execute(
+        """INSERT INTO decision_journal
+        (ts, kind, provider_id, trace_id, pane_slug, agent_id, request_json, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "2024-01-01T00:00:00+00:00",
+            "route_task",
+            "openrouter-routing",
+            None,
+            "task-1",
+            "pi",
+            "{}",
+            100.0,
+        ),
+    )
+
+    # Add classify_output records (should be ignored)
+    conn.execute(
+        """INSERT INTO decision_journal
+        (ts, kind, provider_id,
+        trace_id, request_json,
+        duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?)""",
+        (
+            "2024-01-01T00:00:00+00:00",
+            "classify_output",
+            "deterministic-classifier",
+            None,
+            "{}",
+            100.0,
+        ),
+    )
+
+    conn.commit()
+
+    # Test: should raise insufficient data - non review_output records ignored
+    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=1)
+    with pytest.raises(ProviderError, match="insufficient data"):
+        provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
+
+
+def test_statistical_routing_handles_missing_agent_falls_to_none(tmp_path):
+    """StatisticalRoutingProvider gracefully skips records without agent_id or pane."""
+    from dgov.persistence import _get_db
+
+    session_root = str(tmp_path)
+    conn = _get_db(session_root)
+
+    # Add review records with unknown/missing agent
+    for _ in range(5):
+        conn.execute(
+            """INSERT INTO decision_journal
+            (ts, kind, provider_id,
+            trace_id, pane_slug, agent_id,
+            request_json, result_json, duration_ms)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "2024-01-01T00:00:00+00:00",
+                "review_output",
+                "inspection-review",
+                None,
+                None,
+                None,
+                "{}",
+                '{"decision": {"verdict": "safe"}}',
+                100.0,
+            ),
+        )
+
+    conn.commit()
+
+    # Test: should raise insufficient data - no valid agents found
+    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=1)
+    with pytest.raises(ProviderError, match="insufficient data"):
+        provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
+
+
+# -- InspectionReviewProvider tests --
+
+
+def test_inspection_review_provider_returns_correct_verdict(tmp_path):
+    """InspectionReviewProvider returns typed ReviewOutputDecision with correct verdict."""
+
+    provider = InspectionReviewProvider()
+
+    # Mock the review_worker_pane call with a "safe" verdict
+    mock_review = {
+        "slug": "task-1",
+        "verdict": "safe",
+        "commit_count": 3,
+        "issues": [],
+        "error": None,
+    }
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr("dgov.inspection.review_worker_pane", lambda *args, **kwargs: mock_review)
+
+        result = provider.review_output(
+            ReviewOutputRequest(
+                project_root=str(tmp_path),
+                slug="task-1",
+            )
+        )
+
+    assert result.provider_id == "inspection-review"
+    assert isinstance(result.decision, ReviewOutputDecision)
+    assert result.decision.verdict == "safe"
+    assert result.decision.commit_count == 3
+    assert result.decision.issues == ()
+    assert result.decision.reason is None
+    assert result.artifact == mock_review
+
+
+def test_inspection_review_provider_handles_unsafe_verdict():
+    """InspectionReviewProvider correctly handles non-safe verdicts."""
+    from unittest.mock import patch
+
+    provider = InspectionReviewProvider()
+
+    # Mock with "fail" verdict and issues
+    mock_review = {
+        "slug": "task-2",
+        "verdict": "fail",
+        "commit_count": 0,
+        "issues": ["protected files touched", "test failures"],
+        "error": "tests failed",
+    }
+
+    with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
+        result = provider.review_output(
+            ReviewOutputRequest(
+                project_root="/tmp/test",
+                slug="task-2",
+            )
+        )
+
+    assert result.decision.verdict == "fail"
+    assert result.decision.commit_count == 0
+    assert result.decision.issues == ("protected files touched", "test failures")
+    assert result.decision.reason == "tests failed"
+
+
+def test_inspection_review_provider_requires_project_root(tmp_path):
+    """InspectionReviewProvider raises ProviderError when project_root is missing."""
+    provider = InspectionReviewProvider()
+
+    with pytest.raises(ProviderError, match="project_root and slug"):
+        provider.review_output(
+            ReviewOutputRequest(
+                project_root=None,  # type: ignore[arg-type]
+                slug="task-1",
+            )
+        )
+
+
+def test_inspection_review_provider_requires_slug(tmp_path):
+    """InspectionReviewProvider raises ProviderError when slug is missing."""
+    provider = InspectionReviewProvider()
+
+    with pytest.raises(ProviderError, match="project_root and slug"):
+        provider.review_output(
+            ReviewOutputRequest(
+                project_root=str(tmp_path),
+                slug=None,  # type: ignore[arg-type]
+            )
+        )
+
+
+def test_inspection_review_provider_handles_unknown_verdict():
+    """InspectionReviewProvider handles missing or unknown verdict gracefully."""
+    from unittest.mock import patch
+
+    provider = InspectionReviewProvider()
+
+    # Mock with missing verdict
+    mock_review = {
+        "slug": "task-3",
+        "verdict": None,  # type: ignore[dict-item]
+        "commit_count": None,  # type: ignore[dict-item]
+        "issues": None,  # type: ignore[dict-item]
+    }
+
+    with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
+        result = provider.review_output(
+            ReviewOutputRequest(
+                project_root="/tmp/test",
+                slug="task-3",
+            )
+        )
+
+    # None gets converted to string "None" by str() call in provider
+    assert result.decision.verdict == "None"
+    assert result.decision.commit_count == 0
+
+
+def test_inspection_review_provider_handles_empty_issues_list():
+    """InspectionReviewProvider handles empty issues list correctly."""
+    from unittest.mock import patch
+
+    provider = InspectionReviewProvider()
+
+    mock_review = {
+        "slug": "task-4",
+        "verdict": "safe",
+        "commit_count": 1,
+        "issues": [],
+        "error": None,
+    }
+
+    with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
+        result = provider.review_output(
+            ReviewOutputRequest(
+                project_root="/tmp/test",
+                slug="task-4",
+            )
+        )
+
+    assert result.decision.issues == ()
+
+
+def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
+    """InspectionReviewProvider passes session_root and full kwargs to review_worker_pane."""
+    from unittest.mock import patch
+
+    provider = InspectionReviewProvider()
+
+    mock_review = {"slug": "task-5", "verdict": "safe"}
+
+    with patch("dgov.inspection.review_worker_pane", return_value=mock_review) as mock_func:
+        provider.review_output(
+            ReviewOutputRequest(
+                project_root=str(tmp_path),
+                slug="task-5",
+                session_root="/session",
+                full=True,
+            )
+        )
+
+    # Verify review_worker_pane was called with correct kwargs
+    mock_func.assert_called_once_with(
+        str(tmp_path),
+        "task-5",
+        session_root="/session",
+        full=True,
+    )
