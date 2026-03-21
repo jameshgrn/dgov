@@ -6,8 +6,39 @@ import threading
 import time
 from abc import ABC
 from dataclasses import dataclass, field
+from dataclasses import replace as dataclasses_replace
 from enum import StrEnum
 from typing import Callable, Generic, TypeVar, cast, overload
+
+__all__ = [
+    "DecisionKind",
+    "RouteTaskRequest",
+    "MonitorOutputRequest",
+    "ReviewOutputRequest",
+    "CompletionParseRequest",
+    "ClarifyRequest",
+    "RouteTaskDecision",
+    "MonitorOutputDecision",
+    "ReviewOutputDecision",
+    "CompletionParseDecision",
+    "ClarifyDecision",
+    "DecisionRequest",
+    "DecisionPayload",
+    "DecisionRecord",
+    "DecisionAuditEntry",
+    "ShadowDecisionResult",
+    "ProviderError",
+    "UnsupportedDecisionError",
+    "ProviderTimeoutError",
+    "DecisionProvider",
+    "StaticDecisionProvider",
+    "_call_kind",
+    "_run_with_timeout",
+    "AuditProvider",
+    "TimeoutProvider",
+    "ShadowProvider",
+    "CascadeProvider",
+]
 
 
 class DecisionKind(StrEnum):
@@ -465,6 +496,82 @@ class ShadowProvider(DecisionProvider):
                 )
             )
         return primary  # type: ignore[return-value]
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+
+@dataclass
+class CascadeProvider(DecisionProvider):
+    """Wrapper that tries providers in order (cheap → expensive), falling through on failure.
+
+    Tries each provider in sequence. If a provider succeeds and passes an optional
+    validator, returns its result. If it raises ProviderError or the validator rejects
+    the result, tries the next provider.
+
+    Logs which tier actually handled the request by storing the real provider_id.
+    """
+
+    provider_id: str = field(init=False)
+    inner_providers: list[DecisionProvider]
+    validator: Callable[[DecisionRecord[DecisionPayload]], bool] | None = None
+
+    def __post_init__(self) -> None:
+        self.provider_id = "cascade"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        """Union of all inner provider capabilities."""
+        kinds: set[DecisionKind] = set()
+        for provider in self.inner_providers:
+            kinds.update(provider.capabilities())
+        return frozenset(kinds)
+
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        last_error: BaseException | None = None
+
+        for inner_provider in self.inner_providers:
+            try:
+                result = _call_kind(inner_provider, request)
+            except ProviderError as exc:
+                # Fall through to next provider
+                last_error = exc
+                continue
+
+            # Apply optional validator
+            if self.validator is not None:
+                try:
+                    if not self.validator(result):  # type: ignore[arg-type]
+                        # Validator rejected, try next provider
+                        last_error = ProviderError("Validator rejected result")
+                        continue
+                except Exception as exc:
+                    # Validator raised exception, treat as rejection
+                    last_error = exc
+                    continue
+
+            # Success - return a new record with the inner provider's ID
+            return dataclasses_replace(result, provider_id=inner_provider.provider_id)  # type: ignore[return-value]
+
+        # All providers failed
+        if last_error is not None:
+            raise last_error
+        raise ProviderError("All cascade providers failed")
 
     def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
         return self._call(request)  # type: ignore[return-value]

@@ -7,9 +7,11 @@ import pytest
 
 from dgov.decision import (
     AuditProvider,
+    CascadeProvider,
     DecisionAuditEntry,
     DecisionKind,
     DecisionRecord,
+    MonitorOutputDecision,
     MonitorOutputRequest,
     ProviderError,
     ProviderTimeoutError,
@@ -22,6 +24,7 @@ from dgov.decision import (
     TimeoutProvider,
 )
 from dgov.decision_providers import (
+    DeterministicClassificationProvider,
     InspectionReviewProvider,
     LocalOutputClassificationProvider,
     OpenRouterRoutingProvider,
@@ -355,3 +358,132 @@ def test_read_decision_journal_combined_filters(tmp_path: str) -> None:
     rows = read_decision_journal(session_root, kind="classify_output", pane_slug=None)
     # None filter returns all results since WHERE pane_slug = NULL never matches
     assert len(rows) >= 1
+
+
+# -- CascadeProvider tests --
+
+
+def test_cascade_provider_returns_first_successful_result() -> None:
+    """CascadeProvider returns first provider result when it succeeds."""
+
+    def _first_success(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        return DecisionRecord(
+            kind=DecisionKind.CLASSIFY_OUTPUT,
+            provider_id="static",  # StaticDecisionProvider uses default "static"
+            decision=MonitorOutputDecision(classification="done"),
+        )
+
+    def _second_should_not_call(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        raise ProviderError("should not be called")
+
+    provider = CascadeProvider(
+        inner_providers=[
+            StaticDecisionProvider(provider_id="deterministic", classify_output_fn=_first_success),
+            StaticDecisionProvider(classify_output_fn=_second_should_not_call),
+        ]
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="task complete"))
+
+    assert result.decision.classification == "done"
+    # Real provider_id is stored, not "cascade"
+    assert result.provider_id == "deterministic"
+
+
+def test_cascade_provider_falls_through_on_provider_error() -> None:
+    """CascadeProvider falls through to second when first raises ProviderError."""
+
+    def _first_fails(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        raise ProviderError("regex no match")
+
+    def _second_success(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        return DecisionRecord(
+            kind=DecisionKind.CLASSIFY_OUTPUT,
+            provider_id="static",  # StaticDecisionProvider uses default "static"
+            decision=MonitorOutputDecision(classification="working"),
+        )
+
+    provider = CascadeProvider(
+        inner_providers=[
+            StaticDecisionProvider(provider_id="deterministic", classify_output_fn=_first_fails),
+            StaticDecisionProvider(provider_id="local", classify_output_fn=_second_success),
+        ]
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="working on code"))
+
+    assert result.decision.classification == "working"
+    assert result.provider_id == "local"
+
+
+def test_cascade_provider_falls_through_when_validator_rejects() -> None:
+    """CascadeProvider falls through when validator rejects first result."""
+
+    def _first_result(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        return DecisionRecord(
+            kind=DecisionKind.CLASSIFY_OUTPUT,
+            provider_id="static",
+            decision=MonitorOutputDecision(classification="done"),
+        )
+
+    def _reject_done(result: DecisionRecord) -> bool:
+        # Reject "done" classifications, prefer other results
+        return result.decision.classification != "done"  # type: ignore[attr-defined]
+
+    def _second_success(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        return DecisionRecord(
+            kind=DecisionKind.CLASSIFY_OUTPUT,
+            provider_id="static",
+            decision=MonitorOutputDecision(classification="working"),
+        )
+
+    provider = CascadeProvider(
+        inner_providers=[
+            StaticDecisionProvider(provider_id="deterministic", classify_output_fn=_first_result),
+            StaticDecisionProvider(provider_id="local", classify_output_fn=_second_success),
+        ],
+        validator=_reject_done,
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="task complete"))
+
+    assert result.decision.classification == "working"
+    assert result.provider_id == "local"
+
+
+# -- DeterministicClassificationProvider tests --
+
+
+def test_deterministic_classification_provider_returns_known_pattern() -> None:
+    """DeterministicClassificationProvider returns classification for known patterns."""
+    provider = DeterministicClassificationProvider()
+
+    # Test "done" pattern (success/complete)
+    result = provider.classify_output(
+        MonitorOutputRequest(output="Task complete. All tests pass.")
+    )
+    assert result.decision.classification == "done"
+    assert result.provider_id == "deterministic-classifier"
+
+    # Test "stuck" pattern (error keywords)
+    result = provider.classify_output(
+        MonitorOutputRequest(output="Error: ConnectionRefusedException raised")
+    )
+    assert result.decision.classification == "stuck"
+    assert result.provider_id == "deterministic-classifier"
+
+    # Test "committing" pattern
+    result = provider.classify_output(
+        MonitorOutputRequest(output="Running git commit and pushing changes")
+    )
+    assert result.decision.classification == "committing"
+    assert result.provider_id == "deterministic-classifier"
+
+
+def test_deterministic_classification_provider_raises_on_ambiguous() -> None:
+    """DeterministicClassificationProvider raises ProviderError for ambiguous input."""
+    provider = DeterministicClassificationProvider()
+
+    # Unknown output - should fall through to LLM
+    with pytest.raises(ProviderError, match="No deterministic pattern matched"):
+        provider.classify_output(MonitorOutputRequest(output="I'm working on this now"))

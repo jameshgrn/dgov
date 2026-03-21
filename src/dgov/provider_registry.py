@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
-from dgov.decision import AuditProvider, DecisionKind, DecisionProvider, UnsupportedDecisionError
+from dgov.decision import (
+    AuditProvider,
+    CascadeProvider,
+    DecisionKind,
+    DecisionProvider,
+    UnsupportedDecisionError,
+)
 from dgov.decision_providers import (
+    DeterministicClassificationProvider,
     InspectionReviewProvider,
     LocalOutputClassificationProvider,
     OpenRouterRoutingProvider,
@@ -15,7 +22,13 @@ def _base_provider(kind: DecisionKind) -> DecisionProvider:
         case DecisionKind.ROUTE_TASK:
             return OpenRouterRoutingProvider()
         case DecisionKind.CLASSIFY_OUTPUT:
-            return LocalOutputClassificationProvider()
+            # Deterministic-first cascade: free regex → cheap LLM fallback
+            return CascadeProvider(
+                inner_providers=[
+                    DeterministicClassificationProvider(),
+                    LocalOutputClassificationProvider(),
+                ]
+            )
         case DecisionKind.REVIEW_OUTPUT:
             return InspectionReviewProvider()
         case _:

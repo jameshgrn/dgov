@@ -20,6 +20,39 @@ from dgov.decision import (
 
 
 @dataclass
+class DeterministicClassificationProvider(DecisionProvider):
+    """Deterministic classification provider backed by regex patterns.
+
+    Wraps the _classify_deterministic() function from monitor.py to classify
+    worker output using regex patterns before falling through to LLM-based
+    classification. Returns ProviderError if input is ambiguous (no pattern matched).
+    """
+
+    provider_id: str = "deterministic-classifier"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return frozenset({DecisionKind.CLASSIFY_OUTPUT})
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        from dgov.monitor import _classify_deterministic
+
+        classification = _classify_deterministic(request.output)
+
+        if classification is None:
+            # No pattern matched - ambiguous, fall through to next provider
+            raise ProviderError("No deterministic pattern matched")
+
+        return DecisionRecord(
+            kind=DecisionKind.CLASSIFY_OUTPUT,
+            provider_id=self.provider_id,
+            decision=MonitorOutputDecision(classification=classification),
+            trace_id=request.trace_id,
+        )
+
+
+@dataclass
 class OpenRouterRoutingProvider(DecisionProvider):
     """Route-task provider backed by the existing OpenRouter classification path."""
 
