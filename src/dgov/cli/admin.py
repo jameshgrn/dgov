@@ -399,6 +399,17 @@ def _generate_codebase_md(
     return "\n".join(lines)
 
 
+def regenerate_codebase_md(project_root: str) -> None:
+    """Scan source tree and write CODEBASE.md. Called by merger post-merge."""
+    root_path = Path(project_root).resolve()
+    src_dirs = [root_path / "src" / "dgov", root_path / "src" / "dgov" / "cli"]
+    modules = _scan_py_files(src_dirs, root_path)
+    test_mappings = _map_test_files(modules, root_path / "tests")
+    groups = _group_modules(modules)
+    content = _generate_codebase_md(modules, test_mappings, groups, root_path)
+    (root_path / "CODEBASE.md").write_text(content, encoding="utf-8")
+
+
 @click.command("codebase")
 @click.option("--project-root", "-r", default=".", help="Project root")
 @click.option("--dry-run", is_flag=True, help="Print to stdout instead of writing file")
@@ -407,32 +418,18 @@ def codebase_cmd(project_root: str, dry_run: bool) -> None:
     from dgov.cli.pane import _autocorrect_roots
 
     project_root, _ = _autocorrect_roots(project_root, None)
-    root_path = Path(project_root).resolve()
 
-    # Scan source files
-    src_dirs = [
-        root_path / "src" / "dgov",
-        root_path / "src" / "dgov" / "cli",
-    ]
-    modules = _scan_py_files(src_dirs, root_path)
-
-    # Map test files
-    tests_dir = root_path / "tests"
-    test_mappings = _map_test_files(modules, tests_dir)
-
-    # Group modules
-    groups = _group_modules(modules)
-
-    # Generate content
-    content = _generate_codebase_md(modules, test_mappings, groups, root_path)
-
-    # Output
     if dry_run:
+        root_path = Path(project_root).resolve()
+        src_dirs = [root_path / "src" / "dgov", root_path / "src" / "dgov" / "cli"]
+        modules = _scan_py_files(src_dirs, root_path)
+        test_mappings = _map_test_files(modules, root_path / "tests")
+        groups = _group_modules(modules)
+        content = _generate_codebase_md(modules, test_mappings, groups, root_path)
         click.echo(content)
     else:
-        codebase_path = root_path / "CODEBASE.md"
-        codebase_path.write_text(content, encoding="utf-8")
-        click.echo(f"Written to {codebase_path}")
+        regenerate_codebase_md(project_root)
+        click.echo(f"Written to {Path(project_root).resolve() / 'CODEBASE.md'}")
 
 
 def _count_lines(file_path: Path) -> int:

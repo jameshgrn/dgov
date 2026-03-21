@@ -1048,6 +1048,15 @@ def merge_worker_pane(
                     session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
                 )
 
+                # Regenerate codebase map so future workers get fresh context
+                try:
+                    if (Path(pane_project_root) / "src" / "dgov").is_dir():
+                        from dgov.cli.admin import regenerate_codebase_md
+
+                        regenerate_codebase_md(pane_project_root)
+                except Exception:
+                    logger.debug("CODEBASE.md regeneration skipped (non-critical)")
+
                 result = {
                     "merged": slug,
                     "branch": branch_name,
