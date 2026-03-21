@@ -221,9 +221,20 @@ def _plumbing_merge(
 
         head_sha = head.stdout.strip()
 
+        # Resolve branch to SHA — branch names from worktrees may not resolve
+        # directly in merge-tree, but SHAs always work.
+        branch_sha = subprocess.run(
+            ["git", "-C", project_root, "rev-parse", branch_name],
+            capture_output=True,
+            text=True,
+        )
+        if branch_sha.returncode != 0:
+            return MergeResult(success=False, stderr=f"Cannot resolve {branch_name}")
+        branch_ref = branch_sha.stdout.strip()
+
         # In-memory merge — no working tree side effects
         result = subprocess.run(
-            ["git", "merge-tree", "--write-tree", head_sha, branch_name],
+            ["git", "merge-tree", "--write-tree", head_sha, branch_ref],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -237,13 +248,6 @@ def _plumbing_merge(
         if result.returncode != 0:
             # Non-zero with valid tree = real conflicts — report as failure
             return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
-        branch_tip = subprocess.run(
-            ["git", "-C", project_root, "rev-parse", branch_name],
-            capture_output=True,
-            text=True,
-        )
-        if branch_tip.returncode != 0:
-            return MergeResult(success=False, stderr=f"Cannot resolve {branch_name}")
 
         # Create squash commit (single parent — linear history)
         msg = message or f"Merge {branch_name}"
