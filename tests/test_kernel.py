@@ -346,3 +346,26 @@ def test_dag_kernel_merge_serialization_follows_topo_order() -> None:
     # b should start merging (it's first in topo order)
     merges = [a for a in actions if isinstance(a, MergeTask)]
     assert any(m.task_slug == "b" for m in merges)
+
+
+def test_dag_kernel_pre_skip_propagates() -> None:
+    """Pre-skipped tasks propagate to dependents at init."""
+    kernel = DagKernel(deps=_simple_dag(), skip=frozenset({"a"}))
+    assert kernel.task_states["a"] == DagTaskState.SKIPPED
+    assert kernel.task_states["b"] == DagTaskState.SKIPPED
+    assert kernel.task_states["c"] == DagTaskState.SKIPPED
+
+    actions = kernel.start()
+    dones = [a for a in actions if isinstance(a, DagDone)]
+    assert len(dones) == 1
+    assert dones[0].status == DagState.FAILED
+
+
+def test_dag_kernel_partial_skip() -> None:
+    """Skip one leaf in diamond — others still run."""
+    kernel = DagKernel(deps=_diamond_dag(), skip=frozenset({"b"}))
+    assert kernel.task_states["a"] == DagTaskState.PENDING
+    assert kernel.task_states["b"] == DagTaskState.SKIPPED
+    assert kernel.task_states["c"] == DagTaskState.PENDING
+    # d depends on b → skipped
+    assert kernel.task_states["d"] == DagTaskState.SKIPPED

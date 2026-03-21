@@ -116,6 +116,7 @@ def run_dag_via_kernel(
         run_id=run_id,
         auto_merge=auto_merge,
         max_concurrent=effective_concurrent,
+        skip=frozenset(skip or ()),
         progress=lambda msg: logger.info("DAG[%d] %s", run_id, msg),
     )
 

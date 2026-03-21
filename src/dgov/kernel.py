@@ -296,6 +296,7 @@ class DagKernel:
     deps: dict[str, tuple[str, ...]]
     auto_merge: bool = True
     max_concurrent: int = 0  # 0 = unlimited
+    skip: frozenset[str] = frozenset()
 
     # -- internal state --
     state: DagState = DagState.IDLE
@@ -309,6 +310,21 @@ class DagKernel:
             self.task_states = {slug: DagTaskState.PENDING for slug in self.deps}
         if not self.merge_order:
             self.merge_order = tuple(_topo_sort(self.deps))
+        # Apply pre-skip: mark skipped tasks and their transitive dependents
+        if self.skip:
+            skipped = set(self.skip)
+            changed = True
+            while changed:
+                changed = False
+                for slug, deps in self.deps.items():
+                    if slug in skipped:
+                        continue
+                    if any(d in skipped for d in deps):
+                        skipped.add(slug)
+                        changed = True
+            for slug in skipped:
+                if slug in self.task_states:
+                    self.task_states[slug] = DagTaskState.SKIPPED
 
     @property
     def done(self) -> bool:
@@ -320,7 +336,9 @@ class DagKernel:
         if self.state != DagState.IDLE:
             raise ValueError(f"DagKernel already started in state {self.state}")
         self.state = DagState.RUNNING
-        return self._schedule()
+        actions = self._schedule()
+        actions.extend(self._check_done())
+        return actions
 
     def handle(self, event: DagEvent) -> list[DagAction]:
         actions: list[DagAction] = []

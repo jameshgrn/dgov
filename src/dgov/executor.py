@@ -1252,6 +1252,7 @@ def run_dag_kernel(
     run_id: int = 0,
     auto_merge: bool = True,
     max_concurrent: int = 0,
+    skip: frozenset[str] | None = None,
     poll_interval: float = 3.0,
     task_timeout: int = 600,
     progress: Callable[[str], None] | None = None,
@@ -1306,6 +1307,7 @@ def run_dag_kernel(
         deps=deps,
         auto_merge=auto_merge,
         max_concurrent=max_concurrent,
+        skip=skip or frozenset(),
     )
     actions = kernel.start()
 
