@@ -27,7 +27,7 @@ pytestmark = pytest.mark.unit
 @pytest.fixture(autouse=True)
 def stub_dispatch_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "dgov.dag.run_dispatch_preflight",
+        "dgov.executor.run_dispatch_preflight",
         lambda *args, **kwargs: type("R", (), {"passed": True, "checks": []})(),
     )
 

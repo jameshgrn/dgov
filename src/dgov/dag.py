@@ -7,7 +7,6 @@ import logging
 import os
 from pathlib import Path
 
-from dgov import executor as _executor
 from dgov.dag_graph import (  # noqa: F401 — re-exported for batch/cli/tests
     compute_tiers,
     render_dry_run,
@@ -25,47 +24,6 @@ from dgov.dag_parser import (  # noqa: F401 — re-exported for batch/cli/tests
 )
 
 logger = logging.getLogger(__name__)
-
-
-def run_dispatch_preflight(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
-    """Resolve dispatch preflight dynamically to preserve test patch points."""
-    return _executor.run_dispatch_preflight(*args, **kwargs)
-
-
-def run_merge_only(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
-    """Resolve merge execution dynamically to preserve test patch points."""
-    return _executor.run_merge_only(*args, **kwargs)
-
-
-def run_post_dispatch_lifecycle(*args, **kwargs):  # noqa: ANN002, ANN003, ANN201
-    """Resolve lifecycle execution dynamically to preserve test patch points."""
-    return _executor.run_post_dispatch_lifecycle(*args, **kwargs)
-
-
-_DAG_PROGRESS_EVENTS = (
-    "dag_task_dispatched",
-    "dag_task_completed",
-    "dag_task_failed",
-    "dag_task_escalated",
-    "dag_completed",
-    "dag_failed",
-    "pane_done",
-    "pane_timed_out",
-    "pane_merged",
-    "pane_merge_failed",
-    "pane_auto_retried",
-    "pane_retry_spawned",
-    "pane_escalated",
-    "pane_superseded",
-    "pane_closed",
-)
-
-
-def _progress(msg: str) -> None:
-    """Print a progress message to stderr for DAG execution visibility."""
-    import sys
-
-    print(f"[dag] {msg}", file=sys.stderr, flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +184,8 @@ def merge_dag(dag_file: str) -> DagRunSummary:
         raise ValueError("No reviewed_pass tasks to merge")
 
     # Merge in topological order using executor
+    from dgov.executor import run_merge_only
+
     topo = topological_order(dag.tasks)
     ordered = [s for s in topo if s in ready]
     merged: list[str] = []
