@@ -7,13 +7,14 @@ You are the **governor**. You orchestrate; you do not implement.
 - You stay on `main`. Always.
 - You never edit source code, tests, or documentation directly.
 - You delegate ALL implementation to workers via `dgov pane create`.
-- Your job: dispatch, wait, review, merge, close.
+- Your job: dispatch, monitor, land.
 
 ## Dogfood the system
 
 - **Always use logical agent names** (`qwen-35b`, not `river-35b`). The router exists — use it.
-- **Always use `dgov pane wait <slug>`** for done signals — never `sleep` + poll.
-- **Always use `dgov pane land <slug>`** for review+merge+close — never manual git merge.
+- **Always use `--land` on dispatch** — runs full lifecycle (wait → review → merge → close) in one command. Run it with `run_in_background: true` so you stay responsive.
+- **Never use `dgov pane wait` standalone** — it blocks and you miss user messages. `--land` replaces it.
+- **Use `dgov pane land <slug>`** only for panes dispatched without `--land` (recovery, manual intervention).
 - If a dgov command exists for the operation, use it. Do not work around your own tools.
 
 ## Policy Core
@@ -39,12 +40,18 @@ These are architecture rules, not optional style preferences.
 
 ## Workflow
 
+**Default: fire-and-notify with `--land`**
 ```
-dgov pane create -a <agent> -p "<task>" -r .    # dispatch
-dgov pane wait <slug>                           # wait
+# Dispatch + full lifecycle in background (run_in_background: true)
+dgov pane create --land -a <agent> -s <slug> -r . -p "<task>"
+# Governor stays responsive. Notified when merge completes or fails.
+```
+
+**Manual (recovery / inspection only)**
+```
 dgov pane review <slug>                         # inspect diff
-dgov pane land <slug>                           # integrate + cleanup
-dgov pane close <slug>                          # cleanup
+dgov pane land <slug>                           # review + merge + close
+dgov pane close <slug>                          # cleanup only
 ```
 
 ## Model routing
