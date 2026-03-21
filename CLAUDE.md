@@ -194,9 +194,10 @@ DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/ -q -m unit
 
 ## Tools
 
+- **Always use `uv run dgov`** instead of bare `dgov` — runs from source, never stale after edits. The installed binary can drift mid-session.
 - Lint: `uv run ruff check <file>` then `uv run ruff format <file>`
 - Test: `uv run pytest <test_file> -q -m unit`
-- Status: `dgov status -r .`
+- Status: `uv run dgov status -r .`
 
 ## Action Grammar
 
