@@ -1057,6 +1057,24 @@ def merge_worker_pane(
                 except Exception:
                     logger.debug("CODEBASE.md regeneration skipped (non-critical)")
 
+                # Stage and commit CODEBASE.md if it changed
+                status = subprocess.run(
+                    ["git", "-C", pane_project_root, "status", "--porcelain", "CODEBASE.md"],
+                    capture_output=True,
+                    text=True,
+                )
+                if status.stdout.strip():
+                    subprocess.run(
+                        ["git", "-C", pane_project_root, "add", "CODEBASE.md"],
+                        capture_output=True,
+                    )
+                    subprocess.run(
+                        ["git", "-C", pane_project_root, "commit", "-m", "Regenerate CODEBASE.md"],
+                        capture_output=True,
+                        text=True,
+                        env={**os.environ, "DGOV_SKIP_GOVERNOR_CHECK": "1"},
+                    )
+
                 result = {
                     "merged": slug,
                     "branch": branch_name,
