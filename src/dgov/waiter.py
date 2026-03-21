@@ -213,7 +213,7 @@ def wait_worker_pane(
     slug: str,
     session_root: str | None = None,
     timeout: int = 600,
-    poll: int = 3,
+    poll: int = 1,
     stable: int = 15,
     auto_retry: bool = True,
 ) -> dict:
@@ -221,6 +221,10 @@ def wait_worker_pane(
 
     Returns ``{"done": slug, "method": ...}`` on success.
     Raises ``PaneTimeoutError`` on timeout.
+
+    Uses event-driven wakeup as primary signal (``pane_done``, ``pane_failed``
+    events from ``dgov worker complete``). Falls back to process-based polling
+    every *poll* seconds to catch edge cases (process death without event).
 
     When *auto_retry* is True and the pane ends in "failed" or "abandoned"
     state, consults the agent's retry policy and may automatically retry
@@ -233,7 +237,46 @@ def wait_worker_pane(
     start = time.monotonic()
     stable_state: dict = {}
 
+    # Get latest event ID so we only see new events
+    last_event_id = _persist.latest_event_id(session_root)
+
+    _TERMINAL_EVENTS = ("pane_done", "pane_failed", "pane_timed_out")
+
     while True:
+        # Primary: block on event (100ms poll inside wait_for_events)
+        events = _persist.wait_for_events(
+            session_root,
+            after_id=last_event_id,
+            panes=(slug,),
+            event_types=_TERMINAL_EVENTS,
+            timeout_s=float(poll),
+            poll_interval_s=0.1,
+        )
+        if events:
+            last_event_id = events[-1]["id"]
+            event_type = events[-1]["event"]
+            logger.debug("event wakeup slug=%s event=%s", slug, event_type)
+
+            pane_record = _persist.get_pane(session_root, slug)
+            current_state = pane_record.get("state", "") if pane_record else ""
+
+            if auto_retry and current_state in ("failed", "abandoned"):
+                from dgov.recovery import maybe_auto_retry
+
+                retry_result = maybe_auto_retry(session_root, slug, project_root)
+                if retry_result:
+                    new_slug = retry_result.get("new_slug", "")
+                    if new_slug:
+                        slug = new_slug
+                        stable_state = {}
+                        continue
+
+            elapsed = time.monotonic() - start
+            method = f"event:{event_type}"
+            logger.debug("wait completed slug=%s method=%s duration=%.1fs", slug, method, elapsed)
+            return {"done": slug, "method": method}
+
+        # Fallback: process-based poll to catch edge cases (process death, etc.)
         pane_record = _persist.get_pane(session_root, slug)
         strategy = _strategy_for_pane(pane_record)
         done, method = _poll_once(
@@ -246,7 +289,6 @@ def wait_worker_pane(
             done_strategy=strategy,
         )
         if done:
-            # Re-read: _poll_once/_is_done may have just transitioned the state
             pane_record = _persist.get_pane(session_root, slug)
             current_state = pane_record.get("state", "") if pane_record else ""
 
@@ -257,13 +299,12 @@ def wait_worker_pane(
                 if retry_result:
                     new_slug = retry_result.get("new_slug", "")
                     if new_slug:
-                        # Continue waiting on the new pane
                         slug = new_slug
                         stable_state = {}
                         continue
 
             elapsed = time.monotonic() - start
-            logger.debug("wait completed slug=%s state=%s duration=%.1fs", slug, method, elapsed)
+            logger.debug("wait completed slug=%s method=%s duration=%.1fs", slug, method, elapsed)
             return {"done": slug, "method": method}
 
         elapsed = time.monotonic() - start
@@ -274,7 +315,6 @@ def wait_worker_pane(
                 _persist.emit_event(session_root, "pane_timed_out", slug)
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
             raise PaneTimeoutError(slug, timeout, agent)
-        time.sleep(poll)
 
 
 def wait_all_worker_panes(
