@@ -316,6 +316,11 @@ def _is_done(
 
     # Signal 1a: done-signal file (clean exit) — always checked
     if done_path.exists():
+        # Trust the done signal if the DB already says done (0-commit tasks)
+        db_state = pane_record.get("state", "") if pane_record else ""
+        if db_state == "done":
+            _set_done_reason(_stable_state, "done_signal_db_confirmed")
+            return True
         if pane_record is None or not _has_completion_commit(pane_record):
             return False
 
