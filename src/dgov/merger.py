@@ -872,23 +872,18 @@ def merge_worker_pane(
             "hint": "Worker must complete successfully before merge.",
         }
 
-    # Precondition 2: No agent process may still be attached
-    # Brief retry: --land can trigger merge before agent fully exits
+    # Precondition 2: Skip agent-attached check for done/reviewed panes.
+    # If pane state is 'done', the worker has signaled completion via
+    # dgov worker complete — the process lingering is just exit cleanup.
+    # Only block merge for active panes where the agent is still writing.
     pane_id = target.get("pane_id", "")
-    if pane_id and _agent_still_running(pane_id):
-        import time as _time
-
-        for _ in range(10):
-            _time.sleep(1)
-            if not _agent_still_running(pane_id):
-                break
-        else:
-            return {
-                "error": f"Agent process still attached to pane {slug}",
-                "slug": slug,
-                "pane_id": pane_id,
-                "hint": "Wait for worker to complete or manually clean up the pane.",
-            }
+    if pane_state not in ("done", "reviewed_pass") and pane_id and _agent_still_running(pane_id):
+        return {
+            "error": f"Agent process still attached to pane {slug}",
+            "slug": slug,
+            "pane_id": pane_id,
+            "hint": "Wait for worker to complete or manually clean up the pane.",
+        }
 
     # Precondition 3: Worktree must have no uncommitted non-protected changes
     dirty_files = _check_dirty_worktree(worktree_path, exclude_protected=True)

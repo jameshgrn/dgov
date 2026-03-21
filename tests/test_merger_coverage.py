@@ -468,10 +468,11 @@ def test_merge_worker_pane_refuses_dirty_worktree_changes(
     mock_close_worker_pane.assert_not_called()
 
 
-def test_merge_worker_pane_refuses_attached_agent(
+def test_merge_worker_pane_allows_done_pane_with_attached_agent(
     tmp_path: Path,
     _mock_backend: MagicMock,
 ) -> None:
+    """Done-state panes skip agent-attached check — the worker already signaled completion."""
     repo = _init_repo(tmp_path, "attached-agent")
     base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     worktree = _add_worktree(repo, tmp_path, "dgov-attached")
@@ -486,28 +487,24 @@ def test_merge_worker_pane_refuses_attached_agent(
         slug="attached-pane",
         branch_name="dgov-attached",
         base_sha=base_sha,
+        state="done",
     )
 
     with (
         patch("dgov.persistence.get_pane", return_value=pane),
-        patch("dgov.persistence.update_pane_state") as mock_update_state,
-        patch("dgov.persistence.emit_event") as mock_emit_event,
-        patch("dgov.persistence.set_pane_metadata") as mock_set_metadata,
+        patch("dgov.persistence.update_pane_state"),
+        patch("dgov.persistence.emit_event"),
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.persistence.remove_pane"),
         patch("dgov.backend.get_backend", return_value=_mock_backend),
-        patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.lifecycle.close_worker_pane"),
         patch("dgov.done._agent_still_running", return_value=True),
     ):
         _mock_backend.is_alive.return_value = True
         result = merge_worker_pane(str(repo), "attached-pane", session_root=str(repo))
 
-    assert result["error"] == "Agent process still attached to pane attached-pane"
-    assert result["pane_id"] == "%1"
-    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
-    assert (repo / "worker.txt").exists() is False
-    mock_update_state.assert_not_called()
-    mock_emit_event.assert_not_called()
-    mock_set_metadata.assert_not_called()
-    mock_close_worker_pane.assert_not_called()
+    # Merge should succeed despite agent still running — pane is done
+    assert result.get("merged") == "attached-pane"
 
 
 def test_merge_worker_pane_allows_abandoned_transition_after_success(
