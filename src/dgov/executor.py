@@ -767,6 +767,8 @@ def run_review_only(
                     slug,
                     stale_files,
                 )
+                passed = False
+                error = f"Stale files: main changed {stale_files} since base_sha; rebase required"
 
     return ReviewOnlyResult(
         slug=slug,
