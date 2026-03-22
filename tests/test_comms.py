@@ -429,34 +429,9 @@ class TestUnifiedIsDone:
             assert result is False
             assert stable_state["stable_since"] is None
 
-
-# ---------------------------------------------------------------------------
-# CLI commands
-# ---------------------------------------------------------------------------
-
-
-class TestRespondCLI:
-    def test_respond_cli(self, runner: CliRunner, tmp_path: Path) -> None:
-        session_root = _setup_pane(tmp_path)
-        with (
-            patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.current_command", return_value="claude"),
-            patch("dgov.tmux.send_text_input"),
-        ):
-            result = runner.invoke(
-                cli,
-                ["pane", "respond", "test-worker", "hello", "-S", session_root],
-            )
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["sent"] is True
-
-    def test_respond_cli_missing(self, runner: CliRunner, tmp_path: Path) -> None:
-        result = runner.invoke(
-            cli,
-            ["pane", "respond", "nope", "hello", "-S", str(tmp_path)],
-        )
-        assert result.exit_code == 1
+    # ---------------------------------------------------------------------------
+    # CLI commands
+    # ---------------------------------------------------------------------------
 
     def test_message_cli_rejects_shell_fallback(self, runner: CliRunner, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path)
@@ -505,22 +480,3 @@ class TestSignalCLI:
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["signaled"] == "failed"
-
-
-class TestNudgeCLI:
-    def test_nudge_cli(self, runner: CliRunner, tmp_path: Path) -> None:
-        session_root = _setup_pane(tmp_path)
-        with (
-            patch("dgov.tmux.pane_exists", return_value=True),
-            patch("dgov.tmux.current_command", return_value="claude"),
-            patch("dgov.tmux.send_text_input"),
-            patch("dgov.tmux.capture_pane", return_value="YES I'm done"),
-            patch("dgov.waiter.time.sleep"),
-        ):
-            result = runner.invoke(
-                cli,
-                ["pane", "nudge", "test-worker", "-S", session_root, "-w", "1"],
-            )
-            assert result.exit_code == 0
-            data = json.loads(result.output)
-            assert data["response"] == "YES"

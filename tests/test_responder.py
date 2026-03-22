@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,7 +10,6 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.backend import set_backend
-from dgov.cli import cli
 from dgov.persistence import STATE_DIR, VALID_EVENTS, WorkerPane, add_pane, read_events
 from dgov.responder import (
     BUILT_IN_RULES,
@@ -439,32 +437,3 @@ class TestAutoRespond:
 class TestAutoRespondEvent:
     def test_pane_auto_responded_in_valid_events(self) -> None:
         assert "pane_auto_responded" in VALID_EVENTS
-
-
-# ---------------------------------------------------------------------------
-# CLI respond command
-# ---------------------------------------------------------------------------
-
-
-class TestRespondCLI:
-    def test_respond_sends_message(
-        self, runner: CliRunner, tmp_path: Path, mock_backend: MagicMock
-    ) -> None:
-        session_root = _setup_pane(tmp_path)
-        mock_backend.is_alive.return_value = True
-        with patch("dgov.waiter._agent_still_running", return_value=True):
-            result = runner.invoke(
-                cli,
-                ["pane", "respond", "test-worker", "yes", "-S", session_root],
-            )
-        assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
-        assert data["sent"] is True
-        mock_backend.send_input.assert_called_once_with("%99", "yes")
-
-    def test_respond_missing_pane(self, runner: CliRunner, tmp_path: Path) -> None:
-        result = runner.invoke(
-            cli,
-            ["pane", "respond", "nope", "yes", "-S", str(tmp_path)],
-        )
-        assert result.exit_code == 1

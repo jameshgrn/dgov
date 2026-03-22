@@ -298,9 +298,8 @@ class TestPaneHelp:
             "merge-all",
             "land-all",
             "list",
-            "prune",
+            "gc",
             "classify",
-            "capture",
             "review",
             "diff",
             "escalate",
@@ -871,14 +870,15 @@ touches = ["src/parser.py", "tests/test_parser.py"]
             close=True,
         )
 
-    def test_list_prune_classify_and_capture(self, runner: CliRunner) -> None:
+    def test_list_gc_and_classify(self, runner: CliRunner) -> None:
         with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
             listed = runner.invoke(cli, ["pane", "list", "--json"])
-        with patch("dgov.status.prune_stale_panes", return_value=["old-task"]):
-            pruned = runner.invoke(cli, ["pane", "prune"])
-        with patch(
-            "dgov.status.gc_retained_panes",
-            return_value={"pruned": ["old-review"], "skipped": ["recent-failed"]},
+        with (
+            patch("dgov.status.prune_stale_panes", return_value=["old-task"]),
+            patch(
+                "dgov.status.gc_retained_panes",
+                return_value={"closed": ["old-review"], "skipped": ["recent-failed"]},
+            ),
         ):
             gc = runner.invoke(
                 cli,
@@ -886,28 +886,17 @@ touches = ["src/parser.py", "tests/test_parser.py"]
             )
         with patch("dgov.strategy.classify_task", return_value="claude"):
             classified = runner.invoke(cli, ["pane", "classify", "debug flaky test"])
-        with patch("dgov.status.capture_worker_output", return_value="line 1\nline 2"):
-            captured = runner.invoke(cli, ["pane", "capture", "task", "--lines", "50"])
 
         assert json.loads(listed.output) == [{"slug": "task"}]
-        assert json.loads(pruned.output) == {"pruned": ["old-task"]}
         assert json.loads(gc.output) == {
-            "pruned": ["old-review"],
+            "closed": ["old-review"],
             "skipped": ["recent-failed"],
+            "pruned": ["old-task"],
         }
         assert json.loads(classified.output) == {
             "recommended_agent": "claude",
             "prompt_preview": "debug flaky test",
         }
-        assert captured.exit_code == 0
-        assert captured.output == "line 1\nline 2\n"
-
-    def test_capture_missing_exits(self, runner: CliRunner) -> None:
-        with patch("dgov.status.capture_worker_output", return_value=None):
-            result = runner.invoke(cli, ["pane", "capture", "missing"])
-
-        assert result.exit_code == 1
-        assert json.loads(result.output) == {"error": "Pane not found or dead: missing"}
 
     def test_review_diff_escalate_and_retry(self, runner: CliRunner) -> None:
         with patch(
