@@ -360,7 +360,12 @@ def compute_stats(session_root: str) -> dict:
         for p in failure_panes[:5]
     ]
 
-    reliability = compute_reliability_stats(session_root)
+    try:
+        from dgov.spans import agent_reliability_stats
+
+        reliability = agent_reliability_stats(session_root, min_dispatches=1)
+    except Exception:
+        reliability = {}
 
     return {
         "total_panes": len(panes),
@@ -381,116 +386,6 @@ def _find_event_ts(events: list[dict], event_name: str) -> datetime | None:
             except (ValueError, KeyError):
                 return None
     return None
-
-
-def compute_reliability_stats(session_root: str) -> dict:
-    """Compute reliability stats from decision journal data.
-
-    Returns {'by_agent': {...}, 'by_provider': {...}} where:
-    - by_agent: per-agent review_pass_rate, avg_retry_count, test_pass_rate
-    - by_provider: per-provider call_count, error_rate, avg_latency_ms
-    """
-    # Load decision journal and pane data
-    from dgov.persistence import all_panes, read_decision_journal
-
-    records = read_decision_journal(session_root)
-    panes = all_panes(session_root)
-
-    # Build slug -> agent map
-    slug_to_agent: dict[str, str] = {}
-    for p in panes:
-        slug_to_agent[p["slug"]] = p["agent"]
-
-    # -- by_agent stats (from review_output records) --
-    agent_data: dict[str, dict] = defaultdict(
-        lambda: {"safe_count": 0, "review_count": 0, "retry_counts": [], "test_passes": []}
-    )
-
-    for rec in records:
-        if rec.get("kind") != "review_output":
-            continue
-        result = rec.get("result")
-        if not result:
-            continue
-        decision = result.get("decision", {})
-        artifact = result.get("artifact", {}) or {}
-
-        pane_slug = rec.get("pane_slug")
-        # First try to get agent_id directly from journal record (new column)
-        agent = rec.get("agent_id")
-        if not agent:
-            # Fall back to pane slug -> agent lookup for historical records
-            agent = slug_to_agent.get(pane_slug, "unknown")
-
-        verdict = decision.get("verdict", "")
-        retry_count = artifact.get("retry_count", 0)
-
-        if verdict == "safe":
-            agent_data[agent]["safe_count"] += 1
-        else:
-            agent_data[agent]["review_count"] += 1
-
-        agent_data[agent]["retry_counts"].append(retry_count)
-
-        # tests_passed may be missing — skip if absent
-        tests_passed = artifact.get("tests_passed")
-        if tests_passed is not None:
-            agent_data[agent]["test_passes"].append(tests_passed)
-
-    by_agent: dict[str, dict] = {}
-    for agent, data in agent_data.items():
-        total_reviews = data["safe_count"] + data["review_count"]
-        review_pass_rate = data["safe_count"] / total_reviews if total_reviews > 0 else 0.0
-
-        avg_retry_count = (
-            sum(data["retry_counts"]) / len(data["retry_counts"]) if data["retry_counts"] else None
-        )
-
-        test_pass_values = [1.0 if tp else 0.0 for tp in data["test_passes"]]
-        test_pass_rate = (
-            sum(test_pass_values) / len(test_pass_values) if test_pass_values else None
-        )
-
-        by_agent[agent] = {
-            "review_pass_rate": round(review_pass_rate, 4) if review_pass_rate != 0.0 else 0.0,
-            "avg_retry_count": round(avg_retry_count, 2) if avg_retry_count is not None else None,
-            "test_pass_rate": round(test_pass_rate, 4) if test_pass_rate is not None else None,
-        }
-
-    # -- by_provider stats (from ALL records) --
-    provider_data: dict[str, dict] = defaultdict(
-        lambda: {"call_count": 0, "error_count": 0, "latencies": []}
-    )
-
-    for rec in records:
-        provider_id = rec.get("provider_id")
-        if not provider_id:
-            continue
-
-        provider_data[provider_id]["call_count"] += 1
-
-        if rec.get("error") is not None:
-            provider_data[provider_id]["error_count"] += 1
-
-        latency = rec.get("duration_ms")
-        if latency is not None:
-            provider_data[provider_id]["latencies"].append(latency)
-
-    by_provider: dict[str, dict] = {}
-    for provider_id, data in provider_data.items():
-        call_count = data["call_count"]
-        error_rate = data["error_count"] / call_count if call_count > 0 else 0.0
-        avg_latency_ms = (
-            sum(data["latencies"]) / len(data["latencies"]) if data["latencies"] else None
-        )
-
-        by_provider[provider_id] = {
-            "call_count": call_count,
-            "error_rate": round(error_rate, 4) if error_rate != 0.0 else 0.0,
-            "avg_latency_ms": round(avg_latency_ms, 2) if avg_latency_ms is not None else None,
-        }
-
-    return {"by_agent": dict(by_agent), "by_provider": dict(by_provider)}
 
 
 def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
