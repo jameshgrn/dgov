@@ -387,7 +387,7 @@ def run_wait_only(
 
         _wait_span_id = open_span(session_root, slug, SpanKind.WAIT)
     except Exception:
-        pass
+        logger.debug("failed to open wait span for %s", slug, exc_info=True)
 
     def _phase(name: str, current_slug: str) -> None:
         if phase_callback is not None:
@@ -522,7 +522,7 @@ def run_wait_only(
                     code = exit_path.read_text().strip()
                     exit_msg = f"Worker exited with code {code}"
             except Exception:
-                pass
+                logger.debug("failed to read exit code for %s", current_slug, exc_info=True)
             return WaitOnlyResult(
                 state="failed",
                 slug=current_slug,
@@ -563,7 +563,7 @@ def run_wait_only(
                 wait_method=(_wait_result.wait_result or {}).get("method", ""),
             )
         except Exception:
-            pass
+            logger.debug("failed to close wait span", exc_info=True)
     return _wait_result
 
 
@@ -660,7 +660,7 @@ def run_post_dispatch_lifecycle(
     try:
         set_pane_metadata(session_root, slug, landing=True)
     except Exception:
-        pass  # pane may not exist yet in DB
+        logger.debug("failed to set landing flag for %s", slug, exc_info=True)
 
     from dgov.kernel import (
         KernelState,
@@ -688,7 +688,7 @@ def run_post_dispatch_lifecycle(
         try:
             set_pane_metadata(session_root, slug, landing=False)
         except Exception:
-            pass
+            logger.debug("failed to unset landing flag for %s", slug, exc_info=True)
 
     current_slug = runtime.final_slug(slug)
     wait = runtime.wait
@@ -850,7 +850,7 @@ def run_review_only(
 
         _review_span_id = open_span(session_root or "", slug, SpanKind.REVIEW)
     except Exception:
-        pass
+        logger.debug("failed to open review span for %s", slug, exc_info=True)
 
     from dgov.decision import DecisionKind
     from dgov.provider_registry import get_provider
@@ -902,7 +902,7 @@ def run_review_only(
                 _p = _get_pane(session_root, slug)
                 _pane_state = _p.get("state") if _p else None
             except Exception:
-                pass
+                logger.debug("failed to get pane state for %s", slug, exc_info=True)
         if _pane_state != "done":
             passed = False
             error = "No commits to merge"
@@ -975,7 +975,7 @@ def run_review_only(
                 error=error or "",
             )
         except Exception:
-            pass
+            logger.debug("failed to close review span for %s", slug, exc_info=True)
     return _review_result
 
 
@@ -1079,6 +1079,14 @@ def run_land_only(
     rebase: bool = False,
 ) -> LandResult:
     """Run the canonical review, merge, and cleanup flow for a pane."""
+    import os
+
+    from dgov.persistence import get_pane
+
+    sr = os.path.abspath(session_root) if session_root else os.path.abspath(project_root)
+    if not get_pane(sr, slug):
+        return LandResult(slug=slug, error=f"Pane not found: {slug}", failure_stage="land")
+
     result = run_review_merge(
         project_root,
         slug,
@@ -1215,7 +1223,7 @@ def run_merge_only(
             open_sr, slug, SpanKind.MERGE, merge_strategy="rebase" if rebase else "squash"
         )
     except Exception:
-        pass
+        logger.debug("failed to open merge span for %s", slug, exc_info=True)
 
     from dgov.merger import merge_worker_pane
 
@@ -1252,7 +1260,7 @@ def run_merge_only(
                 error=_merge_error or "",
             )
         except Exception:
-            pass
+            logger.debug("failed to close merge span", exc_info=True)
 
     return _merge_out
 
@@ -1335,7 +1343,7 @@ def run_retry_only(
         _ro = SpanOutcome.FAILURE if _retry_out.error else SpanOutcome.SUCCESS
         close_span(session_root or "", sid, _ro, error=_retry_out.error or "")
     except Exception:
-        pass
+        logger.debug("failed to close retry span for %s", slug, exc_info=True)
     return _retry_out
 
 
@@ -1392,7 +1400,7 @@ def run_escalate_only(
         _eo = SpanOutcome.FAILURE if _esc_out.error else SpanOutcome.SUCCESS
         close_span(session_root or "", sid, _eo, error=_esc_out.error or "")
     except Exception:
-        pass
+        logger.debug("failed to close escalate span", exc_info=True)
     return _esc_out
 
 

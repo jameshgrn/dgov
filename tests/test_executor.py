@@ -542,6 +542,7 @@ class TestReviewMerge:
 
     def test_run_land_only_closes_after_successful_merge(self):
         with (
+            patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
             patch(
                 "dgov.executor.run_review_merge",
                 return_value=MagicMock(
