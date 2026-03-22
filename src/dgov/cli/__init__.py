@@ -469,6 +469,7 @@ from dgov.cli.batch_cmd import batch, checkpoint  # noqa: E402
 from dgov.cli.briefing_cmd import briefing_cmd  # noqa: E402
 from dgov.cli.dag_cmd import dag  # noqa: E402
 from dgov.cli.journal_cmd import journal_cmd  # noqa: E402
+from dgov.cli.ledger_cmd import ledger_cmd  # noqa: E402
 from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
 from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
 from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
@@ -506,6 +507,7 @@ cli.add_command(tunnel_cmd)
 cli.add_command(worker)
 cli.add_command(monitor_cmd)
 cli.add_command(journal_cmd)
+cli.add_command(ledger_cmd)
 cli.add_command(transcript_cmd)
 cli.add_command(trace_cmd)
 

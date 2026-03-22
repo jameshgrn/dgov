@@ -530,6 +530,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     # Spans + tool traces (Phase 4 observability)
     from dgov.spans import (
         CREATE_ARCHIVED_PANES_SQL,
+        CREATE_LEDGER_IDX,
+        CREATE_LEDGER_SQL,
         CREATE_PROMPTS_SQL,
         CREATE_SPANS_IDX_KIND,
         CREATE_SPANS_IDX_TRACE,
@@ -547,6 +549,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(CREATE_PROMPTS_SQL)
     conn.execute(CREATE_ARCHIVED_PANES_SQL)
     conn.execute(CREATE_TRANSCRIPTS_SQL)
+    conn.execute(CREATE_LEDGER_SQL)
+    conn.execute(CREATE_LEDGER_IDX)
 
     # Migrate: add hierarchy columns if missing
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:

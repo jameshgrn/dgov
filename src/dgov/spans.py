@@ -88,6 +88,22 @@ CREATE TABLE IF NOT EXISTS prompts (
     created_at      TEXT NOT NULL
 )"""
 
+CREATE_LEDGER_SQL = """\
+CREATE TABLE IF NOT EXISTS ledger (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts              TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    summary         TEXT NOT NULL,
+    detail          TEXT NOT NULL DEFAULT '',
+    severity        TEXT NOT NULL DEFAULT 'info',
+    status          TEXT NOT NULL DEFAULT 'open',
+    linked_slugs    TEXT NOT NULL DEFAULT '[]',
+    tags            TEXT NOT NULL DEFAULT '[]',
+    source          TEXT NOT NULL DEFAULT 'governor'
+)"""
+
+CREATE_LEDGER_IDX = "CREATE INDEX IF NOT EXISTS idx_ledger_category ON ledger(category, status)"
+
 CREATE_ARCHIVED_PANES_SQL = """\
 CREATE TABLE IF NOT EXISTS archived_panes (
     slug                TEXT NOT NULL,
@@ -208,6 +224,103 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
 def prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode()).hexdigest()[:12]
+
+
+# ---------------------------------------------------------------------------
+# Ledger (formalized napkin)
+# ---------------------------------------------------------------------------
+
+_LEDGER_CATEGORIES = frozenset(
+    {
+        "bug",
+        "fix",
+        "rule",
+        "pattern",
+        "debt",
+        "capability",
+        "decision",
+    }
+)
+_LEDGER_SEVERITIES = frozenset({"info", "low", "medium", "high"})
+_LEDGER_STATUSES = frozenset({"open", "fixed", "accepted", "wontfix"})
+
+
+def ledger_add(
+    session_root: str,
+    category: str,
+    summary: str,
+    *,
+    detail: str = "",
+    severity: str = "info",
+    status: str = "open",
+    linked_slugs: list[str] | None = None,
+    tags: list[str] | None = None,
+    source: str = "governor",
+) -> int:
+    """Add a ledger entry. Returns the entry id."""
+    if category not in _LEDGER_CATEGORIES:
+        raise ValueError(f"Invalid category: {category}. Valid: {sorted(_LEDGER_CATEGORIES)}")
+    if severity not in _LEDGER_SEVERITIES:
+        raise ValueError(f"Invalid severity: {severity}. Valid: {sorted(_LEDGER_SEVERITIES)}")
+    if status not in _LEDGER_STATUSES:
+        raise ValueError(f"Invalid status: {status}. Valid: {sorted(_LEDGER_STATUSES)}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _get_db(session_root)
+    cur = conn.execute(
+        "INSERT INTO ledger (ts, category, summary, detail, severity, status, "
+        "linked_slugs, tags, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            now,
+            category,
+            summary,
+            detail,
+            severity,
+            status,
+            json.dumps(linked_slugs or []),
+            json.dumps(tags or []),
+            source,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid  # type: ignore[return-value]
+
+
+def ledger_update(session_root: str, entry_id: int, *, status: str) -> None:
+    """Update ledger entry status."""
+    if status not in _LEDGER_STATUSES:
+        raise ValueError(f"Invalid status: {status}. Valid: {sorted(_LEDGER_STATUSES)}")
+    conn = _get_db(session_root)
+    conn.execute("UPDATE ledger SET status = ? WHERE id = ?", (status, entry_id))
+    conn.commit()
+
+
+def ledger_query(
+    session_root: str,
+    *,
+    category: str | None = None,
+    status: str | None = None,
+    tag: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Query ledger entries. Returns newest first."""
+    conn = _get_db(session_root)
+    clauses: list[str] = []
+    vals: list[object] = []
+    if category:
+        clauses.append("category = ?")
+        vals.append(category)
+    if status:
+        clauses.append("status = ?")
+        vals.append(status)
+    if tag:
+        clauses.append("tags LIKE ?")
+        vals.append(f"%{tag}%")
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    vals.append(limit)
+    rows = conn.execute(f"SELECT * FROM ledger{where} ORDER BY ts DESC LIMIT ?", vals).fetchall()
+    cols = [d[0] for d in conn.execute("SELECT * FROM ledger LIMIT 0").description]
+    return [dict(zip(cols, row)) for row in rows]
 
 
 def store_prompt(session_root: str, prompt: str) -> str:
