@@ -13,14 +13,14 @@ pytestmark = pytest.mark.unit
 
 
 class TestStatusCommand:
-    def test_returns_expected_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_returns_expected_keys_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "dgov.status.list_worker_panes",
             lambda *a, **kw: [{"alive": True}, {"alive": False}],
         )
         monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
         runner = CliRunner()
-        result = runner.invoke(cli, ["status"])
+        result = runner.invoke(cli, ["status", "--json"])
         assert result.exit_code == 0
         import json
 
@@ -28,17 +28,25 @@ class TestStatusCommand:
         assert data["total"] == 2
         assert data["alive"] == 1
 
-    def test_empty_panes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_empty_panes_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
         monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
         runner = CliRunner()
-        result = runner.invoke(cli, ["status"])
+        result = runner.invoke(cli, ["status", "--json"])
         assert result.exit_code == 0
         import json
 
         data = json.loads(result.output)
         assert data["total"] == 0
         assert data["alive"] == 0
+
+    def test_human_readable_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["status"])
+        assert result.exit_code == 0
+        assert "dgov status:" in result.output
 
 
 class TestDagPersistence:
