@@ -101,80 +101,46 @@ def test_deterministic_classification_provider_handles_idle_pattern():
 # -- StatisticalRoutingProvider tests --
 
 
-def test_statistical_routing_picks_agent_with_highest_pass_rate(tmp_path):
-    """StatisticalRoutingProvider picks agent with highest pass rate from decision journal."""
-    from dgov.persistence import _get_db
-
-    session_root = str(tmp_path)
-
-    # Create mock journal records with known outcomes
-    conn = _get_db(session_root)
-
-    # Agent "pi": 4 safe out of 5 total (80% pass rate)
-    for i in range(4):
-        conn.execute(
-            """INSERT INTO decision_journal
-            (ts, kind, provider_id,
-            trace_id, pane_slug, agent_id,
-            request_json, result_json, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "2024-01-01T00:00:00+00:00",
-                "review_output",
-                "inspection-review",
-                None,
-                f"pi-task-{i}",
-                "pi",
-                "{}",
-                '{"decision": {"verdict": "safe"}}',
-                100.0,
-            ),
-        )
-
+def _insert_span(conn, trace_id, kind, agent="", outcome="success", verdict="", **kw):
+    """Helper to insert a span row for testing."""
     conn.execute(
-        """INSERT INTO decision_journal
-        (ts, kind, provider_id,
-            trace_id, pane_slug, agent_id,
-            request_json, result_json, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        "INSERT INTO spans (trace_id, span_kind, started_at, ended_at, "
+        "duration_ms, outcome, agent, verdict) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            trace_id,
+            kind,
             "2024-01-01T00:00:00+00:00",
-            "review_output",
-            "inspection-review",
-            None,
-            "pi-task-4",
-            "pi",
-            "{}",
-            '{"decision": {"verdict": "stuck"}}',
-            100.0,
+            "2024-01-01T00:01:00+00:00",
+            60000,
+            outcome,
+            agent,
+            verdict,
         ),
     )
 
-    # Agent "claude": 5 safe out of 5 total (100% pass rate)
+
+def test_statistical_routing_picks_agent_with_highest_pass_rate(tmp_path):
+    """StatisticalRoutingProvider picks agent with highest pass rate from spans."""
+    from dgov.persistence import _get_db
+
+    session_root = str(tmp_path)
+    conn = _get_db(session_root)
+
+    # Agent "pi": 5 dispatches, 4 safe reviews out of 5 (80%)
     for i in range(5):
-        conn.execute(
-            """INSERT INTO decision_journal
-            (ts, kind, provider_id,
-            trace_id, pane_slug, agent_id,
-            request_json, result_json, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "2024-01-01T00:00:00+00:00",
-                "review_output",
-                "inspection-review",
-                None,
-                f"claude-task-{i}",
-                "claude",
-                "{}",
-                '{"decision": {"verdict": "safe"}}',
-                100.0,
-            ),
-        )
+        _insert_span(conn, f"pi-task-{i}", "dispatch", agent="pi")
+    for i in range(4):
+        _insert_span(conn, f"pi-task-{i}", "review", agent="pi", verdict="safe")
+    _insert_span(conn, "pi-task-4", "review", agent="pi", verdict="stuck")
+
+    # Agent "claude": 5 dispatches, 5 safe reviews (100%)
+    for i in range(5):
+        _insert_span(conn, f"claude-task-{i}", "dispatch", agent="claude")
+        _insert_span(conn, f"claude-task-{i}", "review", agent="claude", verdict="safe")
 
     conn.commit()
 
-    # Test: should pick claude (100% > 80%)
-    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=5)
+    provider = StatisticalRoutingProvider(session_root=session_root, min_samples=5)
     result = provider.route_task(
         RouteTaskRequest(prompt="debug issue", installed_agents=("pi", "claude"))
     )
@@ -184,183 +150,93 @@ def test_statistical_routing_picks_agent_with_highest_pass_rate(tmp_path):
 
 
 def test_statistical_routing_raises_on_insufficient_samples(tmp_path):
-    """StatisticalRoutingProvider raises ProviderError when < min_samples reviews exist."""
+    """StatisticalRoutingProvider raises ProviderError when < min_samples dispatches."""
     from dgov.persistence import _get_db
 
     session_root = str(tmp_path)
     conn = _get_db(session_root)
 
-    # Create only 3 reviews (below min_samples=5)
+    # Only 3 dispatches (below min_samples=5)
     for i in range(3):
-        conn.execute(
-            """INSERT INTO decision_journal
-            (ts, kind, provider_id,
-            trace_id, pane_slug, agent_id,
-            request_json, result_json, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "2024-01-01T00:00:00+00:00",
-                "review_output",
-                "inspection-review",
-                None,
-                f"task-{i}",
-                "pi",
-                "{}",
-                '{"decision": {"verdict": "safe"}}',
-                100.0,
-            ),
-        )
-
+        _insert_span(conn, f"task-{i}", "dispatch", agent="pi")
+        _insert_span(conn, f"task-{i}", "review", agent="pi", verdict="safe")
     conn.commit()
 
-    # Test: should raise ProviderError("insufficient data")
-    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=5)
-    with pytest.raises(ProviderError, match="insufficient data"):
+    provider = StatisticalRoutingProvider(session_root=session_root, min_samples=5)
+    with pytest.raises(ProviderError, match="insufficient span data"):
         provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
 
 
-def test_statistical_routing_fallback_to_pane_slug_lookup(tmp_path):
-    """StatisticalRoutingProvider falls back to pane lookup when agent_id is missing."""
-    from dgov.persistence import WorkerPane, add_pane
-
-    session_root = str(tmp_path)
-
-    # Create a pane record with agent="pi"
-    pane = WorkerPane(
-        slug="task-1",
-        prompt="test task",
-        pane_id="pane-1",
-        agent="pi",
-        project_root=str(session_root),
-        worktree_path="/tmp/wt",
-        branch_name="test",
-    )
-    add_pane(str(session_root), pane)
-
-    # Create review record WITHOUT agent_id field (simulating old data)
-    from dgov.persistence import _get_db
-
-    conn = _get_db(str(session_root))
-    for _ in range(5):
-        conn.execute(
-            """INSERT INTO decision_journal
-            (ts, kind, provider_id,
-            trace_id, pane_slug, agent_id,
-            request_json, result_json, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "2024-01-01T00:00:00+00:00",
-                "review_output",
-                "inspection-review",
-                None,
-                "task-1",
-                None,
-                "{}",
-                '{"decision": {"verdict": "safe"}}',
-                100.0,
-            ),
-        )
-
-    conn.commit()
-
-    # Test: should still work - falls back to pane slug lookup for agent_id
-    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=5)
-    request = RouteTaskRequest(prompt="test", installed_agents=("pi", "claude"))
-    result = provider.route_task(request)
-
-    assert result.decision.agent == "pi"
-
-
-def test_statistical_routing_handles_empty_journal(tmp_path):
-    """StatisticalRoutingProvider raises when journal is completely empty."""
-    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=1)
-
-    with pytest.raises(ProviderError, match="insufficient data"):
-        provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
-
-
-def test_statistical_routing_excludes_non_review_output_kind(tmp_path):
-    """StatisticalRoutingProvider only processes review_output records."""
+def test_statistical_routing_multiple_agents_different_rates(tmp_path):
+    """StatisticalRoutingProvider correctly ranks agents with different pass rates."""
     from dgov.persistence import _get_db
 
     session_root = str(tmp_path)
     conn = _get_db(session_root)
 
-    # Add route_task records (should be ignored)
-    conn.execute(
-        """INSERT INTO decision_journal
-        (ts, kind, provider_id, trace_id, pane_slug, agent_id, request_json, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            "2024-01-01T00:00:00+00:00",
-            "route_task",
-            "openrouter-routing",
-            None,
-            "task-1",
-            "pi",
-            "{}",
-            100.0,
-        ),
-    )
+    # Agent "fast": 5 dispatches, 3 safe (60%)
+    for i in range(5):
+        _insert_span(conn, f"fast-{i}", "dispatch", agent="fast")
+    for i in range(3):
+        _insert_span(conn, f"fast-{i}", "review", agent="fast", verdict="safe")
+    for i in range(3, 5):
+        _insert_span(conn, f"fast-{i}", "review", agent="fast", verdict="reject")
 
-    # Add classify_output records (should be ignored)
-    conn.execute(
-        """INSERT INTO decision_journal
-        (ts, kind, provider_id,
-        trace_id, request_json,
-        duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?)""",
-        (
-            "2024-01-01T00:00:00+00:00",
-            "classify_output",
-            "deterministic-classifier",
-            None,
-            "{}",
-            100.0,
-        ),
-    )
-
+    # Agent "slow": 5 dispatches, 5 safe (100%)
+    for i in range(5):
+        _insert_span(conn, f"slow-{i}", "dispatch", agent="slow")
+        _insert_span(conn, f"slow-{i}", "review", agent="slow", verdict="safe")
     conn.commit()
 
-    # Test: should raise insufficient data - non review_output records ignored
+    provider = StatisticalRoutingProvider(session_root=session_root, min_samples=5)
+    result = provider.route_task(
+        RouteTaskRequest(prompt="test", installed_agents=("fast", "slow"))
+    )
+    assert result.decision.agent == "slow"
+
+
+def test_statistical_routing_handles_empty_spans(tmp_path):
+    """StatisticalRoutingProvider raises when no spans exist."""
+    from dgov.persistence import _get_db
+
+    _get_db(str(tmp_path))  # ensure schema exists
+
     provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=1)
-    with pytest.raises(ProviderError, match="insufficient data"):
+    with pytest.raises(ProviderError, match="insufficient span data"):
         provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
 
 
-def test_statistical_routing_handles_missing_agent_falls_to_none(tmp_path):
-    """StatisticalRoutingProvider gracefully skips records without agent_id or pane."""
+def test_statistical_routing_ignores_non_dispatch_for_counting(tmp_path):
+    """StatisticalRoutingProvider counts dispatches, not other span kinds."""
     from dgov.persistence import _get_db
 
     session_root = str(tmp_path)
     conn = _get_db(session_root)
 
-    # Add review records with unknown/missing agent
-    for _ in range(5):
-        conn.execute(
-            """INSERT INTO decision_journal
-            (ts, kind, provider_id,
-            trace_id, pane_slug, agent_id,
-            request_json, result_json, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "2024-01-01T00:00:00+00:00",
-                "review_output",
-                "inspection-review",
-                None,
-                None,
-                None,
-                "{}",
-                '{"decision": {"verdict": "safe"}}',
-                100.0,
-            ),
-        )
-
+    # Only review spans (no dispatches) — should not qualify
+    for i in range(5):
+        _insert_span(conn, f"task-{i}", "review", agent="pi", verdict="safe")
     conn.commit()
 
-    # Test: should raise insufficient data - no valid agents found
-    provider = StatisticalRoutingProvider(session_root=str(tmp_path), min_samples=1)
-    with pytest.raises(ProviderError, match="insufficient data"):
+    provider = StatisticalRoutingProvider(session_root=session_root, min_samples=1)
+    with pytest.raises(ProviderError, match="insufficient span data"):
+        provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
+
+
+def test_statistical_routing_handles_no_agent_spans(tmp_path):
+    """StatisticalRoutingProvider skips spans with empty agent field."""
+    from dgov.persistence import _get_db
+
+    session_root = str(tmp_path)
+    conn = _get_db(session_root)
+
+    # Dispatch spans with empty agent
+    for i in range(5):
+        _insert_span(conn, f"task-{i}", "dispatch", agent="")
+    conn.commit()
+
+    provider = StatisticalRoutingProvider(session_root=session_root, min_samples=1)
+    with pytest.raises(ProviderError, match="insufficient span data"):
         provider.route_task(RouteTaskRequest(prompt="test", installed_agents=("pi",)))
 
 
