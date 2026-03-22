@@ -214,6 +214,7 @@ def cli(ctx, governor):
         "monitor",
         "codebase",
         "transcript",
+        "plan",
     ):
         _check_governor_context()
 
@@ -475,6 +476,7 @@ from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
 from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
 from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
+from dgov.cli.plan_cmd import plan_cmd  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
 from dgov.cli.templates import template  # noqa: E402
 from dgov.cli.trace_cmd import trace_cmd  # noqa: E402
@@ -510,6 +512,7 @@ cli.add_command(journal_cmd)
 cli.add_command(ledger_cmd)
 cli.add_command(transcript_cmd)
 cli.add_command(trace_cmd)
+cli.add_command(plan_cmd)
 
 
 if __name__ == "__main__":
