@@ -924,7 +924,7 @@ def run_review_only(
                 _pane_state = _p.get("state") if _p else None
             except Exception:
                 logger.debug("failed to get pane state for %s", slug, exc_info=True)
-        if _pane_state != "done":
+        if _pane_state not in ("done", "merged"):
             passed = False
             error = "No commits to merge"
     if passed and require_safe and verdict != "safe":
