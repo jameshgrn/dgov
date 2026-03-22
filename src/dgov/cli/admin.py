@@ -557,8 +557,12 @@ def status(project_root, session_root, output_json):
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import detect_installed_agents, load_registry
+    from dgov.persistence import read_events
+    from dgov.spans import ledger_query
     from dgov.status import list_worker_panes
 
+    sr = session_root or project_root
+    session_root_abs = os.path.abspath(sr)
     panes = list_worker_panes(project_root, session_root=session_root)
     registry = load_registry(project_root)
     installed = set(detect_installed_agents(registry))
@@ -630,6 +634,24 @@ def status(project_root, session_root, output_json):
             )
         else:
             lines.append(f"agents: {len(installed)} installed, all healthy")
+
+        # Recent failures from events table (kind LIKE fail)
+        try:
+            events = read_events(session_root_abs, limit=100)
+            recent_failures = sum(1 for e in events if "fail" in str(e.get("event", "")).lower())
+            if recent_failures > 0:
+                lines.append(f"recent failures: {recent_failures}")
+        except Exception:
+            pass
+
+        # Open bugs from ledger table
+        try:
+            open_bugs = ledger_query(session_root_abs, category="bug", status="open", limit=50)
+            bug_count = len(open_bugs)
+            if bug_count > 0:
+                lines.append(f"open bugs: {bug_count}")
+        except Exception:
+            pass
 
         click.echo("\n".join(lines))
 
@@ -769,7 +791,14 @@ def version_cmd():
     help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
-def stats(project_root, session_root):
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Output raw JSON instead of human-readable table",
+)
+def stats(project_root, session_root, output_json):
     """Show pane and agent statistics."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
@@ -778,7 +807,27 @@ def stats(project_root, session_root):
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
     data = compute_stats(session_root)
-    click.echo(json.dumps(data, indent=2))
+
+    if output_json:
+        click.echo(json.dumps(data, indent=2))
+    else:
+        reliability = data.get("reliability", {})
+        if not reliability:
+            click.echo("No agent statistics available.")
+            return
+
+        header = f"{'Agent':<15} {'Pass':>6} {'Dispatches':>10} {'Reviews':>7} {'Avg Review':>10}"
+        click.echo(header)
+        click.echo("-" * len(header))
+
+        for agent_name, info in sorted(reliability.items()):
+            pr = info.get("pass_rate", 0.0)
+            disp = info.get("dispatch_count", 0)
+            revs = info.get("review_count", 0)
+            avg_ms = info.get("avg_review_ms", 0.0)
+            pct = f"{int(pr * 100)}%" if pr > 0 else "0%"
+            avg_str = f"{int(avg_ms)}ms" if avg_ms > 0 else "-"
+            click.echo(f"{agent_name:<15} {pct:>6} {disp:>10} {revs:>7} {avg_str:>10}")
 
 
 @click.command("dashboard")
@@ -852,7 +901,10 @@ def tunnel_cmd():
     envvar="DGOV_PROJECT_ROOT",
     help="Project root ($DGOV_PROJECT_ROOT or cwd, where .dgov/ will be created)",
 )
-def init_cmd(project_root):
+@click.option(
+    "--agent", "-a", default=None, help="Governor agent (skip interactive prompt if provided)"
+)
+def init_cmd(project_root, agent):
     """Initialize a new dgov project: scaffold .dgov/ and write config."""
     project_root, _ = _autocorrect_roots(project_root)
 
@@ -863,8 +915,8 @@ def init_cmd(project_root):
         click.echo("Already initialized.")
         return
 
-    # Interactive prompt
-    governor = click.prompt("Governor agent", default="claude", type=str)
+    # Interactive prompt or use provided agent
+    governor = agent or click.prompt("Governor agent", default="claude", type=str)
     permissions = "bypassPermissions"
 
     # Create directories
@@ -1132,26 +1184,28 @@ def transcript_cmd(slug, project_root, session_root, output_json):
 
 
 @click.command("gc")
-@click.option("--root", "-r", default=".", help="Project root")
+@click.option("--project-root", "-r", default=".", help="Project root")
 @SESSION_ROOT_OPTION
 @click.option("--dry-run", is_flag=True, help="Show what would be cleaned")
-def gc_cmd(root, session_root, dry_run):
+def gc_cmd(project_root, session_root, dry_run):
     """Garbage-collect stale tmux sessions, worktrees, and branches."""
     import shutil
 
     from dgov.backend import get_backend
     from dgov.persistence import STATE_DIR, all_panes, remove_pane
 
-    root = Path(root).resolve()
-    session_root = Path(session_root).resolve() if session_root else root
+    project_root = Path(project_root).resolve()
+    session_root = Path(session_root).resolve() if session_root else project_root
     backend = get_backend()
     removed = []
 
     # 0. Prune stale DB entries and retained panes
     from dgov.status import gc_retained_panes, prune_stale_panes
 
-    pruned = prune_stale_panes(str(root), session_root=str(session_root))
-    gc_result = gc_retained_panes(str(root), session_root=str(session_root), older_than_s=3600.0)
+    pruned = prune_stale_panes(str(project_root), session_root=str(session_root))
+    gc_result = gc_retained_panes(
+        str(project_root), session_root=str(session_root), older_than_s=3600.0
+    )
     if pruned:
         removed.extend(f"pruned:{s}" for s in pruned)
     for slug in gc_result.get("closed", []):
@@ -1174,7 +1228,7 @@ def gc_cmd(root, session_root, dry_run):
             removed.append(f"pane:{slug}")
 
     # 2. Remove orphaned worktree directories
-    wt_dir = root / ".dgov" / "worktrees"
+    wt_dir = project_root / ".dgov" / "worktrees"
     if wt_dir.is_dir():
         known_wts = {p.get("worktree_path") for p in panes}
         for entry in wt_dir.iterdir():
@@ -1190,7 +1244,7 @@ def gc_cmd(root, session_root, dry_run):
 
     # 3. Remove orphaned git worktrees
     wt_list = subprocess.run(
-        ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+        ["git", "-C", str(project_root), "worktree", "list", "--porcelain"],
         capture_output=True,
         text=True,
     )
@@ -1207,14 +1261,22 @@ def gc_cmd(root, session_root, dry_run):
                         click.echo(f"[dry-run] prune git worktree: {wt_path}")
                     else:
                         subprocess.run(
-                            ["git", "-C", str(root), "worktree", "remove", "--force", wt_path],
+                            [
+                                "git",
+                                "-C",
+                                str(project_root),
+                                "worktree",
+                                "remove",
+                                "--force",
+                                wt_path,
+                            ],
                             capture_output=True,
                         )
                     removed.append(f"git-worktree:{Path(wt_path).name}")
 
     # 4. Delete stale dgov- branches (merged into main)
     br_result = subprocess.run(
-        ["git", "-C", str(root), "branch", "--merged", "main"],
+        ["git", "-C", str(project_root), "branch", "--merged", "main"],
         capture_output=True,
         text=True,
     )
@@ -1226,7 +1288,7 @@ def gc_cmd(root, session_root, dry_run):
                     click.echo(f"[dry-run] delete merged branch: {branch}")
                 else:
                     subprocess.run(
-                        ["git", "-C", str(root), "branch", "-d", branch],
+                        ["git", "-C", str(project_root), "branch", "-d", branch],
                         capture_output=True,
                     )
                 removed.append(f"branch:{branch}")

@@ -271,7 +271,7 @@ class TestListAgentsCmd:
 class TestStatsCmd:
     def test_stats_outputs_json(self, runner: CliRunner, tmp_path: Path) -> None:
         with patch("dgov.inspection.compute_stats", return_value={"total": 5}) as mock_stats:
-            result = runner.invoke(cli, ["stats", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["stats", "--json", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -467,3 +467,226 @@ class TestTranscriptCmd:
         assert "[18:15:27]" in result.output
         # User message and model_change should be skipped
         assert "Hello" not in result.output
+
+
+class TestStatusRecap:
+    """Tests for status command recap features (recent failures and open bugs)."""
+
+    def test_status_shows_recent_failures(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status shows recent failure count from events table."""
+
+        # Mock events with fail-related events
+        mock_events = [
+            {"event": "pane_failed", "pane": "test-pane"},
+            {"event": "pane_timed_out", "pane": "test-pane"},
+            {"event": "dispatch_queued", "pane": "test-pane"},
+        ]
+
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+            patch("dgov.persistence.read_events", return_value=mock_events),
+            patch("dgov.spans.ledger_query", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        # Should show recent failures count
+        assert "recent failures:" in result.output.lower()
+
+    def test_status_shows_open_bugs(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status shows open bug count from ledger table."""
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+            patch("dgov.persistence.read_events", return_value=[]),
+            patch(
+                "dgov.spans.ledger_query",
+                return_value=[{"id": 1, "category": "bug", "summary": "test bug"}],
+            ),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        # Should show open bugs count
+        assert "open bugs:" in result.output.lower()
+
+    def test_status_recap_with_both_failures_and_bugs(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test status shows both recent failures and open bugs."""
+        mock_events = [
+            {"event": "pane_failed", "pane": "test-pane"},
+            {"event": "pane_timed_out", "pane": "test-pane"},
+        ]
+        mock_bugs = [
+            {"id": 1, "category": "bug", "summary": "bug 1"},
+            {"id": 2, "category": "bug", "summary": "bug 2"},
+        ]
+
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+            patch("dgov.persistence.read_events", return_value=mock_events),
+            patch("dgov.spans.ledger_query", return_value=mock_bugs),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "recent failures:" in output.lower()
+        assert "open bugs:" in output.lower()
+
+    def test_status_recap_no_failures_or_bugs(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status without failures or bugs doesn't show those lines."""
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+            patch("dgov.persistence.read_events", return_value=[]),
+            patch("dgov.spans.ledger_query", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "recent failures:" not in output.lower()
+        assert "open bugs:" not in output.lower()
+
+
+class TestStatsCmdHumanReadable:
+    """Tests for stats command human-readable output."""
+
+    def test_stats_human_readable_table(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test stats outputs a text table by default."""
+        mock_data = {
+            "total_panes": 0,
+            "by_state": {},
+            "by_agent": {},
+            "recent_failures": [],
+            "event_count": 0,
+            "reliability": {
+                "qwen-35b": {
+                    "pass_rate": 0.85,
+                    "dispatch_count": 28,
+                    "review_count": 13,
+                    "avg_review_ms": 635.0,
+                },
+                "qwen-9b": {
+                    "pass_rate": 0.72,
+                    "dispatch_count": 15,
+                    "review_count": 8,
+                    "avg_review_ms": 420.0,
+                },
+            },
+        }
+
+        with patch("dgov.inspection.compute_stats", return_value=mock_data):
+            result = runner.invoke(cli, ["stats", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "Agent" in output
+        assert "qwen-35b" in output
+        assert "qwen-9b" in output
+        assert "85%" in output
+        assert "72%" in output
+        assert "635ms" in output
+
+    def test_stats_empty_agents(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test stats with no agents shows appropriate message."""
+        mock_data = {"reliability": {}}
+
+        with patch("dgov.inspection.compute_stats", return_value=mock_data):
+            result = runner.invoke(cli, ["stats", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "No agent statistics available." in result.output
+
+    def test_stats_json_flag_outputs_raw_json(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test stats --json outputs raw JSON."""
+        mock_data = {
+            "reliability": {
+                "qwen-35b": {
+                    "pass_rate": 0.85,
+                    "dispatch_count": 28,
+                    "review_count": 13,
+                    "avg_review_ms": 635.0,
+                },
+            },
+        }
+
+        with patch("dgov.inspection.compute_stats", return_value=mock_data):
+            result = runner.invoke(cli, ["stats", "--json", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data == mock_data
+
+
+class TestInitCmdAgentOption:
+    """Tests for init command --agent option."""
+
+    def test_init_with_agent_option_skips_prompt(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test init with --agent skips interactive prompt."""
+        result = runner.invoke(cli, ["init", "-r", str(tmp_path), "-a", "claude"])
+
+        assert result.exit_code == 0
+        config_path = tmp_path / ".dgov" / "config.toml"
+        assert config_path.is_file()
+        config_content = config_path.read_text(encoding="utf-8")
+        assert 'governor_agent = "claude"' in config_content
+        # Should not have prompted
+        assert "Governor agent" not in result.output
+
+    def test_init_without_agent_option_prompts(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test init without --agent shows interactive prompt."""
+        result = runner.invoke(cli, ["init", "-r", str(tmp_path)], input="gemini\n")
+
+        assert result.exit_code == 0
+        config_path = tmp_path / ".dgov" / "config.toml"
+        assert config_path.is_file()
+        config_content = config_path.read_text(encoding="utf-8")
+        assert 'governor_agent = "gemini"' in config_content
+
+    def test_init_default_agent_when_no_option(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test init uses claude as default when no --agent provided."""
+        result = runner.invoke(cli, ["init", "-r", str(tmp_path)], input="\n")
+
+        assert result.exit_code == 0
+        config_path = tmp_path / ".dgov" / "config.toml"
+        assert config_path.is_file()
+        config_content = config_path.read_text(encoding="utf-8")
+        assert 'governor_agent = "claude"' in config_content
+
+
+class TestGcCmdProjectRootFlag:
+    """Tests for gc command --project-root flag naming."""
+
+    def test_gc_uses_project_root_parameter(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test gc command accepts --project-root parameter."""
+        with patch("dgov.backend.get_backend") as mock_backend:
+            mock_backend.return_value.is_alive.return_value = False
+
+            with (
+                patch("dgov.persistence.all_panes", return_value=[]),
+                patch("dgov.status.prune_stale_panes", return_value=[]),
+                patch("dgov.status.gc_retained_panes", return_value={"closed": []}),
+                patch("subprocess.run") as mock_run,
+            ):
+                mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+                result = runner.invoke(cli, ["gc", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        # Verify it ran successfully
+        data = json.loads(result.output)
+        assert "gc" in data
+        assert "count" in data
+
+    def test_gc_project_root_long_flag(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test gc accepts --project-root long flag."""
+        result = runner.invoke(cli, ["gc", "-r", str(tmp_path)])
+        assert result.exit_code == 0
