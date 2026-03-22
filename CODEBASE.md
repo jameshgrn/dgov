@@ -102,7 +102,7 @@
 | `src/dgov/cli/trace_cmd.py` | M | Span and tool-trace CLI commands. |
 | `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
 | `src/dgov/dashboard.py` | L | Rich-based live dashboard for dgov pane management. |
-| `src/dgov/plan.py` | M | Plan schema, validator, and compiler for dgov. |
+| `src/dgov/plan.py` | L | Plan schema, validator, and compiler for dgov. |
 | `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch. |
 | `src/dgov/spans.py` | L | Structured span and tool-trace observability for dgov. |
 | `src/dgov/terrain.py` | L | SPIM erosion terrain model for dgov dashboard. |
