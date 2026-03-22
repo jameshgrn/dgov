@@ -9,6 +9,7 @@ import pytest
 from dgov.spans import (
     SpanKind,
     SpanOutcome,
+    close_orphaned_spans,  # noqa: F401
     close_span,
     export_trajectory,
     get_spans,
@@ -691,3 +692,62 @@ def test_prompt_hash():
     assert len(h) == 12
     assert all(c in "0123456789abcdef" for c in h)
     assert prompt_hash("Fix the parser bug") == h  # deterministic
+
+
+# ---------------------------------------------------------------------------
+# close_orphaned_spans
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestCloseOrphanedSpans:
+    def test_closes_old_pending_spans(self, session):
+        """Spans pending for > max_age_hours get closed with outcome=failure."""
+        from datetime import datetime, timedelta, timezone
+
+        from dgov.spans import _get_db
+
+        # Insert a span with started_at 3 hours ago, still pending
+        conn = _get_db(session)
+        old_time = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        conn.execute(
+            "INSERT INTO spans (trace_id, span_kind, started_at, outcome) VALUES (?, ?, ?, ?)",
+            ("orphan-test", "dispatch", old_time, "pending"),
+        )
+        conn.commit()
+
+        closed = close_orphaned_spans(session, max_age_hours=2.0)
+        assert closed == 1
+
+        spans = get_spans(session, "orphan-test")
+        assert len(spans) == 1
+        assert spans[0]["outcome"] == "failure"
+        assert "orphaned" in spans[0]["error"]
+        assert spans[0]["ended_at"] != ""
+        assert spans[0]["duration_ms"] > 0
+
+    def test_leaves_recent_pending_spans(self, session):
+        """Spans pending for < max_age_hours are left alone."""
+        open_span(session, "recent-test", SpanKind.WAIT)
+
+        closed = close_orphaned_spans(session, max_age_hours=2.0)
+        assert closed == 0
+
+        spans = get_spans(session, "recent-test")
+        assert spans[0]["outcome"] == "pending"
+
+    def test_leaves_already_closed_spans(self, session):
+        """Already-closed spans are not touched."""
+        sid = open_span(session, "closed-test", SpanKind.REVIEW)
+        close_span(session, sid, SpanOutcome.SUCCESS)
+
+        closed = close_orphaned_spans(session, max_age_hours=0.0)
+        assert closed == 0
+
+        spans = get_spans(session, "closed-test")
+        assert spans[0]["outcome"] == "success"
+
+    def test_returns_zero_when_no_orphans(self, session):
+        """Returns 0 when there are no orphaned spans."""
+        closed = close_orphaned_spans(session)
+        assert closed == 0

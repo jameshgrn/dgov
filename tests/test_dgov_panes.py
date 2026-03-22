@@ -1708,6 +1708,35 @@ class TestPruneStalePane:
         pruned = prune_stale_panes(str(tmp_path))
         # Dead active pane with worktree gets force-failed (worktree preserved)
         assert pruned == ["dead:has-wt"]
+        # Verify state was changed to failed
+        pane_after = get_pane(str(tmp_path), "has-wt")
+        assert pane_after["state"] == "failed"
+        # Verify worktree was NOT deleted
+        assert wt.exists()
+
+    def test_dead_done_pane_with_worktree_not_double_failed(self, tmp_path, mock_backend):
+        """A dead pane already in 'done' state should not be re-failed."""
+        from dgov.status import prune_stale_panes
+
+        mock_backend.is_alive.return_value = False
+        wt = tmp_path / "done-wt"
+        wt.mkdir()
+        pane = WorkerPane(
+            slug="done-pane",
+            prompt="x",
+            pane_id="%2",
+            agent="pi",
+            project_root=str(tmp_path),
+            worktree_path=str(wt),
+            branch_name="b",
+            state="done",
+        )
+        add_pane(str(tmp_path), pane)
+        pruned = prune_stale_panes(str(tmp_path))
+        # Done pane with worktree should NOT appear in pruned (not active)
+        assert pruned == []
+        pane_after = get_pane(str(tmp_path), "done-pane")
+        assert pane_after["state"] == "done"
 
 
 # ---------------------------------------------------------------------------
