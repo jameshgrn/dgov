@@ -471,7 +471,6 @@ from dgov.cli.dag_cmd import dag  # noqa: E402
 from dgov.cli.journal_cmd import journal_cmd  # noqa: E402
 from dgov.cli.ledger_cmd import ledger_cmd  # noqa: E402
 from dgov.cli.merge_queue_cmd import merge_queue  # noqa: E402
-from dgov.cli.mission_cmd import mission_cmd  # noqa: E402
 from dgov.cli.monitor_cmd import monitor_cmd  # noqa: E402
 from dgov.cli.openrouter_cmd import openrouter  # noqa: E402
 from dgov.cli.pane import pane  # noqa: E402
@@ -498,7 +497,6 @@ cli.add_command(openrouter)
 cli.add_command(init_cmd)
 cli.add_command(doctor_cmd)
 cli.add_command(gc_cmd)
-cli.add_command(mission_cmd)
 cli.add_command(dag)
 cli.add_command(merge_queue)
 cli.add_command(briefing_cmd)
