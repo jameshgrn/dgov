@@ -420,11 +420,12 @@ class TestFullCleanup:
             patch("dgov.lifecycle.subprocess.run", side_effect=OSError("ps missing")),
             patch("dgov.lifecycle.os.getpgid", return_value=321) as mock_getpgid,
             patch("dgov.lifecycle.os.killpg") as mock_killpg,
+            patch("dgov.lifecycle.os.kill", side_effect=ProcessLookupError),
         ):
             _terminate_pane_process_tree(123)
 
-        mock_getpgid.assert_called_once_with(123)
-        mock_killpg.assert_called_once_with(321, signal.SIGTERM)
+        mock_getpgid.assert_called_with(123)
+        mock_killpg.assert_called_with(321, signal.SIGTERM)
 
     def test_full_cleanup_uses_process_tree_termination(
         self, tmp_path: Path, mock_backend: MagicMock

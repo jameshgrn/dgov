@@ -239,10 +239,10 @@ class TestAllPanes:
 
 
 class TestClassifyTask:
-    """Mock journal empty so statistical routing falls through to OpenRouter."""
+    """Mock spans empty so statistical routing falls through to OpenRouter."""
 
     def test_fallback_to_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.persistence.read_decision_journal", lambda *a, **kw: [])
+        monkeypatch.setattr("dgov.spans.agent_reliability_stats", lambda *a, **kw: {})
         monkeypatch.setattr(
             "dgov.openrouter.chat_completion",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("no llm")),
@@ -250,7 +250,7 @@ class TestClassifyTask:
         assert classify_task("fix the lint error") == "claude"
 
     def test_returns_claude(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.persistence.read_decision_journal", lambda *a, **kw: [])
+        monkeypatch.setattr("dgov.spans.agent_reliability_stats", lambda *a, **kw: {})
         monkeypatch.setattr(
             "dgov.openrouter.chat_completion",
             lambda *a, **kw: {"choices": [{"message": {"content": "claude"}}]},
@@ -258,7 +258,7 @@ class TestClassifyTask:
         assert classify_task("debug flaky test") == "claude"
 
     def test_returns_pi_on_pi_response(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.persistence.read_decision_journal", lambda *a, **kw: [])
+        monkeypatch.setattr("dgov.spans.agent_reliability_stats", lambda *a, **kw: {})
         monkeypatch.setattr(
             "dgov.openrouter.chat_completion",
             lambda *a, **kw: {"choices": [{"message": {"content": "pi"}}]},

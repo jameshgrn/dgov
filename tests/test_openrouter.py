@@ -145,14 +145,14 @@ class TestClassifyTask:
     Mock read_decision_journal to return empty so statistical falls through to OpenRouter.
     """
 
-    def _patch_journal_empty(self):
-        return patch("dgov.persistence.read_decision_journal", return_value=[])
+    def _patch_stats_empty(self):
+        return patch("dgov.spans.agent_reliability_stats", return_value={})
 
     def test_classify_pi_via_openrouter(self):
         from dgov.strategy import classify_task
 
         with (
-            self._patch_journal_empty(),
+            self._patch_stats_empty(),
             patch(
                 "dgov.openrouter.chat_completion",
                 return_value={"choices": [{"message": {"content": "pi"}}]},
@@ -164,7 +164,7 @@ class TestClassifyTask:
         from dgov.strategy import classify_task
 
         with (
-            self._patch_journal_empty(),
+            self._patch_stats_empty(),
             patch(
                 "dgov.openrouter.chat_completion",
                 return_value={"choices": [{"message": {"content": "claude"}}]},
@@ -176,7 +176,7 @@ class TestClassifyTask:
         from dgov.strategy import classify_task
 
         with (
-            self._patch_journal_empty(),
+            self._patch_stats_empty(),
             patch("dgov.openrouter.chat_completion", side_effect=RuntimeError("all failed")),
         ):
             assert classify_task("anything") == "claude"
@@ -185,7 +185,7 @@ class TestClassifyTask:
         from dgov.strategy import classify_task
 
         with (
-            self._patch_journal_empty(),
+            self._patch_stats_empty(),
             patch(
                 "dgov.openrouter.chat_completion",
                 return_value={"choices": [{"message": {"content": "codex"}}]},

@@ -247,7 +247,10 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
         if not still_alive_pids:
             return {"terminated": True, "still_running": []}
         # Re-resolve descendants since PIDs may have changed
-        snapshot_after = _process_snapshot()
+        try:
+            snapshot_after = _process_snapshot()
+        except (subprocess.SubprocessError, OSError):
+            snapshot_after = {}
         descendant_pids = _collect_descendant_pids(root_pid, snapshot_after)
         time.sleep(0.25)
 
@@ -852,6 +855,7 @@ def create_worker_pane(
 
             # Re-resolve logical agent name -> physical backend after lock
             # River-first then OpenRouter fallback preserved by router order
+            logical_agent = agent  # preserve for span metadata
             from dgov.router import resolve_agent as _resolve_agent
 
             final_agent, routed_from = _resolve_agent(agent, session_root, project_root)
@@ -1001,6 +1005,7 @@ def create_worker_pane(
                     slug,
                     SpanKind.DISPATCH,
                     agent=agent,
+                    from_agent=logical_agent,
                     prompt_hash=phash,
                     base_sha=base_sha,
                 )
