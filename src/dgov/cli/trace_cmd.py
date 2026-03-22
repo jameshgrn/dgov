@@ -153,6 +153,18 @@ def trace_stats(project_root, session_root):
         for name, count in tools:
             click.echo(f"  {name}: {count}")
 
+    # Per-agent breakdown
+    agent_rows = conn.execute(
+        "SELECT agent, outcome, COUNT(*), AVG(duration_ms) "
+        "FROM spans WHERE agent != '' "
+        "GROUP BY agent, outcome ORDER BY agent, outcome"
+    ).fetchall()
+    if agent_rows:
+        click.echo("\n=== By Agent ===")
+        for agent, outcome, count, avg_ms in agent_rows:
+            avg = f"{avg_ms:.0f}ms" if avg_ms and avg_ms >= 0 else "-"
+            click.echo(f"  {agent:<16s} {outcome:<8s} {count:>5d}  avg {avg:>8s}")
+
 
 @trace_cmd.command("ingest")
 @click.argument("slug")
