@@ -466,6 +466,7 @@ _NOISE_RE: list[re.Pattern[str]] = [
         r")"
     ),  # agent UI chrome
     re.compile(r"^[\$#>%\s]+$"),  # bare shell prompts
+    re.compile(r"^\s*[➜❯❮⌵◉▶]\s+\w+"),  # arrow-style shell prompts (➜ slug git:(branch))
     re.compile(r"^\s*\d+pct\s*\|"),  # progress bars (N pct |)
     re.compile(r"^\s*\d+%\s*[\|█▓▒░]"),  # progress bars (N% |)
 ]

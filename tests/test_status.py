@@ -158,6 +158,42 @@ class TestStripAnsi:
         text = "\x1b[1mbold text\x1b[0m"
         assert _strip_ansi(text) == "bold text"
 
+
+@pytest.mark.unit
+class TestShellPromptNoise:
+    """Test that shell prompt noise is filtered from summaries."""
+
+    def test_arrow_prompt_filtered(self):
+        """Arrow-style prompts like '➜ slug git:(branch)' should be detected as noise."""
+        from dgov.status import _is_noise_line
+
+        assert _is_noise_line("➜  slug git:(branch)") is True
+        assert _is_noise_line("➜ myproject") is True
+        assert _is_noise_line("\u279c project") is True
+
+    def test_other_arrow_prompts_filtered(self):
+        """Other arrow variants should also be detected as noise."""
+        from dgov.status import _is_noise_line
+
+        assert _is_noise_line("❯ workspace") is True
+        assert _is_noise_line("⌵ dir") is True
+
+    def test_non_prompt_lines_not_filtered(self):
+        """Actual output lines should NOT be detected as noise."""
+        from dgov.status import _is_noise_line
+
+        assert _is_noise_line("Reading src/dgov/cli.py") is False
+        assert _is_noise_line("5 passed in 1.2s") is False
+        assert _is_noise_line("linting completed") is False
+
+    def test_bare_prompts_still_filtered(self):
+        """Bare shell prompts should still be detected."""
+        from dgov.status import _is_noise_line
+
+        assert _is_noise_line("$") is True
+        assert _is_noise_line("#") is True
+        assert _is_noise_line(">") is True
+
     def test_strips_cursor_movement(self):
         text = "\x1b[2J\x1b[Hscreen cleared"
         assert _strip_ansi(text) == "screen cleared"
