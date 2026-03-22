@@ -369,3 +369,39 @@ def test_dag_kernel_partial_skip() -> None:
     assert kernel.task_states["c"] == DagTaskState.PENDING
     # d depends on b → skipped
     assert kernel.task_states["d"] == DagTaskState.SKIPPED
+
+
+# ---------------------------------------------------------------------------
+# DagKernel review_agent tests
+# ---------------------------------------------------------------------------
+
+
+def test_review_task_includes_review_agent() -> None:
+    """ReviewTask emitted by kernel includes review_agent from config."""
+    kernel = DagKernel(
+        deps={"a": ()},
+        review_agents={"a": "qwen-35b"},
+    )
+    actions = kernel.start()
+    # Dispatch task a
+    assert len(actions) == 1  # DispatchTask
+    actions = kernel.handle(TaskDispatched("a", "pane-a"))
+    # Should get WaitForAny
+    assert len(actions) == 1
+    # Worker done
+    actions = kernel.handle(TaskWaitDone("a", "pane-a", "done"))
+    # Should get ReviewTask with review_agent
+    assert len(actions) == 1
+    assert isinstance(actions[0], ReviewTask)
+    assert actions[0].review_agent == "qwen-35b"
+
+
+def test_review_task_empty_without_config() -> None:
+    """ReviewTask has empty review_agent when not configured."""
+    kernel = DagKernel(deps={"a": ()})
+    actions = kernel.start()
+    actions = kernel.handle(TaskDispatched("a", "pane-a"))
+    actions = kernel.handle(TaskWaitDone("a", "pane-a", "done"))
+    assert len(actions) == 1
+    assert isinstance(actions[0], ReviewTask)
+    assert actions[0].review_agent == ""

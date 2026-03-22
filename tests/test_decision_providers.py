@@ -408,3 +408,105 @@ def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
         session_root="/session",
         full=True,
     )
+
+
+# -- ModelReviewProvider tests --
+
+
+class TestModelReviewProvider:
+    """Tests for ModelReviewProvider and helpers."""
+
+    def test_parse_review_response_approved(self):
+        """Parse an approved response."""
+        from dgov.decision_providers import _parse_review_response
+
+        content = "VERDICT: approved\nSUMMARY: Looks good\nISSUES: none"
+        verdict, issues, summary = _parse_review_response(content)
+        assert verdict == "safe"
+        assert issues == ()
+        assert summary == "Looks good"
+
+    def test_parse_review_response_concerns(self):
+        """Parse a response with concerns."""
+        from dgov.decision_providers import _parse_review_response
+
+        content = "VERDICT: concerns\nSUMMARY: Missing edge case\nISSUES: No null check on line 42"
+        verdict, issues, summary = _parse_review_response(content)
+        assert verdict == "concerns"
+        assert len(issues) == 1
+        assert "null check" in issues[0]
+        assert summary == "Missing edge case"
+
+    def test_parse_review_response_changes_requested(self):
+        """Parse a changes_requested verdict."""
+        from dgov.decision_providers import _parse_review_response
+
+        content = "VERDICT: changes_requested\nSUMMARY: Needs rework\nISSUES: Bad design"
+        verdict, issues, summary = _parse_review_response(content)
+        assert verdict == "concerns"  # "change" triggers concerns
+
+    def test_parse_review_response_multiple_issues(self):
+        """Parse response with multiple issues."""
+        from dgov.decision_providers import _parse_review_response
+
+        content = (
+            "VERDICT: concerns\n"
+            "SUMMARY: Several problems\n"
+            "ISSUES: Missing error handling\n"
+            "Race condition in cleanup\n"
+            "Unbounded loop on line 99"
+        )
+        verdict, issues, summary = _parse_review_response(content)
+        assert verdict == "concerns"
+        assert len(issues) == 3
+
+    def test_parse_review_response_empty(self):
+        """Parse empty response defaults to approved."""
+        from dgov.decision_providers import _parse_review_response
+
+        verdict, issues, summary = _parse_review_response("")
+        assert verdict == "approved"
+        assert issues == ()
+
+    def test_resolve_review_model_known(self):
+        """Known logical names resolve to OpenRouter model IDs."""
+        from dgov.decision_providers import _resolve_review_model
+
+        assert _resolve_review_model("qwen-35b") == "qwen/qwen3.5-35b"
+        assert _resolve_review_model("qwen-122b") == "qwen/qwen3.5-122b"
+        assert _resolve_review_model("qwen-9b") == "qwen/qwen3.5-9b"
+
+    def test_resolve_review_model_unknown_passthrough(self):
+        """Unknown names pass through as-is (might be a direct model ID)."""
+        from dgov.decision_providers import _resolve_review_model
+
+        assert _resolve_review_model("custom/model-v1") == "custom/model-v1"
+
+    def test_model_review_requires_review_agent(self):
+        """ModelReviewProvider raises ProviderError without review_agent."""
+        from dgov.decision import ProviderError, ReviewOutputRequest
+        from dgov.decision_providers import ModelReviewProvider
+
+        provider = ModelReviewProvider()
+        request = ReviewOutputRequest(
+            project_root="/tmp",
+            slug="test",
+            review_agent="",
+        )
+        with pytest.raises(ProviderError, match="requires review_agent"):
+            provider.review_output(request)
+
+    def test_model_review_requires_diff(self):
+        """ModelReviewProvider raises ProviderError without diff."""
+        from dgov.decision import ProviderError, ReviewOutputRequest
+        from dgov.decision_providers import ModelReviewProvider
+
+        provider = ModelReviewProvider()
+        request = ReviewOutputRequest(
+            project_root="",
+            slug="",
+            review_agent="qwen-35b",
+            diff="",
+        )
+        with pytest.raises(ProviderError, match="No diff available"):
+            provider.review_output(request)

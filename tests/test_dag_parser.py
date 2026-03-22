@@ -146,3 +146,25 @@ files.edit = ["/etc/passwd"]
         task_a = defn.tasks["task-a"]
         assert task_a.permission_mode == "bypassPermissions"
         assert task_a.timeout_s == 900
+
+    def test_review_agent_field(self, tmp_path):
+        """review_agent field is parsed from task spec."""
+        toml_content = """
+[dag]
+version = 1
+name = "test-dag"
+[tasks.task-a]
+summary = "First task"
+prompt = "Do task A"
+commit_message = "Complete A"
+agent = "qwen-9b"
+review_agent = "qwen-35b"
+files.edit = ["src/a.py"]
+"""
+        defn = parse_dag_file(_write_dag(tmp_path, toml_content))
+        assert defn.tasks["task-a"].review_agent == "qwen-35b"
+
+    def test_review_agent_default_empty(self, tmp_path):
+        """review_agent defaults to empty string."""
+        defn = parse_dag_file(_write_dag(tmp_path))
+        assert defn.tasks["task-a"].review_agent == ""
