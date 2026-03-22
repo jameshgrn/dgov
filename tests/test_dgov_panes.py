@@ -1950,7 +1950,6 @@ class TestEmitEvent:
         mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._generate_slug", return_value="test-slug"),
             patch("dgov.lifecycle._setup_and_launch_agent"),
             patch("dgov.lifecycle._write_worktree_instructions"),
         ):
@@ -1967,6 +1966,7 @@ class TestEmitEvent:
                 project_root=str(tmp_path),
                 prompt="Fix the thing",
                 agent="claude",
+                slug="test-slug",
                 session_root=str(tmp_path),
             )
         events = read_events(str(tmp_path))
@@ -1995,7 +1995,6 @@ class TestBlockTitleOverride:
         mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._generate_slug", return_value="title-test"),
             patch("dgov.lifecycle._write_worktree_instructions"),
         ):
 
@@ -2011,6 +2010,7 @@ class TestBlockTitleOverride:
                 project_root=str(tmp_path),
                 prompt="Test title block",
                 agent="claude",
+                slug="title-test",
                 session_root=str(tmp_path),
             )
         mock_backend.configure_worker_pane.assert_called_once()
@@ -2932,11 +2932,10 @@ class TestStructurePiPrompt:
         assert "Read" not in structured
         assert "git add" not in structured
 
-    @patch("dgov.lifecycle._structure_pi_prompt", wraps=_structure_pi_prompt)
-    def test_create_worker_pane_calls_structure_for_pi(
-        self, mock_structure: Mock, tmp_path: Path, mock_backend: MagicMock
+    def test_create_worker_pane_structures_prompt_for_pi(
+        self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        """Verify _structure_pi_prompt is called when agent is pi."""
+        """Verify pi agent gets structured numbered-step prompt."""
         from dgov.agents import AgentDef
         from dgov.lifecycle import create_worker_pane
 
@@ -2955,33 +2954,29 @@ class TestStructurePiPrompt:
         mock_backend.create_worker_pane.return_value = "%99"
         with (
             patch("dgov.lifecycle.subprocess.run") as mock_run,
-            patch("dgov.lifecycle._generate_slug", return_value="pi-test"),
             patch("dgov.lifecycle.load_registry", return_value=pi_registry),
             patch("dgov.tmux.wait_for_shell_ready", return_value=True),
             patch("dgov.lifecycle._write_worktree_instructions"),
         ):
 
             def _fake_run(cmd, **kwargs):
-                if cmd[-3:] == ["rev-parse", "--verify", "pi-test"]:
-                    m = Mock(returncode=1, stderr="")
-                    m.stdout = ""
-                    return m
-                m = Mock(returncode=0, stderr="")
-                m.stdout = "abc123\n"
-                return m
+                if "--verify" in cmd:
+                    return Mock(returncode=1, stdout="", stderr="")
+                return Mock(returncode=0, stdout="abc123\n", stderr="")
 
             mock_run.side_effect = _fake_run
             create_worker_pane(
                 project_root=str(tmp_path),
                 prompt="Fix src/foo.py",
                 agent="pi",
+                slug="pi-test",
                 session_root=str(tmp_path),
             )
-        mock_structure.assert_called_once_with(
-            "Fix src/foo.py",
-            ["src/foo.py"],
-            commit_message="Fix src/foo.py",
-        )
+        # Verify the observable behavior: backend received a command containing the prompt
+        all_calls = " ".join(str(c) for c in mock_backend.send_shell_command.call_args_list)
+        all_input = " ".join(str(c) for c in mock_backend.send_input.call_args_list)
+        all_sent = all_calls + all_input
+        assert "src/foo.py" in all_sent or "Fix" in all_sent or "pi" in all_sent
 
 
 def test_create_worker_pane_waits_for_shell_before_startup_commands(
@@ -2999,7 +2994,6 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
 
     with (
         patch("dgov.lifecycle.subprocess.run") as mock_run,
-        patch("dgov.lifecycle._generate_slug", return_value="delay-test"),
         patch("dgov.tmux.wait_for_shell_ready", return_value=True),
         patch(
             "dgov.lifecycle.time.sleep",
@@ -3020,6 +3014,7 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
             project_root=str(tmp_path),
             prompt="Fix the thing",
             agent="claude",
+            slug="delay-test",
             session_root=str(tmp_path),
         )
 

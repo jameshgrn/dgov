@@ -65,7 +65,6 @@ def _patches():
         "close_worker_pane": MagicMock(return_value=True),
         "emit_event": MagicMock(),
         "run_preflight": MagicMock(return_value=_FakePreflight()),
-        "_generate_slug": MagicMock(return_value="test-slug"),
     }
 
 
@@ -84,7 +83,6 @@ def _apply_patches(monkeypatch, overrides=None):
         "close_worker_pane": "dgov.lifecycle.close_worker_pane",
         "emit_event": "dgov.mission.emit_event",
         "run_preflight": "dgov.preflight.run_preflight",
-        "_generate_slug": "dgov.strategy._generate_slug",
     }
     for key, target in targets.items():
         monkeypatch.setattr(target, mocks[key])
