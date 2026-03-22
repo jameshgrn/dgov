@@ -228,11 +228,7 @@ def poll_workers(
         )
     )
 
-    active = [
-        w
-        for w in workers
-        if w.get("state") == "active" and not (w.get("metadata") or {}).get("landing")
-    ]
+    active = [w for w in workers if w.get("state") == "active" and not w.get("landing")]
     results = []
 
     for w in active:
@@ -543,8 +539,7 @@ def _process_candidate_set(
             candidates.discard(slug)
             continue
         # Skip panes claimed by --land lifecycle
-        meta = pane.get("metadata") or {}
-        if meta.get("landing"):
+        if pane.get("landing"):
             continue
         try:
             act = action_fn(project_root, session_root, slug)

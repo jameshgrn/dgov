@@ -178,7 +178,7 @@ class TestPollWorkers:
                 "agent": "claude",
                 "state": "active",
                 "alive": True,
-                "metadata": {"landing": True},
+                "landing": True,
             },
         ]
         result = poll_workers("/tmp")
