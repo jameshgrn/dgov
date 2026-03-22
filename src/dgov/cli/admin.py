@@ -402,6 +402,27 @@ def _generate_codebase_md(
     lines.append("```")
     lines.append("")
 
+    # Test manifest section
+    manifest_path = project_root / ".test-manifest.json"
+    if manifest_path.exists():
+        import json as _json
+
+        try:
+            manifest = _json.loads(manifest_path.read_text())
+            lines.append("\n## Test Mapping\n")
+            lines.append("Source file → test files (from .test-manifest.json):\n")
+            lines.append("| Source | Tests |")
+            lines.append("|--------|-------|")
+            for src, tests in sorted(manifest.items()):
+                if src.startswith("_"):
+                    continue
+                test_list = ", ".join(f"`{t.replace('tests/', '')}`" for t in tests[:3])
+                if len(tests) > 3:
+                    test_list += f" +{len(tests) - 3} more"
+                lines.append(f"| `{src}` | {test_list} |")
+        except Exception:
+            pass
+
     return "\n".join(lines)
 
 
