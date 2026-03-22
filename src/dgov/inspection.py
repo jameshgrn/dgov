@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -284,6 +285,42 @@ def rebase_governor(project_root: str, onto: str | None = None) -> dict:
             }
 
     return {"rebased": True, "base": base, "stashed": stashed}
+
+
+def check_test_coverage(changed_files: list[str], session_root: str = "") -> list[str]:
+    """Check if changed source files have corresponding test files in the diff.
+
+    Uses .test-manifest.json to look up expected test files.
+    Returns list of source files missing test coverage.
+    """
+    # Load test manifest
+    manifest_path = Path(session_root or ".") / ".test-manifest.json"
+    if not manifest_path.is_file():
+        manifest_path = Path(".test-manifest.json")
+    if not manifest_path.is_file():
+        return []  # No manifest, can't check
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    # Find source files (not test files) that changed
+    changed_set = set(changed_files)
+    source_files = [
+        f for f in changed_files if f.startswith("src/") and not f.startswith("tests/")
+    ]
+    test_files_changed = {f for f in changed_files if f.startswith("tests/")}
+
+    missing = []
+    for src in source_files:
+        expected_tests = manifest.get(src, [])
+        if expected_tests and not any(
+            t in changed_set or t in test_files_changed for t in expected_tests
+        ):
+            missing.append(src)
+
+    return missing
 
 
 # ---------------------------------------------------------------------------

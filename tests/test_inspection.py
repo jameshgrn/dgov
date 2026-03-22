@@ -11,6 +11,7 @@ import pytest
 
 from dgov.inspection import (
     _run_related_tests,
+    check_test_coverage,
     compute_stats,
     diff_worker_pane,
     rebase_governor,
@@ -755,3 +756,116 @@ class TestRunRelatedTestsTimeout:
 
             assert len(result["tests_ran"]) == 1
             assert "test_feature.py" in result["tests_ran"][0]
+
+
+class TestCheckTestCoverage:
+    """Unit tests for check_test_coverage function."""
+
+    def test_no_manifest_returns_empty(self, tmp_path):
+        """No .test-manifest.json returns empty list."""
+        from dgov.inspection import check_test_coverage
+
+        result = check_test_coverage(["src/dgov/foo.py"], session_root=str(tmp_path))
+        assert result == []
+
+    def test_source_with_test_passes(self, tmp_path):
+        """Source file with matching test in diff passes."""
+        import json
+
+        from dgov.inspection import check_test_coverage
+
+        manifest = {"src/dgov/plan.py": ["tests/test_plan.py"]}
+        (tmp_path / ".test-manifest.json").write_text(json.dumps(manifest))
+        result = check_test_coverage(
+            ["src/dgov/plan.py", "tests/test_plan.py"],
+            session_root=str(tmp_path),
+        )
+        assert result == []
+
+    def test_source_without_test_fails(self, tmp_path):
+        """Source file without matching test in diff fails."""
+        import json
+
+        from dgov.inspection import check_test_coverage
+
+        manifest = {"src/dgov/plan.py": ["tests/test_plan.py"]}
+        (tmp_path / ".test-manifest.json").write_text(json.dumps(manifest))
+        result = check_test_coverage(
+            ["src/dgov/plan.py"],
+            session_root=str(tmp_path),
+        )
+        assert result == ["src/dgov/plan.py"]
+
+    def test_source_not_in_manifest_passes(self, tmp_path):
+        """Source file not in manifest passes (no expected tests)."""
+        import json
+
+        from dgov.inspection import check_test_coverage
+
+        manifest = {"src/dgov/other.py": ["tests/test_other.py"]}
+        (tmp_path / ".test-manifest.json").write_text(json.dumps(manifest))
+        result = check_test_coverage(
+            ["src/dgov/plan.py"],
+            session_root=str(tmp_path),
+        )
+        assert result == []
+
+    def test_test_files_only_passes(self, tmp_path):
+        """Only test files changed — no source coverage needed."""
+        import json
+
+        from dgov.inspection import check_test_coverage
+
+        manifest = {"src/dgov/plan.py": ["tests/test_plan.py"]}
+        (tmp_path / ".test-manifest.json").write_text(json.dumps(manifest))
+        result = check_test_coverage(
+            ["tests/test_plan.py"],
+            session_root=str(tmp_path),
+        )
+        assert result == []
+
+    def test_multiple_expected_tests_one_present_passes(self, tmp_path):
+        """Source with multiple expected tests passes if any are present."""
+        import json
+
+        from dgov.inspection import check_test_coverage
+
+        manifest = {"src/dgov/plan.py": ["tests/test_plan.py", "tests/test_other.py"]}
+        (tmp_path / ".test-manifest.json").write_text(json.dumps(manifest))
+        result = check_test_coverage(
+            ["src/dgov/plan.py", "tests/test_other.py"],
+            session_root=str(tmp_path),
+        )
+        assert result == []
+
+    def test_corrupt_manifest_returns_empty(self, tmp_path):
+        """Corrupt JSON manifest returns empty list."""
+        (tmp_path / ".test-manifest.json").write_text("{invalid json}")
+        result = check_test_coverage(["src/dgov/plan.py"], session_root=str(tmp_path))
+        assert result == []
+
+    def test_empty_manifest_returns_empty(self, tmp_path):
+        """Empty manifest returns empty list."""
+        import json
+
+        (tmp_path / ".test-manifest.json").write_text(json.dumps({}))
+        result = check_test_coverage(["src/dgov/plan.py"], session_root=str(tmp_path))
+        assert result == []
+
+    def test_mixed_source_and_test_files(self, tmp_path):
+        """Mixed source and test files - only missing sources flagged."""
+        import json
+
+        from dgov.inspection import check_test_coverage
+
+        manifest = {
+            "src/dgov/a.py": ["tests/test_a.py"],
+            "src/dgov/b.py": ["tests/test_b.py"],
+        }
+        (tmp_path / ".test-manifest.json").write_text(json.dumps(manifest))
+        # a.py has test, b.py doesn't
+        result = check_test_coverage(
+            ["src/dgov/a.py", "tests/test_a.py", "src/dgov/b.py"],
+            session_root=str(tmp_path),
+        )
+        assert result == ["src/dgov/b.py"]

@@ -968,6 +968,19 @@ def run_review_only(
                     stale_files,
                 )
 
+    # Check test coverage for changed source files
+    if passed and commit_count > 0 and session_root:
+        from dgov.inspection import check_test_coverage
+
+        changed = review.get("changed_files", [])
+        if changed:
+            missing_tests = check_test_coverage(changed, session_root=session_root)
+            if missing_tests:
+                review["missing_test_coverage"] = missing_tests
+                passed = False
+                error = f"Source files changed without test coverage: {', '.join(missing_tests)}"
+                logger.info("Test coverage gate failed for %s: %s", slug, missing_tests)
+
     _review_result = ReviewOnlyResult(
         slug=slug,
         review=review,
