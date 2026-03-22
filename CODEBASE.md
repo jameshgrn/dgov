@@ -79,12 +79,12 @@
 | `src/dgov/dag.py` | M | DAG file parser and execution engine for dgov. |
 | `src/dgov/dag_graph.py` | S | DAG graph algorithms: validation, topological sort, tier computation. |
 | `src/dgov/dag_parser.py` | S | DAG file dataclasses and TOML parser. |
-| `src/dgov/mission.py` | S | Mission primitive: declarative create-wait-review-merge lifecycle. |
 | `src/dgov/review_fix.py` | M | Review-then-fix pipeline: dispatch review workers, parse findings, dispatch fix workers. |
 
 ### Other
 | File | Size | Purpose |
 |------|------|---------|
+| `src/dgov/api.py` | M | Public Python API for dgov. |
 | `src/dgov/backend.py` | M | Abstract worker backend interface and tmux implementation. |
 | `src/dgov/blame.py` | M | Blame: query event journal + git history to attribute file changes to agents. |
 | `src/dgov/cli/admin.py` | L | Administrative and diagnostic commands. |
@@ -94,7 +94,6 @@
 | `src/dgov/cli/journal_cmd.py` | S | Decision journal query CLI. |
 | `src/dgov/cli/ledger_cmd.py` | S | Operational ledger CLI — formalized napkin. |
 | `src/dgov/cli/merge_queue_cmd.py` | S | Merge queue commands for governor-side queue processing. |
-| `src/dgov/cli/mission_cmd.py` | S | CLI command for the mission primitive. |
 | `src/dgov/cli/monitor_cmd.py` | S | Monitor daemon CLI command. |
 | `src/dgov/cli/openrouter_cmd.py` | S | OpenRouter integration commands. |
 | `src/dgov/cli/pane.py` | L | Pane management commands. |
@@ -102,6 +101,7 @@
 | `src/dgov/cli/trace_cmd.py` | M | Span and tool-trace CLI commands. |
 | `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
 | `src/dgov/dashboard.py` | L | Rich-based live dashboard for dgov pane management. |
+| `src/dgov/plan.py` | M | Plan schema, validator, and compiler for dgov. |
 | `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch. |
 | `src/dgov/spans.py` | L | Structured span and tool-trace observability for dgov. |
 | `src/dgov/terrain.py` | L | SPIM erosion terrain model for dgov dashboard. |
