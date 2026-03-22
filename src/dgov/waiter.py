@@ -204,9 +204,9 @@ def wait_for_slugs(
             ):
                 pending.discard(slug)
         if pending:
-            from dgov.persistence import _watch_done_dir
+            from dgov.persistence import _wait_for_notify
 
-            _watch_done_dir(session_root, poll)
+            _wait_for_notify(session_root, poll)
     return pending
 
 
@@ -418,9 +418,9 @@ def wait_all_worker_panes(
 
         # Sleep only if there are still pending panes and no events were processed
         if pending:
-            from dgov.persistence import _watch_done_dir
+            from dgov.persistence import _wait_for_notify
 
-            _watch_done_dir(session_root, poll)
+            _wait_for_notify(session_root, poll)
 
 
 # -- Communication helpers --

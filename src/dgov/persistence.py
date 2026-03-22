@@ -20,41 +20,66 @@ from dgov.backend import get_backend
 logger = logging.getLogger(__name__)
 
 
-def _watch_done_dir(session_root: str, timeout: float) -> bool:
-    """Block until a file changes in .dgov/done/ or timeout expires.
+_NOTIFY_PIPE = "events.pipe"
 
-    Uses kqueue (macOS) for zero-polling filesystem notification.
-    Falls back to a short sleep on platforms without kqueue.
 
-    Returns True if a change was detected, False on timeout.
+def _ensure_notify_pipe(session_root: str) -> str:
+    """Create the notify FIFO if it doesn't exist. Returns the path."""
+    pipe_path = Path(session_root) / STATE_DIR / _NOTIFY_PIPE
+    pipe_path.parent.mkdir(parents=True, exist_ok=True)
+    if not pipe_path.exists():
+        os.mkfifo(str(pipe_path))
+    return str(pipe_path)
+
+
+def _notify_waiters(session_root: str) -> None:
+    """Write a byte to the notify pipe. Non-blocking, fire-and-forget.
+
+    Works cross-process: workers call emit_event from separate processes,
+    this wakes any governor/executor blocked in _wait_for_notify.
     """
-    done_dir = Path(session_root) / STATE_DIR / "done"
-    done_dir.mkdir(parents=True, exist_ok=True)
-
+    pipe_str = str(Path(session_root) / STATE_DIR / _NOTIFY_PIPE)
+    if not os.path.exists(pipe_str):
+        return
     try:
-        if not hasattr(select, "kqueue"):
-            # Platform without kqueue — short sleep fallback (policy-nonconformant)
-            time.sleep(min(timeout, 0.5))
-            return True  # Assume change, caller will re-check
-
-        kq = select.kqueue()
-        fd = os.open(str(done_dir), os.O_RDONLY)
+        fd = os.open(pipe_str, os.O_WRONLY | os.O_NONBLOCK)
         try:
-            ev = select.kevent(
-                fd,
-                filter=select.KQ_FILTER_VNODE,
-                flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
-                fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND,
-            )
-            kq.control([ev], 0)
-            events = kq.control(None, 1, timeout)
-            return len(events) > 0
+            os.write(fd, b"\x01")
         finally:
             os.close(fd)
-            kq.close()
-    except (OSError, AttributeError):
-        time.sleep(min(timeout, 0.5))
-        return True
+    except OSError:
+        pass  # No reader or pipe full — both OK
+
+
+def _wait_for_notify(session_root: str, timeout: float) -> bool:
+    """Block on the notify pipe until data arrives or timeout expires.
+
+    Cross-platform (any POSIX). Uses select() on a named pipe — zero
+    polling, instant wakeup when emit_event fires from any process.
+
+    Returns True if notified, False on timeout.
+    """
+    pipe_str = _ensure_notify_pipe(session_root)
+    try:
+        # O_RDONLY|O_NONBLOCK: open returns immediately even without a writer.
+        # select() then blocks until data arrives or timeout.
+        fd = os.open(pipe_str, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            readable, _, _ = select.select([fd], [], [], timeout)
+            if readable:
+                os.read(fd, 4096)  # drain pipe
+                return True
+            return False
+        finally:
+            os.close(fd)
+    except OSError:
+        # Pipe broken or missing — recreate and return timeout
+        try:
+            os.unlink(pipe_str)
+        except OSError:
+            pass
+        _ensure_notify_pipe(session_root)
+        return False
 
 
 # -- Connection cache (per db_path + thread) --
@@ -171,9 +196,7 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
 
     # Touch sentinel to wake kqueue watchers
     try:
-        sentinel = Path(session_root) / STATE_DIR / "done" / ".notify"
-        sentinel.parent.mkdir(parents=True, exist_ok=True)
-        sentinel.touch()
+        _notify_waiters(session_root)
     except OSError:
         pass
 
@@ -289,7 +312,7 @@ def wait_for_events(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return []
-        _watch_done_dir(session_root, min(remaining, timeout_s))
+        _wait_for_notify(session_root, min(remaining, timeout_s))
 
 
 # -- Pane record --
