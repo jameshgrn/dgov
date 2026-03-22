@@ -76,6 +76,8 @@ VALID_EVENTS = frozenset(
         "monitor_auto_retry",
         "monitor_tick",
         "claim_violation",
+        "quality_retry",
+        "quality_escalate",
     }
 )
 

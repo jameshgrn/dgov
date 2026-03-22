@@ -101,7 +101,8 @@ class TestRetryOrEscalate:
             str(tmp_path), "task-1", session_root=str(tmp_path), max_retries=2
         )
         assert result["action"] == "escalate"
-        assert result["agent"] == "qwen-122b"  # river-35b -> qwen-122b in ESCALATION_CHAIN
+        # river-35b maps to supervisor role, which escalates to manager
+        assert result["agent"] == "manager"
         assert result["from_agent"] == "river-35b"
         assert result["retry_count"] == 0
 
@@ -166,13 +167,18 @@ class TestRetryOrEscalate:
 
 class TestEscalationChain:
     def test_default_chain_coverage(self):
-        assert ESCALATION_CHAIN["river-4b"] == "qwen-9b"
-        assert ESCALATION_CHAIN["river-9b"] == "qwen-35b"
-        assert ESCALATION_CHAIN["river-35b"] == "qwen-122b"
-        assert ESCALATION_CHAIN["qwen35-35b"] == "qwen-122b"
-        assert ESCALATION_CHAIN["qwen35-122b"] == "qwen-397b"
-        assert ESCALATION_CHAIN["qwen35-397b"] == "qwen-397b"
-        assert ESCALATION_CHAIN["qwen-397b"] == "qwen-397b"  # ceiling
+        # Role-based escalation: worker → supervisor → manager (ceiling)
+        assert ESCALATION_CHAIN["river-4b"] == "supervisor"  # worker → supervisor
+        assert ESCALATION_CHAIN["river-9b"] == "supervisor"  # worker → supervisor
+        assert ESCALATION_CHAIN["river-35b"] == "manager"  # supervisor → manager
+        assert ESCALATION_CHAIN["qwen35-35b"] == "manager"  # supervisor → manager
+        assert ESCALATION_CHAIN["qwen35-122b"] == "manager"  # manager → manager (ceiling)
+        assert ESCALATION_CHAIN["qwen35-397b"] == "manager"  # manager → manager (ceiling)
+        assert ESCALATION_CHAIN["qwen-397b"] == "manager"  # manager → manager (ceiling)
+        # Role names are also in the chain for direct role escalation
+        assert ESCALATION_CHAIN["worker"] == "supervisor"
+        assert ESCALATION_CHAIN["supervisor"] == "manager"
+        assert ESCALATION_CHAIN["manager"] == "manager"
 
     def test_unknown_agent_returns_self(self, tmp_path, monkeypatch):
         """Agents not in the chain map to themselves (no escalation)."""
@@ -206,3 +212,34 @@ class TestEscalationChain:
         result = _resolve_escalation_target("pi", "/fake")
         # Agent config says gemini, not the chain default of claude
         assert result == "gemini"
+
+
+class TestRoleEscalation:
+    def test_worker_escalates_to_supervisor(self):
+        from dgov.recovery import ROLE_ESCALATION
+
+        assert ROLE_ESCALATION["worker"] == "supervisor"
+
+    def test_supervisor_escalates_to_manager(self):
+        from dgov.recovery import ROLE_ESCALATION
+
+        assert ROLE_ESCALATION["supervisor"] == "manager"
+
+    def test_manager_is_ceiling(self):
+        from dgov.recovery import ROLE_ESCALATION
+
+        assert ROLE_ESCALATION["manager"] == "manager"
+
+    def test_model_to_role_mapping(self):
+        from dgov.recovery import _MODEL_TO_ROLE
+
+        assert _MODEL_TO_ROLE["qwen-9b"] == "worker"
+        assert _MODEL_TO_ROLE["qwen-35b"] == "supervisor"
+        assert _MODEL_TO_ROLE["qwen-122b"] == "manager"
+
+    def test_legacy_chain_compat(self):
+        from dgov.recovery import ESCALATION_CHAIN
+
+        # Legacy chain should still work for old pane records
+        assert "qwen-9b" in ESCALATION_CHAIN
+        assert ESCALATION_CHAIN["qwen-9b"] == "supervisor"

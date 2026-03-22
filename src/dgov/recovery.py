@@ -31,30 +31,41 @@ class RetryPolicy:
     backoff_base: float = 5.0
 
 
-# Default escalation chain: maps agents to the next-tier logical name.
-# Logical names get resolved by the router to available physical backends.
-# Escalation proceeds: 4b → 9b → 35b → 122b → 397b (ceiling).
-# qwen-max is governor/frontier only — not a worker escalation target.
-ESCALATION_CHAIN: dict[str, str] = {
-    # Logical names (preferred — resolved by router)
-    "qwen-4b": "qwen-9b",
-    "qwen-9b": "qwen-35b",
-    "qwen-35b": "qwen-122b",
-    "qwen-122b": "qwen-397b",
-    "qwen-397b": "qwen-397b",  # ceiling — no further worker escalation
-    # Physical names (backward compat for panes that stored physical agent)
-    "river-4b": "qwen-9b",
-    "river-9b": "qwen-35b",
-    "river-9b-2": "qwen-35b",
-    "river-9b-3": "qwen-35b",
-    "river-35b": "qwen-122b",
-    "river-35b-2": "qwen-122b",
-    "qwen35-9b": "qwen-35b",
-    "qwen35-flash": "qwen-35b",
-    "qwen35-35b": "qwen-122b",
-    "qwen35-122b": "qwen-397b",
-    "qwen35-397b": "qwen-397b",  # ceiling
+# Role-based escalation: abstract roles the governor sees.
+# The router maps these to physical models via agents.toml [routing.*] tables.
+ROLE_ESCALATION: dict[str, str] = {
+    "worker": "supervisor",
+    "supervisor": "manager",
+    "manager": "manager",  # ceiling — governor alert after manager fails
 }
+
+# Model-to-role mapping for panes that stored model names instead of roles.
+# Used by _resolve_escalation_target to normalize before looking up ROLE_ESCALATION.
+_MODEL_TO_ROLE: dict[str, str] = {
+    "qwen-4b": "worker",
+    "qwen-9b": "worker",
+    "qwen-35b": "supervisor",
+    "qwen-122b": "manager",
+    "qwen-397b": "manager",
+    # Physical names (legacy panes)
+    "river-4b": "worker",
+    "river-9b": "worker",
+    "river-9b-2": "worker",
+    "river-9b-3": "worker",
+    "river-35b": "supervisor",
+    "river-35b-2": "supervisor",
+    "qwen35-9b": "worker",
+    "qwen35-35b": "supervisor",
+    "qwen35-flash": "worker",
+    "qwen35-122b": "manager",
+    "qwen35-397b": "manager",
+}
+
+# Backward-compat alias: maps each known agent to its escalation target.
+ESCALATION_CHAIN: dict[str, str] = {
+    agent: ROLE_ESCALATION.get(_MODEL_TO_ROLE.get(agent, agent), agent) for agent in _MODEL_TO_ROLE
+}
+ESCALATION_CHAIN.update(ROLE_ESCALATION)
 
 
 def escalate_worker_pane(
@@ -233,6 +244,14 @@ def retry_or_escalate(
 
     if retry_count < max_retries:
         # Retry with the same agent
+        emit_event(
+            session_root,
+            "quality_retry",
+            slug,
+            role=_MODEL_TO_ROLE.get(current_agent, current_agent),
+            attempt=retry_count + 1,
+            reason="retry within tier",
+        )
         result = retry_worker_pane(
             project_root,
             slug,
@@ -255,7 +274,9 @@ def retry_or_escalate(
 
     # Exhausted retries — escalate to next agent
     # Check agent-level escalate_to first, then fall back to ESCALATION_CHAIN
+    current_role = _MODEL_TO_ROLE.get(current_agent, current_agent)
     next_agent = _resolve_escalation_target(current_agent, project_root)
+    next_role = ROLE_ESCALATION.get(current_role, "unknown")
 
     if next_agent == current_agent:
         return {
@@ -263,6 +284,15 @@ def retry_or_escalate(
             f"and no escalation target for agent '{current_agent}'",
         }
 
+    emit_event(
+        session_root,
+        "quality_escalate",
+        slug,
+        from_role=current_role,
+        to_role=next_role,
+        reason=f"retries exhausted ({retry_count}/{max_retries})",
+        attempt=retry_count,
+    )
     result = escalate_worker_pane(
         project_root,
         slug,
@@ -289,7 +319,8 @@ def retry_or_escalate(
 def _resolve_escalation_target(current_agent: str, project_root: str) -> str:
     """Determine the next agent for escalation.
 
-    Priority: agent's ``retry_escalate_to`` config > ``ESCALATION_CHAIN`` > same agent.
+    Normalizes model names to roles, then looks up ROLE_ESCALATION.
+    Priority: agent's retry_escalate_to config > role escalation > same agent.
     """
 
     registry = load_registry(project_root or None)
@@ -297,7 +328,9 @@ def _resolve_escalation_target(current_agent: str, project_root: str) -> str:
     if agent_def and agent_def.retry_escalate_to:
         return agent_def.retry_escalate_to
 
-    return ESCALATION_CHAIN.get(current_agent, current_agent)
+    # Normalize to role, then escalate
+    role = _MODEL_TO_ROLE.get(current_agent, current_agent)
+    return ROLE_ESCALATION.get(role, current_agent)
 
 
 def _slug_lineage(session_root: str, slug: str) -> list[str]:
@@ -476,6 +509,15 @@ def maybe_auto_retry(
             slug,
             provider_name,
         )
+        current_agent = rec.get("agent", "unknown")
+        emit_event(
+            session_root,
+            "quality_retry",
+            slug,
+            role=_MODEL_TO_ROLE.get(current_agent, current_agent),
+            attempt=1,
+            reason="provider/runtime failure recovery",
+        )
         emit_event(
             session_root,
             "pane_auto_retried",
@@ -526,6 +568,15 @@ def maybe_auto_retry(
         else:
             enhanced += "\n\nPrevious attempt failed. Avoid the same failure."
 
+        current_agent = rec.get("agent", "unknown")
+        emit_event(
+            session_root,
+            "quality_retry",
+            slug,
+            role=_MODEL_TO_ROLE.get(current_agent, current_agent),
+            attempt=attempt + 1,
+            reason="auto-retry within tier",
+        )
         emit_event(
             session_root,
             "pane_auto_retried",
@@ -553,6 +604,18 @@ def maybe_auto_retry(
 
     # Exhausted retries — try escalation
     if policy.escalate_to:
+        current_agent = rec.get("agent", "unknown")
+        current_role = _MODEL_TO_ROLE.get(current_agent, current_agent)
+        next_role = ROLE_ESCALATION.get(current_role, "unknown")
+        emit_event(
+            session_root,
+            "quality_escalate",
+            slug,
+            from_role=current_role,
+            to_role=next_role,
+            reason=f"auto-retry exhausted ({attempt}/{policy.max_retries})",
+            attempt=attempt,
+        )
         emit_event(
             session_root,
             "pane_auto_retried",
