@@ -79,11 +79,25 @@ VALID_EVENTS = frozenset(
 )
 
 
+_EVENT_TYPED_COLS = frozenset(
+    {
+        "error",
+        "reason",
+        "merge_sha",
+        "branch",
+        "new_slug",
+        "target_agent",
+        "message",
+    }
+)
+
+
 def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
     """Write a structured event to the events table in state.db.
 
-    Best-effort: logs a warning on lock contention instead of crashing,
-    since events are informational and should never block operations.
+    Known kwargs are written to typed columns. Remaining kwargs go to the
+    data JSON blob as overflow. Best-effort: logs a warning on lock
+    contention instead of crashing.
     """
     from datetime import datetime, timezone
 
@@ -93,10 +107,17 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
     def _do() -> None:
         conn = _get_db(session_root)
         ts = datetime.now(timezone.utc).isoformat()
-        data = json.dumps(kwargs, default=str) if kwargs else "{}"
+
+        typed = {k: str(v) for k, v in kwargs.items() if k in _EVENT_TYPED_COLS}
+        overflow = {k: v for k, v in kwargs.items() if k not in _EVENT_TYPED_COLS}
+        data = json.dumps(overflow, default=str) if overflow else "{}"
+
+        cols = ["ts", "event", "pane", "data", *typed.keys()]
+        placeholders = ", ".join("?" for _ in cols)
+        vals = [ts, event, pane, data, *typed.values()]
         conn.execute(
-            "INSERT INTO events (ts, event, pane, data) VALUES (?, ?, ?, ?)",
-            (ts, event, pane, data),
+            f"INSERT INTO events ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
         )
         conn.commit()
 
@@ -112,39 +133,48 @@ def read_events(
     limit: int | None = None,
 ) -> list[dict]:
     """Read events from the SQLite events table, optionally filtered by slug."""
+    _typed = ", ".join(_EVENT_TYPED_COLS)
+    _select = f"ts, event, pane, data, {_typed}"
     conn = _get_db(session_root)
     if slug is not None:
         if limit is not None:
             rows = conn.execute(
-                "SELECT ts, event, pane, data FROM events WHERE pane = ? ORDER BY id DESC LIMIT ?",
+                f"SELECT {_select} FROM events WHERE pane = ? ORDER BY id DESC LIMIT ?",
                 (slug, limit),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT ts, event, pane, data FROM events WHERE pane = ? ORDER BY id",
+                f"SELECT {_select} FROM events WHERE pane = ? ORDER BY id",
                 (slug,),
             ).fetchall()
     else:
         if limit is not None:
             rows = conn.execute(
-                "SELECT ts, event, pane, data FROM events ORDER BY id DESC LIMIT ?",
+                f"SELECT {_select} FROM events ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT ts, event, pane, data FROM events ORDER BY id",
+                f"SELECT {_select} FROM events ORDER BY id",
             ).fetchall()
+    typed_col_names = list(_EVENT_TYPED_COLS)
     events = []
     # For limited queries we fetch newest-first for performance, then reverse to keep
     # chronological (oldest-first) order at the API boundary.
     if limit is not None:
         rows = list(reversed(rows))
-    for ts, event, pane, data_str in rows:
+    for row in rows:
+        ts, event, pane, data_str = row[0], row[1], row[2], row[3]
         ev = {"ts": ts, "event": event, "pane": pane}
         try:
             ev.update(json.loads(data_str))
         except (json.JSONDecodeError, TypeError):
             pass
+        # Overlay typed columns (non-empty values win over JSON blob)
+        for i, col in enumerate(typed_col_names):
+            val = row[4 + i]
+            if val:
+                ev[col] = val
         events.append(ev)
     return events
 
@@ -373,7 +403,17 @@ CREATE TABLE IF NOT EXISTS panes (
     tier_id TEXT,
     role TEXT DEFAULT 'worker',
     state TEXT,
-    metadata TEXT
+    metadata TEXT,
+    landing INTEGER NOT NULL DEFAULT 0,
+    file_claims TEXT NOT NULL DEFAULT '[]',
+    circuit_breaker INTEGER NOT NULL DEFAULT 0,
+    retried_from TEXT NOT NULL DEFAULT '',
+    superseded_by TEXT NOT NULL DEFAULT '',
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    max_retries INTEGER NOT NULL DEFAULT 0,
+    monitor_reason TEXT NOT NULL DEFAULT '',
+    last_checkpoint TEXT NOT NULL DEFAULT '',
+    last_hook_match TEXT NOT NULL DEFAULT ''
 )"""
 
 _CREATE_EVENTS_TABLE_SQL = """
@@ -382,7 +422,14 @@ CREATE TABLE IF NOT EXISTS events (
     ts TEXT NOT NULL,
     event TEXT NOT NULL,
     pane TEXT NOT NULL,
-    data TEXT NOT NULL DEFAULT '{}')
+    data TEXT NOT NULL DEFAULT '{}',
+    error TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    merge_sha TEXT NOT NULL DEFAULT '',
+    branch TEXT NOT NULL DEFAULT '',
+    new_slug TEXT NOT NULL DEFAULT '',
+    target_agent TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '')
 """
 
 _CREATE_DAG_RUNS_TABLE_SQL = """
@@ -520,6 +567,41 @@ def _get_db(session_root: str) -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass  # column already exists
 
+    # Migrate: add typed pane metadata columns
+    _pane_meta_cols = [
+        ("landing", "INTEGER NOT NULL DEFAULT 0"),
+        ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+        ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
+        ("retried_from", "TEXT NOT NULL DEFAULT ''"),
+        ("superseded_by", "TEXT NOT NULL DEFAULT ''"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
+        ("monitor_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("last_checkpoint", "TEXT NOT NULL DEFAULT ''"),
+        ("last_hook_match", "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for col, coldef in _pane_meta_cols:
+        try:
+            conn.execute(f"ALTER TABLE panes ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
+
+    # Migrate: add typed event columns
+    _event_cols = [
+        ("error", "TEXT NOT NULL DEFAULT ''"),
+        ("reason", "TEXT NOT NULL DEFAULT ''"),
+        ("merge_sha", "TEXT NOT NULL DEFAULT ''"),
+        ("branch", "TEXT NOT NULL DEFAULT ''"),
+        ("new_slug", "TEXT NOT NULL DEFAULT ''"),
+        ("target_agent", "TEXT NOT NULL DEFAULT ''"),
+        ("message", "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for col, coldef in _event_cols:
+        try:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
 
     with _conn_lock:
@@ -561,14 +643,19 @@ def _retry_on_lock(fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
-    """Convert a SQLite row to a pane dict, merging any metadata extras."""
+    """Convert a SQLite row to a pane dict, merging any legacy metadata extras."""
     d = dict(row)
     if d.get("owns_worktree") is not None:
         d["owns_worktree"] = bool(d["owns_worktree"])
+    # Legacy metadata JSON — merge for backward compat, but typed columns win
     metadata = d.pop("metadata", None)
     if metadata:
         try:
-            d.update(json.loads(str(metadata)))
+            legacy = json.loads(str(metadata))
+            # Only fill keys not already present as typed columns
+            for k, v in legacy.items():
+                if k not in d:
+                    d[k] = v
         except (json.JSONDecodeError, TypeError):
             logger.warning(
                 "Corrupt pane metadata for slug=%s: %.100s", d.get("slug", "?"), metadata
@@ -661,13 +748,12 @@ def list_panes_slim(session_root: str) -> list[dict]:
     """
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT slug, pane_id, agent, project_root, worktree_path,"
-        " branch_name, created_at, owns_worktree, base_sha, state,"
-        " metadata, substr(prompt, 1, 200) AS prompt,"
-        " parent_slug, tier_id, role FROM panes"
-    ).fetchall()
-    return [_row_to_dict(row) for row in rows]
+    rows = conn.execute("SELECT * FROM panes").fetchall()
+    result = [_row_to_dict(row) for row in rows]
+    for r in result:
+        if r.get("prompt") and len(r["prompt"]) > 200:
+            r["prompt"] = r["prompt"][:200]
+    return result
 
 
 def get_pane_prompt(session_root: str, slug: str) -> str:
@@ -797,29 +883,72 @@ def settle_completion_state(
     return result
 
 
-def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
-    """Update metadata fields on a specific pane atomically.
+_PANE_TYPED_COLS = frozenset(
+    {
+        "landing",
+        "file_claims",
+        "circuit_breaker",
+        "retried_from",
+        "superseded_by",
+        "retry_count",
+        "max_retries",
+        "monitor_reason",
+        "last_checkpoint",
+        "last_hook_match",
+    }
+)
 
-    Uses SQLite json_set() to avoid read-modify-replace races where
-    concurrent callers can clobber each other's updates.
+
+def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
+    """Update metadata fields on a specific pane.
+
+    Known keys are written to typed columns. Unknown keys fall back to
+    the legacy metadata JSON blob (logged as a warning).
     """
     if not kwargs:
         return
 
     def _do() -> None:
         conn = _get_db(session_root)
-        # Build nested json_set: json_set(json_set(base, '$.k1', ?), '$.k2', ?)
-        expr = "COALESCE(metadata, '{}')"
-        vals: list[object] = []
+        typed_sets: list[str] = []
+        typed_vals: list[object] = []
+        overflow: dict[str, object] = {}
+
         for k, v in kwargs.items():
-            if isinstance(v, dict | list):
-                expr = f"json_set({expr}, '$.{k}', json(?))"
-                vals.append(json.dumps(v))
+            if k in _PANE_TYPED_COLS:
+                if isinstance(v, dict | list):
+                    typed_sets.append(f"{k} = ?")
+                    typed_vals.append(json.dumps(v, default=str))
+                else:
+                    typed_sets.append(f"{k} = ?")
+                    typed_vals.append(v)
             else:
-                expr = f"json_set({expr}, '$.{k}', ?)"
-                vals.append(v)
-        vals.append(slug)
-        conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", vals)
+                overflow[k] = v
+                logger.warning(
+                    "set_pane_metadata: unknown key %r for slug=%s → legacy metadata blob",
+                    k,
+                    slug,
+                )
+
+        if typed_sets:
+            typed_vals.append(slug)
+            sql = f"UPDATE panes SET {', '.join(typed_sets)} WHERE slug = ?"
+            conn.execute(sql, typed_vals)
+
+        if overflow:
+            # Legacy fallback — write to metadata JSON blob
+            expr = "COALESCE(metadata, '{}')"
+            vals: list[object] = []
+            for ok, ov in overflow.items():
+                if isinstance(ov, dict | list):
+                    expr = f"json_set({expr}, '$.{ok}', json(?))"
+                    vals.append(json.dumps(ov))
+                else:
+                    expr = f"json_set({expr}, '$.{ok}', ?)"
+                    vals.append(ov)
+            vals.append(slug)
+            conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", vals)
+
         conn.commit()
 
     _retry_on_lock(_do)

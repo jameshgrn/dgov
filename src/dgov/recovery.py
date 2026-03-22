@@ -226,10 +226,10 @@ def retry_or_escalate(
     current_agent = rec.get("agent", "unknown")
     retry_count = int(rec.get("retry_count", 0))
 
-    # Per-pane max_retries override takes priority
-    pane_max = rec.get("max_retries")
-    if pane_max is not None:
-        max_retries = int(pane_max)
+    # Per-pane max_retries override takes priority (0 means "not set")
+    pane_max = int(rec.get("max_retries") or 0)
+    if pane_max > 0:
+        max_retries = pane_max
 
     if retry_count < max_retries:
         # Retry with the same agent
@@ -415,16 +415,16 @@ def get_retry_policy(session_root: str, slug: str) -> RetryPolicy | None:
     if not rec:
         return None
 
-    # Per-pane override
-    pane_max = rec.get("max_retries")
+    # Per-pane override (0 means "not set", use agent default)
+    pane_max = rec.get("max_retries") or 0
 
     agent_id = rec.get("agent", "")
     project_root = rec.get("project_root", "")
     registry = load_registry(project_root or None)
     agent_def = registry.get(agent_id)
 
-    if pane_max is not None:
-        max_retries = int(pane_max)
+    if pane_max > 0:
+        max_retries = pane_max
     elif agent_def:
         max_retries = agent_def.max_retries
     else:
