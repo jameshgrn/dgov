@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from dgov.backend import get_backend
-from dgov.done import _is_done, _strip_ansi
+from dgov.done import _AGENT_COMMANDS, _is_done, _strip_ansi
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
@@ -247,23 +247,7 @@ def list_worker_panes(
             activity = "done"
         else:
             cmd_lower = cmd.strip().lower()
-            agent_cmds = {
-                "claude",
-                "codex",
-                "gemini",
-                "opencode",
-                "cline",
-                "qwen",
-                "amp",
-                "pi",
-                "cursor-agent",
-                "copilot",
-                "crush",
-                "node",
-                "python",
-                "python3",
-            }
-            if cmd_lower in agent_cmds:
+            if cmd_lower in _AGENT_COMMANDS:
                 activity = "working"
             elif cmd_lower in ("zsh", "bash", "sh", "fish"):
                 activity = "idle"

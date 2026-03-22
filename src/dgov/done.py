@@ -114,7 +114,7 @@ def _wrap_exit_signal(
 
 def _has_new_commits(project_root: str, branch_name: str, base_sha: str) -> bool:
     """Check if *branch_name* has commits newer than *base_sha*."""
-    if not base_sha:
+    if not base_sha or not project_root or not branch_name:
         return False
     result = subprocess.run(
         ["git", "-C", project_root, "log", branch_name, "--not", base_sha, "--oneline"],
@@ -261,7 +261,7 @@ def _is_done(
 
     The *done_strategy* controls which optional signals are enabled:
 
-    - **signal** (default): done file -> exit file -> commits -> liveness -> stabilization.
+    - **api** (default): done file -> exit file -> liveness (skip commit check).
     - **exit**: done file -> exit file -> liveness (skip commit check).
     - **commit**: done file -> exit file -> commits -> liveness (skip stabilization).
     - **stable**: done file -> exit file -> liveness -> stabilization (skip commit check).

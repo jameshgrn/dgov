@@ -718,3 +718,78 @@ class TestDoneSignalWithZeroCommits:
 
         assert result is True
         assert stable_state.get("_done_reason") == "done_signal_db_confirmed"
+
+
+# ---------------------------------------------------------------------------
+# _has_new_commits guards
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestHasNewCommitsGuards:
+    """Tests for _has_new_commits input validation."""
+
+    def test_empty_project_root_returns_false(self) -> None:
+        """_has_new_commits returns False when project_root is empty."""
+        from dgov.done import _has_new_commits
+
+        result = _has_new_commits("", "main", "abc123")
+        assert result is False
+
+    def test_empty_branch_name_returns_false(self) -> None:
+        """_has_new_commits returns False when branch_name is empty."""
+        from dgov.done import _has_new_commits
+
+        result = _has_new_commits(".", "", "abc123")
+        assert result is False
+
+    def test_all_empty_returns_false(self) -> None:
+        """_has_new_commits returns False when all inputs are empty."""
+        from dgov.done import _has_new_commits
+
+        result = _has_new_commits("", "", "")
+        assert result is False
+
+    def test_none_base_sha_returns_false(self) -> None:
+        """_has_new_commits returns False when base_sha is None/empty."""
+        from dgov.done import _has_new_commits
+
+        result = _has_new_commits(".", "main", "")
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# _AGENT_COMMANDS verification
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestAgentCommands:
+    """Tests for _AGENT_COMMANDS frozenset in done.py."""
+
+    def test_agent_commands_contains_expected_agents(self) -> None:
+        """_AGENT_COMMANDS contains expected agent process names."""
+        from dgov.done import _AGENT_COMMANDS
+
+        # Core agents that should be detected
+        assert "claude" in _AGENT_COMMANDS
+        assert "codex" in _AGENT_COMMANDS
+        assert "gemini" in _AGENT_COMMANDS
+        assert "pi" in _AGENT_COMMANDS
+        assert "qwen" in _AGENT_COMMANDS
+        assert "python" in _AGENT_COMMANDS
+        assert "python3" in _AGENT_COMMANDS
+
+    def test_agent_commands_is_frozenset(self) -> None:
+        """_AGENT_COMMANDS is immutable (frozenset)."""
+        from dgov.done import _AGENT_COMMANDS
+
+        assert isinstance(_AGENT_COMMANDS, frozenset)
+
+    def test_agent_commands_case_sensitive(self) -> None:
+        """_AGENT_COMMANDS uses lowercase keys."""
+        from dgov.done import _AGENT_COMMANDS
+
+        # Should be lowercase
+        assert "claude" in _AGENT_COMMANDS
+        assert "Claude" not in _AGENT_COMMANDS
