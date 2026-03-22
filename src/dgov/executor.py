@@ -1158,7 +1158,15 @@ def run_finalize_panes(
 
     for slug in slugs:
         if not get_pane(session_root, slug):
-            results.append(PaneFinalizeResult(slug=slug, error=f"Pane not found: {slug}"))
+            results.append(
+                PaneFinalizeResult(
+                    slug=slug,
+                    review={},
+                    merge_result=None,
+                    error=f"Pane not found: {slug}",
+                    cleanup_error=None,
+                )
+            )
             continue
         if close:
             lifecycle = run_post_dispatch_lifecycle(
