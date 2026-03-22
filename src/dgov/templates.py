@@ -116,7 +116,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "Then exit."
         ),
         required_vars=["ltgov_slug", "task_list", "default_agent"],
-        default_agent="claude",
+        default_agent="codex-mini",
         description="Meta-prompt for a lieutenant governor managing a worker tier",
     ),
 }
