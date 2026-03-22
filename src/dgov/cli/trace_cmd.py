@@ -175,7 +175,7 @@ def trace_stats(project_root, session_root):
 @click.option("--min-tools", default=1, type=int, help="Min tool calls per example")
 @click.option("--output", "-o", "output_file", default=None, help="Output file (default: stdout)")
 def trace_training(project_root, session_root, outcome, min_tools, output_file):
-    """Export training JSONL for fine-tuning."""
+    """Export training JSONL for LLM fine-tuning on tool-use behavior."""
     from dgov.spans import export_training_jsonl
 
     session_root = os.path.abspath(session_root or project_root)
