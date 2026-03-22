@@ -591,7 +591,13 @@ def pane_close(slug, project_root, session_root, force):
     default=False,
     help="Rebase merge (linear history, original commits)",
 )
-def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
+@click.option(
+    "--strict-claims",
+    is_flag=True,
+    default=False,
+    help="Block merge if worker touched undeclared files",
+)
+def pane_merge(slug, project_root, session_root, resolve, squash, rebase, strict_claims):
     """Merge a branch into main with configurable conflict resolution.
 
     Merge the worktree branch for the given pane.
@@ -611,6 +617,7 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase):
         resolve=resolve,
         squash=squash,
         rebase=rebase,
+        strict_claims=strict_claims,
     ).merge_result
 
     click.echo(json.dumps(result, indent=2))

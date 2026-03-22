@@ -839,6 +839,7 @@ def merge_worker_pane(
     squash: bool = True,
     message: str | None = None,
     rebase: bool = False,
+    strict_claims: bool = False,
 ) -> dict:
     """Merge a worker pane's branch with configurable conflict resolution.
 
@@ -930,18 +931,23 @@ def merge_worker_pane(
                 # Filter out test files — tests are read context, not edit targets
                 undeclared = {f for f in undeclared if not f.startswith("tests/")}
                 if undeclared:
-                    logger.warning(
-                        "Pane %s touched undeclared files: %s (claimed: %s)",
-                        slug,
-                        sorted(undeclared),
-                        sorted(claimed),
+                    violation_msg = (
+                        f"Pane {slug} touched undeclared files: "
+                        f"{sorted(undeclared)} (claimed: {sorted(claimed)})"
                     )
+                    logger.warning("%s", violation_msg)
                     _persist.emit_event(
                         session_root,
                         "claim_violation",
                         slug,
                         error=f"Undeclared files: {sorted(undeclared)}",
                     )
+                    if strict_claims:
+                        return {
+                            "error": violation_msg,
+                            "slug": slug,
+                            "claim_violations": sorted(undeclared),
+                        }
 
     # Pre-merge: restore protected files clobbered by workers
     _restore_protected_files(pane_project_root, target)

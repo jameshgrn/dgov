@@ -1225,6 +1225,7 @@ def run_merge_only(
     squash: bool = True,
     rebase: bool = False,
     message: str | None = None,
+    strict_claims: bool = False,
 ) -> MergeOnlyResult:
     """Run the canonical merge operation for an already-approved pane."""
     _merge_span_id = None
@@ -1241,7 +1242,12 @@ def run_merge_only(
     from dgov.merger import merge_worker_pane
 
     if resolve == "skip" and squash is True and not rebase and message is None:
-        merge_result = merge_worker_pane(project_root, slug, session_root=session_root)
+        merge_result = merge_worker_pane(
+            project_root,
+            slug,
+            session_root=session_root,
+            strict_claims=strict_claims,
+        )
     else:
         merge_result = merge_worker_pane(
             project_root,
@@ -1251,6 +1257,7 @@ def run_merge_only(
             squash=squash,
             message=message,
             rebase=rebase,
+            strict_claims=strict_claims,
         )
 
     _merge_error = merge_result.get("error", "")
