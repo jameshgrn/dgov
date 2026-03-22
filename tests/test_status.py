@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from dgov.status import _extract_summary_from_log, _strip_ansi, tail_worker_log
@@ -225,3 +227,58 @@ class TestShellPromptNoise:
     def test_strips_multiple_sequences(self):
         text = "\x1b[32mgreen\x1b[0m and \x1b[34mblue\x1b[0m"
         assert _strip_ansi(text) == "green and blue"
+
+
+@pytest.mark.unit
+class TestPruneStalePanes:
+    """Tests for prune_stale_panes function."""
+
+    def test_empty_pane_list_no_error(self, tmp_path):
+        """Test that prune_stale_panes handles empty pane list without error.
+
+        Regression test for bulk_info optimization — ensure no crash when
+        there are no panes to check.
+        """
+        from dgov.backend import set_backend
+        from dgov.status import prune_stale_panes
+
+        # Mock backend returns empty bulk_info
+        mock_backend = MagicMock()
+        mock_backend.bulk_info.return_value = {}
+        set_backend(mock_backend)
+
+        try:
+            result = prune_stale_panes(str(tmp_path), str(tmp_path))
+            assert result == []
+        finally:
+            set_backend(None)  # type: ignore[arg-type]
+
+    def test_prunes_dead_pane_without_worktree(self, tmp_path, monkeypatch):
+        """Test that prune_stale_panes removes dead panes without worktrees."""
+        from dgov.backend import set_backend
+        from dgov.persistence import WorkerPane, add_pane
+        from dgov.status import prune_stale_panes
+
+        # Create pane in database
+        pane = WorkerPane(
+            slug="dead-pane",
+            prompt="test",
+            pane_id="%1",
+            agent="pi",
+            project_root=str(tmp_path),
+            worktree_path="/nonexistent/wt",
+            branch_name="dead-branch",
+            state="active",
+        )
+        add_pane(str(tmp_path), pane)
+
+        # Mock backend says pane is not alive
+        mock_backend = MagicMock()
+        mock_backend.bulk_info.return_value = {}  # Empty = not alive
+        set_backend(mock_backend)
+
+        try:
+            result = prune_stale_panes(str(tmp_path), str(tmp_path))
+            assert "dead-pane" in result
+        finally:
+            set_backend(None)  # type: ignore[arg-type]

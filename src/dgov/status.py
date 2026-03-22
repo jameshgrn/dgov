@@ -224,6 +224,7 @@ def list_worker_panes(
                 pane_record=p,
                 done_strategy=agent_done_strategy,
                 alive=alive,
+                current_command=cmd,
             )
             if done:
                 # _is_done updated persistent state; reconcile local copy
@@ -340,6 +341,9 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
         pruned: list[str] = []
         pruned_slugs: set[str] = set()
 
+        # Get bulk tmux info once for efficiency
+        bulk_info = get_backend().bulk_info()
+
         # Pass 1: prune stale state entries
         for p in panes:
             pane_id = p.get("pane_id", "")
@@ -348,7 +352,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             # Skip panes claimed by --land lifecycle
             if p.get("landing"):
                 continue
-            alive = get_backend().is_alive(pane_id) if pane_id else False
+            alive = pane_id in bulk_info if pane_id else False
             wt = p.get("worktree_path", "")
             wt_exists = bool(wt) and Path(wt).exists()
             if not alive and not wt_exists:

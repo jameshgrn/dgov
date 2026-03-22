@@ -394,3 +394,45 @@ def test_plumbing_merge_tree_exit_code_1_no_hash(mock_run, tmp_path):
 
     # Should fail because there's no tree hash in stdout
     assert result.success is False
+
+
+@pytest.mark.unit
+@patch("subprocess.run")
+def test_restore_protected_files_returns_early_when_all_checkouts_fail(mock_run, tmp_path):
+    """Test that _restore_protected_files returns early when no files are restored.
+
+    Regression test for audit finding: ensure git amend is not run when all
+    checkout operations fail.
+    """
+    from dgov.merger import _restore_protected_files
+
+    # Create pane_record with changed protected file
+    pane_record = {
+        "worktree_path": str(tmp_path),
+        "branch_name": "test-branch",
+        "base_sha": "abc123",
+    }
+
+    # Mock git diff returning protected file as changed
+    mock_diff = make_subprocess_mock(0, "CLAUDE.md\n")
+
+    # Mock git checkout to fail - stderr needs to be bytes for .decode()
+    mock_stderr = MagicMock()
+    mock_stderr.decode.return_value = "checkout failed"
+    mock_checkout = make_subprocess_mock(1, "", "checkout failed")
+    mock_checkout.stderr = mock_stderr
+
+    # Return diff first, then checkout failure
+    mock_run.side_effect = [mock_diff, mock_checkout]
+
+    _restore_protected_files(str(tmp_path), pane_record)
+
+    # Verify git commit --amend was NOT called (no amend without changes)
+    amend_calls = [
+        c for c in mock_run.call_args_list if "commit" in str(c) and "--amend" in str(c)
+    ]
+    assert len(amend_calls) == 0
+
+    # Verify add was also not called
+    add_calls = [c for c in mock_run.call_args_list if "add" in str(c)]
+    assert len(add_calls) == 0
