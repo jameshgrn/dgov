@@ -13,7 +13,6 @@ from dgov.lifecycle import close_worker_pane, create_worker_pane
 from dgov.merger import merge_worker_pane
 from dgov.persistence import (
     WorkerPane,
-    _close_cached_connections,
     get_pane,
     read_events,
     update_pane_state,
@@ -71,7 +70,6 @@ def repo(tmp_path: Path, monkeypatch):
     }
 
     set_backend(None)  # type: ignore[arg-type]
-    _close_cached_connections()
 
 
 class TestHappyPath:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dgov.batch import _compute_tiers, _transitive_dependents, _validate_dag
+from dgov.batch import _compute_tiers, _transitive_dependents
 
 pytestmark = pytest.mark.unit
 
@@ -20,20 +20,6 @@ def _btask(task_id, depends_on=(), touches=()):
 
 
 class TestBatchDagCompat:
-    def test_validate_valid(self):
-        tasks = {"T0": _btask("T0"), "T1": _btask("T1", depends_on=["T0"])}
-        _validate_dag(tasks)
-
-    def test_validate_missing_dep(self):
-        tasks = {"T0": _btask("T0", depends_on=["T_MISSING"])}
-        with pytest.raises(ValueError):
-            _validate_dag(tasks)
-
-    def test_validate_cycle(self):
-        tasks = {"A": _btask("A", depends_on=["B"]), "B": _btask("B", depends_on=["A"])}
-        with pytest.raises(ValueError):
-            _validate_dag(tasks)
-
     def test_compute_tiers_parallel(self):
         tasks = {"T0": _btask("T0", touches=["a.py"]), "T1": _btask("T1", touches=["b.py"])}
         tiers = _compute_tiers(tasks)

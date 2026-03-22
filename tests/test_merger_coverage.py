@@ -18,7 +18,7 @@ from dgov.merger import (
     _restore_protected_files,
     merge_worker_pane,
 )
-from dgov.persistence import IllegalTransitionError, _close_cached_connections
+from dgov.persistence import IllegalTransitionError
 
 pytestmark = pytest.mark.unit
 
@@ -82,7 +82,7 @@ def _mock_backend() -> MagicMock:
     set_backend(backend)
     yield backend
     set_backend(None)  # type: ignore[arg-type]
-    _close_cached_connections()
+    pass
 
 
 def test_no_squash_merge_creates_no_ff_merge_commit_and_restores_dirty_tree(

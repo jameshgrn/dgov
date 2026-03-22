@@ -11,7 +11,6 @@ import pytest
 from dgov.merger import _plumbing_merge
 from dgov.persistence import (
     WorkerPane,
-    _close_cached_connections,
     add_pane,
     all_panes,
 )
@@ -52,7 +51,7 @@ def repo(tmp_path: Path):
 
     yield repo_dir
 
-    _close_cached_connections()
+    pass
 
 
 class TestConcurrentMerges:
