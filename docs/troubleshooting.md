@@ -24,7 +24,7 @@ dgov uses SQLite in WAL mode, but if multiple processes are stuck, you can safel
 ## Git and worktree issues
 
 **Stale worktrees**
-If you manually delete worktrees or tmux panes, `dgov pane list` might show stale entries. Run `dgov pane prune` to cleanup the database and `dgov preflight --fix` to prune git worktrees.
+If you manually delete worktrees or tmux panes, `dgov pane list` might show stale entries. Run `dgov gc` to cleanup the database and `dgov preflight --fix` to prune git worktrees.
 
 **Merge conflicts**
 dgov tries to auto-resolve conflicts with an agent. If this fails, use `dgov pane land --resolve manual` and resolve them in your editor.

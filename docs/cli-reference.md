@@ -287,7 +287,7 @@ Close a worker pane: kill tmux pane, remove worktree.
 |------|-------|------|---------|-------------|
 | `--force` | `-f` | bool | `False` | Remove worktree even if dirty |
 
-### dgov pane prune
+### dgov gc
 
 Remove stale pane entries (dead pane + no worktree). No arguments beyond global options.
 
@@ -360,41 +360,6 @@ Create a new template TOML file in `.dgov/templates/`.
 **Arguments**: `NAME`
 
 No flags. Uses current directory as session root.
-
----
-
-## Experiments
-
-### dgov experiment start
-
-Run an iterative experiment loop: dispatch worker, evaluate metric, accept or reject.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--program` | `-p` | path | required | Program file (markdown) |
-| `--metric` | `-m` | string | required | Metric name to optimize |
-| `--budget` | `-b` | int | `5` | Max number of experiments |
-| `--agent` | `-a` | string | `claude` | Agent to use |
-| `--direction`| `-d` | string | `minimize`| `minimize` or `maximize` |
-| `--timeout` | `-t` | int | `600` | Timeout per experiment in seconds |
-| `--dry-run` | | bool | `False` | Show plan without executing |
-
-### dgov experiment log
-
-Show the experiment log as JSON for a given program.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--program` | `-p` | string | required | Program name (stem of program file) |
-
-### dgov experiment summary
-
-Show summary stats (best metric, run count, direction) for an experiment program.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--program` | `-p` | string | required | Program name (stem of program file) |
-| `--direction`| `-d` | string | `minimize`| `minimize` or `maximize` |
 
 ---
 

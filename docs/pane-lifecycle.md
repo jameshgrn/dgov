@@ -249,7 +249,7 @@ dgov pane close fix-parser --force # ignores dirty changes
 Cleanup stale database entries for panes that no longer have a running process or worktree.
 
 ```bash
-dgov pane prune
+dgov gc
 ```
 
 ## Classify

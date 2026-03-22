@@ -155,7 +155,6 @@ def _group_modules(modules: dict[str, dict]) -> dict[str, list[str]]:
         "dag_parser.py": "higher-level workflows",
         "dag_graph.py": "higher-level workflows",
         "review_fix.py": "higher-level workflows",
-        "experiment.py": "higher-level workflows",
         "dashboard.py": "visualization",
         "terrain.py": "visualization",
         "terrain_pane.py": "visualization",
@@ -1063,6 +1062,16 @@ def gc_cmd(root, session_root, dry_run):
     session_root = Path(session_root).resolve() if session_root else root
     backend = get_backend()
     removed = []
+
+    # 0. Prune stale DB entries and retained panes
+    from dgov.status import gc_retained_panes, prune_stale_panes
+
+    pruned = prune_stale_panes(str(root), session_root=str(session_root))
+    gc_result = gc_retained_panes(str(root), session_root=str(session_root), older_than_s=3600.0)
+    if pruned:
+        removed.extend(f"pruned:{s}" for s in pruned)
+    for slug in gc_result.get("closed", []):
+        removed.append(f"gc:{slug}")
 
     # 1. Kill dead tmux panes in state DB
     panes = all_panes(str(session_root))
