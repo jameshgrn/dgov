@@ -11,8 +11,7 @@ You are trying to run the governor from a worker's worktree. Change your directo
 The governor dispatches and merges from the `main` branch. Use `git checkout main` before running dgov.
 
 **Worker pane is stuck as "active" forever**
-- Use `dgov pane nudge <slug>` to ask the worker if it is done.
-- Use `dgov pane capture <slug>` to see if it's waiting for input.
+- Use `dgov pane output <slug>` to see the pane's output.
 - If it's truly stuck, use `dgov pane signal <slug> done` (if changes are made) or `dgov pane close <slug>` (to discard).
 
 **Agent not found**

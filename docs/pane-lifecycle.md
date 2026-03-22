@@ -159,12 +159,12 @@ dgov pane diff add-health-check --stat
 dgov pane diff add-health-check --name-only
 ```
 
-## Capture
+## Output
 
-Read live output from the agent's tmux pane.
+Show clean worker output. Prefers live tmux capture for TUI agents, falls back to persistent log for dead panes.
 
 ```bash
-dgov pane capture add-health-check -n 50
+dgov pane output fix-parser -n 50
 ```
 
 ## Land
@@ -260,24 +260,12 @@ Recommend an agent for a specific prompt without creating a pane.
 dgov pane classify "Add documentation to all functions in src/parser.py"
 ```
 
-## Message and Respond
+## Message
 
-Interact with a running worker pane.
+Send text to a running worker pane via backend-agnostic input.
 
 ```bash
-# Send text to stdin (backend-agnostic)
 dgov pane message fix-parser "Proceed with the refactor"
-
-# Send keystrokes directly (tmux specific)
-dgov pane respond fix-parser "Enter"
-```
-
-## Nudge
-
-Ask a worker if it is done and wait for a `YES/NO` response in the output.
-
-```bash
-dgov pane nudge fix-parser --wait 20
 ```
 
 ## Signal

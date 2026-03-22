@@ -163,14 +163,6 @@ Show git diff for a worker pane's branch vs base commit.
 | `--stat` | | bool | `False` | Show diffstat only |
 | `--name-only`| | bool | `False | Show changed file names only |
 
-### dgov pane capture
-
-Capture the last N lines of a worker pane's live tmux output.
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--lines` | `-n` | int | `30` | Number of lines to capture |
-
 ### dgov pane land
 
 Review, merge, and close a worker pane in one step.
@@ -252,22 +244,6 @@ Re-launch an agent in an existing worktree (no new branch or worktree created).
 Send text input directly to the agent's stdin. Backend-agnostic.
 
 **Arguments**: `SLUG`, `TEXT`
-
-### dgov pane respond
-
-Send a response to a worker pane via tmux `send-keys`.
-
-**Arguments**: `SLUG`, `MESSAGE`
-
-### dgov pane nudge
-
-Nudge a worker: ask if done and parse a YES/NO response.
-
-**Arguments**: `SLUG`
-
-| Flag | Short | Type | Default | Description |
-|------|-------|------|---------|-------------|
-| `--wait` | `-w` | int | `10` | Seconds to wait for response |
 
 ### dgov pane signal
 

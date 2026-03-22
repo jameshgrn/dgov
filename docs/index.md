@@ -12,7 +12,6 @@ Distributed governance for AI coding agents. A meta harness that orchestrates an
 - [Agent registry](agent-registry.md)
 - [Prompt templates](prompt-templates.md)
 - [Batch execution](batch-execution.md)
-- [Experiment tracking](experiment-tracking.md)
 - [Review-fix pipeline](review-fix-pipeline.md)
 - [Hook system](hook-system.md)
 - [Preflight checks](preflight-checks.md)
