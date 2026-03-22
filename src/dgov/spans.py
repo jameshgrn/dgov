@@ -81,6 +81,13 @@ CREATE TABLE IF NOT EXISTS tool_traces (
 
 CREATE_TOOL_TRACES_IDX = "CREATE INDEX IF NOT EXISTS idx_traces_trace ON tool_traces(trace_id)"
 
+CREATE_PROMPTS_SQL = """\
+CREATE TABLE IF NOT EXISTS prompts (
+    prompt_hash     TEXT PRIMARY KEY,
+    prompt_text     TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+)"""
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -169,6 +176,28 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
 def prompt_hash(prompt: str) -> str:
     return hashlib.sha256(prompt.encode()).hexdigest()[:12]
+
+
+def store_prompt(session_root: str, prompt: str) -> str:
+    """Store prompt text keyed by hash. Returns the hash. Idempotent."""
+    h = prompt_hash(prompt)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = _get_db(session_root)
+    conn.execute(
+        "INSERT OR IGNORE INTO prompts (prompt_hash, prompt_text, created_at) VALUES (?, ?, ?)",
+        (h, prompt, now),
+    )
+    conn.commit()
+    return h
+
+
+def get_prompt(session_root: str, phash: str) -> str:
+    """Retrieve prompt text by hash. Returns empty string if not found."""
+    conn = _get_db(session_root)
+    row = conn.execute(
+        "SELECT prompt_text FROM prompts WHERE prompt_hash = ?", (phash,)
+    ).fetchone()
+    return row[0] if row else ""
 
 
 def open_span(
@@ -449,16 +478,19 @@ def export_trajectory(session_root: str, trace_id: str) -> dict:
     dispatch = next((s for s in spans if s["span_kind"] == "dispatch"), None)
     agent = dispatch["agent"] if dispatch else ""
 
-    # Get prompt from pane record
+    # Get prompt: try prompts table first, fall back to pane record
     prompt = ""
-    try:
-        from dgov.persistence import get_pane
+    if dispatch and dispatch.get("prompt_hash"):
+        prompt = get_prompt(session_root, dispatch["prompt_hash"])
+    if not prompt:
+        try:
+            from dgov.persistence import get_pane
 
-        pane = get_pane(session_root, trace_id)
-        if pane:
-            prompt = pane.get("prompt", "")
-    except Exception:
-        pass
+            pane = get_pane(session_root, trace_id)
+            if pane:
+                prompt = pane.get("prompt", "")
+        except Exception:
+            pass
 
     return {
         "trace_id": trace_id,

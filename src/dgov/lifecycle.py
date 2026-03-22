@@ -987,14 +987,21 @@ def create_worker_pane(
 
             # Dispatch span (immediate open+close — dispatch is synchronous)
             try:
-                from dgov.spans import SpanKind, SpanOutcome, close_span, open_span, prompt_hash
+                from dgov.spans import (
+                    SpanKind,
+                    SpanOutcome,
+                    close_span,
+                    open_span,
+                    store_prompt,
+                )
 
+                phash = store_prompt(session_root, prompt)
                 sid = open_span(
                     session_root,
                     slug,
                     SpanKind.DISPATCH,
                     agent=agent,
-                    prompt_hash=prompt_hash(prompt),
+                    prompt_hash=phash,
                     base_sha=base_sha,
                 )
                 close_span(session_root, sid, SpanOutcome.SUCCESS)

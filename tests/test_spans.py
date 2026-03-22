@@ -274,6 +274,44 @@ class TestExport:
         assert traj["tool_trace"] == []
         assert traj["outcome"] == "success"  # vacuously true — no failures
 
+    def test_export_trajectory_uses_prompts_table(self, session):
+        from dgov.spans import store_prompt
+
+        phash = store_prompt(session, "Fix the parser bug")
+        sid = open_span(session, "t-prompt", SpanKind.DISPATCH, agent="pi", prompt_hash=phash)
+        close_span(session, sid, SpanOutcome.SUCCESS)
+
+        traj = export_trajectory(session, "t-prompt")
+        assert traj["prompt"] == "Fix the parser bug"
+
+
+# ---------------------------------------------------------------------------
+# Prompts table
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestPrompts:
+    def test_store_and_get(self, session):
+        from dgov.spans import get_prompt, store_prompt
+
+        phash = store_prompt(session, "hello world")
+        assert len(phash) == 12
+        assert get_prompt(session, phash) == "hello world"
+
+    def test_store_idempotent(self, session):
+        from dgov.spans import get_prompt, store_prompt
+
+        h1 = store_prompt(session, "same prompt")
+        h2 = store_prompt(session, "same prompt")
+        assert h1 == h2
+        assert get_prompt(session, h1) == "same prompt"
+
+    def test_get_missing(self, session):
+        from dgov.spans import get_prompt
+
+        assert get_prompt(session, "nonexistent") == ""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
