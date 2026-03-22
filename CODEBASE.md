@@ -97,6 +97,7 @@
 | `src/dgov/cli/monitor_cmd.py` | S | Monitor daemon CLI command. |
 | `src/dgov/cli/openrouter_cmd.py` | S | OpenRouter integration commands. |
 | `src/dgov/cli/pane.py` | L | Pane management commands. |
+| `src/dgov/cli/plan_cmd.py` | S | CLI commands for dgov plan execution. |
 | `src/dgov/cli/review_fix_cmd.py` | S | Review-fix pipeline command. |
 | `src/dgov/cli/trace_cmd.py` | M | Span and tool-trace CLI commands. |
 | `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
