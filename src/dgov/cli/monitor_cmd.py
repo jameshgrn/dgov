@@ -21,7 +21,7 @@ import click
 )
 @click.option("--pane", is_flag=True, help="Launch in tmux utility pane")
 def monitor_cmd(project_root, session_root, interval, dry_run, auto_merge, auto_retry, pane):
-    """Run 4B worker monitor daemon."""
+    """Run worker monitor daemon."""
     project_root = os.path.abspath(project_root)
     session_root = os.path.abspath(session_root) if session_root else project_root
     if pane:

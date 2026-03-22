@@ -155,9 +155,6 @@ def _group_modules(modules: dict[str, dict]) -> dict[str, list[str]]:
         "dag_parser.py": "higher-level workflows",
         "dag_graph.py": "higher-level workflows",
         "review_fix.py": "higher-level workflows",
-        "dashboard.py": "visualization",
-        "terrain.py": "visualization",
-        "terrain_pane.py": "visualization",
     }
 
     for module_key in sorted(modules.keys()):
@@ -305,8 +302,7 @@ def _generate_codebase_md(
         "- `dgov worker complete` will **auto-commit** any unstaged changes before signaling done."
     )
     lines.append(
-        "- Protected files (CLAUDE.md, THEORY.md, .napkin.md) "
-        "**restored during merge** — changes discarded."
+        "- Protected files (CLAUDE.md, THEORY.md) **restored during merge** — changes discarded."
     )
     lines.append("- Do NOT push to remote. Do NOT run the full test suite.")
     lines.append("")
