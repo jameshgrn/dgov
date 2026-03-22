@@ -192,6 +192,7 @@ class WaitForAny:
 class ReviewTask:
     task_slug: str
     pane_slug: str
+    review_agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -298,6 +299,7 @@ class DagKernel:
     auto_merge: bool = True
     max_concurrent: int = 0  # 0 = unlimited
     skip: frozenset[str] = frozenset()
+    review_agents: dict[str, str] = field(default_factory=dict)
 
     # -- internal state --
     state: DagState = DagState.IDLE
@@ -370,7 +372,8 @@ class DagKernel:
             task = event.task_slug
             if event.pane_state in ("done", "reviewed_pass", "merged"):
                 self.task_states[task] = DagTaskState.REVIEWING
-                actions.append(ReviewTask(task, event.pane_slug))
+                review_agent = self.review_agents.get(task, "")
+                actions.append(ReviewTask(task, event.pane_slug, review_agent=review_agent))
             else:
                 self.task_states[task] = DagTaskState.FAILED
                 actions.extend(self._skip_dependents(task))

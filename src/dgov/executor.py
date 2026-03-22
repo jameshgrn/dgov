@@ -1585,15 +1585,20 @@ def run_dag_kernel(
     # Build dependency map from DagDefinition
     deps: dict[str, tuple[str, ...]] = {}
     task_timeouts: dict[str, int] = {}
+    review_agents: dict[str, str] = {}
     for slug, task in dag.tasks.items():
         deps[slug] = tuple(task.depends_on)
         task_timeouts[slug] = getattr(task, "timeout_s", task_timeout)
+        ra = getattr(task, "review_agent", "")
+        if ra:
+            review_agents[slug] = ra
 
     kernel = DagKernel(
         deps=deps,
         auto_merge=auto_merge,
         max_concurrent=max_concurrent,
         skip=skip or frozenset(),
+        review_agents=review_agents,
     )
     actions = kernel.start()
 
@@ -1660,6 +1665,7 @@ def run_dag_kernel(
                 action.task_slug,
                 action.pane_slug,
                 _progress,
+                review_agent=action.review_agent,
             )
             _extend_queue(kernel.handle(event))
             continue
@@ -1846,9 +1852,13 @@ def _dag_review(
     task_slug: str,
     pane_slug: str,
     progress: Callable[[str], None],
+    review_agent: str = "",
 ) -> object:
     """Execute a ReviewTask action. Returns TaskReviewDone."""
     from dgov.kernel import TaskReviewDone
+
+    if review_agent:
+        progress(f"  reviewing {task_slug} with {review_agent}")
 
     result = run_review_only(
         project_root,

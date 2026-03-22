@@ -27,6 +27,7 @@ class DagTaskSpec:
     permission_mode: str
     timeout_s: int
     post_merge_check: str = ""
+    review_agent: str = ""  # model for reviewing this task's output
 
 
 @dataclass(frozen=True)
@@ -136,6 +137,7 @@ def _parse_task(
         permission_mode=raw.get("permission_mode", defaults["permission_mode"]),
         timeout_s=raw.get("timeout_s", defaults["timeout_s"]),
         post_merge_check=raw.get("post_merge_check", ""),
+        review_agent=str(raw.get("review_agent", "")),
     )
 
 

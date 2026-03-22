@@ -52,6 +52,7 @@ class PlanUnit:
     acceptance: AcceptanceCriteria = field(default_factory=AcceptanceCriteria)
     timeout_s: int = 0  # 0 = use plan default
     escalation: tuple[str, ...] = ()
+    review_agent: str = ""  # model for reviewing this unit's output
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class PlanSpec:
     permission_mode: str = "bypassPermissions"
     max_retries: int = 1
     merge_resolve: str = "skip"
+    default_review_agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,7 @@ def parse_plan_file(path: str) -> PlanSpec:
     permission_mode = plan_section.get("permission_mode", "bypassPermissions")
     max_retries = plan_section.get("max_retries", 1)
     merge_resolve = plan_section.get("merge_resolve", "skip")
+    default_review_agent = plan_section.get("default_review_agent", "")
 
     units: dict[str, PlanUnit] = {}
     for slug, unit_raw in units_raw.items():
@@ -165,6 +168,7 @@ def parse_plan_file(path: str) -> PlanSpec:
         permission_mode=permission_mode,
         max_retries=max_retries,
         merge_resolve=merge_resolve,
+        default_review_agent=default_review_agent,
     )
 
 
@@ -193,6 +197,7 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
         acceptance=acceptance,
         timeout_s=int(raw.get("timeout_s", 0)),
         escalation=tuple(raw.get("escalation", ())),
+        review_agent=str(raw.get("review_agent", "")),
     )
 
 
@@ -395,6 +400,7 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
         # Resolve defaults
         agent = unit.agent if unit.agent else plan.default_agent
         timeout_s = unit.timeout_s if unit.timeout_s else plan.default_timeout_s
+        review_agent = unit.review_agent if unit.review_agent else plan.default_review_agent
 
         # Map PlanUnitFiles -> DagFileSpec (drop read files)
         dag_files = DagFileSpec(
@@ -438,6 +444,7 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
             permission_mode=plan.permission_mode,
             timeout_s=timeout_s,
             post_merge_check=acceptance.custom_check,
+            review_agent=review_agent,
         )
 
     return DagDefinition(
@@ -482,6 +489,8 @@ def serialize_plan(plan: PlanSpec) -> str:
         lines.append(f"max_retries = {plan.max_retries}")
     if plan.merge_resolve != "skip":
         lines.append(f'merge_resolve = "{plan.merge_resolve}"')
+    if plan.default_review_agent:
+        lines.append(f'default_review_agent = "{plan.default_review_agent}"')
     lines.append("")
 
     for slug, unit in plan.units.items():
@@ -503,6 +512,8 @@ def serialize_plan(plan: PlanSpec) -> str:
         if unit.escalation:
             escs = ", ".join(f'"{e}"' for e in unit.escalation)
             lines.append(f"escalation = [{escs}]")
+        if unit.review_agent:
+            lines.append(f'review_agent = "{unit.review_agent}"')
         lines.append("")
 
         # Files subtable
