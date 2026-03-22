@@ -104,7 +104,7 @@
 | `src/dgov/kernel.py` | L | Deterministic kernel primitives for pane and DAG lifecycle. |
 | `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch. |
 | `src/dgov/provider_registry.py` | S | Central provider selection and optional decision journaling. |
-| `src/dgov/spans.py` | M | Structured span and tool-trace observability for dgov. |
+| `src/dgov/spans.py` | L | Structured span and tool-trace observability for dgov. |
 | `src/dgov/tmux.py` | L | Thin wrappers around tmux commands. |
 
 ## CLI command registration
