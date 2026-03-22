@@ -963,7 +963,7 @@ class TestTopLevelCommands:
             "dgov.status.list_worker_panes",
             return_value=[],
         ):
-            status = runner.invoke(cli, ["status"])
+            status = runner.invoke(cli, ["status", "--json"])
         with patch(
             "dgov.inspection.rebase_governor",
             return_value={"rebased": True, "base": "main"},
@@ -1019,7 +1019,9 @@ class TestTopLevelCommands:
         assert listed.exit_code == 0
         mock_list_checkpoints.assert_called_once_with(str(Path("/repo").resolve()))
         assert json.loads(listed.output) == [{"name": "wave-1", "pane_count": 1}]
-        mock_run_batch.assert_called_once_with(str(spec_path), project_root=".", session_root=None, dry_run=True)
+        mock_run_batch.assert_called_once_with(
+            str(spec_path), project_root=".", session_root=None, dry_run=True
+        )
         assert json.loads(batch_ok.output)["dry_run"] is True
         assert batch_fail.exit_code == 1
         assert json.loads(batch_fail.output)["failed"] == ["a"]
