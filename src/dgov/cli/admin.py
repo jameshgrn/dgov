@@ -1199,7 +1199,14 @@ def gc_cmd(project_root, session_root, dry_run):
     backend = get_backend()
     removed = []
 
-    # 0. Prune stale DB entries and retained panes
+    # 0. Close orphaned spans (pending > 2 hours)
+    from dgov.spans import close_orphaned_spans
+
+    orphaned = close_orphaned_spans(str(session_root))
+    if orphaned:
+        removed.append(f"spans:{orphaned} orphaned")
+
+    # 0b. Prune stale DB entries and retained panes
     from dgov.status import gc_retained_panes, prune_stale_panes
 
     pruned = prune_stale_panes(str(project_root), session_root=str(session_root))

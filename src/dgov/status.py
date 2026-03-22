@@ -360,6 +360,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
         for p in panes:
             pane_id = p.get("pane_id", "")
             slug = p["slug"]
+            state = p.get("state", "")
             # Skip panes claimed by --land lifecycle
             if p.get("landing"):
                 continue
@@ -372,6 +373,13 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 done_path.unlink(missing_ok=True)
                 pruned.append(slug)
                 pruned_slugs.add(slug)
+            elif not alive and wt_exists and state == "active":
+                # Dead process with orphaned worktree — force to failed
+                from dgov.persistence import settle_completion_state
+
+                settle_completion_state(session_root, slug, "failed")
+                logger.info("Pruned dead active pane %s (worktree preserved)", slug)
+                pruned.append(f"dead:{slug}")
 
         # Pass 2: remove orphaned worktree dirs
         worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"

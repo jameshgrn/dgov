@@ -484,6 +484,37 @@ def get_spans(session_root: str, trace_id: str) -> list[dict]:
     return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def close_orphaned_spans(session_root: str, *, max_age_hours: float = 2.0) -> int:
+    """Close pending spans older than max_age_hours with outcome='failure'.
+
+    Returns count of orphaned spans closed.
+    """
+    conn = _get_db(session_root)
+    cutoff = datetime.now(timezone.utc)
+    rows = conn.execute("SELECT id, started_at FROM spans WHERE outcome = 'pending'").fetchall()
+    closed = 0
+    now_iso = cutoff.isoformat()
+    for span_id, started_at in rows:
+        try:
+            start_dt = datetime.fromisoformat(started_at)
+            age_hours = (cutoff - start_dt).total_seconds() / 3600
+            if age_hours >= max_age_hours:
+                duration = age_hours * 3600 * 1000  # ms
+                conn.execute(
+                    "UPDATE spans SET outcome = 'failure', ended_at = ?, "
+                    "duration_ms = ?, error = 'orphaned span (never closed)' "
+                    "WHERE id = ? AND outcome = 'pending'",
+                    (now_iso, duration, span_id),
+                )
+                closed += 1
+        except (ValueError, TypeError):
+            continue
+    if closed:
+        conn.commit()
+        logger.info("Closed %d orphaned spans older than %.1fh", closed, max_age_hours)
+    return closed
+
+
 # ---------------------------------------------------------------------------
 # Transcript ingest
 # ---------------------------------------------------------------------------

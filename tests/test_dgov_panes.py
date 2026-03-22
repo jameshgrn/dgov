@@ -1706,7 +1706,8 @@ class TestPruneStalePane:
         )
         add_pane(str(tmp_path), pane)
         pruned = prune_stale_panes(str(tmp_path))
-        assert pruned == []
+        # Dead active pane with worktree gets force-failed (worktree preserved)
+        assert pruned == ["dead:has-wt"]
 
 
 # ---------------------------------------------------------------------------
