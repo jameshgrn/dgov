@@ -333,14 +333,24 @@ class TestArchivePane:
             "base_sha": "abc123",
             "created_at": "2024-01-01T00:00:00Z",
             "state": "merged",
-            "metadata": {"landing": False},
+            "metadata": {
+                "landing": False,
+                "retry_count": 2,
+                "file_claims": ["src/dgov/spans.py"],
+            },
         }
         archive_pane(session, pane)
 
         conn = _get_db(session)
-        rows = conn.execute("SELECT slug, agent, final_state FROM archived_panes").fetchall()
+        rows = conn.execute(
+            "SELECT slug, agent, final_state, retry_count, file_claims FROM archived_panes"
+        ).fetchall()
         assert len(rows) == 1
-        assert rows[0] == ("test-pane", "river-35b", "merged")
+        assert rows[0][0] == "test-pane"
+        assert rows[0][1] == "river-35b"
+        assert rows[0][2] == "merged"
+        assert rows[0][3] == 2
+        assert rows[0][4] == '["src/dgov/spans.py"]'
 
     def test_archive_idempotent_different_times(self, session):
         from dgov.spans import _get_db, archive_pane

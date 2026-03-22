@@ -90,17 +90,25 @@ CREATE TABLE IF NOT EXISTS prompts (
 
 CREATE_ARCHIVED_PANES_SQL = """\
 CREATE TABLE IF NOT EXISTS archived_panes (
-    slug            TEXT NOT NULL,
-    archived_at     TEXT NOT NULL,
-    prompt          TEXT NOT NULL DEFAULT '',
-    agent           TEXT NOT NULL DEFAULT '',
-    project_root    TEXT NOT NULL DEFAULT '',
-    worktree_path   TEXT NOT NULL DEFAULT '',
-    branch_name     TEXT NOT NULL DEFAULT '',
-    base_sha        TEXT NOT NULL DEFAULT '',
-    created_at      TEXT NOT NULL DEFAULT '',
-    final_state     TEXT NOT NULL DEFAULT '',
-    metadata        TEXT NOT NULL DEFAULT '{}',
+    slug                TEXT NOT NULL,
+    archived_at         TEXT NOT NULL,
+    prompt              TEXT NOT NULL DEFAULT '',
+    agent               TEXT NOT NULL DEFAULT '',
+    project_root        TEXT NOT NULL DEFAULT '',
+    worktree_path       TEXT NOT NULL DEFAULT '',
+    branch_name         TEXT NOT NULL DEFAULT '',
+    base_sha            TEXT NOT NULL DEFAULT '',
+    created_at          TEXT NOT NULL DEFAULT '',
+    final_state         TEXT NOT NULL DEFAULT '',
+    landing             INTEGER NOT NULL DEFAULT 0,
+    file_claims         TEXT NOT NULL DEFAULT '[]',
+    circuit_breaker     INTEGER NOT NULL DEFAULT 0,
+    retried_from        TEXT NOT NULL DEFAULT '',
+    superseded_by       TEXT NOT NULL DEFAULT '',
+    retry_count         INTEGER NOT NULL DEFAULT 0,
+    max_retries         INTEGER NOT NULL DEFAULT 0,
+    monitor_reason      TEXT NOT NULL DEFAULT '',
+    last_checkpoint     TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (slug, archived_at)
 )"""
 
@@ -227,17 +235,24 @@ def get_prompt(session_root: str, phash: str) -> str:
 def archive_pane(session_root: str, pane: dict) -> None:
     """Snapshot a pane record before deletion. Idempotent per (slug, archived_at)."""
     now = datetime.now(timezone.utc).isoformat()
-    meta = pane.get("metadata", {})
+    meta = pane.get("metadata") or {}
     if isinstance(meta, str):
-        meta_str = meta
-    else:
-        meta_str = json.dumps(meta, default=str)
+        try:
+            meta = json.loads(meta)
+        except (json.JSONDecodeError, TypeError):
+            meta = {}
+    file_claims = meta.get("file_claims", [])
+    if isinstance(file_claims, list):
+        file_claims = json.dumps(file_claims)
     conn = _get_db(session_root)
     conn.execute(
         "INSERT OR IGNORE INTO archived_panes "
         "(slug, archived_at, prompt, agent, project_root, worktree_path, "
-        "branch_name, base_sha, created_at, final_state, metadata) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "branch_name, base_sha, created_at, final_state, "
+        "landing, file_claims, circuit_breaker, retried_from, "
+        "superseded_by, retry_count, max_retries, monitor_reason, "
+        "last_checkpoint) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             pane.get("slug", ""),
             now,
@@ -249,7 +264,15 @@ def archive_pane(session_root: str, pane: dict) -> None:
             pane.get("base_sha", ""),
             pane.get("created_at", ""),
             pane.get("state", ""),
-            meta_str,
+            int(bool(meta.get("landing", False))),
+            file_claims,
+            int(bool(meta.get("circuit_breaker", False))),
+            str(meta.get("retried_from", "")),
+            str(meta.get("superseded_by", "")),
+            int(meta.get("retry_count", 0) or 0),
+            int(meta.get("max_retries", 0) or 0),
+            str(meta.get("monitor_reason", "")),
+            str(meta.get("last_checkpoint", "")),
         ),
     )
     conn.commit()
