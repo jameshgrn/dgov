@@ -483,3 +483,94 @@ def export_all_trajectories(session_root: str, *, outcome: str | None = None) ->
         if outcome is None or traj["outcome"] == outcome:
             trajectories.append(traj)
     return trajectories
+
+
+def trajectory_to_training_messages(trajectory: dict) -> list[dict]:
+    """Convert a pane trajectory into OpenAI chat-format training messages."""
+    prompt = trajectory.get("prompt", "")
+    tool_trace = trajectory.get("tool_trace", [])
+    outcome = trajectory.get("outcome", "unknown")
+
+    if not prompt or not tool_trace:
+        return []
+
+    system_msg = (
+        "You are a coding agent that uses tools to complete tasks. "
+        "You have access to: Read, Edit, Write, Bash, Glob, Grep. "
+        f"(Task outcome: {outcome})"
+    )
+    messages: list[dict] = [
+        {"role": "system", "content": system_msg},
+        {"role": "user", "content": prompt},
+    ]
+
+    call_counter = 0
+    for item in tool_trace:
+        action = item.get("action_type", "")
+        if action == "thinking":
+            continue
+        elif action == "tool_call":
+            call_counter += 1
+            call_id = f"call_{call_counter:03d}"
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": item.get("tool_name", ""),
+                                "arguments": item.get("tool_args", "{}"),
+                            },
+                        }
+                    ],
+                }
+            )
+        elif action == "tool_result":
+            call_id = f"call_{call_counter:03d}"
+            messages.append(
+                {
+                    "role": "tool",
+                    "content": item.get("tool_result", ""),
+                    "tool_call_id": call_id,
+                }
+            )
+        elif action == "text" and item.get("role") == "assistant":
+            text = item.get("tool_result", "")
+            if text.strip():
+                messages.append({"role": "assistant", "content": text})
+
+    return messages
+
+
+def export_training_jsonl(
+    session_root: str,
+    *,
+    outcome: str | None = None,
+    min_tool_calls: int = 1,
+) -> list[dict]:
+    """Export all trajectories as training examples."""
+    trajectories = export_all_trajectories(session_root, outcome=outcome)
+    examples = []
+    for traj in trajectories:
+        messages = trajectory_to_training_messages(traj)
+        if not messages:
+            continue
+        tool_calls = [m for m in messages if m.get("tool_calls")]
+        if len(tool_calls) < min_tool_calls:
+            continue
+        examples.append(
+            {
+                "messages": messages,
+                "metadata": {
+                    "trace_id": traj["trace_id"],
+                    "agent": traj["agent"],
+                    "outcome": traj["outcome"],
+                    "total_duration_ms": traj["total_duration_ms"],
+                    "tool_call_count": len(tool_calls),
+                },
+            }
+        )
+    return examples
