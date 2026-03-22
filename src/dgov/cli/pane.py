@@ -299,9 +299,16 @@ def pane_create(
         from dgov.router import is_routable
 
         if not is_routable(agent):
-            from dgov.router import available_names
+            from dgov.router import _load_routing_tables, available_names
 
-            all_names = sorted(set(registry) | set(available_names()))
+            # Show logical routing names + non-routable registry agents (not physical backends)
+            routable = set(available_names())
+            routing_tables = _load_routing_tables()
+            non_routable: set[str] = set()
+            for k in registry:
+                if k not in routable and not any(k in b for b in routing_tables.values()):
+                    non_routable.add(k)
+            all_names = sorted(routable | non_routable)
             click.echo(f"Unknown agent: {agent}. Available: {', '.join(all_names)}", err=True)
             sys.exit(1)
 
@@ -380,6 +387,9 @@ def pane_create(
     if max_retries is not None:
         result["max_retries"] = max_retries
     click.echo(json.dumps(result, indent=2))
+
+    if slug and pane_obj.slug != slug:
+        click.echo(f"Warning: slug {slug} already in use, renamed to {pane_obj.slug}", err=True)
 
     if land:
         from dgov.executor import run_post_dispatch_lifecycle
@@ -550,7 +560,8 @@ def pane_close(slug, project_root, session_root, force):
         if result.closed:
             click.echo(json.dumps({"closed": s}))
         else:
-            click.echo(json.dumps({"already_closed": s}))
+            click.echo(json.dumps({"not_found": s}), err=True)
+            sys.exit(1)
 
 
 @pane.command("merge")

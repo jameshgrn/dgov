@@ -71,14 +71,18 @@ class TestPaneList:
 
 class TestPaneClose:
     def test_close_unknown_slug(self, runner: CliRunner) -> None:
-        with patch("dgov.lifecycle.close_worker_pane", return_value=False):
+        with patch("dgov.executor.run_close_only") as mock_close:
+            mock_close.return_value = MagicMock(
+                slug="nonexistent", closed=False, error="Failed to close pane: nonexistent"
+            )
             result = runner.invoke(cli, ["pane", "close", "nonexistent"])
 
-        assert result.exit_code == 0
-        assert json.loads(result.output) == {"already_closed": "nonexistent"}
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"not_found": "nonexistent"}
 
     def test_close_existing_pane(self, runner: CliRunner) -> None:
-        with patch("dgov.lifecycle.close_worker_pane", return_value=True):
+        with patch("dgov.executor.run_close_only") as mock_close:
+            mock_close.return_value = MagicMock(slug="fix-parser", closed=True, error=None)
             result = runner.invoke(cli, ["pane", "close", "fix-parser"])
 
         assert result.exit_code == 0
@@ -188,3 +192,111 @@ class TestPaneLand:
         assert json.loads(result.output.splitlines()[-1]) == {
             "error": "Review verdict is review; refusing to merge"
         }
+
+
+class TestPaneCreateSlugWarning:
+    """Tests for slug deduplication warning."""
+
+    def test_slug_rename_warning_shown(self, runner: CliRunner) -> None:
+        """When user-provided slug differs from pane_obj.slug, warn on stderr."""
+        with patch.dict("os.environ", {"DGOV_SKIP_GOVERNOR_CHECK": "1"}):
+            registry = {"qwen-35b": {"prompt_command": "claude"}}
+            with patch("dgov.agents.load_registry", return_value=registry):
+                with patch("dgov.context_packet.build_context_packet"):
+                    with patch("dgov.executor.run_dispatch_only") as mock_dispatch:
+                        mock_dispatch.return_value = MagicMock(
+                            slug="fix-parser-1",  # Auto-deduplicated slug
+                            pane_id="001",
+                            agent="qwen-35b",
+                            worktree_path="/tmp/worktree",
+                            branch_name="fix-parser-1",
+                        )
+                        result = runner.invoke(
+                            cli,
+                            [
+                                "pane",
+                                "create",
+                                "-a",
+                                "qwen-35b",
+                                "-s",
+                                "fix-parser",  # User requested this slug
+                                "-p",
+                                "Fix the parser",
+                                "--no-preflight",
+                            ],
+                        )
+
+        assert result.exit_code == 0
+        # Check that warning was printed to stderr
+        assert "Warning: slug fix-parser already in use, renamed to fix-parser-1" in result.stderr
+
+    def test_no_warning_when_slug_unchanged(self, runner: CliRunner) -> None:
+        """No warning when user-provided slug matches pane_obj.slug."""
+        with patch.dict("os.environ", {"DGOV_SKIP_GOVERNOR_CHECK": "1"}):
+            registry = {"qwen-35b": {"prompt_command": "claude"}}
+            with patch("dgov.agents.load_registry", return_value=registry):
+                with patch("dgov.context_packet.build_context_packet"):
+                    with patch("dgov.executor.run_dispatch_only") as mock_dispatch:
+                        mock_dispatch.return_value = MagicMock(
+                            slug="fix-parser",  # Same as user provided
+                            pane_id="001",
+                            agent="qwen-35b",
+                            worktree_path="/tmp/worktree",
+                            branch_name="fix-parser",
+                        )
+                        result = runner.invoke(
+                            cli,
+                            [
+                                "pane",
+                                "create",
+                                "-a",
+                                "qwen-35b",
+                                "-s",
+                                "fix-parser",
+                                "-p",
+                                "Fix the parser",
+                                "--no-preflight",
+                            ],
+                        )
+
+        assert result.exit_code == 0
+        # No warning should be shown
+        assert "Warning:" not in result.stderr
+
+
+class TestPaneCreateUnknownAgentFiltering:
+    """Tests for filtering physical agent names from error messages."""
+
+    def test_physical_agent_names_filtered_from_error(self, runner: CliRunner) -> None:
+        """Error message should only show logical routing names + non-routable registry agents."""
+        # Mock registry with both logical and physical names
+        registry = {
+            "qwen-35b": {},  # Logical name
+            "river-35b": {},  # Physical backend (should be filtered)
+            "pi": {},  # Non-routable registry agent (should be shown)
+        }
+
+        routing_tables = {"qwen-35b": ["river-35b"]}
+        with patch("dgov.agents.load_registry", return_value=registry):
+            with patch("dgov.router.is_routable", return_value=False):
+                with patch("dgov.router.available_names", return_value=["qwen-35b"]):
+                    with patch("dgov.router._load_routing_tables", return_value=routing_tables):
+                        result = runner.invoke(
+                            cli,
+                            [
+                                "pane",
+                                "create",
+                                "-a",
+                                "unknown-agent",
+                                "-p",
+                                "Test task",
+                            ],
+                        )
+
+        assert result.exit_code == 1
+        output = result.stderr
+        # Should show logical name qwen-35b and non-routable pi
+        assert "qwen-35b" in output
+        assert "pi" in output
+        # Should NOT show physical backend river-35b
+        assert "river-35b" not in output

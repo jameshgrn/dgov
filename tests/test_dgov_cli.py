@@ -543,8 +543,8 @@ class TestPaneCommands:
 
         assert ok.exit_code == 0
         assert json.loads(ok.output) == {"closed": "task"}
-        assert missing.exit_code == 0
-        assert json.loads(missing.output) == {"already_closed": "missing"}
+        assert missing.exit_code == 1
+        assert json.loads(missing.output) == {"not_found": "missing"}
 
     def test_wait_success_and_timeout(self, runner: CliRunner) -> None:
         with (
