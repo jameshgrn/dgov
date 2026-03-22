@@ -1004,8 +1004,8 @@ def create_worker_pane(
                     session_root,
                     slug,
                     SpanKind.DISPATCH,
-                    agent=agent,
-                    from_agent=logical_agent,
+                    agent=logical_agent,
+                    from_agent=agent,
                     prompt_hash=phash,
                     base_sha=base_sha,
                 )

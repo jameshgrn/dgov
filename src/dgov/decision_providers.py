@@ -302,21 +302,13 @@ class StatisticalRoutingProvider(DecisionProvider):
         pass_rate = best["pass_rate"]
         dispatch_count = best["dispatch_count"]
 
-        # Map physical name back to logical name
-        try:
-            from dgov.router import physical_to_logical
-
-            logical_name = physical_to_logical(best_agent)
-        except (ImportError, Exception):
-            logical_name = best_agent
-
         reason = (
             f"statistical: {pass_rate:.0%} pass rate over {dispatch_count} dispatches (from spans)"
         )
         return DecisionRecord(
             kind=DecisionKind.ROUTE_TASK,
             provider_id=self.provider_id,
-            decision=RouteTaskDecision(agent=logical_name, reason=reason),
+            decision=RouteTaskDecision(agent=best_agent, reason=reason),
             model_id="statistical",
             confidence=pass_rate,
             trace_id=request.trace_id,
