@@ -240,10 +240,11 @@ class TestDagEvents:
         emit_event(session, "dag_started", "dag/1", dag_run_id=1)
         cursor = latest_event_id(session)
 
-        def fake_sleep(seconds: float) -> None:
+        def fake_wait(session_root: str, timeout: float) -> bool:
             emit_event(session, "dag_task_completed", "T0", dag_run_id=1, tier=0)
+            return True
 
-        monkeypatch.setattr("dgov.persistence.time.sleep", fake_sleep)
+        monkeypatch.setattr("dgov.persistence._wait_for_notify", fake_wait)
         events = wait_for_events(
             session,
             after_id=cursor,
@@ -267,7 +268,6 @@ class TestDagEvents:
             panes=("T0",),
             event_types=("dag_task_completed",),
             timeout_s=0.01,
-            poll_interval_s=0.01,
         )
 
         assert events == []

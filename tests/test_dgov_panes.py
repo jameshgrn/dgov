@@ -609,7 +609,13 @@ class TestListWorkerPanes:
         assert result[0]["current_command"] == "claude"
         assert result[0]["done"] is False
 
-    def test_skips_is_done_for_superseded_pane(self, tmp_path: Path) -> None:
+    def test_skips_is_done_for_superseded_pane(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        mock_backend.bulk_info.return_value = {
+            "%1": {"pane_id": "%1"},
+            "%2": {"pane_id": "%2", "current_command": "pi"},
+        }
         replace_all_panes(
             str(tmp_path),
             {
@@ -832,7 +838,7 @@ class TestPruneStale:
                 ]
             },
         )
-        mock_backend.is_alive.return_value = True
+        mock_backend.bulk_info.return_value = {"%5": {"pane_id": "%5"}}
         pruned = prune_stale_panes(str(tmp_path))
         assert pruned == []
         assert len(all_panes(str(tmp_path))) == 1
@@ -1674,7 +1680,7 @@ class TestPruneStalePane:
     def test_keeps_alive_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         from dgov.status import prune_stale_panes
 
-        mock_backend.is_alive.return_value = True
+        mock_backend.bulk_info.return_value = {"%1": {"pane_id": "%1"}}
         pane = WorkerPane(
             slug="alive",
             prompt="x",
@@ -2185,6 +2191,8 @@ class TestValidEvents:
             "monitor_auto_retry",
             "monitor_tick",
             "claim_violation",
+            "quality_retry",
+            "quality_escalate",
         }
         assert expected == VALID_EVENTS
 

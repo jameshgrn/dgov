@@ -1,62 +1,101 @@
-# HANDOVER — 2026-03-22 (Infrastructure hardening)
+# HANDOVER — 2026-03-22 (Plan system + cost pyramid + event-driven)
 
 ## Current State
 
-1507 tests passing, 1 skipped. All pushed to main.
+283 tests passing across all touched files, 1 skipped (known same-file merge limitation). All on main, not pushed.
 
-## What Was Done This Session
+## Completed
 
-### Dogfood Audit (10 UX bugs fixed)
-Stats mismatch, land guard, status recap, silent exceptions, mission deleted, close fix, stats format, slug warning, dead code, init --agent.
+### Plan System (Phase 6)
+- `src/dgov/plan.py` — PlanSpec, PlanUnit, AcceptanceCriteria, PlanUnitFiles, PlanIssue
+- `parse_plan_file` → `validate_plan` → `compile_plan` → `run_plan` (full pipeline)
+- `serialize_plan` — TOML output for programmatic plan building
+- `dgov plan validate/compile/run` CLI commands
+- Config flow: permission_mode, max_retries, merge_resolve, review_agent all flow from PlanSpec → DagDefinition → DagTaskSpec
+- Version validation, file conflict detection, cycle detection, test existence gate
+- 43 plan tests
 
-### Infrastructure Bugs (7 fixes)
-File claims at merge time + `--strict-claims`, monitor TOCTOU race, dead test code, GC handles superseded/timed_out, orphaned span cleanup, dead active pane pruning, terminal branch force-delete.
+### Tiered Review (Cost Pyramid)
+- `review_agent` field threaded through: PlanUnit → DagTaskSpec → ReviewTask → _dag_review → run_review_only
+- `ModelReviewProvider` in decision_providers.py — sends diff to specified model via OpenRouter
+- Two-stage sequential review: deterministic InspectionReview (free) → ModelReview (only if review_agent set AND deterministic passes)
+- `_parse_review_response` / `_resolve_review_model` helpers
+- 10+ review tier tests
 
-### Phase 1: Merge Engine Hardening
-- `--strict-claims` blocks merge on undeclared files (wired through merger → executor → CLI)
-- File overlap detection at merge time — warns when worker touches files changed on main since dispatch
-- 3-way `--merge-base` in `_plumbing_merge` for correct merge-tree behavior with diverged branches
-- Direct `--no-ff` merge path for worktree-attached branches (bypasses candidate worktree deadlock)
-- Candidate merge fallback chain: auto-rebase → candidate rebase → candidate merge → detect conflicts
-- 5 concurrent merge stress tests with real git repos (sequential, conflict, same-file overlap, strict claims)
+### Role-Based Escalation
+- `ROLE_ESCALATION`: worker → supervisor → manager → governor alert
+- `_MODEL_TO_ROLE` mapping for backward compat with panes that stored model names
+- Role aliases in `agents.toml`: `[routing.worker]`, `[routing.supervisor]`, `[routing.manager]`
+- Escalation events: `quality_retry`, `quality_escalate`
+- 5 role escalation tests
 
-### Phase 2: Library + Protocol
-- **`src/dgov/api.py`** — `Orchestrator` class: dispatch/wait/review/merge/close/land/status/panes
-- **`AgentProtocol`** in agents.py — formal contract + `validate_agent_protocol()` + `dgov doctor`
-- **`dgov recover`** — crash recovery from event log (`recover_from_events()`)
+### Event-Driven Architecture (No Polling)
+- Named pipe (`events.pipe`) replaces ALL `time.sleep` polling in orchestration
+- `_ensure_notify_pipe` / `_notify_waiters` / `_wait_for_notify` in persistence.py
+- `emit_event` writes byte to pipe after SQLite insert — instant cross-process wakeup
+- `wait_for_events`, `wait_for_slugs`, `_dag_wait_any` all use `_wait_for_notify`
+- Cross-platform (POSIX `select()` on named FIFO, works macOS + Linux)
+- 7 notification tests (FIFO creation, timeout, notify-wakes-waiter, emit triggers)
 
-### Phase 3: Prove Correctness
-- 14 hypothesis property-based kernel tests (600 random event sequences)
-- Concurrent merge stress tests proving: no data loss for separate files, conflicts correctly blocked, strict claims enforced
+### Merge Pipeline Fixes
+- False-negative fix: `git merge --abort` + `reset --hard` after failed candidate merge
+- Test-existence gate: deterministic check via `.test-manifest.json`, blocks merge
+- Codex LT-GOV audit found 3 P0s, 4 P1s — all resolved
+- Bulk `is_alive`, redundant cmd fetch, `_AGENT_COMMANDS` dedup, `_has_new_commits` guard
 
-### Merge Engine Deep Dive (ledger #68)
-Root cause fully traced: squash merges destroy git ancestry. After squash-merging worker 1, worker 2's branch has no common ancestor with HEAD. All same-file changes conflict regardless of overlap — this is a fundamental git limitation, not a dgov bug.
+### Policy Core (7 new rules)
+- No time.sleep in orchestration
+- Roles not models
+- Every state transition emits
+- Quality gates deterministic first
+- Bounded retry with role escalation
+- Kernel never sleeps
+- Plans are the contract
 
-**Attempted fixes**: 3-way merge-base, candidate cherry-pick, candidate git merge, worktree detach + rebase, direct `--no-ff` on main. All fail for worktree-attached branches because the plumbing merge path creates different commit structures than `git merge` on the command line.
+## Key Decisions
+- **Ledger #72**: Plan schema + compiler separates governor cognition from execution
+- **Ledger #76**: review_agent threaded through pipeline for tiered review
+- **Ledger #77**: ModelReviewProvider cascade: deterministic first, model second
+- **Ledger #79**: Four abstract tiers (worker/supervisor/manager/governor)
+- Named pipe over kqueue — cross-platform, no platform-specific APIs
 
-**Policy-adherent resolution**: one file per worker (already in CLAUDE.md). The merger now warns on overlap and the stress test documents the limitation.
-
-## Key Files
-| File | What |
-|------|------|
-| `src/dgov/api.py` | Public Python API |
-| `src/dgov/agents.py` | AgentProtocol + validation |
-| `src/dgov/recovery.py` | recover_from_events() |
-| `src/dgov/merger.py` | 3-way merge-base, overlap detection, direct merge path, strict claims |
-| `src/dgov/executor.py` | Guard checks, strict_claims, silent exception logging |
-| `src/dgov/monitor.py` | TOCTOU race fix |
-| `src/dgov/spans.py` | close_orphaned_spans(), physical_to_logical stats |
-| `src/dgov/status.py` | Terminal state pruning, dead pane gc |
-| `src/dgov/cli/admin.py` | recover_cmd, status recap, stats format, init --agent, doctor protocol |
-| `tests/test_kernel_properties.py` | 14 hypothesis property tests |
-| `tests/test_concurrent_merge.py` | 5 merge stress tests + 1 skipped limitation |
-
-## Known Limitations
-- **Same-file parallel merge**: worktree branches can't be rebased or merged via plumbing when attached. One-file-per-worker policy is the mitigation.
-- **Router concurrency**: river 35B `max_concurrent` should be 1 in agents.toml (ledger #70)
+## Open Issues
+- **Ledger #75**: river-35b (port 8080) process crashed remotely, not restarted
+- **Ledger #80**: Audit all existing quality checks and unify into single gate pipeline
+- **Ledger #81**: 4B model as smart-deterministic tier (formalize)
+- **Ledger #83**: LT-GOV codex should produce PlanSpec, not dispatch workers directly
+- Quality-gate retry in DagKernel not yet built (W3 from original plan — review failure triggers retry/escalation)
+- AcceptanceCriteria defined but not enforced in post-merge pipeline (custom_check maps to post_merge_check but runner doesn't execute it)
+- Monitor daemon still uses its own polling loop (separate from orchestration paths)
 
 ## Next Steps
-1. Fix agents.toml `max_concurrent=1` for river 35B servers
-2. Benchmark suite with published numbers
-3. Consider making `-r` optional (default to cwd when inside a git repo)
-4. Investigate whether removing the worktree before merge could enable same-file parallel merge safely
+1. **Build quality-gate retry in DagKernel** — when TaskReviewDone(passed=False), retry at same tier with failure context, escalate after 2 failures
+2. **Wire AcceptanceCriteria into post-merge** — custom_check already maps to post_merge_check, need a runner
+3. **Codex LT-GOV → PlanSpec output** — codex produces plans, governor executes
+4. **Push to origin** — run full CI suite first
+5. **Restart river-35b on remote** — process crashed, port 8080 dead
+
+## Important Files
+
+| File | What |
+|------|------|
+| `CLAUDE.md` | Policy Core (15 rules), role-based routing |
+| `src/dgov/plan.py` | Plan schema, parse, validate, compile, serialize, run |
+| `src/dgov/cli/plan_cmd.py` | dgov plan validate/compile/run |
+| `src/dgov/decision_providers.py` | ModelReviewProvider, _parse_review_response |
+| `src/dgov/provider_registry.py` | Review cascade wiring |
+| `src/dgov/executor.py` | Two-stage review, _dag_review with review_agent, _wait_for_notify |
+| `src/dgov/persistence.py` | Named pipe notification (_ensure_notify_pipe, _notify_waiters, _wait_for_notify) |
+| `src/dgov/recovery.py` | ROLE_ESCALATION, _MODEL_TO_ROLE, quality events |
+| `src/dgov/merger.py` | Candidate merge abort fix |
+| `src/dgov/inspection.py` | check_test_coverage (deterministic gate) |
+| `src/dgov/kernel.py` | DagKernel.review_agents, ReviewTask.review_agent |
+| `src/dgov/dag_parser.py` | DagTaskSpec.review_agent |
+| `src/dgov/done.py` | _AGENT_COMMANDS (single source), _has_new_commits guard |
+| `src/dgov/status.py` | Imports _AGENT_COMMANDS from done.py, bulk is_alive |
+| `~/.dgov/agents.toml` | Role routing aliases (worker/supervisor/manager) |
+| `tests/test_plan.py` | 43 plan tests |
+| `tests/test_decision_providers.py` | ModelReviewProvider + review_agent tests |
+| `tests/test_persistence_pane.py` | Named pipe notification tests |
+| `tests/test_bounded_retry.py` | Role escalation tests |
+| `tests/test_kernel.py` | DagKernel review_agent tests |

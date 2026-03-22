@@ -224,10 +224,7 @@ class TestMaybeAutoRetry:
 
     @patch("dgov.recovery.retry_worker_pane")
     @patch("dgov.recovery.load_registry")
-    @patch("dgov.recovery.time.sleep")
-    def test_retries_under_max(
-        self, mock_sleep, mock_registry, mock_retry, tmp_path: Path
-    ) -> None:
+    def test_retries_under_max(self, mock_registry, mock_retry, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
         agent_def = MagicMock()
@@ -242,14 +239,10 @@ class TestMaybeAutoRetry:
         assert result["retried"] == "test-worker"
         assert result["new_slug"] == "test-worker-2"
         assert result["attempt"] == 1
-        mock_sleep.assert_called_once()
 
     @patch("dgov.recovery.escalate_worker_pane")
     @patch("dgov.recovery.load_registry")
-    @patch("dgov.recovery.time.sleep")
-    def test_escalates_when_exhausted(
-        self, mock_sleep, mock_registry, mock_escalate, tmp_path: Path
-    ) -> None:
+    def test_escalates_when_exhausted(self, mock_registry, mock_escalate, tmp_path: Path) -> None:
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
         # Pre-fill retry events to exhaust retries
@@ -555,18 +548,17 @@ class TestMaybeAutoRetryProviderFailure:
 
         mock_context.return_value = "Upstream error from openrouter: connection timeout"
 
-        with patch("dgov.recovery.time.sleep"):
-            with patch("dgov.recovery.retry_worker_pane") as mock_retry:
-                mock_retry.return_value = {
-                    "retried": True,
-                    "new_slug": "test-worker-2",
-                    "attempt": 1,
-                }
+        with patch("dgov.recovery.retry_worker_pane") as mock_retry:
+            mock_retry.return_value = {
+                "retried": True,
+                "new_slug": "test-worker-2",
+                "attempt": 1,
+            }
 
-                result = maybe_auto_retry(session_root, slug, "/fake/project")
+            result = maybe_auto_retry(session_root, slug, "/fake/project")
 
-                assert result is not None
-                assert result["retried"] == slug
-                # When policy exists, advisory text IS added
-                call_prompt = mock_retry.call_args.kwargs.get("prompt", "")
-                assert "Avoid the same failure" in call_prompt
+            assert result is not None
+            assert result["retried"] == slug
+            # When policy exists, advisory text IS added
+            call_prompt = mock_retry.call_args.kwargs.get("prompt", "")
+            assert "Avoid the same failure" in call_prompt
