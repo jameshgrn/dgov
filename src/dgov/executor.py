@@ -1877,7 +1877,9 @@ def _dag_wait_any(
         if elapsed > max_timeout:
             return TaskWaitDone(task_slugs[0], pane_map.get(task_slugs[0], ""), "timed_out")
 
-        time.sleep(poll_interval)
+        from dgov.persistence import _watch_done_dir
+
+        _watch_done_dir(session_root, poll_interval)
 
 
 def _dag_review(

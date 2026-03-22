@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import select
 import sqlite3
 import threading
 import time
@@ -16,6 +18,44 @@ from pathlib import Path
 from dgov.backend import get_backend
 
 logger = logging.getLogger(__name__)
+
+
+def _watch_done_dir(session_root: str, timeout: float) -> bool:
+    """Block until a file changes in .dgov/done/ or timeout expires.
+
+    Uses kqueue (macOS) for zero-polling filesystem notification.
+    Falls back to a short sleep on platforms without kqueue.
+
+    Returns True if a change was detected, False on timeout.
+    """
+    done_dir = Path(session_root) / STATE_DIR / "done"
+    done_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if not hasattr(select, "kqueue"):
+            # Platform without kqueue — short sleep fallback (policy-nonconformant)
+            time.sleep(min(timeout, 0.5))
+            return True  # Assume change, caller will re-check
+
+        kq = select.kqueue()
+        fd = os.open(str(done_dir), os.O_RDONLY)
+        try:
+            ev = select.kevent(
+                fd,
+                filter=select.KQ_FILTER_VNODE,
+                flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                fflags=select.KQ_NOTE_WRITE | select.KQ_NOTE_EXTEND,
+            )
+            kq.control([ev], 0)
+            events = kq.control(None, 1, timeout)
+            return len(events) > 0
+        finally:
+            os.close(fd)
+            kq.close()
+    except (OSError, AttributeError):
+        time.sleep(min(timeout, 0.5))
+        return True
+
 
 # -- Connection cache (per db_path + thread) --
 
@@ -129,6 +169,14 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
     except sqlite3.OperationalError:
         logger.warning("emit_event(%s, %s) dropped — database locked", event, pane)
 
+    # Touch sentinel to wake kqueue watchers
+    try:
+        sentinel = Path(session_root) / STATE_DIR / "done" / ".notify"
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+    except OSError:
+        pass
+
 
 def read_events(
     session_root: str,
@@ -196,13 +244,13 @@ def wait_for_events(
     panes: tuple[str, ...] = (),
     event_types: tuple[str, ...] = (),
     timeout_s: float = 5.0,
-    poll_interval_s: float = 0.1,
 ) -> list[dict]:
-    """Wait for new events after *after_id*, optionally filtered by pane and type."""
+    """Wait for new events after *after_id*, optionally filtered by pane and type.
+
+    Uses kqueue-based file watching on .dgov/done/ for zero-polling wakeup.
+    """
     if timeout_s < 0:
         raise ValueError("timeout_s must be non-negative")
-    if poll_interval_s <= 0:
-        raise ValueError("poll_interval_s must be positive")
 
     conn = _get_db(session_root)
     pane_filters = tuple(dict.fromkeys(p for p in panes if p))
@@ -222,7 +270,8 @@ def wait_for_events(
 
     query.append("ORDER BY id")
     sql = " ".join(query)
-    deadline = time.monotonic() + timeout_s
+    start = time.monotonic()
+    deadline = start + timeout_s
 
     while True:
         rows = conn.execute(sql, tuple(params)).fetchall()
@@ -240,7 +289,7 @@ def wait_for_events(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return []
-        time.sleep(min(poll_interval_s, remaining))
+        _watch_done_dir(session_root, min(remaining, timeout_s))
 
 
 # -- Pane record --

@@ -204,7 +204,9 @@ def wait_for_slugs(
             ):
                 pending.discard(slug)
         if pending:
-            time.sleep(poll)
+            from dgov.persistence import _watch_done_dir
+
+            _watch_done_dir(session_root, poll)
     return pending
 
 
@@ -250,7 +252,6 @@ def wait_worker_pane(
             panes=(slug,),
             event_types=_TERMINAL_EVENTS,
             timeout_s=float(poll),
-            poll_interval_s=0.1,
         )
         if events:
             last_event_id = events[-1]["id"]
@@ -360,7 +361,6 @@ def wait_all_worker_panes(
             panes=tuple(sorted(pending)),
             event_types=_TERMINAL_EVENTS,
             timeout_s=float(poll),
-            poll_interval_s=0.1,
         )
 
         # Process events first
@@ -418,7 +418,9 @@ def wait_all_worker_panes(
 
         # Sleep only if there are still pending panes and no events were processed
         if pending:
-            time.sleep(poll)
+            from dgov.persistence import _watch_done_dir
+
+            _watch_done_dir(session_root, poll)
 
 
 # -- Communication helpers --
