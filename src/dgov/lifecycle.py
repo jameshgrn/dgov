@@ -1275,7 +1275,13 @@ def close_worker_pane(
     target = get_pane(session_root, slug)
 
     if not target:
-        return True  # already cleaned up (e.g. by merge)
+        # Check if this slug was ever in the DB (archived or event history)
+        from dgov.persistence import read_events
+
+        events = read_events(session_root, slug=slug)
+        if not events:
+            return False  # truly nonexistent slug
+        return True  # was cleaned up by merge or close
 
     # Open close span
     close_span_id = None

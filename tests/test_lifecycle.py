@@ -798,6 +798,34 @@ class TestFullCleanup:
         assert result["skipped_worktree"] is False
         assert any("worktree" in c and "remove" in c for c in git_calls)
 
+    def test_close_worker_pane_returns_false_for_unknown_slug(self, tmp_path: Path) -> None:
+        """Closing a slug that never existed should return False (not success)."""
+        from dgov.lifecycle import close_worker_pane
+
+        sr = str(tmp_path)
+
+        # No pane exists for this slug
+        result = close_worker_pane(str(tmp_path), "never-existed", session_root=sr)
+
+        # Should indicate failure, not silent success
+        assert result is False
+
+    def test_close_worker_pane_returns_true_for_archived_slug(self, tmp_path: Path) -> None:
+        """Closing an archived slug should return True."""
+        from dgov.lifecycle import close_worker_pane
+        from dgov.persistence import emit_event
+
+        sr = str(tmp_path)
+
+        # Add an event for this slug to the event history
+        emit_event(sr, "pane_created", "former-slug")
+
+        # The pane itself should be gone (we didn't add a pane record)
+        result = close_worker_pane(str(tmp_path), "former-slug", session_root=sr)
+
+        # Should return True since slug was in the DB at some point
+        assert result is True
+
 
 # ──────────────────────────────────────────────────────────────
 # TestPiExtensionFlags
