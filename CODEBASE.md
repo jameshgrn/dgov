@@ -43,7 +43,7 @@
 ### Merge and review
 | File | Size | Purpose |
 |------|------|---------|
-| `src/dgov/inspection.py` | L | Pane inspection: review, diff, rebase. |
+| `src/dgov/inspection.py` | M | Pane inspection: review, diff, rebase. |
 | `src/dgov/merger.py` | L | Git merge, conflict resolution, and post-merge operations. |
 
 ### Automation and recovery
@@ -99,6 +99,7 @@
 | `src/dgov/cli/briefing_cmd.py` | S | CLI command: dgov briefing — on-demand document viewer via glow. |
 | `src/dgov/cli/dag_cmd.py` | M | CLI commands for DAG execution. |
 | `src/dgov/cli/journal_cmd.py` | S | Decision journal query CLI. |
+| `src/dgov/cli/ledger_cmd.py` | S | Operational ledger CLI — formalized napkin. |
 | `src/dgov/cli/merge_queue_cmd.py` | S | Merge queue commands for governor-side queue processing. |
 | `src/dgov/cli/mission_cmd.py` | S | CLI command for the mission primitive. |
 | `src/dgov/cli/monitor_cmd.py` | S | Monitor daemon CLI command. |
