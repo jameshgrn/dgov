@@ -76,6 +76,7 @@ class ReviewOutputRequest:
     file_claims: tuple[str, ...] = ()
     trace_id: str | None = None
     agent_id: str | None = None
+    review_agent: str = ""  # model to use for model-backed review
 
 
 @dataclass(frozen=True)

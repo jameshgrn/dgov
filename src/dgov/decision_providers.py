@@ -274,6 +274,127 @@ class InspectionReviewProvider(DecisionProvider):
 
 
 @dataclass
+class ModelReviewProvider(DecisionProvider):
+    """Review provider that sends the diff to a specified model for quality review.
+
+    Used as the second tier in the review cascade — only fires when the
+    deterministic InspectionReviewProvider passes and a review_agent is specified.
+    The model reviews logic and design quality, not syntax (code already passes tests).
+    """
+
+    provider_id: str = "model-review"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return frozenset({DecisionKind.REVIEW_OUTPUT})
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        if not request.review_agent:
+            raise ProviderError("ModelReviewProvider requires review_agent")
+
+        from dgov.openrouter import _openrouter_request
+
+        # Build the review context
+        diff = request.diff
+        if not diff and request.project_root and request.slug:
+            from dgov.inspection import review_worker_pane
+
+            review = review_worker_pane(
+                request.project_root,
+                request.slug,
+                session_root=request.session_root,
+            )
+            diff = review.get("diff", review.get("stat", ""))
+
+        if not diff:
+            raise ProviderError("No diff available for model review")
+
+        # Map logical agent name to OpenRouter model
+        model = _resolve_review_model(request.review_agent)
+
+        started = time.perf_counter()
+
+        prompt = (
+            "Review this code diff. The code already passes tests and lint.\n"
+            "Focus on: logic correctness, edge cases, design quality.\n"
+            "Do NOT flag style issues — only real bugs or design concerns.\n\n"
+            f"## Diff\n```\n{diff[:8000]}\n```\n\n"
+            "Respond in exactly this format:\n"
+            "VERDICT: approved | concerns\n"
+            "SUMMARY: (one line)\n"
+            "ISSUES: (one per line, or 'none')"
+        )
+
+        try:
+            response = _openrouter_request(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+                max_tokens=500,
+                temperature=0,
+            )
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            verdict, issues, summary = _parse_review_response(content)
+        except Exception as exc:
+            # Model failure is not fatal — fall through gracefully
+            raise ProviderError(f"Model review failed: {exc}") from exc
+
+        latency_ms = (time.perf_counter() - started) * 1000
+
+        return DecisionRecord(
+            kind=DecisionKind.REVIEW_OUTPUT,
+            provider_id=self.provider_id,
+            decision=ReviewOutputDecision(
+                verdict=verdict,
+                commit_count=-1,  # Not applicable for model review
+                issues=issues,
+                reason=summary if verdict != "approved" else None,
+            ),
+            model_id=model,
+            confidence=0.8,
+            latency_ms=latency_ms,
+            trace_id=request.trace_id,
+        )
+
+
+def _resolve_review_model(review_agent: str) -> str:
+    """Map a logical agent name to an OpenRouter model identifier."""
+    _MODEL_MAP = {
+        "qwen-9b": "qwen/qwen3.5-9b",
+        "qwen-35b": "qwen/qwen3.5-35b",
+        "qwen-122b": "qwen/qwen3.5-122b",
+        "qwen-397b": "qwen/qwen3.5-397b",
+    }
+    return _MODEL_MAP.get(review_agent, review_agent)
+
+
+def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
+    """Parse the model's review response into (verdict, issues, summary)."""
+    verdict = "approved"
+    issues: list[str] = []
+    summary = ""
+
+    for line in content.splitlines():
+        line_stripped = line.strip()
+        upper = line_stripped.upper()
+        if upper.startswith("VERDICT:"):
+            raw_verdict = line_stripped.split(":", 1)[1].strip().lower()
+            if "concern" in raw_verdict or "change" in raw_verdict:
+                verdict = "concerns"
+            else:
+                verdict = "safe"
+        elif upper.startswith("SUMMARY:"):
+            summary = line_stripped.split(":", 1)[1].strip()
+        elif upper.startswith("ISSUES:"):
+            rest = line_stripped.split(":", 1)[1].strip()
+            if rest.lower() != "none" and rest:
+                issues.append(rest)
+        elif issues and line_stripped and not upper.startswith(("VERDICT", "SUMMARY")):
+            # Continuation of issues list
+            issues.append(line_stripped)
+
+    return verdict, tuple(issues), summary
+
+
+@dataclass
 class StatisticalRoutingProvider(DecisionProvider):
     """Route tasks using historical success rates from the spans table.
 

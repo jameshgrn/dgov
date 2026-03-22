@@ -842,6 +842,7 @@ def run_review_only(
     full: bool = False,
     require_safe: bool = True,
     require_commits: bool = True,
+    review_agent: str = "",
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
     _review_span_id = None
@@ -855,7 +856,11 @@ def run_review_only(
     from dgov.decision import DecisionKind
     from dgov.provider_registry import get_provider
 
-    provider = get_provider(DecisionKind.REVIEW_OUTPUT, session_root=session_root)
+    provider = get_provider(
+        DecisionKind.REVIEW_OUTPUT,
+        session_root=session_root,
+        review_agent=review_agent,
+    )
 
     # Get agent_id from pane if available
     agent_id = None
@@ -875,6 +880,7 @@ def run_review_only(
             session_root=session_root,
             full=full,
             agent_id=agent_id,
+            review_agent=review_agent,
         )
     )
     artifact = record.artifact if isinstance(record.artifact, dict) else None
@@ -1866,6 +1872,7 @@ def _dag_review(
         session_root=session_root,
         require_safe=True,
         require_commits=True,
+        review_agent=review_agent,
     )
     progress(f"  reviewed {task_slug}: {result.verdict}")
     return TaskReviewDone(
