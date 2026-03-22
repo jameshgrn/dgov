@@ -17,9 +17,7 @@ from dgov.decision_providers import (
 )
 
 
-def _base_provider(
-    kind: DecisionKind, *, session_root: str | None = None, review_agent: str = ""
-) -> DecisionProvider:
+def _base_provider(kind: DecisionKind, *, session_root: str | None = None) -> DecisionProvider:
     match kind:
         case DecisionKind.ROUTE_TASK:
             # Statistical-first cascade: journal data → LLM fallback
@@ -40,22 +38,20 @@ def _base_provider(
                 ]
             )
         case DecisionKind.REVIEW_OUTPUT:
-            # Tiered review cascade: deterministic inspection → model-backed review
-            providers: list[DecisionProvider] = [InspectionReviewProvider()]
-            if review_agent:
-                from dgov.decision_providers import ModelReviewProvider
-
-                providers.append(ModelReviewProvider())
-            return CascadeProvider(inner_providers=providers)
+            # Deterministic inspection only — model review is a separate stage
+            # in run_review_only (additive, not fallback)
+            return CascadeProvider(
+                inner_providers=[
+                    InspectionReviewProvider(),
+                ]
+            )
         case _:
             raise UnsupportedDecisionError(f"No provider registered for {kind}")
 
 
-def get_provider(
-    kind: DecisionKind, *, session_root: str | None = None, review_agent: str = ""
-) -> DecisionProvider:
+def get_provider(kind: DecisionKind, *, session_root: str | None = None) -> DecisionProvider:
     """Return the provider for a decision kind, wrapped with journaling when requested."""
-    provider = _base_provider(kind, session_root=session_root, review_agent=review_agent)
+    provider = _base_provider(kind, session_root=session_root)
     if not session_root:
         return provider
 

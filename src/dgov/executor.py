@@ -853,14 +853,7 @@ def run_review_only(
     except Exception:
         logger.debug("failed to open review span for %s", slug, exc_info=True)
 
-    from dgov.decision import DecisionKind
-    from dgov.provider_registry import get_provider
-
-    provider = get_provider(
-        DecisionKind.REVIEW_OUTPUT,
-        session_root=session_root,
-        review_agent=review_agent,
-    )
+    from dgov.decision import DecisionKind, ProviderError
 
     # Get agent_id from pane if available
     agent_id = None
@@ -873,16 +866,38 @@ def run_review_only(
         except (OSError, Exception):
             pass
 
-    record = provider.review_output(
-        ReviewOutputRequest(
-            project_root=project_root,
-            slug=slug,
-            session_root=session_root,
-            full=full,
-            agent_id=agent_id,
-            review_agent=review_agent,
-        )
+    request = ReviewOutputRequest(
+        project_root=project_root,
+        slug=slug,
+        session_root=session_root,
+        full=full,
+        agent_id=agent_id,
+        review_agent=review_agent,
     )
+
+    # Stage 1: Deterministic inspection (always runs, free)
+    from dgov.provider_registry import get_provider
+
+    provider = get_provider(DecisionKind.REVIEW_OUTPUT, session_root=session_root)
+    record = provider.review_output(request)
+
+    # Stage 2: Model review (only if deterministic passed AND review_agent is set)
+    if review_agent and record.decision.verdict == "safe" and record.decision.commit_count > 0:
+        try:
+            from dgov.decision_providers import ModelReviewProvider
+
+            model_provider = ModelReviewProvider()
+            model_record = model_provider.review_output(request)
+            if model_record.decision.verdict != "safe":
+                record = model_record
+                logger.info(
+                    "Model review (%s) flagged concerns for %s: %s",
+                    review_agent,
+                    slug,
+                    model_record.decision.issues,
+                )
+        except ProviderError:
+            logger.debug("Model review failed for %s, using deterministic result", slug)
     artifact = record.artifact if isinstance(record.artifact, dict) else None
     review = artifact or {
         "slug": slug,
