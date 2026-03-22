@@ -175,8 +175,8 @@ Tests are the primary coordination mechanism of the swarm. Agents do not trust e
 - Git operations on main (commit, tag)
 - Push `main` to `origin/main` when the user explicitly requests it
 - Triage and prioritize tasks
-- **Micro-edits** (1-3 lines) when dispatching a worker would take longer than the fix itself. Examples: adding an import, fixing a typo, wiring a CLI registration. Note these in the napkin as "governor exception."
-- Edit CLAUDE.md, CODEBASE.md, .napkin.md, HANDOVER.md directly (project meta-files)
+- **Micro-edits** (1-3 lines) when dispatching a worker would take longer than the fix itself. Examples: adding an import, fixing a typo, wiring a CLI registration.
+- Edit CLAUDE.md, CODEBASE.md, HANDOVER.md directly (project meta-files)
 
 ## What you must NEVER do
 
@@ -189,11 +189,37 @@ Tests are the primary coordination mechanism of the swarm. Agents do not trust e
 
 `--land` with `run_in_background` notifies you on completion. Use idle time:
 
-- Update `.napkin.md` — log dispatches, bugs, mistakes continuously
+- Update the ledger — `dgov ledger add <category> "<summary>"` for bugs, rules, patterns, debt, fixes
 - Update `HANDOVER.md` via `/handover` — keep it fresh for session handoff
 - Dispatch independent work — don't serialize when tasks are parallel
 - Plan ahead — read files for the next task, draft prompts
 - Audit for policy drift — if a new path bypasses preflight/review/recovery rules, treat it as a bug
+
+## Operational ledger
+
+The ledger (`dgov ledger`) replaces `.napkin.md` as the structured operational knowledge store. It lives in `state.db` and persists across sessions.
+
+**Read at session start:**
+```
+dgov ledger list -r . -c bug -s open     # open bugs
+dgov ledger list -r . -c rule            # hard-won rules
+dgov ledger list -r . -c debt -s open    # tech debt
+```
+
+**Write when something is learned:**
+```
+dgov ledger add bug "Description" -r . -s medium -t tag1 -t tag2
+dgov ledger add rule "Invariant" -r . --status accepted
+dgov ledger add fix "What was fixed" -r . --status fixed
+dgov ledger add debt "What needs cleanup" -r . -s low
+dgov ledger add pattern "Recurring observation" -r .
+dgov ledger add decision "Why we chose X" -r .
+dgov ledger add capability "Model X can do Y" -r . --status accepted
+```
+
+**Resolve when fixed:** `dgov ledger resolve <id> -s fixed`
+
+Categories: `bug`, `fix`, `rule`, `pattern`, `debt`, `capability`, `decision`. Severity: `info`, `low`, `medium`, `high`. Status: `open`, `fixed`, `accepted`, `wontfix`.
 
 ## After every merge
 
