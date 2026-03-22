@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/preflight.py
+# hypothesis_version: 6.151.9
+
+[120, 128, ' (matches expected)', ' (not main)', '--abbrev-ref', '--locked', '--name-only', '--porcelain', '-O', '-S', '-c', './', '.dgov', '/', '/tmp/river.sock', '??', 'Dependencies in sync', 'HEAD', 'Working tree clean', 'abandoned', 'agent_cli', 'agent_concurrency', 'agent_health', 'base_sha', 'bash', 'check', 'checks', 'claude', 'closed', 'deps', 'diff', 'file_claims', 'file_locks', 'git', 'git status failed', 'git_branch', 'git_clean', 'list', 'main', 'master', 'merged', 'passed', 'prune', 'rev-parse', 'river', 'river-', 'river.emes.unc.edu', 'river.sock', 'river_tunnel', 'ssh', 'stale_worktrees', 'state', 'status', 'sync', 'timestamp', 'uv', 'uv not found on PATH', 'worktree', 'worktree ', 'worktree_path', 'zsh']

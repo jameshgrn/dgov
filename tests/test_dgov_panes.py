@@ -2184,6 +2184,7 @@ class TestValidEvents:
             "monitor_auto_merge",
             "monitor_auto_retry",
             "monitor_tick",
+            "claim_violation",
         }
         assert expected == VALID_EVENTS
 

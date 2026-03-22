@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/blame.py
+# hypothesis_version: 6.151.9
+
+['--', '--ancestry-path', '--follow', '--format=%H %s', '--merges', '--name-only', '--porcelain', '--reverse', '-C', '0123456789abcdef', 'COMMIT:', 'Merge (\\S+)', 'agent', 'author', 'author ', 'blame', 'commit', 'content', 'created_at', 'error', 'event', 'file', 'files_in_change', 'git', 'history', 'inf', 'line_end', 'line_no', 'line_start', 'lines', 'log', 'merge_sha', 'merged_at', 'pane', 'pane_created', 'pane_merged', 'prompt', 'slug', 'subject', 'ts', 'unknown']

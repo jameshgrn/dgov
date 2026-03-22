@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/gitops.py
+# hypothesis_version: 6.151.9
+
+['--force', '-C', '-D', 'branch', 'error', 'git', 'prune', 'remove', 'success', 'worktree']

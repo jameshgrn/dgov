@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/router.py
+# hypothesis_version: 6.151.9
+
+['.dgov', 'Routed %s -> %s', 'agents.toml', 'backends', 'mtime', 'rb', 'routing', 'tables']

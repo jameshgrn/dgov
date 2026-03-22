@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/review_fix.py
+# hypothesis_version: 6.151.9
+
+[200, 600, '[', ']', '```', 'acceptEdits', 'all_findings_count', 'bypassPermissions', 'category', 'claude', 'complete', 'critical', 'description', 'error', 'failed_count', 'file', 'filtered_out', 'findings', 'findings_count', 'fixed_count', 'line', 'low', 'medium', 'merged', 'merged_count', 'pass', 'phase', 'pipeline', 'review_fix_completed', 'review_fix_finding', 'review_fix_started', 'review_only', 'severity', 'skipped', 'suggested_fix', 'test_status', 'tests_passed', 'validation']

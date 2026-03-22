@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/waiter.py
+# hypothesis_version: 6.151.9
+
+[0.1, 600, '(?i)are you sure', '(?i)enter passphrase', '(?i)enter password', '(?i)proceed\\?', 'Agent not attached', 'NO', 'Pane dead', 'Pane not found', 'YES', '\\[yes/no\\]', '\\by/n\\b', '_done_reason', 'abandoned', 'agent', 'current_output', 'done', 'error', 'event', 'failed', 'id', 'last_blocked', 'manual', 'method', 'new_slug', 'output', 'pane', 'pane_blocked', 'pane_done', 'pane_failed', 'pane_id', 'pane_slug', 'pane_timed_out', 'poll slug=%s', 'project_root', 'response', 'signal_or_commit', 'slug', 'state', 'timed_out', 'unclear', 'unknown']

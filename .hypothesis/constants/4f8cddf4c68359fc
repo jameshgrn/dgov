@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/cli/trace_cmd.py
+# hypothesis_version: 6.151.9
+
+['\n=== By Agent ===', '  tools used: ', ', ', '-', '--all', '--min-tools', '--outcome', '--output', '--project-root', '-o', '-r', '.', '.dgov', '=== By Kind ===', 'DGOV_PROJECT_ROOT', 'Git repo root', 'action_type', 'agent', 'commit_count', 'duration_ms', 'error', 'export', 'export_all', 'files_changed', 'ingest', 'logs', 'outcome', 'output_file', 'pending', 'show', 'slug', 'span_kind', 'stats', 'thinking', 'tokens_in', 'tokens_out', 'tool_call', 'tool_name', 'tool_result', 'trace', 'training', 'verdict', 'w', 'wait_method']

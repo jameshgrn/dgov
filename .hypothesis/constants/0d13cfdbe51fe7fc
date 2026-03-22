@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/cli/ledger_cmd.py
+# hypothesis_version: 6.151.9
+
+['--category', '--detail', '--json', '--json-output', '--limit', '--project-root', '--severity', '--slug', '--status', '--tag', '-c', '-d', '-n', '-r', '-s', '-t', '.', 'DGOV_PROJECT_ROOT', 'Extended detail', 'Filter by category', 'Filter by tag', 'Git repo root', 'Raw JSON', 'Tags (repeatable)', 'accepted', 'add', 'category', 'entry_id', 'fixed', 'high', 'id', 'info', 'ledger', 'list', 'low', 'medium', 'open', 'resolve', 'severity', 'status', 'summary', 'ts', 'wontfix']

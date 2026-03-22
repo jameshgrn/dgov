@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/templates.py
+# hypothesis_version: 6.151.9
+
+['*.toml', '.dgov', 'bugfix', 'claude', 'codex-mini', 'default_agent', 'description', 'directory', 'feature', 'file', 'lt-gov', 'ltgov_slug', 'name', 'qwen-35b', 'rb', 'refactor', 'required_vars', 'review', 'task_list', 'template', 'templates', 'test', 'test_file']

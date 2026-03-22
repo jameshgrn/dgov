@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/cli/worker_cmd.py
+# hypothesis_version: 6.151.9
+
+['--', '--message', '--oneline', '--porcelain', '-A', '-C', '-m', '1', 'AGENTS.md', 'CLAUDE.md', 'Completion message', 'DGOV_BASE_SHA', 'DGOV_SESSION_ROOT', 'DGOV_SLUG', 'DGOV_WORKTREE_PATH', 'HEAD', 'add', 'auto_committed', 'checkpoint', 'checkpoint_created', 'commit', 'complete', 'done', 'fail', 'failed', 'git', 'log', 'message', 'pane_done', 'pane_failed', 'reason', 'reset', 'slug', 'status', 'unspecified', 'utf-8']

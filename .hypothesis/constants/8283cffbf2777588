@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/cli/journal_cmd.py
+# hypothesis_version: 6.151.9
+
+['-', '--json', '--json-output', '--kind', '--limit', '--pane', '--project-root', '-k', '-n', '-p', '-r', '.', '?', 'DGOV_PROJECT_ROOT', 'ERR', 'Filter by pane slug', 'Git repo root', 'OK', 'Raw JSON output', 'duration_ms', 'error', 'journal', 'kind', 'model_id', 'pane_slug', 'provider_id', 'ts']

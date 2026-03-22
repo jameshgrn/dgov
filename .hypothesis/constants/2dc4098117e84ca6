@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/kernel.py
+# hypothesis_version: 6.151.9
+
+['--name-only', '-C', 'closed', 'committing', 'completed', 'diff', 'dispatched', 'done', 'failed', 'git', 'idle', 'merge', 'merge_failed', 'merge_ready', 'merged', 'merging', 'partial', 'pending', 'review', 'review_failed', 'review_pending', 'reviewed_pass', 'reviewing', 'running', 'safe', 'skipped', 'start', 'stuck', 'task_slug', 'unknown', 'waiting', 'waiting_input', 'worker_failed', 'working']

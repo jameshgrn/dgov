@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/cli/merge_queue_cmd.py
+# hypothesis_version: 6.151.9
+
+[120, '--project-root', '--rebase', '--resolve', '--squash/--no-squash', '--status', '--timeout', '-r', '-s', '.', 'DGOV_PROJECT_ROOT', 'No pending merges', 'Rebase merge', 'Review failed', 'agent', 'branch', 'empty', 'error', 'list', 'manual', 'merge-queue', 'merge_completed', 'message', 'process', 'result', 'skip', 'slug', 'status', 'ticket']

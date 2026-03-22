@@ -1,0 +1,4 @@
+# file: /Users/jakegearon/projects/dgov/src/dgov/cli/briefing_cmd.py
+# hypothesis_version: 6.151.9
+
+['#{pane_id}', '#{window_name}', '*.md', '--project-root', '-F', '-d', '-n', '-r', '-t', '.', '.dgov', '.napkin', 'Available reports:', 'DGOV_PROJECT_ROOT', 'No reports found.', 'briefing', 'changelog', 'claude', 'contributing', 'docs', 'gemini', 'handover', 'license', 'list-panes', 'list-windows', 'name', 'new-window', 'readme', 'reports', 'select-window']
