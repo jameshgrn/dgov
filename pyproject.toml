@@ -14,7 +14,9 @@ dev = [
     "mypy>=1.0",
     "ty>=0.0.1",
     "pytest>=8.0",
+    "pytest-mock>=3.0",
     "ruff>=0.4",
+    "hypothesis>=6.151.9",
 ]
 docs = [
     "mkdocs-material>=9.0",

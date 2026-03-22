@@ -458,6 +458,7 @@ from dgov.cli.admin import (  # noqa: E402
     list_agents,
     preflight_cmd,
     rebase,
+    recover_cmd,
     stats,
     status,
     terrain_cmd,
@@ -497,6 +498,7 @@ cli.add_command(openrouter)
 cli.add_command(init_cmd)
 cli.add_command(doctor_cmd)
 cli.add_command(gc_cmd)
+cli.add_command(recover_cmd)
 cli.add_command(dag)
 cli.add_command(merge_queue)
 cli.add_command(briefing_cmd)

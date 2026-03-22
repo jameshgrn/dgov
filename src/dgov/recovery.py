@@ -579,3 +579,88 @@ def maybe_auto_retry(
         }
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Crash recovery — reconstruct state from event log
+# ---------------------------------------------------------------------------
+
+_EVENT_TO_ACTION: dict[str, str] = {
+    "pane_created": "resume_wait",
+    "pane_dispatched": "resume_wait",
+    "pane_done": "resume_review",
+    "pane_reviewed": "resume_merge",
+    "pane_review_passed": "resume_merge",
+    "pane_merged": "close",
+    "pane_merge_failed": "retry",
+    "pane_closed": "skip",
+    "pane_failed": "skip",
+    "monitor_auto_merge": "skip",
+}
+
+
+def recover_from_events(session_root: str) -> dict[str, dict[str, str]]:
+    """Reconstruct pane lifecycle state from the event log.
+
+    Scans events for each pane and determines what recovery action is
+    needed based on the last meaningful event vs current DB state.
+
+    Returns ``{slug: {"action": ..., "reason": ..., "last_event": ...}}``.
+    Only includes slugs where DB state is inconsistent with events.
+    """
+    session_root = os.path.abspath(session_root)
+    events = read_events(session_root, limit=5000)
+    panes_snapshot = {p["slug"]: p for p in all_panes(session_root)}
+
+    last_event: dict[str, dict] = {}
+    for ev in events:
+        slug = ev.get("slug") or ev.get("pane") or ""
+        if not slug:
+            continue
+        kind = ev.get("event", "")
+        if kind in _EVENT_TO_ACTION:
+            last_event[slug] = {"kind": kind, "ts": ev.get("ts", "")}
+
+    recommendations: dict[str, dict[str, str]] = {}
+    for slug, ev_info in last_event.items():
+        action = _EVENT_TO_ACTION.get(ev_info["kind"], "skip")
+        if action == "skip":
+            continue
+
+        pane = panes_snapshot.get(slug)
+        if pane is None:
+            continue
+
+        db_state = pane.get("state", "")
+        needs_recovery = False
+        reason = ""
+
+        if action == "resume_wait" and db_state == "active":
+            from dgov.backend import get_backend
+
+            pane_id = pane.get("pane_id", "")
+            if pane_id and not get_backend().is_alive(pane_id):
+                needs_recovery = True
+                reason = f"dispatched but process dead (last: {ev_info['kind']})"
+        elif action == "resume_review" and db_state == "done":
+            needs_recovery = True
+            reason = "done but review never completed"
+        elif action == "resume_merge" and db_state in ("done", "reviewed_pass"):
+            needs_recovery = True
+            reason = "reviewed but merge never completed"
+        elif action == "retry" and db_state in ("done", "active"):
+            needs_recovery = True
+            reason = "merge failed but pane not cleaned up"
+        elif action == "close" and db_state not in ("closed", "merged"):
+            needs_recovery = True
+            reason = f"merged but state is {db_state}"
+
+        if needs_recovery:
+            recommendations[slug] = {
+                "action": action,
+                "reason": reason,
+                "last_event": ev_info["kind"],
+                "db_state": db_state,
+            }
+
+    return recommendations

@@ -1023,6 +1023,16 @@ def doctor_cmd(project_root):
         ", ".join(installed) if installed else "none found",
     )
 
+    # 5b. Agent protocol compliance
+    from dgov.agents import check_all_agents
+
+    violations = check_all_agents(registry)
+    if violations:
+        for agent_id, issues in violations.items():
+            _check(f"protocol: {agent_id}", False, "; ".join(issues))
+    else:
+        _check("agent protocol", True, "all agents compliant")
+
     # 6. Hooks directory
     hooks_dir = root / ".dgov" / "hooks"
     if hooks_dir.is_dir():
@@ -1181,6 +1191,39 @@ def transcript_cmd(slug, project_root, session_root, output_json):
             click.echo(f"{timestamp_str} {summary}")
 
     click.echo()
+
+
+@click.command("recover")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+def recover_cmd(project_root, session_root):
+    """Recover pane states from event log after crash."""
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+
+    from dgov.recovery import recover_from_events
+
+    sr = os.path.abspath(session_root) if session_root else os.path.abspath(project_root)
+    recs = recover_from_events(sr)
+    if not recs:
+        click.echo("No recovery needed — all panes consistent with event log.")
+        return
+
+    click.echo(f"Found {len(recs)} pane(s) needing recovery:\n")
+    for slug, info in recs.items():
+        click.echo(f"  {slug}:")
+        click.echo(f"    action:     {info['action']}")
+        click.echo(f"    reason:     {info['reason']}")
+        click.echo(f"    last event: {info['last_event']}")
+        click.echo(f"    db state:   {info['db_state']}")
+        click.echo()
+
+    click.echo("Run dgov pane land <slug> or dgov pane close <slug> to resolve.")
 
 
 @click.command("gc")

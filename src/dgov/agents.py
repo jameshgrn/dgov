@@ -706,3 +706,88 @@ def build_launch_command(
 
     # positional
     return f'{snippet}; {base} "$DGOV_PROMPT_CONTENT"'
+
+
+# ---------------------------------------------------------------------------
+# Agent protocol — formal contract for dgov workers
+# ---------------------------------------------------------------------------
+
+_VALID_TRANSPORTS = frozenset({"positional", "option", "stdin", "send-keys"})
+_VALID_COMPLETIONS = frozenset({"api", "exit", "signal", "commit", "stable"})
+
+
+@dataclass(frozen=True)
+class AgentProtocol:
+    """Formal contract for dgov worker agents.
+
+    An agent MUST:
+    - Accept a task prompt (via its transport mechanism)
+    - Work within the assigned git worktree (cwd)
+    - Commit changes to the worktree branch
+    - Signal completion via one of:
+      a) calling ``dgov worker complete`` (preferred)
+      b) exiting with code 0 (auto-detected)
+      c) producing commits and becoming idle (fallback)
+
+    An agent SHOULD:
+    - Only modify files declared in its file claims
+    - Not modify protected files (CLAUDE.md, CODEBASE.md)
+    - Complete within the timeout period
+
+    An agent MUST NOT:
+    - Write to files outside the worktree
+    - Push to remote repositories
+    - Modify the main branch directly
+    """
+
+    transport: str  # how prompt is delivered
+    completion: str  # how done is signaled
+    isolation: str = "worktree"
+    supports_tools: bool = True
+    headless: bool = False
+
+
+def validate_agent_protocol(agent_id: str, registry: dict[str, AgentDef]) -> list[str]:
+    """Return list of protocol violations for an agent definition.
+
+    Checks that the agent definition conforms to the formal protocol.
+    Empty list = fully compliant.
+    """
+    violations: list[str] = []
+    defn = registry.get(agent_id)
+    if defn is None:
+        return [f"Agent '{agent_id}' not found in registry"]
+
+    if defn.prompt_transport not in _VALID_TRANSPORTS:
+        violations.append(
+            f"Invalid transport '{defn.prompt_transport}' "
+            f"(must be one of {sorted(_VALID_TRANSPORTS)})"
+        )
+
+    if not defn.prompt_command:
+        violations.append("No prompt_command defined")
+
+    done_type = defn.done_strategy.type if defn.done_strategy else "api"
+    if done_type not in _VALID_COMPLETIONS:
+        violations.append(
+            f"Invalid completion strategy '{done_type}' "
+            f"(must be one of {sorted(_VALID_COMPLETIONS)})"
+        )
+
+    if defn.prompt_transport == "send-keys" and not defn.send_keys_submit:
+        violations.append("send-keys transport requires send_keys_submit sequence")
+
+    if defn.prompt_transport == "option" and not defn.prompt_option:
+        violations.append("option transport requires prompt_option flag")
+
+    return violations
+
+
+def check_all_agents(registry: dict[str, AgentDef]) -> dict[str, list[str]]:
+    """Validate all agents in the registry. Returns {agent_id: [violations]}."""
+    results = {}
+    for agent_id in registry:
+        violations = validate_agent_protocol(agent_id, registry)
+        if violations:
+            results[agent_id] = violations
+    return results
