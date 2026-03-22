@@ -137,12 +137,22 @@ class TestListTemplates:
 
 class TestTemplateCliList:
     def test_template_list_output(self, runner: CliRunner, tmp_path: Path) -> None:
-        result = runner.invoke(cli, ["template", "list", "--project-root", str(tmp_path)])
+        result = runner.invoke(
+            cli, ["template", "list", "--project-root", str(tmp_path), "--json"]
+        )
         assert result.exit_code == 0
         data = json.loads(result.output)
         names = {t["name"] for t in data}
         assert "bugfix" in names
         assert "feature" in names
+
+    def test_template_list_human_readable(self, runner: CliRunner, tmp_path: Path) -> None:
+        result = runner.invoke(cli, ["template", "list", "--project-root", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Name" in result.output
+        assert "Description" in result.output
+        assert "Agent" in result.output
+        assert "bugfix" in result.output
 
     def test_template_show(self, runner: CliRunner, tmp_path: Path) -> None:
         result = runner.invoke(

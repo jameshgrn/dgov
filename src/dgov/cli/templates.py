@@ -19,13 +19,33 @@ def template():
 
 @template.command("list")
 @click.option("--project-root", "-r", default=".", help="Project root")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
 @SESSION_ROOT_OPTION
-def template_list(project_root, session_root):
+def template_list(project_root, session_root, as_json):
     """List all available templates (built-in + user)."""
     from dgov.templates import list_templates
 
     session_root_abs = os.path.abspath(session_root or project_root)
-    click.echo(json.dumps(list_templates(session_root_abs), indent=2))
+    templates = list_templates(session_root_abs)
+
+    if as_json or os.environ.get("DGOV_JSON"):
+        click.echo(json.dumps(templates, indent=2))
+        return
+
+    if not templates:
+        click.echo("No templates found.")
+        return
+
+    # Format as table
+    header = f"{'Name':<15} {'Description':<40} {'Agent'}"
+    click.echo(header)
+    click.echo("-" * 80)
+    for tpl in templates:
+        desc = tpl["description"]
+        if len(desc) > 40:
+            desc = desc[:37] + "..."
+        agent = tpl["default_agent"] or "-"
+        click.echo(f"{tpl['name']:<15} {desc:<40} {agent}")
 
 
 @template.command("show")
