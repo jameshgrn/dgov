@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -553,9 +552,7 @@ def maybe_auto_retry(
     attempt = _count_retries(session_root, slug)
 
     if attempt < policy.max_retries:
-        # Backoff
-        delay = policy.backoff_base * (attempt + 1)
-        time.sleep(delay)
+        # Backoff delay removed — dispatch immediately, no blocking sleep
 
         # Build enhanced prompt
         original_prompt = rec.get("prompt", "")

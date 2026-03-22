@@ -473,7 +473,9 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
 
     # Send the nudge
     get_backend().send_input(pane_id, "Are you done? Reply YES or NO.")
-    time.sleep(wait_seconds)
+    from dgov.persistence import _wait_for_notify
+
+    _wait_for_notify(session_root, wait_seconds)
 
     if not get_backend().is_alive(pane_id):
         return {"response": "error", "output": "Pane died during wait"}

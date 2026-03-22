@@ -755,7 +755,9 @@ def _resolve_conflicts_with_agent(
                 else:
                     last_output = output
                     stable_since = None
-            time.sleep(poll_interval)
+            from dgov.persistence import _wait_for_notify
+
+            _wait_for_notify(session_root, poll_interval)
 
         # Check if conflicts were resolved
         still_unmerged = subprocess.run(
