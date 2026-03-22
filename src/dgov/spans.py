@@ -88,6 +88,30 @@ CREATE TABLE IF NOT EXISTS prompts (
     created_at      TEXT NOT NULL
 )"""
 
+CREATE_ARCHIVED_PANES_SQL = """\
+CREATE TABLE IF NOT EXISTS archived_panes (
+    slug            TEXT NOT NULL,
+    archived_at     TEXT NOT NULL,
+    prompt          TEXT NOT NULL DEFAULT '',
+    agent           TEXT NOT NULL DEFAULT '',
+    project_root    TEXT NOT NULL DEFAULT '',
+    worktree_path   TEXT NOT NULL DEFAULT '',
+    branch_name     TEXT NOT NULL DEFAULT '',
+    base_sha        TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL DEFAULT '',
+    final_state     TEXT NOT NULL DEFAULT '',
+    metadata        TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (slug, archived_at)
+)"""
+
+CREATE_TRANSCRIPTS_SQL = """\
+CREATE TABLE IF NOT EXISTS transcripts (
+    trace_id        TEXT PRIMARY KEY,
+    raw_jsonl       TEXT NOT NULL,
+    line_count      INTEGER NOT NULL DEFAULT 0,
+    ingested_at     TEXT NOT NULL
+)"""
+
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -198,6 +222,50 @@ def get_prompt(session_root: str, phash: str) -> str:
         "SELECT prompt_text FROM prompts WHERE prompt_hash = ?", (phash,)
     ).fetchone()
     return row[0] if row else ""
+
+
+def archive_pane(session_root: str, pane: dict) -> None:
+    """Snapshot a pane record before deletion. Idempotent per (slug, archived_at)."""
+    now = datetime.now(timezone.utc).isoformat()
+    meta = pane.get("metadata", {})
+    if isinstance(meta, str):
+        meta_str = meta
+    else:
+        meta_str = json.dumps(meta, default=str)
+    conn = _get_db(session_root)
+    conn.execute(
+        "INSERT OR IGNORE INTO archived_panes "
+        "(slug, archived_at, prompt, agent, project_root, worktree_path, "
+        "branch_name, base_sha, created_at, final_state, metadata) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            pane.get("slug", ""),
+            now,
+            pane.get("prompt", ""),
+            pane.get("agent", ""),
+            pane.get("project_root", ""),
+            pane.get("worktree_path", ""),
+            pane.get("branch_name", ""),
+            pane.get("base_sha", ""),
+            pane.get("created_at", ""),
+            pane.get("state", ""),
+            meta_str,
+        ),
+    )
+    conn.commit()
+
+
+def store_transcript(session_root: str, trace_id: str, raw_jsonl: str) -> None:
+    """Store raw transcript JSONL in DB. Idempotent."""
+    now = datetime.now(timezone.utc).isoformat()
+    line_count = sum(1 for line in raw_jsonl.splitlines() if line.strip())
+    conn = _get_db(session_root)
+    conn.execute(
+        "INSERT OR IGNORE INTO transcripts "
+        "(trace_id, raw_jsonl, line_count, ingested_at) VALUES (?, ?, ?, ?)",
+        (trace_id, raw_jsonl, line_count, now),
+    )
+    conn.commit()
 
 
 def open_span(

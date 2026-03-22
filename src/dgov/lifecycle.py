@@ -1233,11 +1233,14 @@ def _full_cleanup(
                 dest_path = logs_dir / f"{slug}.transcript.jsonl"
                 shutil.copy2(newest_session, dest_path)
 
-                # Ingest transcript into tool_traces immediately after copy
+                # Store raw transcript in DB + ingest structured traces
+                sr = session_root or project_root
                 try:
-                    from dgov.spans import ingest_transcript
+                    from dgov.spans import ingest_transcript, store_transcript
 
-                    ingest_transcript(session_root or project_root, slug, str(dest_path))
+                    raw = dest_path.read_text()
+                    store_transcript(sr, slug, raw)
+                    ingest_transcript(sr, slug, str(dest_path))
                 except Exception:
                     logger.debug("transcript ingest failed for %s", slug, exc_info=True)
 

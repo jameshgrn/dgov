@@ -314,6 +314,76 @@ class TestPrompts:
 
 
 # ---------------------------------------------------------------------------
+# Archive + Transcripts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestArchivePane:
+    def test_archive_and_query(self, session):
+        from dgov.spans import _get_db, archive_pane
+
+        pane = {
+            "slug": "test-pane",
+            "prompt": "Fix the bug",
+            "agent": "river-35b",
+            "project_root": "/tmp",
+            "worktree_path": "/tmp/wt",
+            "branch_name": "test-pane",
+            "base_sha": "abc123",
+            "created_at": "2024-01-01T00:00:00Z",
+            "state": "merged",
+            "metadata": {"landing": False},
+        }
+        archive_pane(session, pane)
+
+        conn = _get_db(session)
+        rows = conn.execute("SELECT slug, agent, final_state FROM archived_panes").fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("test-pane", "river-35b", "merged")
+
+    def test_archive_idempotent_different_times(self, session):
+        from dgov.spans import _get_db, archive_pane
+
+        pane = {"slug": "dup", "state": "done"}
+        archive_pane(session, pane)
+        archive_pane(session, pane)  # same slug, different archived_at timestamp
+
+        conn = _get_db(session)
+        count = conn.execute("SELECT COUNT(*) FROM archived_panes").fetchone()[0]
+        assert count >= 1  # at least 1, possibly 2 if timestamps differ
+
+
+@pytest.mark.unit
+class TestStoreTranscript:
+    def test_store_and_query(self, session):
+        from dgov.spans import _get_db, store_transcript
+
+        raw = '{"type":"message"}\n{"type":"tool_use"}\n'
+        store_transcript(session, "t1", raw)
+
+        conn = _get_db(session)
+        row = conn.execute(
+            "SELECT raw_jsonl, line_count FROM transcripts WHERE trace_id = ?",
+            ("t1",),
+        ).fetchone()
+        assert row[0] == raw
+        assert row[1] == 2
+
+    def test_store_idempotent(self, session):
+        from dgov.spans import _get_db, store_transcript
+
+        store_transcript(session, "t2", "line1\n")
+        store_transcript(session, "t2", "line1\n")  # INSERT OR IGNORE
+
+        conn = _get_db(session)
+        count = conn.execute("SELECT COUNT(*) FROM transcripts WHERE trace_id = 't2'").fetchone()[
+            0
+        ]
+        assert count == 1
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

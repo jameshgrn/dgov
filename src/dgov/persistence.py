@@ -482,12 +482,14 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
     # Spans + tool traces (Phase 4 observability)
     from dgov.spans import (
+        CREATE_ARCHIVED_PANES_SQL,
         CREATE_PROMPTS_SQL,
         CREATE_SPANS_IDX_KIND,
         CREATE_SPANS_IDX_TRACE,
         CREATE_SPANS_SQL,
         CREATE_TOOL_TRACES_IDX,
         CREATE_TOOL_TRACES_SQL,
+        CREATE_TRANSCRIPTS_SQL,
     )
 
     conn.execute(CREATE_SPANS_SQL)
@@ -496,6 +498,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(CREATE_TOOL_TRACES_SQL)
     conn.execute(CREATE_TOOL_TRACES_IDX)
     conn.execute(CREATE_PROMPTS_SQL)
+    conn.execute(CREATE_ARCHIVED_PANES_SQL)
+    conn.execute(CREATE_TRANSCRIPTS_SQL)
 
     # Migrate: add hierarchy columns if missing
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
@@ -607,6 +611,17 @@ def add_pane(session_root: str, pane: WorkerPane) -> None:
 def remove_pane(session_root: str, slug: str) -> None:
     def _do() -> None:
         conn = _get_db(session_root)
+        # Archive before delete
+        row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
+        if row:
+            cols = [d[0] for d in conn.execute("SELECT * FROM panes LIMIT 0").description]
+            pane_dict = dict(zip(cols, row))
+            try:
+                from dgov.spans import archive_pane
+
+                archive_pane(session_root, pane_dict)
+            except Exception:
+                pass  # archive failure must not block deletion
         conn.execute("DELETE FROM panes WHERE slug = ?", (slug,))
         # Record slug in history for unique allocation tracking
         conn.execute(
