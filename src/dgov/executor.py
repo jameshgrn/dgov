@@ -510,12 +510,25 @@ def run_wait_only(
                 pane_state = pane.get("state") if pane else None
         if pane_state == "failed":
             _phase("failed", current_slug)
+            # Try to read exit code from .exit file for a better error message
+            exit_msg = "Worker exited with an error"
+            try:
+                from pathlib import Path as _Path
+
+                from dgov.persistence import STATE_DIR
+
+                exit_path = _Path(session_root) / STATE_DIR / "done" / (current_slug + ".exit")
+                if exit_path.exists():
+                    code = exit_path.read_text().strip()
+                    exit_msg = f"Worker exited with code {code}"
+            except Exception:
+                pass
             return WaitOnlyResult(
                 state="failed",
                 slug=current_slug,
                 wait_result=wait_result,
                 pane_state=pane_state,
-                error="Worker exited with an error (check logs with: dgov pane logs)",
+                error=f"{exit_msg} (check logs with: dgov pane output {current_slug})",
                 failure_stage="worker_failed",
                 suggest_escalate=_should_suggest_escalate(current_slug),
             )
@@ -743,14 +756,13 @@ def _dedupe_paths(paths: list[str]) -> list[str]:
 
 
 def derive_prompt_touches(prompt: str) -> list[str]:
+    """Infer file claims from prompt keywords. Tests excluded — they're read context."""
     from dgov.strategy import extract_task_context
 
     context = extract_task_context(prompt)
     return _dedupe_paths(
         [
             *context.get("primary_files", []),
-            *context.get("also_check", []),
-            *context.get("tests", []),
         ]
     )
 

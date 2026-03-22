@@ -324,9 +324,7 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
             continue
 
         try:
-            changed: set[str] = set()
-
-            # Include declared file claims from pane metadata (no worktree needed)
+            # First: check declared claims against declared claims (fast, no git)
             pane_claims = pane.get("file_claims") or []
             if isinstance(pane_claims, str):
                 import json as _json
@@ -335,8 +333,18 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
                     pane_claims = _json.loads(pane_claims)
                 except (ValueError, TypeError):
                     pane_claims = []
-            changed.update(str(c) for c in pane_claims)
 
+            claim_overlap = {
+                touch
+                for touch in touches
+                if any(_paths_overlap(str(c), touch) for c in pane_claims)
+            }
+            if claim_overlap:
+                conflicts.append(f"{pane['slug']} (claimed): {', '.join(sorted(claim_overlap))}")
+                continue  # no need to also check git state
+
+            # Second: check actual changed files (slower, needs git)
+            changed: set[str] = set()
             if wt and Path(wt).exists() and base_sha:
                 committed = subprocess.run(
                     ["git", "diff", "--name-only", f"{base_sha}..HEAD"],
@@ -364,11 +372,14 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
                             continue
                         changed.add(line[3:])
 
-            overlap = {
-                path for path in changed if any(_paths_overlap(path, touch) for touch in touches)
-            }
-            if overlap:
-                conflicts.append(f"{pane['slug']}: {', '.join(sorted(overlap))}")
+            if changed:
+                overlap = {
+                    path
+                    for path in changed
+                    if any(_paths_overlap(path, touch) for touch in touches)
+                }
+                if overlap:
+                    conflicts.append(f"{pane['slug']}: {', '.join(sorted(overlap))}")
         except (subprocess.TimeoutExpired, OSError):
             continue
 

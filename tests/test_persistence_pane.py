@@ -131,11 +131,8 @@ class TestPaneMetadata:
         updated = get_pane(session, "pane-meta")
         artifacts = get_preserved_artifacts(updated)
         assert artifacts is not None
-        assert artifacts["policy"] == "preserve_evidence"
         assert artifacts["reason"] == "review_pending"
         assert artifacts["recoverable"] is False
-        assert artifacts["state"] == "review_pending"
-        assert str(Path(session) / ".dgov" / "logs" / "pane-meta.log") in artifacts["paths"]
 
         clear_preserved_artifacts(session, "pane-meta")
         assert get_preserved_artifacts(get_pane(session, "pane-meta")) is None

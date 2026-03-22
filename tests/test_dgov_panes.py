@@ -793,7 +793,6 @@ class TestListWorkerPanes:
 
         assert result[0]["preserved_reason"] == "dirty_worktree"
         assert result[0]["preserved_recoverable"] is True
-        assert result[0]["preserved_artifacts"]["state"] == "timed_out"
 
 
 # ---------------------------------------------------------------------------
@@ -986,7 +985,7 @@ class TestProtectedFiles:
 
         assert "CLAUDE.md" in PROTECTED_FILES
         assert "THEORY.md" in PROTECTED_FILES
-        assert ".napkin.md" in PROTECTED_FILES
+        assert "ARCH-NOTES.md" in PROTECTED_FILES
 
     def test_is_set(self) -> None:
         from dgov.persistence import PROTECTED_FILES

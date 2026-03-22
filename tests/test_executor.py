@@ -33,7 +33,7 @@ def test_derive_prompt_touches_dedupes_paths(monkeypatch):
         },
     )
 
-    assert derive_prompt_touches("fix it") == ["src/a.py", "src/b.py", "tests/test_a.py"]
+    assert derive_prompt_touches("fix it") == ["src/a.py"]
 
 
 def test_run_dispatch_preflight_prefers_explicit_touches():

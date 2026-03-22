@@ -336,7 +336,7 @@ class WorkerPane:
 # -- State DB helpers --
 
 STATE_DIR = ".dgov"
-PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md", ".napkin.md"}
+PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md"}
 _STATE_FILE = "state.db"
 
 _PANE_COLUMNS = frozenset(
@@ -413,7 +413,9 @@ CREATE TABLE IF NOT EXISTS panes (
     max_retries INTEGER NOT NULL DEFAULT 0,
     monitor_reason TEXT NOT NULL DEFAULT '',
     last_checkpoint TEXT NOT NULL DEFAULT '',
-    last_hook_match TEXT NOT NULL DEFAULT ''
+    last_hook_match TEXT NOT NULL DEFAULT '',
+    preserve_reason TEXT NOT NULL DEFAULT '',
+    preserve_recoverable INTEGER NOT NULL DEFAULT 0
 )"""
 
 _CREATE_EVENTS_TABLE_SQL = """
@@ -585,6 +587,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
         ("monitor_reason", "TEXT NOT NULL DEFAULT ''"),
         ("last_checkpoint", "TEXT NOT NULL DEFAULT ''"),
         ("last_hook_match", "TEXT NOT NULL DEFAULT ''"),
+        ("preserve_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("preserve_recoverable", "INTEGER NOT NULL DEFAULT 0"),
     ]
     for col, coldef in _pane_meta_cols:
         try:
@@ -919,6 +923,8 @@ _PANE_TYPED_COLS = frozenset(
         "monitor_reason",
         "last_checkpoint",
         "last_hook_match",
+        "preserve_reason",
+        "preserve_recoverable",
     }
 )
 
@@ -999,8 +1005,13 @@ def get_preserved_artifacts(pane_record: dict | None) -> dict | None:
     """Return preserved-artifact metadata when present."""
     if not pane_record:
         return None
-    artifacts = pane_record.get("preserved_artifacts")
-    return artifacts if isinstance(artifacts, dict) else None
+    reason = pane_record.get("preserve_reason", "")
+    if not reason:
+        return None
+    return {
+        "reason": reason,
+        "recoverable": bool(pane_record.get("preserve_recoverable", 0)),
+    }
 
 
 def mark_preserved_artifacts(
@@ -1027,22 +1038,17 @@ def mark_preserved_artifacts(
         if candidate and candidate not in paths:
             paths.append(candidate)
 
-    payload = {
-        "policy": "preserve_evidence",
-        "reason": reason,
-        "recoverable": recoverable,
-        "state": state or str(pane.get("state", "")),
-        "failure_stage": failure_stage,
-        "preserved_at": time.time(),
-        "paths": paths,
-        "last_inspected_at": None,
-    }
-    set_pane_metadata(session_root, slug, preserved_artifacts=payload)
+    set_pane_metadata(
+        session_root,
+        slug,
+        preserve_reason=reason,
+        preserve_recoverable=int(recoverable),
+    )
 
 
 def clear_preserved_artifacts(session_root: str, slug: str) -> None:
     """Remove preserved-artifact metadata once a pane is resumed or cleaned."""
-    clear_pane_metadata_keys(session_root, slug, "preserved_artifacts")
+    set_pane_metadata(session_root, slug, preserve_reason="", preserve_recoverable=0)
 
 
 def record_failure(session_root: str, slug: str, failure_hash: str) -> int:
@@ -1481,20 +1487,10 @@ def record_decision_audit(session_root: str, entry) -> None:  # noqa: ANN001
         json.dumps(entry.result, default=_json_default) if entry.result is not None else None
     )
     trace_id = None
-    metadata: dict[str, object] = {}
     kind = _decision_kind_name(entry.request)
 
     if entry.result is not None:
         trace_id = entry.result.trace_id
-        metadata = {
-            "model_id": entry.result.model_id,
-            "confidence": entry.result.confidence,
-            "latency_ms": entry.result.latency_ms,
-            "cost_usd": entry.result.cost_usd,
-            "evidence_refs": list(entry.result.evidence_refs),
-            "raw_artifact_ref": entry.result.raw_artifact_ref,
-            "record_created_at": entry.result.created_at,
-        }
         if hasattr(entry.result, "kind"):
             kind = entry.result.kind.value
 
@@ -1517,8 +1513,8 @@ def record_decision_audit(session_root: str, entry) -> None:  # noqa: ANN001
         conn.execute(
             "INSERT INTO decision_journal "
             "(ts, kind, provider_id, trace_id, model_id, confidence, pane_slug,"
-            " agent_id, request_json, result_json, error, duration_ms, metadata_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " agent_id, request_json, result_json, error, duration_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 datetime.now(timezone.utc).isoformat(),
                 kind,
@@ -1532,7 +1528,6 @@ def record_decision_audit(session_root: str, entry) -> None:  # noqa: ANN001
                 result_json,
                 entry.error,
                 entry.duration_ms,
-                json.dumps(metadata, default=_json_default),
             ),
         )
         conn.commit()
@@ -1565,7 +1560,7 @@ def read_decision_journal(
     conn = _get_db(session_root)
     query = (
         "SELECT ts, kind, provider_id, trace_id, model_id, confidence, pane_slug, agent_id,"
-        " request_json, result_json, error, duration_ms, metadata_json FROM decision_journal"
+        " request_json, result_json, error, duration_ms FROM decision_journal"
     )
     params: list[object] = []
     clauses = []
@@ -1603,7 +1598,6 @@ def read_decision_journal(
         result_json,
         error,
         duration_ms,
-        meta,
     ) in rows:
         item = {
             "ts": ts,
@@ -1625,9 +1619,5 @@ def read_decision_journal(
             item["result"] = json.loads(result_json) if result_json is not None else None
         except (json.JSONDecodeError, TypeError):
             item["result"] = result_json
-        try:
-            item.update(json.loads(meta))
-        except (json.JSONDecodeError, TypeError):
-            pass
         items.append(item)
     return items
