@@ -481,8 +481,7 @@ CREATE TABLE IF NOT EXISTS decision_journal (
     request_json TEXT NOT NULL,
     result_json TEXT,
     error TEXT,
-    duration_ms REAL NOT NULL,
-    metadata_json TEXT NOT NULL DEFAULT '{}'
+    duration_ms REAL NOT NULL
 )"""
 
 _CREATE_SLUG_HISTORY_TABLE_SQL = """
@@ -570,6 +569,9 @@ def _get_db(session_root: str) -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE decision_journal ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
             pass  # column already exists
+
+    # Migrate: drop unused metadata_json by ignoring it (SQLite cannot DROP COLUMN before 3.35)
+    # No action needed — column is never read. Left in schema for backward compat.
 
     # Migrate: add typed pane metadata columns
     _pane_meta_cols = [
