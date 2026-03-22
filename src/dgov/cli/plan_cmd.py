@@ -48,8 +48,7 @@ def plan_validate(plan_file):
 
 @plan_cmd.command("compile")
 @click.argument("plan_file", type=click.Path(exists=True))
-@click.option("--dry-run", is_flag=True, default=True, help="Print tier view without executing")
-def plan_compile(plan_file, dry_run):
+def plan_compile(plan_file):
     """Compile a plan into a DAG and show the tier view."""
     from dgov.dag_graph import compute_tiers, render_dry_run
     from dgov.plan import compile_plan, parse_plan_file, validate_plan

@@ -11,8 +11,12 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from dgov.dag_parser import DagDefinition
+from dgov.dag_graph import _paths_overlap
+
+if TYPE_CHECKING:
+    from dgov.dag_parser import DagDefinition
 
 
 @dataclass(frozen=True)
@@ -74,7 +78,7 @@ class PlanIssue:
     unit: str | None = None
 
 
-def _normalize_file_specs(project_root: str, files: dict) -> PlanUnitFiles:
+def _normalize_file_specs(files: dict) -> PlanUnitFiles:
     """Normalize file spec lists: validate no globs, all relative, sort."""
     result = {}
     for key in ("create", "edit", "delete", "read"):
@@ -118,6 +122,8 @@ def parse_plan_file(path: str) -> PlanSpec:
         raise ValueError("Missing [plan] section")
     if "version" not in plan_section:
         raise ValueError("Missing plan.version")
+    if plan_section["version"] != 1:
+        raise ValueError(f"Unsupported plan version: {plan_section['version']} (expected 1)")
     if "name" not in plan_section:
         raise ValueError("Missing plan.name")
     if "goal" not in plan_section:
@@ -138,7 +144,7 @@ def parse_plan_file(path: str) -> PlanSpec:
 
     units: dict[str, PlanUnit] = {}
     for slug, unit_raw in units_raw.items():
-        units[slug] = _parse_unit(slug, unit_raw, project_root)
+        units[slug] = _parse_unit(slug, unit_raw)
 
     return PlanSpec(
         name=plan_section["name"],
@@ -153,14 +159,14 @@ def parse_plan_file(path: str) -> PlanSpec:
     )
 
 
-def _parse_unit(slug: str, raw: dict, project_root: str) -> PlanUnit:
+def _parse_unit(slug: str, raw: dict) -> PlanUnit:
     """Parse and validate a single unit block."""
     for req in ("summary", "prompt", "commit_message"):
         if not raw.get(req):
             raise ValueError(f"Unit {slug!r}: missing required field {req!r}")
 
     files_raw = raw.get("files", {})
-    files = _normalize_file_specs(project_root, files_raw)
+    files = _normalize_file_specs(files_raw)
     if not files.create and not files.edit and not files.delete:
         raise ValueError(f"Unit {slug!r}: must specify at least one file in create/edit/delete")
 
@@ -290,15 +296,6 @@ def _touches(unit: PlanUnit) -> set[str]:
     return set(unit.files.create) | set(unit.files.edit) | set(unit.files.delete)
 
 
-def _paths_overlap(a: str, b: str) -> bool:
-    """True if paths conflict: exact match, or ancestor/descendant."""
-    if a == b:
-        return True
-    a_clean = a.rstrip("/")
-    b_clean = b.rstrip("/")
-    return a_clean.startswith(b_clean + "/") or b_clean.startswith(a_clean + "/")
-
-
 def _are_parallel(units: dict[str, PlanUnit], a: str, b: str) -> bool:
     """Check if two units are parallel (no dependency chain between them)."""
     if a == b:
@@ -372,7 +369,7 @@ def _check_file_conflicts(units: dict[str, PlanUnit]) -> list[PlanIssue]:
     return issues
 
 
-def compile_plan(plan: PlanSpec) -> "DagDefinition":
+def compile_plan(plan: PlanSpec) -> DagDefinition:
     """Compile a PlanSpec into a DagDefinition.
 
     Args:
