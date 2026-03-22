@@ -1,0 +1,447 @@
+"""Plan schema, validator, and compiler for dgov.
+
+This module implements the structured artifact between governor planning
+and DAG execution. The governor writes a TOML plan file; this module parses,
+validates, and compiles it into a DagDefinition that the existing DagKernel
+can execute mechanically.
+"""
+
+from __future__ import annotations
+
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from dgov.dag_parser import DagDefinition
+
+
+@dataclass(frozen=True)
+class AcceptanceCriteria:
+    """What 'done' means for a plan unit."""
+
+    tests_pass: bool = True
+    lint_clean: bool = True
+    custom_check: str = ""  # shell command, exit 0 = pass
+
+
+@dataclass(frozen=True)
+class PlanUnitFiles:
+    """Exact file scope for a plan unit."""
+
+    create: tuple[str, ...] = ()
+    edit: tuple[str, ...] = ()
+    delete: tuple[str, ...] = ()
+    read: tuple[str, ...] = ()  # context only, not edited
+
+
+@dataclass(frozen=True)
+class PlanUnit:
+    """A single unit of work in a plan."""
+
+    slug: str
+    summary: str
+    prompt: str
+    commit_message: str
+    files: PlanUnitFiles
+    depends_on: tuple[str, ...] = ()
+    agent: str = ""  # empty = use plan default
+    acceptance: AcceptanceCriteria = field(default_factory=AcceptanceCriteria)
+    timeout_s: int = 0  # 0 = use plan default
+    escalation: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlanSpec:
+    """A governor's execution plan — the contract between planning and execution."""
+
+    name: str
+    goal: str
+    units: dict[str, PlanUnit]
+    project_root: str = "."
+    session_root: str = "."
+    max_concurrent: int = 0
+    merge_strategy: str = "squash"
+    default_agent: str = "qwen-9b"
+    default_timeout_s: int = 600
+
+
+@dataclass(frozen=True)
+class PlanIssue:
+    """A validation issue found in a plan."""
+
+    severity: str  # "error" or "warning"
+    message: str
+    unit: str | None = None
+
+
+def _normalize_file_specs(project_root: str, files: dict) -> PlanUnitFiles:
+    """Normalize file spec lists: validate no globs, all relative, sort."""
+    result = {}
+    for key in ("create", "edit", "delete", "read"):
+        paths = files.get(key, [])
+        for p in paths:
+            if "*" in p or "?" in p or "[" in p:
+                raise ValueError(f"Globs not allowed in file specs: {p!r}")
+            if Path(p).is_absolute():
+                raise ValueError(f"File paths must be relative: {p!r}")
+        result[key] = tuple(sorted(paths))
+    return PlanUnitFiles(**result)
+
+
+def _parse_acceptance(raw: dict) -> AcceptanceCriteria:
+    """Parse optional acceptance subtable."""
+    return AcceptanceCriteria(
+        tests_pass=bool(raw.get("tests_pass", True)),
+        lint_clean=bool(raw.get("lint_clean", True)),
+        custom_check=str(raw.get("custom_check", "")),
+    )
+
+
+def parse_plan_file(path: str) -> PlanSpec:
+    """Parse a TOML plan file into a PlanSpec.
+
+    Args:
+        path: Path to the TOML plan file.
+
+    Returns:
+        A PlanSpec instance.
+
+    Raises:
+        ValueError: If required sections or fields are missing, or if
+            file specs contain globs or absolute paths.
+    """
+    raw_bytes = Path(path).read_bytes()
+    raw = tomllib.loads(raw_bytes.decode())
+
+    plan_section = raw.get("plan")
+    if not plan_section:
+        raise ValueError("Missing [plan] section")
+    if "version" not in plan_section:
+        raise ValueError("Missing plan.version")
+    if "name" not in plan_section:
+        raise ValueError("Missing plan.name")
+    if "goal" not in plan_section:
+        raise ValueError("Missing plan.goal")
+
+    units_raw = raw.get("units")
+    if not units_raw:
+        raise ValueError("Missing [units] section")
+    if len(units_raw) == 0:
+        raise ValueError("[units] section must contain at least one unit")
+
+    project_root = plan_section.get("project_root", ".")
+    session_root = plan_section.get("session_root", ".")
+    max_concurrent = plan_section.get("max_concurrent", 0)
+    merge_strategy = plan_section.get("merge_strategy", "squash")
+    default_agent = plan_section.get("default_agent", "qwen-9b")
+    default_timeout_s = plan_section.get("default_timeout_s", 600)
+
+    units: dict[str, PlanUnit] = {}
+    for slug, unit_raw in units_raw.items():
+        units[slug] = _parse_unit(slug, unit_raw, project_root)
+
+    return PlanSpec(
+        name=plan_section["name"],
+        goal=plan_section["goal"],
+        units=units,
+        project_root=project_root,
+        session_root=session_root,
+        max_concurrent=max_concurrent,
+        merge_strategy=merge_strategy,
+        default_agent=default_agent,
+        default_timeout_s=default_timeout_s,
+    )
+
+
+def _parse_unit(slug: str, raw: dict, project_root: str) -> PlanUnit:
+    """Parse and validate a single unit block."""
+    for req in ("summary", "prompt", "commit_message"):
+        if not raw.get(req):
+            raise ValueError(f"Unit {slug!r}: missing required field {req!r}")
+
+    files_raw = raw.get("files", {})
+    files = _normalize_file_specs(project_root, files_raw)
+    if not files.create and not files.edit and not files.delete:
+        raise ValueError(f"Unit {slug!r}: must specify at least one file in create/edit/delete")
+
+    acceptance_raw = raw.get("acceptance", {})
+    acceptance = _parse_acceptance(acceptance_raw)
+
+    return PlanUnit(
+        slug=slug,
+        summary=raw["summary"],
+        prompt=raw["prompt"],
+        commit_message=raw["commit_message"],
+        files=files,
+        depends_on=tuple(raw.get("depends_on", ())),
+        agent=str(raw.get("agent", "")),
+        acceptance=acceptance,
+        timeout_s=int(raw.get("timeout_s", 0)),
+        escalation=tuple(raw.get("escalation", ())),
+    )
+
+
+def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
+    """Validate a PlanSpec and return any issues found.
+
+    Args:
+        plan: The PlanSpec to validate.
+
+    Returns:
+        A list of PlanIssue objects. Empty list means the plan is valid.
+        Does NOT raise exceptions.
+    """
+    issues: list[PlanIssue] = []
+    units = plan.units
+    unit_ids = set(units)
+
+    # Check dependency refs exist
+    for slug, unit in units.items():
+        for dep in unit.depends_on:
+            if dep not in unit_ids:
+                issues.append(
+                    PlanIssue(
+                        severity="error",
+                        message=f"Unit {slug!r} depends on {dep!r} which does not exist",
+                        unit=slug,
+                    )
+                )
+
+    # Check no cycles using DFS cycle detection
+    visited: set[str] = set()
+    path: set[str] = set()
+
+    def _visit(node: str) -> None:
+        if node in path:
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Dependency cycle detected involving {node!r}",
+                    unit=node,
+                )
+            )
+            return
+        if node in visited:
+            return
+        path.add(node)
+        if node in units:
+            for dep in units[node].depends_on:
+                _visit(dep)
+        path.discard(node)
+        visited.add(node)
+
+    for tid in units:
+        _visit(tid)
+
+    # Check each unit has at least one file in create/edit/delete
+    for slug, unit in units.items():
+        if not unit.files.create and not unit.files.edit and not unit.files.delete:
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Unit {slug!r}: must specify at least one file in create/edit/delete",
+                    unit=slug,
+                )
+            )
+
+    # Check summary <= 80 chars (warning)
+    for slug, unit in units.items():
+        if len(unit.summary) > 80:
+            issues.append(
+                PlanIssue(
+                    severity="warning",
+                    message=(
+                        f"Unit {slug!r}: summary exceeds 80 characters ({len(unit.summary)} chars)"
+                    ),
+                    unit=slug,
+                )
+            )
+
+    # Check prompt non-empty (error)
+    for slug, unit in units.items():
+        if not unit.prompt.strip():
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Unit {slug!r}: prompt must not be empty",
+                    unit=slug,
+                )
+            )
+
+    # Check commit_message non-empty (error)
+    for slug, unit in units.items():
+        if not unit.commit_message.strip():
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Unit {slug!r}: commit_message must not be empty",
+                    unit=slug,
+                )
+            )
+
+    # Check file conflicts for parallel units
+    issues.extend(_check_file_conflicts(units))
+
+    return issues
+
+
+def _touches(unit: PlanUnit) -> set[str]:
+    """Return the union of all file specs for overlap checking."""
+    return set(unit.files.create) | set(unit.files.edit) | set(unit.files.delete)
+
+
+def _paths_overlap(a: str, b: str) -> bool:
+    """True if paths conflict: exact match, or ancestor/descendant."""
+    if a == b:
+        return True
+    a_clean = a.rstrip("/")
+    b_clean = b.rstrip("/")
+    return a_clean.startswith(b_clean + "/") or b_clean.startswith(a_clean + "/")
+
+
+def _are_parallel(units: dict[str, PlanUnit], a: str, b: str) -> bool:
+    """Check if two units are parallel (no dependency chain between them)."""
+    if a == b:
+        return False
+
+    # BFS from a to see if we can reach b via depends_on
+    visited: set[str] = set()
+    queue: list[str] = [a]
+
+    while queue:
+        current = queue.pop(0)
+        if current == b:
+            return False  # There is a dependency chain
+        if current in visited:
+            continue
+        visited.add(current)
+        if current in units:
+            for dep in units[current].depends_on:
+                if dep not in visited:
+                    queue.append(dep)
+
+    # Also check reverse: can b reach a?
+    visited.clear()
+    queue = [b]
+
+    while queue:
+        current = queue.pop(0)
+        if current == a:
+            return False  # There is a dependency chain (reverse)
+        if current in visited:
+            continue
+        visited.add(current)
+        if current in units:
+            for dep in units[current].depends_on:
+                if dep not in visited:
+                    queue.append(dep)
+
+    return True  # No dependency chain found
+
+
+def _check_file_conflicts(units: dict[str, PlanUnit]) -> list[PlanIssue]:
+    """Check for file conflicts between parallel units."""
+    issues: list[PlanIssue] = []
+    unit_ids = list(units.keys())
+
+    for i, a_slug in enumerate(unit_ids):
+        for b_slug in unit_ids[i + 1 :]:
+            if not _are_parallel(units, a_slug, b_slug):
+                continue  # Not parallel, skip conflict check
+
+            a_unit = units[a_slug]
+            b_unit = units[b_slug]
+            a_files = _touches(a_unit)
+            b_files = _touches(b_unit)
+
+            for af in a_files:
+                for bf in b_files:
+                    if _paths_overlap(af, bf):
+                        issues.append(
+                            PlanIssue(
+                                severity="error",
+                                message=(
+                                    f"Units {a_slug!r} and {b_slug!r} both touch "
+                                    f"file {af!r} and are parallel"
+                                ),
+                                unit=a_slug,
+                            )
+                        )
+                        break  # One conflict per pair is enough
+
+    return issues
+
+
+def compile_plan(plan: PlanSpec) -> "DagDefinition":
+    """Compile a PlanSpec into a DagDefinition.
+
+    Args:
+        plan: The PlanSpec to compile.
+
+    Returns:
+        A DagDefinition ready for execution by the DagKernel.
+    """
+    from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+
+    tasks: dict[str, DagTaskSpec] = {}
+
+    for slug, unit in plan.units.items():
+        # Resolve defaults
+        agent = unit.agent if unit.agent else plan.default_agent
+        timeout_s = unit.timeout_s if unit.timeout_s else plan.default_timeout_s
+
+        # Map PlanUnitFiles -> DagFileSpec (drop read files)
+        dag_files = DagFileSpec(
+            create=unit.files.create,
+            edit=unit.files.edit,
+            delete=unit.files.delete,
+        )
+
+        # Build modified prompt with context and acceptance info
+        modified_prompt = unit.prompt
+
+        # Add context files suffix if there are read files
+        if unit.files.read:
+            read_list = ", ".join(sorted(unit.files.read))
+            modified_prompt += f"\n\n## Context files\nAlso read: {read_list}"
+
+        # Add acceptance criteria suffix if different from defaults
+        acceptance = unit.acceptance
+        if (
+            acceptance.tests_pass != AcceptanceCriteria().tests_pass
+            or acceptance.lint_clean != AcceptanceCriteria().lint_clean
+            or acceptance.custom_check != AcceptanceCriteria().custom_check
+        ):
+            modified_prompt += "\n\n## Acceptance criteria"
+            modified_prompt += f"\n- Tests must pass: {'yes' if acceptance.tests_pass else 'no'}"
+            modified_prompt += (
+                f"\n- Lint must be clean: {'yes' if acceptance.lint_clean else 'no'}"
+            )
+            if acceptance.custom_check:
+                modified_prompt += f"\n- Custom check: {acceptance.custom_check}"
+
+        tasks[slug] = DagTaskSpec(
+            slug=slug,
+            summary=unit.summary,
+            prompt=modified_prompt,
+            commit_message=unit.commit_message,
+            agent=agent,
+            escalation=unit.escalation,
+            depends_on=unit.depends_on,
+            files=dag_files,
+            permission_mode="bypassPermissions",  # Default value
+            timeout_s=timeout_s,
+            post_merge_check="",  # Default value
+        )
+
+    return DagDefinition(
+        name=plan.name,
+        dag_file="",  # Not applicable for compiled plans
+        project_root=plan.project_root,
+        session_root=plan.session_root,
+        default_max_retries=1,  # Default value
+        merge_resolve="skip",  # Default value
+        merge_squash=(plan.merge_strategy == "squash"),
+        max_concurrent=plan.max_concurrent,
+        tasks=tasks,
+    )
