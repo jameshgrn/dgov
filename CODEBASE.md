@@ -178,7 +178,6 @@ Source file → test files (from .test-manifest.json):
 | `src/dgov/kernel.py` | `test_kernel.py` |
 | `src/dgov/lifecycle.py` | `test_lifecycle.py`, `test_executor.py`, `test_dgov_helpers.py` +2 more |
 | `src/dgov/merger.py` | `test_dgov_merger.py`, `test_merger_conflicts.py`, `test_merger_coverage.py` +2 more |
-| `src/dgov/mission.py` | `test_mission.py` |
 | `src/dgov/monitor.py` | `test_monitor.py` |
 | `src/dgov/monitor_hooks.py` | `test_monitor_hooks.py` |
 | `src/dgov/openrouter.py` | `test_openrouter.py` |
@@ -196,4 +195,4 @@ Source file → test files (from .test-manifest.json):
 | `src/dgov/terrain.py` | `test_terrain_events.py` |
 | `src/dgov/terrain_pane.py` | `test_terrain_pane.py` |
 | `src/dgov/tmux.py` | `test_dgov_tmux.py` |
-| `src/dgov/waiter.py` | `test_waiter.py`, `test_comms.py`, `test_mission.py` |
+| `src/dgov/waiter.py` | `test_waiter.py`, `test_comms.py` |
