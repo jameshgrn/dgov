@@ -102,18 +102,25 @@ class TestUpdatePaneState:
 
 
 class TestPaneMetadata:
-    def test_set_pane_metadata_uses_json_set(self, tmp_path: Path) -> None:
+    def test_set_pane_metadata_typed_columns(self, tmp_path: Path) -> None:
         session = _make_session(tmp_path)
         pane = _make_pane("pane-meta", session)
         add_pane(session, pane)
 
-        set_pane_metadata(session, "pane-meta", key1="value1")
-        set_pane_metadata(session, "pane-meta", key2=42)
+        set_pane_metadata(session, "pane-meta", landing=1, retry_count=3)
 
         updated = get_pane(session, "pane-meta")
         assert updated is not None
-        assert updated["key1"] == "value1"
-        assert updated["key2"] == 42
+        assert updated["landing"] == 1
+        assert updated["retry_count"] == 3
+
+    def test_set_pane_metadata_rejects_unknown_keys(self, tmp_path: Path) -> None:
+        session = _make_session(tmp_path)
+        pane = _make_pane("pane-meta", session)
+        add_pane(session, pane)
+
+        with pytest.raises(ValueError, match="unknown key"):
+            set_pane_metadata(session, "pane-meta", bogus_key="nope")
 
     def test_mark_and_clear_preserved_artifacts(self, tmp_path: Path) -> None:
         session = _make_session(tmp_path)

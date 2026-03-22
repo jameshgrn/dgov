@@ -942,7 +942,6 @@ def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
         conn = _get_db(session_root)
         typed_sets: list[str] = []
         typed_vals: list[object] = []
-        overflow: dict[str, object] = {}
 
         for k, v in kwargs.items():
             if k in _PANE_TYPED_COLS:
@@ -953,49 +952,15 @@ def set_pane_metadata(session_root: str, slug: str, **kwargs: object) -> None:
                     typed_sets.append(f"{k} = ?")
                     typed_vals.append(v)
             else:
-                overflow[k] = v
-                logger.warning(
-                    "set_pane_metadata: unknown key %r for slug=%s → legacy metadata blob",
-                    k,
-                    slug,
+                raise ValueError(
+                    f"set_pane_metadata: unknown key {k!r} for slug={slug}. "
+                    f"Add it to _PANE_TYPED_COLS and the panes schema first."
                 )
 
         if typed_sets:
             typed_vals.append(slug)
             sql = f"UPDATE panes SET {', '.join(typed_sets)} WHERE slug = ?"
             conn.execute(sql, typed_vals)
-
-        if overflow:
-            # Legacy fallback — write to metadata JSON blob
-            expr = "COALESCE(metadata, '{}')"
-            vals: list[object] = []
-            for ok, ov in overflow.items():
-                if isinstance(ov, dict | list):
-                    expr = f"json_set({expr}, '$.{ok}', json(?))"
-                    vals.append(json.dumps(ov))
-                else:
-                    expr = f"json_set({expr}, '$.{ok}', ?)"
-                    vals.append(ov)
-            vals.append(slug)
-            conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", vals)
-
-        conn.commit()
-
-    _retry_on_lock(_do)
-
-
-def clear_pane_metadata_keys(session_root: str, slug: str, *keys: str) -> None:
-    """Remove metadata keys from a pane atomically."""
-    clean_keys = tuple(dict.fromkeys(key for key in keys if key))
-    if not clean_keys:
-        return
-
-    def _do() -> None:
-        conn = _get_db(session_root)
-        expr = "COALESCE(metadata, '{}')"
-        for key in clean_keys:
-            expr = f"json_remove({expr}, '$.{key}')"
-        conn.execute(f"UPDATE panes SET metadata = {expr} WHERE slug = ?", (slug,))
         conn.commit()
 
     _retry_on_lock(_do)
