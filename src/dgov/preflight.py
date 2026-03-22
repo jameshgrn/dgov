@@ -6,6 +6,7 @@ fixable failures (stale worktrees, deps, agent health).
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -14,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dgov.agents import AGENT_REGISTRY
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
