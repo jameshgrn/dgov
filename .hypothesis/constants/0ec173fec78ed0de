@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/batch.py
-# hypothesis_version: 6.151.9
-
-[600, '*.json', ', ', '-C', '.', '.toml', 'HEAD', 'agent', 'ascii_dag', 'branch_heads', 'branch_name', 'bypassPermissions', 'checkpoint', 'checkpoint_created', 'checkpoints', 'claude', 'depends_on', 'dry_run', 'error', 'failed', 'git', 'id', 'main_sha', 'merged', 'name', 'overwrote', 'pane_count', 'pane_slug', 'panes', 'permission_mode', 'project_root', 'prompt', 'rb', 'rev-parse', 'review_pending', 'reviewed_fail', 'skip', 'skipped', 'slug', 'status', 'tasks', 'tier', 'tiers', 'timeout', 'total_tasks', 'touches', 'ts', 'unknown', 'w', 'worktree_path']

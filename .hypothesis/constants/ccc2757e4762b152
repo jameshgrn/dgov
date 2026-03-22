@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/done.py
-# hypothesis_version: 6.151.9
-
-['--count', '--not', '--oneline', '-C', '.exit', '0', '\\[\\d{3}~', '_cb_prev_hash', '_done_reason', 'abandoned', 'amp', 'api', 'api_fallback_stable', 'base_sha', 'branch_name', 'circuit_breaker', 'claude', 'cline', 'codex', 'commit', 'commit_count', 'commit_seen_at', 'commits_detected', 'copilot', 'crush', 'current_output', 'cursor-agent', 'dead_since', 'done', 'done_signal', 'exit', 'exit_signal', 'failed', 'gemini', 'git', 'last_output', 'log', 'node', 'opencode', 'pane_circuit_breaker', 'pane_done', 'pane_id', 'pi', 'project_root', 'python', 'python3', 'qwen', 'rev-list', 'signal', 'stable', 'stable_since', 'state']

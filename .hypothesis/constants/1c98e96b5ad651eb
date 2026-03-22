@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/cli/batch_cmd.py
-# hypothesis_version: 6.151.9
-
-['--dry-run', '--project-root', '-r', '.', 'DGOV_PROJECT_ROOT', 'Git repo root', 'ascii_dag', 'batch', 'create', 'failed', 'list', 'name', 'spec_path']

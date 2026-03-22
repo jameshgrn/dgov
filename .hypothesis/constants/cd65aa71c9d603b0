@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/openrouter.py
-# hypothesis_version: 6.151.9
-
-[200, 300, 429, '.dgov', '0', '1', ':free', 'Authorization', 'Content-Type', 'HTTP-Referer', 'OPENROUTER_API_KEY', 'POST', 'X-Title', 'account', 'api_key', 'api_key_set', 'api_reachable', 'application/json', 'code', 'completion', 'config.toml', 'context_length', 'data', 'default_model', 'dgov', 'error', 'id', 'max_tokens', 'messages', 'model', 'name', 'openrouter', 'pricing', 'prompt', 'qwen', 'qwen/qwen3.5-35b', 'rb', 'temperature']

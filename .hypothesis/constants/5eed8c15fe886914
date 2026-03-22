@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/dag.py
-# hypothesis_version: 6.151.9
-
-['DAG[%d] %s', 'auto_merge', 'awaiting_merge', 'closed', 'completed', 'dag_completed', 'dag_failed', 'dag_started', 'dag_task_completed', 'definition_hash', 'dry_run', 'failed', 'id', 'merge_conflict', 'merged', 'options', 'pane_slug', 'reviewed_fail', 'reviewed_pass', 'running', 'skip', 'slug', 'status', 'tiers', 'topological_order']

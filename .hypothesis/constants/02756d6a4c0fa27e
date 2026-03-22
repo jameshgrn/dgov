@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/decision.py
-# hypothesis_version: 6.151.9
-
-[1000, 'AuditProvider', 'CascadeProvider', 'ClarifyDecision', 'ClarifyRequest', 'ConsensusProvider', 'DecisionAuditEntry', 'DecisionKind', 'DecisionPayload', 'DecisionProvider', 'DecisionRecord', 'DecisionRequest', 'MonitorOutputRequest', 'ProviderError', 'ProviderTimeoutError', 'ReviewOutputDecision', 'ReviewOutputRequest', 'RouteTaskDecision', 'RouteTaskRequest', 'ShadowDecisionResult', 'ShadowProvider', 'TDecision', 'TimeoutProvider', '_call_kind', '_run_with_timeout', 'cascade', 'classify_output', 'decision-provider', 'disambiguate', 'parse_completion', 'review_output', 'route_task', 'static']

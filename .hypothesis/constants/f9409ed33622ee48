@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/cli/review_fix_cmd.py
-# hypothesis_version: 6.151.9
-
-[600, '--auto-approve', '--fix-agent', '--project-root', '--review-agent', '--severity', '--targets', '--timeout', '-r', '-t', '.', 'Agent for fix phase', 'Git repo root', 'critical', 'failed_count', 'low', 'medium', 'review-fix']

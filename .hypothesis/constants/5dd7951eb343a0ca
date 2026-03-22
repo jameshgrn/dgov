@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/dag_parser.py
-# hypothesis_version: 6.151.9
-
-[900, '*', '.', '?', 'Missing dag.name', 'Missing dag.version', '[', 'agent', 'bypassPermissions', 'commit_message', 'create', 'dag', 'default_max_retries', 'default_timeout_s', 'delete', 'depends_on', 'edit', 'escalation', 'files', 'max_concurrent', 'merge_resolve', 'merge_squash', 'name', 'permission_mode', 'post_merge_check', 'project_root', 'prompt', 'session_root', 'skip', 'summary', 'tasks', 'timeout_s', 'version']

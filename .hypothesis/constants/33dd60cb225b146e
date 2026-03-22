@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/cli/dag_cmd.py
-# hypothesis_version: 6.151.9
-
-['  (no tasks)', '--dry-run', '--max-concurrent', '--project-root', '--run-id', '--skip', '--tier', '-r', '.', '?', 'DGOV_PROJECT_ROOT', 'agent', 'attempt', 'current_tier', 'dag', 'dag_file', 'dagfile', 'error', 'failed', 'id', 'merge', 'merged', 'partial', 'resume', 'resumed', 'run', 'slug', 'started_at', 'status']

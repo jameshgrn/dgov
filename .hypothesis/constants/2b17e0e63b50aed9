@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/cli/templates.py
-# hypothesis_version: 6.151.9
-
-['-', '--json', '--project-root', '-r', '.', '...', '.dgov', 'DGOV_JSON', 'No templates found.', 'Output as JSON', 'Project root', 'as_json', 'create', 'created', 'default_agent', 'description', 'list', 'name', 'required_vars', 'show', 'template', 'templates']

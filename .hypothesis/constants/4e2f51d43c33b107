@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/context_packet.py
-# hypothesis_version: 6.151.9
-
-['## Start here\n', '.', './', '/', 'Exact edit claims:\n', 'Hints:\n', 'Read first:\n', 'Tests:\n', 'Worker changes', '^\\d+(\\.\\d+)+$', 'also_check', 'architecture_context', 'hints', 'primary_files', 'tests']

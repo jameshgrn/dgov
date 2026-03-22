@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/responder.py
-# hypothesis_version: 6.151.9
-
-['(?i)are you sure', '(?i)enter passphrase', '(?i)enter password', '(?i)proceed\\?', '.dgov', '\\[yes/no\\]', '\\b[yY]/[nN]\\b', 'action', 'auto_respond', 'done', 'escalate', 'pane_auto_responded', 'pane_blocked', 'pane_id', 'pattern', 'rb', 'response', 'responses.toml', 'rule', 'rules', 'send', 'signal_done', 'signal_failed', 'y', 'yes']

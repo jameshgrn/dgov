@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/monitor_hooks.py
-# hypothesis_version: 6.151.9
-
-['.dgov', 'auto_complete', 'committing', 'done', 'fail', 'hook', 'hooks', 'idle', 'keystroke', 'kind', 'message', 'monitor-hooks.toml', 'nudge', 'pattern', 'rb', 'stuck', 'waiting_input', 'working']

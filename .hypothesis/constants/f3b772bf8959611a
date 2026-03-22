@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/cli/openrouter_cmd.py
-# hypothesis_version: 6.151.9
-
-['--model', '--prompt', '-m', '-p', 'Model to use', 'Test prompt', 'choices', 'content', 'error', 'message', 'model', 'models', 'response', 'role', 'status', 'test', 'unknown', 'user']

@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/decision_providers.py
-# hypothesis_version: 6.151.9
-
-[0.7, 1.0, -2000, 300, 1000, ', ', 'choices', 'claude', 'commit_count', 'committing', 'content', 'deterministic', 'dispatch_count', 'done', 'error', 'idle', 'inspection-review', 'issues', 'message', 'model', 'openrouter-routing', 'pass_rate', 'pi', 'role', 'statistical', 'statistical-routing', 'stuck', 'system', 'unknown', 'user', 'verdict', 'waiting_input', 'working']

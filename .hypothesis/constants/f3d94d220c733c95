@@ -1,4 +1,0 @@
-# file: /Users/jakegearon/projects/dgov/src/dgov/cli/monitor_cmd.py
-# hypothesis_version: 6.151.9
-
-[' --auto-merge', ' --dry-run', ' --no-auto-merge', ' --no-auto-retry', '--dry-run', '--interval', '--pane', '--project-root', '--session-root', '-S', '-i', '-r', '.', 'DGOV_PROJECT_ROOT', '[gov] monitor', 'monitor']
