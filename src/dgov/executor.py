@@ -965,6 +965,7 @@ def run_review_only(
                 session_root or "",
                 _review_span_id,
                 _ro,
+                agent=agent_id or "",
                 verdict=verdict,
                 commit_count=commit_count,
                 tests_passed=1
