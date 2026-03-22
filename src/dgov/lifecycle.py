@@ -1292,8 +1292,8 @@ def close_worker_pane(
         child_project_root = os.path.abspath(child.get("project_root", project_root))
         close_worker_pane(child_project_root, child_slug, session_root, force=force)
 
-    # Auto-enable force for merged/closed panes
-    if target.get("state") in ("merged", "closed", "done", "failed"):
+    # Auto-enable force for terminal-state panes
+    if target.get("state") in ("merged", "closed", "done", "failed", "merge_conflict"):
         force = True
 
     result = _full_cleanup(
@@ -1317,21 +1317,35 @@ def close_worker_pane(
             logger.debug("transcript ingest failed for %s", slug, exc_info=True)
 
     # Preserve evidence when worktree removal fails or is skipped (dirty pane)
-    if result.get("skipped_worktree") or result.get("worktree_removal_failed"):
+    if result.get("skipped_worktree"):
         mark_preserved_artifacts(
             session_root,
             slug,
-            reason="dirty_worktree" if result.get("skipped_worktree") else "cleanup_failed",
-            recoverable=bool(result.get("skipped_worktree")),
+            reason="dirty_worktree",
+            recoverable=True,
             state=str(target.get("state", "")),
         )
-        # Don't remove pane state; leave it inspectable for debugging
-        if result.get("worktree_removal_failed"):
+        logger.info("Pane %s preserved for inspection in state %s", slug, target.get("state", ""))
+    elif result.get("worktree_removal_failed"):
+        # Worktree already gone — nothing to inspect. Clean up the record.
+        wt = target.get("worktree_path", "")
+        if wt and not Path(wt).exists():
+            logger.info("Worktree already removed for %s — cleaning up pane record", slug)
+            update_pane_state(session_root, slug, "closed")
+            emit_event(session_root, "pane_closed", slug)
+            remove_pane(session_root, slug)
+        else:
+            mark_preserved_artifacts(
+                session_root,
+                slug,
+                reason="cleanup_failed",
+                recoverable=False,
+                state=str(target.get("state", "")),
+            )
             logger.warning(
                 "Worktree removal failed for %s — pane state preserved for inspection",
                 slug,
             )
-        logger.info("Pane %s preserved for inspection in state %s", slug, target.get("state", ""))
     else:
         # Normal close - worktree removed, transition to closed and delete record
         update_pane_state(session_root, slug, "closed")

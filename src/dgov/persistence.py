@@ -606,6 +606,24 @@ def _get_db(session_root: str) -> sqlite3.Connection:
         except sqlite3.OperationalError:
             pass
 
+    # Migrate: add typed archived_panes columns (replace metadata blob)
+    _archive_cols = [
+        ("landing", "INTEGER NOT NULL DEFAULT 0"),
+        ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+        ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
+        ("retried_from", "TEXT NOT NULL DEFAULT ''"),
+        ("superseded_by", "TEXT NOT NULL DEFAULT ''"),
+        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
+        ("monitor_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("last_checkpoint", "TEXT NOT NULL DEFAULT ''"),
+    ]
+    for col, coldef in _archive_cols:
+        try:
+            conn.execute(f"ALTER TABLE archived_panes ADD COLUMN {col} {coldef}")
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
 
     with _conn_lock:
