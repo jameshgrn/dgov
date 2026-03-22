@@ -574,3 +574,95 @@ def export_training_jsonl(
             }
         )
     return examples
+
+
+def agent_reliability_stats(
+    session_root: str,
+    *,
+    min_dispatches: int = 3,
+) -> dict[str, dict]:
+    """Compute per-agent reliability metrics from spans.
+
+    Returns {agent_name: {pass_rate, dispatch_count, review_count,
+    retry_count, avg_wait_ms, avg_review_ms, last_seen}}.
+    Only includes agents with >= min_dispatches dispatch spans.
+    """
+    conn = _get_db(session_root)
+
+    # Count dispatches per agent
+    dispatch_rows = conn.execute(
+        "SELECT agent, COUNT(*) FROM spans "
+        "WHERE span_kind = 'dispatch' AND agent != '' "
+        "GROUP BY agent"
+    ).fetchall()
+    dispatch_counts = {row[0]: row[1] for row in dispatch_rows}
+
+    # Filter to agents with enough data
+    qualifying = {a for a, c in dispatch_counts.items() if c >= min_dispatches}
+    if not qualifying:
+        return {}
+
+    # Review stats: pass rate from verdict
+    review_rows = conn.execute(
+        "SELECT agent, verdict, COUNT(*) FROM spans "
+        "WHERE span_kind = 'review' AND agent != '' "
+        "GROUP BY agent, verdict"
+    ).fetchall()
+
+    # Retry counts
+    retry_rows = conn.execute(
+        "SELECT from_agent, COUNT(*) FROM spans "
+        "WHERE span_kind = 'retry' AND from_agent != '' "
+        "GROUP BY from_agent"
+    ).fetchall()
+    retry_counts = {row[0]: row[1] for row in retry_rows}
+
+    # Average durations
+    duration_rows = conn.execute(
+        "SELECT agent, span_kind, AVG(duration_ms) FROM spans "
+        "WHERE agent != '' AND duration_ms > 0 "
+        "AND span_kind IN ('wait', 'review') "
+        "GROUP BY agent, span_kind"
+    ).fetchall()
+
+    # Last seen
+    last_seen_rows = conn.execute(
+        "SELECT agent, MAX(started_at) FROM spans WHERE agent != '' GROUP BY agent"
+    ).fetchall()
+    last_seen = {row[0]: row[1] for row in last_seen_rows}
+
+    # Build stats per agent
+    stats: dict[str, dict] = {}
+    for agent in qualifying:
+        safe = 0
+        total_reviews = 0
+        for a, verdict, count in review_rows:
+            if a != agent:
+                continue
+            total_reviews += count
+            if verdict == "safe":
+                safe += count
+
+        pass_rate = safe / total_reviews if total_reviews > 0 else 0.0
+
+        avg_wait = 0.0
+        avg_review = 0.0
+        for a, kind, avg_ms in duration_rows:
+            if a != agent:
+                continue
+            if kind == "wait":
+                avg_wait = avg_ms or 0.0
+            elif kind == "review":
+                avg_review = avg_ms or 0.0
+
+        stats[agent] = {
+            "pass_rate": pass_rate,
+            "dispatch_count": dispatch_counts.get(agent, 0),
+            "review_count": total_reviews,
+            "retry_count": retry_counts.get(agent, 0),
+            "avg_wait_ms": avg_wait,
+            "avg_review_ms": avg_review,
+            "last_seen": last_seen.get(agent, ""),
+        }
+
+    return stats
