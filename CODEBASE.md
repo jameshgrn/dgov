@@ -32,7 +32,9 @@
 | File | Size | Purpose |
 |------|------|---------|
 | `src/dgov/done.py` | L | Done-signal and done-detection helpers. |
+| `src/dgov/executor.py` | L | Shared executor policy for dispatch preflight and merge review gates. |
 | `src/dgov/gitops.py` | S | Low-level git plumbing helpers for worktree and branch management. |
+| `src/dgov/kernel.py` | L | Deterministic kernel primitives for pane and DAG lifecycle. |
 | `src/dgov/lifecycle.py` | L | Pane lifecycle: create, close, resume, and cleanup. |
 | `src/dgov/persistence.py` | L | State file management and event journal. |
 | `src/dgov/status.py` | L | Pane status: list, freshness, output capture, pruning. |
@@ -61,6 +63,14 @@
 | `src/dgov/router.py` | S | Agent router: resolve logical model names to available physical backends. |
 | `src/dgov/strategy.py` | M | Task routing, slug generation, and prompt structuring. |
 | `src/dgov/templates.py` | S | Prompt template system for worker panes. |
+
+### Decision system
+| File | Size | Purpose |
+|------|------|---------|
+| `src/dgov/context_packet.py` | S | Compiled task context shared across preflight, prompts, and instructions. |
+| `src/dgov/decision.py` | L | Typed decision requests, records, and provider wrappers. |
+| `src/dgov/decision_providers.py` | M | Concrete decision providers built on existing dgov transports. |
+| `src/dgov/provider_registry.py` | S | Central provider selection and optional decision journaling. |
 
 ### Higher-level workflows
 | File | Size | Purpose |
@@ -95,15 +105,9 @@
 | `src/dgov/cli/openrouter_cmd.py` | S | OpenRouter integration commands. |
 | `src/dgov/cli/pane.py` | L | Pane management commands. |
 | `src/dgov/cli/review_fix_cmd.py` | S | Review-fix pipeline command. |
-| `src/dgov/cli/trace_cmd.py` | S | Span and tool-trace CLI commands. |
+| `src/dgov/cli/trace_cmd.py` | M | Span and tool-trace CLI commands. |
 | `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
-| `src/dgov/context_packet.py` | S | Compiled task context shared across preflight, prompts, and instructions. |
-| `src/dgov/decision.py` | L | Typed decision requests, records, and provider wrappers. |
-| `src/dgov/decision_providers.py` | M | Concrete decision providers built on existing dgov transports. |
-| `src/dgov/executor.py` | L | Shared executor policy for dispatch preflight and merge review gates. |
-| `src/dgov/kernel.py` | L | Deterministic kernel primitives for pane and DAG lifecycle. |
 | `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch. |
-| `src/dgov/provider_registry.py` | S | Central provider selection and optional decision journaling. |
 | `src/dgov/spans.py` | L | Structured span and tool-trace observability for dgov. |
 | `src/dgov/tmux.py` | L | Thin wrappers around tmux commands. |
 
