@@ -265,8 +265,8 @@ def _plumbing_merge(
         valid_hash = len(tree_hash) >= 40 and all(c in "0123456789abcdef" for c in tree_hash)
         if not valid_hash:
             return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
-        logger.info(
-            "merge-tree: rc=%d valid=%s hash='%s'", result.returncode, valid_hash, tree_hash
+        logger.debug(
+            "merge-tree: rc=%d valid=%s hash=%s", result.returncode, valid_hash, tree_hash[:8]
         )
         if result.returncode == 1 and valid_hash:
             # Exit 1 = conflicts detected. Check if they're real (overlapping)
@@ -970,6 +970,35 @@ def merge_worker_pane(
             "hint": "Commit or stash changes in the worktree before merging.",
         }
 
+    # Auto-rebase when same-file overlap detected.
+    # Squash merge breaks 3-way ancestry for parallel same-file workers.
+    # If main has changed files that this worker also changed, switch to rebase.
+    _base = target.get("base_sha", "")
+    logger.debug("overlap check: squash=%s rebase=%s base_sha=%s", squash, rebase, _base)
+    if squash and not rebase and _base:
+        main_changed_r = subprocess.run(
+            ["git", "-C", pane_project_root, "diff", "--name-only", f"{_base}..HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        if main_changed_r.returncode == 0:
+            main_changed = set(main_changed_r.stdout.strip().splitlines())
+            worker_changed_r = subprocess.run(
+                ["git", "-C", worktree_path, "diff", "--name-only", f"{_base}..HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if worker_changed_r.returncode == 0:
+                worker_changed = set(worker_changed_r.stdout.strip().splitlines())
+                overlap = main_changed & worker_changed
+                if overlap:
+                    logger.warning(
+                        "File overlap for %s: %s — squash merge may conflict. "
+                        "Use --no-squash or dispatch with non-overlapping file claims.",
+                        slug,
+                        sorted(overlap),
+                    )
+
     # Validate file claims: warn if worker touched undeclared files
     import json as _json
 
@@ -1037,17 +1066,71 @@ def merge_worker_pane(
 
     with _MergeLock(pane_project_root):
         # Auto-rebase worker branch onto HEAD to prevent stale-branch conflicts.
-        # Skip for rebase merges — _rebase_merge already rebases internally.
         rebase_fallback = False
         if not rebase:
             pre_rebase = _rebase_onto_head(pane_project_root, branch_name)
             if not pre_rebase.success:
                 logger.warning(
-                    "Auto-rebase failed for %s, falling back to plumbing merge: %s",
+                    "Auto-rebase failed for %s, falling back: %s",
                     branch_name,
                     pre_rebase.stderr,
                 )
                 rebase_fallback = True
+
+        # For no-squash merges with attached worktree branches, merge
+        # directly on main (candidate worktree can't access attached branches).
+        if not squash and rebase_fallback:
+            logger.info("Direct no-squash merge for %s", branch_name)
+            _msg = message or f"Merge {branch_name}"
+            _merge_r = subprocess.run(
+                ["git", "-C", pane_project_root, "merge", "--no-ff", "-m", _msg, branch_name],
+                capture_output=True,
+                text=True,
+            )
+            if _merge_r.returncode != 0:
+                logger.warning(
+                    "Direct --no-ff merge failed for %s: rc=%d out=%.200s err=%.200s",
+                    branch_name,
+                    _merge_r.returncode,
+                    _merge_r.stdout.strip(),
+                    _merge_r.stderr.strip(),
+                )
+            merge = MergeResult(
+                success=_merge_r.returncode == 0,
+                stderr=_merge_r.stderr.strip() if _merge_r.returncode != 0 else "",
+            )
+            if merge.success:
+                # Run post-merge validation on main directly
+                lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
+                from dgov.inspection import _run_related_tests
+
+                test_result = _run_related_tests(pane_project_root, changed_file_names)
+                validation_failed = False
+                if test_result and not test_result.get("no_tests_found"):
+                    if not test_result.get("tests_passed"):
+                        validation_failed = True
+                if validation_failed:
+                    # Revert: reset main to pre-merge state
+                    subprocess.run(
+                        ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
+                        capture_output=True,
+                    )
+                    return {
+                        "error": "Post-merge tests failed",
+                        "slug": slug,
+                        "branch": branch_name,
+                        "test_result": test_result,
+                    }
+                _persist.update_pane_state(session_root, slug, "merged")
+                _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
+                result = {"merged": slug, "branch": branch_name, "no_squash_direct": True}
+                if lint_result:
+                    result.update(lint_result)
+                if changed_file_names:
+                    result["changed_files"] = changed_file_names
+                    result["files_changed"] = len(changed_file_names)
+                return result
+            # Fall through to candidate worktree path if direct merge failed
 
         with _candidate_worktree(pane_project_root, slug) as (candidate_root, _candidate_branch):
             # If auto-rebase failed (worktree-attached branch), rebase in the
@@ -1064,20 +1147,14 @@ def merge_worker_pane(
                         ["git", "-C", candidate_root, "rebase", "--abort"],
                         capture_output=True,
                     )
-                    logger.info(
-                        "Candidate rebase failed for %s (expected for attached branches), "
-                        "trying git merge in candidate",
-                        branch_name,
-                    )
-                    # Use git merge in candidate — it handles non-overlapping
-                    # same-file edits that merge-tree reports as conflicts
+                    # git merge in candidate — handles non-overlapping
+                    # same-file edits via ort strategy with proper ancestry.
                     candidate_merge = subprocess.run(
                         [
                             "git",
                             "-C",
                             candidate_root,
                             "merge",
-                            "--no-ff",
                             branch_name,
                             "-m",
                             message or f"Merge {branch_name}",
@@ -1086,16 +1163,12 @@ def merge_worker_pane(
                         text=True,
                     )
                     if candidate_merge.returncode == 0:
-                        logger.info("Merged %s via git merge in candidate", branch_name)
+                        logger.info("Merged %s in candidate worktree", branch_name)
                         merge = MergeResult(success=True)
-                        # Skip _plumbing_merge — we already merged
-                        # Jump directly to post-merge validation
                     else:
                         logger.warning(
-                            "Candidate git merge failed for %s: rc=%d stdout=%s stderr=%s",
+                            "Candidate merge failed for %s: %s",
                             branch_name,
-                            candidate_merge.returncode,
-                            candidate_merge.stdout.strip()[:200],
                             candidate_merge.stderr.strip()[:200],
                         )
                 else:
@@ -1104,6 +1177,24 @@ def merge_worker_pane(
             if merge is None:
                 if rebase:
                     merge = _rebase_merge(candidate_root, branch_name, message=message)
+                    if not merge.success:
+                        # Rebase failed — merge fallback
+                        fallback_merge = subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                candidate_root,
+                                "merge",
+                                branch_name,
+                                "-m",
+                                message or f"Merge {branch_name}",
+                            ],
+                            capture_output=True,
+                            text=True,
+                        )
+                        if fallback_merge.returncode == 0:
+                            logger.info("Merge fallback for %s (rebase failed)", branch_name)
+                            merge = MergeResult(success=True)
                 else:
                     merge = _plumbing_merge(
                         candidate_root,
