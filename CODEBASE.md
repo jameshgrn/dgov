@@ -152,3 +152,52 @@ active → failed → (retry) → active
 active → abandoned → closed
 any terminal state → closed
 ```
+
+
+## Test Mapping
+
+Source file → test files (from .test-manifest.json):
+
+| Source | Tests |
+|--------|-------|
+| `src/dgov/agents.py` | `test_dgov_agents.py`, `test_dgov_preflight.py`, `test_circuit_breaker.py` +2 more |
+| `src/dgov/backend.py` | `test_backend.py`, `test_cascade_close.py`, `test_circuit_breaker.py` +4 more |
+| `src/dgov/batch.py` | `test_batch.py`, `test_batch_dag.py` |
+| `src/dgov/blame.py` | `test_blame.py`, `test_dgov_blame.py` |
+| `src/dgov/cli/__init__.py` | `test_dgov_cli.py`, `test_cli_admin.py`, `test_dgov_state.py` +1 more |
+| `src/dgov/cli/admin.py` | `test_cli_admin.py`, `test_dgov_cli.py`, `test_init_doctor.py` |
+| `src/dgov/cli/pane.py` | `test_dgov_cli.py`, `test_cli_pane.py`, `test_comms.py` +1 more |
+| `src/dgov/cli/templates.py` | `test_templates.py` |
+| `src/dgov/context_packet.py` | `test_context_packet.py` |
+| `src/dgov/dag.py` | `test_dag.py` |
+| `src/dgov/dag_graph.py` | `test_dag_graph.py`, `test_dag_internals.py`, `test_dag.py` |
+| `src/dgov/dag_parser.py` | `test_dag_parser.py`, `test_dag_graph.py`, `test_dag_internals.py` +1 more |
+| `src/dgov/dashboard.py` | `test_dashboard.py` |
+| `src/dgov/decision.py` | `test_decision.py`, `test_decision_providers.py`, `test_monitor.py` +1 more |
+| `src/dgov/decision_providers.py` | `test_decision_providers.py`, `test_decision.py`, `test_provider_registry.py` |
+| `src/dgov/done.py` | `test_done_strategy.py`, `test_circuit_breaker.py`, `test_comms.py` +1 more |
+| `src/dgov/executor.py` | `test_executor.py`, `test_kernel.py`, `test_cli_pane.py` +1 more |
+| `src/dgov/gitops.py` | `test_gitops.py` |
+| `src/dgov/inspection.py` | `test_inspection.py`, `test_dgov_helpers.py`, `test_integration.py` +1 more |
+| `src/dgov/kernel.py` | `test_kernel.py` |
+| `src/dgov/lifecycle.py` | `test_lifecycle.py`, `test_executor.py`, `test_dgov_helpers.py` +2 more |
+| `src/dgov/merger.py` | `test_dgov_merger.py`, `test_merger_conflicts.py`, `test_merger_coverage.py` +2 more |
+| `src/dgov/mission.py` | `test_mission.py` |
+| `src/dgov/monitor.py` | `test_monitor.py` |
+| `src/dgov/monitor_hooks.py` | `test_monitor_hooks.py` |
+| `src/dgov/openrouter.py` | `test_openrouter.py` |
+| `src/dgov/persistence.py` | `test_persistence_pane.py`, `test_dgov_state.py`, `test_transitions.py` +15 more |
+| `src/dgov/preflight.py` | `test_dgov_preflight.py` |
+| `src/dgov/provider_registry.py` | `test_provider_registry.py` |
+| `src/dgov/recovery.py` | `test_bounded_retry.py`, `test_recovery_dogfood.py`, `test_retry.py` |
+| `src/dgov/responder.py` | `test_responder.py` |
+| `src/dgov/review_fix.py` | `test_review_fix.py` |
+| `src/dgov/router.py` | `test_router.py` |
+| `src/dgov/spans.py` | `test_spans.py` |
+| `src/dgov/status.py` | `test_status.py`, `test_preview.py`, `test_dgov_panes.py` |
+| `src/dgov/strategy.py` | `test_strategy.py`, `test_dgov_panes.py` |
+| `src/dgov/templates.py` | `test_templates.py` |
+| `src/dgov/terrain.py` | `test_terrain_events.py` |
+| `src/dgov/terrain_pane.py` | `test_terrain_pane.py` |
+| `src/dgov/tmux.py` | `test_dgov_tmux.py` |
+| `src/dgov/waiter.py` | `test_waiter.py`, `test_comms.py`, `test_mission.py` |
