@@ -7,13 +7,17 @@ import pytest
 import dgov.lifecycle as _lifecycle  # noqa: F401 - bind real persistence symbols before patches
 from dgov.executor import (
     CleanupOnlyResult,
+    EscalateResult,
     PostDispatchActionExecutor,
+    RetryResult,
     derive_prompt_touches,
     review_merge_gate,
     run_cleanup_only,
     run_dispatch_preflight,
+    run_escalate_only,
     run_land_only,
     run_post_dispatch_lifecycle,
+    run_retry_only,
     run_review_merge,
     run_review_only,
     run_wait_only,
@@ -562,3 +566,62 @@ class TestReviewMerge:
             force=False,
         )
         mock_close.assert_called_once_with("/repo", "task", session_root="/session")
+
+
+# =============================================================================
+# Retry and Escalate Tests
+# =============================================================================
+
+
+def test_run_retry_only_success(monkeypatch):
+    """Test run_retry_only with successful retry."""
+    monkeypatch.setattr(
+        "dgov.recovery.retry_worker_pane",
+        lambda *args, **kwargs: {"new_slug": "s2"},
+    )
+    result = run_retry_only("/repo", "task1", session_root="/session")
+    assert isinstance(result, RetryResult)
+    assert result.slug == "task1"
+    assert result.new_slug == "s2"
+    assert result.error is None
+
+
+def test_run_retry_only_error(monkeypatch):
+    """Test run_retry_only with error response."""
+    monkeypatch.setattr(
+        "dgov.recovery.retry_worker_pane",
+        lambda *args, **kwargs: {"error": "retry failed"},
+    )
+    result = run_retry_only("/repo", "task1", session_root="/session")
+    assert isinstance(result, RetryResult)
+    assert result.slug == "task1"
+    assert result.new_slug is None
+    assert result.error == "retry failed"
+
+
+def test_run_escalate_only_success(monkeypatch):
+    """Test run_escalate_only with successful escalation."""
+    monkeypatch.setattr(
+        "dgov.recovery.escalate_worker_pane",
+        lambda *args, **kwargs: {"new_slug": "s2"},
+    )
+    result = run_escalate_only("/repo", "task1", session_root="/session", target_agent="qwen-35b")
+    assert isinstance(result, EscalateResult)
+    assert result.slug == "task1"
+    assert result.new_slug == "s2"
+    assert result.target_agent == "qwen-35b"
+    assert result.error is None
+
+
+def test_run_escalate_only_error(monkeypatch):
+    """Test run_escalate_only with error response."""
+    monkeypatch.setattr(
+        "dgov.recovery.escalate_worker_pane",
+        lambda *args, **kwargs: {"error": "escalation failed"},
+    )
+    result = run_escalate_only("/repo", "task1", session_root="/session", target_agent="qwen-35b")
+    assert isinstance(result, EscalateResult)
+    assert result.slug == "task1"
+    assert result.new_slug is None
+    assert result.target_agent == "qwen-35b"
+    assert result.error == "escalation failed"
