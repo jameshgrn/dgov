@@ -67,6 +67,9 @@ class PlanSpec:
     merge_strategy: str = "squash"
     default_agent: str = "qwen-9b"
     default_timeout_s: int = 600
+    permission_mode: str = "bypassPermissions"
+    max_retries: int = 1
+    merge_resolve: str = "skip"
 
 
 @dataclass(frozen=True)
@@ -141,6 +144,9 @@ def parse_plan_file(path: str) -> PlanSpec:
     merge_strategy = plan_section.get("merge_strategy", "squash")
     default_agent = plan_section.get("default_agent", "qwen-9b")
     default_timeout_s = plan_section.get("default_timeout_s", 600)
+    permission_mode = plan_section.get("permission_mode", "bypassPermissions")
+    max_retries = plan_section.get("max_retries", 1)
+    merge_resolve = plan_section.get("merge_resolve", "skip")
 
     units: dict[str, PlanUnit] = {}
     for slug, unit_raw in units_raw.items():
@@ -156,6 +162,9 @@ def parse_plan_file(path: str) -> PlanSpec:
         merge_strategy=merge_strategy,
         default_agent=default_agent,
         default_timeout_s=default_timeout_s,
+        permission_mode=permission_mode,
+        max_retries=max_retries,
+        merge_resolve=merge_resolve,
     )
 
 
@@ -426,9 +435,9 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
             escalation=unit.escalation,
             depends_on=unit.depends_on,
             files=dag_files,
-            permission_mode="bypassPermissions",  # Default value
+            permission_mode=plan.permission_mode,
             timeout_s=timeout_s,
-            post_merge_check="",  # Default value
+            post_merge_check=acceptance.custom_check,
         )
 
     return DagDefinition(
@@ -436,9 +445,140 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
         dag_file="",  # Not applicable for compiled plans
         project_root=plan.project_root,
         session_root=plan.session_root,
-        default_max_retries=1,  # Default value
-        merge_resolve="skip",  # Default value
+        default_max_retries=plan.max_retries,
+        merge_resolve=plan.merge_resolve,
         merge_squash=(plan.merge_strategy == "squash"),
         max_concurrent=plan.max_concurrent,
         tasks=tasks,
+    )
+
+
+def serialize_plan(plan: PlanSpec) -> str:
+    """Serialize a PlanSpec to TOML string.
+
+    This allows the governor to build plans programmatically and persist them.
+    """
+    lines = [
+        "[plan]",
+        "version = 1",
+        f'name = "{plan.name}"',
+        f'goal = "{plan.goal}"',
+    ]
+    if plan.project_root != ".":
+        lines.append(f'project_root = "{plan.project_root}"')
+    if plan.session_root != ".":
+        lines.append(f'session_root = "{plan.session_root}"')
+    if plan.max_concurrent != 0:
+        lines.append(f"max_concurrent = {plan.max_concurrent}")
+    if plan.merge_strategy != "squash":
+        lines.append(f'merge_strategy = "{plan.merge_strategy}"')
+    if plan.default_agent != "qwen-9b":
+        lines.append(f'default_agent = "{plan.default_agent}"')
+    if plan.default_timeout_s != 600:
+        lines.append(f"default_timeout_s = {plan.default_timeout_s}")
+    if plan.permission_mode != "bypassPermissions":
+        lines.append(f'permission_mode = "{plan.permission_mode}"')
+    if plan.max_retries != 1:
+        lines.append(f"max_retries = {plan.max_retries}")
+    if plan.merge_resolve != "skip":
+        lines.append(f'merge_resolve = "{plan.merge_resolve}"')
+    lines.append("")
+
+    for slug, unit in plan.units.items():
+        lines.append(f"[units.{slug}]")
+        lines.append(f'summary = "{unit.summary}"')
+        # Use triple-quoted strings for multi-line prompts
+        if "\n" in unit.prompt:
+            lines.append(f'prompt = """\n{unit.prompt}"""')
+        else:
+            lines.append(f'prompt = "{unit.prompt}"')
+        lines.append(f'commit_message = "{unit.commit_message}"')
+        if unit.agent:
+            lines.append(f'agent = "{unit.agent}"')
+        if unit.timeout_s:
+            lines.append(f"timeout_s = {unit.timeout_s}")
+        if unit.depends_on:
+            deps = ", ".join(f'"{d}"' for d in unit.depends_on)
+            lines.append(f"depends_on = [{deps}]")
+        if unit.escalation:
+            escs = ", ".join(f'"{e}"' for e in unit.escalation)
+            lines.append(f"escalation = [{escs}]")
+        lines.append("")
+
+        # Files subtable
+        has_files = unit.files.create or unit.files.edit or unit.files.delete or unit.files.read
+        if has_files:
+            lines.append(f"[units.{slug}.files]")
+            if unit.files.create:
+                items = ", ".join(f'"{f}"' for f in unit.files.create)
+                lines.append(f"create = [{items}]")
+            if unit.files.edit:
+                items = ", ".join(f'"{f}"' for f in unit.files.edit)
+                lines.append(f"edit = [{items}]")
+            if unit.files.delete:
+                items = ", ".join(f'"{f}"' for f in unit.files.delete)
+                lines.append(f"delete = [{items}]")
+            if unit.files.read:
+                items = ", ".join(f'"{f}"' for f in unit.files.read)
+                lines.append(f"read = [{items}]")
+            lines.append("")
+
+        # Acceptance subtable (only if non-default)
+        acc = unit.acceptance
+        default_acc = AcceptanceCriteria()
+        if acc != default_acc:
+            lines.append(f"[units.{slug}.acceptance]")
+            if acc.tests_pass != default_acc.tests_pass:
+                lines.append(f"tests_pass = {'true' if acc.tests_pass else 'false'}")
+            if acc.lint_clean != default_acc.lint_clean:
+                lines.append(f"lint_clean = {'true' if acc.lint_clean else 'false'}")
+            if acc.custom_check:
+                lines.append(f'custom_check = "{acc.custom_check}"')
+            lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def run_plan(
+    plan_file: str,
+    *,
+    session_root: str | None = None,
+    max_concurrent: int = 0,
+) -> object:
+    """Canonical entry point: parse, validate, compile, execute a plan.
+
+    Args:
+        plan_file: Path to the TOML plan file.
+        session_root: Session root (defaults to plan's session_root).
+        max_concurrent: Override max concurrent workers (0=use plan default).
+
+    Returns:
+        A DagRunSummary from the execution.
+
+    Raises:
+        ValueError: If the plan fails parsing or validation.
+    """
+    import hashlib
+
+    from dgov.dag import run_dag_via_kernel
+
+    plan = parse_plan_file(plan_file)
+
+    issues = validate_plan(plan)
+    errors = [i for i in issues if i.severity == "error"]
+    if errors:
+        msg = "; ".join(i.message for i in errors)
+        raise ValueError(f"Plan validation failed: {msg}")
+
+    dag = compile_plan(plan)
+    definition_hash = hashlib.sha256(Path(plan_file).read_bytes()).hexdigest()
+
+    effective_concurrent = max_concurrent if max_concurrent > 0 else dag.max_concurrent
+
+    return run_dag_via_kernel(
+        dag,
+        dag_key=str(Path(plan_file).resolve()),
+        definition_hash=definition_hash,
+        auto_merge=True,
+        max_concurrent=effective_concurrent,
     )

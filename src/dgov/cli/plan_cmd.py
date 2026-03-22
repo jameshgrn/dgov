@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-from pathlib import Path
 
 import click
 
@@ -79,36 +77,13 @@ def plan_compile(plan_file):
 @click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
 def plan_run(plan_file, max_concurrent):
     """Execute a plan through the DAG kernel."""
-    from dgov.dag import run_dag_via_kernel
-    from dgov.plan import compile_plan, parse_plan_file, validate_plan
+    from dgov.plan import run_plan
 
     try:
-        plan = parse_plan_file(plan_file)
+        result = run_plan(plan_file, max_concurrent=max_concurrent)
     except ValueError as e:
-        click.secho(f"Parse error: {e}", fg="red")
+        click.secho(str(e), fg="red")
         raise SystemExit(1) from None
-
-    issues = validate_plan(plan)
-    errors = [i for i in issues if i.severity == "error"]
-    if errors:
-        for issue in errors:
-            unit_str = f" [{issue.unit}]" if issue.unit else ""
-            click.secho(f"  ERROR{unit_str}: {issue.message}", fg="red")
-        raise SystemExit(1)
-
-    dag = compile_plan(plan)
-    definition_hash = hashlib.sha256(Path(plan_file).read_bytes()).hexdigest()
-
-    effective_concurrent = max_concurrent if max_concurrent > 0 else dag.max_concurrent
-
-    click.echo(f"Running plan '{plan.name}' ({len(dag.tasks)} tasks)")
-    result = run_dag_via_kernel(
-        dag,
-        dag_key=str(Path(plan_file).resolve()),
-        definition_hash=definition_hash,
-        auto_merge=True,
-        max_concurrent=effective_concurrent,
-    )
 
     click.echo(
         json.dumps(
