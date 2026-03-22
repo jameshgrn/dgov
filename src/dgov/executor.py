@@ -641,6 +641,14 @@ def run_post_dispatch_lifecycle(
 
     session_root = os.path.abspath(session_root or project_root)
 
+    # Claim landing lock so the monitor skips this pane
+    from dgov.persistence import set_pane_metadata
+
+    try:
+        set_pane_metadata(session_root, slug, landing=True)
+    except Exception:
+        pass  # pane may not exist yet in DB
+
     from dgov.kernel import (
         KernelState,
         PostDispatchKernel,
@@ -661,7 +669,13 @@ def run_post_dispatch_lifecycle(
         rebase=rebase,
         phase_callback=phase_callback,
     )
-    _drive_post_dispatch_kernel(kernel, actions, runtime, execute_cleanup=True)
+    try:
+        _drive_post_dispatch_kernel(kernel, actions, runtime, execute_cleanup=True)
+    finally:
+        try:
+            set_pane_metadata(session_root, slug, landing=False)
+        except Exception:
+            pass
 
     current_slug = runtime.final_slug(slug)
     wait = runtime.wait

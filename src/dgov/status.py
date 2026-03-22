@@ -350,6 +350,9 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
         for p in panes:
             pane_id = p.get("pane_id", "")
             slug = p["slug"]
+            # Skip panes claimed by --land lifecycle
+            if (p.get("metadata") or {}).get("landing"):
+                continue
             alive = get_backend().is_alive(pane_id) if pane_id else False
             wt = p.get("worktree_path", "")
             wt_exists = bool(wt) and Path(wt).exists()

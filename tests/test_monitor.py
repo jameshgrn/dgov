@@ -165,6 +165,26 @@ class TestPollWorkers:
         assert result[0]["classification"] == "idle"
         mock_classify.assert_not_called()
 
+    @patch("dgov.monitor.tail_worker_log")
+    @patch("dgov.monitor.list_worker_panes")
+    @patch("dgov.monitor.classify_output")
+    @patch("dgov.monitor._has_new_commits")
+    def test_poll_skips_landing_panes(self, mock_commits, mock_classify, mock_list, mock_tail):
+        from dgov.monitor import poll_workers
+
+        mock_list.return_value = [
+            {
+                "slug": "w1",
+                "agent": "claude",
+                "state": "active",
+                "alive": True,
+                "metadata": {"landing": True},
+            },
+        ]
+        result = poll_workers("/tmp")
+        assert len(result) == 0
+        mock_classify.assert_not_called()
+
 
 class TestTakeAction:
     """Test _take_action() decision engine."""

@@ -535,11 +535,17 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
                 capture_output=True,
                 check=True,
             )
-            subprocess.run(
-                ["git", "-C", project_root, "commit", "--amend", "--no-edit"],
+            # Only amend if there are actually staged changes
+            staged = subprocess.run(
+                ["git", "-C", project_root, "diff", "--cached", "--quiet"],
                 capture_output=True,
-                check=True,
             )
+            if staged.returncode != 0:  # non-zero = there ARE staged changes
+                subprocess.run(
+                    ["git", "-C", project_root, "commit", "--amend", "--no-edit"],
+                    capture_output=True,
+                    check=True,
+                )
 
         if warnings:
             result["lint_warnings"] = warnings

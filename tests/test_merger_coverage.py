@@ -792,6 +792,23 @@ def test_lint_fix_merged_files_formats_python_and_amends_commit(tmp_path: Path) 
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
 
 
+@pytest.mark.unit
+def test_lint_fix_skips_amend_when_no_staged_changes(tmp_path: Path) -> None:
+    """When ruff makes no changes, skip the amend to avoid CalledProcessError."""
+    repo = _init_repo(tmp_path, "lint-noop")
+
+    # Already-clean Python file — ruff will make no changes
+    (repo / "clean.py").write_text("def clean():\n    return 1\n")
+    _git(repo, "add", "clean.py")
+    _git(repo, "commit", "-m", "add clean module")
+
+    result = _lint_fix_merged_files(str(repo), ["clean.py"])
+
+    # No lint changes → empty result, no crash
+    assert "lint_fixed" not in result
+    assert _git(repo, "status", "--porcelain").stdout.strip() == ""
+
+
 def test_plumbing_merge_stash_pop_failure_returns_success_with_warning(
     tmp_path: Path,
 ) -> None:
