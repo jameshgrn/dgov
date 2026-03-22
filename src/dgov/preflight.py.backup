@@ -686,18 +686,10 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
 
             elif check.name == "river_tunnel":
                 try:
-                    shell = shutil.which("zsh") or shutil.which("bash")
-                    if shell:
-                        subprocess.run(
-                            [shell, "-c", f"source ~/{shell.split('/')[-1]}rc && river-tunnel"],
-                            timeout=30,
-                        )
-                        recheck.append(check.name)
+                    subprocess.run(["zsh", "-c", "source ~/.zshrc && river-tunnel"], timeout=30)
+                    recheck.append(check.name)
                 except Exception:
-                    logger.debug(
-                        "Failed to start river-tunnel via shell fix attempt", exc_info=True
-                    )
-
+                    pass
             elif check.name == "agent_health":
                 if _fix_agent_health(project_root):
                     recheck.append(check.name)
@@ -717,6 +709,13 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
                 new_checks.append(check_river_tunnel())
                 new_checks.append(check_stale_worktrees(project_root))
 
+            elif check.name == "river_tunnel":
+                try:
+                    subprocess.run(["zsh", "-c", "source ~/.zshrc && river-tunnel"], timeout=30)
+                    recheck.append(check.name)
+                except Exception:
+                    pass
+            elif check.name == "agent_health":
                 # Re-run all agent health checks
                 from dgov.agents import load_registry
 

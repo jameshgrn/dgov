@@ -642,17 +642,6 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     return conn
 
 
-def _close_cached_connections() -> None:
-    """Close and remove all cached connections. For test cleanup."""
-    with _conn_lock:
-        for conn in _conn_cache.values():
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
-        _conn_cache.clear()
-
-
 _LOCK_RETRIES = 20
 _LOCK_BACKOFF_S = 0.5
 

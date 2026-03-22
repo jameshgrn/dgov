@@ -15,9 +15,6 @@ from dgov.dag_graph import (
 from dgov.dag_graph import (
     transitive_dependents as _dag_transitive_dependents,
 )
-from dgov.dag_graph import (
-    validate_dag as _dag_validate,
-)
 from dgov.dag_parser import DagFileSpec, DagTaskSpec
 from dgov.persistence import (
     STATE_DIR,
@@ -202,11 +199,6 @@ def _task_dict_to_spec(task_id: str, task: dict) -> DagTaskSpec:
 def _to_dag_specs(tasks: dict[str, dict]) -> dict[str, DagTaskSpec]:
     """Convert all batch tasks to DagTaskSpec."""
     return {tid: _task_dict_to_spec(tid, t) for tid, t in tasks.items()}
-
-
-def _validate_dag(tasks: dict[str, dict]) -> None:
-    """Validate that depends_on references exist and there are no cycles."""
-    _dag_validate(_to_dag_specs(tasks))
 
 
 def _compute_tiers(tasks: dict[str, dict]) -> list[list[dict]]:
