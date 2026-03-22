@@ -545,26 +545,93 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
     help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
-def status(project_root, session_root):
-    """Get full dgov status as JSON."""
+@click.option(
+    "--json",
+    "output_json",
+    is_flag=True,
+    default=False,
+    help="Output raw JSON instead of human-readable summary",
+)
+def status(project_root, session_root, output_json):
+    """Get dgov status."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
+    from dgov.agents import detect_installed_agents, load_registry
     from dgov.status import list_worker_panes
 
     panes = list_worker_panes(project_root, session_root=session_root)
-    click.echo(
-        json.dumps(
-            {
-                "panes": panes,
-                "total": len(panes),
-                "alive": sum(1 for p in panes if p["alive"]),
-                "done": sum(1 for p in panes if p.get("state") == "done"),
-                "merged": sum(1 for p in panes if p.get("state") == "merged"),
-                "failed": sum(1 for p in panes if p.get("state") == "failed"),
-            },
-            indent=2,
+    registry = load_registry(project_root)
+    installed = set(detect_installed_agents(registry))
+
+    if output_json:
+        # Machine-readable JSON output
+        click.echo(
+            json.dumps(
+                {
+                    "panes": panes,
+                    "total": len(panes),
+                    "alive": sum(1 for p in panes if p["alive"]),
+                    "done": sum(1 for p in panes if p.get("state") == "done"),
+                    "merged": sum(1 for p in panes if p.get("state") == "merged"),
+                    "failed": sum(1 for p in panes if p.get("state") == "failed"),
+                },
+                indent=2,
+            )
         )
-    )
+    else:
+        # Human-readable summary
+        total = len(panes)
+        by_state: dict[str, int] = {}
+        for p in panes:
+            state = p.get("state") or "active"
+            by_state[state] = by_state.get(state, 0) + 1
+
+        # Count healthy agents
+        unhealthy = []
+        for agent_id in installed:
+            agent_def = registry.get(agent_id)
+            if agent_def and agent_def.health_check:
+                result = subprocess.run(
+                    agent_def.health_check, shell=True, capture_output=True, text=True, timeout=5
+                )
+                if result.returncode != 0:
+                    unhealthy.append(agent_id)
+
+        # Format human-readable output
+        lines = []
+
+        # Pane summary with breakdown
+        active_count = by_state.get("active", 0)
+        done_count = by_state.get("done", 0)
+        merged_count = by_state.get("merged", 0)
+        failed_count = by_state.get("failed", 0)
+
+        parts = [f"{total} panes"]
+        if active_count > 0:
+            parts.append(f"{active_count} active")
+        if done_count > 0:
+            parts.append(f"{done_count} done")
+        if merged_count > 0:
+            parts.append(f"{merged_count} merged")
+
+        panes_str = ", ".join(parts)
+        lines.append(f"dgov status: {panes_str}")
+
+        # Failed count on separate line if any
+        if failed_count > 0:
+            lines[-1] += f", {failed_count} failed"
+
+        # Agent health summary
+        healthy_count = len(installed) - len(unhealthy)
+        if unhealthy:
+            unhealthy_str = f"{len(unhealthy)} unhealthy"
+            lines.append(
+                f"agents: {len(installed)} installed, {healthy_count} healthy, {unhealthy_str}"
+            )
+        else:
+            lines.append(f"agents: {len(installed)} installed, all healthy")
+
+        click.echo("\n".join(lines))
 
 
 @click.command("rebase")

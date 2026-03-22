@@ -37,16 +37,18 @@ class TestVersionCmd:
 
 
 class TestStatusCmd:
-    def test_status_empty(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_status_empty_json(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status --json outputs raw JSON for empty panes."""
         with patch("dgov.status.list_worker_panes", return_value=[]):
-            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["status", "--json", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
         assert data["total"] == 0
         assert data["panes"] == []
 
-    def test_status_with_panes(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_status_with_panes_json(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status --json outputs correct counts."""
         panes = [
             {
                 "slug": "active-pane",
@@ -60,7 +62,7 @@ class TestStatusCmd:
             },
         ]
         with patch("dgov.status.list_worker_panes", return_value=panes):
-            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["status", "--json", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -69,6 +71,91 @@ class TestStatusCmd:
         assert data["done"] == 1
         assert data["merged"] == 0
         assert data["failed"] == 0
+
+    def test_status_empty_human_readable(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status without --json outputs human-readable summary for empty panes."""
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        # Should have human-readable output starting with "dgov status:"
+        assert result.output.strip().startswith("dgov status:")
+        assert "0 panes" in result.output
+        assert "agents: 0 installed, all healthy" in result.output
+
+    def test_status_with_panes_human_readable(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status without --json outputs human-readable summary."""
+        with (
+            patch(
+                "dgov.status.list_worker_panes",
+                return_value=[
+                    {"slug": "active1", "alive": True, "state": "active"},
+                    {"slug": "active2", "alive": True, "state": "active"},
+                    {"slug": "done1", "alive": False, "state": "done"},
+                ],
+            ),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        # Check for pane summary with breakdown
+        assert "3 panes" in output
+        assert "2 active" in output
+        assert "1 done" in output
+
+    def test_status_with_failed_panes(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status shows failed count in human-readable mode."""
+        with (
+            patch(
+                "dgov.status.list_worker_panes",
+                return_value=[
+                    {"slug": "active1", "alive": True, "state": "active"},
+                    {"slug": "failed1", "alive": False, "state": "failed"},
+                ],
+            ),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "2 panes" in output
+        assert "1 active" in output
+        # Failed count should be included on first line
+        assert ", 1 failed" in output
+
+    def test_status_with_unhealthy_agents(self, runner: CliRunner, tmp_path: Path) -> None:
+        """Test status shows unhealthy agent count."""
+        from types import SimpleNamespace
+
+        agent_def = SimpleNamespace(
+            name="TestAgent",
+            prompt_transport="positional",
+            source="builtin",
+            health_check="exit 1",  # Simulate unhealthy agent
+        )
+        registry = {"test-agent": agent_def}
+
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch("dgov.agents.detect_installed_agents", return_value=["test-agent"]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "1 installed" in output
+        assert "0 healthy" in output
+        assert "1 unhealthy" in output
 
 
 class TestRebaseCmd:
