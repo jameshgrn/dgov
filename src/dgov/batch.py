@@ -305,6 +305,7 @@ def run_batch(
     spec_path: str,
     session_root: str | None = None,
     dry_run: bool = False,
+    project_root: str | None = None,
 ) -> dict:
     """Execute a batch spec by compiling it into the canonical DAG scheduler.
 
@@ -312,9 +313,18 @@ def run_batch(
     Tasks are ordered by explicit depends_on and implicit touch overlap.
     On failure, transitive dependents are skipped; unrelated branches continue.
     """
+    from dgov.cli.pane import _autocorrect_roots
     from dgov.persistence import list_dag_tasks
 
-    project_root, tasks = _parse_spec(spec_path)
+    spec_project_root, tasks = _parse_spec(spec_path)
+    if project_root is None:
+        # Use spec file's project_root (or default ".")
+        project_root = spec_project_root
+    else:
+        # CLI-provided project_root overrides spec file
+        pass
+
+    project_root, _ = _autocorrect_roots(project_root, session_root)
     session_root = os.path.abspath(session_root or project_root)
 
     tiers = _compute_tiers(tasks)

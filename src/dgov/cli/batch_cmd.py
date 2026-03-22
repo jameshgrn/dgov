@@ -42,9 +42,16 @@ def checkpoint_list(project_root, session_root):
 
 @click.command("batch")
 @click.argument("spec_path", type=click.Path(exists=True))
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
 @click.option("--dry-run", is_flag=True, help="Show DAG tiers without executing")
-def batch(spec_path, session_root, dry_run):
+def batch(spec_path, project_root, session_root, dry_run):
     """Execute a batch spec (TOML or JSON) with DAG-ordered parallelism.
 
     Tasks declare depends_on for explicit ordering and touches for implicit
@@ -52,7 +59,9 @@ def batch(spec_path, session_root, dry_run):
     """
     from dgov.batch import run_batch
 
-    result = run_batch(spec_path, session_root=session_root, dry_run=dry_run)
+    result = run_batch(
+        spec_path, project_root=project_root, session_root=session_root, dry_run=dry_run
+    )
     if dry_run and result.get("ascii_dag"):
         click.echo(result["ascii_dag"])
     else:

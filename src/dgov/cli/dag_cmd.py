@@ -15,6 +15,13 @@ def dag():
 
 @dag.command("run")
 @click.argument("dagfile", type=click.Path(exists=True))
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @click.option("--dry-run", is_flag=True, help="Parse and print execution plan without running")
 @click.option("--tier", type=int, default=None, help="Run only tiers 0..N (inclusive, zero-based)")
 @click.option("--skip", multiple=True, help="Skip a task slug (repeatable)")
@@ -25,7 +32,7 @@ def dag():
     default=0,
     help="Max tasks dispatched simultaneously per tier (0=unlimited)",
 )
-def dag_run(dagfile, dry_run, tier, skip, auto_merge, max_concurrent):
+def dag_run(dagfile, project_root, dry_run, tier, skip, auto_merge, max_concurrent):
     """Execute a TOML DAG file."""
     from dgov.dag import compute_tiers, parse_dag_file, render_dry_run, run_dag
 
@@ -53,7 +60,14 @@ def dag_run(dagfile, dry_run, tier, skip, auto_merge, max_concurrent):
 
 @dag.command("merge")
 @click.argument("dagfile", type=click.Path(exists=True))
-def dag_merge(dagfile):
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+def dag_merge(dagfile, project_root):
     """Merge an awaiting_merge DAG run in topological order."""
     from dgov.dag import merge_dag
 
@@ -69,16 +83,25 @@ def dag_merge(dagfile):
 @dag.command("resume")
 @click.argument("dagfile", type=click.Path(exists=True))
 @click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@click.option(
     "--run-id",
     type=int,
     default=None,
     help="Specific run ID to resume (default: most recent failed)",
 )
 @click.option("--max-concurrent", type=int, default=0, help="Max tasks per tier (0=unlimited)")
-def dag_resume(dagfile, run_id, max_concurrent):
+def dag_resume(dagfile, project_root, run_id, max_concurrent):
     """Resume a failed DAG run, re-executing unmerged tasks."""
+    import os
     from pathlib import Path
 
+    from dgov.cli.pane import _autocorrect_roots
     from dgov.persistence import (
         ensure_dag_tables,
         get_dag_run,
@@ -86,9 +109,8 @@ def dag_resume(dagfile, run_id, max_concurrent):
     )
 
     abs_path = str(Path(dagfile).resolve())
-    import os
-
-    session_root = os.path.abspath(".")
+    project_root, session_root = _autocorrect_roots(project_root, None)
+    session_root = os.path.abspath(session_root or project_root)
 
     try:
         ensure_dag_tables(session_root)
