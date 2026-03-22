@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from dgov.persistence import (
+    STATE_DIR,
     IllegalTransitionError,
     WorkerPane,
+    _ensure_notify_pipe,
     _get_db,
+    _notify_waiters,
+    _wait_for_notify,
     add_pane,
     all_panes,
     clear_preserved_artifacts,
     emit_event,
+    ensure_dag_tables,
     get_pane,
     get_preserved_artifacts,
     list_panes_slim,
@@ -232,3 +239,103 @@ class TestPaneEvents:
         assert queued[0]["agent_hint"] == "qwen-35b"
         assert "ts" in queued[0]
         assert take_dispatch_queue(session) == []
+
+
+class TestEventNotification:
+    """Tests for the named pipe event notification system."""
+
+    def test_ensure_notify_pipe_creates_fifo(self, tmp_path):
+        """_ensure_notify_pipe creates a FIFO at the expected path."""
+        session_root = str(tmp_path)
+        (tmp_path / STATE_DIR).mkdir(parents=True)
+        pipe_path = _ensure_notify_pipe(session_root)
+        assert stat.S_ISFIFO(os.stat(pipe_path).st_mode)
+
+    def test_ensure_notify_pipe_idempotent(self, tmp_path):
+        """Calling _ensure_notify_pipe twice doesn't error."""
+        session_root = str(tmp_path)
+        (tmp_path / STATE_DIR).mkdir(parents=True)
+        path1 = _ensure_notify_pipe(session_root)
+        path2 = _ensure_notify_pipe(session_root)
+        assert path1 == path2
+
+    def test_notify_waiters_no_reader_ok(self, tmp_path):
+        """_notify_waiters doesn't error when no reader is waiting."""
+        session_root = str(tmp_path)
+        (tmp_path / STATE_DIR).mkdir(parents=True)
+        _ensure_notify_pipe(session_root)
+        # Should not raise — fire and forget
+        _notify_waiters(session_root)
+
+    def test_notify_waiters_no_pipe_ok(self, tmp_path):
+        """_notify_waiters doesn't error when pipe doesn't exist."""
+        # No pipe created — should not raise
+        _notify_waiters(str(tmp_path))
+
+    def test_wait_for_notify_timeout(self, tmp_path):
+        """_wait_for_notify returns False on timeout when no notification."""
+        import time as _time
+
+        session_root = str(tmp_path)
+        (tmp_path / STATE_DIR).mkdir(parents=True)
+        _ensure_notify_pipe(session_root)
+
+        start = _time.monotonic()
+        result = _wait_for_notify(session_root, 0.1)
+        elapsed = _time.monotonic() - start
+        # Should return False (timeout) and take ~0.1s
+        assert result is False
+        assert elapsed < 0.5  # Didn't block forever
+
+    def test_notify_wakes_waiter(self, tmp_path):
+        """_notify_waiters wakes a blocked _wait_for_notify."""
+        import threading
+        import time as _time
+
+        session_root = str(tmp_path)
+        (tmp_path / STATE_DIR).mkdir(parents=True)
+        _ensure_notify_pipe(session_root)
+
+        result = {}
+
+        def waiter():
+            result["notified"] = _wait_for_notify(session_root, 5.0)
+            result["time"] = _time.monotonic()
+
+        start = _time.monotonic()
+        t = threading.Thread(target=waiter)
+        t.start()
+
+        # Give the waiter a moment to block on select()
+        _time.sleep(0.1)
+        _notify_waiters(session_root)
+        t.join(timeout=3.0)
+
+        assert result.get("notified") is True
+        # Should have woken up quickly, not waited the full 5s
+        assert result["time"] - start < 2.0
+
+    def test_emit_event_triggers_notification(self, tmp_path):
+        """emit_event triggers the notify pipe so waiters wake up."""
+        import threading
+        import time as _time
+
+        session_root = str(tmp_path)
+        (tmp_path / STATE_DIR).mkdir(parents=True)
+        ensure_dag_tables(session_root)
+        _ensure_notify_pipe(session_root)
+
+        result = {}
+
+        def waiter():
+            result["notified"] = _wait_for_notify(session_root, 5.0)
+
+        t = threading.Thread(target=waiter)
+        t.start()
+        _time.sleep(0.1)
+
+        # emit_event should trigger notification
+        emit_event(session_root, "pane_done", "test-slug")
+        t.join(timeout=3.0)
+
+        assert result.get("notified") is True
