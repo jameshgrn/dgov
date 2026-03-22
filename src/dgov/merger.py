@@ -1166,6 +1166,19 @@ def merge_worker_pane(
                         logger.info("Merged %s in candidate worktree", branch_name)
                         merge = MergeResult(success=True)
                     else:
+                        # Abort the failed merge and reset working tree to clean state.
+                        # Without this, conflict markers from the failed merge persist in
+                        # the working tree. Subsequent _plumbing_merge creates a clean commit
+                        # but post-merge validation (lint/tests) runs against the dirty
+                        # working tree files and fails — a false negative.
+                        subprocess.run(
+                            ["git", "-C", candidate_root, "merge", "--abort"],
+                            capture_output=True,
+                        )
+                        subprocess.run(
+                            ["git", "-C", candidate_root, "reset", "--hard", "HEAD"],
+                            capture_output=True,
+                        )
                         logger.warning(
                             "Candidate merge failed for %s: %s",
                             branch_name,
