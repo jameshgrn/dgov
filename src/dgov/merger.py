@@ -910,6 +910,39 @@ def merge_worker_pane(
             "hint": "Commit or stash changes in the worktree before merging.",
         }
 
+    # Validate file claims: warn if worker touched undeclared files
+    import json as _json
+
+    raw_claims = target.get("file_claims", "[]")
+    file_claims = _json.loads(raw_claims) if isinstance(raw_claims, str) else (raw_claims or [])
+    if file_claims:
+        base_sha_check = target.get("base_sha", "")
+        if base_sha_check and worktree_path:
+            actual_r = subprocess.run(
+                ["git", "-C", worktree_path, "diff", "--name-only", f"{base_sha_check}..HEAD"],
+                capture_output=True,
+                text=True,
+            )
+            if actual_r.returncode == 0:
+                actual_files = {f for f in actual_r.stdout.strip().splitlines() if f}
+                claimed = set(file_claims)
+                undeclared = actual_files - claimed
+                # Filter out test files — tests are read context, not edit targets
+                undeclared = {f for f in undeclared if not f.startswith("tests/")}
+                if undeclared:
+                    logger.warning(
+                        "Pane %s touched undeclared files: %s (claimed: %s)",
+                        slug,
+                        sorted(undeclared),
+                        sorted(claimed),
+                    )
+                    _persist.emit_event(
+                        session_root,
+                        "claim_violation",
+                        slug,
+                        error=f"Undeclared files: {sorted(undeclared)}",
+                    )
+
     # Pre-merge: restore protected files clobbered by workers
     _restore_protected_files(pane_project_root, target)
 
@@ -993,8 +1026,6 @@ def merge_worker_pane(
                 tests_failed = False
                 if test_result and not test_result.get("no_tests_found"):
                     if not test_result.get("tests_passed"):
-                        tests_failed = True
-                    elif test_result.get("tests_failed", 0) > 0:
                         tests_failed = True
 
                 warning_msg: str | None = None

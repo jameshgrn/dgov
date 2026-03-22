@@ -616,7 +616,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
 
     # Re-check state from DB to avoid TOCTOU race
     raw = get_pane(session_root, slug)
-    if not raw or raw.get("state") != "active":
+    if not raw or raw.get("state") != "active" or raw.get("landing"):
         return None
 
     # Handle stale workers (active but not alive)
