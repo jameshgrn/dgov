@@ -394,6 +394,173 @@ class TestStoreTranscript:
 
 
 # ---------------------------------------------------------------------------
+# Ledger
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestLedgerAdd:
+    def test_returns_incrementing_ids(self, session):
+        from dgov.spans import ledger_add
+
+        id1 = ledger_add(session, "bug", "First bug")
+        id2 = ledger_add(session, "fix", "First fix")
+        assert id1 < id2
+
+    def test_all_fields_stored(self, session):
+        from dgov.spans import _get_db, ledger_add
+
+        ledger_add(
+            session,
+            "bug",
+            "Merge breaks",
+            detail="Plumbing merge clobbers changes",
+            severity="high",
+            status="open",
+            linked_slugs=["pane-1", "pane-2"],
+            tags=["merge", "critical"],
+            source="worker",
+        )
+        conn = _get_db(session)
+        row = conn.execute("SELECT * FROM ledger WHERE id = 1").fetchone()
+        cols = [d[0] for d in conn.execute("SELECT * FROM ledger LIMIT 0").description]
+        entry = dict(zip(cols, row))
+        assert entry["category"] == "bug"
+        assert entry["summary"] == "Merge breaks"
+        assert entry["detail"] == "Plumbing merge clobbers changes"
+        assert entry["severity"] == "high"
+        assert entry["status"] == "open"
+        assert entry["linked_slugs"] == '["pane-1", "pane-2"]'
+        assert entry["tags"] == '["merge", "critical"]'
+        assert entry["source"] == "worker"
+        assert entry["ts"]  # non-empty timestamp
+
+    def test_invalid_category_raises(self, session):
+        from dgov.spans import ledger_add
+
+        with pytest.raises(ValueError, match="Invalid category"):
+            ledger_add(session, "nosuch", "Bad")
+
+    def test_invalid_severity_raises(self, session):
+        from dgov.spans import ledger_add
+
+        with pytest.raises(ValueError, match="Invalid severity"):
+            ledger_add(session, "bug", "Bad", severity="critical")
+
+    def test_invalid_status_raises(self, session):
+        from dgov.spans import ledger_add
+
+        with pytest.raises(ValueError, match="Invalid status"):
+            ledger_add(session, "bug", "Bad", status="closed")
+
+    def test_defaults(self, session):
+        from dgov.spans import _get_db, ledger_add
+
+        ledger_add(session, "rule", "Always commit")
+        conn = _get_db(session)
+        row = conn.execute("SELECT * FROM ledger WHERE id = 1").fetchone()
+        cols = [d[0] for d in conn.execute("SELECT * FROM ledger LIMIT 0").description]
+        entry = dict(zip(cols, row))
+        assert entry["detail"] == ""
+        assert entry["severity"] == "info"
+        assert entry["status"] == "open"
+        assert entry["linked_slugs"] == "[]"
+        assert entry["tags"] == "[]"
+        assert entry["source"] == "governor"
+
+
+@pytest.mark.unit
+class TestLedgerUpdate:
+    def test_update_status(self, session):
+        from dgov.spans import ledger_add, ledger_query, ledger_update
+
+        eid = ledger_add(session, "bug", "Broken")
+        ledger_update(session, eid, status="fixed")
+        entries = ledger_query(session, status="fixed")
+        assert len(entries) == 1
+        assert entries[0]["summary"] == "Broken"
+
+    def test_invalid_status_raises(self, session):
+        from dgov.spans import ledger_add, ledger_update
+
+        eid = ledger_add(session, "bug", "Broken")
+        with pytest.raises(ValueError, match="Invalid status"):
+            ledger_update(session, eid, status="deleted")
+
+
+@pytest.mark.unit
+class TestLedgerQuery:
+    def test_filter_by_category(self, session):
+        from dgov.spans import ledger_add, ledger_query
+
+        ledger_add(session, "bug", "Bug one")
+        ledger_add(session, "fix", "Fix one")
+        ledger_add(session, "bug", "Bug two")
+
+        bugs = ledger_query(session, category="bug")
+        assert len(bugs) == 2
+        assert all(b["category"] == "bug" for b in bugs)
+
+    def test_filter_by_status(self, session):
+        from dgov.spans import ledger_add, ledger_query, ledger_update
+
+        id1 = ledger_add(session, "bug", "Open bug")
+        ledger_add(session, "bug", "Another open bug")
+        ledger_update(session, id1, status="fixed")
+
+        open_bugs = ledger_query(session, status="open")
+        assert len(open_bugs) == 1
+        assert open_bugs[0]["summary"] == "Another open bug"
+
+    def test_filter_by_tag(self, session):
+        from dgov.spans import ledger_add, ledger_query
+
+        ledger_add(session, "bug", "Tagged", tags=["merge", "urgent"])
+        ledger_add(session, "bug", "Untagged")
+
+        results = ledger_query(session, tag="merge")
+        assert len(results) == 1
+        assert results[0]["summary"] == "Tagged"
+
+    def test_limit(self, session):
+        from dgov.spans import ledger_add, ledger_query
+
+        for i in range(10):
+            ledger_add(session, "bug", f"Bug {i}")
+
+        results = ledger_query(session, limit=3)
+        assert len(results) == 3
+
+    def test_newest_first(self, session):
+        from dgov.spans import ledger_add, ledger_query
+
+        ledger_add(session, "bug", "First")
+        ledger_add(session, "bug", "Second")
+        ledger_add(session, "bug", "Third")
+
+        results = ledger_query(session)
+        assert results[0]["summary"] == "Third"
+        assert results[-1]["summary"] == "First"
+
+    def test_empty_result(self, session):
+        from dgov.spans import ledger_query
+
+        assert ledger_query(session) == []
+
+    def test_combined_filters(self, session):
+        from dgov.spans import ledger_add, ledger_query, ledger_update
+
+        id1 = ledger_add(session, "bug", "Open tagged", tags=["merge"])
+        ledger_add(session, "bug", "Open untagged")
+        id3 = ledger_add(session, "bug", "Fixed tagged", tags=["merge"])
+        ledger_update(session, id3, status="fixed")
+
+        results = ledger_query(session, category="bug", status="open", tag="merge")
+        assert len(results) == 1
+        assert results[0]["id"] == id1
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
