@@ -34,6 +34,13 @@ These are architecture rules, not optional style preferences.
 - **Consensus and validation over self-reported confidence.** Never use LLM confidence scores as escalation signals — models are overconfident when wrong. Escalation triggers: two cheap providers disagree (consensus), output fails property tests (validation), or historical accuracy is low (calibration). Disagreement is a real signal; confidence is vibes.
 - **Zero tolerance for policy violations.** Every rule in this Policy Core section is an architecture constraint, not a style preference. If you find code that violates a rule, fix it immediately — do not ship the violation and plan to fix it later. If a rule conflicts with a task requirement, raise it before writing code. No exceptions, no "we'll clean it up next sprint."
 - **Wide typed columns over JSON blobs.** All queryable data in SQLite must be typed columns — never JSON that requires `json_extract` to query. `WHERE verdict = 'safe'` must work, not `WHERE json_extract(data, '$.verdict') = 'safe'`. The only acceptable TEXT blobs are: (1) opaque archives not intended for SQL queries (raw transcripts, prompt text), (2) variable-length lists serialized as JSON where the list itself is the value (file_claims, stale_files), never nested objects. If you catch yourself writing `json_extract` in a query, the schema is wrong — add typed columns.
+- **No `time.sleep` in orchestration.** Named pipe (`events.pipe`) notification for all wait operations. `select()` blocks on kernel event, never CPU spin. Acceptable sleeps: tmux sequencing delays, UI refresh loops, SQLite lock backoff. Nothing else.
+- **Roles, not models.** Governor dispatches `worker`/`supervisor`/`manager` — never model names. Router resolves roles to physical models via `agents.toml` routing tables. Governor never judges model capability; routing policy and task-level outcome data do. Frontier-model bias against small models is a bug, not a feature.
+- **Every state transition emits an event.** No silent state changes anywhere. Events are the audit trail AND the notification mechanism (pipe wakeup). If it didn't emit, it didn't happen.
+- **Quality gates are deterministic first.** Test existence, lint pass, file claims, diff structure — all checked without an LLM. Model-backed review only fires after deterministic gates pass. The intelligence hierarchy (determinism → statistics → LLM) applies to review too.
+- **Bounded retry with role escalation.** 2 attempts per tier, 3 tiers (worker → supervisor → manager), then governor alert. Max 6 attempts before human intervention. Each retry gets the specific failure context. Escalation is policy, not judgment.
+- **The kernel never sleeps.** Pure state machine: `(state, event) → (new_state, actions)`. No I/O, no blocking, no subprocess calls, no imports at module level. The kernel computes; the executor acts.
+- **Plans are the contract.** Governor writes PlanSpec, compiler produces DagDefinition, kernel executes. Plan compilation is deterministic code, not LLM reasoning. The plan is immutable during execution.
 
 ## DAG Principles
 
@@ -63,37 +70,25 @@ dgov pane close <slug>                          # cleanup only
 
 ## Model routing
 
-Claude Code or Gemini CLI can be governor. Workers are always Qwen models. Codex is never a worker — it serves only as a lieutenant governor.
+Four abstract tiers. Governor dispatches by **role**, never by model name.
 
-### Worker tier (implementation)
+### Roles → models (router resolves via `agents.toml [routing.*]`)
 
-1. **River GPU** (preferred) — free, local, no rate limits
-   - `river-35b` / `river-35b-2` — complex single-file logic, exact code generation
-   - `river-9b` / `river-9b-2` / `river-9b-3` — capable general agent for most implementation tasks
-   - `river-4b` — classification, triage, monitoring
-2. **OpenRouter Qwen** (fallback when River is down or busy)
-   - `qwen35-35b` — same capability as river-35b
-   - `qwen35-9b` — same as river-9b
-   - `qwen35-122b` / `qwen35-397b` — complex single-file reasoning
-   - `qwen3-max` — frontier/governor-only, not a worker escalation target
-
-### Governor tier
-
-- `claude` — Claude Code (primary governor)
-- `gemini` — Gemini CLI (alternate governor when Claude tokens are scarce)
-
-### LT-GOV tier (orchestration only)
-
-- `codex` — adversarial review, security audit, large-scale refactors
-- `qwen-flash` — low-latency triage and quick checks
+| Role | Purpose | Default model | Escalation |
+|------|---------|---------------|------------|
+| **worker** | All implementation + tests | qwen-9b | → supervisor |
+| **supervisor** | Code review, quality gates | qwen-35b | → manager |
+| **manager** | Reviews supervisor judgment | qwen-122b | → governor alert |
+| **governor** | Exception handling, planning | claude/gemini | — |
+| **lt-gov** | Adversarial audit, large refactors | codex-mini | — |
 
 ### Selection rules
 
-- **Always use logical agent names** (`qwen-35b`, `qwen-9b`, etc.) — never physical names (`river-35b`, `qwen35-35b`). The router handles health checks, load-balancing across local GPUs, and fallback automatically.
-- Default to `qwen-35b`. Escalate to `qwen-122b` or `qwen-397b` for complex single-file reasoning.
-- Never dispatch claude/gemini/codex as a worker. Codex can be an LT-GOV.
-- One file per task for Qwen workers. Multi-file = LT-GOV.
-- Review exists to catch failures — dispatch cheap, retry cheap.
+- **Always dispatch by role** (`worker`, `supervisor`, `manager`) — never model names. The router maps roles to physical backends, handles health checks, load-balancing, and fallback.
+- All tasks start at `worker`. Escalation is automatic (2 attempts per tier, then next tier).
+- Never dispatch governor-tier models as workers. Codex is LT-GOV only.
+- One file per task for workers. Multi-file = use autonomous mode with rich context.
+- Dispatch cheap, retry cheap. Review exists to catch failures.
 - **Maintain your tunnel:** Run `dgov tunnel` if local workers fail preflight.
 
 ## Prompting Qwen workers
