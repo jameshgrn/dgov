@@ -495,3 +495,211 @@ edit = ["src/a.py"]
         spec = parse_plan_file(_write_plan(tmp_path, toml_content))
         dag = compile_plan(spec)
         assert dag.merge_squash is False
+
+
+class TestCompilePlanConfigFlow:
+    def test_compile_permission_mode(self, tmp_path):
+        """permission_mode flows through to DagTaskSpec."""
+        toml_content = """
+[plan]
+version = 1
+name = "test"
+goal = "test"
+permission_mode = "default"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "a"
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        dag = compile_plan(spec)
+        assert dag.tasks["a"].permission_mode == "default"
+
+    def test_compile_max_retries(self, tmp_path):
+        """max_retries flows through to DagDefinition."""
+        toml_content = """
+[plan]
+version = 1
+name = "test"
+goal = "test"
+max_retries = 3
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "a"
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        dag = compile_plan(spec)
+        assert dag.default_max_retries == 3
+
+    def test_compile_merge_resolve(self, tmp_path):
+        """merge_resolve flows through to DagDefinition."""
+        toml_content = """
+[plan]
+version = 1
+name = "test"
+goal = "test"
+merge_resolve = "rebase"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "a"
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        dag = compile_plan(spec)
+        assert dag.merge_resolve == "rebase"
+
+    def test_compile_custom_check_maps_to_post_merge(self, tmp_path):
+        """acceptance.custom_check maps to DagTaskSpec.post_merge_check."""
+        toml_content = """
+[plan]
+version = 1
+name = "test"
+goal = "test"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "a"
+[units.a.files]
+edit = ["a.py"]
+[units.a.acceptance]
+custom_check = "uv run pytest tests/test_a.py -q"
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        dag = compile_plan(spec)
+        assert dag.tasks["a"].post_merge_check == "uv run pytest tests/test_a.py -q"
+
+    def test_compile_defaults_flow(self, tmp_path):
+        """Default config values flow through correctly."""
+        spec = parse_plan_file(_write_plan(tmp_path))
+        dag = compile_plan(spec)
+        assert dag.default_max_retries == 1
+        assert dag.merge_resolve == "skip"
+        assert dag.tasks["task-a"].permission_mode == "bypassPermissions"
+
+
+class TestSerializePlan:
+    def test_round_trip(self, tmp_path):
+        """Parse -> serialize -> parse produces equivalent PlanSpec."""
+        from dgov.plan import serialize_plan
+
+        original = parse_plan_file(_write_plan(tmp_path))
+        toml_str = serialize_plan(original)
+
+        # Write serialized TOML and parse it back
+        roundtrip_path = tmp_path / "roundtrip.toml"
+        roundtrip_path.write_text(toml_str)
+        roundtripped = parse_plan_file(str(roundtrip_path))
+
+        assert roundtripped.name == original.name
+        assert roundtripped.goal == original.goal
+        assert len(roundtripped.units) == len(original.units)
+        for slug in original.units:
+            assert slug in roundtripped.units
+            orig_unit = original.units[slug]
+            rt_unit = roundtripped.units[slug]
+            assert rt_unit.summary == orig_unit.summary
+            assert rt_unit.commit_message == orig_unit.commit_message
+            assert rt_unit.files.edit == orig_unit.files.edit
+            assert rt_unit.files.create == orig_unit.files.create
+            assert rt_unit.depends_on == orig_unit.depends_on
+
+    def test_serialize_contains_plan_header(self, tmp_path):
+        """Serialized TOML contains [plan] section."""
+        from dgov.plan import serialize_plan
+
+        spec = parse_plan_file(_write_plan(tmp_path))
+        toml_str = serialize_plan(spec)
+        assert "[plan]" in toml_str
+        assert 'name = "test-plan"' in toml_str
+        assert 'goal = "Test the plan system"' in toml_str
+
+    def test_serialize_contains_units(self, tmp_path):
+        """Serialized TOML contains unit sections."""
+        from dgov.plan import serialize_plan
+
+        spec = parse_plan_file(_write_plan(tmp_path))
+        toml_str = serialize_plan(spec)
+        assert "[units.task-a]" in toml_str
+        assert "[units.task-b]" in toml_str
+
+    def test_serialize_non_default_config(self, tmp_path):
+        """Non-default config values appear in serialized output."""
+        from dgov.plan import serialize_plan
+
+        unit = PlanUnit(
+            slug="x",
+            summary="x",
+            prompt="do x",
+            commit_message="x",
+            files=PlanUnitFiles(edit=("a.py",)),
+        )
+        plan = PlanSpec(
+            name="test",
+            goal="test",
+            units={"x": unit},
+            max_concurrent=4,
+            merge_strategy="rebase",
+            default_agent="qwen-35b",
+            max_retries=3,
+        )
+        toml_str = serialize_plan(plan)
+        assert "max_concurrent = 4" in toml_str
+        assert 'merge_strategy = "rebase"' in toml_str
+        assert 'default_agent = "qwen-35b"' in toml_str
+        assert "max_retries = 3" in toml_str
+
+
+class TestRunPlan:
+    def test_run_plan_validates(self, tmp_path):
+        """run_plan raises ValueError on invalid plan."""
+        from dgov.plan import run_plan
+
+        toml_content = """
+[plan]
+version = 1
+name = "bad"
+goal = "test"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "a"
+depends_on = ["nonexistent"]
+[units.a.files]
+edit = ["a.py"]
+"""
+        plan_path = _write_plan(tmp_path, toml_content)
+        with pytest.raises(ValueError, match="validation failed"):
+            run_plan(plan_path)
+
+    def test_run_plan_rejects_bad_version(self, tmp_path):
+        """run_plan raises ValueError on unsupported version."""
+        from dgov.plan import run_plan
+
+        toml_content = """
+[plan]
+version = 99
+name = "bad"
+goal = "test"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "a"
+[units.a.files]
+edit = ["a.py"]
+"""
+        plan_path = _write_plan(tmp_path, toml_content)
+        with pytest.raises(ValueError, match="Unsupported plan version"):
+            run_plan(plan_path)
