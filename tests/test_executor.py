@@ -11,6 +11,7 @@ from dgov.executor import (
     PostDispatchActionExecutor,
     RetryResult,
     derive_prompt_touches,
+    resolve_touches,
     review_merge_gate,
     run_cleanup_only,
     run_dispatch_preflight,
@@ -625,3 +626,64 @@ def test_run_escalate_only_error(monkeypatch):
     assert result.new_slug is None
     assert result.target_agent == "qwen-35b"
     assert result.error == "escalation failed"
+
+
+class TestResolveTouches:
+    def test_explicit(self):
+        result = resolve_touches(touches=["a.py", "b.py"])
+        assert result == ["a.py", "b.py"]
+
+    def test_dedupes(self):
+        result = resolve_touches(touches=["a.py", "a.py"])
+        assert result == ["a.py"]
+
+    def test_from_prompt(self, monkeypatch):
+        monkeypatch.setattr(
+            "dgov.strategy.extract_task_context",
+            lambda prompt: {
+                "primary_files": ["src/merger.py", "src/driver.py"],
+                "also_check": [],
+                "tests": [],
+                "hints": [],
+            },
+        )
+        result = resolve_touches(prompt="fix merger")
+        assert result == ["src/merger.py", "src/driver.py"]
+
+    def test_empty(self):
+        result = resolve_touches()
+        assert result == []
+
+
+class TestFinalSlug:
+    def test_uses_cleanup_if_present(self, tmp_path):
+        executor = PostDispatchActionExecutor(project_root="/repo", session_root=str(tmp_path))
+        executor.cleanup = CleanupOnlyResult(slug="cleanup-slug", action="close", reason="test")
+        assert executor.final_slug("initial") == "cleanup-slug"
+
+    def test_uses_merge_if_no_cleanup(self, tmp_path):
+        from dgov.executor import MergeOnlyResult
+
+        executor = PostDispatchActionExecutor(project_root="/repo", session_root=str(tmp_path))
+        executor.merge = MergeOnlyResult(slug="merge-slug")
+        assert executor.final_slug("initial") == "merge-slug"
+
+    def test_uses_review_if_no_merge(self, tmp_path):
+        from dgov.executor import ReviewOnlyResult
+
+        executor = PostDispatchActionExecutor(project_root="/repo", session_root=str(tmp_path))
+        executor.review = ReviewOnlyResult(
+            slug="review-slug", review={}, passed=True, verdict="safe", commit_count=0
+        )
+        assert executor.final_slug("initial") == "review-slug"
+
+    def test_uses_wait_if_nothing_else(self, tmp_path):
+        from dgov.executor import WaitOnlyResult
+
+        executor = PostDispatchActionExecutor(project_root="/repo", session_root=str(tmp_path))
+        executor.wait = WaitOnlyResult(state="completed", slug="wait-slug")
+        assert executor.final_slug("initial") == "wait-slug"
+
+    def test_falls_back_to_initial(self, tmp_path):
+        executor = PostDispatchActionExecutor(project_root="/repo", session_root=str(tmp_path))
+        assert executor.final_slug("initial") == "initial"
