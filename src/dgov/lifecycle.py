@@ -1115,7 +1115,8 @@ def _full_cleanup(
 
             if branch and not worktree_removal_failed:
                 pane_state = pane_record.get("state", "")
-                delete_flag = "-D" if pane_state == "merged" else "-d"
+                _force_delete_states = {"merged", "superseded", "timed_out", "abandoned"}
+                delete_flag = "-D" if pane_state in _force_delete_states else "-d"
                 br_result = subprocess.run(
                     ["git", "-C", project_root, "branch", delete_flag, branch],
                     capture_output=True,
