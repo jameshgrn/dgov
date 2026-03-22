@@ -1011,12 +1011,16 @@ def test_rebase_skips_attached_worktree_branch(tmp_path: Path) -> None:
     # Test _stash_and_rebase directly with attached branch
     from dgov.merger import _stash_and_rebase
 
-    # This should NOT fail — it's a known limitation of git worktrees
+    # Attached worktree branches can't be rebased — returns failure
+    # so the merge pipeline can fall back to candidate merge
     result, current_branch = _stash_and_rebase(
         str(repo), "test-rebase", "HEAD", "dgov-attached-rebase"
     )
 
-    assert result.success is True
+    assert result.success is False
+    assert (
+        "attached" in (result.stderr or "").lower() or "worktree" in (result.stderr or "").lower()
+    )
     assert current_branch == "main"
 
 
@@ -1036,7 +1040,7 @@ def test_rebase_onto_head_skips_attached_worktree(tmp_path: Path) -> None:
 
     from dgov.merger import _rebase_onto_head
 
-    # This should return success, not failure (attached branch = no rebase needed)
+    # Branch already based on HEAD — no rebase needed, returns success
     result = _rebase_onto_head(str(repo), "dgov-attached-head")
     assert result.success is True
 

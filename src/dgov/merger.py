@@ -198,6 +198,7 @@ def _plumbing_merge(
     branch_name: str,
     message: str | None = None,
     squash: bool = True,
+    merge_base: str | None = None,
 ) -> MergeResult:
     """Merge branch into HEAD using git plumbing (zero side effects on failure).
 
@@ -232,12 +233,31 @@ def _plumbing_merge(
             return MergeResult(success=False, stderr=f"Cannot resolve {branch_name}")
         branch_ref = branch_sha.stdout.strip()
 
+        # Find merge-base for 3-way merge (handles diverged branches correctly)
+        if merge_base:
+            merge_base_sha = merge_base
+        else:
+            merge_base_r = subprocess.run(
+                ["git", "-C", project_root, "merge-base", head_sha, branch_ref],
+                capture_output=True,
+                text=True,
+            )
+            merge_base_sha = merge_base_r.stdout.strip() if merge_base_r.returncode == 0 else ""
+        merge_base_args = [f"--merge-base={merge_base_sha}"] if merge_base_sha else []
+
         # In-memory merge — no working tree side effects
+        cmd = ["git", "merge-tree", "--write-tree", *merge_base_args, head_sha, branch_ref]
         result = subprocess.run(
-            ["git", "merge-tree", "--write-tree", head_sha, branch_ref],
+            cmd,
             cwd=project_root,
             capture_output=True,
             text=True,
+        )
+        logger.debug(
+            "merge-tree cmd=%s exit=%d stdout=%.100s",
+            " ".join(cmd),
+            result.returncode,
+            result.stdout,
         )
         # merge-tree exit codes: 0=clean, 1=conflicts (tree still created), >1=error
         lines = result.stdout.strip().splitlines()
@@ -245,8 +265,44 @@ def _plumbing_merge(
         valid_hash = len(tree_hash) >= 40 and all(c in "0123456789abcdef" for c in tree_hash)
         if not valid_hash:
             return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
-        if result.returncode != 0:
-            # Non-zero with valid tree = real conflicts — report as failure
+        logger.info(
+            "merge-tree: rc=%d valid=%s hash='%s'", result.returncode, valid_hash, tree_hash
+        )
+        if result.returncode == 1 and valid_hash:
+            # Exit 1 = conflicts detected. Check if they're real (overlapping)
+            # or auto-resolved (both-modified but non-overlapping).
+            # Real conflicts have conflict markers in the tree content.
+            cat_r = subprocess.run(
+                ["git", "-C", project_root, "cat-file", "-p", tree_hash],
+                capture_output=True,
+                text=True,
+            )
+            has_conflict_blob = False
+            for tree_line in cat_r.stdout.splitlines():
+                # Tree entries with mode 100644 that appear multiple times
+                # for the same path indicate unresolved conflicts
+                parts = tree_line.split()
+                if len(parts) >= 4:
+                    blob_hash = parts[2]
+                    blob_r = subprocess.run(
+                        ["git", "-C", project_root, "cat-file", "-p", blob_hash],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if "<<<<<<<" in blob_r.stdout or "=======" in blob_r.stdout:
+                        has_conflict_blob = True
+                        break
+            if has_conflict_blob:
+                return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
+            # Tree is clean despite exit 1 — auto-resolved, safe to use
+            logger.info(
+                "merge-tree exit 1: has_conflict_blob=%s tree=%s",
+                has_conflict_blob,
+                tree_hash,
+            )
+            if has_conflict_blob:
+                return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
+        elif result.returncode > 1:
             return MergeResult(success=False, stdout=result.stdout, stderr=result.stderr)
 
         # Create squash commit (single parent — linear history)
@@ -377,13 +433,16 @@ def _stash_and_rebase(
         # Error message pattern: 'fatal: \<branch\> is already used by worktree at \<path\>'
         stderr_lower = rebase.stderr.lower()
         if "already used by worktree" in stderr_lower or "attached" in stderr_lower:
-            # This branch is attached to a worktree — we can't rebase it anyway,
-            # but this isn't a real failure. The plumbing merge will handle it.
+            # Branch is attached to a worktree — can't rebase from main repo.
+            # Return failure so caller can rebase in the candidate worktree.
             logger.info(
-                "Skipping rebase for %s (attached to worktree)",
+                "Rebase skipped for %s (attached to worktree, needs candidate rebase)",
                 branch_to_rebase,
             )
-            return (MergeResult(success=True), current_branch)
+            return (
+                MergeResult(success=False, stderr="attached to worktree"),
+                current_branch,
+            )
 
         subprocess.run(
             ["git", "-C", project_root, "rebase", "--abort"],
@@ -991,15 +1050,68 @@ def merge_worker_pane(
                 rebase_fallback = True
 
         with _candidate_worktree(pane_project_root, slug) as (candidate_root, _candidate_branch):
-            if rebase:
-                merge = _rebase_merge(candidate_root, branch_name, message=message)
-            else:
-                merge = _plumbing_merge(
-                    candidate_root,
-                    branch_name,
-                    message=message,
-                    squash=squash,
+            # If auto-rebase failed (worktree-attached branch), rebase in the
+            # candidate worktree where the branch isn't attached.
+            merge = None  # may be set by candidate merge fallback
+            if rebase_fallback:
+                candidate_rebase = subprocess.run(
+                    ["git", "-C", candidate_root, "rebase", "HEAD", branch_name],
+                    capture_output=True,
+                    text=True,
                 )
+                if candidate_rebase.returncode != 0:
+                    subprocess.run(
+                        ["git", "-C", candidate_root, "rebase", "--abort"],
+                        capture_output=True,
+                    )
+                    logger.info(
+                        "Candidate rebase failed for %s (expected for attached branches), "
+                        "trying git merge in candidate",
+                        branch_name,
+                    )
+                    # Use git merge in candidate — it handles non-overlapping
+                    # same-file edits that merge-tree reports as conflicts
+                    candidate_merge = subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            candidate_root,
+                            "merge",
+                            "--no-ff",
+                            branch_name,
+                            "-m",
+                            message or f"Merge {branch_name}",
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if candidate_merge.returncode == 0:
+                        logger.info("Merged %s via git merge in candidate", branch_name)
+                        merge = MergeResult(success=True)
+                        # Skip _plumbing_merge — we already merged
+                        # Jump directly to post-merge validation
+                    else:
+                        logger.warning(
+                            "Candidate git merge failed for %s: rc=%d stdout=%s stderr=%s",
+                            branch_name,
+                            candidate_merge.returncode,
+                            candidate_merge.stdout.strip()[:200],
+                            candidate_merge.stderr.strip()[:200],
+                        )
+                else:
+                    logger.info("Rebased %s in candidate worktree", branch_name)
+
+            if merge is None:
+                if rebase:
+                    merge = _rebase_merge(candidate_root, branch_name, message=message)
+                else:
+                    merge = _plumbing_merge(
+                        candidate_root,
+                        branch_name,
+                        message=message,
+                        squash=squash,
+                        merge_base=base_sha or None,
+                    )
 
             if merge.success:
                 # Post-merge: lint + verify protected files BEFORE mutating main
