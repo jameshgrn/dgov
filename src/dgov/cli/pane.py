@@ -960,25 +960,6 @@ def pane_list(project_root, session_root, as_json, verbose):
             click.echo(f"  └ {p['last_output'].strip()}")
 
 
-@pane.command("prune")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-def pane_prune(project_root, session_root):
-    """Remove stale pane entries and orphaned worktree dirs."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
-
-    from dgov.status import prune_stale_panes
-
-    pruned = prune_stale_panes(project_root, session_root=session_root)
-    click.echo(json.dumps({"pruned": pruned}))
-
-
 @pane.command("gc")
 @click.option(
     "--project-root",
@@ -1002,32 +983,24 @@ def pane_prune(project_root, session_root):
     help="Only collect panes in these states (repeatable)",
 )
 def pane_gc(project_root, session_root, older_than_hours, states):
-    """Explicitly garbage-collect preserved evidence and old terminal panes."""
+    """Garbage-collect: prune stale entries, then clean old preserved/terminal panes."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.status import gc_retained_panes
+    from dgov.status import gc_retained_panes, prune_stale_panes
 
+    pruned = prune_stale_panes(project_root, session_root=session_root)
     result = gc_retained_panes(
         project_root,
         session_root=session_root,
         older_than_s=older_than_hours * 3600.0,
         states=tuple(states),
     )
+    result["pruned"] = pruned
     click.echo(json.dumps(result))
 
 
 @pane.command("classify")
 @click.argument("prompt")
-def pane_classify(prompt):
-    """Classify a task and recommend an agent (OpenRouter or local Qwen 4B)."""
-    from dgov.strategy import classify_task
-
-    agent = classify_task(prompt)
-    click.echo(json.dumps({"recommended_agent": agent, "prompt_preview": prompt[:80]}))
-
-
-@pane.command("capture")
-@click.argument("slug")
 @click.option(
     "--project-root",
     "-r",
@@ -1036,18 +1009,12 @@ def pane_classify(prompt):
     help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
-@click.option("--lines", "-n", default=30, help="Number of lines to capture")
-def pane_capture(slug, project_root, session_root, lines):
-    """Capture the last N lines of a worker pane's output."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
+def pane_classify(prompt, project_root, session_root):
+    """Classify a task and recommend an agent (OpenRouter or local Qwen 4B)."""
+    from dgov.strategy import classify_task
 
-    from dgov.status import capture_worker_output
-
-    output = capture_worker_output(project_root, slug, lines, session_root=session_root)
-    if output is None:
-        click.echo(json.dumps({"error": f"Pane not found or dead: {slug}"}), err=True)
-        sys.exit(1)
-    click.echo(output)
+    agent = classify_task(prompt)
+    click.echo(json.dumps({"recommended_agent": agent, "prompt_preview": prompt[:80]}))
 
 
 @pane.command("review")
@@ -1261,33 +1228,6 @@ def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode
         sys.exit(1)
 
 
-@pane.command("logs")
-@click.argument("slug")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-@click.option("--tail", "-n", default=None, type=int, help="Show last N lines")
-def pane_logs(slug, project_root, session_root, tail):
-    """Show persistent log for a pane."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
-
-    session_root = os.path.abspath(session_root or project_root)
-    log_file = os.path.join(session_root, ".dgov", "logs", f"{slug}.log")
-    if not os.path.exists(log_file):
-        click.echo(json.dumps({"error": f"No log file found: {log_file}"}), err=True)
-        sys.exit(1)
-    with open(log_file) as f:
-        lines = f.readlines()
-    if tail:
-        lines = lines[-tail:]
-    click.echo("".join(lines), nl=False)
-
-
 @pane.command("output")
 @click.argument("slug")
 @click.option(
@@ -1327,22 +1267,6 @@ def pane_output(slug, project_root, session_root, tail):
     click.echo(text)
 
 
-@pane.command("respond")
-@click.argument("slug")
-@click.argument("message")
-@SESSION_ROOT_OPTION
-def pane_respond(slug, message, session_root):
-    """Send a message to a worker pane via tmux send-keys."""
-    from dgov.waiter import interact_with_pane
-
-    session_root = os.path.abspath(session_root or ".")
-    if interact_with_pane(session_root, slug, message):
-        click.echo(json.dumps({"sent": True, "slug": slug}))
-    else:
-        click.echo(json.dumps({"error": f"Pane not found or dead: {slug}"}), err=True)
-        sys.exit(1)
-
-
 @pane.command("message")
 @click.argument("slug")
 @click.argument("text")
@@ -1379,21 +1303,6 @@ def pane_message(slug, text, project_root, session_root):
     click.echo(json.dumps({"sent": True, "slug": slug, "message": text[:100]}))
 
 
-@pane.command("nudge")
-@click.argument("slug")
-@SESSION_ROOT_OPTION
-@click.option("--wait", "-w", default=10, help="Seconds to wait for response")
-def pane_nudge(slug, session_root, wait):
-    """Nudge a worker: ask if done, parse YES/NO response."""
-    from dgov.waiter import nudge_pane
-
-    session_root = os.path.abspath(session_root or ".")
-    result = nudge_pane(session_root, slug, wait_seconds=wait)
-    click.echo(json.dumps(result))
-    if result.get("response") == "error":
-        sys.exit(1)
-
-
 @pane.command("merge-request")
 @click.argument("slug")
 @click.option(
@@ -1425,13 +1334,21 @@ def pane_merge_request(slug, project_root, session_root):
 @pane.command("signal")
 @click.argument("slug")
 @click.argument("signal_type", type=click.Choice(["done", "failed"]))
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
 @SESSION_ROOT_OPTION
-def pane_signal(slug, signal_type, session_root):
+def pane_signal(slug, signal_type, project_root, session_root):
     """Manually signal a pane as done or failed."""
     from dgov.persistence import get_pane
     from dgov.waiter import signal_pane
 
-    session_root = os.path.abspath(session_root or ".")
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+    session_root = os.path.abspath(session_root or project_root)
     if signal_pane(session_root, slug, signal_type):
         click.echo(json.dumps({"signaled": signal_type, "slug": slug}))
     else:
