@@ -1154,7 +1154,12 @@ def run_finalize_panes(
     session_root = os.path.abspath(session_root or project_root)
     results: list[PaneFinalizeResult] = []
 
+    from dgov.persistence import get_pane
+
     for slug in slugs:
+        if not get_pane(session_root, slug):
+            results.append(PaneFinalizeResult(slug=slug, error=f"Pane not found: {slug}"))
+            continue
         if close:
             lifecycle = run_post_dispatch_lifecycle(
                 project_root,
