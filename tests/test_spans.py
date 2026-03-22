@@ -561,6 +561,126 @@ class TestLedgerQuery:
 
 
 # ---------------------------------------------------------------------------
+# agent_reliability_stats tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestAgentReliabilityStats:
+    """Tests for agent_reliability_stats normalization of physical to logical names."""
+
+    def test_physical_logical_name_mapping(self, session, monkeypatch):
+        """Test that review spans with physical names are attributed to logical agents.
+
+        Dispatch spans use "qwen-35b" but review spans use "river-35b".
+        The stats should correctly attribute the reviews to "qwen-35b".
+        """
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        # Create test data: dispatch on logical name, review on physical name
+        session_str = str(session)
+        sid1 = open_span(session_str, "t1", SpanKind.DISPATCH, agent="qwen-35b")
+        close_span(session_str, sid1, SpanOutcome.SUCCESS)
+
+        sid2 = open_span(session_str, "t2", SpanKind.DISPATCH, agent="qwen-35b")
+        close_span(session_str, sid2, SpanOutcome.SUCCESS)
+
+        sid3 = open_span(session_str, "t3", SpanKind.DISPATCH, agent="qwen-35b")
+        close_span(session_str, sid3, SpanOutcome.SUCCESS)
+
+        # Review spans use physical name "river-35b" (the backend for qwen-35b)
+        sid4 = open_span(session_str, "t1", SpanKind.REVIEW, agent="river-35b")
+        close_span(session_str, sid4, SpanOutcome.SUCCESS, verdict="safe")
+
+        sid5 = open_span(session_str, "t2", SpanKind.REVIEW, agent="river-35b")
+        close_span(session_str, sid5, SpanOutcome.SUCCESS, verdict="unsafe")
+
+        sid6 = open_span(session_str, "t3", SpanKind.REVIEW, agent="river-35b")
+        close_span(session_str, sid6, SpanOutcome.SUCCESS, verdict="safe")
+
+        # Mock physical_to_logical to return logical name for physical backend
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-35b":
+                return "qwen-35b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        # Verify qwen-35b has correct aggregated stats from river-35b reviews
+        assert "qwen-35b" in stats
+        assert stats["qwen-35b"]["dispatch_count"] == 3
+        assert stats["qwen-35b"]["review_count"] == 3
+        # 2 safe out of 3 = 66.7% pass rate
+        assert stats["qwen-35b"]["pass_rate"] == 2 / 3
+
+    def test_mixed_physical_and_logical_names(self, session, monkeypatch):
+        """Test that dispatches under both physical and logical names are merged."""
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        # Mock mapping river-35b -> qwen-35b
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-35b":
+                return "qwen-35b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+
+        # Some dispatches under logical, some under physical name
+        for i in range(6):
+            sid = open_span(session_str, f"t{i}", SpanKind.DISPATCH, agent="qwen-35b")
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Add reviews for first 2 dispatches under physical name river-35b
+        review_sid1 = open_span(session_str, "t0_review", SpanKind.REVIEW, agent="river-35b")
+        close_span(session_str, review_sid1, SpanOutcome.SUCCESS, verdict="safe")
+
+        review_sid2 = open_span(session_str, "t1_review", SpanKind.REVIEW, agent="river-35b")
+        close_span(session_str, review_sid2, SpanOutcome.SUCCESS, verdict="safe")
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        # Should have 6 dispatches total (logical + physical aggregated)
+        assert "qwen-35b" in stats
+        assert stats["qwen-35b"]["dispatch_count"] == 6
+        # Only first two had reviews under river-35b
+        assert stats["qwen-35b"]["review_count"] == 2
+
+    def test_no_mapping_found_returns_unchanged(self, session, monkeypatch):
+        """Test that agent names without mapping remain unchanged."""
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        # Mock that no physical name maps to anything (return as-is)
+        def mock_physical_to_logical(physical_name):
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+        sid1 = open_span(session_str, "t1", SpanKind.DISPATCH, agent="custom-agent")
+        close_span(session_str, sid1, SpanOutcome.SUCCESS)
+
+        sid2 = open_span(session_str, "t2", SpanKind.DISPATCH, agent="custom-agent")
+        close_span(session_str, sid2, SpanOutcome.SUCCESS)
+
+        sid3 = open_span(session_str, "t3", SpanKind.DISPATCH, agent="custom-agent")
+        close_span(session_str, sid3, SpanOutcome.SUCCESS)
+
+        # Review on same name
+        sid4 = open_span(session_str, "t1", SpanKind.REVIEW, agent="custom-agent")
+        close_span(session_str, sid4, SpanOutcome.SUCCESS, verdict="safe")
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        assert "custom-agent" in stats
+        assert stats["custom-agent"]["dispatch_count"] == 3
+        assert stats["custom-agent"]["review_count"] == 1
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

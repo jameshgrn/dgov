@@ -823,49 +823,69 @@ def agent_reliability_stats(
     retry_count, avg_wait_ms, avg_review_ms, last_seen}}.
     Only includes agents with >= min_dispatches dispatch spans.
     """
+    from dgov.router import physical_to_logical
+
     conn = _get_db(session_root)
 
-    # Count dispatches per agent
+    # Count dispatches per agent and normalize to logical names
     dispatch_rows = conn.execute(
         "SELECT agent, COUNT(*) FROM spans "
         "WHERE span_kind = 'dispatch' AND agent != '' "
         "GROUP BY agent"
     ).fetchall()
-    dispatch_counts = {row[0]: row[1] for row in dispatch_rows}
+    # Merge physical and logical names - both should map to same logical name
+    dispatch_counts: dict[str, int] = {}
+    for a, count in dispatch_rows:
+        logical_a = physical_to_logical(a) if a else a
+        dispatch_counts[logical_a] = dispatch_counts.get(logical_a, 0) + count
 
     # Filter to agents with enough data
     qualifying = {a for a, c in dispatch_counts.items() if c >= min_dispatches}
     if not qualifying:
         return {}
 
-    # Review stats: pass rate from verdict
+    # Review stats: pass rate from verdict - normalize physical names to logical
     review_rows = conn.execute(
         "SELECT agent, verdict, COUNT(*) FROM spans "
         "WHERE span_kind = 'review' AND agent != '' "
         "GROUP BY agent, verdict"
     ).fetchall()
+    # Remap review agents from physical to logical
+    review_rows = [
+        (physical_to_logical(a) if a else a, verdict, count) for a, verdict, count in review_rows
+    ]
 
-    # Retry counts
+    # Retry counts - normalize physical names to logical
     retry_rows = conn.execute(
         "SELECT from_agent, COUNT(*) FROM spans "
         "WHERE span_kind = 'retry' AND from_agent != '' "
         "GROUP BY from_agent"
     ).fetchall()
-    retry_counts = {row[0]: row[1] for row in retry_rows}
+    retry_counts: dict[str, int] = {}
+    for a, count in retry_rows:
+        logical_a = physical_to_logical(a) if a else a
+        retry_counts[logical_a] = retry_counts.get(logical_a, 0) + count
 
-    # Average durations
+    # Average durations - normalize physical names to logical
     duration_rows = conn.execute(
         "SELECT agent, span_kind, AVG(duration_ms) FROM spans "
         "WHERE agent != '' AND duration_ms > 0 "
         "AND span_kind IN ('wait', 'review') "
         "GROUP BY agent, span_kind"
     ).fetchall()
+    # Remap duration agents from physical to logical
+    duration_rows = [
+        (physical_to_logical(a) if a else a, kind, avg_ms) for a, kind, avg_ms in duration_rows
+    ]
 
-    # Last seen
+    # Last seen - normalize physical names to logical
     last_seen_rows = conn.execute(
         "SELECT agent, MAX(started_at) FROM spans WHERE agent != '' GROUP BY agent"
     ).fetchall()
-    last_seen = {row[0]: row[1] for row in last_seen_rows}
+    last_seen: dict[str, str] = {}
+    for a, ts in last_seen_rows:
+        logical_a = physical_to_logical(a) if a else a
+        last_seen[logical_a] = ts
 
     # Build stats per agent
     stats: dict[str, dict] = {}
