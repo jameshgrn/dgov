@@ -166,6 +166,36 @@ def trace_stats(project_root, session_root):
             click.echo(f"  {agent:<16s} {outcome:<8s} {count:>5d}  avg {avg:>8s}")
 
 
+@trace_cmd.command("training")
+@click.option(
+    "--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT", help="Git repo root"
+)
+@SESSION_ROOT_OPTION
+@click.option("--outcome", default=None, help="Filter by outcome (success/failure)")
+@click.option("--min-tools", default=1, type=int, help="Min tool calls per example")
+@click.option("--output", "-o", "output_file", default=None, help="Output file (default: stdout)")
+def trace_training(project_root, session_root, outcome, min_tools, output_file):
+    """Export training JSONL for fine-tuning."""
+    from dgov.spans import export_training_jsonl
+
+    session_root = os.path.abspath(session_root or project_root)
+    examples = export_training_jsonl(session_root, outcome=outcome, min_tool_calls=min_tools)
+
+    if not examples:
+        click.echo("No training examples found.", err=True)
+        return
+
+    if output_file:
+        with open(output_file, "w") as f:
+            for ex in examples:
+                f.write(json.dumps(ex, default=str) + "\n")
+        click.echo(f"Exported {len(examples)} training examples to {output_file}", err=True)
+    else:
+        for ex in examples:
+            click.echo(json.dumps(ex, default=str))
+        click.echo(f"Exported {len(examples)} training examples", err=True)
+
+
 @trace_cmd.command("ingest")
 @click.argument("slug")
 @click.option(
