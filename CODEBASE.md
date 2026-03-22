@@ -23,7 +23,7 @@
 - You are in a **git worktree**, not the main repo. Do not merge, rebase, or pull.
 - `CLAUDE.md` and `AGENTS.md` are **git-excluded** — exist on disk for read, cannot commit.
 - `dgov worker complete` will **auto-commit** any unstaged changes before signaling done.
-- Protected files (CLAUDE.md, THEORY.md, .napkin.md) **restored during merge** — changes discarded.
+- Protected files (CLAUDE.md, THEORY.md) **restored during merge** — changes discarded.
 - Do NOT push to remote. Do NOT run the full test suite.
 
 ## Module groups
@@ -82,13 +82,6 @@
 | `src/dgov/mission.py` | S | Mission primitive: declarative create-wait-review-merge lifecycle. |
 | `src/dgov/review_fix.py` | M | Review-then-fix pipeline: dispatch review workers, parse findings, dispatch fix workers. |
 
-### Visualization
-| File | Size | Purpose |
-|------|------|---------|
-| `src/dgov/dashboard.py` | L | Rich-based live dashboard for dgov pane management. |
-| `src/dgov/terrain.py` | L | SPIM erosion terrain model for dgov dashboard. |
-| `src/dgov/terrain_pane.py` | S | Standalone terrain simulation pane for dgov governor workspace. |
-
 ### Other
 | File | Size | Purpose |
 |------|------|---------|
@@ -108,8 +101,11 @@
 | `src/dgov/cli/review_fix_cmd.py` | S | Review-fix pipeline command. |
 | `src/dgov/cli/trace_cmd.py` | M | Span and tool-trace CLI commands. |
 | `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
+| `src/dgov/dashboard.py` | L | Rich-based live dashboard for dgov pane management. |
 | `src/dgov/preflight.py` | L | Pre-flight validation for dgov dispatch. |
 | `src/dgov/spans.py` | L | Structured span and tool-trace observability for dgov. |
+| `src/dgov/terrain.py` | L | SPIM erosion terrain model for dgov dashboard. |
+| `src/dgov/terrain_pane.py` | S | Standalone terrain simulation pane for dgov governor workspace. |
 | `src/dgov/tmux.py` | L | Thin wrappers around tmux commands. |
 
 ## CLI command registration
