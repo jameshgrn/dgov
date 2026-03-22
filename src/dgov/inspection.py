@@ -365,6 +365,7 @@ def compute_stats(session_root: str) -> dict:
 
         reliability = agent_reliability_stats(session_root, min_dispatches=1)
     except Exception:
+        logger.debug("reliability stats failed", exc_info=True)
         reliability = {}
 
     return {
