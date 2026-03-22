@@ -30,7 +30,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {file} && git commit -m "Fix: {description}"'
         ),
         required_vars=["file", "description", "test_file"],
-        default_agent="pi",
+        default_agent="qwen-35b",
         description="Fix a bug in a single file with targeted tests",
     ),
     "feature": PromptTemplate(
@@ -39,10 +39,10 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "Implement the following feature in {file}: {description}. "
             "Follow existing code patterns. Add tests in {test_file}. "
             "Run: uv run ruff check {file} && uv run pytest {test_file} -q. "
-            'git add -A && git commit -m "Add: {description}"'
+            'git add {file} {test_file} && git commit -m "Add: {description}"'
         ),
         required_vars=["file", "description", "test_file"],
-        default_agent="claude",
+        default_agent="qwen-35b",
         description="Add a new feature with tests",
     ),
     "refactor": PromptTemplate(
@@ -53,7 +53,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {file} && git commit -m "Refactor: {description}"'
         ),
         required_vars=["file", "description", "test_file"],
-        default_agent="pi",
+        default_agent="qwen-35b",
         description="Refactor code while preserving behavior",
     ),
     "test": PromptTemplate(
@@ -65,7 +65,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {test_file} && git commit -m "Add tests for {file}"'
         ),
         required_vars=["file", "test_file"],
-        default_agent="pi",
+        default_agent="qwen-35b",
         description="Write tests for an existing file",
     ),
     "review": PromptTemplate(

@@ -72,7 +72,7 @@ def template_create(name):
         'description = ""\n'
         'template = "Do {{thing}} in {{file}}. Commit."\n'
         'required_vars = ["thing", "file"]\n'
-        'default_agent = "pi"\n'
+        'default_agent = "qwen-35b"\n'
     )
     out_path.write_text(content)
     click.echo(json.dumps({"created": str(out_path)}))

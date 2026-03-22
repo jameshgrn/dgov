@@ -32,7 +32,7 @@ def skip_governor_check(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
 
 
-def _pane(slug: str = "task", agent: str = "claude") -> SimpleNamespace:
+def _pane(slug: str = "task", agent: str = "qwen-35b") -> SimpleNamespace:
     return SimpleNamespace(
         slug=slug,
         pane_id="%7",
@@ -175,7 +175,7 @@ class TestPaneCreateWithTemplate:
     def test_template_renders_and_creates_pane(self, runner: CliRunner) -> None:
         with patch(
             "dgov.lifecycle.create_worker_pane",
-            return_value=_pane("fix-null", "pi"),
+            return_value=_pane("fix-null", "qwen-35b"),
         ) as mock_create:
             result = runner.invoke(
                 cli,
@@ -198,13 +198,13 @@ class TestPaneCreateWithTemplate:
         call_kwargs = mock_create.call_args.kwargs
         assert "null pointer" in call_kwargs["prompt"]
         assert "src/app.py" in call_kwargs["prompt"]
-        assert call_kwargs["agent"] == "pi"
+        assert call_kwargs["agent"] == "qwen-35b"
         assert call_kwargs["skip_auto_structure"] is True
 
     def test_template_uses_default_agent(self, runner: CliRunner) -> None:
         with patch(
             "dgov.lifecycle.create_worker_pane",
-            return_value=_pane("add-feat", "claude"),
+            return_value=_pane("add-feat", "qwen-35b"),
         ) as mock_create:
             result = runner.invoke(
                 cli,
@@ -224,7 +224,7 @@ class TestPaneCreateWithTemplate:
             )
 
         assert result.exit_code == 0, result.output
-        assert mock_create.call_args.kwargs["agent"] == "claude"
+        assert mock_create.call_args.kwargs["agent"] == "qwen-35b"
 
     def test_template_agent_override(self, runner: CliRunner) -> None:
         with patch(
