@@ -46,6 +46,7 @@ Use these `kind` values deliberately:
 - `integration_test`: verifies cross-component integration behavior.
 - `security`: asserts security properties or access control invariants.
 - `scalability`: asserts the system handles growth in data, users, or load.
+- `usability`: asserts user-facing workflow clarity and discoverability.
 
 ## Unit checklist
 
