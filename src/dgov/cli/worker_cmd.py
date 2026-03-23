@@ -47,13 +47,19 @@ def worker_complete(message):
     worktree = os.environ.get("DGOV_WORKTREE_PATH", "")
 
     # Auto-commit uncommitted changes before signaling done
+    auto_committed = False
     if worktree and Path(worktree).is_dir():
         status = subprocess.run(
             ["git", "-C", worktree, "status", "--porcelain"],
             capture_output=True,
             text=True,
         )
-        if status.stdout.strip():
+        dirty_lines = [
+            ln
+            for ln in status.stdout.strip().splitlines()
+            if ln and ln[3:] not in ("CLAUDE.md", "AGENTS.md") and not ln[3:].startswith(".dgov/")
+        ]
+        if dirty_lines:
             subprocess.run(
                 ["git", "-C", worktree, "add", "-A"],
                 capture_output=True,
@@ -71,7 +77,26 @@ def worker_complete(message):
                 capture_output=True,
                 env={**os.environ, "DGOV_SKIP_GOVERNOR_CHECK": "1"},
             )
+            auto_committed = True
             click.echo(json.dumps({"auto_committed": True, "slug": slug}), err=True)
+
+    # Contradiction check: worker said "no changes needed" but there ARE changes.
+    # This means the worker hallucinated the file state and didn't verify.
+    if auto_committed and message:
+        click.echo(
+            f"WARNING: Worker claimed '{message}' but had uncommitted source changes. "
+            f"The worker likely hallucinated the file state without reading it.",
+            err=True,
+        )
+        from dgov.persistence import emit_event as _emit
+
+        _emit(
+            session_root,
+            "worker_contradiction",
+            slug,
+            message=message,
+            auto_committed=True,
+        )
 
     # Verify at least one commit exists beyond DGOV_BASE_SHA
     base_sha = os.environ.get("DGOV_BASE_SHA", "")
