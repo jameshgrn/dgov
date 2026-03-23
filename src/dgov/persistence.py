@@ -56,25 +56,29 @@ def _notify_waiters(session_root: str) -> None:
 def _wait_for_notify(session_root: str, timeout: float) -> bool:
     """Block on the notify pipe until data arrives or timeout expires.
 
-    Cross-platform (any POSIX). Uses select() on a named pipe — zero
+    Cross-platform (any POSIX). Uses poll() on a named pipe — zero
     polling, instant wakeup when emit_event fires from any process.
+    poll() has no fd number limit (unlike select() which fails above
+    FD_SETSIZE=1024 on macOS).
 
     Returns True if notified, False on timeout.
     """
     pipe_str = _ensure_notify_pipe(session_root)
     try:
         # O_RDONLY|O_NONBLOCK: open returns immediately even without a writer.
-        # select() then blocks until data arrives or timeout.
+        # poll() then blocks until data arrives or timeout.
         fd = os.open(pipe_str, os.O_RDONLY | os.O_NONBLOCK)
         try:
-            readable, _, _ = select.select([fd], [], [], timeout)
-            if readable:
+            poller = select.poll()
+            poller.register(fd, select.POLLIN)
+            events = poller.poll(int(timeout * 1000))  # milliseconds
+            if events:
                 os.read(fd, 4096)  # drain pipe
                 return True
             return False
         finally:
             os.close(fd)
-    except OSError:
+    except (OSError, ValueError):
         # Pipe broken or missing — recreate and return timeout
         try:
             os.unlink(pipe_str)
