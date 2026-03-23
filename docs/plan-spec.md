@@ -79,6 +79,7 @@ Allowed `kind` values are:
 - `performance`
 - `integration_test`
 - `security`
+- `scalability`
 
 Every unit must list the eval ids it satisfies with `satisfies = [...]`.
 Plans without evals, units without `satisfies`, or orphaned evals fail

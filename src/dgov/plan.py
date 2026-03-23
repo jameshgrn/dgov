@@ -112,6 +112,7 @@ _ALLOWED_EVAL_KINDS = {
     "performance",
     "integration_test",
     "security",
+    "scalability",
 }
 
 

@@ -45,6 +45,7 @@ Use these `kind` values deliberately:
 - `performance`: asserts latency, throughput, or resource usage bounds.
 - `integration_test`: verifies cross-component integration behavior.
 - `security`: asserts security properties or access control invariants.
+- `scalability`: asserts the system handles growth in data, users, or load.
 
 ## Unit checklist
 
