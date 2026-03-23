@@ -151,6 +151,8 @@ VALID_EVENTS = frozenset(
         "claim_violation",
         "quality_retry",
         "quality_escalate",
+        "evals_verified",
+        "worker_contradiction",
     }
 )
 

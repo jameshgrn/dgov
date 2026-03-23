@@ -2205,6 +2205,8 @@ class TestValidEvents:
             "claim_violation",
             "quality_retry",
             "quality_escalate",
+            "evals_verified",
+            "worker_contradiction",
         }
         assert expected == VALID_EVENTS
 
