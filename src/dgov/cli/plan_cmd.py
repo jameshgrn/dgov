@@ -130,7 +130,6 @@ def plan_run(plan_file, max_concurrent, wait):
     # Block until terminal event. Order: dag_completed → evals_verified.
     # If evals exist, wait for evals_verified (comes right after dag_completed).
     # If no evals, dag_completed/dag_failed is terminal.
-    seen_completed = False
     while True:
         events = wait_for_events(
             session_root,
@@ -149,17 +148,15 @@ def plan_run(plan_file, max_concurrent, wait):
                 raise SystemExit(1)
 
             if ev["event"] == "dag_completed":
-                seen_completed = True
                 # Check if this run has evals — if not, we're done
                 run = get_dag_run(session_root, run_id)
                 if not run or not run.get("evals"):
                     click.echo(f"\nDAG run {run_id}: {run['status'] if run else 'completed'}")
                     return
                 # Has evals — wait for evals_verified next
+                continue
 
-            if ev["event"] == "evals_verified" or (
-                seen_completed and ev["event"] == "dag_completed"
-            ):
+            if ev["event"] == "evals_verified":
                 run = get_dag_run(session_root, run_id)
                 if not run:
                     return
