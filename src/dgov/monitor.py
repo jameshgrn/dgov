@@ -36,7 +36,6 @@ from dgov.persistence import (
 from dgov.status import list_worker_panes, prune_stale_panes, tail_worker_log
 
 if TYPE_CHECKING:
-    from dgov.dag_parser import DagDefinition
     from dgov.monitor_hooks import MonitorHook
 
 logger = logging.getLogger(__name__)
@@ -1067,6 +1066,7 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
     session_root = os.path.abspath(session_root or project_root)
     project_root = os.path.abspath(project_root)
     pid_file = Path(session_root) / ".dgov" / "monitor.pid"
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
 
     already_running = False
     if pid_file.exists():
@@ -1078,24 +1078,58 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
             pid_file.unlink(missing_ok=True)
 
     if not already_running:
-        # Determine the best executable to use (support uv run)
         if getattr(sys, "frozen", False):
-            dgov_exe = sys.executable
+            cmd = [
+                sys.executable,
+                "monitor",
+                "-r",
+                project_root,
+                "--session-root",
+                session_root,
+            ]
+        elif shutil.which("uv"):
+            cmd = [
+                "uv",
+                "run",
+                "dgov",
+                "monitor",
+                "-r",
+                project_root,
+                "--session-root",
+                session_root,
+            ]
+        elif shutil.which("dgov"):
+            cmd = [
+                "dgov",
+                "monitor",
+                "-r",
+                project_root,
+                "--session-root",
+                session_root,
+            ]
         else:
-            dgov_exe = "dgov" if shutil.which("dgov") else sys.executable
+            raise RuntimeError(
+                "Cannot launch headless monitor: neither `uv` nor `dgov` is available on PATH"
+            )
 
         log_dir = Path(session_root) / ".dgov" / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "monitor.log"
 
         with open(log_file, "a") as f:
-            subprocess.Popen(
-                [dgov_exe, "monitor", "-r", project_root],
+            proc = subprocess.Popen(
+                cmd,
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
+                cwd=project_root,
             )
-        logger.info("Monitor: kickstarted headless daemon for %s (logging to %s)", project_root, log_file)
+        pid_file.write_text(str(proc.pid))
+        logger.info(
+            "Monitor: kickstarted headless daemon for %s (logging to %s)",
+            project_root,
+            log_file,
+        )
 
 
 def run_monitor(

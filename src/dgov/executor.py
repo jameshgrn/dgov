@@ -512,6 +512,7 @@ def run_post_dispatch_lifecycle(
     This sequentially invokes the underlying executor policies.
     """
     import os
+
     from dgov.persistence import set_pane_metadata
 
     session_root = os.path.abspath(session_root or project_root)
@@ -622,7 +623,7 @@ def run_post_dispatch_lifecycle(
             failure_stage=failure_stage,
         )
         current_slug = cleanup_res.slug if cleanup_res else current_slug
-        
+
         for claimed in claimed_slugs:
             try:
                 set_pane_metadata(session_root, claimed, landing=False)
@@ -922,7 +923,7 @@ def run_review_merge(
     import os
 
     session_root = os.path.abspath(session_root or project_root)
-    
+
     review_res = run_review_only(
         project_root,
         slug,
@@ -1578,16 +1579,8 @@ def run_dag_kernel(
     import os
 
     from dgov.kernel import (
-        CloseTask,
         DagDone,
         DagKernel,
-        DispatchTask,
-        InterruptGovernor,
-        MergeTask,
-        ReviewTask,
-        RetryTask,
-        SkipTask,
-        TaskClosed,
         TaskDispatched,
         TaskRetryStarted,
         WaitForAny,
@@ -1683,8 +1676,6 @@ def run_dag_kernel(
         # Execute non-waiting actions through the reactor
         event = reactor.execute(action)
         if event:
-            from dgov.kernel import TaskDispatched, TaskRetryStarted
-
             if isinstance(event, TaskDispatched):
                 pane_map[action.task_slug] = event.pane_slug
             elif isinstance(event, TaskRetryStarted):
@@ -1874,6 +1865,7 @@ def _dag_review(
 
 
 def _dag_merge(
+    dag: object,
     project_root: str,
     session_root: str,
     task_slug: str,
@@ -1946,7 +1938,7 @@ def _dag_retry(
             session_root=session_root,
             max_retries=max_retries,
         )
-        
+
         if res.get("error"):
             return TaskDispatchFailed(task_slug, res["error"])
 
@@ -2012,17 +2004,17 @@ def _dag_interrupt(
     progress: Callable[[str], None],
 ) -> None:
     """Gather context for a governor interrupt and emit dag_blocked event."""
+    from dgov.inspection import diff_worker_pane
     from dgov.persistence import emit_event, get_pane, upsert_dag_task
     from dgov.status import tail_worker_log
-    from dgov.inspection import diff_worker_pane
 
     progress(f"  INTERRUPT: {task_slug} blocked on {reason}")
-    
+
     # 1. Gather context
     pane = get_pane(session_root, pane_slug) or {}
     role = pane.get("role", "worker")
     log_tail = tail_worker_log(session_root, pane_slug, lines=20)
-    
+
     diff_data = diff_worker_pane(project_root, pane_slug, session_root=session_root)
     diff_text = diff_data.get("diff", "")
 

@@ -350,6 +350,32 @@ class TestSortPanesHierarchical:
         assert len(result) == 1
         assert result[0][1] == 1  # indent_level
 
+    def test_selection_order_matches_visual_hierarchy(self):
+        from dgov.dashboard import _selection_order
+
+        panes = [
+            {"slug": "worker-a", "role": "worker"},
+            {"slug": "lt-gov-1", "role": "lt-gov"},
+            {"slug": "child-1", "role": "worker", "parent_slug": "lt-gov-1"},
+        ]
+
+        assert _selection_order(panes) == [1, 2, 0]
+
+    def test_move_selection_follows_visual_hierarchy(self):
+        from dgov.dashboard import _move_selection
+
+        panes = [
+            {"slug": "worker-a", "role": "worker"},
+            {"slug": "lt-gov-1", "role": "lt-gov"},
+            {"slug": "child-1", "role": "worker", "parent_slug": "lt-gov-1"},
+        ]
+
+        selected, position = _move_selection(panes, selected=1, step=1)
+        assert (selected, position) == (2, 1)
+
+        selected, position = _move_selection(panes, selected=2, step=1)
+        assert (selected, position) == (0, 2)
+
 
 @pytest.mark.unit
 class TestWorkerTableHierarchy:
@@ -501,6 +527,90 @@ class TestPreviewState:
         state = DashboardState(branch="main", last_refresh=1710000000)
         output = _render_dashboard_text(state, width=120, height=20)
         assert "p:preview" in output
+
+
+@pytest.mark.unit
+class TestDashboardObserverMode:
+    def test_data_thread_waits_on_notify_pipe(self, monkeypatch):
+        from dgov.dashboard import DashboardState, data_thread
+
+        state = DashboardState(project_root="/tmp/repo", session_root="/tmp/session")
+        refresh_calls: list[str] = []
+        wait_calls: list[tuple[str, float]] = []
+
+        monkeypatch.setattr(
+            "dgov.dashboard._refresh_dashboard_state",
+            lambda current: refresh_calls.append(current.project_root),
+        )
+
+        def fake_wait(session_root: str, timeout: float) -> bool:
+            wait_calls.append((session_root, timeout))
+            state.stop_event.set()
+            return True
+
+        monkeypatch.setattr("dgov.persistence._wait_for_notify", fake_wait)
+
+        data_thread(state, 0.25)
+
+        assert refresh_calls == ["/tmp/repo"]
+        assert wait_calls == [("/tmp/session", 3600.0)]
+
+    def test_run_dashboard_starts_only_data_thread(self, tmp_path, monkeypatch):
+        import io
+
+        import dgov.dashboard as dashboard
+
+        started_targets: list[str] = []
+        lock_fd = io.StringIO()
+        pidfile = tmp_path / "dashboard.pid"
+
+        class FakeThread:
+            def __init__(self, target, args=(), daemon=False):  # noqa: ANN001
+                self.target = target
+
+            def start(self) -> None:
+                started_targets.append(self.target.__name__)
+
+        class FakeLive:
+            def __init__(self, *args, **kwargs):  # noqa: ANN001
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):  # noqa: ANN001
+                return False
+
+            def refresh(self) -> None:
+                return None
+
+            def stop(self) -> None:
+                return None
+
+            def start(self) -> None:
+                return None
+
+        real_state_cls = dashboard.DashboardState
+
+        def fake_state(*args, **kwargs):  # noqa: ANN001, ANN201
+            state = real_state_cls(*args, **kwargs)
+            state.stop_event.set()
+            return state
+
+        monkeypatch.setattr(
+            "dgov.dashboard._acquire_dashboard_lock",
+            lambda *_: (pidfile, lock_fd),
+        )
+        monkeypatch.setattr("dgov.dashboard.threading.Thread", FakeThread)
+        monkeypatch.setattr("dgov.dashboard.Live", FakeLive)
+        monkeypatch.setattr("dgov.dashboard.DashboardState", fake_state)
+        monkeypatch.setattr("dgov.dashboard._wake_dashboard_observer", lambda *_: None)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+        monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+        dashboard.run_dashboard(str(tmp_path), str(tmp_path), refresh_interval=0.25)
+
+        assert started_targets == ["data_thread"]
 
 
 @pytest.mark.unit

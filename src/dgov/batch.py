@@ -341,8 +341,8 @@ def run_batch(
 
     # Headless migration: run_dag_via_kernel is now non-blocking.
     # To satisfy legacy synchronous callers (CLI), we must wait here.
-    from dgov.persistence import latest_event_id, wait_for_events, get_dag_run
     from dgov.dag_parser import DagRunSummary
+    from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
 
     cursor = latest_event_id(session_root)
     while True:
@@ -359,13 +359,13 @@ def run_batch(
             if data.get("dag_run_id") == run_id:
                 finished = True
                 break
-        
+
         if finished:
             break
-        
+
         # Safety: check if it already finished between submission and wait
         run = get_dag_run(session_root, run_id)
-        if run and run["status"] in ("completed", "failed", "cancelled"):
+        if run and run["status"] in ("completed", "failed", "partial", "cancelled"):
             break
 
     # Re-fetch final state

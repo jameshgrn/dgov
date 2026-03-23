@@ -138,13 +138,22 @@ class TestBatchDispatch:
         monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
         monkeypatch.setattr(
             "dgov.persistence.wait_for_events",
-            lambda *args, **kwargs: [{"id": 1, "event": "dag_completed", "data": json.dumps({"dag_run_id": run_id})}],
+            lambda *args, **kwargs: [
+                {
+                    "id": 1,
+                    "event": "dag_completed",
+                    "data": json.dumps({"dag_run_id": run_id}),
+                }
+            ],
         )
 
         task_states = {}
-        for s in (merged or []): task_states[s] = "merged"
-        for s in (failed or []): task_states[s] = "failed"
-        for s in (skipped or []): task_states[s] = "skipped"
+        for s in merged or []:
+            task_states[s] = "merged"
+        for s in failed or []:
+            task_states[s] = "failed"
+        for s in skipped or []:
+            task_states[s] = "skipped"
 
         monkeypatch.setattr(
             "dgov.persistence.get_dag_run",
@@ -204,6 +213,56 @@ touches = ["a.py"]
 
         assert result["merged"] == []
         assert result["failed"] == ["t1"]
+
+    def test_batch_dispatch_treats_partial_run_as_terminal(self, tmp_path, monkeypatch):
+        from dgov.batch import run_batch
+        from dgov.dag_parser import DagRunSummary
+
+        spec_path = self._write_spec(
+            tmp_path,
+            """
+project_root = "."
+
+[tasks.t1]
+prompt = "first task"
+agent = "agent-one"
+touches = ["a.py"]
+
+[tasks.t2]
+prompt = "second task"
+agent = "agent-two"
+touches = ["b.py"]
+""",
+        )
+
+        run_id = 7
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id,
+                dag_file=str(spec_path),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
+            ),
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 9)
+        monkeypatch.setattr("dgov.persistence.wait_for_events", lambda *args, **kwargs: [])
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "partial",
+                "state_json": {"task_states": {"t1": "merged", "t2": "failed"}},
+            },
+        )
+
+        result = run_batch(str(spec_path), session_root=str(tmp_path))
+
+        assert result["merged"] == ["t1"]
+        assert result["failed"] == ["t2"]
 
     def test_batch_dispatch_records_failed_task_error_in_tier_results(self, tmp_path, monkeypatch):
         spec_path = self._write_spec(

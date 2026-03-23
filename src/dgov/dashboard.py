@@ -83,7 +83,7 @@ class DashboardState:
     post_exit_attach: str = ""
     preview_lines: list[str] = field(default_factory=list)
     preview_visible: bool = False
-    monitor_alive: bool = False
+    monitor_timestamp: float = 0.0
     # Done notification tracking
     recent_done_slugs: list[str] = field(default_factory=list)
     done_bell_rung: bool = False
@@ -203,9 +203,8 @@ def fetch_panes(state: DashboardState) -> None:
             state.last_refresh = time.time()
             state.error = ""
             state.preview_lines = preview
-            # Add monitor health info to state for header
             m_ts = monitor_status.get("timestamp", 0)
-            state.monitor_alive = (time.time() - m_ts < 45) if m_ts else False
+            state.monitor_timestamp = float(m_ts) if m_ts else 0.0
             # Update done notification tracking
             if new_done_slugs:
                 # Keep only recent slugs (last 5)
@@ -219,38 +218,36 @@ def fetch_panes(state: DashboardState) -> None:
             state.last_refresh = time.time()
 
 
-def data_thread(state: DashboardState, interval: float) -> None:
-    while not state.stop_event.is_set():
-        fetch_panes(state)
-        # Detect stale binary
-        try:
-            import dgov as _pkg
-
-            _mod_file = getattr(_pkg, "__file__", "")
-            if _mod_file and os.path.getmtime(_mod_file) > _STARTUP_TIME:
-                with state.lock:
-                    state.error = "dgov reinstalled — restart dashboard (q then dgov resume)"
-        except (OSError, AttributeError):
-            pass
-        state.force_refresh.wait(timeout=interval)
-        state.force_refresh.clear()
-
-
-def monitor_thread(state: DashboardState) -> None:
-    """Run the reactive monitor loop in a background thread."""
-    from dgov.monitor import run_monitor
-
+def _refresh_dashboard_state(state: DashboardState) -> None:
+    fetch_panes(state)
     try:
-        run_monitor(
-            state.project_root,
-            session_root=state.session_root,
-            auto_merge=True,  # Enable auto-actions while dashboard is open
-            auto_retry=True,
-        )
-    except Exception as e:
-        with state.lock:
-            state.error = f"Monitor thread failed: {e}"
-        logger.exception("Monitor thread crashed")
+        import dgov as _pkg
+
+        mod_file = getattr(_pkg, "__file__", "")
+        if mod_file and os.path.getmtime(mod_file) > _STARTUP_TIME:
+            with state.lock:
+                state.error = "dgov reinstalled — restart dashboard (q then dgov resume)"
+    except (OSError, AttributeError):
+        pass
+
+
+def _wake_dashboard_observer(state: DashboardState) -> None:
+    from dgov.persistence import _notify_waiters
+
+    _notify_waiters(state.session_root or state.project_root)
+
+
+def data_thread(state: DashboardState, _interval: float) -> None:
+    from dgov.persistence import _wait_for_notify
+
+    session_root = state.session_root or state.project_root
+    _refresh_dashboard_state(state)
+    while not state.stop_event.is_set():
+        _wait_for_notify(session_root, 3600.0)
+        if state.stop_event.is_set():
+            break
+        state.force_refresh.clear()
+        _refresh_dashboard_state(state)
 
 
 def _sort_panes_hierarchical(
@@ -291,6 +288,22 @@ def _sort_panes_hierarchical(
         result.append((p, 0, False, orig_idx))
 
     return result
+
+
+def _selection_order(panes: list[dict]) -> list[int]:
+    return [orig_idx for _, _, _, orig_idx in _sort_panes_hierarchical(panes, 0)]
+
+
+def _move_selection(panes: list[dict], selected: int, step: int) -> tuple[int, int]:
+    order = _selection_order(panes)
+    if not order:
+        return 0, 0
+    try:
+        position = order.index(selected)
+    except ValueError:
+        position = 0
+    new_position = min(max(position + step, 0), len(order) - 1)
+    return order[new_position], new_position
 
 
 def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0) -> Table:
@@ -395,7 +408,7 @@ def _build_layout(
         selected = state.selected
         preview_lines = list(state.preview_lines)
         preview_visible = state.preview_visible
-        monitor_alive = state.monitor_alive
+        monitor_timestamp = state.monitor_timestamp
         scroll_offset = state.scroll_offset
 
     ts = (
@@ -408,6 +421,7 @@ def _build_layout(
         f" DGOV v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {len(panes)} workers"
     )
 
+    monitor_alive = bool(monitor_timestamp) and (time.time() - monitor_timestamp < 45)
     mon_color = "green" if monitor_alive else "red"
     header_text.append(" \u2502 ", style="dim")
     header_text.append("\u25cf", style=mon_color)
@@ -602,9 +616,6 @@ def run_dashboard(
     thread = threading.Thread(target=data_thread, args=(state, refresh_interval), daemon=True)
     thread.start()
 
-    mon_thread = threading.Thread(target=monitor_thread, args=(state,), daemon=True)
-    mon_thread.start()
-
     old_settings = None
     if is_tty:
         try:
@@ -659,29 +670,33 @@ def run_dashboard(
                     break
                 elif ch == "j":
                     with state.lock:
-                        state.selected = min(state.selected + 1, max(0, len(state.panes) - 1))
-                        if state.selected >= state.scroll_offset + _VISIBLE_ROWS:
-                            state.scroll_offset = state.selected - _VISIBLE_ROWS + 1
+                        state.selected, position = _move_selection(state.panes, state.selected, 1)
+                        if position >= state.scroll_offset + _VISIBLE_ROWS:
+                            state.scroll_offset = position - _VISIBLE_ROWS + 1
                     live.refresh()
                 elif ch == "k":
                     with state.lock:
-                        state.selected = max(0, state.selected - 1)
-                        if state.selected < state.scroll_offset:
-                            state.scroll_offset = state.selected
+                        state.selected, position = _move_selection(state.panes, state.selected, -1)
+                        if position < state.scroll_offset:
+                            state.scroll_offset = position
                     live.refresh()
                 elif ch == "g":
                     with state.lock:
-                        state.selected = 0
-                        state.scroll_offset = 0
+                        order = _selection_order(state.panes)
+                        if order:
+                            state.selected = order[0]
+                            state.scroll_offset = 0
                     live.refresh()
                 elif ch == "G":
                     with state.lock:
-                        state.selected = max(0, len(state.panes) - 1)
-                        if state.selected >= state.scroll_offset + _VISIBLE_ROWS:
-                            state.scroll_offset = state.selected - _VISIBLE_ROWS + 1
+                        order = _selection_order(state.panes)
+                        if order:
+                            state.selected = order[-1]
+                            state.scroll_offset = max(0, len(order) - _VISIBLE_ROWS)
                     live.refresh()
                 elif ch == "r":
                     state.force_refresh.set()
+                    _wake_dashboard_observer(state)
                     live.refresh()
                 elif ch == "\r" or ch == "\n":
                     # Switch to worker's background tmux window
@@ -714,6 +729,7 @@ def run_dashboard(
                         if confirm == "y":
                             _execute_action(state, "merge", slug)
                             state.force_refresh.set()
+                            _wake_dashboard_observer(state)
                         live.start()
                         live.refresh()
                 elif ch == "x":
@@ -738,12 +754,14 @@ def run_dashboard(
                         if confirm == "y":
                             _execute_action(state, "close", slug)
                             state.force_refresh.set()
+                            _wake_dashboard_observer(state)
                         live.start()
                         live.refresh()
                 elif ch == "p":
                     with state.lock:
                         state.preview_visible = not state.preview_visible
                     state.force_refresh.set()
+                    _wake_dashboard_observer(state)
                     live.refresh()
                 elif ch == "a":
                     # Alias for Enter — switch to worker window
@@ -756,6 +774,7 @@ def run_dashboard(
                             _switch_to_worker_window(pane_id)
     finally:
         state.stop_event.set()
+        _wake_dashboard_observer(state)
         if old_settings:
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)

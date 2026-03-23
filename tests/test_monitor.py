@@ -342,6 +342,45 @@ class TestRunMonitor:
         mock_wait.assert_called_once_with(str(tmp_path), str(tmp_path), 12, 7)
         assert mock_latest_event_id.call_count >= 1
 
+    def test_ensure_monitor_running_uses_uv_and_writes_pid(self, tmp_path, monkeypatch):
+        from dgov.monitor import ensure_monitor_running
+
+        project_root = tmp_path / "project"
+        session_root = tmp_path / "session"
+        project_root.mkdir()
+        session_root.mkdir()
+
+        captured: dict[str, object] = {}
+
+        class DummyProc:
+            pid = 4321
+
+        def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN201
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return DummyProc()
+
+        monkeypatch.setattr(
+            "shutil.which",
+            lambda exe: "/opt/homebrew/bin/uv" if exe == "uv" else None,
+        )
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+        ensure_monitor_running(str(project_root), session_root=str(session_root))
+
+        assert captured["cmd"] == [
+            "uv",
+            "run",
+            "dgov",
+            "monitor",
+            "-r",
+            str(project_root.resolve()),
+            "--session-root",
+            str(session_root.resolve()),
+        ]
+        assert captured["kwargs"]["cwd"] == str(project_root.resolve())
+        assert (session_root / ".dgov" / "monitor.pid").read_text() == "4321"
+
 
 class TestNudgeStuck:
     """Test _nudge_stuck edge cases."""
@@ -535,7 +574,14 @@ class TestMonitorEventState:
             {"id": 9, "event": "pane_review_pending", "pane": "worker-1"},
         ]
 
-        _apply_monitor_events("/project", "/session", state, events, auto_merge=True, auto_retry=True)
+        _apply_monitor_events(
+            "/project",
+            "/session",
+            state,
+            events,
+            auto_merge=True,
+            auto_retry=True,
+        )
 
         assert state.event_cursor == 9
         assert state.queue_dirty is True

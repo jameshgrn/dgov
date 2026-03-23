@@ -216,7 +216,13 @@ def test_run_wait_only_returns_timeout_when_retries_exhausted(tmp_path):
         "dgov.waiter.wait_worker_pane",
         side_effect=PaneTimeoutError("task", 30, "claude"),
     ):
-        result = run_wait_only("/repo", "task", session_root=str(tmp_path), timeout=30, max_retries=0)
+        result = run_wait_only(
+            "/repo",
+            "task",
+            session_root=str(tmp_path),
+            timeout=30,
+            max_retries=0,
+        )
 
     assert result.state == "failed"
     assert result.failure_stage == "timeout"
@@ -473,6 +479,41 @@ class TestPostDispatchLifecycle:
 
 
 class TestReviewMerge:
+    def test_dag_reactor_executes_merge_task(self, tmp_path):
+        from types import SimpleNamespace
+
+        from dgov.executor import DagReactor
+        from dgov.kernel import MergeTask, TaskMergeDone
+
+        dag = SimpleNamespace(
+            tasks={"task": SimpleNamespace(commit_message="merge task")},
+            merge_resolve="manual",
+            merge_squash=False,
+        )
+
+        with (
+            patch("dgov.persistence.get_pane", return_value=None),
+            patch(
+                "dgov.executor.run_merge_only",
+                return_value=SimpleNamespace(error=None),
+            ) as mock_merge,
+        ):
+            result = DagReactor("/repo", str(tmp_path), 1, dag).execute(
+                MergeTask("task", "pane-1")
+            )
+
+        assert isinstance(result, TaskMergeDone)
+        assert result.task_slug == "task"
+        assert result.error is None
+        mock_merge.assert_called_once_with(
+            "/repo",
+            "pane-1",
+            session_root=str(tmp_path),
+            resolve="manual",
+            squash=False,
+            message="merge task",
+        )
+
     def test_run_review_merge_blocks_non_safe_review(self, tmp_path):
         with patch(
             "dgov.inspection.review_worker_pane",
@@ -585,7 +626,12 @@ def test_run_escalate_only_success(monkeypatch, tmp_path):
         "dgov.recovery.escalate_worker_pane",
         lambda *args, **kwargs: {"new_slug": "s2"},
     )
-    result = run_escalate_only("/repo", "task1", session_root=str(tmp_path), target_agent="qwen-35b")
+    result = run_escalate_only(
+        "/repo",
+        "task1",
+        session_root=str(tmp_path),
+        target_agent="qwen-35b",
+    )
     assert isinstance(result, EscalateResult)
     assert result.slug == "task1"
     assert result.new_slug == "s2"
@@ -599,7 +645,12 @@ def test_run_escalate_only_error(monkeypatch, tmp_path):
         "dgov.recovery.escalate_worker_pane",
         lambda *args, **kwargs: {"error": "escalation failed"},
     )
-    result = run_escalate_only("/repo", "task1", session_root=str(tmp_path), target_agent="qwen-35b")
+    result = run_escalate_only(
+        "/repo",
+        "task1",
+        session_root=str(tmp_path),
+        target_agent="qwen-35b",
+    )
     assert isinstance(result, EscalateResult)
     assert result.slug == "task1"
     assert result.new_slug is None
@@ -632,5 +683,4 @@ class TestResolveTouches:
     def test_empty(self, tmp_path):
         result = resolve_touches()
         assert result == []
-
 
