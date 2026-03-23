@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING
 
 # ---------------------------------------------------------------------------
 # DAG Kernel — multi-pane orchestration with dependency tracking
@@ -180,7 +179,6 @@ DagEvent = (
     | TaskRetryStarted
     | TaskGovernorResumed
 )
-
 
 
 @dataclass
@@ -527,14 +525,20 @@ class DagKernel:
         merged = tuple(s for s, st in self.task_states.items() if st == DagTaskState.MERGED)
         failed = tuple(s for s, st in self.task_states.items() if st == DagTaskState.FAILED)
         skipped = tuple(s for s, st in self.task_states.items() if st == DagTaskState.SKIPPED)
-        blocked = tuple(s for s, st in self.task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR)
+        blocked = tuple(
+            s for s, st in self.task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR
+        )
 
         if failed or skipped or blocked:
             self.state = DagState.PARTIAL if merged else DagState.FAILED
         else:
             self.state = DagState.COMPLETED
 
-        return [DagDone(status=self.state, merged=merged, failed=failed, skipped=skipped, blocked=blocked)]
+        return [
+            DagDone(
+                status=self.state, merged=merged, failed=failed, skipped=skipped, blocked=blocked
+            )
+        ]
 
 
 # -- Utilities --
