@@ -87,6 +87,8 @@ class DashboardState:
     # Done notification tracking
     recent_done_slugs: list[str] = field(default_factory=list)
     done_bell_rung: bool = False
+    # Eval contract from active DAG run (typed persistence, never blobs)
+    eval_summary: str = ""
 
 
 def _get_branch(project_root: str) -> str:
@@ -196,6 +198,38 @@ def fetch_panes(state: DashboardState) -> None:
             if raw:
                 preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
 
+        # Compute eval summary from active DAG runs (typed tables)
+        eval_summary = ""
+        try:
+            from dgov.persistence import list_active_dag_runs, list_dag_tasks
+
+            active_runs = list_active_dag_runs(session_root)
+            if active_runs:
+                run = active_runs[0]
+                run_evals = run.get("evals", [])
+                if run_evals:
+                    links = run.get("unit_eval_links", [])
+                    tasks = list_dag_tasks(session_root, run["id"])
+                    task_status = {t["slug"]: t.get("status", "pending") for t in tasks}
+                    eval_units: dict[str, list[str]] = {}
+                    for lk in links:
+                        eval_units.setdefault(lk["eval_id"], []).append(lk["unit_slug"])
+                    passed = 0
+                    failed = 0
+                    for ev in run_evals:
+                        units = eval_units.get(ev["eval_id"], [])
+                        if units and all(task_status.get(u) == "merged" for u in units):
+                            passed += 1
+                        elif any(task_status.get(u) in ("failed", "abandoned") for u in units):
+                            failed += 1
+                    total = len(run_evals)
+                    if failed:
+                        eval_summary = f"E:{passed}/{total} ({failed} FAIL)"
+                    else:
+                        eval_summary = f"E:{passed}/{total}"
+        except Exception:
+            pass
+
         with state.lock:
             state.panes = panes
             state.events = events
@@ -203,6 +237,7 @@ def fetch_panes(state: DashboardState) -> None:
             state.last_refresh = time.time()
             state.error = ""
             state.preview_lines = preview
+            state.eval_summary = eval_summary
             m_ts = monitor_status.get("timestamp", 0)
             state.monitor_timestamp = float(m_ts) if m_ts else 0.0
             # Update done notification tracking
@@ -410,6 +445,7 @@ def _build_layout(
         preview_visible = state.preview_visible
         monitor_timestamp = state.monitor_timestamp
         scroll_offset = state.scroll_offset
+        eval_summary = state.eval_summary
 
     ts = (
         time.strftime("%a %b %d, %I:%M:%S %p %Z", time.localtime(last_refresh))
@@ -425,6 +461,11 @@ def _build_layout(
     mon_color = "green" if monitor_alive else "red"
     header_text.append(" \u2502 ", style="dim")
     header_text.append("\u25cf", style=mon_color)
+
+    if eval_summary:
+        header_text.append(" \u2502 ", style="dim")
+        eval_color = "red" if "FAIL" in eval_summary else "green"
+        header_text.append(eval_summary, style=eval_color)
 
     # Show done notification banner
     with state.lock:

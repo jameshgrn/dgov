@@ -672,6 +672,40 @@ class TestLayoutRendering:
         layout = _build_layout(state, term_width=120, term_height=20)
         assert layout["body"]["bottom"].get("monitor") is not None
 
+    def test_eval_summary_in_header(self):
+        """Eval summary from typed persistence appears in dashboard header."""
+        from dgov.dashboard import DashboardState
+
+        state = DashboardState(
+            panes=[{"slug": "w1", "agent": "qwen-9b", "state": "active", "duration_s": 10}],
+            branch="main",
+            last_refresh=1710000000,
+            eval_summary="E:2/3",
+        )
+        output = _render_dashboard_text(state, width=120, height=16)
+        assert "E:2/3" in output
+
+    def test_eval_summary_empty_when_no_dag(self):
+        """No eval summary shown when no DAG is active."""
+        from dgov.dashboard import DashboardState
+
+        state = DashboardState(branch="main", last_refresh=1710000000)
+        output = _render_dashboard_text(state, width=120, height=16)
+        assert "E:" not in output
+
+    def test_eval_summary_shows_failures(self):
+        """Eval summary includes failure count when evals fail."""
+        from dgov.dashboard import DashboardState
+
+        state = DashboardState(
+            branch="main",
+            last_refresh=1710000000,
+            eval_summary="E:1/3 (1 FAIL)",
+        )
+        output = _render_dashboard_text(state, width=120, height=16)
+        assert "E:1/3" in output
+        assert "FAIL" in output
+
 
 @pytest.mark.unit
 class TestDoneNotifications:
