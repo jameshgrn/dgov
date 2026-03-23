@@ -236,6 +236,23 @@ def data_thread(state: DashboardState, interval: float) -> None:
         state.force_refresh.clear()
 
 
+def monitor_thread(state: DashboardState) -> None:
+    """Run the reactive monitor loop in a background thread."""
+    from dgov.monitor import run_monitor
+
+    try:
+        run_monitor(
+            state.project_root,
+            session_root=state.session_root,
+            auto_merge=True,  # Enable auto-actions while dashboard is open
+            auto_retry=True,
+        )
+    except Exception as e:
+        with state.lock:
+            state.error = f"Monitor thread failed: {e}"
+        logger.exception("Monitor thread crashed")
+
+
 def _sort_panes_hierarchical(
     panes: list[dict], selected: int
 ) -> list[tuple[dict, int, bool, int]]:
@@ -584,6 +601,9 @@ def run_dashboard(
 
     thread = threading.Thread(target=data_thread, args=(state, refresh_interval), daemon=True)
     thread.start()
+
+    mon_thread = threading.Thread(target=monitor_thread, args=(state,), daemon=True)
+    mon_thread.start()
 
     old_settings = None
     if is_tty:
