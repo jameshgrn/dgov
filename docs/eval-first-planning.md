@@ -42,6 +42,7 @@ Use these `kind` values deliberately:
 - `invariant`: names behavior that must remain unchanged.
 - `non_goal`: states what the task must not expand into.
 - `manual`: reserves a check that cannot yet be made deterministic.
+- `performance`: asserts latency, throughput, or resource usage bounds.
 
 ## Unit checklist
 
