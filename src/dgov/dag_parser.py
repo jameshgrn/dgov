@@ -30,6 +30,9 @@ class DagTaskSpec:
     lint_clean: bool = True
     post_merge_check: str = ""
     review_agent: str = ""  # model for reviewing this task's output
+    role: str = "worker"
+    template: str = ""
+    template_vars: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -138,8 +141,13 @@ def _parse_task(
         files=files,
         permission_mode=raw.get("permission_mode", defaults["permission_mode"]),
         timeout_s=raw.get("timeout_s", defaults["timeout_s"]),
+        tests_pass=bool(raw.get("tests_pass", True)),
+        lint_clean=bool(raw.get("lint_clean", True)),
         post_merge_check=raw.get("post_merge_check", ""),
         review_agent=str(raw.get("review_agent", "")),
+        role=str(raw.get("role", "worker")),
+        template=str(raw.get("template", "")),
+        template_vars=dict(raw.get("vars", {})),
     )
 
 

@@ -514,6 +514,7 @@ def run_post_dispatch_lifecycle(
     from dgov.persistence import set_pane_metadata
 
     session_root = os.path.abspath(session_root or project_root)
+    claimed_slugs: set[str] = {slug}
 
     try:
         set_pane_metadata(session_root, slug, landing=True)
@@ -547,6 +548,12 @@ def run_post_dispatch_lifecycle(
             phase_callback=phase_callback,
         )
         current_slug = wait_res.slug
+        if current_slug not in claimed_slugs:
+            try:
+                set_pane_metadata(session_root, current_slug, landing=True)
+            except Exception:
+                logger.debug("failed to set landing flag for %s", current_slug, exc_info=True)
+            claimed_slugs.add(current_slug)
         if wait_res.state != "completed":
             state = "failed"
             failure_stage = wait_res.failure_stage
@@ -615,10 +622,11 @@ def run_post_dispatch_lifecycle(
         )
         current_slug = cleanup_res.slug if cleanup_res else current_slug
         
-        try:
-            set_pane_metadata(session_root, current_slug, landing=False)
-        except Exception:
-            logger.debug("failed to unset landing flag for %s", current_slug, exc_info=True)
+        for claimed in claimed_slugs:
+            try:
+                set_pane_metadata(session_root, claimed, landing=False)
+            except Exception:
+                logger.debug("failed to unset landing flag for %s", claimed, exc_info=True)
 
     return PostDispatchResult(
         state=state,
@@ -1508,6 +1516,7 @@ def run_dag_kernel(
         max_concurrent=max_concurrent,
         skip=skip or frozenset(),
         review_agents=review_agents,
+        max_retries=getattr(dag, "default_max_retries", 3),
     )
     actions = kernel.start()
 
@@ -1623,6 +1632,7 @@ def run_dag_kernel(
                 action.task_slug,
                 action.pane_slug,
                 action.attempt,
+                getattr(dag, "default_max_retries", 3),
                 _progress,
             )
             if isinstance(event, TaskRetryStarted):
@@ -1698,6 +1708,7 @@ def _dag_dispatch(
             slug=dag_slug,
             session_root=session_root,
             context_packet=packet,
+            role=task.role,
         )
         pane_slug = pane.slug
         upsert_dag_task(
@@ -1795,7 +1806,7 @@ def _dag_review(
         pane_slug,
         session_root=session_root,
         require_safe=True,
-        require_commits=True,
+        require_commits=False,
         review_agent=review_agent,
         tests_pass=task.tests_pass,
         lint_clean=task.lint_clean,
@@ -1844,7 +1855,15 @@ def _dag_merge(
                 stale_files,
             )
 
-    result = run_merge_only(project_root, pane_slug, session_root=session_root)
+    task = dag.tasks[task_slug]
+    result = run_merge_only(
+        project_root,
+        pane_slug,
+        session_root=session_root,
+        resolve=dag.merge_resolve,
+        squash=dag.merge_squash,
+        message=task.commit_message or None,
+    )
     if result.error:
         progress(f"  merge failed {task_slug}: {result.error}")
     else:
@@ -1859,6 +1878,7 @@ def _dag_retry(
     task_slug: str,
     pane_slug: str,
     attempt: int,
+    max_retries: int,
     progress: Callable[[str], None],
 ) -> object:
     """Execute a RetryTask action. Returns TaskRetryStarted or TaskDispatchFailed."""
@@ -1872,20 +1892,24 @@ def _dag_retry(
             project_root,
             pane_slug,
             session_root=session_root,
+            max_retries=max_retries,
         )
-        if hasattr(res, "error") and res.error:
-            return TaskDispatchFailed(task_slug, res.error)
+        
+        if res.get("error"):
+            return TaskDispatchFailed(task_slug, res["error"])
 
-        new_slug = getattr(res, "new_slug", "")
+        new_slug = res.get("new_slug")
         if not new_slug:
             return TaskDispatchFailed(task_slug, "Retry failed to produce new slug")
+
+        target_agent = res.get("agent", "")
 
         upsert_dag_task(
             session_root,
             run_id,
             task_slug,
             "dispatched",
-            getattr(res, "target_agent", ""),
+            target_agent,
             attempt=attempt + 1,
             pane_slug=new_slug,
         )

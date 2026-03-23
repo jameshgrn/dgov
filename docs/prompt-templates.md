@@ -17,6 +17,7 @@ dgov ships with several optimized templates:
 | `refactor`| Refactor code while preserving behavior | `pi` |
 | `test` | Write tests for an existing file | `pi` |
 | `review` | Review code and output structured JSON findings | `claude` |
+| `lt-gov` | Meta-prompt for a Lieutenant Governor managing workers | `codex-mini` |
 
 ## Using templates
 

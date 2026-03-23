@@ -801,6 +801,11 @@ def create_worker_pane(
             all_env.update(agent_def.env)
             if env_vars:
                 all_env.update(env_vars)
+
+            if role == "lt-gov":
+                all_env["DGOV_SKIP_GOVERNOR_CHECK"] = "1"
+                all_env["DGOV_PROJECT_ROOT"] = project_root
+
             for key in all_env:
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
                     raise ValueError(f"Invalid environment variable name: {key!r}")

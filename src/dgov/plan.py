@@ -53,6 +53,9 @@ class PlanUnit:
     timeout_s: int = 0  # 0 = use plan default
     escalation: tuple[str, ...] = ()
     review_agent: str = ""  # model for reviewing this unit's output
+    role: str = "worker"
+    template: str = ""
+    template_vars: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -198,6 +201,9 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
         timeout_s=int(raw.get("timeout_s", 0)),
         escalation=tuple(raw.get("escalation", ())),
         review_agent=str(raw.get("review_agent", "")),
+        role=str(raw.get("role", "worker")),
+        template=str(raw.get("template", "")),
+        template_vars=dict(raw.get("vars", {})),
     )
 
 
@@ -393,7 +399,9 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
         A DagDefinition ready for execution by the DagKernel.
     """
     from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+    from dgov.templates import load_templates, render_template
 
+    all_templates = load_templates(plan.session_root)
     tasks: dict[str, DagTaskSpec] = {}
 
     for slug, unit in plan.units.items():
@@ -409,28 +417,42 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
             delete=unit.files.delete,
         )
 
-        # Build modified prompt with context and acceptance info
-        modified_prompt = unit.prompt
+        # Build modified prompt
+        if unit.template:
+            if unit.template not in all_templates:
+                raise ValueError(f"Unit {slug!r}: Unknown template {unit.template!r}")
+            tpl = all_templates[unit.template]
+            tpl_vars = dict(unit.template_vars)
+            if unit.role == "lt-gov":
+                # Inject LT-GOV defaults if missing
+                if "ltgov_slug" not in tpl_vars:
+                    tpl_vars["ltgov_slug"] = slug
+                if "default_agent" not in tpl_vars:
+                    tpl_vars["default_agent"] = plan.default_agent
+            modified_prompt = render_template(tpl, tpl_vars)
+        else:
+            # Build modified prompt with context and acceptance info (auto-structure)
+            modified_prompt = unit.prompt
 
-        # Add context files suffix if there are read files
-        if unit.files.read:
-            read_list = ", ".join(sorted(unit.files.read))
-            modified_prompt += f"\n\n## Context files\nAlso read: {read_list}"
+            # Add context files suffix if there are read files
+            if unit.files.read:
+                read_list = ", ".join(sorted(unit.files.read))
+                modified_prompt += f"\n\n## Context files\nAlso read: {read_list}"
 
-        # Add acceptance criteria suffix if different from defaults
-        acceptance = unit.acceptance
-        if (
-            acceptance.tests_pass != AcceptanceCriteria().tests_pass
-            or acceptance.lint_clean != AcceptanceCriteria().lint_clean
-            or acceptance.custom_check != AcceptanceCriteria().custom_check
-        ):
-            modified_prompt += "\n\n## Acceptance criteria"
-            modified_prompt += f"\n- Tests must pass: {'yes' if acceptance.tests_pass else 'no'}"
-            modified_prompt += (
-                f"\n- Lint must be clean: {'yes' if acceptance.lint_clean else 'no'}"
-            )
-            if acceptance.custom_check:
-                modified_prompt += f"\n- Custom check: {acceptance.custom_check}"
+            # Add acceptance criteria suffix if different from defaults
+            acceptance = unit.acceptance
+            if (
+                acceptance.tests_pass != AcceptanceCriteria().tests_pass
+                or acceptance.lint_clean != AcceptanceCriteria().lint_clean
+                or acceptance.custom_check != AcceptanceCriteria().custom_check
+            ):
+                modified_prompt += "\n\n## Acceptance criteria"
+                modified_prompt += f"\n- Tests must pass: {'yes' if acceptance.tests_pass else 'no'}"
+                modified_prompt += (
+                    f"\n- Lint must be clean: {'yes' if acceptance.lint_clean else 'no'}"
+                )
+                if acceptance.custom_check:
+                    modified_prompt += f"\n- Custom check: {acceptance.custom_check}"
 
         tasks[slug] = DagTaskSpec(
             slug=slug,
@@ -443,10 +465,13 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
             files=dag_files,
             permission_mode=plan.permission_mode,
             timeout_s=timeout_s,
-            tests_pass=acceptance.tests_pass,
-            lint_clean=acceptance.lint_clean,
-            post_merge_check=acceptance.custom_check,
+            tests_pass=unit.acceptance.tests_pass,
+            lint_clean=unit.acceptance.lint_clean,
+            post_merge_check=unit.acceptance.custom_check,
             review_agent=review_agent,
+            role=unit.role,
+            template=unit.template,
+            template_vars=unit.template_vars,
         )
 
     return DagDefinition(
@@ -516,6 +541,18 @@ def serialize_plan(plan: PlanSpec) -> str:
             lines.append(f"escalation = [{escs}]")
         if unit.review_agent:
             lines.append(f'review_agent = "{unit.review_agent}"')
+        if unit.role != "worker":
+            lines.append(f'role = "{unit.role}"')
+        if unit.template:
+            lines.append(f'template = "{unit.template}"')
+        if unit.template_vars:
+            lines.append("[units." + slug + ".vars]")
+            for k, v in unit.template_vars.items():
+                if "\n" in v:
+                    lines.append(f'{k} = """\n{v}"""')
+                else:
+                    lines.append(f'{k} = "{v}"')
+        
         lines.append("")
 
         # Files subtable

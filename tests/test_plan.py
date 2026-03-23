@@ -703,3 +703,45 @@ edit = ["a.py"]
         plan_path = _write_plan(tmp_path, toml_content)
         with pytest.raises(ValueError, match="Unsupported plan version"):
             run_plan(plan_path)
+
+
+class TestLTGovCompilation:
+    def test_compile_lt_gov_task(self, tmp_path):
+        """Compile an LT-GOV task with template variables."""
+        # Create a mock template directory and file
+        tpl_dir = tmp_path / ".dgov" / "templates"
+        tpl_dir.mkdir(parents=True)
+        (tpl_dir / "lt-gov.toml").write_text("""
+name = "lt-gov"
+template = "LT: {ltgov_slug}, Agent: {default_agent}, Tasks: {task_list}"
+required_vars = ["ltgov_slug", "default_agent", "task_list"]
+""")
+
+        plan_toml = f"""
+[plan]
+version = 1
+name = "lt-plan"
+goal = "Test LT-GOV"
+session_root = "{tmp_path}"
+
+[units.lt-task]
+summary = "LT summary"
+prompt = "ignored"
+commit_message = "LT commit"
+role = "lt-gov"
+template = "lt-gov"
+[units.lt-task.vars]
+task_list = "1. a, 2. b"
+[units.lt-task.files]
+edit = ["src/api.py"]
+"""
+
+        plan_file = _write_plan(tmp_path, plan_toml)
+        plan = parse_plan_file(plan_file)
+        dag = compile_plan(plan)
+
+        task = dag.tasks["lt-task"]
+        assert task.role == "lt-gov"
+        assert task.prompt == "LT: lt-task, Agent: qwen-9b, Tasks: 1. a, 2. b"
+        assert task.template == "lt-gov"
+        assert task.template_vars == {"task_list": "1. a, 2. b"}
