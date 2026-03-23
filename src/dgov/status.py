@@ -355,13 +355,24 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             alive = pane_id in bulk_info if pane_id else False
             wt = p.get("worktree_path", "")
             wt_exists = bool(wt) and Path(wt).exists()
-            if not alive and not wt_exists:
+
+            # If pane_id exists but is dead, and worktree is gone, it's stale.
+            # If NO pane_id exists yet (monitor dispatching), but worktree exists, it's NOT stale.
+            should_prune = False
+            if pane_id:
+                if not alive and not wt_exists:
+                    should_prune = True
+            else:
+                if not wt_exists:
+                    should_prune = True
+
+            if should_prune:
                 remove_pane(session_root, slug)
                 done_path = Path(session_root) / STATE_DIR / "done" / slug
                 done_path.unlink(missing_ok=True)
                 pruned.append(slug)
                 pruned_slugs.add(slug)
-            elif not alive and wt_exists and state == "active":
+            elif pane_id and not alive and wt_exists and state == "active":
                 # Dead process with orphaned worktree — force to failed
                 from dgov.persistence import settle_completion_state
 

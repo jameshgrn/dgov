@@ -63,6 +63,7 @@ class DagRunSummary:
     run_id: int
     dag_file: str
     status: str
+    definition_hash: str = ""
     succeeded: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
