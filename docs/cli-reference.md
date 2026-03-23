@@ -47,6 +47,31 @@ Generate a structured prompt for a refactoring task (Move, Extract, Inline, etc.
 | `--dest`| | string | required | Destination file (e.g. `src/b.py`) |
 | `--task`| | string | `Move` | Action type |
 
+### dgov plan scratch
+
+Create an ephemeral plan skeleton under `.dgov/plans/`. Scratch plans are
+gitignored by design and intended for draft orchestration work, not checked-in
+repo artifacts.
+
+| Flag | Short | Type | Default | Description |
+|------|-------|------|---------|-------------|
+| `NAME` | | string | required | Scratch plan name; writes `.dgov/plans/<name>.toml` |
+| `--project-root` | `-r` | string | `.` | Project root |
+| `--session-root` | `-S` | string | `None` | Location of `.dgov/`. Defaults to project root. |
+| `--force` | | bool | `False` | Overwrite an existing scratch plan |
+
+### dgov plan validate
+
+Parse a plan TOML file and print validation issues.
+
+### dgov plan compile
+
+Compile a plan TOML file into a DAG and render the tier view without executing it.
+
+### dgov plan run
+
+Execute a validated plan through the canonical DAG pipeline.
+
 ### dgov rebase
 
 Rebase the governor's branch onto its upstream. Stashes dirty changes, rebases, pops stash. Aborts on conflict.

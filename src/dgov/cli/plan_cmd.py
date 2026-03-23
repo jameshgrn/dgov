@@ -3,14 +3,43 @@
 from __future__ import annotations
 
 import json
+import os
 
 import click
+
+from dgov.cli import SESSION_ROOT_OPTION
 
 
 @click.group("plan")
 def plan_cmd():
     """Plan management: validate, compile, and run structured plans."""
     pass
+
+
+@plan_cmd.command("scratch")
+@click.argument("name")
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+@SESSION_ROOT_OPTION
+@click.option("--force", is_flag=True, help="Overwrite an existing scratch plan")
+def plan_scratch(name, project_root, session_root, force):
+    """Create a scratch plan under .dgov/plans/."""
+    from dgov.plan import write_scratch_plan
+
+    project_root = os.path.abspath(project_root)
+    session_root = os.path.abspath(session_root) if session_root else project_root
+
+    try:
+        path = write_scratch_plan(
+            name,
+            project_root=project_root,
+            session_root=session_root,
+            force=force,
+        )
+    except ValueError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(1) from None
+
+    click.echo(str(path))
 
 
 @plan_cmd.command("validate")

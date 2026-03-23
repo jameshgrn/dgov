@@ -15,6 +15,8 @@ All project-specific data lives in the `.dgov/` directory at your repository roo
 │   └── <slug>.log
 ├── prompts/          # Saved task prompts
 │   └── <slug>--<ts>.txt
+├── plans/            # Scratch plan specs (ephemeral, gitignored)
+│   └── <name>.toml
 ├── checkpoints/      # State snapshots
 │   └── <name>.json
 ├── experiments/      # Experiment results and logs
@@ -92,6 +94,13 @@ action = "escalate"
 ## Prompt templates
 
 TOML files at `.dgov/templates/<name>.toml` (see [Prompt templates](prompt-templates.md) for details).
+
+## Scratch plans
+
+Ephemeral plan specs created with `uv run dgov plan scratch <name>` live at
+`.dgov/plans/<name>.toml`. These files are treated as user-editable working
+inputs, not durable source files, so they belong under `.dgov/` rather than in
+the repo root.
 
 ## Protected files
 

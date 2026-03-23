@@ -283,6 +283,32 @@ class TestResumeAndRefresh:
         )
 
 
+class TestPlanCommands:
+    def test_plan_scratch_writes_under_dgov_plans(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "scratch", "review_refactor"])
+
+        expected = tmp_path / ".dgov" / "plans" / "review_refactor.toml"
+        assert result.exit_code == 0
+        assert result.output.strip() == str(expected.resolve())
+        assert expected.exists()
+
+    def test_plan_scratch_refuses_overwrite_without_force(
+        self, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        first = runner.invoke(cli, ["plan", "scratch", "river_test"])
+        second = runner.invoke(cli, ["plan", "scratch", "river_test"])
+
+        assert first.exit_code == 0
+        assert second.exit_code == 1
+        assert "already exists" in second.output
+
+
 class TestPaneHelp:
     def test_pane_help_lists_current_commands(self, runner: CliRunner) -> None:
         result = runner.invoke(cli, ["pane", "--help"])

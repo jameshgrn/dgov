@@ -8,6 +8,7 @@ can execute mechanically.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -84,6 +85,82 @@ class PlanIssue:
     severity: str  # "error" or "warning"
     message: str
     unit: str | None = None
+
+
+_SCRATCH_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _validate_scratch_name(name: str) -> str:
+    """Validate a scratch plan name for safe filesystem use."""
+    if not _SCRATCH_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid scratch plan name: {name!r}. "
+            "Use 1-64 chars: lowercase letters, digits, hyphens, or underscores."
+        )
+    return name
+
+
+def scratch_plans_dir(project_root: str, session_root: str | None = None) -> Path:
+    """Return the canonical directory for ephemeral scratch plans."""
+    root = Path(session_root or project_root).resolve()
+    return root / ".dgov" / "plans"
+
+
+def scratch_plan_path(
+    name: str,
+    *,
+    project_root: str = ".",
+    session_root: str | None = None,
+) -> Path:
+    """Return the canonical path for a scratch plan file."""
+    scratch_name = _validate_scratch_name(name)
+    return scratch_plans_dir(project_root, session_root) / f"{scratch_name}.toml"
+
+
+def _scratch_plan_template(name: str) -> str:
+    """Build the default scratch plan skeleton."""
+    scratch_name = _validate_scratch_name(name)
+    return f"""# Scratch plans live under .dgov/plans/ and are safe to delete when finished.
+# The plan is the contract. Keep file claims exact and dependencies minimal.
+# Optional plan-level routing stays here if needed:
+# default_agent = "qwen-9b"
+
+[plan]
+version = 1
+name = "{scratch_name}"
+goal = "Replace with the concrete goal before running."
+
+[units.first_change]
+summary = "Describe one concrete unit of work"
+prompt = \"\"\"
+1. Read the target files first.
+2. Make the requested change.
+3. Run targeted validation for the claimed files.
+4. git add the changed files.
+5. git commit -m "Describe the completed change"
+\"\"\"
+commit_message = "Describe the completed change"
+
+[units.first_change.files]
+edit = ["src/path/to/file.py"]
+read = ["tests/test_path_to_file.py"]
+"""
+
+
+def write_scratch_plan(
+    name: str,
+    *,
+    project_root: str = ".",
+    session_root: str | None = None,
+    force: bool = False,
+) -> Path:
+    """Create a scratch plan skeleton under .dgov/plans/."""
+    path = scratch_plan_path(name, project_root=project_root, session_root=session_root)
+    if path.exists() and not force:
+        raise ValueError(f"Scratch plan already exists: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_scratch_plan_template(name))
+    return path
 
 
 def _normalize_file_specs(files: dict) -> PlanUnitFiles:
@@ -447,7 +524,9 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
                 or acceptance.custom_check != AcceptanceCriteria().custom_check
             ):
                 modified_prompt += "\n\n## Acceptance criteria"
-                modified_prompt += f"\n- Tests must pass: {'yes' if acceptance.tests_pass else 'no'}"
+                modified_prompt += (
+                    f"\n- Tests must pass: {'yes' if acceptance.tests_pass else 'no'}"
+                )
                 modified_prompt += (
                     f"\n- Lint must be clean: {'yes' if acceptance.lint_clean else 'no'}"
                 )
@@ -552,7 +631,7 @@ def serialize_plan(plan: PlanSpec) -> str:
                     lines.append(f'{k} = """\n{v}"""')
                 else:
                     lines.append(f'{k} = "{v}"')
-        
+
         lines.append("")
 
         # Files subtable

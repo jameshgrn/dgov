@@ -12,7 +12,10 @@ from dgov.plan import (
     PlanUnitFiles,
     compile_plan,
     parse_plan_file,
+    scratch_plan_path,
+    scratch_plans_dir,
     validate_plan,
+    write_scratch_plan,
 )
 
 pytestmark = pytest.mark.unit
@@ -243,6 +246,42 @@ edit = ["/etc/passwd"]
 """
         with pytest.raises(ValueError, match="must be relative"):
             parse_plan_file(_write_plan(tmp_path, toml_content))
+
+
+class TestScratchPlans:
+    def test_scratch_plans_dir_uses_session_root(self, tmp_path: Path) -> None:
+        session_root = tmp_path / "session"
+        actual = scratch_plans_dir(str(tmp_path), str(session_root))
+        assert actual == session_root.resolve() / ".dgov" / "plans"
+
+    def test_scratch_plan_path_appends_toml(self, tmp_path: Path) -> None:
+        actual = scratch_plan_path("review_refactor", project_root=str(tmp_path))
+        assert actual == tmp_path.resolve() / ".dgov" / "plans" / "review_refactor.toml"
+
+    def test_write_scratch_plan_creates_valid_skeleton(self, tmp_path: Path) -> None:
+        path = write_scratch_plan("review_refactor", project_root=str(tmp_path))
+        assert path == tmp_path.resolve() / ".dgov" / "plans" / "review_refactor.toml"
+        assert path.exists()
+
+        spec = parse_plan_file(str(path))
+        assert spec.name == "review_refactor"
+        assert spec.goal == "Replace with the concrete goal before running."
+        assert "first_change" in spec.units
+
+    def test_write_scratch_plan_rejects_invalid_name(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Invalid scratch plan name"):
+            write_scratch_plan("Review Refactor", project_root=str(tmp_path))
+
+    def test_write_scratch_plan_requires_force_to_overwrite(self, tmp_path: Path) -> None:
+        path = write_scratch_plan("river_test", project_root=str(tmp_path))
+        path.write_text("sentinel")
+
+        with pytest.raises(ValueError, match="already exists"):
+            write_scratch_plan("river_test", project_root=str(tmp_path))
+
+        rewritten = write_scratch_plan("river_test", project_root=str(tmp_path), force=True)
+        assert rewritten == path
+        assert "[plan]" in path.read_text()
 
 
 class TestValidatePlan:

@@ -2,6 +2,18 @@
 
 A plan is a structured contract between the governor's high-level planning and the mechanical execution of tasks via a Directed Acyclic Graph (DAG).
 
+Scratch plans should live under `.dgov/plans/`, not in the repo root. Create
+one with `uv run dgov plan scratch <name>`, then edit the generated TOML before
+running `validate`, `compile`, or `run`.
+
+## Authoring guidance
+
+- The plan is the contract. Encode file claims in TOML instead of leaving scope implicit in prompts.
+- Keep units small and concrete. One logical change per unit beats a vague omnibus task.
+- Use `depends_on` only for real execution dependencies, not as a substitute for thinking through file claims.
+- Prompts should tell the worker what to read, what to change, and what validation to run.
+- Treat `.dgov/plans/*.toml` as scratch artifacts. Keep durable, reviewed plans somewhere intentional if they are part of repo history.
+
 ## Format
 
 Plans are written in TOML format. A plan consists of a global `[plan]` section and one or more `[units.<slug>]` sections.
@@ -11,7 +23,6 @@ Plans are written in TOML format. A plan consists of a global `[plan]` section a
 version = 1
 name = "my-feature-plan"
 goal = "Implement a new feature with tests"
-default_agent = "worker"
 max_retries = 2
 
 [units.add-logic]
@@ -78,3 +89,13 @@ File scopes are used for:
 3. **Review Gating**: Ensuring only declared files were modified.
 
 Possible keys: `create`, `edit`, `delete`, `read`.
+
+## Scratch workflow
+
+```bash
+uv run dgov plan scratch review-refactor
+$EDITOR .dgov/plans/review-refactor.toml
+uv run dgov plan validate .dgov/plans/review-refactor.toml
+uv run dgov plan compile .dgov/plans/review-refactor.toml
+uv run dgov plan run .dgov/plans/review-refactor.toml
+```

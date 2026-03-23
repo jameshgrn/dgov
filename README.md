@@ -183,8 +183,18 @@ and `commit_message` from TOML used as the merge commit message.
 |---------|-------------|
 | `dgov mission` | Single-prompt orchestration: dispatch, wait, review, merge |
 | `dgov batch` | Execute a batch spec with DAG-ordered parallelism |
+| `dgov plan scratch` | Create a scratch plan under `.dgov/plans/` |
 | `dgov monitor` | Run the worker monitor daemon or launch it in a utility pane |
 | `dgov review-fix` | Review-then-fix pipeline with severity filtering |
+
+Scratch plans are the right place for ad hoc DAG work. Create them under the
+managed scratch namespace, edit them, then validate or run them:
+
+```bash
+uv run dgov plan scratch review-refactor
+uv run dgov plan validate .dgov/plans/review-refactor.toml
+uv run dgov plan compile .dgov/plans/review-refactor.toml
+```
 
 ### LT-GOV (delegation)
 
