@@ -126,3 +126,38 @@ def plan_run(plan_file, max_concurrent):
             indent=2,
         )
     )
+
+
+@plan_cmd.command("verify")
+@click.argument("run_id", type=int)
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+@SESSION_ROOT_OPTION
+@click.option("--timeout", default=60, help="Timeout per evidence command (seconds)")
+def plan_verify(run_id, project_root, session_root, timeout):
+    """Run eval evidence commands for a DAG run and report pass/fail."""
+    from dgov.plan import verify_eval_evidence
+
+    project_root = os.path.abspath(project_root)
+    session_root = os.path.abspath(session_root) if session_root else project_root
+
+    results = verify_eval_evidence(
+        session_root, run_id, project_root=project_root, timeout_s=timeout
+    )
+
+    if not results:
+        click.echo("No evals with evidence commands found.")
+        return
+
+    passed = sum(1 for r in results if r["passed"])
+    failed = sum(1 for r in results if not r["passed"])
+
+    for r in results:
+        marker = "PASS" if r["passed"] else "FAIL"
+        color = "green" if r["passed"] else "red"
+        click.secho(f"  [{marker}] {r['eval_id']} ({r['kind']}): {r['statement']}", fg=color)
+        if not r["passed"] and r["output"]:
+            click.echo(f"         {r['output'][:100]}")
+
+    click.echo(f"\n{passed} passed, {failed} failed, {len(results)} total")
+    if failed:
+        raise SystemExit(1)

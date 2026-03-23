@@ -890,3 +890,75 @@ def run_plan(
             for eval_id in unit.satisfies
         ],
     )
+
+
+def verify_eval_evidence(
+    session_root: str,
+    dag_run_id: int,
+    *,
+    project_root: str = ".",
+    timeout_s: int = 60,
+) -> list[dict]:
+    """Run eval evidence commands and record pass/fail results.
+
+    For each eval in the DAG run, executes the evidence command in a
+    subprocess. Records results as typed rows in dag_eval_results.
+    Returns the list of results.
+    """
+    import subprocess
+
+    from dgov.persistence import (
+        emit_event,
+        list_dag_evals,
+        record_eval_result,
+    )
+
+    evals = list_dag_evals(session_root, dag_run_id)
+    results = []
+
+    for ev in evals:
+        evidence = ev.get("evidence", "")
+        if not evidence.strip():
+            continue
+
+        exit_code = None
+        try:
+            proc = subprocess.run(
+                evidence,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=project_root,
+                timeout=timeout_s,
+            )
+            passed = proc.returncode == 0
+            exit_code = proc.returncode
+            output = (proc.stdout + proc.stderr).strip()
+        except subprocess.TimeoutExpired:
+            passed = False
+            output = f"Evidence command timed out after {timeout_s}s"
+        except OSError as exc:
+            passed = False
+            output = f"Evidence command failed: {exc}"
+
+        record_eval_result(session_root, dag_run_id, ev["eval_id"], passed, exit_code, output)
+        result = {
+            "eval_id": ev["eval_id"],
+            "kind": ev["kind"],
+            "statement": ev["statement"],
+            "passed": passed,
+            "output": output[:200],
+        }
+        results.append(result)
+
+    emit_event(
+        session_root,
+        "evals_verified",
+        f"dag/{dag_run_id}",
+        dag_run_id=dag_run_id,
+        passed=sum(1 for r in results if r["passed"]),
+        failed=sum(1 for r in results if not r["passed"]),
+        total=len(results),
+    )
+
+    return results

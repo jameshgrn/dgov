@@ -565,6 +565,19 @@ CREATE TABLE IF NOT EXISTS dag_unit_eval_links (
     FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
 )"""
 
+_CREATE_DAG_EVAL_RESULTS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS dag_eval_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_run_id INTEGER NOT NULL,
+    eval_id TEXT NOT NULL,
+    passed INTEGER NOT NULL,
+    exit_code INTEGER,
+    output TEXT NOT NULL DEFAULT '',
+    verified_at TEXT NOT NULL,
+    UNIQUE(dag_run_id, eval_id),
+    FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
+)"""
+
 _CREATE_MERGE_QUEUE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS merge_queue (
     ticket TEXT PRIMARY KEY,
@@ -1189,6 +1202,7 @@ def ensure_dag_tables(session_root: str) -> None:
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
     conn.execute(_CREATE_DAG_EVALS_TABLE_SQL)
     conn.execute(_CREATE_DAG_UNIT_EVAL_LINKS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_EVAL_RESULTS_TABLE_SQL)
     conn.commit()
 
 
@@ -1247,6 +1261,7 @@ def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
     }
     run["evals"] = list_dag_evals(session_root, run["id"])
     run["unit_eval_links"] = list_dag_unit_eval_links(session_root, run["id"])
+    run["eval_results"] = list_eval_results(session_root, run["id"])
     return run
 
 
@@ -1271,6 +1286,7 @@ def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
     }
     run["evals"] = list_dag_evals(session_root, run["id"])
     run["unit_eval_links"] = list_dag_unit_eval_links(session_root, run["id"])
+    run["eval_results"] = list_eval_results(session_root, run["id"])
     return run
 
 
@@ -1329,6 +1345,7 @@ def list_active_dag_runs(session_root: str) -> list[dict]:
     for run in runs:
         run["evals"] = list_dag_evals(session_root, run["id"])
         run["unit_eval_links"] = list_dag_unit_eval_links(session_root, run["id"])
+        run["eval_results"] = list_eval_results(session_root, run["id"])
     return runs
 
 
@@ -1400,6 +1417,57 @@ def list_dag_unit_eval_links(session_root: str, dag_run_id: int) -> list[dict]:
         (dag_run_id,),
     ).fetchall()
     return [{"unit_slug": row[0], "eval_id": row[1]} for row in rows]
+
+
+def record_eval_result(
+    session_root: str,
+    dag_run_id: int,
+    eval_id: str,
+    passed: bool,
+    exit_code: int | None,
+    output: str,
+) -> None:
+    """Record an eval evidence check result."""
+    from datetime import datetime, timezone
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        conn.execute(
+            """INSERT OR REPLACE INTO dag_eval_results
+               (dag_run_id, eval_id, passed, exit_code, output, verified_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                dag_run_id,
+                eval_id,
+                1 if passed else 0,
+                exit_code,
+                output[-2000:] if len(output) > 2000 else output,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+
+    _retry_on_lock(_do)
+
+
+def list_eval_results(session_root: str, dag_run_id: int) -> list[dict]:
+    """List eval evidence check results for a DAG run."""
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT eval_id, passed, exit_code, output, verified_at"
+        " FROM dag_eval_results WHERE dag_run_id = ? ORDER BY eval_id",
+        (dag_run_id,),
+    ).fetchall()
+    return [
+        {
+            "eval_id": row[0],
+            "passed": bool(row[1]),
+            "exit_code": row[2],
+            "output": row[3],
+            "verified_at": row[4],
+        }
+        for row in rows
+    ]
 
 
 def upsert_dag_task(

@@ -215,6 +215,7 @@ def dag_status(dagfile, run_id):
     # Eval contract
     evals = run.get("evals", [])
     links = run.get("unit_eval_links", [])
+    eval_results = {r["eval_id"]: r for r in run.get("eval_results", [])}
     if evals:
         click.echo()
         click.echo("Evals:")
@@ -231,8 +232,11 @@ def dag_status(dagfile, run_id):
             kind = ev["kind"]
             stmt = ev["statement"]
             satisfying = eval_units.get(eid, [])
-            # Derive eval status from unit statuses
-            if not satisfying:
+            # Use evidence result if available, otherwise derive from unit status
+            er = eval_results.get(eid)
+            if er is not None:
+                marker = "PASS" if er["passed"] else "FAIL"
+            elif not satisfying:
                 marker = "?"
             elif all(task_status.get(u) == "merged" for u in satisfying):
                 marker = "PASS"
@@ -243,6 +247,8 @@ def dag_status(dagfile, run_id):
             units_str = ", ".join(satisfying) if satisfying else "(none)"
             click.echo(f"  [{marker:4s}] {eid} ({kind}): {stmt}")
             click.echo(f"         units: {units_str}")
+            if er is not None and not er["passed"] and er.get("output"):
+                click.echo(f"         evidence: {er['output'][:80]}")
 
     click.echo()
 

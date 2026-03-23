@@ -381,6 +381,22 @@ def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: l
                 dag_run_id=dag_state.run_id,
                 status=action.status,
             )
+            # Run eval evidence checks on completion
+            if action.status == "completed":
+                try:
+                    from dgov.plan import verify_eval_evidence
+
+                    verify_eval_evidence(
+                        session_root,
+                        dag_state.run_id,
+                        project_root=dag_state.reactor.project_root,
+                    )
+                except Exception:
+                    logger.debug(
+                        "eval evidence check failed for dag/%s",
+                        dag_state.run_id,
+                        exc_info=True,
+                    )
             continue
 
         event = dag_state.reactor.execute(action)
