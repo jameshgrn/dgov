@@ -1236,7 +1236,16 @@ def close_worker_pane(
         close_worker_pane(child_project_root, child_slug, session_root, force=force)
 
     # Auto-enable force for terminal-state panes
-    if target.get("state") in ("merged", "closed", "done", "failed", "merge_conflict"):
+    if target.get("state") in (
+        "merged",
+        "closed",
+        "done",
+        "failed",
+        "merge_conflict",
+        "superseded",
+        "timed_out",
+        "abandoned",
+    ):
         force = True
 
     result = _full_cleanup(
@@ -1270,10 +1279,26 @@ def close_worker_pane(
         )
         logger.info("Pane %s preserved for inspection in state %s", slug, target.get("state", ""))
     elif result.get("worktree_removal_failed"):
-        # Worktree already gone — nothing to inspect. Clean up the record.
+        # Check if the path is a real git worktree or just a leftover directory.
+        # The orphan pruner race can leave empty dirs that git doesn't recognize.
         wt = target.get("worktree_path", "")
-        if wt and not Path(wt).exists():
-            logger.info("Worktree already removed for %s — cleaning up pane record", slug)
+        is_valid_worktree = False
+        if wt and Path(wt).exists():
+            check = subprocess.run(
+                ["git", "-C", wt, "rev-parse", "--git-dir"],
+                capture_output=True,
+                text=True,
+            )
+            # Valid worktree has a .git file pointing to main repo's .git/worktrees/
+            is_valid_worktree = check.returncode == 0 and "worktrees" in check.stdout
+
+        if not is_valid_worktree:
+            # Leftover directory or already gone — clean up everything
+            if wt and Path(wt).is_dir():
+                import shutil
+
+                shutil.rmtree(wt, ignore_errors=True)
+            logger.info("Worktree invalid/gone for %s — cleaning up pane record", slug)
             update_pane_state(session_root, slug, "closed")
             emit_event(session_root, "pane_closed", slug)
             remove_pane(session_root, slug)
