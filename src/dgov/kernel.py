@@ -262,7 +262,7 @@ class DagKernel:
         """Reconstruct kernel state from DB."""
         # Use field() default_factory for task_states/pane_slugs/attempts
         k = cls(
-            deps=data["deps"],
+            deps={k: tuple(v) for k, v in data["deps"].items()},
             auto_merge=data.get("auto_merge", True),
             max_concurrent=data.get("max_concurrent", 0),
             skip=frozenset(data.get("skip", [])),
@@ -318,6 +318,8 @@ class DagKernel:
 
         if isinstance(event, TaskWaitDone):
             task = event.task_slug
+            if self.task_states.get(task) != DagTaskState.WAITING:
+                return []
             if event.pane_state in ("done", "reviewed_pass", "merged"):
                 self.task_states[task] = DagTaskState.REVIEWING
                 review_agent = self.review_agents.get(task, "")
@@ -341,6 +343,8 @@ class DagKernel:
 
         if isinstance(event, TaskReviewDone):
             task = event.task_slug
+            if self.task_states.get(task) != DagTaskState.REVIEWING:
+                return []
             if event.passed and event.commit_count > 0:
                 self.task_states[task] = DagTaskState.MERGE_READY
                 if self.auto_merge:
@@ -366,6 +370,8 @@ class DagKernel:
 
         if isinstance(event, TaskRetryStarted):
             task = event.task_slug
+            if self.task_states.get(task) != DagTaskState.DISPATCHED:
+                return []
             self.task_states[task] = DagTaskState.WAITING
             self.pane_slugs[task] = event.new_pane_slug
             self.attempts[task] = event.attempt + 1
@@ -375,6 +381,8 @@ class DagKernel:
 
         if isinstance(event, TaskGovernorResumed):
             task = event.task_slug
+            if self.task_states.get(task) != DagTaskState.BLOCKED_ON_GOVERNOR:
+                return []
             if event.action == "retry":
                 # Reset attempts and re-dispatch
                 self.attempts[task] = 1
@@ -394,6 +402,8 @@ class DagKernel:
 
         if isinstance(event, TaskMergeDone):
             task = event.task_slug
+            if self.task_states.get(task) not in (DagTaskState.MERGE_READY, DagTaskState.MERGING):
+                return []
             if event.error:
                 self.task_states[task] = DagTaskState.FAILED
                 actions.extend(self._skip_dependents(task))

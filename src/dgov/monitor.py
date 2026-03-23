@@ -431,7 +431,29 @@ def _bootstrap_monitor_state(
                 run_id=run_id,
                 dag=dag_def,
             )
+            
+            # RECONCILE: if monitor crashed between pane completion and DAG update, 
+            # the DAG might be stuck waiting for an event it missed.
+            from dgov.kernel import DagTaskState, TaskWaitDone
+            pending_events = []
+            for t_slug, state in kernel.task_states.items():
+                if state == DagTaskState.WAITING:
+                    p_slug = kernel.pane_slugs.get(t_slug)
+                    if p_slug:
+                        p_rec = get_pane(session_root, p_slug)
+                        if p_rec:
+                            p_state = p_rec.get("state")
+                            if p_state in ("done", "failed", "timed_out", "merged", "closed"):
+                                pending_events.append(TaskWaitDone(t_slug, p_slug, p_state))
+            
             active_dags[run_id] = DagMonitorState(run_id, kernel, reactor)
+            
+            # Apply reconciled events immediately
+            if pending_events:
+                logger.info("Monitor: reconciling %d missed events for DAG %d", len(pending_events), run_id)
+                for ev in pending_events:
+                    _drive_dag(session_root, active_dags[run_id], kernel.handle(ev))
+
             logger.info("Monitor: resumed DAG run %d", run_id)
         except Exception:
             logger.warning("Monitor: failed to resume DAG run %d", run_id, exc_info=True)
