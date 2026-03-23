@@ -27,8 +27,10 @@ def _ensure_notify_pipe(session_root: str) -> str:
     """Create the notify FIFO if it doesn't exist. Returns the path."""
     pipe_path = Path(session_root) / STATE_DIR / _NOTIFY_PIPE
     pipe_path.parent.mkdir(parents=True, exist_ok=True)
-    if not pipe_path.exists():
+    try:
         os.mkfifo(str(pipe_path))
+    except FileExistsError:
+        pass
     return str(pipe_path)
 
 
