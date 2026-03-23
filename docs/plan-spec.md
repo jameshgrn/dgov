@@ -77,6 +77,7 @@ Allowed `kind` values are:
 - `non_goal`
 - `manual`
 - `performance`
+- `integration_test`
 
 Every unit must list the eval ids it satisfies with `satisfies = [...]`.
 Plans without evals, units without `satisfies`, or orphaned evals fail

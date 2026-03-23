@@ -43,6 +43,7 @@ Use these `kind` values deliberately:
 - `non_goal`: states what the task must not expand into.
 - `manual`: reserves a check that cannot yet be made deterministic.
 - `performance`: asserts latency, throughput, or resource usage bounds.
+- `integration_test`: verifies cross-component integration behavior.
 
 ## Unit checklist
 

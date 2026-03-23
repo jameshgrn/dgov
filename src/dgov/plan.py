@@ -110,6 +110,7 @@ _ALLOWED_EVAL_KINDS = {
     "non_goal",
     "manual",
     "performance",
+    "integration_test",
 }
 
 
