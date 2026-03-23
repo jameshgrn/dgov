@@ -97,7 +97,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "{task_list}\n\n"
             "## Workflow\n"
             "1. dgov pane create --land -a {default_agent} -p "
-            "\"<task prompt>\" -r $DGOV_PROJECT_ROOT --parent {ltgov_slug}\n"
+            '"<task prompt>" -r $DGOV_PROJECT_ROOT --parent {ltgov_slug}\n'
             "2. Let the --land lifecycle (wait/review/merge) run automatically.\n"
             "3. If a task fails twice at one tier or retries are exhausted, "
             "escalate to the supervisor (claude).\n"

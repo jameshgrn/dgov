@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from dgov.dag import DagDefinition, DagRunOptions, DagRunSummary, parse_dag_file
+from dgov.dag import DagDefinition, DagRunSummary, parse_dag_file
 from dgov.dag_graph import compute_tiers, topological_order, transitive_dependents, validate_dag
 from dgov.dag_parser import DagFileSpec, DagTaskSpec
 
@@ -529,7 +529,3 @@ class TestMaxConcurrent:
     def test_max_concurrent_defaults_to_zero(self):
         dag = parse_dag_file(_write_toml(MINIMAL_TOML))
         assert dag.max_concurrent == 0
-
-    def test_dag_run_options_max_concurrent(self):
-        opts = DagRunOptions(max_concurrent=2)
-        assert opts.max_concurrent == 2

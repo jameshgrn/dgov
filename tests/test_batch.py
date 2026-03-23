@@ -160,14 +160,11 @@ class TestBatchDispatch:
             lambda *args, **kwargs: {
                 "id": run_id,
                 "status": status,
-                "state_json": {
-                    "task_states": task_states
-                },
+                "state_json": {"task_states": task_states},
             },
         )
         monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
         yield
-
 
     def test_batch_dispatch_reads_toml_and_dispatches_tasks(self, tmp_path, monkeypatch):
         spec_path = self._write_spec(

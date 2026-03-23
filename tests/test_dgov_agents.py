@@ -109,7 +109,7 @@ class TestAgentRegistry:
         assert AGENT_REGISTRY["cline"].prompt_transport == "send-keys"
         assert AGENT_REGISTRY["qwen"].prompt_transport == "option"
         assert AGENT_REGISTRY["amp"].prompt_transport == "stdin"
-        assert AGENT_REGISTRY["pi"].prompt_transport == "positional"
+        assert AGENT_REGISTRY["pi"].prompt_transport == "stdin"
         assert AGENT_REGISTRY["cursor"].prompt_transport == "positional"
         assert AGENT_REGISTRY["copilot"].prompt_transport == "option"
         assert AGENT_REGISTRY["crush"].prompt_transport == "send-keys"
@@ -422,10 +422,10 @@ class TestBuildLaunchCommandOption:
         assert "$DGOV_PROMPT_CONTENT" in cmd
 
 
-class TestBuildLaunchCommandPositional:
-    def test_build_launch_command_positional(self, tmp_path: Path) -> None:
+class TestBuildLaunchCommandStdin:
+    def test_build_launch_command_stdin(self, tmp_path: Path) -> None:
         agent = AGENT_REGISTRY["pi"]
-        assert agent.prompt_transport == "positional"
+        assert agent.prompt_transport == "stdin"
 
         cmd = build_launch_command(
             agent_id="pi",
@@ -439,6 +439,9 @@ class TestBuildLaunchCommandPositional:
         assert "$DGOV_PROMPT_CONTENT" in cmd
         assert 'cat "$DGOV_PROMPT_FILE"' in cmd
         assert 'rm -f "$DGOV_PROMPT_FILE"' in cmd
+        # stdin transport pipes prompt into the command
+        assert "printf" in cmd
+        assert "|" in cmd
 
 
 class TestBuildLaunchCommandSendKeysAgent:

@@ -864,8 +864,13 @@ class TestPruneStale:
 
     def test_prunes_orphaned_worktree_dir(self, tmp_path: Path, mock_backend: MagicMock) -> None:
         """Worktree dir exists in .dgov/worktrees/ but no pane entry references it."""
+        import os
+
         orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-task"
         orphan_dir.mkdir(parents=True)
+        # Age past the 60s grace period so the pruner doesn't skip it
+        old_time = time.time() - 120
+        os.utime(orphan_dir, (old_time, old_time))
         # Empty state — no pane entries at all
         replace_all_panes(str(tmp_path), {"panes": []})
         mock_backend.is_alive.return_value = False
@@ -906,8 +911,13 @@ class TestPruneStale:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """Both a stale pane entry AND an orphaned dir get pruned in one call."""
+        import os
+
         orphan_dir = tmp_path / ".dgov" / "worktrees" / "orphan-slug"
         orphan_dir.mkdir(parents=True)
+        # Age the directory past the 60s grace period
+        old_time = time.time() - 120
+        os.utime(orphan_dir, (old_time, old_time))
         replace_all_panes(
             str(tmp_path),
             {
@@ -3636,7 +3646,9 @@ class TestComputeTiersDeep:
 
 
 class TestRunBatchLiveWait:
-    def test_batch_creates_waits_merges(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_batch_creates_waits_merges(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from dgov.batch import run_batch
         from dgov.dag_parser import DagRunSummary
 
@@ -3654,14 +3666,21 @@ class TestRunBatchLiveWait:
         monkeypatch.setattr(
             "dgov.dag.run_dag_via_kernel",
             lambda *args, **kwargs: DagRunSummary(
-                run_id=run_id, dag_file=str(spec_file), status="submitted",
-                merged=[], failed=[], skipped=[], blocked=[]
+                run_id=run_id,
+                dag_file=str(spec_file),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
             ),
         )
         monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
         monkeypatch.setattr(
             "dgov.persistence.wait_for_events",
-            lambda *args, **kwargs: [{"id": 1, "event": "dag_completed", "data": json.dumps({"dag_run_id": run_id})}],
+            lambda *args, **kwargs: [
+                {"id": 1, "event": "dag_completed", "data": json.dumps({"dag_run_id": run_id})}
+            ],
         )
         monkeypatch.setattr(
             "dgov.persistence.get_dag_run",
@@ -3669,9 +3688,7 @@ class TestRunBatchLiveWait:
                 "id": run_id,
                 "status": "completed",
                 "dag_file": str(spec_file),
-                "state_json": {
-                    "task_states": {"t1": "merged", "t2": "merged"}
-                },
+                "state_json": {"task_states": {"t1": "merged", "t2": "merged"}},
             },
         )
         monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
@@ -3681,7 +3698,9 @@ class TestRunBatchLiveWait:
         assert result["merged"] == ["t1", "t2"]
         assert result["failed"] == []
 
-    def test_batch_aborts_on_merge_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_batch_aborts_on_merge_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from dgov.batch import run_batch
         from dgov.dag_parser import DagRunSummary
 
@@ -3698,14 +3717,21 @@ class TestRunBatchLiveWait:
         monkeypatch.setattr(
             "dgov.dag.run_dag_via_kernel",
             lambda *args, **kwargs: DagRunSummary(
-                run_id=run_id, dag_file=str(spec_file), status="submitted",
-                merged=[], failed=[], skipped=[], blocked=[]
+                run_id=run_id,
+                dag_file=str(spec_file),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
             ),
         )
         monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
         monkeypatch.setattr(
             "dgov.persistence.wait_for_events",
-            lambda *args, **kwargs: [{"id": 1, "event": "dag_failed", "data": json.dumps({"dag_run_id": run_id})}],
+            lambda *args, **kwargs: [
+                {"id": 1, "event": "dag_failed", "data": json.dumps({"dag_run_id": run_id})}
+            ],
         )
         monkeypatch.setattr(
             "dgov.persistence.get_dag_run",
@@ -3713,9 +3739,7 @@ class TestRunBatchLiveWait:
                 "id": run_id,
                 "status": "failed",
                 "dag_file": str(spec_file),
-                "state_json": {
-                    "task_states": {"t1": "failed"}
-                },
+                "state_json": {"task_states": {"t1": "failed"}},
             },
         )
         monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
@@ -3724,7 +3748,9 @@ class TestRunBatchLiveWait:
 
         assert "t1" in result["failed"]
 
-    def test_batch_timeout_marks_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_batch_timeout_marks_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from dgov.batch import run_batch
         from dgov.dag_parser import DagRunSummary
 
@@ -3741,14 +3767,21 @@ class TestRunBatchLiveWait:
         monkeypatch.setattr(
             "dgov.dag.run_dag_via_kernel",
             lambda *args, **kwargs: DagRunSummary(
-                run_id=run_id, dag_file=str(spec_file), status="submitted",
-                merged=[], failed=[], skipped=[], blocked=[]
+                run_id=run_id,
+                dag_file=str(spec_file),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
             ),
         )
         monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
         monkeypatch.setattr(
             "dgov.persistence.wait_for_events",
-            lambda *args, **kwargs: [{"id": 1, "event": "dag_failed", "data": json.dumps({"dag_run_id": run_id})}],
+            lambda *args, **kwargs: [
+                {"id": 1, "event": "dag_failed", "data": json.dumps({"dag_run_id": run_id})}
+            ],
         )
         monkeypatch.setattr(
             "dgov.persistence.get_dag_run",
@@ -3756,9 +3789,7 @@ class TestRunBatchLiveWait:
                 "id": run_id,
                 "status": "failed",
                 "dag_file": str(spec_file),
-                "state_json": {
-                    "task_states": {"t1": "failed"}
-                },
+                "state_json": {"task_states": {"t1": "failed"}},
             },
         )
         monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])

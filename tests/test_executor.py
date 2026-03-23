@@ -252,6 +252,7 @@ def test_run_cleanup_only_preserves_inspectable_outcomes(tmp_path):
         failure_stage=None,
     )
 
+
 def test_run_cleanup_only_force_closes_worker_failed(tmp_path):
     with patch(
         "dgov.lifecycle.close_worker_pane",
@@ -274,8 +275,6 @@ def test_run_cleanup_only_force_closes_worker_failed(tmp_path):
         session_root=str(tmp_path),
         force=True,
     )
-
-
 
 
 class TestPostDispatchLifecycle:
@@ -683,4 +682,3 @@ class TestResolveTouches:
     def test_empty(self, tmp_path):
         result = resolve_touches()
         assert result == []
-

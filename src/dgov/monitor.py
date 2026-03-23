@@ -399,9 +399,7 @@ def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: l
     update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
 
 
-def _load_dag_run(
-    project_root: str, session_root: str, run_dict: dict
-) -> DagMonitorState | None:
+def _load_dag_run(project_root: str, session_root: str, run_dict: dict) -> DagMonitorState | None:
     """Reconstruct a DagMonitorState from a DB record and kickstart if needed."""
     from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
     from dgov.kernel import DagState, DagTaskState, TaskWaitDone
