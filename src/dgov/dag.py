@@ -61,82 +61,60 @@ def run_dag_via_kernel(
     auto_merge: bool = True,
     max_concurrent: int = 0,
 ) -> DagRunSummary:
-    """Execute a DAG through the DagKernel state machine."""
+    """Submit a DAG for headless execution by the monitor daemon."""
     from datetime import datetime, timezone
-
-    from dgov.executor import run_dag_kernel
-    from dgov.persistence import create_dag_run, emit_event, update_dag_run
+    from dgov.kernel import DagKernel
+    from dgov.persistence import create_dag_run, emit_event
 
     session_root = dag.session_root
-    options = DagRunOptions(skip=frozenset(skip or ()), auto_merge=auto_merge)
+    
+    # Initialize the kernel to get the starting state_json
+    deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
+    review_agents = {slug: t.review_agent for slug, t in dag.tasks.items() if t.review_agent}
+    
+    kernel = DagKernel(
+        deps=deps,
+        auto_merge=auto_merge,
+        max_concurrent=max_concurrent or dag.max_concurrent,
+        skip=frozenset(skip or ()),
+        review_agents=review_agents,
+        max_retries=dag.default_max_retries,
+    )
+
+    # Serialize definition for headless reconstruction
+    from dataclasses import asdict
+    def_json = {
+        "name": dag.name,
+        "default_max_retries": dag.default_max_retries,
+        "merge_resolve": dag.merge_resolve,
+        "merge_squash": dag.merge_squash,
+        "max_concurrent": dag.max_concurrent,
+        "tasks": {slug: asdict(t) for slug, t in dag.tasks.items()},
+    }
 
     # Create the DB run record
-    tiers = compute_tiers(dag.tasks)
-    state_json = {
-        "definition_hash": definition_hash,
-        "tiers": tiers,
-        "topological_order": topological_order(dag.tasks),
-        "options": {
-            "skip": sorted(options.skip),
-            "auto_merge": options.auto_merge,
-        },
-    }
     run_id = create_dag_run(
         session_root,
         dag_key,
         datetime.now(timezone.utc).isoformat(),
         "running",
         0,
-        state_json,
+        kernel.to_dict(),
+        definition_json=def_json,
     )
+    
+    # Notify monitor
     emit_event(session_root, "dag_started", f"dag/{run_id}", dag_run_id=run_id)
-
-    effective_concurrent = max_concurrent if max_concurrent > 0 else dag.max_concurrent
-
-    result = run_dag_kernel(
-        dag.project_root,
-        dag,
-        session_root=session_root,
-        run_id=run_id,
-        auto_merge=auto_merge,
-        max_concurrent=effective_concurrent,
-        skip=frozenset(skip or ()),
-        progress=lambda msg: logger.info("DAG[%d] %s", run_id, msg),
-    )
-
-    # Cleanup orphaned panes from failed/partial runs
-    from dgov.executor import run_close_only
-    from dgov.persistence import list_dag_tasks
-
-    task_rows = list_dag_tasks(session_root, run_id)
-    for row in task_rows:
-        pane_slug = row.get("pane_slug", "")
-        status = row.get("status", "")
-        if pane_slug and status not in ("merged", "closed"):
-            try:
-                run_close_only(dag.project_root, pane_slug, session_root=session_root, force=True)
-            except Exception:
-                logger.debug("Cleanup failed for %s", pane_slug, exc_info=True)
-
-    # Finalize DB
-    update_dag_run(session_root, run_id, status=result.status)
-    emit_event(
-        session_root,
-        "dag_completed" if result.status == "completed" else "dag_failed",
-        f"dag/{run_id}",
-        dag_run_id=run_id,
-        status=result.status,
-    )
 
     return DagRunSummary(
         run_id=run_id,
         dag_file=dag_key,
-        status=result.status,
-        succeeded=result.merged,
-        merged=result.merged,
-        failed=result.failed,
-        skipped=result.skipped,
-        blocked=result.blocked,
+        status="submitted",
+        succeeded=[],
+        merged=[],
+        failed=[],
+        skipped=[],
+        blocked=[],
     )
 
 

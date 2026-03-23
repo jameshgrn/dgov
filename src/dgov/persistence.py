@@ -516,7 +516,8 @@ CREATE TABLE IF NOT EXISTS dag_runs (
     started_at TEXT NOT NULL,
     status TEXT NOT NULL,
     current_tier INTEGER NOT NULL DEFAULT 0,
-    state_json TEXT NOT NULL DEFAULT '{}'
+    state_json TEXT NOT NULL DEFAULT '{}',
+    definition_json TEXT NOT NULL DEFAULT '{}'
 )"""
 
 _CREATE_DAG_TASKS_TABLE_SQL = """
@@ -1163,6 +1164,7 @@ def create_dag_run(
     status: str,
     current_tier: int,
     state_json: dict,
+    definition_json: dict | None = None,
 ) -> int:
     """Insert a new DAG run row and return its id."""
 
@@ -1170,9 +1172,16 @@ def create_dag_run(
         conn = _get_db(session_root)
         cur = conn.execute(
             "INSERT INTO dag_runs"
-            " (dag_file, started_at, status, current_tier, state_json)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (dag_file, started_at, status, current_tier, json.dumps(state_json)),
+            " (dag_file, started_at, status, current_tier, state_json, definition_json)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                dag_file,
+                started_at,
+                status,
+                current_tier,
+                json.dumps(state_json),
+                json.dumps(definition_json) if definition_json else "{}",
+            ),
         )
         conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
@@ -1184,7 +1193,7 @@ def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
     """Find an unfinished DAG run for the given absolute dag_file path."""
     conn = _get_db(session_root)
     row = conn.execute(
-        "SELECT id, dag_file, started_at, status, current_tier, state_json"
+        "SELECT id, dag_file, started_at, status, current_tier, state_json, definition_json"
         " FROM dag_runs"
         " WHERE dag_file = ? AND status NOT IN (?, ?, ?)"
         " ORDER BY id DESC LIMIT 1",
@@ -1199,6 +1208,7 @@ def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
         "status": row[3],
         "current_tier": row[4],
         "state_json": json.loads(row[5]),
+        "definition_json": json.loads(row[6]),
     }
 
 
@@ -1206,7 +1216,7 @@ def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
     """Fetch a DAG run by id."""
     conn = _get_db(session_root)
     row = conn.execute(
-        "SELECT id, dag_file, started_at, status, current_tier, state_json"
+        "SELECT id, dag_file, started_at, status, current_tier, state_json, definition_json"
         " FROM dag_runs WHERE id = ?",
         (dag_run_id,),
     ).fetchone()
@@ -1219,6 +1229,7 @@ def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
         "status": row[3],
         "current_tier": row[4],
         "state_json": json.loads(row[5]),
+        "definition_json": json.loads(row[6]),
     }
 
 
@@ -1252,6 +1263,28 @@ def update_dag_run(
         conn.commit()
 
     _retry_on_lock(_do)
+
+
+def list_active_dag_runs(session_root: str) -> list[dict]:
+    """List all DAG runs not in a terminal state."""
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT id, dag_file, started_at, status, current_tier, state_json, definition_json"
+        " FROM dag_runs"
+        " WHERE status NOT IN ('completed', 'failed', 'cancelled')"
+    ).fetchall()
+    return [
+        {
+            "id": r[0],
+            "dag_file": r[1],
+            "started_at": r[2],
+            "status": r[3],
+            "current_tier": r[4],
+            "state_json": json.loads(r[5]),
+            "definition_json": json.loads(r[6]),
+        }
+        for r in rows
+    ]
 
 
 def upsert_dag_task(

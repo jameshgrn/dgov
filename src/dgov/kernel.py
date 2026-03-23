@@ -221,7 +221,7 @@ class DagKernel:
         if not self.task_states:
             self.task_states = {slug: DagTaskState.PENDING for slug in self.deps}
         for slug in self.deps:
-            self.attempts[slug] = 1
+            self.attempts.setdefault(slug, 1)
         if not self.merge_order:
             self.merge_order = tuple(_topo_sort(self.deps))
         # Apply pre-skip: mark skipped tasks and their transitive dependents
@@ -239,6 +239,43 @@ class DagKernel:
             for slug in skipped:
                 if slug in self.task_states:
                     self.task_states[slug] = DagTaskState.SKIPPED
+
+    def to_dict(self) -> dict:
+        """Serialize kernel state for DB persistence."""
+        return {
+            "deps": self.deps,
+            "auto_merge": self.auto_merge,
+            "max_concurrent": self.max_concurrent,
+            "skip": list(self.skip),
+            "review_agents": self.review_agents,
+            "max_retries": self.max_retries,
+            "state": self.state.value,
+            "task_states": {k: v.value for k, v in self.task_states.items()},
+            "pane_slugs": self.pane_slugs,
+            "attempts": self.attempts,
+            "merge_order": self.merge_order,
+            "merge_cursor": self._merge_cursor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> DagKernel:
+        """Reconstruct kernel state from DB."""
+        # Use field() default_factory for task_states/pane_slugs/attempts
+        k = cls(
+            deps=data["deps"],
+            auto_merge=data.get("auto_merge", True),
+            max_concurrent=data.get("max_concurrent", 0),
+            skip=frozenset(data.get("skip", [])),
+            review_agents=data.get("review_agents", {}),
+            max_retries=data.get("max_retries", 3),
+        )
+        k.state = DagState(data.get("state", "idle"))
+        k.task_states = {k_: DagTaskState(v) for k_, v in data.get("task_states", {}).items()}
+        k.pane_slugs = dict(data.get("pane_slugs", {}))
+        k.attempts = dict(data.get("attempts", {}))
+        k.merge_order = tuple(data.get("merge_order", ()))
+        k._merge_cursor = int(data.get("merge_cursor", 0))
+        return k
 
     @property
     def done(self) -> bool:

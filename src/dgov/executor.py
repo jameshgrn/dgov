@@ -1446,6 +1446,104 @@ class DagRunResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class DagReactor:
+    """Stateless executor for DagKernel actions."""
+
+    project_root: str
+    session_root: str
+    run_id: int
+    dag: object  # DagDefinition
+    progress: Callable[[str], None] = lambda msg: None
+
+    def execute(self, action: object) -> object | None:
+        """Execute a single kernel action and return the resulting event."""
+        from dgov.kernel import (
+            CloseTask,
+            DispatchTask,
+            InterruptGovernor,
+            MergeTask,
+            RetryTask,
+            ReviewTask,
+            SkipTask,
+            TaskClosed,
+        )
+
+        if isinstance(action, DispatchTask):
+            return _dag_dispatch(
+                self.dag, action.task_slug, self.run_id, self.session_root, self.progress
+            )
+
+        if isinstance(action, ReviewTask):
+            return _dag_review(
+                self.dag,
+                self.project_root,
+                self.session_root,
+                action.task_slug,
+                action.pane_slug,
+                self.progress,
+                review_agent=action.review_agent,
+            )
+
+        if isinstance(action, MergeTask):
+            return _dag_merge(
+                self.dag,
+                self.project_root,
+                self.session_root,
+                action.task_slug,
+                action.pane_slug,
+                self.progress,
+            )
+
+        if isinstance(action, SkipTask):
+            _dag_skip(
+                self.session_root,
+                self.run_id,
+                action.task_slug,
+                self.dag,
+                action.reason,
+                self.progress,
+            )
+            return TaskClosed(action.task_slug)
+
+        if isinstance(action, CloseTask):
+            _dag_close(
+                self.project_root,
+                self.session_root,
+                action.task_slug,
+                action.pane_slug,
+                action.reason,
+                self.progress,
+            )
+            return TaskClosed(action.task_slug)
+
+        if isinstance(action, InterruptGovernor):
+            _dag_interrupt(
+                self.project_root,
+                self.session_root,
+                self.run_id,
+                action.task_slug,
+                action.pane_slug,
+                action.reason,
+                self.progress,
+            )
+            return None
+
+        if isinstance(action, RetryTask):
+            return _dag_retry(
+                self.project_root,
+                self.session_root,
+                self.run_id,
+                action.task_slug,
+                action.pane_slug,
+                action.attempt,
+                getattr(self.dag, "default_max_retries", 3),
+                self.progress,
+            )
+
+        return None
+
+
 def run_dag_kernel(
     project_root: str,
     dag_definition: object,
@@ -1540,6 +1638,14 @@ def run_dag_kernel(
             queue[:] = [a for a in queue if not isinstance(a, WaitForAny)]
         queue.extend(new_actions)
 
+    reactor = DagReactor(
+        project_root=project_root,
+        session_root=session_root,
+        run_id=run_id,
+        dag=dag,
+        progress=_progress,
+    )
+
     while queue:
         action = queue.pop(0)
 
@@ -1560,13 +1666,6 @@ def run_dag_kernel(
                 run_id=run_id,
             )
 
-        if isinstance(action, DispatchTask):
-            event = _dag_dispatch(dag, action.task_slug, run_id, session_root, _progress)
-            if isinstance(event, TaskDispatched):
-                pane_map[action.task_slug] = event.pane_slug
-            _extend_queue(kernel.handle(event))
-            continue
-
         if isinstance(action, WaitForAny):
             event = _dag_wait_any(
                 project_root,
@@ -1580,82 +1679,17 @@ def run_dag_kernel(
             _extend_queue(kernel.handle(event))
             continue
 
-        if isinstance(action, ReviewTask):
-            event = _dag_review(
-                dag,
-                project_root,
-                session_root,
-                action.task_slug,
-                action.pane_slug,
-                _progress,
-                review_agent=action.review_agent,
-            )
-            _extend_queue(kernel.handle(event))
-            continue
+        # Execute non-waiting actions through the reactor
+        event = reactor.execute(action)
+        if event:
+            from dgov.kernel import TaskDispatched, TaskRetryStarted
 
-        if isinstance(action, MergeTask):
-            event = _dag_merge(
-                project_root,
-                session_root,
-                action.task_slug,
-                action.pane_slug,
-                _progress,
-            )
-            _extend_queue(kernel.handle(event))
-            continue
-
-        if isinstance(action, SkipTask):
-            _dag_skip(
-                session_root,
-                run_id,
-                action.task_slug,
-                dag,
-                action.reason,
-                _progress,
-            )
-            _extend_queue(kernel.handle(TaskClosed(action.task_slug)))
-            continue
-
-        if isinstance(action, CloseTask):
-            _dag_close(
-                project_root,
-                session_root,
-                action.task_slug,
-                action.pane_slug,
-                action.reason,
-                _progress,
-            )
-            _extend_queue(kernel.handle(TaskClosed(action.task_slug)))
-            continue
-
-        if isinstance(action, InterruptGovernor):
-            _dag_interrupt(
-                project_root,
-                session_root,
-                run_id,
-                action.task_slug,
-                action.pane_slug,
-                action.reason,
-                _progress,
-            )
-            # Rest of DAG keeps running, loop continues
-            continue
-
-        if isinstance(action, RetryTask):
-            event = _dag_retry(
-                project_root,
-                session_root,
-                run_id,
-                action.task_slug,
-                action.pane_slug,
-                action.attempt,
-                getattr(dag, "default_max_retries", 3),
-                _progress,
-            )
-            if isinstance(event, TaskRetryStarted):
+            if isinstance(event, TaskDispatched):
+                pane_map[action.task_slug] = event.pane_slug
+            elif isinstance(event, TaskRetryStarted):
                 pane_map[action.task_slug] = event.new_pane_slug
+
             _extend_queue(kernel.handle(event))
-            continue
 
     # Queue exhausted without DagDone — shouldn't happen
     from dgov.kernel import DagTaskState
