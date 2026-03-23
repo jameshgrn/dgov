@@ -336,10 +336,10 @@ class TestCodebaseCmd:
         result = runner.invoke(cli, ["codebase", "--dry-run", "-r", "."])
 
         assert result.exit_code == 0
-        assert "# dgov Codebase Map" in result.output
-        assert "## Task routing — start here" in result.output
-        assert "## Invariants" in result.output
-        assert "Module groups" in result.output
+        assert "# CODEBASE" in result.output
+        assert "## ROUTING" in result.output
+        assert "## INVARIANTS" in result.output
+        assert "## MODULES" in result.output
 
     def test_codebase_write_file(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test codebase command writes CODEBASE.md."""
@@ -350,8 +350,8 @@ class TestCodebaseCmd:
         assert codebase_path.is_file()
 
         content = codebase_path.read_text(encoding="utf-8")
-        assert "# dgov Codebase Map" in content
-        assert "## Module groups" in content
+        assert "# CODEBASE" in content
+        assert "## MODULES" in content
 
     def test_codebase_commit_flag(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test codebase command with --commit flag."""

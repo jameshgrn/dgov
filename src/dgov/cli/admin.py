@@ -177,249 +177,128 @@ def _generate_codebase_md(
     groups: dict[str, list[str]],
     project_root: Path,
 ) -> str:
-    """Generate the CODEBASE.md content."""
-    lines = []
+    """Generate CODEBASE.md in dense LLM-native format.
 
-    # Header
-    lines.append("# dgov Codebase Map")
-    lines.append("")
-    lines.append("## Task routing — start here")
-    lines.append("")
-    lines.append("| If your task is about... | Start in | Also check | Tests |")
-    lines.append("|--------------------------|----------|------------|-------|")
+    Optimized for token efficiency and pattern matching, not human readability.
+    Uses structured blocks instead of markdown tables.
+    """
+    lines: list[str] = []
 
-    # Generate task routing table from modules
-    routing_table = [
-        (
-            "Pane create/close/resume",
-            "lifecycle.py",
-            ["persistence.py", "done.py", "gitops.py"],
-            "test_lifecycle.py",
-        ),
-        (
-            "Merge/review behavior",
-            "merger.py",
-            ["inspection.py", "persistence.py"],
-            "test_merger*.py",
-        ),
-        (
-            "Review diffs, verdicts, freshness",
-            "inspection.py",
-            ["merger.py"],
-            "test_inspection*.py",
-        ),
-        (
-            "Retry/escalation/recovery",
-            "recovery.py",
-            ["responder.py", "monitor.py"],
-            "test_retry*.py",
-        ),
-        (
-            "Monitor daemon logic",
-            "monitor.py",
-            ["monitor_hooks.py", "recovery.py"],
-            "test_monitor.py",
-        ),
-        (
-            "Worker completion/done",
-            "done.py, waiter.py",
-            ["lifecycle.py"],
-            "test_done_strategy.py",
-        ),
-        (
-            "Agent routing/selection",
-            "router.py, agents.py",
-            ["strategy.py"],
-            "test_router.py",
-        ),
-        (
-            "Decision providers",
-            "decision.py, decision_providers.py",
-            ["provider_registry.py"],
-            "test_decision.py",
-        ),
-        (
-            "Prompt templates",
-            "templates.py, strategy.py",
-            ["lifecycle.py"],
-            "test_templates.py",
-        ),
-        (
-            "Dashboard/terrain TUI",
-            "dashboard.py, terrain.py",
-            ["terrain_pane.py"],
-            "test_dashboard.py",
-        ),
-        (
-            "DAG/batch/mission",
-            "dag.py, batch.py, mission.py",
-            ["dag_parser.py", "dag_graph.py"],
-            "test_dag.py, test_batch.py, test_mission.py",
-        ),
-        (
-            "State DB/events",
-            "persistence.py",
-            ["status.py", "metrics.py"],
-            "test_persistence*.py",
-        ),
-        (
-            "Top-level CLI command",
-            "cli/admin.py, cli/pane.py",
-            ["cli/__init__.py"],
-            "test_cli_admin.py, test_dgov_cli.py",
-        ),
+    lines.append("# CODEBASE")
+    lines.append("")
+
+    # Task routing: compact key→value
+    lines.append("## ROUTING")
+    routing = [
+        ("pane lifecycle", "lifecycle.py", "persistence.py done.py gitops.py"),
+        ("merge/review", "merger.py", "inspection.py persistence.py"),
+        ("review diffs", "inspection.py", "merger.py"),
+        ("retry/escalation", "recovery.py", "responder.py monitor.py"),
+        ("monitor daemon", "monitor.py", "monitor_hooks.py recovery.py"),
+        ("done detection", "done.py waiter.py", "lifecycle.py"),
+        ("agent routing", "router.py agents.py", "strategy.py"),
+        ("decisions", "decision.py decision_providers.py", "provider_registry.py"),
+        ("templates", "templates.py strategy.py", "lifecycle.py"),
+        ("dashboard TUI", "dashboard.py terrain.py", "terrain_pane.py"),
+        ("DAG/batch/plan", "dag.py batch.py plan.py", "dag_parser.py dag_graph.py kernel.py"),
+        ("state DB", "persistence.py", "status.py"),
+        ("CLI", "cli/admin.py cli/pane.py", "cli/__init__.py"),
     ]
-
-    for task_desc, start_mod, check_mods, test_pattern in routing_table:
-        tests = []
-        if test_pattern:
-            # Find matching test files
-            if test_pattern in test_mappings and test_mappings[test_pattern]:
-                tests.extend(test_mappings[test_pattern])
-            else:
-                # Fallback: just show the pattern
-                tests.append(test_pattern)
-        elif start_mod in test_mappings:
-            tests = test_mappings[start_mod]
-
-        tests_str = ", ".join(sorted(set(tests))) if tests else "N/A"
-        check_str = ", ".join(check_mods)
-        lines.append(f"| {task_desc} | `{start_mod}` | {check_str} | {tests_str} |")
-
+    for task, start, deps in routing:
+        lines.append(f"{task}: {start} + {deps}")
     lines.append("")
 
-    # Invariants section (hardcoded from current CODEBASE.md)
-    lines.append("## Invariants — do not break these")
-    lines.append("")
-    lines.append(
-        "- You are in a **git worktree**, not the main repo. Do not merge, rebase, or pull."
-    )
-    lines.append(
-        "- `CLAUDE.md` and `AGENTS.md` are "
-        "**git-excluded** — exist on disk for read, cannot commit."
-    )
-    lines.append(
-        "- `dgov worker complete` will **auto-commit** any unstaged changes before signaling done."
-    )
-    lines.append(
-        "- Protected files (CLAUDE.md, THEORY.md) **restored during merge** — changes discarded."
-    )
-    lines.append("- Do NOT push to remote. Do NOT run the full test suite.")
+    # Invariants: flat rules, no bold/emphasis (wastes tokens)
+    lines.append("## INVARIANTS")
+    lines.append("- git worktree, not main repo. no merge/rebase/pull.")
+    lines.append("- CLAUDE.md git-excluded. read-only, cannot commit.")
+    lines.append("- dgov worker complete auto-commits unstaged changes.")
+    lines.append("- protected files restored at merge. changes discarded.")
+    lines.append("- no push to remote. no full test suite.")
     lines.append("")
 
-    # Module groups section
-    lines.append("## Module groups")
-    lines.append("")
-
+    # Modules: one line per file, dense
+    lines.append("## MODULES")
     group_order = [
         "orchestration core",
         "merge and review",
         "automation and recovery",
         "agent integration",
         "decision system",
-        "cli",
         "higher-level workflows",
-        "visualization",
+        "cli",
         "other",
     ]
-
     for group_name in group_order:
         if group_name not in groups or not groups[group_name]:
             continue
-
-        lines.append(f"### {group_name.capitalize().replace('_', ' ')}")
-        lines.append("| File | Size | Purpose |")
-        lines.append("|------|------|---------|")
-
+        lines.append(f"[{group_name}]")
         for module_key in sorted(groups[group_name]):
             mod_info = modules.get(module_key, {})
-            docstring = mod_info.get("docstring", "")
-            size_cat = mod_info.get("size_category", "S")
-
-            # Truncate docstring if too long
-            if len(docstring) > 100:
-                display_docstring = docstring[:97] + "..."
-            else:
-                display_docstring = docstring
-
-            # Escape markdown pipes in docstring
-            display_docstring = display_docstring.replace("|", "\\|")
-
-            lines.append(f"| `{module_key}` | {size_cat} | {display_docstring or 'N/A'} |")
-
-        lines.append("")
-
-    # CLI command registration section (hardcoded from current CODEBASE.md)
-    lines.append("## CLI command registration")
-    lines.append("")
-    lines.append("**Pane subcommands** (no registration needed):")
-    lines.append('1. Add `@pane.command("name")` function to `cli/pane.py`')
-    lines.append("")
-    lines.append("**Top-level commands**:")
-    lines.append(
-        "1. Add function to appropriate `cli/*.py` file (or create a new `cli/foo_cmd.py`)"
-    )
-    lines.append("2. Import in `cli/__init__.py` (alphabetical)")
-    lines.append("3. Add `cli.add_command(your_cmd)` after the import block")
+            doc = mod_info.get("docstring", "").replace("|", "/")
+            sz = mod_info.get("size_category", "S")
+            tests = test_mappings.get(module_key, [])
+            test_str = " ".join(t.replace("tests/", "") for t in tests[:3])
+            if len(tests) > 3:
+                test_str += f" +{len(tests) - 3}"
+            entry = f"  {module_key} ({sz}): {doc}"
+            if test_str:
+                entry += f" -> {test_str}"
+            lines.append(entry)
     lines.append("")
 
-    # Data flow section (hardcoded from current CODEBASE.md)
-    lines.append("## Data flow")
-    lines.append("")
-    lines.append("```")
-    lines.append("create_worker_pane()")
-    lines.append("  → load_registry() + resolve_agent()   # find and route agent")
-    lines.append("  → get_backend().create_worker_pane()   # tmux split-pane")
-    lines.append("  → add_pane()                           # write to state.db")
-    lines.append("  → _write_worktree_instructions()       # inject worker context")
-    lines.append("  → _wrap_done_signal()                  # setup done detection")
-    lines.append("")
-    lines.append("merge_worker_pane()")
-    lines.append("  → get_pane()                           # read pane record")
-    lines.append("  → _restore_protected_files()           # fix CLAUDE.md on branch")
-    lines.append("  → _commit_worktree()                   # auto-commit uncommitted")
-    lines.append("  → _rebase_onto_head()                  # rebase branch")
-    lines.append("  → _plumbing_merge()                    # in-memory git merge")
-    lines.append("  → _full_cleanup()                      # kill pane + remove worktree")
-    lines.append("  → _lint_fix_merged_files()             # ruff check + format")
-    lines.append("  → _run_related_tests()                 # pytest on changed files")
-    lines.append("```")
+    # Call graphs: indented notation
+    lines.append("## CALL GRAPH")
+    lines.append("create_worker_pane:")
+    lines.append("  load_registry + resolve_agent")
+    lines.append("  get_backend.create_worker_pane (tmux)")
+    lines.append("  add_pane (state.db)")
+    lines.append("  _write_worktree_instructions (context)")
+    lines.append("  _wrap_done_signal (exit detection)")
+    lines.append("merge_worker_pane:")
+    lines.append("  _restore_protected_files")
+    lines.append("  _commit_worktree (auto-commit)")
+    lines.append("  _rebase_onto_head")
+    lines.append("  _plumbing_merge (in-memory)")
+    lines.append("  _full_cleanup (kill + remove)")
+    lines.append("  _lint_fix_merged_files (ruff)")
+    lines.append("  _run_related_tests (pytest)")
     lines.append("")
 
-    # State machine section (hardcoded from current CODEBASE.md)
-    lines.append("## State machine")
-    lines.append("")
-    lines.append("```")
-    lines.append("active → done → merged → (removed)")
-    lines.append("active → timed_out → (retry) → active")
-    lines.append("active → failed → (retry) → active")
-    lines.append("active → abandoned → closed")
-    lines.append("any terminal state → closed")
-    lines.append("```")
+    # State machine: flat transitions
+    lines.append("## STATES")
+    lines.append("active -> done -> merged -> removed")
+    lines.append("active -> timed_out -> retry -> active")
+    lines.append("active -> failed -> retry -> active")
+    lines.append("active -> abandoned -> closed")
+    lines.append("any terminal -> closed")
     lines.append("")
 
-    # Test manifest section
+    # CLI registration: minimal
+    lines.append("## CLI REGISTRATION")
+    lines.append('pane sub: @pane.command("name") in cli/pane.py')
+    lines.append("top-level: fn in cli/*.py, import+add_command in cli/__init__.py")
+    lines.append("")
+
+    # Test manifest: compact source->tests
     manifest_path = project_root / ".test-manifest.json"
     if manifest_path.exists():
         import json as _json
 
         try:
             manifest = _json.loads(manifest_path.read_text())
-            lines.append("\n## Test Mapping\n")
-            lines.append("Source file → test files (from .test-manifest.json):\n")
-            lines.append("| Source | Tests |")
-            lines.append("|--------|-------|")
+            lines.append("## TESTS")
             for src, tests in sorted(manifest.items()):
                 if src.startswith("_"):
                     continue
-                test_list = ", ".join(f"`{t.replace('tests/', '')}`" for t in tests[:3])
+                test_str = " ".join(t.replace("tests/", "") for t in tests[:3])
                 if len(tests) > 3:
-                    test_list += f" +{len(tests) - 3} more"
-                lines.append(f"| `{src}` | {test_list} |")
+                    test_str += f" +{len(tests) - 3}"
+                lines.append(f"{src} -> {test_str}")
         except Exception:
             pass
 
-    return "\n".join(lines)
+    return "\n".join(lines) + "\n"
 
 
 def regenerate_codebase_md(project_root: str) -> None:

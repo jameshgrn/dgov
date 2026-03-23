@@ -42,6 +42,37 @@ from dgov.strategy import (
 logger = logging.getLogger(__name__)
 
 
+def _refresh_codebase_md(project_root: str) -> None:
+    """Regenerate CODEBASE.md if stale (older than HEAD commit timestamp).
+
+    Called before every dispatch so workers always get a fresh codebase map.
+    Skips regeneration if CODEBASE.md is newer than the last commit.
+    """
+    codebase = Path(project_root) / "CODEBASE.md"
+    try:
+        # Get HEAD commit timestamp
+        result = subprocess.run(
+            ["git", "-C", project_root, "log", "-1", "--format=%ct"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return
+        head_ts = float(result.stdout.strip())
+
+        # Skip if CODEBASE.md exists and is newer than HEAD
+        if codebase.exists() and codebase.stat().st_mtime >= head_ts:
+            return
+
+        from dgov.cli.admin import regenerate_codebase_md
+
+        regenerate_codebase_md(project_root)
+        logger.debug("Refreshed CODEBASE.md (stale)")
+    except Exception:
+        logger.debug("CODEBASE.md refresh failed", exc_info=True)
+
+
 @contextmanager
 def _pane_lock(project_root: str):
     """File-based lock to serialize pane creation on the same repo."""
@@ -763,6 +794,9 @@ def create_worker_pane(
 
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
+
+    # 0b. Auto-regenerate CODEBASE.md if stale (older than HEAD commit)
+    _refresh_codebase_md(project_root)
 
     # 1. Capture base SHA (HEAD of project_root before worktree creation)
     base_sha_result = subprocess.run(
