@@ -40,7 +40,6 @@ if TYPE_CHECKING:
     from dgov.monitor_hooks import MonitorHook
 
 logger = logging.getLogger(__name__)
-
 _MONITOR_WAKE_EVENTS = (
     "dispatch_queued",
     "pane_created",
@@ -55,20 +54,12 @@ _MONITOR_WAKE_EVENTS = (
     "pane_retry_spawned",
     "pane_auto_retried",
     "pane_review_pending",
-    "mission_pending",
-    "mission_running",
-    "mission_waiting",
-    "mission_reviewing",
-    "mission_merging",
-    "mission_completed",
-    "mission_failed",
     "dag_started",
+    "dag_resumed",
     "dag_task_dispatched",
-    "dag_task_completed",
-    "dag_task_failed",
-    "dag_task_escalated",
     "dag_completed",
     "dag_failed",
+    "dag_blocked",
     "merge_completed",
     "monitor_auto_complete",
     "monitor_idle_timeout",
