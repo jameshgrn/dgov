@@ -66,6 +66,7 @@ class DagRunSummary:
     succeeded: list[str] = field(default_factory=list)
     failed: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
+    blocked: list[str] = field(default_factory=list)
     escalated: list[dict[str, object]] = field(default_factory=list)
     merged: list[str] = field(default_factory=list)
     unmerged: list[str] = field(default_factory=list)

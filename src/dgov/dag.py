@@ -136,6 +136,7 @@ def run_dag_via_kernel(
         merged=result.merged,
         failed=result.failed,
         skipped=result.skipped,
+        blocked=result.blocked,
     )
 
 

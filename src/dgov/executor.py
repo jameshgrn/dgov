@@ -1441,6 +1441,7 @@ class DagRunResult:
     merged: list[str]
     failed: list[str]
     skipped: list[str]
+    blocked: list[str]
     run_id: int | None = None
     error: str | None = None
 
@@ -1482,6 +1483,7 @@ def run_dag_kernel(
         DagDone,
         DagKernel,
         DispatchTask,
+        InterruptGovernor,
         MergeTask,
         ReviewTask,
         RetryTask,
@@ -1546,13 +1548,15 @@ def run_dag_kernel(
                 f"DAG {action.status}: "
                 f"{len(action.merged)} merged, "
                 f"{len(action.failed)} failed, "
-                f"{len(action.skipped)} skipped"
+                f"{len(action.skipped)} skipped, "
+                f"{len(action.blocked)} blocked"
             )
             return DagRunResult(
                 status=action.status,
                 merged=list(action.merged),
                 failed=list(action.failed),
                 skipped=list(action.skipped),
+                blocked=list(action.blocked),
                 run_id=run_id,
             )
 
@@ -1622,6 +1626,19 @@ def run_dag_kernel(
                 _progress,
             )
             _extend_queue(kernel.handle(TaskClosed(action.task_slug)))
+            continue
+
+        if isinstance(action, InterruptGovernor):
+            _dag_interrupt(
+                project_root,
+                session_root,
+                run_id,
+                action.task_slug,
+                action.pane_slug,
+                action.reason,
+                _progress,
+            )
+            # Rest of DAG keeps running, loop continues
             continue
 
         if isinstance(action, RetryTask):
@@ -1948,3 +1965,65 @@ def _dag_close(
     if pane_slug:
         run_close_only(project_root, pane_slug, session_root=session_root, force=True)
     progress(f"  closed {task_slug}: {reason}")
+
+
+def _dag_interrupt(
+    project_root: str,
+    session_root: str,
+    run_id: int,
+    task_slug: str,
+    pane_slug: str,
+    reason: str,
+    progress: Callable[[str], None],
+) -> None:
+    """Gather context for a governor interrupt and emit dag_blocked event."""
+    from dgov.persistence import emit_event, get_pane, upsert_dag_task
+    from dgov.status import tail_worker_log
+    from dgov.inspection import diff_worker_pane
+
+    progress(f"  INTERRUPT: {task_slug} blocked on {reason}")
+    
+    # 1. Gather context
+    pane = get_pane(session_root, pane_slug) or {}
+    role = pane.get("role", "worker")
+    log_tail = tail_worker_log(session_root, pane_slug, lines=20)
+    
+    diff_data = diff_worker_pane(project_root, pane_slug, session_root=session_root)
+    diff_text = diff_data.get("diff", "")
+
+    interrupt_data = {
+        "task_slug": task_slug,
+        "pane_slug": pane_slug,
+        "role": role,
+        "reason": reason,
+        "log_tail": log_tail,
+        "diff": diff_text,
+    }
+
+    # 2. Persist state
+    upsert_dag_task(
+        session_root,
+        run_id,
+        task_slug,
+        "blocked_on_governor",
+        pane.get("agent", "unknown"),
+        pane_slug=pane_slug,
+        error=reason,
+    )
+
+    # 3. Write detailed report
+    report_dir = Path(session_root, ".dgov", "reports", "interrupts")
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"{pane_slug}.json"
+    report_path.write_text(json.dumps(interrupt_data, indent=2))
+
+    # 4. Notify governor
+    emit_event(
+        session_root,
+        "dag_blocked",
+        f"dag/{run_id}",
+        task=task_slug,
+        pane_slug=pane_slug,
+        reason=reason,
+        report_path=str(report_path),
+    )

@@ -480,6 +480,7 @@ from dgov.cli.plan_cmd import plan_cmd  # noqa: E402
 from dgov.cli.review_fix_cmd import review_fix  # noqa: E402
 from dgov.cli.templates import template  # noqa: E402
 from dgov.cli.trace_cmd import trace_cmd  # noqa: E402
+from dgov.cli.wait_cmd import wait_cmd  # noqa: E402
 from dgov.cli.worker_cmd import worker  # noqa: E402
 
 cli.add_command(pane)
@@ -513,6 +514,7 @@ cli.add_command(ledger_cmd)
 cli.add_command(transcript_cmd)
 cli.add_command(trace_cmd)
 cli.add_command(plan_cmd)
+cli.add_command(wait_cmd)
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ class DagTaskState(StrEnum):
     MERGED = "merged"
     FAILED = "failed"
     SKIPPED = "skipped"
+    BLOCKED_ON_GOVERNOR = "blocked_on_governor"
 
 
 _DAG_TERMINAL = frozenset({DagTaskState.MERGED, DagTaskState.FAILED, DagTaskState.SKIPPED})
@@ -85,6 +86,7 @@ class DagDone:
     merged: tuple[str, ...]
     failed: tuple[str, ...]
     skipped: tuple[str, ...]
+    blocked: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -94,8 +96,23 @@ class RetryTask:
     attempt: int
 
 
+@dataclass(frozen=True)
+class InterruptGovernor:
+    task_slug: str
+    pane_slug: str
+    reason: str
+
+
 DagAction = (
-    DispatchTask | WaitForAny | ReviewTask | MergeTask | SkipTask | CloseTask | RetryTask | DagDone
+    DispatchTask
+    | WaitForAny
+    | ReviewTask
+    | MergeTask
+    | SkipTask
+    | CloseTask
+    | RetryTask
+    | InterruptGovernor
+    | DagDone
 )
 
 
@@ -147,6 +164,12 @@ class TaskRetryStarted:
     attempt: int
 
 
+@dataclass(frozen=True)
+class TaskGovernorResumed:
+    task_slug: str
+    action: str  # "retry", "fail", "skip"
+
+
 DagEvent = (
     TaskDispatched
     | TaskDispatchFailed
@@ -155,6 +178,7 @@ DagEvent = (
     | TaskMergeDone
     | TaskClosed
     | TaskRetryStarted
+    | TaskGovernorResumed
 )
 
 
@@ -268,9 +292,12 @@ class DagKernel:
                     self.task_states[task] = DagTaskState.DISPATCHED
                     actions.append(RetryTask(task, event.pane_slug, curr_attempt))
                 else:
-                    self.task_states[task] = DagTaskState.FAILED
-                    actions.extend(self._skip_dependents(task))
-                    actions.append(CloseTask(task, event.pane_slug, reason="worker_failed"))
+                    # BLOCK on governor instead of hard failure
+                    self.task_states[task] = DagTaskState.BLOCKED_ON_GOVERNOR
+                    actions.append(
+                        InterruptGovernor(task, event.pane_slug, reason=f"wait_{event.pane_state}")
+                    )
+                    # Rest of DAG keeps running (scheduling happens automatically)
                     actions.extend(self._schedule())
                     actions.extend(self._check_done())
             return actions
@@ -291,11 +318,11 @@ class DagKernel:
                     pane = self.pane_slugs.get(task, "")
                     actions.append(RetryTask(task, pane, curr_attempt))
                 else:
-                    self.task_states[task] = DagTaskState.FAILED
-                    actions.extend(self._skip_dependents(task))
+                    # BLOCK on governor instead of hard failure
+                    self.task_states[task] = DagTaskState.BLOCKED_ON_GOVERNOR
                     pane = self.pane_slugs.get(task, "")
-                    if pane:
-                        actions.append(CloseTask(task, pane, reason="review_failed"))
+                    actions.append(InterruptGovernor(task, pane, reason="review_failed"))
+                    # Rest of DAG keeps running
                     actions.extend(self._schedule())
                     actions.extend(self._check_done())
             return actions
@@ -305,7 +332,27 @@ class DagKernel:
             self.task_states[task] = DagTaskState.WAITING
             self.pane_slugs[task] = event.new_pane_slug
             self.attempts[task] = event.attempt + 1
+            # MUST return wait action or loop will exhaust without events
             actions.extend(self._maybe_wait())
+            return actions
+
+        if isinstance(event, TaskGovernorResumed):
+            task = event.task_slug
+            if event.action == "retry":
+                # Reset attempts and re-dispatch
+                self.attempts[task] = 1
+                self.task_states[task] = DagTaskState.PENDING
+                actions.extend(self._schedule())
+            elif event.action == "fail":
+                self.task_states[task] = DagTaskState.FAILED
+                actions.extend(self._skip_dependents(task))
+                actions.extend(self._schedule())
+                actions.extend(self._check_done())
+            elif event.action == "skip":
+                self.task_states[task] = DagTaskState.SKIPPED
+                actions.extend(self._skip_dependents(task))
+                actions.extend(self._schedule())
+                actions.extend(self._check_done())
             return actions
 
         if isinstance(event, TaskMergeDone):
@@ -421,9 +468,11 @@ class DagKernel:
             return []
 
         # MERGE_READY is terminal when auto_merge=False
-        effectively_terminal = _DAG_TERMINAL | (
-            {DagTaskState.MERGE_READY} if not self.auto_merge else set()
-        )
+        # BLOCKED_ON_GOVERNOR is terminal for the automatic run loop (requires human)
+        effectively_terminal = _DAG_TERMINAL | {DagTaskState.BLOCKED_ON_GOVERNOR}
+        if not self.auto_merge:
+            effectively_terminal |= {DagTaskState.MERGE_READY}
+
         non_terminal = [s for s, st in self.task_states.items() if st not in effectively_terminal]
         if non_terminal:
             return self._maybe_wait()
@@ -431,13 +480,14 @@ class DagKernel:
         merged = tuple(s for s, st in self.task_states.items() if st == DagTaskState.MERGED)
         failed = tuple(s for s, st in self.task_states.items() if st == DagTaskState.FAILED)
         skipped = tuple(s for s, st in self.task_states.items() if st == DagTaskState.SKIPPED)
+        blocked = tuple(s for s, st in self.task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR)
 
-        if failed or skipped:
+        if failed or skipped or blocked:
             self.state = DagState.PARTIAL if merged else DagState.FAILED
         else:
             self.state = DagState.COMPLETED
 
-        return [DagDone(status=self.state, merged=merged, failed=failed, skipped=skipped)]
+        return [DagDone(status=self.state, merged=merged, failed=failed, skipped=skipped, blocked=blocked)]
 
 
 # -- Utilities --

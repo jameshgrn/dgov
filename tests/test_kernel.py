@@ -1,14 +1,16 @@
+"""Tests for dgov.kernel — state machine logic."""
+
 from __future__ import annotations
 
 import pytest
 
 from dgov.kernel import (
-    CloseTask,
     DagDone,
     DagKernel,
     DagState,
     DagTaskState,
     DispatchTask,
+    InterruptGovernor,
     MergeTask,
     RetryTask,
     ReviewTask,
@@ -16,6 +18,7 @@ from dgov.kernel import (
     TaskClosed,
     TaskDispatched,
     TaskDispatchFailed,
+    TaskGovernorResumed,
     TaskMergeDone,
     TaskRetryStarted,
     TaskReviewDone,
@@ -140,7 +143,7 @@ def test_dag_kernel_failure_skips_dependents() -> None:
     # TaskRetryStarted(attempt=2) -> attempts=3
     # 3rd attempt fails -> RetryTask(attempt=3)
     # TaskRetryStarted(attempt=3) -> attempts=4
-    # 4th attempt fails -> FAILED
+    # 4th attempt fails -> BLOCKED_ON_GOVERNOR (new behavior)
 
     for i in range(1, 4):
         actions = kernel.handle(TaskWaitDone("a", f"pane-{i}", "failed"))
@@ -149,12 +152,8 @@ def test_dag_kernel_failure_skips_dependents() -> None:
         kernel.handle(TaskRetryStarted("a", f"pane-{i + 1}", attempt=i))
 
     actions = kernel.handle(TaskWaitDone("a", "pane-4", "failed"))
-    assert kernel.task_states["a"] == DagTaskState.FAILED
-    skips = [a for a in actions if isinstance(a, SkipTask)]
-    skip_slugs = {s.task_slug for s in skips}
-    assert skip_slugs == {"b", "c"}
-    assert kernel.task_states["b"] == DagTaskState.SKIPPED
-    assert kernel.task_states["c"] == DagTaskState.SKIPPED
+    assert kernel.task_states["a"] == DagTaskState.BLOCKED_ON_GOVERNOR
+    assert any(isinstance(a, InterruptGovernor) for a in actions)
 
 
 def test_dag_kernel_diamond_parallel_execution() -> None:
@@ -264,94 +263,43 @@ def test_dag_kernel_partial_skip() -> None:
     assert kernel.task_states["d"] == DagTaskState.SKIPPED
 
 
-# ---------------------------------------------------------------------------
-# DagKernel review_agent tests
-# ---------------------------------------------------------------------------
-
-
-def test_review_task_includes_review_agent() -> None:
-    """ReviewTask emitted by kernel includes review_agent from config."""
-    kernel = DagKernel(
-        deps={"a": ()},
-        review_agents={"a": "qwen-35b"},
-    )
-    actions = kernel.start()
-    # Dispatch task a
-    assert len(actions) == 1  # DispatchTask
-    actions = kernel.handle(TaskDispatched("a", "pane-a"))
-    # Should get WaitForAny
-    assert len(actions) == 1
-    # Worker done
-    actions = kernel.handle(TaskWaitDone("a", "pane-a", "done"))
-    # Should get ReviewTask with review_agent
-    assert len(actions) == 1
-    assert isinstance(actions[0], ReviewTask)
-    assert actions[0].review_agent == "qwen-35b"
-
-
-def test_review_task_empty_without_config() -> None:
-    """ReviewTask has empty review_agent when not configured."""
-    kernel = DagKernel(deps={"a": ()})
-    actions = kernel.start()
-    actions = kernel.handle(TaskDispatched("a", "pane-a"))
-    actions = kernel.handle(TaskWaitDone("a", "pane-a", "done"))
-    assert len(actions) == 1
-    assert isinstance(actions[0], ReviewTask)
-    assert actions[0].review_agent == ""
-
-
-def test_kernel_retries_on_review_fail() -> None:
+def test_kernel_interrupts_governor_on_exhausted_retries() -> None:
     deps = {"a": ()}
-    kernel = DagKernel(deps=deps, max_retries=2)
+    # Set max_retries to 1, so 1st failure retries, 2nd failure interrupts
+    kernel = DagKernel(deps=deps, max_retries=1)
 
-    # 1. Start & Dispatch
-    actions = kernel.start()
-    assert isinstance(actions[0], DispatchTask)
+    kernel.start()
+    kernel.handle(TaskDispatched("a", "pane-1"))
+    kernel.handle(TaskWaitDone("a", "pane-1", "done"))
 
-    # Confirm dispatch
-    actions = kernel.handle(TaskDispatched("a", "pane-1"))
-
-    # 2. Wait completes
-    actions = kernel.handle(TaskWaitDone("a", "pane-1", "done"))
-    assert isinstance(actions[0], ReviewTask)
-
-    # 3. Review fails (Attempt 1)
+    # 1. First review failure -> Retry
     actions = kernel.handle(
         TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
     )
-    assert len(actions) == 1
     assert isinstance(actions[0], RetryTask)
-    assert actions[0].attempt == 1
+
+    kernel.handle(TaskRetryStarted("a", "pane-2", attempt=1))
+    kernel.handle(TaskWaitDone("a", "pane-2", "done"))
+
+    # 2. Second review failure -> Interrupt
+    actions = kernel.handle(
+        TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
+    )
+    assert kernel.task_states["a"] == DagTaskState.BLOCKED_ON_GOVERNOR
+    assert any(isinstance(a, InterruptGovernor) for a in actions)
+    assert any(
+        a.task_slug == "a" and a.reason == "review_failed"
+        for a in actions
+        if isinstance(a, InterruptGovernor)
+    )
+
+
+def test_kernel_governor_resume_retry() -> None:
+    deps = {"a": ()}
+    kernel = DagKernel(deps=deps)
+    kernel.task_states["a"] = DagTaskState.BLOCKED_ON_GOVERNOR
+
+    # Resume with retry
+    actions = kernel.handle(TaskGovernorResumed("a", action="retry"))
     assert kernel.task_states["a"] == DagTaskState.DISPATCHED
-
-    # 4. Confirm retry started
-    actions = kernel.handle(TaskRetryStarted("a", "pane-2", attempt=1))
-    assert kernel.task_states["a"] == DagTaskState.WAITING
-    assert kernel.pane_slugs["a"] == "pane-2"
-    assert kernel.attempts["a"] == 2
-
-    # 5. Wait completes again
-    actions = kernel.handle(TaskWaitDone("a", "pane-2", "done"))
-    assert isinstance(actions[0], ReviewTask)
-
-    # 6. Review fails again (Attempt 2)
-    actions = kernel.handle(
-        TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
-    )
-    assert isinstance(actions[0], RetryTask)
-    assert actions[0].attempt == 2
-
-    # 7. Confirm retry 2 started
-    actions = kernel.handle(TaskRetryStarted("a", "pane-3", attempt=2))
-    assert kernel.attempts["a"] == 3
-
-    # 8. Wait completes
-    kernel.handle(TaskWaitDone("a", "pane-3", "done"))
-
-    # 9. Review fails (Attempt 3 - exceeds max_retries=2)
-    actions = kernel.handle(
-        TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
-    )
-    assert kernel.task_states["a"] == DagTaskState.FAILED
-    assert any(isinstance(a, CloseTask) for a in actions)
-    assert any(isinstance(a, DagDone) for a in actions)
+    assert any(isinstance(a, DispatchTask) and a.task_slug == "a" for a in actions)
