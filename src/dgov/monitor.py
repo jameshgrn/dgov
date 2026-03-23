@@ -123,18 +123,23 @@ class MonitorLoopState:
 
 
 # Deterministic regex patterns for classification
+# Order matters: first match wins.
 DETERMINISTIC_PATTERNS = {
-    "stuck": [
-        r"\b(failed|error|exception|traceback|crash|panic|fatal)\b",
+    "done": [
+        r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
+        r"[\u279c\u2714]\s+[\w\-\.]+\s+git:\([\w\-\.]+\)",  # shell prompt on branch
+        r"[\u279c\u2714]\s+[\w\-\.]+\s+%",  # simple zsh prompt
+        r"[\u279c\u2714]\s+[\w\-\.]+\s+[\$\#]",  # bash/sh prompt
+        r"\(base\)\s+➜",  # conda/zsh combo
+        r"\b(finished|exited) with code \d+\b",
     ],
     "waiting_input": [
         r"\b(waiting[ \t]+for\s+(user|input|confirmation|approval|prompt))\b",
         r"\b(paused.*awaiting\b|awaiting.*input\b)",
         r"\bawaiting\s+input\b",
     ],
-    "done": [
-        r"\b(done|complete[d]?|finish[e]?d?|\bready\b|success|all\.done)",
-        r"[\u279c\u2714]\s+[\w\-\.]+\s+git:\([\w\-\.]+\)",  # shell prompt on branch
+    "stuck": [
+        r"\b(failed|error|exception|traceback|crash|panic|fatal)\b",
     ],
     "committing": [
         r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
@@ -1079,13 +1084,18 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
         else:
             dgov_exe = "dgov" if shutil.which("dgov") else sys.executable
 
-        subprocess.Popen(
-            [dgov_exe, "monitor", "-r", project_root],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        logger.info("Monitor: kickstarted headless daemon for %s", project_root)
+        log_dir = Path(session_root) / ".dgov" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "monitor.log"
+
+        with open(log_file, "a") as f:
+            subprocess.Popen(
+                [dgov_exe, "monitor", "-r", project_root],
+                stdout=f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        logger.info("Monitor: kickstarted headless daemon for %s (logging to %s)", project_root, log_file)
 
 
 def run_monitor(

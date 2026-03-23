@@ -339,7 +339,7 @@ class TestRunMonitor:
 
         run_monitor(str(tmp_path), dry_run=False, poll_interval=7)
 
-        mock_wait.assert_called_once_with(str(tmp_path), 12, 7)
+        mock_wait.assert_called_once_with(str(tmp_path), str(tmp_path), 12, 7)
         assert mock_latest_event_id.call_count >= 1
 
 
@@ -505,52 +505,19 @@ class TestTryAutoMerge:
 
 class TestMonitorWakeup:
     def test_wait_for_monitor_wakeup_uses_event_waiter(self):
-        from dgov.monitor import _wait_for_monitor_wakeup
+        from dgov.monitor import _MONITOR_WAKE_EVENTS, _wait_for_monitor_wakeup
 
         with (
             patch("dgov.monitor.wait_for_events", return_value=[{"id": 13}]) as mock_wait,
+            patch("pathlib.Path.is_dir", return_value=True),
         ):
-            events = _wait_for_monitor_wakeup("/tmp/proj", 12, 9)
+            events = _wait_for_monitor_wakeup("/tmp/proj", "/tmp/proj", 12, 9)
 
         assert events == [{"id": 13}]
         mock_wait.assert_called_once_with(
             "/tmp/proj",
             after_id=12,
-            event_types=(
-                "dispatch_queued",
-                "pane_created",
-                "pane_done",
-                "pane_failed",
-                "pane_timed_out",
-                "pane_merged",
-                "pane_merge_failed",
-                "pane_escalated",
-                "pane_superseded",
-                "pane_closed",
-                "pane_retry_spawned",
-                "pane_auto_retried",
-                "pane_review_pending",
-                "mission_pending",
-                "mission_running",
-                "mission_waiting",
-                "mission_reviewing",
-                "mission_merging",
-                "mission_completed",
-                "mission_failed",
-                "dag_started",
-                "dag_task_dispatched",
-                "dag_task_completed",
-                "dag_task_failed",
-                "dag_task_escalated",
-                "dag_completed",
-                "dag_failed",
-                "merge_completed",
-                "monitor_auto_complete",
-                "monitor_idle_timeout",
-                "monitor_blocked",
-                "monitor_auto_merge",
-                "monitor_auto_retry",
-            ),
+            event_types=_MONITOR_WAKE_EVENTS,
             timeout_s=9.0,
         )
 
