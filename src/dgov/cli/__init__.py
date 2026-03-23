@@ -27,6 +27,11 @@ _GOVERNOR_PROMPT = (
     "  dgov pane review <slug>                          # inspect the diff\n"
     "  dgov pane land <slug>                           # review, merge, close\n"
     "  dgov pane close <slug>                           # cleanup\n"
+    "When planning structured work, start with evals, not units:\n"
+    "  1. Write 3-7 falsifiable evals plus invariants/non-goals.\n"
+    "  2. Let the model translate intent into a spec constrained by those evals.\n"
+    "  3. Derive units from evals; every unit must cite the evals it satisfies.\n"
+    "  4. Keep file claims exact and validation commands tied to the evals.\n"
     "Never edit source files directly. Dispatch workers instead."
 )
 

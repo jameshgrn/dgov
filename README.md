@@ -196,6 +196,10 @@ uv run dgov plan validate .dgov/plans/review-refactor.toml
 uv run dgov plan compile .dgov/plans/review-refactor.toml
 ```
 
+Plans are eval-first: write falsifiable `[[evals]]` entries first, then derive
+units with exact file claims and `satisfies` links. See
+[`docs/eval-first-planning.md`](docs/eval-first-planning.md).
+
 ### LT-GOV (delegation)
 
 A lieutenant governor is a sub-governor worker that follows the canonical governor pipeline (preflight → dispatch → wait → review → merge → cleanup). The governor delegates a broad task to an LT-GOV, which runs workers via `dgov pane create --land`, tracks progress in `.dgov/progress/{ltgov_slug}.json`, and escalates structural issues back to the governor instead of editing code directly.

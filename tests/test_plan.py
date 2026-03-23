@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from dgov.plan import (
+    PlanEval,
     PlanSpec,
     PlanUnit,
     PlanUnitFiles,
@@ -28,10 +29,25 @@ goal = "Test the plan system"
 default_agent = "qwen-9b"
 default_timeout_s = 600
 
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "Task A updates src/a.py."
+evidence = "uv run pytest tests/test_a.py -q"
+scope = ["src/a.py"]
+
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "Task B creates src/b.py."
+evidence = "uv run pytest tests/test_b.py -q"
+scope = ["src/b.py"]
+
 [units.task-a]
 summary = "First task"
 prompt = "Do task A"
 commit_message = "Complete A"
+satisfies = ["E1"]
 agent = "qwen-35b"
 timeout_s = 900
 
@@ -47,6 +63,7 @@ lint_clean = true
 summary = "Second task"
 prompt = "Do task B"
 commit_message = "Complete B"
+satisfies = ["E2"]
 depends_on = ["task-a"]
 
 [units.task-b.files]
@@ -68,6 +85,7 @@ class TestParsePlanFile:
         assert isinstance(spec, PlanSpec)
         assert spec.name == "test-plan"
         assert spec.goal == "Test the plan system"
+        assert len(spec.evals) == 2
         assert len(spec.units) == 2
         assert "task-a" in spec.units
         assert "task-b" in spec.units
@@ -80,8 +98,18 @@ class TestParsePlanFile:
         assert task_a.summary == "First task"
         assert task_a.prompt == "Do task A"
         assert task_a.commit_message == "Complete A"
+        assert task_a.satisfies == ("E1",)
         assert task_a.agent == "qwen-35b"
         assert task_a.timeout_s == 900
+
+    def test_eval_fields(self, tmp_path):
+        """Check eval fields are parsed correctly."""
+        spec = parse_plan_file(_write_plan(tmp_path))
+        assert spec.evals[0].eval_id == "E1"
+        assert spec.evals[0].kind == "regression"
+        assert spec.evals[0].statement == "Task A updates src/a.py."
+        assert spec.evals[0].evidence == "uv run pytest tests/test_a.py -q"
+        assert spec.evals[0].scope == ("src/a.py",)
 
     def test_unit_files(self, tmp_path):
         """Check file specs are parsed correctly."""
@@ -266,7 +294,9 @@ class TestScratchPlans:
         spec = parse_plan_file(str(path))
         assert spec.name == "review_refactor"
         assert spec.goal == "Replace with the concrete goal before running."
+        assert spec.evals[0].eval_id == "E1"
         assert "first_change" in spec.units
+        assert spec.units["first_change"].satisfies == ("E1",)
 
     def test_write_scratch_plan_rejects_invalid_name(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Invalid scratch plan name"):
@@ -291,6 +321,26 @@ class TestValidatePlan:
         issues = validate_plan(spec)
         assert issues == []
 
+    def test_missing_evals_is_error(self, tmp_path):
+        """Plans must define evals before units."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E1"]
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        issues = validate_plan(spec)
+        assert any("at least one [[evals]]" in issue.message for issue in issues)
+
     def test_missing_dependency(self, tmp_path):
         """Unit depends on non-existent unit returns error."""
         toml_content = """
@@ -298,10 +348,16 @@ class TestValidatePlan:
 version = 1
 name = "test-plan"
 goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "Task a depends on existing work."
+evidence = "uv run pytest tests/test_a.py -q"
 [units.task-a]
 summary = "task a"
 prompt = "do a"
 commit_message = "commit a"
+satisfies = ["E1"]
 depends_on = ["nonexistent"]
 [units.task-a.files]
 edit = ["a.py"]
@@ -319,10 +375,21 @@ edit = ["a.py"]
 version = 1
 name = "test-plan"
 goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a resolves before b"
+evidence = "uv run pytest tests/test_cycle.py -q"
+[[evals]]
+id = "E2"
+kind = "edge"
+statement = "b resolves before a"
+evidence = "uv run pytest tests/test_cycle.py -q"
 [units.a]
 summary = "a"
 prompt = "do a"
 commit_message = "commit a"
+satisfies = ["E1"]
 depends_on = ["b"]
 [units.a.files]
 edit = ["a.py"]
@@ -330,6 +397,7 @@ edit = ["a.py"]
 summary = "b"
 prompt = "do b"
 commit_message = "commit b"
+satisfies = ["E2"]
 depends_on = ["a"]
 [units.b.files]
 edit = ["b.py"]
@@ -347,16 +415,28 @@ edit = ["b.py"]
 version = 1
 name = "test-plan"
 goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a edits foo"
+evidence = "uv run pytest tests/test_foo.py -q"
+[[evals]]
+id = "E2"
+kind = "edge"
+statement = "b edits foo"
+evidence = "uv run pytest tests/test_foo.py -q"
 [units.a]
 summary = "a"
 prompt = "do a"
 commit_message = "commit a"
+satisfies = ["E1"]
 [units.a.files]
 edit = ["src/foo.py"]
 [units.b]
 summary = "b"
 prompt = "do b"
 commit_message = "commit b"
+satisfies = ["E2"]
 [units.b.files]
 edit = ["src/foo.py"]
 """
@@ -373,16 +453,28 @@ edit = ["src/foo.py"]
 version = 1
 name = "test-plan"
 goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a edits foo before b"
+evidence = "uv run pytest tests/test_foo.py -q"
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "b edits foo after a"
+evidence = "uv run pytest tests/test_foo.py -q"
 [units.a]
 summary = "a"
 prompt = "do a"
 commit_message = "commit a"
+satisfies = ["E1"]
 [units.a.files]
 edit = ["src/foo.py"]
 [units.b]
 summary = "b"
 prompt = "do b"
 commit_message = "commit b"
+satisfies = ["E2"]
 depends_on = ["a"]
 [units.b.files]
 edit = ["src/foo.py"]
@@ -401,10 +493,16 @@ edit = ["src/foo.py"]
 version = 1
 name = "test-plan"
 goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "long summary still has a target eval"
+evidence = "uv run pytest tests/test_long.py -q"
 [units.long]
 summary = "{long_summary}"
 prompt = "do it"
 commit_message = "commit"
+satisfies = ["E1"]
 [units.long.files]
 edit = ["a.py"]
 """
@@ -424,11 +522,20 @@ edit = ["a.py"]
             prompt="   ",
             commit_message="commit",
             files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
         )
         plan = PlanSpec(
             name="test",
             goal="test goal",
             units={"bad": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Prompt must describe the work.",
+                    evidence="uv run pytest tests/test_prompt.py -q",
+                ),
+            ),
         )
         issues = validate_plan(plan)
         assert len(issues) == 1
@@ -443,16 +550,80 @@ edit = ["a.py"]
             prompt="do it",
             commit_message="   ",
             files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
         )
         plan = PlanSpec(
             name="test",
             goal="test goal",
             units={"bad": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Commit message must be present.",
+                    evidence="uv run pytest tests/test_commit.py -q",
+                ),
+            ),
         )
         issues = validate_plan(plan)
         assert len(issues) == 1
         assert issues[0].severity == "error"
         assert "commit_message must not be empty" in issues[0].message
+
+    def test_unit_must_reference_known_eval(self, tmp_path):
+        """Unknown eval references are validation errors."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "Known eval"
+evidence = "uv run pytest tests/test_known.py -q"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E2"]
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        issues = validate_plan(spec)
+        assert any("unknown eval 'E2'" in issue.message for issue in issues)
+
+    def test_eval_must_be_satisfied_by_a_unit(self, tmp_path):
+        """Unclaimed evals are validation errors."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "claimed eval"
+evidence = "uv run pytest tests/test_claimed.py -q"
+[[evals]]
+id = "E2"
+kind = "invariant"
+statement = "unclaimed eval"
+evidence = "uv run pytest tests/test_unclaimed.py -q"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E1"]
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        issues = validate_plan(spec)
+        assert any("not satisfied by any unit" in issue.message for issue in issues)
 
 
 class TestCompilePlan:
@@ -495,6 +666,15 @@ class TestCompilePlan:
         prompt = dag.tasks["task-a"].prompt
         assert "Also read:" in prompt
         assert "src/helpers.py" in prompt
+
+    def test_compile_injects_evals(self, tmp_path):
+        """Compiled prompts include linked eval statements and evidence."""
+        spec = parse_plan_file(_write_plan(tmp_path))
+        dag = compile_plan(spec)
+        prompt = dag.tasks["task-a"].prompt
+        assert "## Evals to satisfy" in prompt
+        assert "[E1] regression: Task A updates src/a.py." in prompt
+        assert "Evidence: uv run pytest tests/test_a.py -q" in prompt
 
     def test_compile_drops_read_from_file_claims(self, tmp_path):
         """Compiled DagFileSpec should NOT have read files."""
@@ -642,6 +822,7 @@ class TestSerializePlan:
 
         assert roundtripped.name == original.name
         assert roundtripped.goal == original.goal
+        assert roundtripped.evals == original.evals
         assert len(roundtripped.units) == len(original.units)
         for slug in original.units:
             assert slug in roundtripped.units
@@ -662,6 +843,8 @@ class TestSerializePlan:
         assert "[plan]" in toml_str
         assert 'name = "test-plan"' in toml_str
         assert 'goal = "Test the plan system"' in toml_str
+        assert "[[evals]]" in toml_str
+        assert 'id = "E1"' in toml_str
 
     def test_serialize_contains_units(self, tmp_path):
         """Serialized TOML contains unit sections."""
@@ -671,6 +854,7 @@ class TestSerializePlan:
         toml_str = serialize_plan(spec)
         assert "[units.task-a]" in toml_str
         assert "[units.task-b]" in toml_str
+        assert 'satisfies = ["E1"]' in toml_str
 
     def test_serialize_non_default_config(self, tmp_path):
         """Non-default config values appear in serialized output."""
@@ -687,6 +871,14 @@ class TestSerializePlan:
             name="test",
             goal="test",
             units={"x": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="x is implemented",
+                    evidence="uv run pytest tests/test_x.py -q",
+                ),
+            ),
             max_concurrent=4,
             merge_strategy="rebase",
             default_agent="qwen-35b",
@@ -709,11 +901,17 @@ class TestRunPlan:
 version = 1
 name = "bad"
 goal = "test"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a should exist"
+evidence = "uv run pytest tests/test_a.py -q"
 
 [units.a]
 summary = "a"
 prompt = "do a"
 commit_message = "a"
+satisfies = ["E1"]
 depends_on = ["nonexistent"]
 [units.a.files]
 edit = ["a.py"]
@@ -731,11 +929,17 @@ edit = ["a.py"]
 version = 99
 name = "bad"
 goal = "test"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a should exist"
+evidence = "uv run pytest tests/test_a.py -q"
 
 [units.a]
 summary = "a"
 prompt = "do a"
 commit_message = "a"
+satisfies = ["E1"]
 [units.a.files]
 edit = ["a.py"]
 """
@@ -762,11 +966,17 @@ version = 1
 name = "lt-plan"
 goal = "Test LT-GOV"
 session_root = "{tmp_path}"
+[[evals]]
+id = "E1"
+kind = "manual"
+statement = "LT-GOV dispatches the planned worker set."
+evidence = "Review .dgov/progress/lt-task.json after completion."
 
 [units.lt-task]
 summary = "LT summary"
 prompt = "ignored"
 commit_message = "LT commit"
+satisfies = ["E1"]
 role = "lt-gov"
 template = "lt-gov"
 [units.lt-task.vars]
@@ -781,6 +991,8 @@ edit = ["src/api.py"]
 
         task = dag.tasks["lt-task"]
         assert task.role == "lt-gov"
-        assert task.prompt == "LT: lt-task, Agent: qwen-9b, Tasks: 1. a, 2. b"
+        assert task.prompt.startswith("LT: lt-task, Agent: qwen-9b, Tasks: 1. a, 2. b")
+        assert "## Evals to satisfy" in task.prompt
+        assert "[E1] manual: LT-GOV dispatches the planned worker set." in task.prompt
         assert task.template == "lt-gov"
         assert task.template_vars == {"task_list": "1. a, 2. b"}

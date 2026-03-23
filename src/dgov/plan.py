@@ -40,6 +40,17 @@ class PlanUnitFiles:
 
 
 @dataclass(frozen=True)
+class PlanEval:
+    """A falsifiable condition that defines plan success."""
+
+    eval_id: str
+    kind: str
+    statement: str
+    evidence: str
+    scope: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PlanUnit:
     """A single unit of work in a plan."""
 
@@ -48,6 +59,7 @@ class PlanUnit:
     prompt: str
     commit_message: str
     files: PlanUnitFiles
+    satisfies: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
     agent: str = ""  # empty = use plan default
     acceptance: AcceptanceCriteria = field(default_factory=AcceptanceCriteria)
@@ -66,6 +78,7 @@ class PlanSpec:
     name: str
     goal: str
     units: dict[str, PlanUnit]
+    evals: tuple[PlanEval, ...] = ()
     project_root: str = "."
     session_root: str = "."
     max_concurrent: int = 0
@@ -88,6 +101,15 @@ class PlanIssue:
 
 
 _SCRATCH_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_EVAL_ID_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
+_ALLOWED_EVAL_KINDS = {
+    "regression",
+    "happy_path",
+    "edge",
+    "invariant",
+    "non_goal",
+    "manual",
+}
 
 
 def _validate_scratch_name(name: str) -> str:
@@ -130,6 +152,13 @@ version = 1
 name = "{scratch_name}"
 goal = "Replace with the concrete goal before running."
 
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "The scratch plan is created under .dgov/plans/ and not in the repo root."
+evidence = "uv run dgov plan scratch {scratch_name}"
+scope = ["src/dgov/plan.py", "src/dgov/cli/plan_cmd.py"]
+
 [units.first_change]
 summary = "Describe one concrete unit of work"
 prompt = \"\"\"
@@ -140,6 +169,7 @@ prompt = \"\"\"
 5. git commit -m "Describe the completed change"
 \"\"\"
 commit_message = "Describe the completed change"
+satisfies = ["E1"]
 
 [units.first_change.files]
 edit = ["src/path/to/file.py"]
@@ -167,14 +197,43 @@ def _normalize_file_specs(files: dict) -> PlanUnitFiles:
     """Normalize file spec lists: validate no globs, all relative, sort."""
     result = {}
     for key in ("create", "edit", "delete", "read"):
-        paths = files.get(key, [])
-        for p in paths:
-            if "*" in p or "?" in p or "[" in p:
-                raise ValueError(f"Globs not allowed in file specs: {p!r}")
-            if Path(p).is_absolute():
-                raise ValueError(f"File paths must be relative: {p!r}")
-        result[key] = tuple(sorted(paths))
+        result[key] = _normalize_relative_paths(
+            files.get(key, []),
+            label=f"file specs[{key}]",
+        )
     return PlanUnitFiles(**result)
+
+
+def _normalize_relative_paths(paths: list[str], *, label: str) -> tuple[str, ...]:
+    """Normalize relative path lists used in plan metadata."""
+    for path in paths:
+        if "*" in path or "?" in path or "[" in path:
+            raise ValueError(f"Globs not allowed in {label}: {path!r}")
+        if Path(path).is_absolute():
+            raise ValueError(f"Paths in {label} must be relative: {path!r}")
+    return tuple(sorted(paths))
+
+
+def _parse_eval(raw: dict) -> PlanEval:
+    """Parse and validate a single eval block."""
+    for req in ("id", "kind", "statement", "evidence"):
+        if not raw.get(req):
+            raise ValueError(f"Eval missing required field {req!r}")
+
+    eval_id = str(raw["id"])
+    if not _EVAL_ID_RE.match(eval_id):
+        raise ValueError(
+            f"Invalid eval id: {eval_id!r}. "
+            "Use 1-32 chars: letters, digits, underscores, or hyphens."
+        )
+
+    return PlanEval(
+        eval_id=eval_id,
+        kind=str(raw["kind"]),
+        statement=str(raw["statement"]),
+        evidence=str(raw["evidence"]),
+        scope=_normalize_relative_paths(list(raw.get("scope", ())), label=f"eval {eval_id} scope"),
+    )
 
 
 def _parse_acceptance(raw: dict) -> AcceptanceCriteria:
@@ -230,6 +289,8 @@ def parse_plan_file(path: str) -> PlanSpec:
     max_retries = plan_section.get("max_retries", 1)
     merge_resolve = plan_section.get("merge_resolve", "skip")
     default_review_agent = plan_section.get("default_review_agent", "")
+    evals_raw = raw.get("evals", [])
+    evals = tuple(_parse_eval(eval_raw) for eval_raw in evals_raw)
 
     units: dict[str, PlanUnit] = {}
     for slug, unit_raw in units_raw.items():
@@ -238,6 +299,7 @@ def parse_plan_file(path: str) -> PlanSpec:
     return PlanSpec(
         name=plan_section["name"],
         goal=plan_section["goal"],
+        evals=evals,
         units=units,
         project_root=project_root,
         session_root=session_root,
@@ -272,6 +334,7 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
         prompt=raw["prompt"],
         commit_message=raw["commit_message"],
         files=files,
+        satisfies=tuple(raw.get("satisfies", ())),
         depends_on=tuple(raw.get("depends_on", ())),
         agent=str(raw.get("agent", "")),
         acceptance=acceptance,
@@ -297,6 +360,49 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     issues: list[PlanIssue] = []
     units = plan.units
     unit_ids = set(units)
+    evals_by_id = {plan_eval.eval_id: plan_eval for plan_eval in plan.evals}
+
+    if not plan.evals:
+        issues.append(
+            PlanIssue(
+                severity="error",
+                message="Plan must define at least one [[evals]] entry before units",
+            )
+        )
+
+    if len(evals_by_id) != len(plan.evals):
+        issues.append(
+            PlanIssue(
+                severity="error",
+                message="Eval ids must be unique",
+            )
+        )
+
+    for plan_eval in plan.evals:
+        if plan_eval.kind not in _ALLOWED_EVAL_KINDS:
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=(
+                        f"Eval {plan_eval.eval_id!r} has invalid kind {plan_eval.kind!r}; "
+                        f"expected one of {sorted(_ALLOWED_EVAL_KINDS)}"
+                    ),
+                )
+            )
+        if not plan_eval.statement.strip():
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Eval {plan_eval.eval_id!r} statement must not be empty",
+                )
+            )
+        if not plan_eval.evidence.strip():
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Eval {plan_eval.eval_id!r} evidence must not be empty",
+                )
+            )
 
     # Check dependency refs exist
     for slug, unit in units.items():
@@ -362,6 +468,23 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
 
     # Check prompt non-empty (error)
     for slug, unit in units.items():
+        if not unit.satisfies:
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Unit {slug!r} must declare at least one eval in satisfies",
+                    unit=slug,
+                )
+            )
+        for eval_id in unit.satisfies:
+            if eval_id not in evals_by_id:
+                issues.append(
+                    PlanIssue(
+                        severity="error",
+                        message=f"Unit {slug!r} references unknown eval {eval_id!r}",
+                        unit=slug,
+                    )
+                )
         if not unit.prompt.strip():
             issues.append(
                 PlanIssue(
@@ -384,6 +507,18 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
 
     # Check file conflicts for parallel units
     issues.extend(_check_file_conflicts(units))
+
+    for plan_eval in plan.evals:
+        if not any(plan_eval.eval_id in unit.satisfies for unit in units.values()):
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=(
+                        f"Eval {plan_eval.eval_id!r} is not satisfied by any unit; "
+                        "derive units from evals, not the reverse"
+                    ),
+                )
+            )
 
     return issues
 
@@ -480,6 +615,7 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
 
     all_templates = load_templates(plan.session_root)
     tasks: dict[str, DagTaskSpec] = {}
+    evals_by_id = {plan_eval.eval_id: plan_eval for plan_eval in plan.evals}
 
     for slug, unit in plan.units.items():
         # Resolve defaults
@@ -532,6 +668,19 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
                 )
                 if acceptance.custom_check:
                     modified_prompt += f"\n- Custom check: {acceptance.custom_check}"
+
+        if unit.satisfies:
+            modified_prompt += "\n\n## Evals to satisfy"
+            for eval_id in unit.satisfies:
+                plan_eval = evals_by_id.get(eval_id)
+                if plan_eval is None:
+                    continue
+                modified_prompt += (
+                    f"\n- [{plan_eval.eval_id}] {plan_eval.kind}: {plan_eval.statement}"
+                )
+                modified_prompt += f"\n  Evidence: {plan_eval.evidence}"
+                if plan_eval.scope:
+                    modified_prompt += f"\n  Scope: {', '.join(plan_eval.scope)}"
 
         tasks[slug] = DagTaskSpec(
             slug=slug,
@@ -599,6 +748,17 @@ def serialize_plan(plan: PlanSpec) -> str:
         lines.append(f'default_review_agent = "{plan.default_review_agent}"')
     lines.append("")
 
+    for plan_eval in plan.evals:
+        lines.append("[[evals]]")
+        lines.append(f'id = "{plan_eval.eval_id}"')
+        lines.append(f'kind = "{plan_eval.kind}"')
+        lines.append(f'statement = "{plan_eval.statement}"')
+        lines.append(f'evidence = "{plan_eval.evidence}"')
+        if plan_eval.scope:
+            items = ", ".join(f'"{path}"' for path in plan_eval.scope)
+            lines.append(f"scope = [{items}]")
+        lines.append("")
+
     for slug, unit in plan.units.items():
         lines.append(f"[units.{slug}]")
         lines.append(f'summary = "{unit.summary}"')
@@ -612,6 +772,9 @@ def serialize_plan(plan: PlanSpec) -> str:
             lines.append(f'agent = "{unit.agent}"')
         if unit.timeout_s:
             lines.append(f"timeout_s = {unit.timeout_s}")
+        if unit.satisfies:
+            items = ", ".join(f'"{eval_id}"' for eval_id in unit.satisfies)
+            lines.append(f"satisfies = [{items}]")
         if unit.depends_on:
             deps = ", ".join(f'"{d}"' for d in unit.depends_on)
             lines.append(f"depends_on = [{deps}]")
