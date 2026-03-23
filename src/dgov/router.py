@@ -84,7 +84,8 @@ def resolve_agent(
     Checks health and concurrency for each backend in order.
     """
     from dgov.agents import load_registry
-    from dgov.status import _count_active_agent_workers
+    from dgov.backend import get_backend
+    from dgov.persistence import all_panes
 
     tables = _load_routing_tables()
     if name not in tables:
@@ -93,12 +94,49 @@ def resolve_agent(
     backends = tables[name]
     registry = load_registry(project_root)
 
+    # Optimization: fetch all active panes and tmux info once
+    _TERMINAL_STATES = {
+        "done",
+        "failed",
+        "superseded",
+        "merged",
+        "closed",
+        "escalated",
+        "timed_out",
+    }
+    panes = all_panes(session_root)
+    all_tmux = get_backend().bulk_info()
+
+    active_counts: dict[str, int] = {}
+    for p in panes:
+        agent_id = p.get("agent", "")
+        if agent_id and p.get("state") not in _TERMINAL_STATES:
+            pane_id = p.get("pane_id", "")
+            if pane_id and pane_id in all_tmux:
+                active_counts[agent_id] = active_counts.get(agent_id, 0) + 1
+
+    # River cluster policy: if two 35B models are running, limit further river tasks
+    river_35b_active = sum(v for k, v in active_counts.items() if k.startswith("river-35b"))
+    river_9b_active = sum(v for k, v in active_counts.items() if k.startswith("river-9b"))
+
     tried: list[str] = []
     for backend_id in backends:
         agent_def = registry.get(backend_id)
         if agent_def is None:
             tried.append(f"{backend_id} (not registered)")
             continue
+
+        # River Cluster Constraint
+        if backend_id.startswith("river-"):
+            if river_35b_active >= 2:
+                if backend_id.startswith("river-35b"):
+                    tried.append(
+                        f"{backend_id} (river cluster 35B capacity full: {river_35b_active})"
+                    )
+                    continue
+                if backend_id.startswith("river-9b") and river_9b_active >= 1:
+                    tried.append(f"{backend_id} (river cluster 9B limited during 35B load)")
+                    continue
 
         # Health check
         if agent_def.health_check:
@@ -118,10 +156,11 @@ def resolve_agent(
                 continue
 
         # Concurrency check
-        if agent_def.max_concurrent is not None:
-            active = _count_active_agent_workers(session_root, backend_id)
-            if active >= agent_def.max_concurrent:
-                tried.append(f"{backend_id} ({active}/{agent_def.max_concurrent} busy)")
+        max_concurrent = agent_def.max_concurrent
+        if max_concurrent is not None:
+            active = active_counts.get(backend_id, 0)
+            if active >= max_concurrent:
+                tried.append(f"{backend_id} ({active}/{max_concurrent} busy)")
                 continue
 
         logger.info("Routed %s -> %s", name, backend_id)

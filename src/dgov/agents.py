@@ -181,6 +181,8 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         default_flags="-p",  # non-interactive: process prompt and exit
         permission_flags={
             "plan": "--tools read,grep,find,ls",
+            "acceptEdits": "--tools read,grep,find,ls,edit",
+            "bypassPermissions": "--tools read,grep,find,ls,edit,bash,write",
         },
         resume_template="pi --continue{permissions}",
         color=34,
