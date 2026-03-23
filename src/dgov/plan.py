@@ -109,6 +109,7 @@ _ALLOWED_EVAL_KINDS = {
     "invariant",
     "non_goal",
     "manual",
+    "performance",
 }
 
 
