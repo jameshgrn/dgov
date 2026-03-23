@@ -62,6 +62,7 @@ class AgentDef:
     retry_escalate_to: str | None = None
     color: int | None = None
     env: dict[str, str] = field(default_factory=dict)
+    groups: tuple[str, ...] = ()
     done_strategy: DoneStrategy | None = None
     source: str = "built-in"
 
@@ -334,6 +335,7 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
         retry_escalate_to=table.get("retry_escalate_to"),
         color=table.get("color"),
         env=dict(env_section),
+        groups=tuple(table.get("groups", ())),
         done_strategy=done_strategy,
         source=source,
         interactive=table.get("interactive", False),
@@ -387,7 +389,7 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
             kwargs[f] = getattr(base, f)
 
     # Handle tuple fields
-    for tf in ("send_keys_pre_prompt", "send_keys_submit"):
+    for tf in ("send_keys_pre_prompt", "send_keys_submit", "groups"):
         if tf in kwargs and isinstance(kwargs[tf], list):
             kwargs[tf] = tuple(kwargs[tf])
 
@@ -793,3 +795,34 @@ def check_all_agents(registry: dict[str, AgentDef]) -> dict[str, list[str]]:
         if violations:
             results[agent_id] = violations
     return results
+
+
+def load_groups(project_root: str | None = None) -> dict[str, dict]:
+    """Load agent group definitions from TOML config files.
+
+    Returns {group_id: {max_concurrent: int, ...}}.
+    """
+    groups: dict[str, dict] = {}
+
+    # User global: ~/.dgov/agents.toml
+    user_config = Path.home() / ".dgov" / "agents.toml"
+    if user_config.is_file():
+        try:
+            with open(user_config, "rb") as f:
+                data = tomllib.load(f)
+                groups.update(data.get("groups", {}))
+        except (tomllib.TOMLDecodeError, OSError):
+            pass
+
+    # Project-local: <project_root>/.dgov/agents.toml
+    if project_root:
+        project_config = Path(project_root) / ".dgov" / "agents.toml"
+        if project_config.is_file():
+            try:
+                with open(project_config, "rb") as f:
+                    data = tomllib.load(f)
+                    groups.update(data.get("groups", {}))
+            except (tomllib.TOMLDecodeError, OSError):
+                pass
+
+    return groups

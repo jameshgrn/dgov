@@ -23,28 +23,28 @@ def _load_routing_tables() -> dict[str, list[str]]:
     Returns {logical_name: [backend1, backend2, ...]}.
     """
     config_path = Path.home() / ".dgov" / "agents.toml"
-    if not config_path.is_file():
-        return {}
 
-    try:
-        mtime = config_path.stat().st_mtime
-    except OSError:
-        return {}
+    mtime = 0.0
+    if config_path.is_file():
+        try:
+            mtime = config_path.stat().st_mtime
+        except OSError:
+            pass
 
     if _routing_cache.get("mtime") == mtime and "tables" in _routing_cache:
         return _routing_cache["tables"]  # type: ignore[return-value]
 
-    try:
-        with open(config_path, "rb") as f:
-            data = tomllib.load(f)
-    except (tomllib.TOMLDecodeError, OSError):
-        return {}
-
-    routing = data.get("routing", {})
     result: dict[str, list[str]] = {}
-    for name, table in routing.items():
-        if isinstance(table, dict) and "backends" in table:
-            result[name] = list(table["backends"])
+    if mtime > 0:
+        try:
+            with open(config_path, "rb") as f:
+                data = tomllib.load(f)
+            routing = data.get("routing", {})
+            for name, table in routing.items():
+                if isinstance(table, dict) and "backends" in table:
+                    result[name] = list(table["backends"])
+        except (tomllib.TOMLDecodeError, OSError):
+            pass
 
     _routing_cache["mtime"] = mtime
     _routing_cache["tables"] = result
@@ -83,9 +83,10 @@ def resolve_agent(
     If name is not a routing key, returns (name, None) unchanged.
     Checks health and concurrency for each backend in order.
     """
-    from dgov.agents import load_registry
+    from dgov.agents import load_groups, load_registry
     from dgov.backend import get_backend
     from dgov.persistence import all_panes
+    from dgov.status import _count_active_agent_workers
 
     tables = _load_routing_tables()
     if name not in tables:
@@ -93,8 +94,9 @@ def resolve_agent(
 
     backends = tables[name]
     registry = load_registry(project_root)
+    groups = load_groups(project_root)
 
-    # Optimization: fetch all active panes and tmux info once
+    # Optimization: fetch all active panes and tmux info once for group checks
     _TERMINAL_STATES = {
         "done",
         "failed",
@@ -107,17 +109,18 @@ def resolve_agent(
     panes = all_panes(session_root)
     all_tmux = get_backend().bulk_info()
 
-    active_counts: dict[str, int] = {}
+    group_counts: dict[str, int] = {}
     for p in panes:
         agent_id = p.get("agent", "")
         if agent_id and p.get("state") not in _TERMINAL_STATES:
             pane_id = p.get("pane_id", "")
             if pane_id and pane_id in all_tmux:
-                active_counts[agent_id] = active_counts.get(agent_id, 0) + 1
-
-    # River cluster policy: if two 35B models are running, limit further river tasks
-    river_35b_active = sum(v for k, v in active_counts.items() if k.startswith("river-35b"))
-    river_9b_active = sum(v for k, v in active_counts.items() if k.startswith("river-9b"))
+                # Track group counts
+                agent_def = registry.get(agent_id)
+                if agent_def:
+                    agent_groups = getattr(agent_def, "groups", ())
+                    for g in agent_groups:
+                        group_counts[g] = group_counts.get(g, 0) + 1
 
     tried: list[str] = []
     for backend_id in backends:
@@ -126,17 +129,21 @@ def resolve_agent(
             tried.append(f"{backend_id} (not registered)")
             continue
 
-        # River Cluster Constraint
-        if backend_id.startswith("river-"):
-            if river_35b_active >= 2:
-                if backend_id.startswith("river-35b"):
-                    tried.append(
-                        f"{backend_id} (river cluster 35B capacity full: {river_35b_active})"
-                    )
-                    continue
-                if backend_id.startswith("river-9b") and river_9b_active >= 1:
-                    tried.append(f"{backend_id} (river cluster 9B limited during 35B load)")
-                    continue
+        # Group Concurrency Check
+        agent_groups = getattr(agent_def, "groups", ())
+        if agent_groups:
+            group_blocked = False
+            for g in agent_groups:
+                g_def = groups.get(g)
+                if g_def and "max_concurrent" in g_def:
+                    active = group_counts.get(g, 0)
+                    limit = g_def["max_concurrent"]
+                    if active >= limit:
+                        tried.append(f"{backend_id} (group '{g}' full: {active}/{limit})")
+                        group_blocked = True
+                        break
+            if group_blocked:
+                continue
 
         # Health check
         if agent_def.health_check:
@@ -155,10 +162,10 @@ def resolve_agent(
                 tried.append(f"{backend_id} (health check timeout)")
                 continue
 
-        # Concurrency check
+        # Individual Concurrency check
         max_concurrent = agent_def.max_concurrent
         if max_concurrent is not None:
-            active = active_counts.get(backend_id, 0)
+            active = _count_active_agent_workers(session_root, backend_id)
             if active >= max_concurrent:
                 tried.append(f"{backend_id} ({active}/{max_concurrent} busy)")
                 continue
@@ -167,7 +174,7 @@ def resolve_agent(
         return backend_id, name
 
     raise RuntimeError(
-        f"No available backend for \x27{name}\x27. "
+        f"No available backend for '{name}'. "
         f"Tried: {', '.join(tried)}. "
         f"All backends busy or unhealthy."
     )
