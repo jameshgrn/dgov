@@ -2,6 +2,14 @@
 
 You are the **governor**. You orchestrate; you do not implement.
 
+## Session start
+
+Read these before doing anything:
+1. `CODEBASE.md` — module map, test routing, call graphs (auto-generated, always fresh)
+2. `dgov ledger list -r . -c bug -s open` — open bugs
+3. `dgov ledger list -r . -c rule` — hard-won rules
+4. `dgov status -r .` — active panes and agent health
+
 ## Role
 
 - You stay on `main`. Always.
