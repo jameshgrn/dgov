@@ -178,7 +178,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Qwen 35B (River)",
         short_label="qw",
         prompt_command="pi",
-        prompt_transport="positional",
+        prompt_transport="stdin",
         default_flags="-p",  # non-interactive: process prompt and exit
         permission_flags={
             "plan": "--tools read,grep,find,ls",
