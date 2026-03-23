@@ -44,6 +44,7 @@ Use these `kind` values deliberately:
 - `manual`: reserves a check that cannot yet be made deterministic.
 - `performance`: asserts latency, throughput, or resource usage bounds.
 - `integration_test`: verifies cross-component integration behavior.
+- `security`: asserts security properties or access control invariants.
 
 ## Unit checklist
 

@@ -111,6 +111,7 @@ _ALLOWED_EVAL_KINDS = {
     "manual",
     "performance",
     "integration_test",
+    "security",
 }
 
 
