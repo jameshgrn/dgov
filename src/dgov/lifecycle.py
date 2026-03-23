@@ -445,8 +445,20 @@ def _write_worktree_instructions(
         if prompt:
             preamble += f"\n## Task\n\n{prompt}\n"
 
-    # Write only the role-specific preamble (no repo context inheritance)
+    # Append CODEBASE.md content directly so workers/lt-govs have the full
+    # module map, task routing table, and test mapping in their context window
+    # without needing to follow a "read this file" hint.
+    codebase_path = wt / "CODEBASE.md"
+    codebase_content = ""
+    if codebase_path.exists():
+        try:
+            codebase_content = codebase_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
     content = preamble
+    if codebase_content:
+        content += f"\n## Codebase Map\n\n{codebase_content}\n"
 
     instructions_file.write_text(content, encoding="utf-8")
 
