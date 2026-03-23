@@ -845,9 +845,11 @@ def dashboard(project_root, session_root, refresh, pane):
     """Launch live terminal dashboard."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    if pane:
-        import subprocess
+    # Ensure the headless engine is running
+    from dgov.monitor import ensure_monitor_running
+    ensure_monitor_running(project_root, session_root=session_root)
 
+    if pane:
         cmd = f"dgov dashboard -r {os.path.abspath(project_root)} --refresh {refresh}"
         if session_root:
             cmd += f" --session-root {os.path.abspath(session_root)}"

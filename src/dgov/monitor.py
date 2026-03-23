@@ -1049,6 +1049,45 @@ def _wait_for_monitor_wakeup(
     )
 
 
+def ensure_monitor_running(project_root: str, session_root: str | None = None) -> None:
+    """Ensure the headless monitor daemon is running in the background.
+
+    Uses a PID file to prevent duplicate instances.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    session_root = os.path.abspath(session_root or project_root)
+    project_root = os.path.abspath(project_root)
+    pid_file = Path(session_root) / ".dgov" / "monitor.pid"
+
+    already_running = False
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            os.kill(old_pid, 0)
+            already_running = True
+        except (ValueError, ProcessLookupError, PermissionError):
+            pid_file.unlink(missing_ok=True)
+
+    if not already_running:
+        # Determine the best executable to use (support uv run)
+        if getattr(sys, "frozen", False):
+            dgov_exe = sys.executable
+        else:
+            dgov_exe = "dgov" if shutil.which("dgov") else sys.executable
+
+        subprocess.Popen(
+            [dgov_exe, "monitor", "-r", project_root],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        logger.info("Monitor: kickstarted headless daemon for %s", project_root)
+
+
 def run_monitor(
     project_root: str,
     session_root: str | None = None,

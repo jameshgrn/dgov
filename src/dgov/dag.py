@@ -103,6 +103,10 @@ def run_dag_via_kernel(
         definition_json=def_json,
     )
     
+    # Ensure the headless engine is running
+    from dgov.monitor import ensure_monitor_running
+    ensure_monitor_running(dag.project_root, session_root=session_root)
+
     # Notify monitor
     emit_event(session_root, "dag_started", f"dag/{run_id}", dag_run_id=run_id)
 
