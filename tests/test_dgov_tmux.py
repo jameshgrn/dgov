@@ -18,6 +18,7 @@ from dgov.tmux import (
     send_command,
     send_prompt_via_buffer,
     set_title,
+    setup_governor_workspace,
     setup_pane_borders,
     split_pane,
     style_dgov_session,
@@ -453,3 +454,19 @@ class TestComposedHelpers:
             call(["send-keys", "-t", "%5", "Enter"]),
             call(["delete-buffer", "-b", "dgov-123456"], silent=True),
         ]
+
+    def test_setup_governor_workspace_uses_headless_monitor_helper(self) -> None:
+        with (
+            patch("dgov.tmux._run", return_value=""),
+            patch("dgov.tmux.split_pane", side_effect=["%11", "%12"]),
+            patch("dgov.tmux._wait_for_shell"),
+            patch("dgov.tmux.send_command"),
+            patch("dgov.tmux.set_title"),
+            patch("dgov.tmux._style_pane"),
+            patch("dgov.tmux._apply_governor_layout"),
+            patch("dgov.monitor.ensure_monitor_running") as mock_ensure,
+        ):
+            panes = setup_governor_workspace("/repo")
+
+        assert panes == ["%11", "%12"]
+        mock_ensure.assert_called_once_with("/repo")

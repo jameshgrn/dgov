@@ -561,6 +561,7 @@ class TestDashboardObserverMode:
         import dgov.dashboard as dashboard
 
         started_targets: list[str] = []
+        live_kwargs: dict[str, object] = {}
         lock_fd = io.StringIO()
         pidfile = tmp_path / "dashboard.pid"
 
@@ -573,7 +574,7 @@ class TestDashboardObserverMode:
 
         class FakeLive:
             def __init__(self, *args, **kwargs):  # noqa: ANN001
-                pass
+                live_kwargs.update(kwargs)
 
             def __enter__(self):
                 return self
@@ -611,6 +612,7 @@ class TestDashboardObserverMode:
         dashboard.run_dashboard(str(tmp_path), str(tmp_path), refresh_interval=0.25)
 
         assert started_targets == ["data_thread"]
+        assert live_kwargs["refresh_per_second"] == 4.0
 
 
 @pytest.mark.unit

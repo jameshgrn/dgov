@@ -483,26 +483,9 @@ def setup_governor_workspace(project_root: str, *, target_window: str | None = N
     if panes:
         _apply_governor_layout(target_window)
 
-    # Launch monitor as a background daemon (not a tmux pane)
-    # PID file guard: skip if monitor already running
-    pid_file = Path(project_root) / ".dgov" / "monitor.pid"
-    _already_running = False
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-            _already_running = True
-        except (ValueError, ProcessLookupError, PermissionError):
-            pid_file.unlink(missing_ok=True)
-    if not _already_running:
-        proc = subprocess.Popen(
-            [dgov_exe, "monitor", "-r", project_root],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        pid_file.parent.mkdir(parents=True, exist_ok=True)
-        pid_file.write_text(str(proc.pid))
+    from dgov.monitor import ensure_monitor_running
+
+    ensure_monitor_running(project_root)
 
     return panes
 

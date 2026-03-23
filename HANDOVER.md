@@ -37,10 +37,15 @@ Architecture shifted from synchronous CLI loops to a **headless reactive Agent O
 - **Ledger #75**: river-35b still unreachable.
 - **Monitor SPIM**: Monitor currently runs in foreground/background but lacks a formalized "service" wrapper (systemd/launchd).
 
+## Verification Results (River Cluster)
+- **Status**: Local cluster is active and healthy (via nodes 8081-8085).
+- **Routing**: Confirmed that logical roles (`qwen-35b`, `worker`) correctly skip the dead 8080 node and land on local hardware.
+- **Success**: Verified end-to-end task dispatch via dashboard monitor on River backends.
+
 ## Next Steps
-1. **Push to origin** — run full CI suite first.
-2. **Restart river-35b**.
-3. **Audit Results**: Verify results of the architectural audit in `.dgov/reports/`.
+1. Resolve the remaining order-dependent unit failure around recovery escalation when running the wider pane/CLI slice.
+2. Formalize monitor service management instead of relying on ad hoc foreground/background launch patterns.
+3. Run the full pre-push validation set before pushing to `origin`.
 
 ## Important Files (Updated)
 

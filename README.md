@@ -188,17 +188,16 @@ and `commit_message` from TOML used as the merge commit message.
 
 ### LT-GOV (delegation)
 
-A lieutenant governor is a claude worker with a meta-prompt that itself dispatches workers. The governor delegates a broad task to an LT-GOV, which breaks it down, dispatches sub-workers, and submits merge requests back to the governor's queue.
+A lieutenant governor is a sub-governor worker that follows the canonical governor pipeline (preflight → dispatch → wait → review → merge → cleanup). The governor delegates a broad task to an LT-GOV, which runs workers via `dgov pane create --land`, tracks progress in `.dgov/progress/{ltgov_slug}.json`, and escalates structural issues back to the governor instead of editing code directly.
 
 ```bash
 dgov pane create -a claude -T lt-gov -V task_list="..." # dispatch LT-GOV
-dgov merge-queue list                                    # see pending merges
-dgov merge-queue process                                 # claim and execute
+dgov dashboard                                            # monitor worker progress
 ```
 
 | Command | Description |
 |---------|-------------|
-| `dgov pane merge-request` | Enqueue a merge (used by LT-GOVs) |
+| `dgov pane merge-request` | Enqueue a merge for governor processing |
 | `dgov merge-queue list` | Show pending merge requests |
 | `dgov merge-queue process` | Claim and execute next merge |
 

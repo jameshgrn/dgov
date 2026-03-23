@@ -13,6 +13,8 @@ These options appear on many commands. They are listed once here and omitted fro
 
 ---
 
+> Running `dgov` inside the repo already sets `--project-root` to `.` by default, so you only need `-r` when invoking the CLI from outside the repo or when you want to be explicit about a different root.
+
 ## General
 
 ### dgov (bare)
@@ -55,7 +57,7 @@ Rebase the governor's branch onto its upstream. Stashes dirty changes, rebases, 
 
 ### dgov dashboard
 
-Launch a live terminal dashboard showing pane status, agents, and health. Refreshes at a configurable interval.
+Launch a live terminal dashboard showing pane status, agents, and health. The dashboard is an event-driven observer; `--refresh` controls UI repaint cadence, not orchestration polling.
 
 | Flag | Short | Type | Default | Description |
 |------|-------|------|---------|-------------|

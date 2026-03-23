@@ -612,6 +612,9 @@ def run_dashboard(
         project_root=project_root,
         session_root=session_root,
     )
+    ui_refresh_per_second = (
+        1.0 / max(refresh_interval, 0.05) if refresh_interval > 0 else _UI_REFRESH_PER_SECOND
+    )
 
     thread = threading.Thread(target=data_thread, args=(state, refresh_interval), daemon=True)
     thread.start()
@@ -641,7 +644,7 @@ def run_dashboard(
             console=console,
             auto_refresh=True,
             get_renderable=_render_dashboard,
-            refresh_per_second=_UI_REFRESH_PER_SECOND,
+            refresh_per_second=ui_refresh_per_second,
             transient=False,
             screen=True,
         ) as live:
