@@ -114,7 +114,13 @@ def review_worker_pane(
     if uncommitted:
         issues.append("uncommitted changes (merge refused until committed)")
     pane_state = target.get("state", "")
-    if commit_count == 0 and pane_state != "done":
+    from dgov.kernel import WorkerPhase
+    from dgov.monitor import observe_worker
+
+    obs = observe_worker(project_root, session_root, slug)
+    is_terminal = obs.phase in (WorkerPhase.DONE, WorkerPhase.FAILED) or pane_state == "done"
+
+    if commit_count == 0 and not is_terminal:
         issues.append("no commits — nothing to merge")
 
     # Deterministic quality gates

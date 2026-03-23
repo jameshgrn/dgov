@@ -331,14 +331,58 @@ def run_batch(
         }
 
     dag = _batch_to_dag_definition(spec_path, project_root, session_root, tasks)
-    summary = run_dag_via_kernel(
+    submission = run_dag_via_kernel(
         dag,
         dag_key=str(Path(spec_path).resolve()),
         definition_hash=_spec_hash(spec_path),
         auto_merge=True,
     )
-    task_rows = list_dag_tasks(session_root, summary.run_id)
-    return _dag_summary_to_batch_result(summary, tiers, task_rows)
+    run_id = submission.run_id
+
+    # Headless migration: run_dag_via_kernel is now non-blocking.
+    # To satisfy legacy synchronous callers (CLI), we must wait here.
+    from dgov.persistence import latest_event_id, wait_for_events, get_dag_run
+    from dgov.dag_parser import DagRunSummary
+
+    cursor = latest_event_id(session_root)
+    while True:
+        events = wait_for_events(
+            session_root,
+            after_id=cursor,
+            event_types=("dag_completed", "dag_failed"),
+            timeout_s=60.0,
+        )
+        finished = False
+        for ev in events:
+            cursor = max(cursor, ev["id"])
+            data = json.loads(ev["data"])
+            if data.get("dag_run_id") == run_id:
+                finished = True
+                break
+        
+        if finished:
+            break
+        
+        # Safety: check if it already finished between submission and wait
+        run = get_dag_run(session_root, run_id)
+        if run and run["status"] in ("completed", "failed", "cancelled"):
+            break
+
+    # Re-fetch final state
+    run = get_dag_run(session_root, run_id)
+    task_states = run["state_json"].get("task_states", {})
+    final_summary = DagRunSummary(
+        run_id=run_id,
+        dag_file=submission.dag_file,
+        status=run["status"],
+        merged=[s for s, st in task_states.items() if st == "merged"],
+        failed=[s for s, st in task_states.items() if st == "failed"],
+        skipped=[s for s, st in task_states.items() if st == "skipped"],
+        blocked=[s for s, st in task_states.items() if st == "blocked_on_governor"],
+    )
+
+    task_rows = list_dag_tasks(session_root, run_id)
+    return _dag_summary_to_batch_result(final_summary, tiers, task_rows)
 
 
 def batch_dispatch(

@@ -248,6 +248,9 @@ class InspectionReviewProvider(DecisionProvider):
             request.slug,
             session_root=request.session_root,
             full=request.full,
+            tests_pass=request.tests_pass,
+            lint_clean=request.lint_clean,
+            post_merge_check=request.post_merge_check,
         )
         latency_ms = (time.perf_counter() - started) * 1000
 

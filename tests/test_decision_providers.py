@@ -385,7 +385,7 @@ def test_inspection_review_provider_handles_empty_issues_list():
 
 def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
     """InspectionReviewProvider passes session_root and full kwargs to review_worker_pane."""
-    from unittest.mock import patch
+    from unittest.mock import ANY, patch
 
     provider = InspectionReviewProvider()
 
@@ -407,6 +407,9 @@ def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
         "task-5",
         session_root="/session",
         full=True,
+        tests_pass=ANY,
+        lint_clean=ANY,
+        post_merge_check=ANY,
     )
 
 

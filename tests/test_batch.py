@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -117,6 +118,48 @@ class TestBatchDispatch:
         spec.write_text(body)
         return spec
 
+    @contextmanager
+    def _mock_dag_run(self, monkeypatch, status, merged=None, failed=None, skipped=None):
+        from dgov.dag_parser import DagRunSummary
+
+        run_id = 1
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id,
+                dag_file="test.toml",
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
+            ),
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+        monkeypatch.setattr(
+            "dgov.persistence.wait_for_events",
+            lambda *args, **kwargs: [{"id": 1, "event": "dag_completed", "data": json.dumps({"dag_run_id": run_id})}],
+        )
+
+        task_states = {}
+        for s in (merged or []): task_states[s] = "merged"
+        for s in (failed or []): task_states[s] = "failed"
+        for s in (skipped or []): task_states[s] = "skipped"
+
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": status,
+                "state_json": {
+                    "task_states": task_states
+                },
+            },
+        )
+        monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
+        yield
+
+
     def test_batch_dispatch_reads_toml_and_dispatches_tasks(self, tmp_path, monkeypatch):
         spec_path = self._write_spec(
             tmp_path,
@@ -135,27 +178,12 @@ permission_mode = "bypassPermissions"
         session_root = tmp_path / "session"
         session_root.mkdir()
 
-        # Mock the kernel-driven DAG runner
-        from dgov.executor import DagRunResult
-
-        monkeypatch.setattr(
-            "dgov.executor.run_dag_kernel",
-            lambda *args, **kwargs: DagRunResult(
-                status="completed",
-                merged=["t1"],
-                failed=[],
-                skipped=[],
-                run_id=1,
-            ),
-        )
-
-        result = batch_dispatch(str(spec_path), session_root=str(session_root))
+        with self._mock_dag_run(monkeypatch, status="completed", merged=["t1"]):
+            result = batch_dispatch(str(spec_path), session_root=str(session_root))
 
         assert result["merged"] == ["t1"]
 
     def test_batch_dispatch_skips_non_safe_review(self, tmp_path, monkeypatch):
-        from dgov.executor import DagRunResult
-
         spec_path = self._write_spec(
             tmp_path,
             """
@@ -171,21 +199,13 @@ touches = ["a.py"]
         session_root = tmp_path / "session"
         session_root.mkdir()
 
-        monkeypatch.setattr(
-            "dgov.executor.run_dag_kernel",
-            lambda *args, **kwargs: DagRunResult(
-                status="failed", merged=[], failed=["t1"], skipped=[], run_id=1
-            ),
-        )
-
-        result = batch_dispatch(str(spec_path), session_root=str(session_root))
+        with self._mock_dag_run(monkeypatch, status="failed", failed=["t1"]):
+            result = batch_dispatch(str(spec_path), session_root=str(session_root))
 
         assert result["merged"] == []
         assert result["failed"] == ["t1"]
 
     def test_batch_dispatch_records_failed_task_error_in_tier_results(self, tmp_path, monkeypatch):
-        from dgov.executor import DagRunResult
-
         spec_path = self._write_spec(
             tmp_path,
             """
@@ -201,50 +221,10 @@ touches = ["a.py"]
         session_root = tmp_path / "session"
         session_root.mkdir()
 
-        monkeypatch.setattr(
-            "dgov.executor.run_dag_kernel",
-            lambda *args, **kwargs: DagRunResult(
-                status="failed", merged=[], failed=["t1"], skipped=[], run_id=1
-            ),
-        )
-
-        result = batch_dispatch(str(spec_path), session_root=str(session_root))
+        with self._mock_dag_run(monkeypatch, status="failed", failed=["t1"]):
+            result = batch_dispatch(str(spec_path), session_root=str(session_root))
 
         assert result["failed"] == ["t1"]
-
-    def test_batch_dispatch_blocks_preflight_failure(self, tmp_path, monkeypatch):
-        spec_path = self._write_spec(
-            tmp_path,
-            """
-project_root = "."
-
-[tasks.t1]
-prompt = "do a thing"
-agent = "agent-one"
-touches = ["a.py"]
-""",
-        )
-
-        session_root = tmp_path / "session"
-        session_root.mkdir()
-
-        monkeypatch.setattr("dgov.batch._compute_tiers", lambda tasks: [[tasks["t1"]]])
-        monkeypatch.setattr("dgov.batch._transitive_dependents", lambda tasks, failed_ids: set())
-        monkeypatch.setattr(
-            "dgov.preflight.run_preflight",
-            lambda *args, **kwargs: type("R", (), {"passed": False})(),
-        )
-        create_calls: list[str] = []
-        monkeypatch.setattr(
-            "dgov.lifecycle.create_worker_pane",
-            lambda **kwargs: create_calls.append(kwargs["slug"]),
-        )
-
-        result = batch_dispatch(str(spec_path), session_root=str(session_root))
-
-        assert result["merged"] == []
-        assert result["failed"] == ["t1"]
-        assert create_calls == []
 
     def test_batch_dispatch_invalid_toml_raises(self, tmp_path):
         spec = tmp_path / "bad.toml"

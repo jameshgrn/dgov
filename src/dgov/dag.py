@@ -110,6 +110,7 @@ def run_dag_via_kernel(
         run_id=run_id,
         dag_file=dag_key,
         status="submitted",
+        definition_hash=definition_hash,
         succeeded=[],
         merged=[],
         failed=[],

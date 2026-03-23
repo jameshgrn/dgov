@@ -568,7 +568,7 @@ class TestMonitorEventState:
             {"id": 9, "event": "pane_review_pending", "pane": "worker-1"},
         ]
 
-        _apply_monitor_events(state, events, auto_merge=True, auto_retry=True)
+        _apply_monitor_events("/project", "/session", state, events, auto_merge=True, auto_retry=True)
 
         assert state.event_cursor == 9
         assert state.queue_dirty is True

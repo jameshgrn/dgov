@@ -3634,9 +3634,9 @@ class TestComputeTiersDeep:
 
 
 class TestRunBatchLiveWait:
-    def test_batch_creates_waits_merges(self, tmp_path: Path) -> None:
+    def test_batch_creates_waits_merges(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.batch import run_batch
-        from dgov.executor import DagRunResult
+        from dgov.dag_parser import DagRunSummary
 
         spec = {
             "project_root": str(tmp_path),
@@ -3648,20 +3648,40 @@ class TestRunBatchLiveWait:
         spec_file = tmp_path / "spec.json"
         spec_file.write_text(json.dumps(spec))
 
-        with patch(
-            "dgov.executor.run_dag_kernel",
-            return_value=DagRunResult(
-                status="completed", merged=["t1", "t2"], failed=[], skipped=[], run_id=1
+        run_id = 1
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id, dag_file=str(spec_file), status="submitted",
+                merged=[], failed=[], skipped=[], blocked=[]
             ),
-        ):
-            result = run_batch(str(spec_file), session_root=str(tmp_path))
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+        monkeypatch.setattr(
+            "dgov.persistence.wait_for_events",
+            lambda *args, **kwargs: [{"id": 1, "event": "dag_completed", "data": json.dumps({"dag_run_id": run_id})}],
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "completed",
+                "dag_file": str(spec_file),
+                "state_json": {
+                    "task_states": {"t1": "merged", "t2": "merged"}
+                },
+            },
+        )
+        monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
+
+        result = run_batch(str(spec_file), session_root=str(tmp_path))
 
         assert result["merged"] == ["t1", "t2"]
         assert result["failed"] == []
 
-    def test_batch_aborts_on_merge_failure(self, tmp_path: Path) -> None:
+    def test_batch_aborts_on_merge_failure(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.batch import run_batch
-        from dgov.executor import DagRunResult
+        from dgov.dag_parser import DagRunSummary
 
         spec = {
             "project_root": str(tmp_path),
@@ -3672,19 +3692,39 @@ class TestRunBatchLiveWait:
         spec_file = tmp_path / "spec.json"
         spec_file.write_text(json.dumps(spec))
 
-        with patch(
-            "dgov.executor.run_dag_kernel",
-            return_value=DagRunResult(
-                status="failed", merged=[], failed=["t1"], skipped=[], run_id=1
+        run_id = 1
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id, dag_file=str(spec_file), status="submitted",
+                merged=[], failed=[], skipped=[], blocked=[]
             ),
-        ):
-            result = run_batch(str(spec_file), session_root=str(tmp_path))
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+        monkeypatch.setattr(
+            "dgov.persistence.wait_for_events",
+            lambda *args, **kwargs: [{"id": 1, "event": "dag_failed", "data": json.dumps({"dag_run_id": run_id})}],
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "failed",
+                "dag_file": str(spec_file),
+                "state_json": {
+                    "task_states": {"t1": "failed"}
+                },
+            },
+        )
+        monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
+
+        result = run_batch(str(spec_file), session_root=str(tmp_path))
 
         assert "t1" in result["failed"]
 
-    def test_batch_timeout_marks_failed(self, tmp_path: Path) -> None:
+    def test_batch_timeout_marks_failed(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.batch import run_batch
-        from dgov.executor import DagRunResult
+        from dgov.dag_parser import DagRunSummary
 
         spec = {
             "project_root": str(tmp_path),
@@ -3695,12 +3735,32 @@ class TestRunBatchLiveWait:
         spec_file = tmp_path / "spec.json"
         spec_file.write_text(json.dumps(spec))
 
-        with patch(
-            "dgov.executor.run_dag_kernel",
-            return_value=DagRunResult(
-                status="failed", merged=[], failed=["t1"], skipped=[], run_id=1
+        run_id = 1
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id, dag_file=str(spec_file), status="submitted",
+                merged=[], failed=[], skipped=[], blocked=[]
             ),
-        ):
-            result = run_batch(str(spec_file), session_root=str(tmp_path))
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+        monkeypatch.setattr(
+            "dgov.persistence.wait_for_events",
+            lambda *args, **kwargs: [{"id": 1, "event": "dag_failed", "data": json.dumps({"dag_run_id": run_id})}],
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "failed",
+                "dag_file": str(spec_file),
+                "state_json": {
+                    "task_states": {"t1": "failed"}
+                },
+            },
+        )
+        monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args: [])
+
+        result = run_batch(str(spec_file), session_root=str(tmp_path))
 
         assert "t1" in result["failed"]

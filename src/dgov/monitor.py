@@ -369,114 +369,7 @@ def observe_worker(
     )
 
 
-def _bootstrap_monitor_state(
-    project_root: str, session_root: str, *, auto_merge: bool, auto_retry: bool
-) -> MonitorLoopState:
-    """Seed monitor state from persisted records once at startup."""
-    from dgov.dag_parser import DagDefinition
-
-    panes = all_panes(session_root)
-    active_dags: dict[int, DagMonitorState] = {}
-
-    runs = list_active_dag_runs(session_root)
-    for run in runs:
-        run_id = run["id"]
-        try:
-            # Reconstruct kernel and reactor
-            kernel = DagKernel.from_dict(run["state_json"])
-            
-            # Reconstruct DagDefinition object for the reactor
-            def_json = run["definition_json"]
-            # Minimal reconstruction needed for reactor: project_root, tasks, merge_resolve/squash
-            dag_def = DagDefinition(
-                name=def_json.get("name", "reconstructed"),
-                dag_file=run["dag_file"],
-                project_root=project_root,
-                session_root=session_root,
-                default_max_retries=def_json.get("default_max_retries", 3),
-                merge_resolve=def_json.get("merge_resolve", "skip"),
-                merge_squash=def_json.get("merge_squash", True),
-                max_concurrent=def_json.get("max_concurrent", 0),
-                tasks={},
-            )
-            # Reconstruct tasks
-            from dgov.dag_parser import DagTaskSpec, DagFileSpec
-            for t_slug, t_def in def_json.get("tasks", {}).items():
-                files = DagFileSpec(
-                    create=tuple(t_def.get("files", {}).get("create", ())),
-                    edit=tuple(t_def.get("files", {}).get("edit", ())),
-                    delete=tuple(t_def.get("files", {}).get("delete", ())),
-                )
-                dag_def.tasks[t_slug] = DagTaskSpec(
-                    slug=t_slug,
-                    summary=t_def.get("summary", ""),
-                    prompt=t_def.get("prompt", ""),
-                    commit_message=t_def.get("commit_message", ""),
-                    agent=t_def.get("agent", ""),
-                    escalation=tuple(t_def.get("escalation", ())),
-                    depends_on=tuple(t_def.get("depends_on", ())),
-                    files=files,
-                    permission_mode=t_def.get("permission_mode", "bypassPermissions"),
-                    timeout_s=t_def.get("timeout_s", 600),
-                    tests_pass=t_def.get("tests_pass", True),
-                    lint_clean=t_def.get("lint_clean", True),
-                    post_merge_check=t_def.get("post_merge_check", ""),
-                    review_agent=t_def.get("review_agent", ""),
-                    role=t_def.get("role", "worker"),
-                )
-
-            reactor = DagReactor(
-                project_root=project_root,
-                session_root=session_root,
-                run_id=run_id,
-                dag=dag_def,
-            )
-            
-            # RECONCILE: if monitor crashed between pane completion and DAG update, 
-            # the DAG might be stuck waiting for an event it missed.
-            from dgov.kernel import DagTaskState, TaskWaitDone
-            pending_events = []
-            for t_slug, state in kernel.task_states.items():
-                if state == DagTaskState.WAITING:
-                    p_slug = kernel.pane_slugs.get(t_slug)
-                    if p_slug:
-                        p_rec = get_pane(session_root, p_slug)
-                        if p_rec:
-                            p_state = p_rec.get("state")
-                            if p_state in ("done", "failed", "timed_out", "merged", "closed"):
-                                pending_events.append(TaskWaitDone(t_slug, p_slug, p_state))
-            
-            active_dags[run_id] = DagMonitorState(run_id, kernel, reactor)
-            
-            # Apply reconciled events immediately
-            if pending_events:
-                logger.info("Monitor: reconciling %d missed events for DAG %d", len(pending_events), run_id)
-                for ev in pending_events:
-                    _drive_dag(session_root, active_dags[run_id], kernel.handle(ev))
-
-            logger.info("Monitor: resumed DAG run %d", run_id)
-        except Exception:
-            logger.warning("Monitor: failed to resume DAG run %d", run_id, exc_info=True)
-
-    return MonitorLoopState(
-        event_cursor=latest_event_id(session_root),
-        active_slugs={pane["slug"] for pane in panes if pane.get("state") == "active"},
-        merge_candidates={
-            pane["slug"] for pane in panes if auto_merge and pane.get("state") == "done"
-        },
-        retry_candidates={
-            pane["slug"]
-            for pane in panes
-            if auto_retry and pane.get("state") in {"failed", "abandoned"}
-        },
-        active_dags=active_dags,
-        queue_dirty=(Path(session_root) / ".dgov" / "dispatch_queue.jsonl").is_file(),
-    )
-
-
-def _drive_dag(
-    session_root: str, dag_state: DagMonitorState, initial_actions: list
-) -> None:
+def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: list) -> None:
     """Recursively process kernel actions and handle immediate event feedback."""
     from dgov.kernel import DagDone, TaskDispatched, TaskRetryStarted
 
@@ -509,6 +402,128 @@ def _drive_dag(
 
     # Persist kernel state after pass
     update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
+
+
+def _load_dag_run(
+    project_root: str, session_root: str, run_dict: dict
+) -> DagMonitorState | None:
+    """Reconstruct a DagMonitorState from a DB record and kickstart if needed."""
+    from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+    from dgov.kernel import DagState, DagTaskState, TaskWaitDone
+
+    run_id = run_dict["id"]
+    try:
+        # Reconstruct kernel and reactor
+        kernel = DagKernel.from_dict(run_dict["state_json"])
+
+        def_json = run_dict["definition_json"]
+        dag_def = DagDefinition(
+            name=def_json.get("name", "reconstructed"),
+            dag_file=run_dict["dag_file"],
+            project_root=project_root,
+            session_root=session_root,
+            default_max_retries=def_json.get("default_max_retries", 3),
+            merge_resolve=def_json.get("merge_resolve", "skip"),
+            merge_squash=def_json.get("merge_squash", True),
+            max_concurrent=def_json.get("max_concurrent", 0),
+            tasks={},
+        )
+        # Reconstruct tasks
+        for t_slug, t_def in def_json.get("tasks", {}).items():
+            files = DagFileSpec(
+                create=tuple(t_def.get("files", {}).get("create", ())),
+                edit=tuple(t_def.get("files", {}).get("edit", ())),
+                delete=tuple(t_def.get("files", {}).get("delete", ())),
+            )
+            dag_def.tasks[t_slug] = DagTaskSpec(
+                slug=t_slug,
+                summary=t_def.get("summary", ""),
+                prompt=t_def.get("prompt", ""),
+                commit_message=t_def.get("commit_message", ""),
+                agent=t_def.get("agent", ""),
+                escalation=tuple(t_def.get("escalation", ())),
+                depends_on=tuple(t_def.get("depends_on", ())),
+                files=files,
+                permission_mode=t_def.get("permission_mode", "bypassPermissions"),
+                timeout_s=t_def.get("timeout_s", 600),
+                tests_pass=t_def.get("tests_pass", True),
+                lint_clean=t_def.get("lint_clean", True),
+                post_merge_check=t_def.get("post_merge_check", ""),
+                review_agent=t_def.get("review_agent", ""),
+                role=t_def.get("role", "worker"),
+            )
+
+        reactor = DagReactor(
+            project_root=project_root,
+            session_root=session_root,
+            run_id=run_id,
+            dag=dag_def,
+        )
+        ds = DagMonitorState(run_id, kernel, reactor)
+
+        # Kickstart if new, or reconcile if crashed during wait
+        if kernel.state == DagState.IDLE:
+            logger.info("Monitor: kickstarting new DAG run %d", run_id)
+            _drive_dag(session_root, ds, kernel.start())
+        else:
+            pending_events = []
+            for t_slug, state in kernel.task_states.items():
+                if state == DagTaskState.WAITING:
+                    p_slug = kernel.pane_slugs.get(t_slug)
+                    if p_slug:
+                        p_rec = get_pane(session_root, p_slug)
+                        if p_rec:
+                            p_state = p_rec.get("state")
+                            if p_state in ("done", "failed", "timed_out", "merged", "closed"):
+                                pending_events.append(TaskWaitDone(t_slug, p_slug, p_state))
+
+            if pending_events:
+                logger.info(
+                    "Monitor: reconciling %d missed events for DAG %d",
+                    len(pending_events),
+                    run_id,
+                )
+                for ev in pending_events:
+                    _drive_dag(session_root, ds, kernel.handle(ev))
+
+        return ds
+    except Exception:
+        logger.warning("Monitor: failed to load DAG run %d", run_id, exc_info=True)
+        return None
+
+
+def _bootstrap_monitor_state(
+    project_root: str, session_root: str, *, auto_merge: bool, auto_retry: bool
+) -> MonitorLoopState:
+    """Seed monitor state from persisted records once at startup."""
+    logger.info("Monitor: bootstrapping state from %s", session_root)
+    panes = all_panes(session_root)
+    logger.info("Monitor: loaded %d panes", len(panes))
+    active_dags: dict[int, DagMonitorState] = {}
+
+    runs = list_active_dag_runs(session_root)
+    logger.info("Monitor: found %d active DAG runs", len(runs))
+    for run in runs:
+        ds = _load_dag_run(project_root, session_root, run)
+        if ds:
+            active_dags[run["id"]] = ds
+
+    state = MonitorLoopState(
+        event_cursor=latest_event_id(session_root),
+        active_slugs={pane["slug"] for pane in panes if pane.get("state") == "active"},
+        merge_candidates={
+            pane["slug"] for pane in panes if auto_merge and pane.get("state") == "done"
+        },
+        retry_candidates={
+            pane["slug"]
+            for pane in panes
+            if auto_retry and pane.get("state") in {"failed", "abandoned"}
+        },
+        active_dags=active_dags,
+        queue_dirty=(Path(session_root) / ".dgov" / "dispatch_queue.jsonl").is_file(),
+    )
+    logger.info("Monitor: bootstrap complete, cursor at %d", state.event_cursor)
+    return state
 
 
 def _apply_monitor_events(
@@ -546,14 +561,9 @@ def _apply_monitor_events(
             if run_id and run_id not in state.active_dags:
                 run = get_dag_run(session_root, run_id)
                 if run:
-                    # Re-use bootstrap logic to load new DAG
-                    _temp_state = _bootstrap_monitor_state(
-                        project_root, session_root, auto_merge=auto_merge, auto_retry=auto_retry
-                    )
-                    if run_id in _temp_state.active_dags:
-                        state.active_dags[run_id] = _temp_state.active_dags[run_id]
-                        # Kickstart new DAG
-                        _drive_dag(session_root, state.active_dags[run_id], state.active_dags[run_id].kernel.start())
+                    ds = _load_dag_run(project_root, session_root, run)
+                    if ds:
+                        state.active_dags[run_id] = ds
             continue
 
         if kind in ("dag_completed", "dag_failed"):
@@ -1031,8 +1041,15 @@ def _try_auto_retry(project_root: str, session_root: str, slug: str) -> str | No
     return None
 
 
-def _wait_for_monitor_wakeup(session_root: str, after_id: int, timeout_s: int) -> list[dict]:
+def _wait_for_monitor_wakeup(
+    project_root: str, session_root: str, after_id: int, timeout_s: int
+) -> list[dict]:
     """Wait for journal activity that should wake the monitor early."""
+    if not Path(project_root).is_dir():
+        # Fallback to avoid infinite loop if directory gone
+        time.sleep(timeout_s)
+        return []
+
     return wait_for_events(
         session_root,
         after_id=after_id,
@@ -1052,13 +1069,6 @@ def run_monitor(
 ) -> None:
     """Run the monitor loop."""
     session_root = session_root or project_root
-    state = _bootstrap_monitor_state(
-        project_root, session_root, auto_merge=auto_merge, auto_retry=auto_retry
-    )
-    history: dict[str, dict] = {}
-    merge_attempted: set[str] = set()
-    retry_attempted: set[str] = set()
-    pending_events: list[dict] = []
 
     # Ensure logging is configured for console output
     logging.basicConfig(
@@ -1066,6 +1076,14 @@ def run_monitor(
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    state = _bootstrap_monitor_state(
+        project_root, session_root, auto_merge=auto_merge, auto_retry=auto_retry
+    )
+    history: dict[str, dict] = {}
+    merge_attempted: set[str] = set()
+    retry_attempted: set[str] = set()
+    pending_events: list[dict] = []
 
     monitor_dir = Path(session_root, STATE_DIR, "monitor")
     monitor_dir.mkdir(parents=True, exist_ok=True)
@@ -1076,6 +1094,11 @@ def run_monitor(
     last_prune = 0.0
     try:
         while True:
+            # Safety: ensure project_root still exists (daemon might have started in a deleted dir)
+            if not Path(project_root).is_dir():
+                logger.error("Monitor: project_root %s is gone! Stopping.", project_root)
+                break
+
             try:
                 _apply_monitor_events(
                     project_root,
@@ -1175,8 +1198,8 @@ def run_monitor(
             if dry_run:
                 return
 
-            state.event_cursor = latest_event_id(session_root)
             pending_events = _wait_for_monitor_wakeup(
+                project_root,
                 session_root,
                 state.event_cursor,
                 poll_interval,
