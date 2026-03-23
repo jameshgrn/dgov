@@ -43,7 +43,7 @@
 ### Merge and review
 | File | Size | Purpose |
 |------|------|---------|
-| `src/dgov/inspection.py` | M | Pane inspection: review, diff, rebase. |
+| `src/dgov/inspection.py` | L | Pane inspection: review, diff, rebase. |
 | `src/dgov/merger.py` | L | Git merge, conflict resolution, and post-merge operations. |
 
 ### Automation and recovery
@@ -100,6 +100,7 @@
 | `src/dgov/cli/plan_cmd.py` | S | CLI commands for dgov plan execution. |
 | `src/dgov/cli/review_fix_cmd.py` | S | Review-fix pipeline command. |
 | `src/dgov/cli/trace_cmd.py` | M | Span and tool-trace CLI commands. |
+| `src/dgov/cli/wait_cmd.py` | S | CLI command for event-driven waiting and governor interrupts. |
 | `src/dgov/cli/worker_cmd.py` | S | Worker status reporting commands. |
 | `src/dgov/dashboard.py` | L | Rich-based live dashboard for dgov pane management. |
 | `src/dgov/plan.py` | L | Plan schema, validator, and compiler for dgov. |
