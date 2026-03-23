@@ -123,6 +123,10 @@ def send_command(pane_id: str, command: str) -> None:
     time.sleep(0.1)
     _run(["send-keys", "-t", pane_id, "Enter"])
     _run(["delete-buffer", "-b", buf_name], silent=True)
+    # Brief settle: let zsh process Enter before next paste arrives.
+    # Without this, back-to-back send_command calls can double the first
+    # character of the next paste ("ssource" instead of "source").
+    time.sleep(0.2)
 
 
 def send_text_input(pane_id: str, text: str) -> None:
