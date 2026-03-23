@@ -553,7 +553,7 @@ class TestDashboardObserverMode:
         data_thread(state, 0.25)
 
         assert refresh_calls == ["/tmp/repo"]
-        assert wait_calls == [("/tmp/session", 3600.0)]
+        assert wait_calls == [("/tmp/session", 10.0)]
 
     def test_run_dashboard_starts_only_data_thread(self, tmp_path, monkeypatch):
         import io

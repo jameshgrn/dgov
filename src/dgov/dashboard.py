@@ -87,6 +87,7 @@ class DashboardState:
     # Done notification tracking
     recent_done_slugs: list[str] = field(default_factory=list)
     done_bell_rung: bool = False
+    done_notification_ts: float = 0.0  # when the last batch arrived
     # Eval contract from active DAG run (typed persistence, never blobs)
     eval_summary: str = ""
 
@@ -242,10 +243,12 @@ def fetch_panes(state: DashboardState) -> None:
             state.monitor_timestamp = float(m_ts) if m_ts else 0.0
             # Update done notification tracking
             if new_done_slugs:
-                # Keep only recent slugs (last 5)
                 state.recent_done_slugs = (new_done_slugs + state.recent_done_slugs)[:5]
-                # Reset bell flag so we ring for this new batch
                 state.done_bell_rung = False
+                state.done_notification_ts = time.time()
+            elif state.recent_done_slugs and time.time() - state.done_notification_ts > 30:
+                # Expire stale done notifications after 30s
+                state.recent_done_slugs = []
 
     except Exception as exc:
         with state.lock:
@@ -278,7 +281,9 @@ def data_thread(state: DashboardState, _interval: float) -> None:
     session_root = state.session_root or state.project_root
     _refresh_dashboard_state(state)
     while not state.stop_event.is_set():
-        _wait_for_notify(session_root, 3600.0)
+        # Block on pipe with 10s ceiling so duration/eval displays stay fresh.
+        # Wakes instantly on any event; falls through after 10s to refresh anyway.
+        _wait_for_notify(session_root, 10.0)
         if state.stop_event.is_set():
             break
         state.force_refresh.clear()
