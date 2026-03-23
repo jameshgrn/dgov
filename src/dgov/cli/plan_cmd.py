@@ -127,6 +127,10 @@ def plan_run(plan_file, max_concurrent, wait):
     session_root = os.path.abspath(".")
     cursor = latest_event_id(session_root)
 
+    # Block until terminal event. Order: dag_completed → evals_verified.
+    # If evals exist, wait for evals_verified (comes right after dag_completed).
+    # If no evals, dag_completed/dag_failed is terminal.
+    seen_completed = False
     while True:
         events = wait_for_events(
             session_root,
@@ -136,24 +140,40 @@ def plan_run(plan_file, max_concurrent, wait):
         )
         for ev in events:
             cursor = max(cursor, ev["id"])
-            if ev.get("dag_run_id") == run_id and ev["event"] in (
-                "dag_completed",
-                "dag_failed",
+            if ev.get("dag_run_id") != run_id:
+                continue
+
+            if ev["event"] == "dag_failed":
+                run = get_dag_run(session_root, run_id)
+                click.echo(f"\nDAG run {run_id}: {run['status'] if run else 'failed'}")
+                raise SystemExit(1)
+
+            if ev["event"] == "dag_completed":
+                seen_completed = True
+                # Check if this run has evals — if not, we're done
+                run = get_dag_run(session_root, run_id)
+                if not run or not run.get("evals"):
+                    click.echo(f"\nDAG run {run_id}: {run['status'] if run else 'completed'}")
+                    return
+                # Has evals — wait for evals_verified next
+
+            if ev["event"] == "evals_verified" or (
+                seen_completed and ev["event"] == "dag_completed"
             ):
                 run = get_dag_run(session_root, run_id)
-                status = run["status"] if run else "unknown"
-                eval_results = run.get("eval_results", []) if run else []
+                if not run:
+                    return
+                eval_results = run.get("eval_results", [])
                 passed = sum(1 for r in eval_results if r["passed"])
                 failed = sum(1 for r in eval_results if not r["passed"])
-
-                click.echo(f"\nDAG run {run_id}: {status}")
+                click.echo(f"\nDAG run {run_id}: {run['status']}")
+                for r in eval_results:
+                    m = "PASS" if r["passed"] else "FAIL"
+                    c = "green" if r["passed"] else "red"
+                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
                 if eval_results:
-                    for r in eval_results:
-                        m = "PASS" if r["passed"] else "FAIL"
-                        c = "green" if r["passed"] else "red"
-                        click.secho(f"  [{m}] {r['eval_id']}", fg=c)
                     click.echo(f"  {passed} passed, {failed} failed")
-                if status != "completed" or failed:
+                if failed:
                     raise SystemExit(1)
                 return
 
