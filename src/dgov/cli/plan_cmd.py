@@ -104,7 +104,8 @@ def plan_compile(plan_file):
 @plan_cmd.command("run")
 @click.argument("plan_file", type=click.Path(exists=True))
 @click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
-def plan_run(plan_file, max_concurrent):
+@click.option("--wait", is_flag=True, help="Block until DAG completes (pipe-driven, no polling)")
+def plan_run(plan_file, max_concurrent, wait):
     """Execute a plan through the DAG kernel."""
     from dgov.plan import run_plan
 
@@ -114,18 +115,47 @@ def plan_run(plan_file, max_concurrent):
         click.secho(str(e), fg="red")
         raise SystemExit(1) from None
 
-    click.echo(
-        json.dumps(
-            {
-                "run_id": result.run_id,
-                "status": result.status,
-                "merged": result.merged,
-                "failed": result.failed,
-                "skipped": result.skipped,
-            },
-            indent=2,
+    run_id = result.run_id
+    click.echo(json.dumps({"run_id": run_id, "status": result.status}, indent=2))
+
+    if not wait:
+        return
+
+    # Block on named pipe until dag_completed or dag_failed event
+    from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
+
+    session_root = os.path.abspath(".")
+    cursor = latest_event_id(session_root)
+
+    while True:
+        events = wait_for_events(
+            session_root,
+            after_id=cursor,
+            event_types=("dag_completed", "dag_failed", "evals_verified"),
+            timeout_s=3600.0,
         )
-    )
+        for ev in events:
+            cursor = max(cursor, ev["id"])
+            if ev.get("dag_run_id") == run_id and ev["event"] in (
+                "dag_completed",
+                "dag_failed",
+            ):
+                run = get_dag_run(session_root, run_id)
+                status = run["status"] if run else "unknown"
+                eval_results = run.get("eval_results", []) if run else []
+                passed = sum(1 for r in eval_results if r["passed"])
+                failed = sum(1 for r in eval_results if not r["passed"])
+
+                click.echo(f"\nDAG run {run_id}: {status}")
+                if eval_results:
+                    for r in eval_results:
+                        m = "PASS" if r["passed"] else "FAIL"
+                        c = "green" if r["passed"] else "red"
+                        click.secho(f"  [{m}] {r['eval_id']}", fg=c)
+                    click.echo(f"  {passed} passed, {failed} failed")
+                if status != "completed" or failed:
+                    raise SystemExit(1)
+                return
 
 
 @plan_cmd.command("verify")
