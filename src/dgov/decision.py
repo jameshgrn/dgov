@@ -80,6 +80,8 @@ class ReviewOutputRequest:
     tests_pass: bool = True
     lint_clean: bool = True
     post_merge_check: str = ""
+    # Eval contract context from typed persistence (never reparsed from blobs)
+    evals: tuple[dict, ...] = ()  # eval dicts this unit satisfies
 
 
 @dataclass(frozen=True)

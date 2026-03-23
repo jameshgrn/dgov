@@ -234,6 +234,151 @@ class TestDagPersistence:
         assert run["evals"][0]["eval_id"] == "E1"
         assert run["unit_eval_links"][0]["unit_slug"] == "cleanup"
 
+    def test_dag_status_shows_evals(self, tmp_path, monkeypatch):
+        """dag status CLI surfaces eval contract from typed persistence."""
+        from click.testing import CliRunner
+
+        from dgov.cli import cli
+        from dgov.persistence import (
+            create_dag_run,
+            replace_dag_plan_contract,
+            upsert_dag_task,
+        )
+
+        session = self._make_session(tmp_path)
+        monkeypatch.chdir(session)
+        dag_file = str(tmp_path / "plan.toml")
+        Path(dag_file).write_text("[plan]\nversion = 1\nname = 'x'\ngoal = 'y'\n")
+
+        run_id = create_dag_run(
+            session, str(Path(dag_file).resolve()), "2024-01-01T00:00:00Z", "running", 0, {}
+        )
+        replace_dag_plan_contract(
+            session,
+            run_id,
+            evals=[
+                {
+                    "eval_id": "E1",
+                    "kind": "regression",
+                    "statement": "Parser handles empty input",
+                    "evidence": "uv run pytest tests/test_parser.py -q",
+                    "scope": [],
+                },
+            ],
+            unit_eval_links=[
+                {"unit_slug": "fix-parser", "eval_id": "E1"},
+            ],
+        )
+        upsert_dag_task(session, run_id, "fix-parser", "merged", "qwen-9b")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["dag", "status", dag_file],
+            env={"DGOV_SKIP_GOVERNOR_CHECK": "1"},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "E1" in result.output
+        assert "regression" in result.output
+        assert "Parser handles empty input" in result.output
+        assert "PASS" in result.output
+        assert "satisfies: E1" in result.output
+
+    def test_dag_status_shows_pending_evals(self, tmp_path, monkeypatch):
+        """Evals show '...' when units are still pending."""
+        from click.testing import CliRunner
+
+        from dgov.cli import cli
+        from dgov.persistence import (
+            create_dag_run,
+            replace_dag_plan_contract,
+            upsert_dag_task,
+        )
+
+        session = self._make_session(tmp_path)
+        monkeypatch.chdir(session)
+        dag_file = str(tmp_path / "plan.toml")
+        Path(dag_file).write_text("[plan]\nversion = 1\nname = 'x'\ngoal = 'y'\n")
+
+        run_id = create_dag_run(
+            session, str(Path(dag_file).resolve()), "2024-01-01T00:00:00Z", "running", 0, {}
+        )
+        replace_dag_plan_contract(
+            session,
+            run_id,
+            evals=[
+                {
+                    "eval_id": "E1",
+                    "kind": "happy_path",
+                    "statement": "Feature works",
+                    "evidence": "manual check",
+                    "scope": [],
+                },
+            ],
+            unit_eval_links=[
+                {"unit_slug": "add-feature", "eval_id": "E1"},
+            ],
+        )
+        upsert_dag_task(session, run_id, "add-feature", "dispatched", "qwen-35b")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["dag", "status", dag_file],
+            env={"DGOV_SKIP_GOVERNOR_CHECK": "1"},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "..." in result.output
+
+    def test_dag_status_shows_failed_evals(self, tmp_path, monkeypatch):
+        """Evals show FAIL when a satisfying unit has failed."""
+        from click.testing import CliRunner
+
+        from dgov.cli import cli
+        from dgov.persistence import (
+            create_dag_run,
+            replace_dag_plan_contract,
+            upsert_dag_task,
+        )
+
+        session = self._make_session(tmp_path)
+        monkeypatch.chdir(session)
+        dag_file = str(tmp_path / "plan.toml")
+        Path(dag_file).write_text("[plan]\nversion = 1\nname = 'x'\ngoal = 'y'\n")
+
+        run_id = create_dag_run(
+            session, str(Path(dag_file).resolve()), "2024-01-01T00:00:00Z", "running", 0, {}
+        )
+        replace_dag_plan_contract(
+            session,
+            run_id,
+            evals=[
+                {
+                    "eval_id": "E1",
+                    "kind": "edge",
+                    "statement": "Handles null",
+                    "evidence": "pytest test_null.py",
+                    "scope": [],
+                },
+            ],
+            unit_eval_links=[
+                {"unit_slug": "null-guard", "eval_id": "E1"},
+            ],
+        )
+        upsert_dag_task(session, run_id, "null-guard", "failed", "qwen-9b")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["dag", "status", dag_file],
+            env={"DGOV_SKIP_GOVERNOR_CHECK": "1"},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0
+        assert "FAIL" in result.output
+
 
 class TestDagEvents:
     """Tests for DAG lifecycle events."""

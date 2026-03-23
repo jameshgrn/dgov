@@ -173,7 +173,7 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
 @click.argument("dagfile", type=click.Path(exists=True))
 @click.option("--run-id", type=int, default=None, help="Specific run ID (default: most recent)")
 def dag_status(dagfile, run_id):
-    """Show status of a DAG run: tasks, agents, states."""
+    """Show status of a DAG run: tasks, agents, states, and eval contract."""
     import os
     from pathlib import Path
 
@@ -195,46 +195,82 @@ def dag_status(dagfile, run_id):
     else:
         conn = _get_db(session_root)
         row = conn.execute(
-            "SELECT id, dag_file, started_at, status, current_tier, state_json"
-            " FROM dag_runs WHERE dag_file = ? ORDER BY id DESC LIMIT 1",
+            "SELECT id FROM dag_runs WHERE dag_file = ? ORDER BY id DESC LIMIT 1",
             (abs_path,),
         ).fetchone()
         if not row:
             raise click.ClickException(f"No runs found for {abs_path}")
-        run = {
-            "id": row[0],
-            "dag_file": row[1],
-            "started_at": row[2],
-            "status": row[3],
-            "current_tier": row[4],
-        }
-        run_id = run["id"]
+        run = get_dag_run(session_root, row[0])
+        if not run:
+            raise click.ClickException(f"DAG run {row[0]} not found")
 
+    run_id = run["id"]
     tasks = list_dag_tasks(session_root, run_id)
 
     click.echo(f"DAG run {run_id}: {run['status']}")
     click.echo(f"  file: {run['dag_file']}")
     click.echo(f"  started: {run.get('started_at', 'unknown')}")
     click.echo(f"  tier: {run.get('current_tier', '?')}")
+
+    # Eval contract
+    evals = run.get("evals", [])
+    links = run.get("unit_eval_links", [])
+    if evals:
+        click.echo()
+        click.echo("Evals:")
+        # Build unit→eval and eval→units maps from links
+        eval_units: dict[str, list[str]] = {}
+        for link in links:
+            eval_units.setdefault(link["eval_id"], []).append(link["unit_slug"])
+
+        # Build task status lookup
+        task_status = {t["slug"]: t.get("status", "pending") for t in tasks}
+
+        for ev in evals:
+            eid = ev["eval_id"]
+            kind = ev["kind"]
+            stmt = ev["statement"]
+            satisfying = eval_units.get(eid, [])
+            # Derive eval status from unit statuses
+            if not satisfying:
+                marker = "?"
+            elif all(task_status.get(u) == "merged" for u in satisfying):
+                marker = "PASS"
+            elif any(task_status.get(u) in ("failed", "abandoned") for u in satisfying):
+                marker = "FAIL"
+            else:
+                marker = "..."
+            units_str = ", ".join(satisfying) if satisfying else "(none)"
+            click.echo(f"  [{marker:4s}] {eid} ({kind}): {stmt}")
+            click.echo(f"         units: {units_str}")
+
     click.echo()
 
     if not tasks:
         click.echo("  (no tasks)")
         return
 
+    # Build unit→evals map for display
+    unit_evals: dict[str, list[str]] = {}
+    for link in links:
+        unit_evals.setdefault(link["unit_slug"], []).append(link["eval_id"])
+
     # Column widths
     max_slug = max(len(t["slug"]) for t in tasks)
     max_agent = max(len(t.get("agent", "?")) for t in tasks)
 
     for t in tasks:
-        slug = t["slug"].ljust(max_slug)
+        slug_str = t["slug"].ljust(max_slug)
         agent = t.get("agent", "?").ljust(max_agent)
         status = t.get("status", "?")
         attempt = t.get("attempt", 1)
         error = t.get("error", "")
-        line = f"  {slug}  {agent}  {status}"
+        line = f"  {slug_str}  {agent}  {status}"
         if attempt and attempt > 1:
             line += f"  (attempt {attempt})"
         if error:
             line += f"  [{error[:60]}]"
+        satisfies = unit_evals.get(t["slug"], [])
+        if satisfies:
+            line += f"  satisfies: {', '.join(satisfies)}"
         click.echo(line)

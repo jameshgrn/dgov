@@ -413,6 +413,61 @@ def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
     )
 
 
+def test_inspection_review_surfaces_evals_in_artifact(tmp_path):
+    """InspectionReviewProvider includes eval contract in review artifact."""
+    from unittest.mock import patch
+
+    provider = InspectionReviewProvider()
+
+    mock_review = {"slug": "task-e", "verdict": "safe", "commit_count": 1}
+
+    evals = (
+        {
+            "eval_id": "E1",
+            "kind": "regression",
+            "statement": "Parser handles empty input",
+            "evidence": "pytest test_parser.py",
+        },
+    )
+
+    with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
+        record = provider.review_output(
+            ReviewOutputRequest(
+                project_root=str(tmp_path),
+                slug="task-e",
+                evals=evals,
+            )
+        )
+
+    assert record.artifact["evals"] == [
+        {
+            "eval_id": "E1",
+            "kind": "regression",
+            "statement": "Parser handles empty input",
+            "evidence": "pytest test_parser.py",
+        },
+    ]
+
+
+def test_inspection_review_no_evals_no_key_in_artifact(tmp_path):
+    """When no evals are passed, artifact should not contain an evals key."""
+    from unittest.mock import patch
+
+    provider = InspectionReviewProvider()
+
+    mock_review = {"slug": "task-ne", "verdict": "safe", "commit_count": 1}
+
+    with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
+        record = provider.review_output(
+            ReviewOutputRequest(
+                project_root=str(tmp_path),
+                slug="task-ne",
+            )
+        )
+
+    assert "evals" not in record.artifact
+
+
 # -- ModelReviewProvider tests --
 
 

@@ -259,6 +259,18 @@ class InspectionReviewProvider(DecisionProvider):
         issues = tuple(str(issue) for issue in review.get("issues", []) or [])
         reason = str(review.get("error")) if review.get("error") else None
 
+        # Surface eval contract in artifact (from typed persistence, never blobs)
+        if request.evals:
+            review["evals"] = [
+                {
+                    "eval_id": ev["eval_id"],
+                    "kind": ev["kind"],
+                    "statement": ev["statement"],
+                    "evidence": ev["evidence"],
+                }
+                for ev in request.evals
+            ]
+
         return DecisionRecord(
             kind=DecisionKind.REVIEW_OUTPUT,
             provider_id=self.provider_id,
@@ -316,10 +328,22 @@ class ModelReviewProvider(DecisionProvider):
 
         started = time.perf_counter()
 
+        eval_section = ""
+        if request.evals:
+            eval_lines = []
+            for ev in request.evals:
+                eval_lines.append(f"- [{ev['eval_id']}] {ev['kind']}: {ev['statement']}")
+            eval_section = (
+                "\n## Evals this unit must satisfy\n"
+                + "\n".join(eval_lines)
+                + "\nCheck whether the diff plausibly satisfies these conditions.\n\n"
+            )
+
         prompt = (
             "Review this code diff. The code already passes tests and lint.\n"
             "Focus on: logic correctness, edge cases, design quality.\n"
             "Do NOT flag style issues — only real bugs or design concerns.\n\n"
+            f"{eval_section}"
             f"## Diff\n```\n{diff[:8000]}\n```\n\n"
             "Respond in exactly this format:\n"
             "VERDICT: approved | concerns\n"

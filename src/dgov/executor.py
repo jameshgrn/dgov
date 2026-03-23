@@ -737,6 +737,7 @@ def run_review_only(
     tests_pass: bool = True,
     lint_clean: bool = True,
     post_merge_check: str = "",
+    evals: tuple[dict, ...] = (),
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
     _review_span_id = None
@@ -770,6 +771,7 @@ def run_review_only(
         tests_pass=tests_pass,
         lint_clean=lint_clean,
         post_merge_check=post_merge_check,
+        evals=evals,
     )
 
     # Stage 1: Deterministic inspection (always runs, free)
@@ -1485,6 +1487,7 @@ class DagReactor:
                 action.pane_slug,
                 self.progress,
                 review_agent=action.review_agent,
+                run_id=self.run_id,
             )
 
         if isinstance(action, MergeTask):
@@ -1835,6 +1838,7 @@ def _dag_review(
     pane_slug: str,
     progress: Callable[[str], None],
     review_agent: str = "",
+    run_id: int | None = None,
 ) -> object:
     """Execute a ReviewTask action. Returns TaskReviewDone."""
     from dgov.kernel import TaskReviewDone
@@ -1843,6 +1847,20 @@ def _dag_review(
 
     if review_agent:
         progress(f"  reviewing {task_slug} with {review_agent}")
+
+    # Look up eval contract from typed persistence (never reparse blobs)
+    evals: tuple[dict, ...] = ()
+    if run_id is not None:
+        try:
+            from dgov.persistence import list_dag_evals, list_dag_unit_eval_links
+
+            links = list_dag_unit_eval_links(session_root, run_id)
+            eval_ids = {lk["eval_id"] for lk in links if lk["unit_slug"] == task_slug}
+            if eval_ids:
+                all_evals = list_dag_evals(session_root, run_id)
+                evals = tuple(ev for ev in all_evals if ev["eval_id"] in eval_ids)
+        except Exception:
+            logger.debug("failed to load eval contract for %s", task_slug, exc_info=True)
 
     result = run_review_only(
         project_root,
@@ -1854,6 +1872,7 @@ def _dag_review(
         tests_pass=task.tests_pass,
         lint_clean=task.lint_clean,
         post_merge_check=task.post_merge_check,
+        evals=evals,
     )
     progress(f"  reviewed {task_slug}: {result.verdict}")
     return TaskReviewDone(
