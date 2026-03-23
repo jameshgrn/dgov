@@ -82,6 +82,8 @@ class TestDagPersistence:
         assert run["dag_file"] == "/path/to/dag.toml"
         assert run["status"] == "running"
         assert run["state_json"]["tiers"] == [["T0"]]
+        assert run["evals"] == []
+        assert run["unit_eval_links"] == []
 
     def test_get_open_dag_run(self, tmp_path):
         from dgov.persistence import create_dag_run, get_open_dag_run
@@ -168,6 +170,69 @@ class TestDagPersistence:
         # Exact absolute path matches
         run = get_open_dag_run(session, "/abs/path/dag.toml")
         assert run is not None
+
+    def test_replace_and_list_dag_plan_contract(self, tmp_path):
+        from dgov.persistence import (
+            create_dag_run,
+            get_dag_run,
+            list_dag_evals,
+            list_dag_unit_eval_links,
+            replace_dag_plan_contract,
+        )
+
+        session = self._make_session(tmp_path)
+        run_id = create_dag_run(session, "/dag.toml", "2024-01-01T00:00:00Z", "running", 0, {})
+
+        replace_dag_plan_contract(
+            session,
+            run_id,
+            evals=[
+                {
+                    "eval_id": "E1",
+                    "kind": "regression",
+                    "statement": "scratch plans stay under .dgov/plans",
+                    "evidence": "uv run pytest tests/test_plan.py -q -m unit",
+                    "scope": ["src/dgov/plan.py"],
+                },
+                {
+                    "eval_id": "E2",
+                    "kind": "invariant",
+                    "statement": "repo root stays clean",
+                    "evidence": "uv run pytest tests/test_dgov_cli.py -q -m unit",
+                    "scope": [],
+                },
+            ],
+            unit_eval_links=[
+                {"unit_slug": "first_change", "eval_id": "E1"},
+                {"unit_slug": "cleanup", "eval_id": "E2"},
+            ],
+        )
+
+        assert list_dag_evals(session, run_id) == [
+            {
+                "eval_id": "E1",
+                "kind": "regression",
+                "statement": "scratch plans stay under .dgov/plans",
+                "evidence": "uv run pytest tests/test_plan.py -q -m unit",
+                "scope": ["src/dgov/plan.py"],
+            },
+            {
+                "eval_id": "E2",
+                "kind": "invariant",
+                "statement": "repo root stays clean",
+                "evidence": "uv run pytest tests/test_dgov_cli.py -q -m unit",
+                "scope": [],
+            },
+        ]
+        assert list_dag_unit_eval_links(session, run_id) == [
+            {"unit_slug": "cleanup", "eval_id": "E2"},
+            {"unit_slug": "first_change", "eval_id": "E1"},
+        ]
+
+        run = get_dag_run(session, run_id)
+        assert run is not None
+        assert run["evals"][0]["eval_id"] == "E1"
+        assert run["unit_eval_links"][0]["unit_slug"] == "cleanup"
 
 
 class TestDagEvents:

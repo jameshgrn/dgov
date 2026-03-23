@@ -182,6 +182,9 @@ All queryable data in SQLite must be typed columns — never JSON that requires 
 - `commit_count` (INTEGER): Number of commits
 - `tests_passed` (BOOLEAN): Test pass status
 - `lint_clean` (BOOLEAN): Lint pass status
+- `eval_id` (TEXT): Stable eval identifier attached to a DAG run
+- `kind` (TEXT): Eval kind (`regression`, `edge`, `invariant`, etc.)
+- `unit_slug` (TEXT): Unit-to-eval link for executable coverage
 
 This enables efficient queries like:
 ```sql
@@ -196,6 +199,32 @@ WHERE json_extract(metadata, '$.state') = 'done'
 ```
 
 Which is slow, error-prone, and harder to maintain.
+
+### Plan Contracts Must Persist as Typed Rows
+
+Plan evals are not documentation fluff. They are part of the executable
+contract, so they must persist in typed tables keyed by `dag_run_id`.
+
+- `dag_evals` stores the eval contract itself (`eval_id`, `kind`, `statement`, `evidence`).
+- `dag_unit_eval_links` stores which units claim to satisfy which evals.
+- `definition_json` may archive the same information, but review/reporting code must not rely on reparsing it.
+
+This enables queries like:
+
+```sql
+SELECT eval_id, kind
+FROM dag_evals
+WHERE dag_run_id = 17;
+```
+
+and
+
+```sql
+SELECT unit_slug, eval_id
+FROM dag_unit_eval_links
+WHERE dag_run_id = 17
+ORDER BY unit_slug, eval_id;
+```
 
 ## Intelligence Hierarchy: Determinism → Statistics → LLM
 

@@ -873,4 +873,19 @@ def run_plan(
         definition_hash=definition_hash,
         auto_merge=True,
         max_concurrent=effective_concurrent,
+        plan_evals=[
+            {
+                "eval_id": plan_eval.eval_id,
+                "kind": plan_eval.kind,
+                "statement": plan_eval.statement,
+                "evidence": plan_eval.evidence,
+                "scope": list(plan_eval.scope),
+            }
+            for plan_eval in plan.evals
+        ],
+        unit_eval_links=[
+            {"unit_slug": unit.slug, "eval_id": eval_id}
+            for unit in plan.units.values()
+            for eval_id in unit.satisfies
+        ],
     )

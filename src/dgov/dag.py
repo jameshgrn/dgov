@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from dgov.dag_graph import compute_tiers, render_dry_run, topological_order
-from dgov.dag_parser import DagDefinition, DagRunOptions, DagRunSummary, parse_dag_file
+from dgov.dag_parser import DagDefinition, DagRunSummary, parse_dag_file
 
 logger = logging.getLogger(__name__)
 
@@ -60,18 +60,22 @@ def run_dag_via_kernel(
     skip: set[str] | None = None,
     auto_merge: bool = True,
     max_concurrent: int = 0,
+    plan_evals: list[dict] | None = None,
+    unit_eval_links: list[dict] | None = None,
 ) -> DagRunSummary:
     """Submit a DAG for headless execution by the monitor daemon."""
+    from dataclasses import asdict
     from datetime import datetime, timezone
+
     from dgov.kernel import DagKernel
-    from dgov.persistence import create_dag_run, emit_event
+    from dgov.persistence import create_dag_run, emit_event, replace_dag_plan_contract
 
     session_root = dag.session_root
-    
+
     # Initialize the kernel to get the starting state_json
     deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
     review_agents = {slug: t.review_agent for slug, t in dag.tasks.items() if t.review_agent}
-    
+
     kernel = DagKernel(
         deps=deps,
         auto_merge=auto_merge,
@@ -82,7 +86,6 @@ def run_dag_via_kernel(
     )
 
     # Serialize definition for headless reconstruction
-    from dataclasses import asdict
     def_json = {
         "name": dag.name,
         "default_max_retries": dag.default_max_retries,
@@ -102,9 +105,17 @@ def run_dag_via_kernel(
         kernel.to_dict(),
         definition_json=def_json,
     )
-    
+    if plan_evals or unit_eval_links:
+        replace_dag_plan_contract(
+            session_root,
+            run_id,
+            evals=plan_evals or [],
+            unit_eval_links=unit_eval_links or [],
+        )
+
     # Ensure the headless engine is running
     from dgov.monitor import ensure_monitor_running
+
     ensure_monitor_running(dag.project_root, session_root=session_root)
 
     # Notify monitor

@@ -536,6 +536,29 @@ CREATE TABLE IF NOT EXISTS dag_tasks (
     FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
 )"""
 
+_CREATE_DAG_EVALS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS dag_evals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_run_id INTEGER NOT NULL,
+    eval_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    evidence TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT '[]',
+    UNIQUE(dag_run_id, eval_id),
+    FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
+)"""
+
+_CREATE_DAG_UNIT_EVAL_LINKS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS dag_unit_eval_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_run_id INTEGER NOT NULL,
+    unit_slug TEXT NOT NULL,
+    eval_id TEXT NOT NULL,
+    UNIQUE(dag_run_id, unit_slug, eval_id),
+    FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
+)"""
+
 _CREATE_MERGE_QUEUE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS merge_queue (
     ticket TEXT PRIMARY KEY,
@@ -602,6 +625,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_EVALS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_UNIT_EVAL_LINKS_TABLE_SQL)
     conn.execute(_CREATE_MERGE_QUEUE_TABLE_SQL)
     conn.execute(_CREATE_DECISION_JOURNAL_TABLE_SQL)
     conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
@@ -1156,6 +1181,8 @@ def ensure_dag_tables(session_root: str) -> None:
     conn = _get_db(session_root)
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
     conn.execute(_CREATE_DAG_TASKS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_EVALS_TABLE_SQL)
+    conn.execute(_CREATE_DAG_UNIT_EVAL_LINKS_TABLE_SQL)
     conn.commit()
 
 
@@ -1203,7 +1230,7 @@ def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
     ).fetchone()
     if row is None:
         return None
-    return {
+    run = {
         "id": row[0],
         "dag_file": row[1],
         "started_at": row[2],
@@ -1212,6 +1239,9 @@ def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
         "state_json": json.loads(row[5]),
         "definition_json": json.loads(row[6]),
     }
+    run["evals"] = list_dag_evals(session_root, run["id"])
+    run["unit_eval_links"] = list_dag_unit_eval_links(session_root, run["id"])
+    return run
 
 
 def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
@@ -1224,7 +1254,7 @@ def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
     ).fetchone()
     if row is None:
         return None
-    return {
+    run = {
         "id": row[0],
         "dag_file": row[1],
         "started_at": row[2],
@@ -1233,6 +1263,9 @@ def get_dag_run(session_root: str, dag_run_id: int) -> dict | None:
         "state_json": json.loads(row[5]),
         "definition_json": json.loads(row[6]),
     }
+    run["evals"] = list_dag_evals(session_root, run["id"])
+    run["unit_eval_links"] = list_dag_unit_eval_links(session_root, run["id"])
+    return run
 
 
 def update_dag_run(
@@ -1275,7 +1308,7 @@ def list_active_dag_runs(session_root: str) -> list[dict]:
         " FROM dag_runs"
         " WHERE status NOT IN ('completed', 'failed', 'cancelled')"
     ).fetchall()
-    return [
+    runs = [
         {
             "id": r[0],
             "dag_file": r[1],
@@ -1287,6 +1320,80 @@ def list_active_dag_runs(session_root: str) -> list[dict]:
         }
         for r in rows
     ]
+    for run in runs:
+        run["evals"] = list_dag_evals(session_root, run["id"])
+        run["unit_eval_links"] = list_dag_unit_eval_links(session_root, run["id"])
+    return runs
+
+
+def replace_dag_plan_contract(
+    session_root: str,
+    dag_run_id: int,
+    *,
+    evals: list[dict],
+    unit_eval_links: list[dict],
+) -> None:
+    """Replace persisted eval contract rows for a DAG run."""
+
+    def _do() -> None:
+        conn = _get_db(session_root)
+        conn.execute("DELETE FROM dag_unit_eval_links WHERE dag_run_id = ?", (dag_run_id,))
+        conn.execute("DELETE FROM dag_evals WHERE dag_run_id = ?", (dag_run_id,))
+        for plan_eval in evals:
+            conn.execute(
+                """INSERT INTO dag_evals
+                   (dag_run_id, eval_id, kind, statement, evidence, scope)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    dag_run_id,
+                    plan_eval["eval_id"],
+                    plan_eval["kind"],
+                    plan_eval["statement"],
+                    plan_eval["evidence"],
+                    json.dumps(plan_eval.get("scope", [])),
+                ),
+            )
+        for link in unit_eval_links:
+            conn.execute(
+                """INSERT INTO dag_unit_eval_links
+                   (dag_run_id, unit_slug, eval_id)
+                   VALUES (?, ?, ?)""",
+                (dag_run_id, link["unit_slug"], link["eval_id"]),
+            )
+        conn.commit()
+
+    _retry_on_lock(_do)
+
+
+def list_dag_evals(session_root: str, dag_run_id: int) -> list[dict]:
+    """List persisted eval rows for a DAG run."""
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT eval_id, kind, statement, evidence, scope"
+        " FROM dag_evals WHERE dag_run_id = ? ORDER BY eval_id",
+        (dag_run_id,),
+    ).fetchall()
+    return [
+        {
+            "eval_id": row[0],
+            "kind": row[1],
+            "statement": row[2],
+            "evidence": row[3],
+            "scope": json.loads(row[4]),
+        }
+        for row in rows
+    ]
+
+
+def list_dag_unit_eval_links(session_root: str, dag_run_id: int) -> list[dict]:
+    """List unit-to-eval links for a DAG run."""
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT unit_slug, eval_id"
+        " FROM dag_unit_eval_links WHERE dag_run_id = ? ORDER BY unit_slug, eval_id",
+        (dag_run_id,),
+    ).fetchall()
+    return [{"unit_slug": row[0], "eval_id": row[1]} for row in rows]
 
 
 def upsert_dag_task(

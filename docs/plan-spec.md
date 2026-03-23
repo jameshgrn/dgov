@@ -81,6 +81,10 @@ Every unit must list the eval ids it satisfies with `satisfies = [...]`.
 Plans without evals, units without `satisfies`, or orphaned evals fail
 validation.
 
+On submission, evals and unit-to-eval links are persisted as typed SQLite rows
+for the DAG run. The TOML remains the authoring artifact; the database becomes
+the queryable execution record.
+
 ## LT-GOV Integration
 
 You can dispatch a Lieutenant Governor (LT-GOV) as a plan unit. An LT-GOV is a

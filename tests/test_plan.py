@@ -947,6 +947,44 @@ edit = ["a.py"]
         with pytest.raises(ValueError, match="Unsupported plan version"):
             run_plan(plan_path)
 
+    def test_run_plan_passes_eval_contract_to_kernel(self, tmp_path, monkeypatch):
+        """run_plan persists evals as typed contract rows via the kernel submit path."""
+        from dgov.plan import run_plan
+
+        captured: dict[str, object] = {}
+
+        def fake_run_dag_via_kernel(dag, **kwargs):
+            captured["dag"] = dag
+            captured["kwargs"] = kwargs
+            return object()
+
+        monkeypatch.setattr("dgov.dag.run_dag_via_kernel", fake_run_dag_via_kernel)
+
+        plan_path = _write_plan(tmp_path)
+        run_plan(plan_path)
+
+        kwargs = captured["kwargs"]
+        assert kwargs["plan_evals"] == [
+            {
+                "eval_id": "E1",
+                "kind": "regression",
+                "statement": "Task A updates src/a.py.",
+                "evidence": "uv run pytest tests/test_a.py -q",
+                "scope": ["src/a.py"],
+            },
+            {
+                "eval_id": "E2",
+                "kind": "happy_path",
+                "statement": "Task B creates src/b.py.",
+                "evidence": "uv run pytest tests/test_b.py -q",
+                "scope": ["src/b.py"],
+            },
+        ]
+        assert kwargs["unit_eval_links"] == [
+            {"unit_slug": "task-a", "eval_id": "E1"},
+            {"unit_slug": "task-b", "eval_id": "E2"},
+        ]
+
 
 class TestLTGovCompilation:
     def test_compile_lt_gov_task(self, tmp_path):
