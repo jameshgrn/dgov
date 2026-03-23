@@ -724,6 +724,9 @@ def run_review_only(
     require_safe: bool = True,
     require_commits: bool = True,
     review_agent: str = "",
+    tests_pass: bool = True,
+    lint_clean: bool = True,
+    post_merge_check: str = "",
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
     _review_span_id = None
@@ -754,6 +757,9 @@ def run_review_only(
         full=full,
         agent_id=agent_id,
         review_agent=review_agent,
+        tests_pass=tests_pass,
+        lint_clean=lint_clean,
+        post_merge_check=post_merge_check,
     )
 
     # Stage 1: Deterministic inspection (always runs, free)
@@ -1470,9 +1476,11 @@ def run_dag_kernel(
         DispatchTask,
         MergeTask,
         ReviewTask,
+        RetryTask,
         SkipTask,
         TaskClosed,
         TaskDispatched,
+        TaskRetryStarted,
         WaitForAny,
     )
 
@@ -1561,6 +1569,7 @@ def run_dag_kernel(
 
         if isinstance(action, ReviewTask):
             event = _dag_review(
+                dag,
                 project_root,
                 session_root,
                 action.task_slug,
@@ -1604,6 +1613,21 @@ def run_dag_kernel(
                 _progress,
             )
             _extend_queue(kernel.handle(TaskClosed(action.task_slug)))
+            continue
+
+        if isinstance(action, RetryTask):
+            event = _dag_retry(
+                project_root,
+                session_root,
+                run_id,
+                action.task_slug,
+                action.pane_slug,
+                action.attempt,
+                _progress,
+            )
+            if isinstance(event, TaskRetryStarted):
+                pane_map[action.task_slug] = event.new_pane_slug
+            _extend_queue(kernel.handle(event))
             continue
 
     # Queue exhausted without DagDone — shouldn't happen
@@ -1750,6 +1774,7 @@ def _dag_wait_any(
 
 
 def _dag_review(
+    dag: object,
     project_root: str,
     session_root: str,
     task_slug: str,
@@ -1759,6 +1784,8 @@ def _dag_review(
 ) -> object:
     """Execute a ReviewTask action. Returns TaskReviewDone."""
     from dgov.kernel import TaskReviewDone
+
+    task = dag.tasks[task_slug]
 
     if review_agent:
         progress(f"  reviewing {task_slug} with {review_agent}")
@@ -1770,6 +1797,9 @@ def _dag_review(
         require_safe=True,
         require_commits=True,
         review_agent=review_agent,
+        tests_pass=task.tests_pass,
+        lint_clean=task.lint_clean,
+        post_merge_check=task.post_merge_check,
     )
     progress(f"  reviewed {task_slug}: {result.verdict}")
     return TaskReviewDone(
@@ -1820,6 +1850,50 @@ def _dag_merge(
     else:
         progress(f"  merged {task_slug}")
     return TaskMergeDone(task_slug, error=result.error)
+
+
+def _dag_retry(
+    project_root: str,
+    session_root: str,
+    run_id: int,
+    task_slug: str,
+    pane_slug: str,
+    attempt: int,
+    progress: Callable[[str], None],
+) -> object:
+    """Execute a RetryTask action. Returns TaskRetryStarted or TaskDispatchFailed."""
+    from dgov.kernel import TaskDispatchFailed, TaskRetryStarted
+    from dgov.persistence import upsert_dag_task
+    from dgov.recovery import retry_or_escalate
+
+    progress(f"  retrying {task_slug} (attempt {attempt})")
+    try:
+        res = retry_or_escalate(
+            project_root,
+            pane_slug,
+            session_root=session_root,
+        )
+        if hasattr(res, "error") and res.error:
+            return TaskDispatchFailed(task_slug, res.error)
+
+        new_slug = getattr(res, "new_slug", "")
+        if not new_slug:
+            return TaskDispatchFailed(task_slug, "Retry failed to produce new slug")
+
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            "dispatched",
+            getattr(res, "target_agent", ""),
+            attempt=attempt + 1,
+            pane_slug=new_slug,
+        )
+        return TaskRetryStarted(task_slug, new_slug, attempt)
+
+    except Exception as exc:
+        logger.error("Retry failed for %s: %s", task_slug, exc)
+        return TaskDispatchFailed(task_slug, str(exc))
 
 
 def _dag_skip(

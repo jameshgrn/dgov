@@ -26,6 +26,8 @@ class DagTaskSpec:
     files: DagFileSpec
     permission_mode: str
     timeout_s: int
+    tests_pass: bool = True
+    lint_clean: bool = True
     post_merge_check: str = ""
     review_agent: str = ""  # model for reviewing this task's output
 

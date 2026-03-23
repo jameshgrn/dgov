@@ -862,10 +862,10 @@ def run_monitor(
     monitor_dir = Path(session_root, STATE_DIR, "monitor")
     monitor_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Starting monitor on %s (interval %ds)", project_root, poll_interval)
-    print(f"Monitor active: polling every {poll_interval}s...")
+    logger.info("Starting monitor on %s", project_root)
+    print("Monitor active: event-driven (blocking on events.pipe)")
 
-    tick = 0
+    last_prune = 0.0
     try:
         while True:
             try:
@@ -879,11 +879,13 @@ def run_monitor(
                 # Reload hooks each tick for live updates
                 hooks = load_monitor_hooks(session_root)
 
-                # Prune stale panes every 30 ticks (~2.5 mins at 5s interval)
-                if tick % 30 == 0:
+                # Prune stale panes periodically
+                now = time.time()
+                if now - last_prune > 120:  # Every 2 minutes
                     pruned = prune_stale_panes(project_root, session_root)
                     if pruned:
                         logger.info("Monitor: pruned stale panes: %s", ", ".join(pruned))
+                    last_prune = now
 
                 actions = []
 
@@ -955,12 +957,7 @@ def run_monitor(
                     worker_states = ", ".join(
                         f"{w['slug']}={w['classification']}" for w in workers
                     )
-                    logger.info("Tick %d: %s", tick, worker_states)
                     emit_event(session_root, "monitor_tick", "monitor", states=worker_states)
-                elif tick % 4 == 0:
-                    # Heartbeat print when idle
-                    logger.info("Tick %d: idle", tick)
-                    emit_event(session_root, "monitor_tick", "monitor", states="idle")
 
             except Exception:
                 logger.warning("Monitor tick failed", exc_info=True)
@@ -974,7 +971,6 @@ def run_monitor(
                 state.event_cursor,
                 poll_interval,
             )
-            tick += 1
     except KeyboardInterrupt:
         logger.info("Monitor stopped by user")
         print("\nMonitor stopped.")

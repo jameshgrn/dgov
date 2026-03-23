@@ -87,7 +87,16 @@ class DagDone:
     skipped: tuple[str, ...]
 
 
-DagAction = DispatchTask | WaitForAny | ReviewTask | MergeTask | SkipTask | CloseTask | DagDone
+@dataclass(frozen=True)
+class RetryTask:
+    task_slug: str
+    pane_slug: str
+    attempt: int
+
+
+DagAction = (
+    DispatchTask | WaitForAny | ReviewTask | MergeTask | SkipTask | CloseTask | RetryTask | DagDone
+)
 
 
 # -- DAG Events (runtime → kernel) --
@@ -131,6 +140,13 @@ class TaskClosed:
     task_slug: str
 
 
+@dataclass(frozen=True)
+class TaskRetryStarted:
+    task_slug: str
+    new_pane_slug: str
+    attempt: int
+
+
 DagEvent = (
     TaskDispatched
     | TaskDispatchFailed
@@ -138,7 +154,9 @@ DagEvent = (
     | TaskReviewDone
     | TaskMergeDone
     | TaskClosed
+    | TaskRetryStarted
 )
+
 
 
 @dataclass
@@ -165,17 +183,21 @@ class DagKernel:
     max_concurrent: int = 0  # 0 = unlimited
     skip: frozenset[str] = frozenset()
     review_agents: dict[str, str] = field(default_factory=dict)
+    max_retries: int = 3
 
     # -- internal state --
     state: DagState = DagState.IDLE
     task_states: dict[str, DagTaskState] = field(default_factory=dict)  # noqa: RUF009
     pane_slugs: dict[str, str] = field(default_factory=dict)  # noqa: RUF009
+    attempts: dict[str, int] = field(default_factory=dict)  # noqa: RUF009
     merge_order: tuple[str, ...] = ()
     _merge_cursor: int = 0
 
     def __post_init__(self) -> None:
         if not self.task_states:
             self.task_states = {slug: DagTaskState.PENDING for slug in self.deps}
+        for slug in self.deps:
+            self.attempts[slug] = 1
         if not self.merge_order:
             self.merge_order = tuple(_topo_sort(self.deps))
         # Apply pre-skip: mark skipped tasks and their transitive dependents
@@ -240,11 +262,17 @@ class DagKernel:
                 review_agent = self.review_agents.get(task, "")
                 actions.append(ReviewTask(task, event.pane_slug, review_agent=review_agent))
             else:
-                self.task_states[task] = DagTaskState.FAILED
-                actions.extend(self._skip_dependents(task))
-                actions.append(CloseTask(task, event.pane_slug, reason="worker_failed"))
-                actions.extend(self._schedule())
-                actions.extend(self._check_done())
+                # Wait failed (timeout or crash) -> try retry/escalate
+                curr_attempt = self.attempts.get(task, 1)
+                if curr_attempt <= self.max_retries:
+                    self.task_states[task] = DagTaskState.DISPATCHED
+                    actions.append(RetryTask(task, event.pane_slug, curr_attempt))
+                else:
+                    self.task_states[task] = DagTaskState.FAILED
+                    actions.extend(self._skip_dependents(task))
+                    actions.append(CloseTask(task, event.pane_slug, reason="worker_failed"))
+                    actions.extend(self._schedule())
+                    actions.extend(self._check_done())
             return actions
 
         if isinstance(event, TaskReviewDone):
@@ -256,13 +284,28 @@ class DagKernel:
                 actions.extend(self._schedule())
                 actions.extend(self._check_done())
             else:
-                self.task_states[task] = DagTaskState.FAILED
-                actions.extend(self._skip_dependents(task))
-                pane = self.pane_slugs.get(task, "")
-                if pane:
-                    actions.append(CloseTask(task, pane, reason="review_failed"))
-                actions.extend(self._schedule())
-                actions.extend(self._check_done())
+                # Review failed (negative verdict or 0 commits) -> retry/escalate
+                curr_attempt = self.attempts.get(task, 1)
+                if curr_attempt <= self.max_retries:
+                    self.task_states[task] = DagTaskState.DISPATCHED
+                    pane = self.pane_slugs.get(task, "")
+                    actions.append(RetryTask(task, pane, curr_attempt))
+                else:
+                    self.task_states[task] = DagTaskState.FAILED
+                    actions.extend(self._skip_dependents(task))
+                    pane = self.pane_slugs.get(task, "")
+                    if pane:
+                        actions.append(CloseTask(task, pane, reason="review_failed"))
+                    actions.extend(self._schedule())
+                    actions.extend(self._check_done())
+            return actions
+
+        if isinstance(event, TaskRetryStarted):
+            task = event.task_slug
+            self.task_states[task] = DagTaskState.WAITING
+            self.pane_slugs[task] = event.new_pane_slug
+            self.attempts[task] = event.attempt + 1
+            actions.extend(self._maybe_wait())
             return actions
 
         if isinstance(event, TaskMergeDone):

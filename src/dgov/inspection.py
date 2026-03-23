@@ -41,6 +41,9 @@ def review_worker_pane(
     slug: str,
     session_root: str | None = None,
     full: bool = False,
+    tests_pass: bool = True,
+    lint_clean: bool = True,
+    post_merge_check: str = "",
 ) -> dict:
     """Preview a worker pane's changes before merging.
 
@@ -104,7 +107,7 @@ def review_worker_pane(
         porcelain_lines.append(ln)
     uncommitted = bool(porcelain_lines)
 
-    # Verdict
+    # Verdict issues
     issues = []
     if protected_touched:
         issues.append(f"protected files touched: {protected_touched}")
@@ -113,6 +116,23 @@ def review_worker_pane(
     pane_state = target.get("state", "")
     if commit_count == 0 and pane_state != "done":
         issues.append("no commits — nothing to merge")
+
+    # Deterministic quality gates
+    test_res = {}
+    if tests_pass and commit_count > 0:
+        test_res = _run_related_tests(wt, list(changed_files))
+        if test_res.get("tests_passed") is False:
+            issues.append(f"tests failed: {test_res.get('test_output', 'unknown error')}")
+
+    if lint_clean and commit_count > 0:
+        lint_res = _run_lint_checks(wt, list(changed_files))
+        if not lint_res["passed"]:
+            issues.append(f"lint failed: {lint_res['output']}")
+
+    if post_merge_check and commit_count > 0:
+        custom_res = _run_custom_check(wt, post_merge_check)
+        if not custom_res["passed"]:
+            issues.append(f"custom check failed: {custom_res['output']}")
 
     verdict = "safe" if not issues else "review"
 
@@ -131,10 +151,6 @@ def review_worker_pane(
     auto_respond_count = sum(
         1 for ev in events if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug
     )
-
-    # Run smoke tests on related test files
-    changed_file_list = list(changed_files)
-    test_result = _run_related_tests(wt, changed_file_list)
 
     result = {
         "slug": slug,
@@ -155,10 +171,28 @@ def review_worker_pane(
     if f_full is not None:
         diff_result = f_full.result()
         result["diff"] = diff_result.stdout if diff_result.returncode == 0 else ""
-    if test_result:
-        result.update(test_result)
+
+    if test_res:
+        result.update(test_res)
 
     return result
+
+
+def _run_lint_checks(project_root: str, changed_files: list[str]) -> dict:
+    """Run ruff check on changed files."""
+    python_files = [f for f in changed_files if f.endswith(".py")]
+    if not python_files:
+        return {"passed": True, "output": "no python files to lint"}
+
+    cmd = ["uv", "run", "ruff", "check", *python_files]
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
+    return {"passed": result.returncode == 0, "output": result.stdout + result.stderr}
+
+
+def _run_custom_check(project_root: str, command: str) -> dict:
+    """Run a custom shell command check."""
+    result = subprocess.run(command, shell=True, capture_output=True, text=True, cwd=project_root)
+    return {"passed": result.returncode == 0, "output": result.stdout + result.stderr}
 
 
 def diff_worker_pane(

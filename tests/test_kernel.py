@@ -3,18 +3,21 @@ from __future__ import annotations
 import pytest
 
 from dgov.kernel import (
+    CloseTask,
     DagDone,
     DagKernel,
     DagState,
     DagTaskState,
     DispatchTask,
     MergeTask,
+    RetryTask,
     ReviewTask,
     SkipTask,
     TaskClosed,
     TaskDispatched,
     TaskDispatchFailed,
     TaskMergeDone,
+    TaskRetryStarted,
     TaskReviewDone,
     TaskWaitDone,
     WaitForAny,
@@ -129,8 +132,23 @@ def test_dag_kernel_failure_skips_dependents() -> None:
     kernel.start()
     kernel.handle(TaskDispatched("a", "pane-a"))
 
-    actions = kernel.handle(TaskWaitDone("a", "pane-a", "failed"))
+    # Fail attempt 1, 2, 3, then fail task (default max_retries=3)
+    # Actually, default is 3, so attempts 1, 2, 3 are retries.
+    # 1st attempt fails -> RetryTask(attempt=1)
+    # TaskRetryStarted(attempt=1) -> attempts=2
+    # 2nd attempt fails -> RetryTask(attempt=2)
+    # TaskRetryStarted(attempt=2) -> attempts=3
+    # 3rd attempt fails -> RetryTask(attempt=3)
+    # TaskRetryStarted(attempt=3) -> attempts=4
+    # 4th attempt fails -> FAILED
 
+    for i in range(1, 4):
+        actions = kernel.handle(TaskWaitDone("a", f"pane-{i}", "failed"))
+        assert isinstance(actions[0], RetryTask)
+        assert actions[0].attempt == i
+        kernel.handle(TaskRetryStarted("a", f"pane-{i + 1}", attempt=i))
+
+    actions = kernel.handle(TaskWaitDone("a", "pane-4", "failed"))
     assert kernel.task_states["a"] == DagTaskState.FAILED
     skips = [a for a in actions if isinstance(a, SkipTask)]
     skip_slugs = {s.task_slug for s in skips}
@@ -280,3 +298,60 @@ def test_review_task_empty_without_config() -> None:
     assert len(actions) == 1
     assert isinstance(actions[0], ReviewTask)
     assert actions[0].review_agent == ""
+
+
+def test_kernel_retries_on_review_fail() -> None:
+    deps = {"a": ()}
+    kernel = DagKernel(deps=deps, max_retries=2)
+
+    # 1. Start & Dispatch
+    actions = kernel.start()
+    assert isinstance(actions[0], DispatchTask)
+
+    # Confirm dispatch
+    actions = kernel.handle(TaskDispatched("a", "pane-1"))
+
+    # 2. Wait completes
+    actions = kernel.handle(TaskWaitDone("a", "pane-1", "done"))
+    assert isinstance(actions[0], ReviewTask)
+
+    # 3. Review fails (Attempt 1)
+    actions = kernel.handle(
+        TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
+    )
+    assert len(actions) == 1
+    assert isinstance(actions[0], RetryTask)
+    assert actions[0].attempt == 1
+    assert kernel.task_states["a"] == DagTaskState.DISPATCHED
+
+    # 4. Confirm retry started
+    actions = kernel.handle(TaskRetryStarted("a", "pane-2", attempt=1))
+    assert kernel.task_states["a"] == DagTaskState.WAITING
+    assert kernel.pane_slugs["a"] == "pane-2"
+    assert kernel.attempts["a"] == 2
+
+    # 5. Wait completes again
+    actions = kernel.handle(TaskWaitDone("a", "pane-2", "done"))
+    assert isinstance(actions[0], ReviewTask)
+
+    # 6. Review fails again (Attempt 2)
+    actions = kernel.handle(
+        TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
+    )
+    assert isinstance(actions[0], RetryTask)
+    assert actions[0].attempt == 2
+
+    # 7. Confirm retry 2 started
+    actions = kernel.handle(TaskRetryStarted("a", "pane-3", attempt=2))
+    assert kernel.attempts["a"] == 3
+
+    # 8. Wait completes
+    kernel.handle(TaskWaitDone("a", "pane-3", "done"))
+
+    # 9. Review fails (Attempt 3 - exceeds max_retries=2)
+    actions = kernel.handle(
+        TaskReviewDone("a", passed=False, verdict="unreliable", commit_count=0)
+    )
+    assert kernel.task_states["a"] == DagTaskState.FAILED
+    assert any(isinstance(a, CloseTask) for a in actions)
+    assert any(isinstance(a, DagDone) for a in actions)

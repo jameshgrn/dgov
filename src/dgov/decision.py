@@ -77,6 +77,9 @@ class ReviewOutputRequest:
     trace_id: str | None = None
     agent_id: str | None = None
     review_agent: str = ""  # model to use for model-backed review
+    tests_pass: bool = True
+    lint_clean: bool = True
+    post_merge_check: str = ""
 
 
 @dataclass(frozen=True)

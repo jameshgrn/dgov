@@ -443,6 +443,8 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
             files=dag_files,
             permission_mode=plan.permission_mode,
             timeout_s=timeout_s,
+            tests_pass=acceptance.tests_pass,
+            lint_clean=acceptance.lint_clean,
             post_merge_check=acceptance.custom_check,
             review_agent=review_agent,
         )
