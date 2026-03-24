@@ -35,7 +35,8 @@ def _notify_waiters(session_root: str) -> None:
 
     Each reader process creates its own FIFO in .dgov/notify/<pid>.pipe.
     This writes to every pipe so all readers (monitor, dashboard, --wait)
-    get woken independently. Stale pipes from dead processes are cleaned up.
+    get woken independently. Stale pipes from dead processes are cleaned up,
+    but only if the owning process is actually dead (not just between reads).
     """
     notify = _notify_dir(session_root)
     for pipe_path in notify.iterdir():
@@ -48,11 +49,19 @@ def _notify_waiters(session_root: str) -> None:
             finally:
                 os.close(fd)
         except OSError:
-            # No reader (process died) — clean up stale pipe
+            # Write failed — either no reader right now or process is dead.
+            # Only delete the pipe if the owning process is actually dead.
             try:
-                pipe_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+                pid = int(pipe_path.stem)
+                os.kill(pid, 0)  # check if process exists
+            except (ValueError, ProcessLookupError):
+                # Process is dead — clean up stale pipe
+                try:
+                    pipe_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            except PermissionError:
+                pass  # process exists but owned by different user
 
 
 def _wait_for_notify(session_root: str, timeout: float) -> bool:
