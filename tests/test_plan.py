@@ -625,6 +625,41 @@ edit = ["a.py"]
         issues = validate_plan(spec)
         assert any("not satisfied by any unit" in issue.message for issue in issues)
 
+    def test_eval_kind_must_be_valid(self, tmp_path):
+        """Invalid eval kinds are validation errors."""
+        from dgov.plan import _ALLOWED_EVAL_KINDS
+
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "Valid eval"
+evidence = "uv run pytest tests/test_valid.py -q"
+
+[[evals]]
+id = "E2"
+kind = "invalid_kind"
+statement = "Invalid kind test"
+evidence = "uv run pytest tests/test_invalid.py -q"
+
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E1"]
+[units.a.files]
+edit = ["a.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        issues = validate_plan(spec)
+        assert len(issues) >= 1
+        assert any("invalid kind" in issue.message.lower() for issue in issues)
+        assert "correctness" in _ALLOWED_EVAL_KINDS
+
 
 class TestCompilePlan:
     def test_compile_basic(self, tmp_path):
