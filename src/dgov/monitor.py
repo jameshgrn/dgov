@@ -39,6 +39,28 @@ if TYPE_CHECKING:
     from dgov.monitor_hooks import MonitorHook
 
 logger = logging.getLogger(__name__)
+
+
+def _record_fast_failure(session_root: str, slug: str) -> None:
+    """Record a backend failure if the pane died within 60s of creation."""
+    pane_rec = get_pane(session_root, slug)
+    if not pane_rec:
+        return
+    agent_id = pane_rec.get("agent", "")
+    created_at = pane_rec.get("created_at")
+    if not agent_id or not created_at:
+        return
+    try:
+        age_s = time.time() - float(created_at)
+        if age_s < 60:
+            from dgov.router import record_backend_failure
+
+            record_backend_failure(session_root, agent_id)
+            logger.info("Monitor: recorded fast failure for %s (age=%.0fs)", agent_id, age_s)
+    except (ValueError, TypeError):
+        pass
+
+
 _MONITOR_WAKE_EVENTS = (
     "dispatch_queued",
     "pane_created",
@@ -889,6 +911,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
             return "stale_auto_complete"
         else:
             _mark_idle_failed(project_root, session_root, slug, reason="stale_process")
+            _record_fast_failure(session_root, slug)
             hist["last_action_at"] = time.time()
             return "stale_fail"
 
@@ -933,6 +956,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
 
     if classification == "idle" and consecutive >= 4:
         _mark_idle_failed(project_root, session_root, slug)
+        _record_fast_failure(session_root, slug)
         hist["last_action_at"] = time.time()
         return "idle_timeout"
 

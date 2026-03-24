@@ -798,3 +798,78 @@ class TestRunMonitorAutoMergePolicy:
 
                 # Verify _try_auto_merge was never called
                 mock_try_merge.assert_not_called()
+
+
+class TestRecordFastFailure:
+    """Test _record_fast_failure backend failure recording."""
+
+    @patch("dgov.monitor.get_pane")
+    @patch("dgov.router.record_backend_failure")
+    def test_record_fast_failure_calls_circuit_breaker(self, mock_record, mock_get_pane, tmp_path):
+        """When a pane dies within 60s, _record_fast_failure records a backend failure."""
+        import time
+
+        from dgov.monitor import _record_fast_failure
+
+        # Create a pane record that was created 30 seconds ago
+        mock_get_pane.return_value = {"agent": "test-backend", "created_at": time.time() - 30}
+
+        recorded = []
+        mock_record.side_effect = lambda sr, agent: recorded.append(agent)
+
+        _record_fast_failure(str(tmp_path), "test-slug")
+        assert recorded == ["test-backend"]
+        mock_get_pane.assert_called_once_with(str(tmp_path), "test-slug")
+
+    @patch("dgov.monitor.get_pane")
+    @patch("dgov.router.record_backend_failure")
+    def test_record_fast_failure_skips_old_panes(self, mock_record, mock_get_pane, tmp_path):
+        """Panes older than 60s should not trigger circuit breaker recording."""
+        import time
+
+        from dgov.monitor import _record_fast_failure
+
+        mock_get_pane.return_value = {"agent": "test-backend", "created_at": time.time() - 120}
+
+        recorded = []
+        mock_record.side_effect = lambda sr, agent: recorded.append(agent)
+
+        _record_fast_failure(str(tmp_path), "test-slug")
+        assert recorded == []
+        mock_record.assert_not_called()
+
+    @patch("dgov.monitor.get_pane", return_value=None)
+    def test_record_fast_failure_skips_missing_pane(self, mock_get_pane, tmp_path):
+        """Missing pane records should be skipped."""
+        from dgov.monitor import _record_fast_failure
+
+        with patch("dgov.router.record_backend_failure") as mock_record:
+            _record_fast_failure(str(tmp_path), "missing-slug")
+            mock_record.assert_not_called()
+
+    @patch("dgov.monitor.get_pane", return_value={})
+    def test_record_fast_failure_skips_missing_fields(self, mock_get_pane, tmp_path):
+        """Pane records without agent or created_at should be skipped."""
+        from dgov.monitor import _record_fast_failure
+
+        with patch("dgov.router.record_backend_failure") as mock_record:
+            _record_fast_failure(str(tmp_path), "incomplete-slug")
+            mock_record.assert_not_called()
+
+    @patch("dgov.monitor.get_pane", return_value={"agent": "", "created_at": 0.0})
+    def test_record_fast_failure_empty_agent_id(self, mock_get_pane, tmp_path):
+        """Empty agent ID should be skipped."""
+        from dgov.monitor import _record_fast_failure
+
+        with patch("dgov.router.record_backend_failure") as mock_record:
+            _record_fast_failure(str(tmp_path), "empty-agent-slug")
+            mock_record.assert_not_called()
+
+    @patch("dgov.monitor.get_pane", return_value={"agent": "test", "created_at": "invalid"})
+    def test_record_fast_failure_invalid_created_at(self, mock_get_pane, tmp_path):
+        """Invalid created_at value should be skipped via exception handling."""
+        from dgov.monitor import _record_fast_failure
+
+        with patch("dgov.router.record_backend_failure") as mock_record:
+            _record_fast_failure(str(tmp_path), "invalid-timestamp-slug")
+            mock_record.assert_not_called()
