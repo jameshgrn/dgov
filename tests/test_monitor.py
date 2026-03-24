@@ -342,7 +342,7 @@ class TestRunMonitor:
         mock_wait.assert_called_once_with(str(tmp_path), str(tmp_path), 12, 7)
         assert mock_latest_event_id.call_count >= 1
 
-    def test_ensure_monitor_running_uses_uv_and_writes_pid(self, tmp_path, monkeypatch):
+    def test_ensure_monitor_running_uses_flock_and_spawns(self, tmp_path, monkeypatch):
         from dgov.monitor import ensure_monitor_running
 
         project_root = tmp_path / "project"
@@ -366,6 +366,7 @@ class TestRunMonitor:
         )
         monkeypatch.setattr("subprocess.Popen", fake_popen)
 
+        # No lock held — should spawn
         ensure_monitor_running(str(project_root), session_root=str(session_root))
 
         assert captured["cmd"] == [
@@ -379,7 +380,36 @@ class TestRunMonitor:
             str(session_root.resolve()),
         ]
         assert captured["kwargs"]["cwd"] == str(project_root.resolve())
-        assert (session_root / ".dgov" / "monitor.pid").read_text() == "4321"
+
+    def test_ensure_monitor_running_skips_when_locked(self, tmp_path, monkeypatch):
+        import fcntl
+
+        from dgov.monitor import ensure_monitor_running
+
+        project_root = tmp_path / "project"
+        session_root = tmp_path / "session"
+        project_root.mkdir()
+        session_root.mkdir()
+        (session_root / ".dgov").mkdir(parents=True)
+
+        # Hold the lock to simulate a running monitor
+        lock_path = session_root / ".dgov" / "monitor.lock"
+        lock_fd = open(lock_path, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        captured: dict[str, object] = {}
+
+        def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN201
+            captured["cmd"] = cmd
+            return type("P", (), {"pid": 9999})()
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+        # Lock held — should NOT spawn
+        ensure_monitor_running(str(project_root), session_root=str(session_root))
+        assert "cmd" not in captured
+
+        lock_fd.close()
 
 
 class TestNudgeStuck:

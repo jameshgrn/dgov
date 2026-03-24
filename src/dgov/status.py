@@ -375,9 +375,10 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 pruned_slugs.add(slug)
             elif pane_id and not alive and wt_exists and state == "active":
                 # Dead process with orphaned worktree — force to failed
-                from dgov.persistence import settle_completion_state
+                from dgov.persistence import emit_event, settle_completion_state
 
                 settle_completion_state(session_root, slug, "failed")
+                emit_event(session_root, "pane_failed", slug, reason="dead_process_pruned")
                 logger.info("Pruned dead active pane %s (worktree preserved)", slug)
                 pruned.append(f"dead:{slug}")
 

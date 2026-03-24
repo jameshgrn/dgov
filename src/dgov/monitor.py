@@ -1107,8 +1107,11 @@ def _wait_for_monitor_wakeup(
 def ensure_monitor_running(project_root: str, session_root: str | None = None) -> None:
     """Ensure the headless monitor daemon is running in the background.
 
-    Uses a PID file to prevent duplicate instances.
+    Uses flock to probe whether a monitor already holds the lock.
+    If the lock is held, another monitor is alive — do nothing.
+    If the lock is free, spawn a new monitor (which will acquire it on startup).
     """
+    import fcntl
     import os
     import shutil
     import subprocess
@@ -1116,19 +1119,22 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
 
     session_root = os.path.abspath(session_root or project_root)
     project_root = os.path.abspath(project_root)
-    pid_file = Path(session_root) / ".dgov" / "monitor.pid"
-    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = Path(session_root) / ".dgov" / "monitor.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    already_running = False
-    if pid_file.exists():
-        try:
-            old_pid = int(pid_file.read_text().strip())
-            os.kill(old_pid, 0)
-            already_running = True
-        except (ValueError, ProcessLookupError, PermissionError):
-            pid_file.unlink(missing_ok=True)
+    # Probe: try to acquire the lock non-blocking
+    try:
+        probe_fd = open(lock_path, "w")  # noqa: SIM115
+        fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # We got the lock — no monitor running. Release so the spawned one can acquire.
+        fcntl.flock(probe_fd, fcntl.LOCK_UN)
+        probe_fd.close()
+    except OSError:
+        # Lock held — a monitor is already running
+        return
 
-    if not already_running:
+    # No monitor running — spawn one
+    if True:
         if getattr(sys, "frozen", False):
             cmd = [
                 sys.executable,
@@ -1175,10 +1181,10 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
                 start_new_session=True,
                 cwd=project_root,
             )
-        pid_file.write_text(str(proc.pid))
         logger.info(
-            "Monitor: kickstarted headless daemon for %s (logging to %s)",
+            "Monitor: kickstarted headless daemon for %s (pid=%d, logging to %s)",
             project_root,
+            proc.pid,
             log_file,
         )
 
@@ -1193,7 +1199,25 @@ def run_monitor(
     auto_retry: bool = True,
 ) -> None:
     """Run the monitor loop."""
+    import fcntl
+
     session_root = session_root or project_root
+
+    # flock singleton — only one monitor per session_root
+    lock_path = Path(session_root, STATE_DIR, "monitor.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = open(lock_path, "w")  # noqa: SIM115
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        logger.info("Another monitor is already running, exiting")
+        lock_fd.close()
+        return
+    # Write PID for diagnostics only (flock is the real liveness check)
+    import os as _os
+
+    lock_fd.write(str(_os.getpid()))
+    lock_fd.flush()
 
     # Ensure logging is configured for console output
     logging.basicConfig(
