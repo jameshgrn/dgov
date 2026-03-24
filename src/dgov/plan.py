@@ -118,6 +118,7 @@ _ALLOWED_EVAL_KINDS = {
     "reliability",
     "correctness",
     "maintainability",
+    "testability",
 }
 
 

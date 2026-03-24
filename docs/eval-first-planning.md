@@ -50,6 +50,7 @@ Use these `kind` values deliberately:
 - `accessibility`: asserts inclusive design and assistive technology support.
 - `reliability`: asserts fault tolerance, retry behavior, or degradation handling.
 - `maintainability`: asserts code remains understandable and changeable over time.
+- `testability`: asserts code is structured for easy unit and integration testing.
 
 ## Unit checklist
 
