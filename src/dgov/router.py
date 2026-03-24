@@ -7,8 +7,11 @@ pick the first available backend.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import logging
 import subprocess
+import time
 import tomllib
 from pathlib import Path
 
@@ -72,6 +75,74 @@ def physical_to_logical(physical_name: str) -> str:
     return physical_name
 
 
+def record_backend_failure(session_root: str, backend_id: str) -> None:
+    """Record a backend failure and prune old entries.
+
+    Appends current timestamp to JSON file at session_root/.dgov/backend_failures.json.
+    Prunes all entries older than 10 minutes on each write.
+    Uses fcntl.flock(LOCK_EX) for concurrency safety.
+    If file is unreadable/corrupt, silently resets to empty dict.
+    """
+    failures_file = Path(session_root) / ".dgov" / "backend_failures.json"
+    failures_file.parent.mkdir(parents=True, exist_ok=True)
+
+    now = time.time()
+
+    try:
+        with open(failures_file, "r") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                data = json.load(f)
+            except (json.JSONDecodeError, KeyError):
+                data = {}
+    except (OSError, IOError):
+        data = {}
+
+    if backend_id not in data:
+        data[backend_id] = []
+    data[backend_id].append(now)
+
+    # Prune all backends' old entries
+    for bid in list(data.keys()):
+        data[bid] = [ts for ts in data[bid] if now - ts < 600]
+        if not data[bid]:
+            del data[bid]
+
+    try:
+        with open(failures_file, "w") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            json.dump(data, f)
+    except (OSError, IOError):
+        pass
+
+
+def _check_circuit_breaker(
+    session_root: str, backend_id: str, threshold: int = 2, window_minutes: int = 10
+) -> bool:
+    """Check if circuit breaker is tripped for a backend.
+
+    Returns True if backend has >= threshold failures within the last window_minutes.
+    Returns False if file missing, unreadable, or backend not in file.
+    Never raises — fails open (returns False on any error).
+    """
+    failures_file = Path(session_root) / ".dgov" / "backend_failures.json"
+
+    try:
+        with open(failures_file, "r") as f:
+            data = json.load(f)
+    except (OSError, IOError, json.JSONDecodeError):
+        return False
+
+    if backend_id not in data:
+        return False
+
+    now = time.time()
+    cutoff = now - (window_minutes * 60)
+    recent_failures = [ts for ts in data[backend_id] if ts > cutoff]
+
+    return len(recent_failures) >= threshold
+
+
 def resolve_agent(
     name: str,
     session_root: str,
@@ -127,6 +198,11 @@ def resolve_agent(
         agent_def = registry.get(backend_id)
         if agent_def is None:
             tried.append(f"{backend_id} (not registered)")
+            continue
+
+        # Circuit breaker check
+        if _check_circuit_breaker(session_root, backend_id):
+            tried.append(f"{backend_id} (circuit breaker tripped)")
             continue
 
         # Group Concurrency Check

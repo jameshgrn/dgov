@@ -1,5 +1,8 @@
 """Tests for dgov.router — logical agent name resolution."""
 
+import json
+import time
+
 import pytest
 
 from dgov.router import _load_routing_tables, available_names, is_routable, resolve_agent
@@ -144,3 +147,88 @@ class TestResolveAgent:
 
         with pytest.raises(RuntimeError, match="No available backend"):
             resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
+
+
+@pytest.mark.unit
+class TestCircuitBreaker:
+    def test_record_creates_file(self, tmp_path):
+        from dgov.router import record_backend_failure
+
+        record_backend_failure(str(tmp_path), "test-backend")
+        failures_file = tmp_path / ".dgov" / "backend_failures.json"
+        assert failures_file.exists()
+        data = json.loads(failures_file.read_text())
+        assert "test-backend" in data
+        assert len(data["test-backend"]) == 1
+
+    def test_record_appends(self, tmp_path):
+        from dgov.router import record_backend_failure
+
+        record_backend_failure(str(tmp_path), "test-backend")
+        record_backend_failure(str(tmp_path), "test-backend")
+        data = json.loads((tmp_path / ".dgov" / "backend_failures.json").read_text())
+        assert len(data["test-backend"]) == 2
+
+    def test_record_prunes_old(self, tmp_path):
+        from dgov.router import record_backend_failure
+
+        failures_file = tmp_path / ".dgov" / "backend_failures.json"
+        failures_file.parent.mkdir(parents=True, exist_ok=True)
+        old_ts = time.time() - 700  # > 10 minutes ago
+        failures_file.write_text(json.dumps({"test-backend": [old_ts]}))
+        record_backend_failure(str(tmp_path), "test-backend")
+        data = json.loads(failures_file.read_text())
+        assert len(data["test-backend"]) == 1  # old one pruned
+
+    def test_check_true_when_threshold_exceeded(self, tmp_path):
+        from dgov.router import _check_circuit_breaker, record_backend_failure
+
+        record_backend_failure(str(tmp_path), "bad-backend")
+        record_backend_failure(str(tmp_path), "bad-backend")
+        assert _check_circuit_breaker(str(tmp_path), "bad-backend") is True
+
+    def test_check_false_under_threshold(self, tmp_path):
+        from dgov.router import _check_circuit_breaker, record_backend_failure
+
+        record_backend_failure(str(tmp_path), "ok-backend")
+        assert _check_circuit_breaker(str(tmp_path), "ok-backend") is False
+
+    def test_check_false_missing_file(self, tmp_path):
+        from dgov.router import _check_circuit_breaker
+
+        assert _check_circuit_breaker(str(tmp_path), "any-backend") is False
+
+    def test_resolve_skips_tripped_backend(self, tmp_path, monkeypatch):
+        from dgov.router import record_backend_failure
+
+        monkeypatch.setattr(
+            "dgov.router._load_routing_tables",
+            lambda: {"qwen-test": ["tripped-one", "healthy-one"]},
+        )
+
+        class FakeAgent:
+            health_check = None
+            max_concurrent = None
+            groups = ()
+
+        monkeypatch.setattr(
+            "dgov.agents.load_registry",
+            lambda *a, **kw: {"tripped-one": FakeAgent(), "healthy-one": FakeAgent()},
+        )
+        monkeypatch.setattr("dgov.agents.load_groups", lambda *a, **kw: {})
+        monkeypatch.setattr("dgov.status._count_active_agent_workers", lambda *a: 0)
+
+        class FakeBackend:
+            def bulk_info(self):
+                return {}
+
+        monkeypatch.setattr("dgov.backend.get_backend", lambda: FakeBackend())
+        monkeypatch.setattr("dgov.persistence.all_panes", lambda *a: [])
+
+        # Trip the circuit breaker for tripped-one
+        record_backend_failure(str(tmp_path), "tripped-one")
+        record_backend_failure(str(tmp_path), "tripped-one")
+
+        resolved, routed_from = resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
+        assert resolved == "healthy-one"
+        assert routed_from == "qwen-test"
