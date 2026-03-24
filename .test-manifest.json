@@ -99,6 +99,9 @@
   "src/dgov/monitor_hooks.py": [
     "tests/test_monitor_hooks.py"
   ],
+  "src/dgov/plan.py": [
+    "tests/test_plan.py"
+  ],
   "src/dgov/openrouter.py": [
     "tests/test_openrouter.py"
   ],
