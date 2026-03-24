@@ -237,21 +237,29 @@ def wait_worker_pane(
     logger.debug("wait_for_pane slug=%s timeout=%ds", slug, timeout)
     session_root = os.path.abspath(session_root or project_root)
     start = time.monotonic()
-    stable_state: dict = {}
 
     # Get latest event ID so we only see new events
     last_event_id = _persist.latest_event_id(session_root)
 
     _TERMINAL_EVENTS = ("pane_done", "pane_failed", "pane_timed_out")
 
+    # Also check for events that already fired before we started waiting
+    _TERMINAL_STATES = frozenset({"done", "failed", "abandoned", "timed_out", "superseded"})
+    pane_record = _persist.get_pane(session_root, slug)
+    if pane_record and pane_record.get("state") in _TERMINAL_STATES:
+        method = f"already:{pane_record['state']}"
+        logger.debug("wait: pane already terminal slug=%s state=%s", slug, pane_record["state"])
+        return {"done": slug, "method": method}
+
     while True:
-        # Primary: block on event (100ms poll inside wait_for_events)
+        # Block on event — no polling, no re-classification
+        remaining = max(1.0, timeout - (time.monotonic() - start)) if timeout > 0 else float(poll)
         events = _persist.wait_for_events(
             session_root,
             after_id=last_event_id,
             panes=(slug,),
             event_types=_TERMINAL_EVENTS,
-            timeout_s=float(poll),
+            timeout_s=min(float(poll), remaining),
         )
         if events:
             last_event_id = events[-1]["id"]
@@ -269,7 +277,6 @@ def wait_worker_pane(
                     new_slug = retry_result.get("new_slug", "")
                     if new_slug:
                         slug = new_slug
-                        stable_state = {}
                         continue
 
             elapsed = time.monotonic() - start
@@ -277,43 +284,14 @@ def wait_worker_pane(
             logger.debug("wait completed slug=%s method=%s duration=%.1fs", slug, method, elapsed)
             return {"done": slug, "method": method}
 
-        # Fallback: process-based poll to catch edge cases (process death, etc.)
-        pane_record = _persist.get_pane(session_root, slug)
-        strategy = _strategy_for_pane(pane_record)
-        done, method = _poll_once(
-            session_root,
-            project_root,
-            slug,
-            pane_record,
-            stable_state,
-            stable,
-            done_strategy=strategy,
-        )
-        if done:
-            pane_record = _persist.get_pane(session_root, slug)
-            current_state = pane_record.get("state", "") if pane_record else ""
-
-            if auto_retry and current_state in ("failed", "abandoned"):
-                from dgov.recovery import maybe_auto_retry
-
-                retry_result = maybe_auto_retry(session_root, slug, project_root)
-                if retry_result:
-                    new_slug = retry_result.get("new_slug", "")
-                    if new_slug:
-                        slug = new_slug
-                        stable_state = {}
-                        continue
-
-            elapsed = time.monotonic() - start
-            logger.debug("wait completed slug=%s method=%s duration=%.1fs", slug, method, elapsed)
-            return {"done": slug, "method": method}
-
+        # No event within poll interval — check timeout
         elapsed = time.monotonic() - start
         if timeout > 0 and elapsed >= timeout:
             logger.warning("wait timed out slug=%s after=%.1fs", slug, elapsed)
             transition = _persist.settle_completion_state(session_root, slug, "timed_out")
             if transition.changed:
                 _persist.emit_event(session_root, "pane_timed_out", slug)
+            pane_record = _persist.get_pane(session_root, slug)
             agent = pane_record.get("agent", "unknown") if pane_record else "unknown"
             raise PaneTimeoutError(slug, timeout, agent)
 
