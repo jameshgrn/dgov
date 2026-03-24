@@ -119,6 +119,7 @@ _ALLOWED_EVAL_KINDS = {
     "correctness",
     "maintainability",
     "testability",
+    "composability",
 }
 
 
