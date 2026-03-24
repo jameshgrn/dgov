@@ -1,4 +1,5 @@
 """Plan schema, validator, and compiler for dgov.
+# selftest marker — safe to remove
 
 This module implements the structured artifact between governor planning
 and DAG execution. The governor writes a TOML plan file; this module parses,
