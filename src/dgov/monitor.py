@@ -413,6 +413,26 @@ def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: l
                 failed=eval_failed,
                 total=eval_total,
             )
+            # Clean up all panes inline — don't defer to event loop
+            try:
+                from dgov.persistence import list_dag_tasks
+
+                tasks = list_dag_tasks(session_root, dag_state.run_id)
+                for task in tasks:
+                    pane_slug = task.get("pane_slug")
+                    if pane_slug:
+                        try:
+                            from dgov.lifecycle import close_worker_pane
+
+                            close_worker_pane(
+                                dag_state.reactor.project_root,
+                                pane_slug,
+                                session_root,
+                            )
+                        except Exception:
+                            logger.debug("pane cleanup failed for %s", pane_slug, exc_info=True)
+            except Exception:
+                logger.debug("dag cleanup failed for run %s", dag_state.run_id, exc_info=True)
             continue
 
         event = dag_state.reactor.execute(action)
@@ -595,23 +615,7 @@ def _apply_monitor_events(
             run_id = data.get("dag_run_id")
             if run_id in state.active_dags:
                 del state.active_dags[run_id]
-            # Clean up all panes belonging to this DAG run
-            if run_id is not None:
-                try:
-                    from dgov.persistence import list_dag_tasks
-
-                    tasks = list_dag_tasks(session_root, run_id)
-                    for task in tasks:
-                        pane_slug = task.get("pane_slug")
-                        if pane_slug:
-                            try:
-                                from dgov.lifecycle import close_worker_pane
-
-                                close_worker_pane(project_root, pane_slug, session_root)
-                            except Exception:
-                                logger.debug("cleanup failed for %s", pane_slug, exc_info=True)
-                except Exception:
-                    logger.debug("dag pane cleanup failed for run %s", run_id, exc_info=True)
+            # Pane cleanup happens inline in _drive_dag after DagDone.
             continue
 
         if not slug or slug in {"monitor", "dispatch-queue"}:
