@@ -55,7 +55,7 @@ class TestFmtDuration:
     def test_seconds(self):
         from dgov.dashboard import fmt_duration
 
-        assert fmt_duration(45) == "45.0s"
+        assert fmt_duration(45) == "45.000s"
 
     def test_minutes(self):
         from dgov.dashboard import fmt_duration
@@ -70,7 +70,7 @@ class TestFmtDuration:
     def test_negative(self):
         from dgov.dashboard import fmt_duration
 
-        assert fmt_duration(-5) == "0.0s"
+        assert fmt_duration(-5) == "0.000s"
 
 
 @pytest.mark.unit

@@ -58,7 +58,7 @@ def fmt_duration(seconds: float) -> str:
     if seconds < 0:
         seconds = 0.0
     if seconds < 60:
-        return f"{seconds:.1f}s"
+        return f"{seconds:.3f}s"
     if seconds < 3600:
         return f"{int(seconds) // 60}m{int(seconds) % 60}s"
     h = int(seconds) // 3600
