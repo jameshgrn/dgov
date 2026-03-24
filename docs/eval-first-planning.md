@@ -48,6 +48,7 @@ Use these `kind` values deliberately:
 - `scalability`: asserts the system handles growth in data, users, or load.
 - `usability`: asserts user-facing workflow clarity and discoverability.
 - `accessibility`: asserts inclusive design and assistive technology support.
+- `reliability`: asserts fault tolerance, retry behavior, or degradation handling.
 
 ## Unit checklist
 

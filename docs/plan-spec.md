@@ -82,6 +82,7 @@ Allowed `kind` values are:
 - `scalability`
 - `usability`
 - `accessibility`
+- `reliability`
 
 Every unit must list the eval ids it satisfies with `satisfies = [...]`.
 Plans without evals, units without `satisfies`, or orphaned evals fail

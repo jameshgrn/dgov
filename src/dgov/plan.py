@@ -115,6 +115,7 @@ _ALLOWED_EVAL_KINDS = {
     "scalability",
     "usability",
     "accessibility",
+    "reliability",
 }
 
 
