@@ -30,7 +30,7 @@ from dgov import __version__
 logger = logging.getLogger(__name__)
 
 _STARTUP_TIME = time.time()
-_UI_REFRESH_PER_SECOND = 2
+_UI_REFRESH_PER_SECOND = 4
 _INPUT_POLL_INTERVAL = 0.05
 _VISIBLE_ROWS = 15
 
@@ -54,15 +54,15 @@ def state_color(state: str) -> str:
     }.get(state, "white")
 
 
-def fmt_duration(seconds: int) -> str:
+def fmt_duration(seconds: float) -> str:
     if seconds < 0:
-        seconds = 0
+        seconds = 0.0
     if seconds < 60:
-        return f"{seconds}s"
+        return f"{seconds:.1f}s"
     if seconds < 3600:
-        return f"{seconds // 60}m{seconds % 60}s"
-    h = seconds // 3600
-    m = (seconds % 3600) // 60
+        return f"{int(seconds) // 60}m{int(seconds) % 60}s"
+    h = int(seconds) // 3600
+    m = (int(seconds) % 3600) // 60
     return f"{h}h{m}m"
 
 
@@ -377,7 +377,9 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
 
         slug_display = Text(f"{prefix}{p.get('slug', '')}")
         agent = Text(p.get("agent", "?"))
-        dur = fmt_duration(int(p.get("duration_s", 0)))
+        # Compute duration live from created_at so it ticks at render rate
+        created_at = p.get("created_at") or time.time()
+        dur = fmt_duration(time.time() - created_at)
 
         # Commit indicator
         has_commits = p.get("monitor_has_commits", False)
