@@ -49,6 +49,7 @@ Use these `kind` values deliberately:
 - `usability`: asserts user-facing workflow clarity and discoverability.
 - `accessibility`: asserts inclusive design and assistive technology support.
 - `reliability`: asserts fault tolerance, retry behavior, or degradation handling.
+- `maintainability`: asserts code remains understandable and changeable over time.
 
 ## Unit checklist
 
