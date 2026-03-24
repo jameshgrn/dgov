@@ -365,7 +365,9 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
     assert _git(repo, "rev-parse", "--verify", "dgov-conflict").returncode == 0
     assert not (repo / ".git" / "MERGE_HEAD").exists()
     mock_update_state.assert_called_once_with(str(repo), "conflict-pane", "merge_conflict")
-    mock_emit_event.assert_called_once_with(str(repo), "pane_merge_conflict", "conflict-pane", branch="dgov-conflict")
+    mock_emit_event.assert_called_once_with(
+        str(repo), "pane_merge_conflict", "conflict-pane", branch="dgov-conflict"
+    )
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 
@@ -598,7 +600,9 @@ def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
     assert result["resolve"] == "manual"
     assert result.get("conflicts") is not None
     mock_update_state.assert_called_once_with(str(repo), "manual-pane", "merge_conflict")
-    mock_emit_event.assert_called_once_with(str(repo), "pane_merge_conflict", "manual-pane", branch="dgov-manual")
+    mock_emit_event.assert_called_once_with(
+        str(repo), "pane_merge_conflict", "manual-pane", branch="dgov-manual"
+    )
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 
@@ -641,7 +645,9 @@ def test_merge_worker_pane_returns_unknown_resolve_error_for_conflict(
     assert result["error"] == "Unknown resolve strategy: bogus"
     assert not (repo / ".git" / "MERGE_HEAD").exists()
     mock_update_state.assert_called_once_with(str(repo), "unknown-pane", "merge_conflict")
-    mock_emit_event.assert_called_once_with(str(repo), "pane_merge_conflict", "unknown-pane", branch="dgov-unknown")
+    mock_emit_event.assert_called_once_with(
+        str(repo), "pane_merge_conflict", "unknown-pane", branch="dgov-unknown"
+    )
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 
