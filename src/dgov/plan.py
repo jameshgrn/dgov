@@ -914,7 +914,6 @@ def verify_eval_evidence(
     import subprocess
 
     from dgov.persistence import (
-        emit_event,
         list_dag_evals,
         record_eval_result,
     )
@@ -957,14 +956,7 @@ def verify_eval_evidence(
         }
         results.append(result)
 
-    emit_event(
-        session_root,
-        "evals_verified",
-        f"dag/{dag_run_id}",
-        dag_run_id=dag_run_id,
-        passed=sum(1 for r in results if r["passed"]),
-        failed=sum(1 for r in results if not r["passed"]),
-        total=len(results),
-    )
+    # Note: evals_verified event is emitted by the monitor, not here.
+    # This function just records results; the monitor owns the event lifecycle.
 
     return results

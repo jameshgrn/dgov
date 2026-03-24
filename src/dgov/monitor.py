@@ -381,22 +381,38 @@ def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: l
                 dag_run_id=dag_state.run_id,
                 status=action.status,
             )
-            # Run eval evidence checks on completion
+            # Run eval evidence on completion, then always emit evals_verified
+            # so --wait only needs to listen for one terminal event type.
+            eval_passed = 0
+            eval_failed = 0
+            eval_total = 0
             if action.status == "completed":
                 try:
                     from dgov.plan import verify_eval_evidence
 
-                    verify_eval_evidence(
+                    results = verify_eval_evidence(
                         session_root,
                         dag_state.run_id,
                         project_root=dag_state.reactor.project_root,
                     )
+                    eval_passed = sum(1 for r in results if r["passed"])
+                    eval_failed = sum(1 for r in results if not r["passed"])
+                    eval_total = len(results)
                 except Exception:
                     logger.debug(
                         "eval evidence check failed for dag/%s",
                         dag_state.run_id,
                         exc_info=True,
                     )
+            emit_event(
+                session_root,
+                "evals_verified",
+                f"dag/{dag_state.run_id}",
+                dag_run_id=dag_state.run_id,
+                passed=eval_passed,
+                failed=eval_failed,
+                total=eval_total,
+            )
             continue
 
         event = dag_state.reactor.execute(action)

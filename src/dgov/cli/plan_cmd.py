@@ -121,20 +121,19 @@ def plan_run(plan_file, max_concurrent, wait):
     if not wait:
         return
 
-    # Block on named pipe until dag_completed or dag_failed event
+    # Block on evals_verified — the single terminal event for all DAG runs.
+    # The monitor always emits evals_verified after dag_completed/dag_failed,
+    # even when no evals exist (total=0). One event type, no timing dance.
     from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
 
     session_root = os.path.abspath(".")
     cursor = latest_event_id(session_root)
 
-    # Block until terminal event. Order: dag_completed → evals_verified.
-    # If evals exist, wait for evals_verified (comes right after dag_completed).
-    # If no evals, dag_completed/dag_failed is terminal.
     while True:
         events = wait_for_events(
             session_root,
             after_id=cursor,
-            event_types=("dag_completed", "dag_failed", "evals_verified"),
+            event_types=("evals_verified",),
             timeout_s=3600.0,
         )
         for ev in events:
@@ -142,37 +141,22 @@ def plan_run(plan_file, max_concurrent, wait):
             if ev.get("dag_run_id") != run_id:
                 continue
 
-            if ev["event"] == "dag_failed":
-                run = get_dag_run(session_root, run_id)
-                click.echo(f"\nDAG run {run_id}: {run['status'] if run else 'failed'}")
+            run = get_dag_run(session_root, run_id)
+            status = run["status"] if run else "unknown"
+            eval_results = run.get("eval_results", []) if run else []
+            passed = sum(1 for r in eval_results if r["passed"])
+            failed = sum(1 for r in eval_results if not r["passed"])
+
+            click.echo(f"\nDAG run {run_id}: {status}")
+            for r in eval_results:
+                m = "PASS" if r["passed"] else "FAIL"
+                c = "green" if r["passed"] else "red"
+                click.secho(f"  [{m}] {r['eval_id']}", fg=c)
+            if eval_results:
+                click.echo(f"  {passed} passed, {failed} failed")
+            if status != "completed" or failed:
                 raise SystemExit(1)
-
-            if ev["event"] == "dag_completed":
-                # Check if this run has evals — if not, we're done
-                run = get_dag_run(session_root, run_id)
-                if not run or not run.get("evals"):
-                    click.echo(f"\nDAG run {run_id}: {run['status'] if run else 'completed'}")
-                    return
-                # Has evals — wait for evals_verified next
-                continue
-
-            if ev["event"] == "evals_verified":
-                run = get_dag_run(session_root, run_id)
-                if not run:
-                    return
-                eval_results = run.get("eval_results", [])
-                passed = sum(1 for r in eval_results if r["passed"])
-                failed = sum(1 for r in eval_results if not r["passed"])
-                click.echo(f"\nDAG run {run_id}: {run['status']}")
-                for r in eval_results:
-                    m = "PASS" if r["passed"] else "FAIL"
-                    c = "green" if r["passed"] else "red"
-                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
-                if eval_results:
-                    click.echo(f"  {passed} passed, {failed} failed")
-                if failed:
-                    raise SystemExit(1)
-                return
+            return
 
 
 @plan_cmd.command("verify")
