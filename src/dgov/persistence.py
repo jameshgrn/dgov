@@ -652,7 +652,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
     # Outside the lock — only one thread will ever hit this for a given key.
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.execute(_CREATE_TABLE_SQL)
