@@ -13,7 +13,6 @@ from click.testing import CliRunner
 
 from dgov import __version__
 from dgov.cli import _check_governor_context, _ensure_governor_session, cli
-from dgov.executor import PaneFinalizeResult
 
 pytestmark = pytest.mark.unit
 
@@ -320,12 +319,8 @@ class TestPaneHelp:
             "merge",
             "land",
             "wait",
-            "wait-all",
-            "merge-all",
-            "land-all",
             "list",
             "gc",
-            "classify",
             "review",
             "diff",
             "escalate",
@@ -622,141 +617,6 @@ class TestPaneCommands:
             "suggest_escalate": True,
         }
 
-    def test_wait_all_handles_empty_and_timeout(self, runner: CliRunner) -> None:
-        with patch("dgov.status.list_worker_panes", return_value=[]):
-            empty = runner.invoke(cli, ["pane", "wait-all"])
-
-        timeout = __import__("dgov.waiter", fromlist=["PaneTimeoutError"]).PaneTimeoutError(
-            "a",
-            10,
-            "pi",
-            pending_panes=[{"slug": "a", "agent": "pi"}, {"slug": "b", "agent": "claude"}],
-        )
-        with (
-            patch(
-                "dgov.status.list_worker_panes",
-                return_value=[{"slug": "a", "done": False}, {"slug": "b", "done": False}],
-            ),
-            patch("dgov.waiter.wait_all_worker_panes", side_effect=timeout),
-        ):
-            failed = runner.invoke(cli, ["pane", "wait-all"])
-
-        assert empty.exit_code == 0
-        assert json.loads(empty.output) == {"done": "all", "count": 0}
-        assert failed.exit_code == 1
-        lines = [json.loads(line) for line in failed.output.strip().splitlines()]
-        # Neither pi nor claude are in ESCALATION_CHAIN, so suggest_escalate is False
-        assert lines == [
-            {
-                "error": "Timeout after 10s",
-                "slug": "a",
-                "agent": "pi",
-            },
-            {
-                "error": "Timeout after 10s",
-                "slug": "b",
-                "agent": "claude",
-            },
-        ]
-
-    def test_merge_all_summarizes_results(self, runner: CliRunner) -> None:
-        panes = [
-            {"slug": "a", "done": True},
-            {"slug": "b", "done": True},
-            {"slug": "c", "done": False},
-        ]
-        with (
-            patch("dgov.status.list_worker_panes", return_value=panes),
-            patch(
-                "dgov.executor.run_finalize_panes",
-                return_value=[
-                    PaneFinalizeResult(
-                        slug="a",
-                        review={"slug": "a", "verdict": "safe", "commit_count": 1},
-                        merge_result={"merged": "a", "files_changed": 2},
-                        error=None,
-                        cleanup_error=None,
-                    ),
-                    PaneFinalizeResult(
-                        slug="b",
-                        review={"slug": "b", "verdict": "safe", "commit_count": 1},
-                        merge_result=None,
-                        error="conflict",
-                        cleanup_error=None,
-                    ),
-                ],
-            ),
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all"])
-
-        assert result.exit_code == 1
-        assert json.loads(result.output) == {
-            "merged_count": 1,
-            "failed_count": 1,
-            "total_files_changed": 2,
-            "merged": ["a"],
-            "failed": ["b"],
-            "warnings": ["b: conflict"],
-        }
-
-    def test_merge_all_passes_selected_strategy(self, runner: CliRunner) -> None:
-        panes = [{"slug": "a", "done": True}]
-
-        with (
-            patch("dgov.status.list_worker_panes", return_value=panes),
-            patch(
-                "dgov.executor.run_finalize_panes",
-                return_value=[
-                    PaneFinalizeResult(
-                        slug="a",
-                        review={"slug": "a", "verdict": "safe", "commit_count": 1},
-                        merge_result={"merged": "a", "branch": "a"},
-                        error=None,
-                        cleanup_error=None,
-                    )
-                ],
-            ) as mock_merge,
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all", "--resolve", "manual"])
-
-        assert result.exit_code == 0
-        mock_merge.assert_called_once_with(
-            ".", ["a"], session_root=None, resolve="manual", squash=True, rebase=False, close=False
-        )
-
-    def test_merge_all_blocks_non_safe_review(self, runner: CliRunner) -> None:
-        panes = [{"slug": "a", "done": True}]
-
-        with (
-            patch("dgov.status.list_worker_panes", return_value=panes),
-            patch(
-                "dgov.executor.run_finalize_panes",
-                return_value=[
-                    PaneFinalizeResult(
-                        slug="a",
-                        review={"slug": "a", "verdict": "review", "commit_count": 1},
-                        merge_result=None,
-                        error="Review verdict is review; refusing to merge",
-                        cleanup_error=None,
-                    )
-                ],
-            ) as mock_merge,
-        ):
-            result = runner.invoke(cli, ["pane", "merge-all"])
-
-        assert result.exit_code == 1
-        assert json.loads(result.output) == {
-            "merged_count": 0,
-            "failed_count": 1,
-            "total_files_changed": 0,
-            "merged": [],
-            "failed": ["a"],
-            "warnings": ["a: review verdict is review; refusing to merge"],
-        }
-        mock_merge.assert_called_once_with(
-            ".", ["a"], session_root=None, resolve="skip", squash=True, rebase=False, close=False
-        )
-
     def test_pane_batch_blocks_preflight_failure(self, runner: CliRunner, tmp_path: Path) -> None:
         spec_path = tmp_path / "pane-batch.toml"
         spec_path.write_text(
@@ -812,91 +672,7 @@ touches = ["src/parser.py", "tests/test_parser.py"]
         packet = created["context_packet"]
         assert packet.file_claims == ("src/parser.py", "tests/test_parser.py")
 
-    def test_land_all_summarizes_results(self, runner: CliRunner) -> None:
-        panes = [
-            {"slug": "a", "done": True},
-            {"slug": "b", "done": True},
-            {"slug": "c", "done": False},
-        ]
-        with (
-            patch("dgov.status.list_worker_panes", return_value=panes),
-            patch(
-                "dgov.executor.run_finalize_panes",
-                return_value=[
-                    PaneFinalizeResult(
-                        slug="a",
-                        review={"slug": "a", "verdict": "safe", "commit_count": 1},
-                        merge_result={"merged": "a", "files_changed": 2},
-                        error=None,
-                        cleanup_error=None,
-                    ),
-                    PaneFinalizeResult(
-                        slug="b",
-                        review={"slug": "b", "verdict": "safe", "commit_count": 0},
-                        merge_result=None,
-                        error="No commits to merge",
-                        cleanup_error=None,
-                    ),
-                ],
-            ) as mock_land,
-        ):
-            result = runner.invoke(cli, ["pane", "land-all"])
-
-        assert result.exit_code == 1
-        lines = result.output.strip().splitlines()
-        assert json.loads(lines[0]) == {"review": "safe", "commits": 1, "slug": "a"}
-        assert json.loads(lines[1]) == {"review": "safe", "commits": 0, "slug": "b"}
-        assert json.loads("\n".join(lines[2:])) == {
-            "landed_count": 1,
-            "failed_count": 1,
-            "total_files_changed": 2,
-            "landed": ["a"],
-            "failed": ["b"],
-            "warnings": ["b: no commits to merge"],
-        }
-        assert mock_land.call_count == 1
-
-    def test_land_all_skips_non_safe_review(self, runner: CliRunner) -> None:
-        panes = [{"slug": "a", "done": True}]
-        with (
-            patch("dgov.status.list_worker_panes", return_value=panes),
-            patch(
-                "dgov.executor.run_finalize_panes",
-                return_value=[
-                    PaneFinalizeResult(
-                        slug="a",
-                        review={"slug": "a", "verdict": "review", "commit_count": 1},
-                        merge_result=None,
-                        error="Review verdict is review; refusing to merge",
-                        cleanup_error=None,
-                    ),
-                ],
-            ) as mock_land,
-        ):
-            result = runner.invoke(cli, ["pane", "land-all"])
-
-        assert result.exit_code == 1
-        lines = result.output.strip().splitlines()
-        assert json.loads(lines[0]) == {"review": "review", "commits": 1, "slug": "a"}
-        assert json.loads("\n".join(lines[1:])) == {
-            "landed_count": 0,
-            "failed_count": 1,
-            "total_files_changed": 0,
-            "landed": [],
-            "failed": ["a"],
-            "warnings": ["a: review verdict is review; refusing to merge"],
-        }
-        mock_land.assert_called_once_with(
-            ".",
-            ["a"],
-            session_root=None,
-            resolve="skip",
-            squash=True,
-            rebase=False,
-            close=True,
-        )
-
-    def test_list_gc_and_classify(self, runner: CliRunner) -> None:
+    def test_list_and_gc(self, runner: CliRunner) -> None:
         with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
             listed = runner.invoke(cli, ["pane", "list", "--json"])
         with (
@@ -910,18 +686,12 @@ touches = ["src/parser.py", "tests/test_parser.py"]
                 cli,
                 ["pane", "gc", "--older-than-hours", "12", "--state", "review_pending"],
             )
-        with patch("dgov.strategy.classify_task", return_value="claude"):
-            classified = runner.invoke(cli, ["pane", "classify", "debug flaky test"])
 
         assert json.loads(listed.output) == [{"slug": "task"}]
         assert json.loads(gc.output) == {
             "closed": ["old-review"],
             "skipped": ["recent-failed"],
             "pruned": ["old-task"],
-        }
-        assert json.loads(classified.output) == {
-            "recommended_agent": "claude",
-            "prompt_preview": "debug flaky test",
         }
 
     def test_review_diff_escalate_and_retry(self, runner: CliRunner) -> None:

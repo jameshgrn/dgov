@@ -11,7 +11,6 @@ import click
 
 from dgov.cli import SESSION_ROOT_OPTION
 from dgov.context_packet import build_context_packet
-from dgov.executor import run_wait_all
 
 
 def _autocorrect_roots(
@@ -66,66 +65,6 @@ def _finalize_slugs(
         rebase=rebase,
         close=land,
     )
-
-
-def _process_done_panes(
-    project_root: str,
-    session_root: str | None,
-    *,
-    resolve: str,
-    squash: bool,
-    rebase: bool,
-    land: bool,
-) -> tuple[list[str], list[str], int, list[str], list[dict]]:
-    from dgov.status import list_worker_panes
-
-    panes = list_worker_panes(project_root, session_root=session_root)
-    done_panes = [p for p in panes if p["done"]]
-    if not done_panes:
-        return [], [], 0, [], []
-
-    succeeded: list[str] = []
-    failed: list[str] = []
-    warnings: list[str] = []
-    review_lines: list[dict] = []
-    total_files = 0
-    slugs = [pane["slug"] for pane in done_panes]
-
-    results = _finalize_slugs(
-        project_root,
-        session_root,
-        slugs,
-        resolve=resolve,
-        squash=squash,
-        rebase=rebase,
-        land=land,
-    )
-
-    for pane, result in zip(done_panes, results):
-        final_slug = result.slug
-        review_lines.append(_review_summary(result.review or {}, final_slug))
-        if result.error:
-            failed.append(final_slug)
-            warnings.append(f"{final_slug}: {result.error.lower()}")
-            continue
-        if result.cleanup_error:
-            failed.append(final_slug)
-            warnings.append(f"{final_slug}: {result.cleanup_error.lower()}")
-            continue
-
-        merge_result = result.merge_result or {}
-        if merge_result.get("merged"):
-            succeeded.append(final_slug)
-            total_files += merge_result.get("files_changed", 0)
-            if merge_result.get("warning"):
-                warnings.append(f"{final_slug}: {merge_result['warning']}")
-            continue
-
-        failed.append(final_slug)
-        err = merge_result.get("hint", "unknown")
-        warnings.append(f"{final_slug}: {str(err).lower()}")
-
-    return succeeded, failed, total_files, warnings, review_lines
 
 
 @click.group()
@@ -750,186 +689,6 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
         sys.exit(exit_code)
 
 
-@pane.command("wait-all")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-@click.option("--timeout", "-t", default=600, help="Max seconds to wait (0=forever)")
-@click.option("--poll", "-i", default=3, help="Poll interval in seconds")
-@click.option("--stable", "-s", default=15, help="Seconds of stable output before declaring done")
-def pane_wait_all(project_root, session_root, timeout, poll, stable):
-    """Wait for ALL worker panes to finish. Prints each as it completes."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
-
-    from dgov.status import list_worker_panes
-    from dgov.waiter import PaneTimeoutError
-
-    session_root_abs = os.path.abspath(session_root or project_root)
-    panes = list_worker_panes(project_root, session_root=session_root_abs)
-    pending = {p["slug"] for p in panes if not p["done"]}
-    if not pending:
-        click.echo(json.dumps({"done": "all", "count": 0}))
-        return
-
-    try:
-        count = 0
-        for result in run_wait_all(
-            project_root,
-            session_root=session_root,
-            timeout=timeout,
-            poll=poll,
-            stable=stable,
-        ):
-            click.echo(json.dumps(result))
-            count += 1
-        click.echo(json.dumps({"done": "all", "count": count}))
-    except PaneTimeoutError as exc:
-        for p in exc.pending_panes:
-            timeout_result = {
-                "error": f"Timeout after {exc.timeout}s",
-                "slug": p["slug"],
-                "agent": p["agent"],
-            }
-            from dgov.recovery import _resolve_escalation_target
-
-            if _resolve_escalation_target(p["agent"], project_root) != p["agent"]:
-                timeout_result["suggest_escalate"] = True
-            click.echo(json.dumps(timeout_result), err=True)
-        sys.exit(1)
-
-
-@pane.command("merge-all")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-@click.option(
-    "--resolve",
-    type=click.Choice(["skip", "agent", "manual"]),
-    default="skip",
-    help="Conflict resolution strategy",
-)
-@click.option(
-    "--squash/--no-squash",
-    default=True,
-    help="Squash worker commits into one (default: squash)",
-)
-@click.option(
-    "--rebase",
-    is_flag=True,
-    default=False,
-    help="Rebase merge (linear history, original commits)",
-)
-def pane_merge_all(project_root, session_root, resolve, squash, rebase):
-    """Merge ALL done worker panes sequentially. Prints combined summary."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
-
-    if rebase and not squash:
-        click.echo("Cannot use --rebase with --no-squash", err=True)
-        sys.exit(1)
-
-    merged_slugs, failed_slugs, total_files, warnings, _ = _process_done_panes(
-        project_root,
-        session_root,
-        resolve=resolve,
-        squash=squash,
-        rebase=rebase,
-        land=False,
-    )
-    if not merged_slugs and not failed_slugs:
-        click.echo(json.dumps({"merged": [], "skipped": "no done panes"}))
-        return
-
-    summary = {
-        "merged_count": len(merged_slugs),
-        "failed_count": len(failed_slugs),
-        "total_files_changed": total_files,
-        "merged": merged_slugs,
-    }
-    if failed_slugs:
-        summary["failed"] = failed_slugs
-    if warnings:
-        summary["warnings"] = warnings
-
-    click.echo(json.dumps(summary, indent=2))
-    if failed_slugs:
-        sys.exit(1)
-
-
-@pane.command("land-all")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-@click.option(
-    "--resolve",
-    type=click.Choice(["skip", "agent", "manual"]),
-    default="skip",
-    help="Conflict resolution strategy",
-)
-@click.option(
-    "--squash/--no-squash",
-    default=True,
-    help="Squash worker commits",
-)
-@click.option(
-    "--rebase",
-    is_flag=True,
-    default=False,
-    help="Rebase merge (linear history, original commits)",
-)
-def pane_land_all(project_root, session_root, resolve, squash, rebase):
-    """Review, merge, and close ALL done worker panes sequentially. Prints combined summary."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
-
-    if rebase and not squash:
-        click.echo("Cannot use --rebase with --no-squash", err=True)
-        sys.exit(1)
-
-    landed_slugs, failed_slugs, total_files, warnings, review_lines = _process_done_panes(
-        project_root,
-        session_root,
-        resolve=resolve,
-        squash=squash,
-        rebase=rebase,
-        land=True,
-    )
-    if not landed_slugs and not failed_slugs:
-        click.echo(json.dumps({"landed": [], "failed": [], "summary": "no done panes"}))
-        return
-
-    for line in review_lines:
-        click.echo(json.dumps(line))
-
-    summary = {
-        "landed_count": len(landed_slugs),
-        "failed_count": len(failed_slugs),
-        "total_files_changed": total_files,
-        "landed": landed_slugs,
-    }
-    if failed_slugs:
-        summary["failed"] = failed_slugs
-    if warnings:
-        summary["warnings"] = warnings
-
-    click.echo(json.dumps(summary, indent=2))
-    if failed_slugs:
-        sys.exit(1)
-
-
 @pane.command("list")
 @click.option(
     "--project-root",
@@ -1015,24 +774,6 @@ def pane_gc(project_root, session_root, older_than_hours, states):
     )
     result["pruned"] = pruned
     click.echo(json.dumps(result))
-
-
-@pane.command("classify")
-@click.argument("prompt")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-def pane_classify(prompt, project_root, session_root):
-    """Classify a task and recommend an agent (OpenRouter or local Qwen 4B)."""
-    from dgov.strategy import classify_task
-
-    agent = classify_task(prompt)
-    click.echo(json.dumps({"recommended_agent": agent, "prompt_preview": prompt[:80]}))
 
 
 @pane.command("review")
@@ -1211,38 +952,6 @@ def pane_retry_or_escalate(slug, project_root, session_root, max_retries, permis
             output["target_agent"] = result.target_agent
     click.echo(json.dumps(output, indent=2))
     if "error" in output:
-        sys.exit(1)
-
-
-@pane.command("resume")
-@click.argument("slug")
-@click.option(
-    "--project-root",
-    "-r",
-    default=".",
-    envvar="DGOV_PROJECT_ROOT",
-    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
-)
-@SESSION_ROOT_OPTION
-@click.option("--agent", "-a", default=None, help="Override agent")
-@click.option("--prompt", "-p", default=None, help="Override prompt")
-@click.option("--permission-mode", "-m", default="bypassPermissions", help="Permission mode")
-def pane_resume(slug, project_root, session_root, agent, prompt, permission_mode):
-    """Re-launch agent in an existing worktree."""
-    project_root, session_root = _autocorrect_roots(project_root, session_root)
-
-    from dgov.lifecycle import resume_worker_pane
-
-    result = resume_worker_pane(
-        project_root=project_root,
-        slug=slug,
-        session_root=session_root,
-        agent=agent,
-        prompt=prompt,
-        permission_mode=permission_mode,
-    )
-    click.echo(json.dumps(result, indent=2))
-    if "error" in result:
         sys.exit(1)
 
 
