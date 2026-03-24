@@ -579,6 +579,23 @@ def _apply_monitor_events(
             run_id = data.get("dag_run_id")
             if run_id in state.active_dags:
                 del state.active_dags[run_id]
+            # Clean up all panes belonging to this DAG run
+            if run_id is not None:
+                try:
+                    from dgov.persistence import list_dag_tasks
+
+                    tasks = list_dag_tasks(session_root, run_id)
+                    for task in tasks:
+                        pane_slug = task.get("pane_slug")
+                        if pane_slug:
+                            try:
+                                from dgov.lifecycle import close_worker_pane
+
+                                close_worker_pane(project_root, pane_slug, session_root)
+                            except Exception:
+                                logger.debug("cleanup failed for %s", pane_slug, exc_info=True)
+                except Exception:
+                    logger.debug("dag pane cleanup failed for run %s", run_id, exc_info=True)
             continue
 
         if not slug or slug in {"monitor", "dispatch-queue"}:
