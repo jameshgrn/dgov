@@ -627,7 +627,6 @@ edit = ["a.py"]
 
     def test_eval_kind_must_be_valid(self, tmp_path):
         """Invalid eval kinds are validation errors."""
-        from dgov.plan import _ALLOWED_EVAL_KINDS
 
         toml_content = """
 [plan]
@@ -658,7 +657,6 @@ edit = ["a.py"]
         issues = validate_plan(spec)
         assert len(issues) >= 1
         assert any("invalid kind" in issue.message.lower() for issue in issues)
-        assert "correctness" in _ALLOWED_EVAL_KINDS
 
 
 class TestCompilePlan:

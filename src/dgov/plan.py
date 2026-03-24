@@ -112,15 +112,6 @@ _ALLOWED_EVAL_KINDS = {
     "manual",
     "performance",
     "integration_test",
-    "security",
-    "scalability",
-    "usability",
-    "accessibility",
-    "reliability",
-    "correctness",
-    "maintainability",
-    "testability",
-    "composability",
 }
 
 
