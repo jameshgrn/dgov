@@ -44,7 +44,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/agents.py (L): Agent registry and launch command builder.
   src/dgov/cli/templates.py (S): Prompt template commands. -> test_templates.py
   src/dgov/openrouter.py (M): OpenRouter API client with local Qwen 4B fallback. -> test_openrouter.py
-  src/dgov/router.py (S): Agent router: resolve logical model names to available physical backends. -> test_router.py
+  src/dgov/router.py (M): Agent router: resolve logical model names to available physical backends. -> test_router.py
   src/dgov/strategy.py (M): Task routing, slug generation, and prompt structuring. -> test_strategy.py
   src/dgov/templates.py (S): Prompt template system for worker panes. -> test_templates.py
 [decision system]
