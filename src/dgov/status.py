@@ -285,6 +285,7 @@ def list_worker_panes(
             "role": p.get("role", "worker"),
             "parent_slug": p.get("parent_slug", ""),
             "tier_id": p.get("tier_id", ""),
+            "created_at": p.get("created_at"),
             "duration_s": duration_s,
             "preserved_artifacts": preserved_artifacts,
             "preserved_reason": preserved_artifacts.get("reason") if preserved_artifacts else None,
