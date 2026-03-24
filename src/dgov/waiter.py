@@ -502,6 +502,7 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
             done_path.parent.mkdir(parents=True, exist_ok=True)
             done_path.touch()
             _persist.settle_completion_state(session_root, slug, "done")
+            _persist.emit_event(session_root, "pane_done", slug, reason="respond_confirmed")
 
     return {"response": response, "output": captured or ""}
 
@@ -527,10 +528,12 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
             return False
         (done_dir / slug).touch()
         _persist.settle_completion_state(session_root, slug, "done", allow_abandoned=True)
+        _persist.emit_event(session_root, "pane_done", slug, reason="manual_signal")
 
     elif signal == "failed":
         (done_dir / f"{slug}.exit").write_text("manual")
         _persist.settle_completion_state(session_root, slug, "failed", allow_abandoned=True)
+        _persist.emit_event(session_root, "pane_failed", slug, reason="manual_signal")
     else:
         raise ValueError(f"Unknown signal: {signal!r}. Must be 'done' or 'failed'.")
 
