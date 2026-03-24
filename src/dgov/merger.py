@@ -1364,6 +1364,7 @@ def merge_worker_pane(
 
     if conflicts:
         _persist.update_pane_state(session_root, slug, "merge_conflict")
+        _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
         if resolve == "agent":
             resolved = _resolve_conflicts_with_agent(
                 pane_project_root, branch_name, target, session_root
