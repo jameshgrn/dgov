@@ -30,7 +30,7 @@ def wait_cmd(interrupts, project_root, session_root):
 
     if interrupts:
         click.echo(
-            "Waiting for governor interrupts or DAG completion (blocking on events.pipe)..."
+            "Waiting for governor interrupts or DAG completion (per-process notify pipe)..."
         )
     else:
         click.echo("Waiting for DAG completion...")

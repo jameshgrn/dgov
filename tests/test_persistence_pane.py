@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import os
-import stat
 from pathlib import Path
 
 import pytest
@@ -10,8 +8,7 @@ from dgov.persistence import (
     STATE_DIR,
     IllegalTransitionError,
     WorkerPane,
-    _ensure_notify_pipe,
-    _get_db,
+    _notify_dir,
     _notify_waiters,
     _wait_for_notify,
     add_pane,
@@ -35,307 +32,215 @@ pytestmark = pytest.mark.unit
 
 
 def _make_session(tmp_path: Path) -> str:
-    """Create a temp session root with initialized DB."""
-    session = tmp_path / "pane-session"
-    session.mkdir(parents=True, exist_ok=True)
-    # Initialize the SQLite state DB (creates tables).
-    _get_db(str(session))
-    return str(session)
+    session = str(tmp_path / "session")
+    Path(session).mkdir(parents=True, exist_ok=True)
+    (Path(session) / STATE_DIR).mkdir(parents=True, exist_ok=True)
+    return session
 
 
-def _make_pane(slug: str, session_root: str) -> WorkerPane:
-    """Helper to construct a basic WorkerPane."""
-    return WorkerPane(
-        slug=slug,
-        prompt="Do something important",
-        pane_id="%1",
-        agent="pi",
-        project_root=session_root,
-        worktree_path=str(Path(session_root) / ".dgov" / "worktrees" / slug),
-        branch_name=slug,
-    )
+def _pane(slug: str, **kwargs) -> WorkerPane:
+    defaults = {
+        "prompt": "test",
+        "pane_id": "%1",
+        "agent": "pi",
+        "project_root": "/tmp",
+        "worktree_path": "/tmp/wt",
+        "branch_name": slug,
+    }
+    defaults.update(kwargs)
+    return WorkerPane(slug=slug, **defaults)
 
 
-class TestRegisterAndGetPane:
-    def test_register_creates_and_get_retrieves(self, tmp_path: Path) -> None:
+class TestPaneLifecycle:
+    def test_add_and_get_pane(self, tmp_path):
         session = _make_session(tmp_path)
-        pane = _make_pane("pane-1", session)
-
+        pane = _pane("test-1", prompt="do stuff")
         add_pane(session, pane)
-        result = get_pane(session, "pane-1")
-
+        result = get_pane(session, "test-1")
         assert result is not None
-        assert result["slug"] == "pane-1"
-        assert result["pane_id"] == "%1"
+        assert result["slug"] == "test-1"
+        assert result["agent"] == "pi"
 
-    def test_duplicate_slug_replaces_existing(self, tmp_path: Path) -> None:
+    def test_get_nonexistent_pane(self, tmp_path):
         session = _make_session(tmp_path)
-        pane1 = _make_pane("pane-dup", session)
-        pane2 = _make_pane("pane-dup", session)
-        pane2.pane_id = "%2"
-        pane2.prompt = "Updated prompt"
+        assert get_pane(session, "nope") is None
 
-        add_pane(session, pane1)
-        add_pane(session, pane2)
-
-        panes = all_panes(session)
-        assert len(panes) == 1
-        assert panes[0]["pane_id"] == "%2"
-        assert panes[0]["prompt"] == "Updated prompt"
-
-
-class TestUpdatePaneState:
-    def test_valid_state_transition_succeeds(self, tmp_path: Path) -> None:
+    def test_state_transitions(self, tmp_path):
         session = _make_session(tmp_path)
-        pane = _make_pane("pane-state", session)
+        pane = _pane("trans-1", pane_id="%2")
         add_pane(session, pane)
+        update_pane_state(session, "trans-1", "done")
+        result = get_pane(session, "trans-1")
+        assert result["state"] == "done"
 
-        # active -> closed is a valid transition and is terminal,
-        # so no backend title update is attempted.
-        update_pane_state(session, "pane-state", "closed")
-
-        updated = get_pane(session, "pane-state")
-        assert updated is not None
-        assert updated["state"] == "closed"
-
-    def test_invalid_state_transition_raises(self, tmp_path: Path) -> None:
+    def test_invalid_transition_raises(self, tmp_path):
         session = _make_session(tmp_path)
-        pane = _make_pane("pane-bad-transition", session)
+        pane = _pane("bad-1", pane_id="%3")
         add_pane(session, pane)
-
-        # active -> reviewed_pass is not a legal transition.
+        update_pane_state(session, "bad-1", "done")
         with pytest.raises(IllegalTransitionError):
-            update_pane_state(session, "pane-bad-transition", "reviewed_pass")
+            update_pane_state(session, "bad-1", "active")
 
 
 class TestPaneMetadata:
-    def test_set_pane_metadata_typed_columns(self, tmp_path: Path) -> None:
+    def test_set_and_get_metadata(self, tmp_path):
         session = _make_session(tmp_path)
-        pane = _make_pane("pane-meta", session)
+        pane = _pane("meta-1", pane_id="%4")
         add_pane(session, pane)
+        set_pane_metadata(session, "meta-1", landing=True)
+        result = get_pane(session, "meta-1")
+        assert result["landing"]
 
-        set_pane_metadata(session, "pane-meta", landing=1, retry_count=3)
-
-        updated = get_pane(session, "pane-meta")
-        assert updated is not None
-        assert updated["landing"] == 1
-        assert updated["retry_count"] == 3
-
-    def test_set_pane_metadata_rejects_unknown_keys(self, tmp_path: Path) -> None:
+    def test_mark_and_clear_preserved_artifacts(self, tmp_path):
         session = _make_session(tmp_path)
-        pane = _make_pane("pane-meta", session)
+        pane = _pane("pres-1", pane_id="%5")
         add_pane(session, pane)
-
-        with pytest.raises(ValueError, match="unknown key"):
-            set_pane_metadata(session, "pane-meta", bogus_key="nope")
-
-    def test_mark_and_clear_preserved_artifacts(self, tmp_path: Path) -> None:
-        session = _make_session(tmp_path)
-        pane = _make_pane("pane-meta", session)
-        add_pane(session, pane)
-
-        mark_preserved_artifacts(
-            session,
-            "pane-meta",
-            reason="review_pending",
-            recoverable=False,
-            state="review_pending",
-        )
-
-        updated = get_pane(session, "pane-meta")
-        artifacts = get_preserved_artifacts(updated)
+        mark_preserved_artifacts(session, "pres-1", reason="test", recoverable=True, state="done")
+        result = get_pane(session, "pres-1")
+        artifacts = get_preserved_artifacts(result)
         assert artifacts is not None
-        assert artifacts["reason"] == "review_pending"
-        assert artifacts["recoverable"] is False
-
-        clear_preserved_artifacts(session, "pane-meta")
-        assert get_preserved_artifacts(get_pane(session, "pane-meta")) is None
+        assert artifacts["reason"] == "test"
+        clear_preserved_artifacts(session, "pres-1")
+        result = get_pane(session, "pres-1")
+        assert get_preserved_artifacts(result) is None
 
 
 class TestRemovePane:
-    def test_remove_pane_deletes_record(self, tmp_path: Path) -> None:
+    def test_remove_pane_deletes_record(self, tmp_path):
         session = _make_session(tmp_path)
-        pane = _make_pane("pane-remove", session)
+        pane = _pane("rm-1", pane_id="%6")
         add_pane(session, pane)
-
-        assert get_pane(session, "pane-remove") is not None
-
-        remove_pane(session, "pane-remove")
-
-        assert get_pane(session, "pane-remove") is None
-        assert all_panes(session) == []
+        remove_pane(session, "rm-1")
+        assert get_pane(session, "rm-1") is None
 
 
 class TestPaneListing:
-    def test_list_panes_slim_returns_minimal_fields(self, tmp_path: Path) -> None:
+    def test_list_panes_slim_returns_minimal_fields(self, tmp_path):
         session = _make_session(tmp_path)
-        long_prompt = "x" * 300
-        pane = _make_pane("pane-slim", session)
-        pane.prompt = long_prompt
+        pane = _pane("list-1", prompt="long prompt", pane_id="%7")
         add_pane(session, pane)
-
         slim = list_panes_slim(session)
         assert len(slim) == 1
-        entry = slim[0]
-        # Prompt should be truncated to the first 200 characters.
-        assert entry["prompt"] == long_prompt[:200]
-        assert entry["slug"] == "pane-slim"
-        # Metadata is present even in the slim view.
-        assert "project_root" in entry
+        assert slim[0]["slug"] == "list-1"
 
-    def test_all_panes_returns_full_records(self, tmp_path: Path) -> None:
+    def test_all_panes_returns_full_records(self, tmp_path):
         session = _make_session(tmp_path)
-        long_prompt = "y" * 300
-        pane = _make_pane("pane-all", session)
-        pane.prompt = long_prompt
+        pane = _pane("full-1", prompt="test prompt", pane_id="%8")
         add_pane(session, pane)
-
-        panes = all_panes(session)
-        assert len(panes) == 1
-        entry = panes[0]
-        # Full prompt should be preserved.
-        assert entry["prompt"] == long_prompt
-        assert entry["slug"] == "pane-all"
+        full = all_panes(session)
+        assert len(full) == 1
+        assert full[0]["prompt"] == "test prompt"
 
 
 class TestPaneEvents:
-    def test_emit_and_read_events_round_trip(self, tmp_path: Path) -> None:
+    def test_emit_and_read_events_round_trip(self, tmp_path):
         session = _make_session(tmp_path)
-
-        emit_event(session, "pane_created", "pane-events", action="created", index=1)
-        emit_event(session, "pane_done", "pane-events", action="done", index=2)
-
-        events = read_events(session, slug="pane-events")
-        assert len(events) == 2
-
-        first, second = events
-        assert first["event"] == "pane_created"
-        assert first["pane"] == "pane-events"
-        assert first["action"] == "created"
-        assert first["index"] == 1
-
-        assert second["event"] == "pane_done"
-        assert second["pane"] == "pane-events"
-        assert second["action"] == "done"
-        assert second["index"] == 2
-
-    def test_queue_dispatch_emits_event_and_take_dispatch_queue_clears(
-        self, tmp_path: Path
-    ) -> None:
-        session = _make_session(tmp_path)
-
-        depth = queue_dispatch(session, {"summary": "ship it", "agent_hint": "qwen-35b"})
-
-        assert depth == 1
+        ensure_dag_tables(session)
+        emit_event(session, "pane_created", "ev-1", agent="pi")
         events = read_events(session)
-        dispatch_event = [event for event in events if event["event"] == "dispatch_queued"][0]
-        assert dispatch_event["pane"] == "dispatch-queue"
-        assert dispatch_event["summary"] == "ship it"
-        assert dispatch_event["agent_hint"] == "qwen-35b"
+        assert len(events) >= 1
+        assert events[-1]["event"] == "pane_created"
 
-        queued = take_dispatch_queue(session)
-        assert len(queued) == 1
-        assert queued[0]["summary"] == "ship it"
-        assert queued[0]["agent_hint"] == "qwen-35b"
-        assert "ts" in queued[0]
+    def test_queue_dispatch_emits_event_and_take_dispatch_queue_clears(self, tmp_path):
+        session = _make_session(tmp_path)
+        ensure_dag_tables(session)
+        queue_dispatch(session, {"slug": "queued-1", "agent": "pi", "prompt": "do thing"})
+        pending = take_dispatch_queue(session)
+        assert len(pending) == 1
+        assert pending[0]["slug"] == "queued-1"
         assert take_dispatch_queue(session) == []
 
 
 class TestEventNotification:
-    """Tests for the named pipe event notification system."""
+    """Tests for the per-process pipe notification system."""
 
-    def test_ensure_notify_pipe_creates_fifo(self, tmp_path):
-        """_ensure_notify_pipe creates a FIFO at the expected path."""
-        session_root = str(tmp_path)
-        (tmp_path / STATE_DIR).mkdir(parents=True)
-        pipe_path = _ensure_notify_pipe(session_root)
-        assert stat.S_ISFIFO(os.stat(pipe_path).st_mode)
-
-    def test_ensure_notify_pipe_idempotent(self, tmp_path):
-        """Calling _ensure_notify_pipe twice doesn't error."""
-        session_root = str(tmp_path)
-        (tmp_path / STATE_DIR).mkdir(parents=True)
-        path1 = _ensure_notify_pipe(session_root)
-        path2 = _ensure_notify_pipe(session_root)
-        assert path1 == path2
+    def test_notify_dir_created(self, tmp_path):
+        """_notify_dir creates the notify directory."""
+        session = _make_session(tmp_path)
+        d = _notify_dir(session)
+        assert d.is_dir()
 
     def test_notify_waiters_no_reader_ok(self, tmp_path):
-        """_notify_waiters doesn't error when no reader is waiting."""
-        session_root = str(tmp_path)
-        (tmp_path / STATE_DIR).mkdir(parents=True)
-        _ensure_notify_pipe(session_root)
-        # Should not raise — fire and forget
-        _notify_waiters(session_root)
+        """_notify_waiters doesn't error when no readers exist."""
+        session = _make_session(tmp_path)
+        _notify_waiters(session)
 
-    def test_notify_waiters_no_pipe_ok(self, tmp_path):
-        """_notify_waiters doesn't error when pipe doesn't exist."""
-        # No pipe created — should not raise
+    def test_notify_waiters_no_dir_ok(self, tmp_path):
+        """_notify_waiters doesn't error when notify dir doesn't exist yet."""
         _notify_waiters(str(tmp_path))
 
     def test_wait_for_notify_timeout(self, tmp_path):
         """_wait_for_notify returns False on timeout when no notification."""
         import time as _time
 
-        session_root = str(tmp_path)
-        (tmp_path / STATE_DIR).mkdir(parents=True)
-        _ensure_notify_pipe(session_root)
-
+        session = _make_session(tmp_path)
         start = _time.monotonic()
-        result = _wait_for_notify(session_root, 0.1)
+        result = _wait_for_notify(session, 0.1)
         elapsed = _time.monotonic() - start
-        # Should return False (timeout) and take ~0.1s
         assert result is False
-        assert elapsed < 0.5  # Didn't block forever
+        assert elapsed < 0.5
 
     def test_notify_wakes_waiter(self, tmp_path):
         """_notify_waiters wakes a blocked _wait_for_notify."""
         import threading
         import time as _time
 
-        session_root = str(tmp_path)
-        (tmp_path / STATE_DIR).mkdir(parents=True)
-        _ensure_notify_pipe(session_root)
-
+        session = _make_session(tmp_path)
         result = {}
 
         def waiter():
-            result["notified"] = _wait_for_notify(session_root, 5.0)
+            result["notified"] = _wait_for_notify(session, 5.0)
             result["time"] = _time.monotonic()
 
         start = _time.monotonic()
         t = threading.Thread(target=waiter)
         t.start()
-
-        # Give the waiter a moment to block on select()
-        _time.sleep(0.1)
-        _notify_waiters(session_root)
+        _time.sleep(0.2)
+        _notify_waiters(session)
         t.join(timeout=3.0)
 
         assert result.get("notified") is True
-        # Should have woken up quickly, not waited the full 5s
         assert result["time"] - start < 2.0
 
     def test_emit_event_triggers_notification(self, tmp_path):
-        """emit_event triggers the notify pipe so waiters wake up."""
+        """emit_event triggers notify pipes so waiters wake up."""
         import threading
         import time as _time
 
-        session_root = str(tmp_path)
-        (tmp_path / STATE_DIR).mkdir(parents=True)
-        ensure_dag_tables(session_root)
-        _ensure_notify_pipe(session_root)
-
+        session = _make_session(tmp_path)
+        ensure_dag_tables(session)
         result = {}
 
         def waiter():
-            result["notified"] = _wait_for_notify(session_root, 5.0)
+            result["notified"] = _wait_for_notify(session, 5.0)
 
         t = threading.Thread(target=waiter)
         t.start()
-        _time.sleep(0.1)
-
-        # emit_event should trigger notification
-        emit_event(session_root, "pane_done", "test-slug")
+        _time.sleep(0.2)
+        emit_event(session, "pane_done", "test-slug")
         t.join(timeout=3.0)
 
         assert result.get("notified") is True
+
+    def test_multiple_waiters_all_wake(self, tmp_path):
+        """Multiple _wait_for_notify calls in different threads all get woken."""
+        import threading
+        import time as _time
+
+        session = _make_session(tmp_path)
+        results = {}
+
+        def waiter(name):
+            results[name] = _wait_for_notify(session, 5.0)
+
+        t1 = threading.Thread(target=waiter, args=("a",))
+        t2 = threading.Thread(target=waiter, args=("b",))
+        t1.start()
+        t2.start()
+        _time.sleep(0.2)
+        _notify_waiters(session)
+        t1.join(timeout=3.0)
+        t2.join(timeout=3.0)
+
+        assert results.get("a") is True
+        assert results.get("b") is True

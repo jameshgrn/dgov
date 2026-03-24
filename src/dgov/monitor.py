@@ -1177,7 +1177,7 @@ def run_monitor(
     monitor_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info("Starting monitor on %s", project_root)
-    print("Monitor active: event-driven (blocking on events.pipe)")
+    print("Monitor active: event-driven (per-process notify pipes)")
 
     last_prune = 0.0
     try:

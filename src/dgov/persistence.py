@@ -20,58 +20,63 @@ from dgov.backend import get_backend
 logger = logging.getLogger(__name__)
 
 
-_NOTIFY_PIPE = "events.pipe"
+_NOTIFY_DIR = "notify"
 
 
-def _ensure_notify_pipe(session_root: str) -> str:
-    """Create the notify FIFO if it doesn't exist. Returns the path."""
-    pipe_path = Path(session_root) / STATE_DIR / _NOTIFY_PIPE
-    pipe_path.parent.mkdir(parents=True, exist_ok=True)
+def _notify_dir(session_root: str) -> Path:
+    """Return the per-reader notification pipe directory."""
+    d = Path(session_root) / STATE_DIR / _NOTIFY_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _notify_waiters(session_root: str) -> None:
+    """Write a byte to ALL per-reader notify pipes. Non-blocking, fire-and-forget.
+
+    Each reader process creates its own FIFO in .dgov/notify/<pid>.pipe.
+    This writes to every pipe so all readers (monitor, dashboard, --wait)
+    get woken independently. Stale pipes from dead processes are cleaned up.
+    """
+    notify = _notify_dir(session_root)
+    for pipe_path in notify.iterdir():
+        if not pipe_path.name.endswith(".pipe"):
+            continue
+        try:
+            fd = os.open(str(pipe_path), os.O_WRONLY | os.O_NONBLOCK)
+            try:
+                os.write(fd, b"\x01")
+            finally:
+                os.close(fd)
+        except OSError:
+            # No reader (process died) — clean up stale pipe
+            try:
+                pipe_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _wait_for_notify(session_root: str, timeout: float) -> bool:
+    """Block on a per-process notify pipe until data arrives or timeout.
+
+    Each calling process gets its own FIFO in .dgov/notify/<pid>.pipe,
+    so multiple readers (monitor, dashboard, --wait) all receive every
+    notification independently. Uses poll() — no fd limit, no polling.
+
+    Returns True if notified, False on timeout.
+    """
+    notify = _notify_dir(session_root)
+    pipe_path = notify / f"{os.getpid()}.pipe"
     try:
         os.mkfifo(str(pipe_path))
     except FileExistsError:
         pass
-    return str(pipe_path)
 
-
-def _notify_waiters(session_root: str) -> None:
-    """Write a byte to the notify pipe. Non-blocking, fire-and-forget.
-
-    Works cross-process: workers call emit_event from separate processes,
-    this wakes any governor/executor blocked in _wait_for_notify.
-    """
-    pipe_str = str(Path(session_root) / STATE_DIR / _NOTIFY_PIPE)
-    if not os.path.exists(pipe_str):
-        return
     try:
-        fd = os.open(pipe_str, os.O_WRONLY | os.O_NONBLOCK)
-        try:
-            os.write(fd, b"\x01")
-        finally:
-            os.close(fd)
-    except OSError:
-        pass  # No reader or pipe full — both OK
-
-
-def _wait_for_notify(session_root: str, timeout: float) -> bool:
-    """Block on the notify pipe until data arrives or timeout expires.
-
-    Cross-platform (any POSIX). Uses poll() on a named pipe — zero
-    polling, instant wakeup when emit_event fires from any process.
-    poll() has no fd number limit (unlike select() which fails above
-    FD_SETSIZE=1024 on macOS).
-
-    Returns True if notified, False on timeout.
-    """
-    pipe_str = _ensure_notify_pipe(session_root)
-    try:
-        # O_RDONLY|O_NONBLOCK: open returns immediately even without a writer.
-        # poll() then blocks until data arrives or timeout.
-        fd = os.open(pipe_str, os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(str(pipe_path), os.O_RDONLY | os.O_NONBLOCK)
         try:
             poller = select.poll()
             poller.register(fd, select.POLLIN)
-            events = poller.poll(int(timeout * 1000))  # milliseconds
+            events = poller.poll(int(timeout * 1000))
             if events:
                 os.read(fd, 4096)  # drain pipe
                 return True
@@ -79,12 +84,11 @@ def _wait_for_notify(session_root: str, timeout: float) -> bool:
         finally:
             os.close(fd)
     except (OSError, ValueError):
-        # Pipe broken or missing — recreate and return timeout
+        # Pipe broken — recreate next call
         try:
-            os.unlink(pipe_str)
+            pipe_path.unlink(missing_ok=True)
         except OSError:
             pass
-        _ensure_notify_pipe(session_root)
         return False
 
 

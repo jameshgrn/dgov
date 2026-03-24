@@ -281,9 +281,8 @@ def data_thread(state: DashboardState, _interval: float) -> None:
     session_root = state.session_root or state.project_root
     _refresh_dashboard_state(state)
     while not state.stop_event.is_set():
-        # 5s ceiling keeps displays fresh. The named pipe is shared with the
-        # monitor (single-reader FIFO), so the dashboard may miss wakeups.
-        # The short ceiling ensures it catches up promptly regardless.
+        # Per-process notify pipes: dashboard gets its own FIFO, wakes
+        # instantly on any event. 5s ceiling for duration display freshness.
         _wait_for_notify(session_root, 5.0)
         if state.stop_event.is_set():
             break
