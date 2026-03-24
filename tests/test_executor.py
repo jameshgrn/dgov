@@ -136,7 +136,7 @@ def test_run_review_only_fails_on_stale_files(tmp_path):
         ),
         patch("dgov.persistence.get_pane", return_value=pane_data),
         patch(
-            "dgov.kernel.build_manifest_on_completion",
+            "dgov.gitops.build_manifest_on_completion",
             return_value=MagicMock(
                 base_sha="abc123",
                 file_claims=("src/foo.py",),
@@ -145,7 +145,7 @@ def test_run_review_only_fails_on_stale_files(tmp_path):
             ),
         ),
         patch(
-            "dgov.kernel.validate_manifest_freshness",
+            "dgov.gitops.validate_manifest_freshness",
             return_value=(False, ["src/foo.py"]),
         ),
     ):
@@ -173,7 +173,7 @@ def test_run_review_only_passes_when_manifest_fresh(tmp_path):
         ),
         patch("dgov.persistence.get_pane", return_value=pane_data),
         patch(
-            "dgov.kernel.build_manifest_on_completion",
+            "dgov.gitops.build_manifest_on_completion",
             return_value=MagicMock(
                 base_sha="abc123",
                 file_claims=("src/foo.py",),
@@ -182,7 +182,7 @@ def test_run_review_only_passes_when_manifest_fresh(tmp_path):
             ),
         ),
         patch(
-            "dgov.kernel.validate_manifest_freshness",
+            "dgov.gitops.validate_manifest_freshness",
             return_value=(True, []),
         ),
     ):

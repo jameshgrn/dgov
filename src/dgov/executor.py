@@ -834,7 +834,7 @@ def run_review_only(
     if passed and commit_count > 0 and session_root:
         import os
 
-        from dgov.kernel import build_manifest_on_completion, validate_manifest_freshness
+        from dgov.gitops import build_manifest_on_completion, validate_manifest_freshness
         from dgov.persistence import get_pane
 
         sr = os.path.abspath(session_root)
@@ -1893,11 +1893,8 @@ def _dag_merge(
     progress: Callable[[str], None],
 ) -> object:
     """Execute a MergeTask action. Returns TaskMergeDone."""
-    from dgov.kernel import (
-        TaskMergeDone,
-        build_manifest_on_completion,
-        validate_manifest_freshness,
-    )
+    from dgov.gitops import build_manifest_on_completion, validate_manifest_freshness
+    from dgov.kernel import TaskMergeDone
     from dgov.persistence import get_pane
 
     # Re-check staleness at merge time: review may have passed but main could
