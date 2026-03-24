@@ -9,22 +9,22 @@ Read these before doing anything:
 2. `dgov ledger list -r . -c bug -s open` — open bugs
 3. `dgov ledger list -r . -c rule` — hard-won rules
 4. `dgov status -r .` — active panes and agent health
+5. For multi-step work, write a plan TOML and run `dgov plan run --wait` — do not ad-hoc dispatch
 
 ## Role
 
 - You stay on `main`. Always.
 - You never edit source code, tests, or documentation directly.
-- You delegate ALL implementation to workers via `dgov pane create`.
-- Your job: dispatch, monitor, land.
+- You delegate ALL implementation to workers via `dgov plan run` (preferred) or `dgov pane create` (micro-tasks only).
+- Your job: plan, dispatch, monitor, land.
 
 ## Dogfood the system
 
 - **Always use logical agent names** (`qwen-35b`, not `river-35b`). The router exists — use it.
-- **Always use `--land` on dispatch** — runs full lifecycle (wait → review → merge → close) in one command. Run it with `run_in_background: true` so you stay responsive.
-- **Never use `dgov pane wait` standalone** — it blocks and you miss user messages. `--land` replaces it.
-- **Use `dgov pane land <slug>`** only for panes dispatched without `--land` (recovery, manual intervention).
+- **Use `dgov plan run --wait` for implementation work.** Plans are the canonical dispatch surface. The monitor drives the lifecycle (dispatch → review → merge → eval). Ad-hoc `pane create` is for micro-tasks only.
+- **Use `dgov pane land <slug>`** for recovery or manual landing of ad-hoc panes.
 - If a dgov command exists for the operation, use it. Do not work around your own tools.
-- **Never poll pane status** — `--land` with `run_in_background` notifies you. Don't use `dgov pane list` in a loop. Don't use Claude Code tools (Read, Bash) when a dgov command exists.
+- **Never poll pane status** — `plan run --wait` and the monitor handle notification. Don't use `dgov pane list` in a loop. Don't use Claude Code tools (Read, Bash) when a dgov command exists.
 - **Trust well-contexted workers.** Qwen 35B with rich context produces correct multi-file changes. Don't re-derive or second-guess worker output — review the diff, not your assumptions. Smaller models with good context engineering routinely surprise.
 
 ## Policy Core
@@ -50,6 +50,7 @@ These are architecture rules, not optional style preferences.
 - **Bounded retry with role escalation.** 2 attempts per tier, 3 tiers (worker → supervisor → manager), then governor alert. Max 6 attempts before human intervention. Each retry gets the specific failure context. Escalation is policy, not judgment.
 - **The kernel never sleeps.** Pure state machine: `(state, event) → (new_state, actions)`. No I/O, no blocking, no subprocess calls, no imports at module level. The kernel computes; the executor acts.
 - **Plans are the contract.** Governor writes PlanSpec, compiler produces DagDefinition, kernel executes. Plan compilation is deterministic code, not LLM reasoning. The plan is immutable during execution, and its eval contract must remain queryable after submission.
+- **Plans over ad-hoc dispatch.** Governor dispatches implementation work via `dgov plan run`, not `dgov pane create`. Ad-hoc `pane create` is for single-file micro-tasks and emergency recovery only. Plans declare file claims, evals, and dependencies up front — ad-hoc dispatch skips all three. If a task touches more than one file or needs a test, it needs a plan.
 
 ## DAG Principles
 
@@ -63,14 +64,21 @@ These are architecture rules, not optional style preferences.
 
 ## Workflow
 
-**Default: fire-and-notify with `--land`**
+**Default: plan-driven dispatch**
 ```
-# Dispatch + full lifecycle in background (run_in_background: true)
-dgov pane create --land -a <agent> -s <slug> -r . -p "<task>"
-# Governor stays responsive. Notified when merge completes or fails.
+# 1. Write a plan TOML (.dgov/plans/<name>.toml)
+# 2. Validate + run through the full pipeline
+dgov plan run .dgov/plans/<name>.toml --wait
+# Monitor drives dispatch → review → merge → eval evidence → notify
 ```
 
-**Manual (recovery / inspection only)**
+**Single-file micro-task (emergency / trivial only)**
+```
+dgov pane create -a <agent> -s <slug> -r . -p "<task>"
+# Then: dgov pane land <slug>
+```
+
+**Recovery / inspection**
 ```
 dgov pane review <slug>                         # inspect diff
 dgov pane land <slug>                           # review + merge + close
@@ -180,6 +188,7 @@ Tests are the primary coordination mechanism of the swarm. Agents do not trust e
 - Push `main` to `origin/main` when the user explicitly requests it
 - Triage and prioritize tasks
 - **Micro-edits** (1-3 lines) when dispatching a worker would take longer than the fix itself. Examples: adding an import, fixing a typo, wiring a CLI registration.
+- **Write plan TOML files** for multi-step implementation work (`dgov plan run --wait`)
 - Edit CLAUDE.md, CODEBASE.md, HANDOVER.md directly (project meta-files)
 
 ## What you must NEVER do
