@@ -64,15 +64,29 @@ def _paths_overlap(path: str, touch: str) -> bool:
 
 
 def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
-    """Check that the agent CLI binary is on PATH."""
+    """Check that the agent CLI binary is on PATH.
+
+    Handles both physical agent names (in registry) and logical routing
+    names (resolved via router). Logical names are valid if routable.
+    """
     reg = registry or AGENT_REGISTRY
     defn = reg.get(agent)
     if defn is None:
+        # Check if it's a logical routing name (e.g. qwen-35b, worker, supervisor)
+        from dgov.router import is_routable
+
+        if is_routable(agent):
+            return CheckResult(
+                name="agent_cli",
+                passed=True,
+                critical=True,
+                message=f"Logical agent '{agent}' is routable",
+            )
         return CheckResult(
             name="agent_cli",
             passed=False,
             critical=True,
-            message=f"Unknown agent '{agent}' -- not in registry",
+            message=f"Unknown agent '{agent}' -- not in registry or routing tables",
         )
     cmd = defn.prompt_command.split()[0]
     found = shutil.which(cmd) is not None
