@@ -942,7 +942,7 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
             heat /= supersample * supersample
 
         # Use stream order as primary river detection signal
-        if cell_order >= 1 and elev < 0.80:
+        if cell_order >= 2 and elev < 0.80:
             base_color = _river_color(flow, s, phase=phase, order=cell_order)
         elif flow > river_thresh and elev < 0.80:
             base_color = _river_color(flow, s, phase=phase)

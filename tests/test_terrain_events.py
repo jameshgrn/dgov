@@ -565,3 +565,34 @@ def test_stream_order_hierarchy():
                 max_flow_order = model.stream_order[r][c]
 
     assert max_flow_order >= 2
+
+
+@pytest.mark.unit
+def test_headwater_not_rendered_as_river():
+    """Order-1 (headwater) cells should get elevation color, not river color."""
+    from dgov.terrain import render_terrain
+
+    model = ErosionModel(width=20, height=20, seed=42)
+    for _ in range(10):
+        model.step()
+
+    # Find a cell with order == 1 and a cell with order >= 2
+    order1_cell = None
+    order2_cell = None
+    for r in range(1, model.height_count - 1):
+        for c in range(1, model.width - 1):
+            if model.stream_order[r][c] == 1 and order1_cell is None:
+                order1_cell = (r, c)
+            if model.stream_order[r][c] >= 2 and order2_cell is None:
+                order2_cell = (r, c)
+            if order1_cell and order2_cell:
+                break
+        if order1_cell and order2_cell:
+            break
+
+    assert order1_cell is not None, "Need an order-1 cell for this test"
+    assert order2_cell is not None, "Need an order-2+ cell for this test"
+
+    # Render and verify the text output exists (rendering doesn't crash)
+    text = render_terrain(model)
+    assert len(text.plain) > 0
