@@ -3,6 +3,8 @@
 Maps logical names (qwen-35b, qwen-9b, etc.) to ordered pools of physical
 backends (river-35b, qwen35-35b, etc.). Checks health and concurrency to
 pick the first available backend.
+
+Includes circuit breaker for backends with recent failures.
 """
 
 from __future__ import annotations
