@@ -1067,3 +1067,57 @@ edit = ["src/api.py"]
         assert "[E1] manual: LT-GOV dispatches the planned worker set." in task.prompt
         assert task.template == "lt-gov"
         assert task.template_vars == {"task_list": "1. a, 2. b"}
+
+
+class TestEvidenceSyntaxCheck:
+    def test_evidence_syntax_catches_bad_shell(self):
+        """Malformed shell commands should produce a warning."""
+        from dgov.plan import _check_evidence_syntax
+
+        # Unmatched quote
+        warnings = _check_evidence_syntax("echo 'unterminated")
+        assert any("syntax" in w.lower() for w in warnings)
+
+    def test_evidence_valid_no_warnings(self):
+        """Valid shell commands should produce no warnings."""
+        from dgov.plan import _check_evidence_syntax
+
+        warnings = _check_evidence_syntax("grep -qE 'foo|bar' src/test.py")
+        assert warnings == []
+
+    def test_evidence_backslash_pipe_warning(self):
+        """grep with escaped backslash-pipe should warn about ERE alternation."""
+        from dgov.plan import _check_evidence_syntax
+
+        warnings = _check_evidence_syntax("grep -qE 'age_factor\\|session_age' src/foo.py")
+        assert any("alternation" in w.lower() or "\\|" in w for w in warnings)
+
+    def test_evidence_syntax_in_validate_plan(self):
+        """validate_plan should include evidence syntax warnings."""
+        plan = PlanSpec(
+            name="test",
+            goal="test",
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="happy_path",
+                    statement="test",
+                    evidence="echo 'unterminated",
+                ),
+            ),
+            units={
+                "t1": PlanUnit(
+                    slug="t1",
+                    summary="test",
+                    prompt="test",
+                    commit_message="test",
+                    files=PlanUnitFiles(edit=("src/a.py",)),
+                    satisfies=("E1",),
+                ),
+            },
+        )
+        issues = validate_plan(plan)
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any(
+            "syntax" in i.message.lower() or "evidence" in i.message.lower() for i in warnings
+        )
