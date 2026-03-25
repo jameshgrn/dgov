@@ -1133,7 +1133,12 @@ def test_lint_unfixable_issues_block_merge_completion(
         base_sha=base_sha,
     )
 
-    fake_lint_result = {"lint_fixed": [], "lint_unfixable": ["broken.py"]}
+    # Mock lint result with new format including lint_unfixable_files
+    fake_lint_result = {
+        "lint_fixed": [],
+        "lint_unfixable": ["broken.py:1:1: E741 ambiguous variable name"],
+        "lint_unfixable_files": ["broken.py"],
+    }
 
     with (
         patch("dgov.persistence.get_pane", return_value=pane),
@@ -1151,13 +1156,11 @@ def test_lint_unfixable_issues_block_merge_completion(
     ):
         result = merge_worker_pane(str(repo), "lint-unfixable", session_root=str(repo))
 
-    # Validation failed — should NOT be marked merged, worktree preserved
-    assert "error" in result
-    assert "validation_failed" in result
-    assert result["validation_failed"] is True
-    assert "unfixable issues" in result["error"]
-    assert worktree.exists()
-    mock_update_state.assert_not_called()
+    # Lint issues are advisory — should still succeed and be marked merged
+    assert result.get("merged") == "lint-unfixable"
+    assert "validation_failed" not in result or result["validation_failed"] is False
+    # Worktree gets cleaned up after successful merge
+    mock_update_state.assert_called_once()
 
 
 def test_both_tests_and_lint_fail_show_first_error(
@@ -1182,7 +1185,11 @@ def test_both_tests_and_lint_fail_show_first_error(
     )
 
     fake_test_result = {"tests_ran": 3, "tests_failed": 1}
-    fake_lint_result = {"lint_fixed": [], "lint_unfixable": ["worker.py"]}
+    fake_lint_result = {
+        "lint_fixed": [],
+        "lint_unfixable": ["worker.py:1:1: E741"],
+        "lint_unfixable_files": ["worker.py"],
+    }
 
     with (
         patch("dgov.persistence.get_pane", return_value=pane),
@@ -1203,6 +1210,7 @@ def test_both_tests_and_lint_fail_show_first_error(
     ):
         result = merge_worker_pane(str(repo), "both-fail", session_root=str(repo))
 
-    # Test failure comes first in validation order
+    # Test failure comes first in validation order; lint issues don't block
     assert "error" in result
     assert "tests failed" in result["error"]
+    # But lint should only produce warning, not error

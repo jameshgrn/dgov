@@ -543,7 +543,7 @@ def _rebase_merge(project_root: str, branch_name: str, message: str | None = Non
 def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
     """Run ruff check --fix + ruff format on changed .py files after merge.
 
-    Returns {"fixed": [...], "unfixable": [...]} or empty dict if nothing to do.
+    Returns {"fixed": [...], "unfixable": [...], "lint_unfixable_files": [...]}.
     """
     py_files = [f for f in changed_files if f.endswith(".py")]
     if not py_files:
@@ -556,7 +556,8 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
         return {}
 
     fixed = []
-    unfixable = []
+    unfixable_lines = []
+    unfixable_files: set[str] = set()
     result = {}
 
     # Isolate post-merge linting from unrelated dirty files on main.
@@ -570,7 +571,14 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
             cwd=project_root,
         )
         if check.returncode != 0 and check.stdout.strip():
-            unfixable.extend(check.stdout.strip().splitlines()[:10])
+            # Parse ruff output to extract distinct file paths
+            # Ruff format: <filepath>:<line>:<col>: <message>
+            for line in check.stdout.strip().splitlines()[:10]:
+                unfixable_lines.append(line)
+                # Extract filepath from line (everything before the first colon)
+                if ":" in line:
+                    filepath = line.split(":")[0]
+                    unfixable_files.add(filepath)
 
         # ruff format
         subprocess.run(
@@ -611,8 +619,9 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
 
     if fixed:
         result["lint_fixed"] = fixed
-    if unfixable:
-        result["lint_unfixable"] = unfixable
+    if unfixable_lines:
+        result["lint_unfixable"] = unfixable_lines
+        result["lint_unfixable_files"] = sorted(unfixable_files)
     return result
 
 
@@ -1267,12 +1276,14 @@ def merge_worker_pane(
                     logger.error("%s", validation_error)
 
                 if lint_result.get("lint_unfixable"):
-                    validation_failed = True
-                    n_unfixable = len(lint_result["lint_unfixable"])
-                    lint_error = f"Post-merge lint found unfixable issues: {n_unfixable} files"
-                    if validation_error is None:
-                        validation_error = lint_error
-                    logger.error("%s", lint_error)
+                    # Lint issues are advisory after merge has landed — warn instead of fail
+                    files = lint_result.get("lint_unfixable_files", [])
+                    n_files = len(files)
+                    file_list = ", ".join(files) or "unknown"
+                    lint_msg = (
+                        f"Post-merge lint found unfixable issues in {n_files} file(s): {file_list}"
+                    )
+                    logger.warning("%s", lint_msg)
 
                 if validation_failed:
                     _persist.emit_event(
