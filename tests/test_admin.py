@@ -18,6 +18,7 @@ def test_doctor_auth_warns_on_api_key_with_oauth(tmp_path, monkeypatch):
 
     runner = CliRunner()
     result = runner.invoke(doctor_cmd, ["--project-root", str(tmp_path)])
+    assert "WARN" in result.output
     assert "ANTHROPIC_API_KEY" in result.output
 
 

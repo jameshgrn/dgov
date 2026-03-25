@@ -989,13 +989,18 @@ def doctor_cmd(project_root):
         transport = provider_cfg.get("transport", "")
         if auth_mode == "oauth" and transport == "claude-cli":
             has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-            _check(
-                f"auth: {provider_name}",
-                not has_api_key,
-                "ANTHROPIC_API_KEY env var overrides OAuth — remove from .zshrc"
-                if has_api_key
-                else "OAuth configured, no conflicting env var",
-            )
+            if has_api_key:
+                click.echo(
+                    "  [WARN] auth: "
+                    f"{provider_name} — ANTHROPIC_API_KEY env var overrides OAuth"
+                    " — remove from .zshrc"
+                )
+            else:
+                _check(
+                    f"auth: {provider_name}",
+                    True,
+                    "OAuth configured, no conflicting env var",
+                )
 
     click.echo()
     if ok:
