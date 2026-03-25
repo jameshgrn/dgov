@@ -671,3 +671,23 @@ def test_plan_generation_config_transport_openrouter(monkeypatch):
         request = GeneratePlanRequest(goal="test", files=("a.py",))
         result = provider.generate_plan(request)
         assert result.decision.plan_toml  # got something back
+
+
+def test_plan_generation_prompt_forbids_fragile_patterns():
+    """The prompt Rules section should explicitly forbid fragile eval evidence."""
+    from dgov.decision import GeneratePlanRequest
+    from dgov.decision_providers import PlanGenerationProvider
+
+    provider = PlanGenerationProvider()
+    request = GeneratePlanRequest(goal="test", files=("a.py",))
+    prompt = provider._build_prompt(request)
+
+    # Must forbid fragile patterns
+    assert "NEVER" in prompt
+    assert "ast" in prompt.lower() or "AST" in prompt
+    assert "GOOD" in prompt or "Good" in prompt
+    assert "BAD" in prompt or "Bad" in prompt
+
+    # Must include positive examples
+    assert "uv run pytest" in prompt
+    assert "uv run ruff check" in prompt
