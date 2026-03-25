@@ -1528,6 +1528,15 @@ def run_force_complete_dag(session_root: str, run_id: int) -> dict:
     emit_event(
         session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id, status="completed"
     )
+    emit_event(
+        session_root,
+        "evals_verified",
+        f"dag/{run_id}",
+        dag_run_id=run_id,
+        passed=0,
+        failed=0,
+        total=0,
+    )
 
     return {"run_id": run_id, "forced": forced, "status": "completed"}
 
