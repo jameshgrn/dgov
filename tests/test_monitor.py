@@ -384,7 +384,7 @@ class TestRunMonitor:
     def test_ensure_monitor_running_skips_when_locked(self, tmp_path, monkeypatch):
         import fcntl
 
-        from dgov.monitor import ensure_monitor_running
+        from dgov.monitor import _source_hash, ensure_monitor_running
 
         project_root = tmp_path / "project"
         session_root = tmp_path / "session"
@@ -392,10 +392,12 @@ class TestRunMonitor:
         session_root.mkdir()
         (session_root / ".dgov").mkdir(parents=True)
 
-        # Hold the lock to simulate a running monitor
+        # Hold the lock to simulate a running monitor with current version
         lock_path = session_root / ".dgov" / "monitor.lock"
         lock_fd = open(lock_path, "w")
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd.write(f"12345\n0.9.0\n{_source_hash()}")
+        lock_fd.flush()
 
         captured: dict[str, object] = {}
 
@@ -405,11 +407,55 @@ class TestRunMonitor:
 
         monkeypatch.setattr("subprocess.Popen", fake_popen)
 
-        # Lock held — should NOT spawn
+        # Lock held with current hash — should NOT spawn
         ensure_monitor_running(str(project_root), session_root=str(session_root))
         assert "cmd" not in captured
 
         lock_fd.close()
+
+    def test_ensure_monitor_kills_stale_monitor(self, tmp_path, monkeypatch):
+        import fcntl
+
+        from dgov.monitor import ensure_monitor_running
+
+        project_root = tmp_path / "project"
+        session_root = tmp_path / "session"
+        project_root.mkdir()
+        session_root.mkdir()
+        (session_root / ".dgov").mkdir(parents=True)
+
+        # Write stale hash to lock file, then hold the lock
+        lock_path = session_root / ".dgov" / "monitor.lock"
+        lock_fd = open(lock_path, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_fd.write("12345\n0.8.0\nstale_hash_value")
+        lock_fd.flush()
+
+        killed_pids: list[int] = []
+        spawned: dict[str, object] = {}
+
+        import os as _os
+
+        def fake_kill(pid, sig):  # noqa: ANN001, ANN201
+            killed_pids.append(pid)
+
+        def fake_popen(cmd, **kwargs):  # noqa: ANN001, ANN201
+            spawned["cmd"] = cmd
+            return type("P", (), {"pid": 9999})()
+
+        monkeypatch.setattr(_os, "kill", fake_kill)
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+        # Make sleep a no-op
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        # Keep lock held — ensure_monitor_running should detect stale hash,
+        # kill the pid, and spawn a replacement
+        try:
+            ensure_monitor_running(str(project_root), session_root=str(session_root))
+            assert 12345 in killed_pids
+            assert "cmd" in spawned
+        finally:
+            lock_fd.close()
 
 
 class TestNudgeStuck:

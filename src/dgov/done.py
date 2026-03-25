@@ -52,21 +52,30 @@ _CIRCUIT_BREAKER_LINES = 20
 # -- Done-signal wrapper --
 
 
-def _wrap_done_signal(
+def _wrap_cmd(
     cmd: str,
     done_signal: str,
     *,
     worktree_path: str | None = None,
+    headless: bool = True,
 ) -> str:
-    """Wrap *cmd* so done-signal is only touched on success.
+    """Wrap *cmd* with auto-commit and done/exit signal handling.
+
+    Two modes controlled by *headless*:
+
+    - **headless=True** (default, pi workers): wrapper writes ``.done`` on
+      success and ``.exit`` on failure.  The wrapper is the sole signal source.
+    - **headless=False** (interactive/TUI agents): wrapper only writes ``.exit``
+      if ``.done`` doesn't already exist.  The agent may write ``.done`` itself
+      via ``dgov worker complete``.
 
     When *worktree_path* is provided, auto-commits any uncommitted changes
-    on BOTH success and failure paths. This ensures headless workers that
-    forget to commit still have their work product captured — the review
-    gate judges quality, not the commit wrapper.
+    on both success and failure paths. The review gate judges quality, not
+    the commit wrapper.
     """
     ok = shlex.quote(done_signal)
     fail = shlex.quote(done_signal + ".exit")
+    auto_commit = ""
     if worktree_path:
         wt = shlex.quote(worktree_path)
         auto_commit = (
@@ -74,43 +83,27 @@ def _wrap_done_signal(
             f" && {{ git -C {wt} diff --cached --quiet"
             f" || git -C {wt} commit -m 'Auto-commit on agent exit'; }}"
         )
-        return (
-            f"{cmd}; __dgov_rc=$?; {auto_commit}; "
-            f"if [ $__dgov_rc -eq 0 ]; then touch {ok}; else echo $__dgov_rc > {fail}; fi"
-        )
-    return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
+
+    if headless:
+        if auto_commit:
+            return (
+                f"{cmd}; __dgov_rc=$?; {auto_commit}; "
+                f"if [ $__dgov_rc -eq 0 ]; then touch {ok}; else echo $__dgov_rc > {fail}; fi"
+            )
+        return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
+    else:
+        if auto_commit:
+            return f"{cmd}; __rc=$?; [ -f {ok} ] || {{ {auto_commit}; echo $__rc > {fail}; }}"
+        return f"{cmd}; __rc=$?; [ -f {ok} ] || echo $__rc > {fail}"
 
 
-def _wrap_exit_signal(
-    cmd: str,
-    done_signal: str,
-    *,
-    worktree_path: str | None = None,
-) -> str:
-    """Wrap *cmd* so .exit file is written on any exit unless done-signal already exists.
+# Backward-compat aliases
+def _wrap_done_signal(cmd: str, done_signal: str, *, worktree_path: str | None = None) -> str:
+    return _wrap_cmd(cmd, done_signal, worktree_path=worktree_path, headless=True)
 
-    Writes the exit code (0 or non-zero) to the .exit file whenever the
-    wrapped command exits AND the agent hasn't already written its own done
-    signal via ``dgov worker complete``.  This ensures interactive/TUI agents
-    that drop back to a shell prompt without signalling are detected immediately
-    by _is_done() Signal 1b rather than hanging in ``active`` state indefinitely.
 
-    When *worktree_path* is provided, any uncommitted changes are auto-committed
-    before the exit code is written.  This lets Signal 1b see exit-0-with-commits
-    and auto-promote to done, even when the agent forgot to commit.
-    """
-    ok = shlex.quote(done_signal)
-    fail = shlex.quote(done_signal + ".exit")
-    if worktree_path:
-        wt = shlex.quote(worktree_path)
-        # Auto-commit dirty changes so Signal 1b can detect work product
-        auto_commit = (
-            f"git -C {wt} add -A"
-            f" && {{ git -C {wt} diff --cached --quiet"
-            f" || git -C {wt} commit -m 'Auto-commit on agent exit'; }}"
-        )
-        return f"{cmd}; __rc=$?; [ -f {ok} ] || {{ {auto_commit}; echo $__rc > {fail}; }}"
-    return f"{cmd}; __rc=$?; [ -f {ok} ] || echo $__rc > {fail}"
+def _wrap_exit_signal(cmd: str, done_signal: str, *, worktree_path: str | None = None) -> str:
+    return _wrap_cmd(cmd, done_signal, worktree_path=worktree_path, headless=False)
 
 
 # -- Commit detection --

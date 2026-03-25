@@ -793,3 +793,56 @@ class TestAgentCommands:
         # Should be lowercase
         assert "claude" in _AGENT_COMMANDS
         assert "Claude" not in _AGENT_COMMANDS
+
+
+# ---------------------------------------------------------------------------
+# _wrap_cmd tests
+# ---------------------------------------------------------------------------
+
+
+class TestWrapCmd:
+    """Tests for the unified _wrap_cmd function (consolidation of #75)."""
+
+    def test_headless_without_worktree(self):
+        from dgov.done import _wrap_cmd
+
+        result = _wrap_cmd("pi -p", "/tmp/done/slug", headless=True)
+        assert "touch" in result
+        assert "pi -p" in result
+        assert ".exit" in result
+
+    def test_headless_with_worktree(self):
+        from dgov.done import _wrap_cmd
+
+        result = _wrap_cmd("pi -p", "/tmp/done/slug", worktree_path="/wt", headless=True)
+        assert "Auto-commit on agent exit" in result
+        assert "__dgov_rc" in result
+        assert "touch" in result
+
+    def test_interactive_without_worktree(self):
+        from dgov.done import _wrap_cmd
+
+        result = _wrap_cmd("claude -p", "/tmp/done/slug", headless=False)
+        assert "[ -f" in result
+        assert ".exit" in result
+        assert "touch" not in result  # interactive never touches .done
+
+    def test_interactive_with_worktree(self):
+        from dgov.done import _wrap_cmd
+
+        result = _wrap_cmd("claude -p", "/tmp/done/slug", worktree_path="/wt", headless=False)
+        assert "Auto-commit on agent exit" in result
+        assert "[ -f" in result
+
+    def test_backward_compat_aliases(self):
+        """_wrap_done_signal and _wrap_exit_signal produce same output as _wrap_cmd."""
+        from dgov.done import _wrap_cmd, _wrap_done_signal, _wrap_exit_signal
+
+        assert _wrap_done_signal("cmd", "/sig") == _wrap_cmd("cmd", "/sig", headless=True)
+        assert _wrap_exit_signal("cmd", "/sig") == _wrap_cmd("cmd", "/sig", headless=False)
+        assert _wrap_done_signal("cmd", "/sig", worktree_path="/wt") == _wrap_cmd(
+            "cmd", "/sig", worktree_path="/wt", headless=True
+        )
+        assert _wrap_exit_signal("cmd", "/sig", worktree_path="/wt") == _wrap_cmd(
+            "cmd", "/sig", worktree_path="/wt", headless=False
+        )

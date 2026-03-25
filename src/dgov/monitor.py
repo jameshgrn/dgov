@@ -41,6 +41,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _source_hash() -> str:
+    """Hash of the dgov package source — changes after edits or reinstall."""
+    import hashlib
+
+    src_dir = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for py in sorted(src_dir.rglob("*.py")):
+        h.update(py.read_bytes())
+    return h.hexdigest()[:16]
+
+
 def _record_fast_failure(session_root: str, slug: str) -> None:
     """Record a backend failure if the pane died within 60s of creation."""
     pane_rec = get_pane(session_root, slug)
@@ -1151,18 +1162,44 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
     lock_path = Path(session_root) / ".dgov" / "monitor.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Probe: try to acquire the lock non-blocking
+    # Probe: try to acquire the lock non-blocking.
+    # Use "a" mode to avoid truncating the version stamp written by run_monitor.
     try:
-        probe_fd = open(lock_path, "w")  # noqa: SIM115
+        probe_fd = open(lock_path, "a")  # noqa: SIM115
         fcntl.flock(probe_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # We got the lock — no monitor running. Release so the spawned one can acquire.
         fcntl.flock(probe_fd, fcntl.LOCK_UN)
         probe_fd.close()
     except OSError:
-        # Lock held — a monitor is already running
-        return
+        # Lock held — check if the running monitor's source hash matches current code
+        try:
+            lines = lock_path.read_text().splitlines()
+            if len(lines) >= 3:
+                running_pid, _running_ver, running_hash = lines[0], lines[1], lines[2]
+                current_hash = _source_hash()
+                if running_hash != current_hash:
+                    logger.warning(
+                        "Stale monitor (pid=%s, hash=%s vs %s) — killing and restarting",
+                        running_pid,
+                        running_hash,
+                        current_hash,
+                    )
+                    try:
+                        os.kill(int(running_pid), 15)  # SIGTERM
+                    except (ValueError, OSError):
+                        pass
+                    import time as _time
 
-    # No monitor running — spawn one
+                    _time.sleep(1)
+                    # Fall through to spawn a replacement
+                else:
+                    return  # monitor is current
+            else:
+                return  # old lock format, assume ok
+        except OSError:
+            return  # can't read lock file, assume ok
+
+    # Spawn a new monitor (lock was free, or stale monitor was killed)
     if True:
         if getattr(sys, "frozen", False):
             cmd = [
@@ -1242,10 +1279,12 @@ def run_monitor(
         logger.info("Another monitor is already running, exiting")
         lock_fd.close()
         return
-    # Write PID for diagnostics only (flock is the real liveness check)
+    # Write PID + version stamp for staleness detection
     import os as _os
 
-    lock_fd.write(str(_os.getpid()))
+    from dgov import __version__
+
+    lock_fd.write(f"{_os.getpid()}\n{__version__}\n{_source_hash()}")
     lock_fd.flush()
 
     # Ensure logging is configured for console output
