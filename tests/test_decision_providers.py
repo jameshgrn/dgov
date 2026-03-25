@@ -568,3 +568,78 @@ class TestModelReviewProvider:
         )
         with pytest.raises(ProviderError, match="No diff available"):
             provider.review_output(request)
+
+
+# -- PlanGenerationProvider tests --
+
+
+def test_plan_generation_provider_builds_prompt():
+    """PlanGenerationProvider._build_prompt constructs a non-empty prompt with goal and files."""
+    from dgov.decision import GeneratePlanRequest
+    from dgov.decision_providers import PlanGenerationProvider
+
+    provider = PlanGenerationProvider()
+    request = GeneratePlanRequest(
+        goal="Fix the widget parser",
+        files=("src/widget.py", "tests/test_widget.py"),
+        file_contents=(("src/widget.py", "def parse(): pass"),),
+    )
+    prompt = provider._build_prompt(request)
+    assert "Fix the widget parser" in prompt
+    assert "src/widget.py" in prompt
+    assert "def parse(): pass" in prompt
+
+
+def test_plan_generation_provider_extracts_toml_from_fences():
+    """_extract_toml handles markdown fenced blocks."""
+    from dgov.decision_providers import PlanGenerationProvider
+
+    raw = "Here is the plan:\n```toml\n[plan]\nversion = 1\n```\nDone."
+    assert PlanGenerationProvider._extract_toml(raw) == "[plan]\nversion = 1"
+
+
+def test_plan_generation_provider_extracts_bare_toml():
+    """_extract_toml handles unfenced TOML."""
+    from dgov.decision_providers import PlanGenerationProvider
+
+    raw = "[plan]\nversion = 1"
+    assert PlanGenerationProvider._extract_toml(raw) == "[plan]\nversion = 1"
+
+
+def test_plan_generation_provider_validates_valid_toml(tmp_path):
+    """_validate_toml returns True for valid plan TOML."""
+    from dgov.decision_providers import PlanGenerationProvider
+
+    valid_toml = """
+[plan]
+version = 1
+name = "test"
+goal = "Test"
+
+[[evals]]
+id = "E1"
+kind = "happy_path"
+statement = "It works"
+evidence = "echo ok"
+scope = ["src/x.py"]
+
+[units.test-unit]
+summary = "Test"
+prompt = "Do the thing"
+commit_message = "Do it"
+satisfies = ["E1"]
+
+[units.test-unit.files]
+edit = ["src/x.py"]
+"""
+    valid, issues = PlanGenerationProvider._validate_toml(valid_toml)
+    assert valid, f"Expected valid but got issues: {issues}"
+
+
+def test_plan_generation_provider_rejects_invalid_toml():
+    """_validate_toml returns False for garbage."""
+    from dgov.decision_providers import PlanGenerationProvider
+
+    valid, issues = PlanGenerationProvider._validate_toml("not valid toml {{{}}")
+    assert not valid
+    assert len(issues) > 0

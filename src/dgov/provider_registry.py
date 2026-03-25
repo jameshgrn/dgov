@@ -45,6 +45,10 @@ def _base_provider(kind: DecisionKind, *, session_root: str | None = None) -> De
                     InspectionReviewProvider(),
                 ]
             )
+        case DecisionKind.GENERATE_PLAN:
+            from dgov.decision_providers import PlanGenerationProvider
+
+            return PlanGenerationProvider()
         case _:
             raise UnsupportedDecisionError(f"No provider registered for {kind}")
 

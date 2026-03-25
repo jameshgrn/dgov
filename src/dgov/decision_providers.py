@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import re
+import tempfile
 import time
 from dataclasses import dataclass
 
@@ -9,6 +12,8 @@ from dgov.decision import (
     DecisionKind,
     DecisionProvider,
     DecisionRecord,
+    GeneratePlanDecision,
+    GeneratePlanRequest,
     MonitorOutputDecision,
     MonitorOutputRequest,
     ProviderError,
@@ -419,6 +424,183 @@ def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
             issues.append(line_stripped)
 
     return verdict, tuple(issues), summary
+
+
+@dataclass
+class PlanGenerationProvider(DecisionProvider):
+    """Generate plan TOML from goal + file context via LLM.
+
+    The provider is pure: all file contents and examples are pre-loaded
+    in the request. No file I/O happens here — the CLI is the I/O boundary.
+    """
+
+    provider_id: str = "plan-generation"
+    model: str = "qwen/qwen3.5-122b"
+
+    def capabilities(self) -> frozenset[DecisionKind]:
+        return frozenset({DecisionKind.GENERATE_PLAN})
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
+        from dgov.openrouter import _openrouter_request
+
+        started = time.perf_counter()
+        prompt = self._build_prompt(request)
+
+        try:
+            response = _openrouter_request(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model,
+                max_tokens=4000,
+                temperature=0.2,
+            )
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+        except Exception as exc:
+            raise ProviderError(f"Plan generation LLM call failed: {exc}") from exc
+
+        toml_text = self._extract_toml(content)
+        valid, issues = self._validate_toml(toml_text)
+        latency_ms = (time.perf_counter() - started) * 1000
+
+        return DecisionRecord(
+            kind=DecisionKind.GENERATE_PLAN,
+            provider_id=self.provider_id,
+            decision=GeneratePlanDecision(
+                plan_toml=toml_text,
+                valid=valid,
+                validation_issues=tuple(issues),
+            ),
+            model_id=response.get("model", self.model),
+            latency_ms=latency_ms,
+            trace_id=request.trace_id,
+        )
+
+    def _build_prompt(self, request: GeneratePlanRequest) -> str:
+        """Build the plan generation prompt from request context."""
+        sections = []
+
+        sections.append(
+            "You are a plan generator for dgov, a developer orchestration system.\n"
+            "Given a goal and file context, produce a COMPLETE, VALID TOML plan file.\n"
+            "\n"
+            "## TOML Plan Format\n"
+            "\n"
+            "[plan]\n"
+            "version = 1\n"
+            'name = "<slug>"\n'
+            'goal = "<goal>"\n'
+            'default_agent = "qwen-35b"\n'
+            "default_timeout_s = 300\n"
+            "max_retries = 2\n"
+            "\n"
+            "[[evals]]\n"
+            'id = "E1"\n'
+            'kind = "<kind>"  # one of: regression, happy_path, edge, invariant\n'
+            'statement = "<falsifiable statement>"\n'
+            'evidence = "<shell command, exit 0 = pass>"\n'
+            'scope = ["<files>"]\n'
+            "\n"
+            "[units.<slug>]\n"
+            'summary = "<one line>"\n'
+            'prompt = """\n'
+            "<worker instructions>\n"
+            '"""\n'
+            'commit_message = "<imperative, ≤72 chars>"\n'
+            'satisfies = ["E1"]\n'
+            "\n"
+            "[units.<slug>.files]\n"
+            'edit = ["<files>"]\n'
+        )
+
+        sections.append(
+            "## Rules\n"
+            "- EVAL-FIRST: write evals before units. Every unit satisfies ≥1 eval.\n"
+            "- Evidence: use 'uv run pytest <test_file> -q -m unit' for regression evals.\n"
+            "  Use 'uv run python3 -c \"...\"' for happy_path evals.\n"
+            "  NEVER reference specific test function names — use whole test files.\n"
+            "- Worker prompts: describe goal/why, list files to read, state constraints.\n"
+            "  End EVERY prompt with: ruff check, ruff format, pytest, git add, git commit.\n"
+            "- File paths: relative, no globs, no absolute paths.\n"
+            "- If units share files, add depends_on to serialize them.\n"
+            "- Prefer fewer larger units over many tiny ones.\n"
+            "- default_agent = 'qwen-35b' unless task is trivial (then 'qwen-9b').\n"
+        )
+
+        if request.constraints:
+            sections.append(
+                "## Constraints\n" + "\n".join(f"- {c}" for c in request.constraints) + "\n"
+            )
+
+        if request.active_claims:
+            sections.append(
+                "## Active Claims (avoid overlapping these files)\n"
+                + "\n".join(f"- {c}" for c in request.active_claims)
+                + "\n"
+            )
+
+        if request.plan_examples:
+            sections.append("## Example Plans\n")
+            for i, ex in enumerate(request.plan_examples[:2]):
+                sections.append(f"### Example {i + 1}\n```toml\n{ex[:2000]}\n```\n")
+
+        sections.append(f"## Goal\n{request.goal}\n")
+
+        if request.file_contents:
+            sections.append("## File Context\n")
+            for path, content in request.file_contents:
+                lines = content.splitlines()[:150]
+                truncated = "\n".join(lines)
+                sections.append(f"### {path}\n```python\n{truncated}\n```\n")
+
+        if request.files:
+            sections.append(
+                "## Files to Edit\n" + "\n".join(f"- {f}" for f in request.files) + "\n"
+            )
+
+        sections.append(
+            "## Output\n"
+            "Produce ONLY the TOML plan content. Wrap it in ```toml fences.\n"
+            "No explanation outside the fences."
+        )
+
+        return "\n".join(sections)
+
+    @staticmethod
+    def _extract_toml(content: str) -> str:
+        """Extract TOML from LLM response, handling markdown fences."""
+        # Try to extract from ```toml ... ``` fences
+        match = re.search(r"```toml\s*\n(.*?)```", content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+        # Try generic ``` fences
+        match = re.search(r"```\s*\n(.*?)```", content, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+        # No fences — assume the whole thing is TOML
+        return content.strip()
+
+    @staticmethod
+    def _validate_toml(toml_text: str) -> tuple[bool, list[str]]:
+        """Validate generated TOML by parsing and running validate_plan."""
+        from dgov.plan import parse_plan_file, validate_plan
+
+        if not toml_text.strip():
+            return False, ["Empty TOML output"]
+
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+                f.write(toml_text)
+                tmp_path = f.name
+            try:
+                plan = parse_plan_file(tmp_path)
+                issues = validate_plan(plan)
+                errors = [i.message for i in issues if i.severity == "error"]
+                return (len(errors) == 0, errors)
+            finally:
+                os.unlink(tmp_path)
+        except Exception as exc:
+            return False, [str(exc)]
 
 
 @dataclass
