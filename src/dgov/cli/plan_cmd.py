@@ -335,3 +335,133 @@ def plan_verify(run_id, project_root, session_root, timeout):
     click.echo(f"\n{passed} passed, {failed} failed, {len(results)} total")
     if failed:
         raise SystemExit(2)
+
+
+@plan_cmd.command("resume")
+@click.argument("plan_file", type=click.Path(exists=True))
+@click.option(
+    "--run-id", type=int, default=None, help="Specific run ID (default: most recent failed)"
+)
+@click.option("--wait", is_flag=True, help="Block until DAG completes")
+@click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
+def plan_resume(plan_file, run_id, wait, max_concurrent):
+    """Resume a failed or partial plan run, skipping already-merged units."""
+    from pathlib import Path
+
+    from dgov.persistence import (
+        _get_db,
+        ensure_dag_tables,
+        get_dag_run,
+        list_dag_tasks,
+    )
+
+    abs_path = str(Path(plan_file).resolve())
+    session_root = os.path.abspath(".")
+    ensure_dag_tables(session_root)
+
+    if run_id is not None:
+        existing = get_dag_run(session_root, run_id)
+        if not existing:
+            click.secho(f"DAG run {run_id} not found", fg="red")
+            raise SystemExit(1)
+        if existing["status"] not in ("failed", "partial"):
+            click.secho(
+                f"Run {run_id} status is '{existing['status']}' — only failed/partial can resume",
+                fg="red",
+            )
+            raise SystemExit(1)
+    else:
+        conn = _get_db(session_root)
+        row = conn.execute(
+            "SELECT id, status FROM dag_runs"
+            " WHERE dag_file = ? AND status IN (?, ?)"
+            " ORDER BY id DESC LIMIT 1",
+            (abs_path, "failed", "partial"),
+        ).fetchone()
+        if not row:
+            click.secho(f"No failed or partial runs found for {plan_file}", fg="red")
+            raise SystemExit(1)
+        run_id = row[0]
+        click.echo(f"Resuming run {run_id} (status: {row[1]})")
+
+    task_rows = list_dag_tasks(session_root, run_id)
+    already_done = {r["slug"] for r in task_rows if r.get("status") in ("merged",)}
+    if already_done:
+        click.echo(f"Skipping {len(already_done)} merged: {', '.join(sorted(already_done))}")
+
+    from dgov.executor import run_resume_dag
+
+    run_resume_dag(session_root, run_id)
+
+    from dgov.plan import run_plan
+
+    try:
+        result = run_plan(plan_file, max_concurrent=max_concurrent, skip=already_done or None)
+    except ValueError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(1) from None
+
+    new_run_id = result.run_id
+    click.echo(json.dumps({"run_id": new_run_id, "resumed_from": run_id, "status": result.status}))
+
+    if not wait:
+        return
+
+    # Same --wait event loop as plan_run
+    from dgov.persistence import latest_event_id, wait_for_events
+
+    cursor = latest_event_id(session_root)
+    _PROGRESS_EVENTS = (
+        "dag_task_dispatched",
+        "pane_done",
+        "pane_failed",
+        "review_pass",
+        "review_fail",
+        "merge_completed",
+        "dag_completed",
+        "dag_failed",
+        "evals_verified",
+    )
+
+    while True:
+        events = wait_for_events(
+            session_root, after_id=cursor, event_types=_PROGRESS_EVENTS, timeout_s=3600.0
+        )
+        for ev in events:
+            cursor = max(cursor, ev["id"])
+            kind = ev.get("event", "")
+            dag_rid = ev.get("dag_run_id")
+            if dag_rid is not None and dag_rid != new_run_id:
+                continue
+            if kind == "dag_task_dispatched":
+                click.echo(f"  dispatched: {ev.get('task', ev.get('pane', ''))}")
+            elif kind == "pane_done":
+                click.echo(f"  done: {ev.get('pane', '')}")
+            elif kind == "pane_failed":
+                click.echo(f"  failed: {ev.get('pane', '')}")
+            elif kind == "review_pass":
+                click.echo(f"  review pass: {ev.get('pane', '')}")
+            elif kind == "review_fail":
+                click.echo(f"  review fail: {ev.get('pane', '')}")
+            elif kind == "merge_completed":
+                click.echo(f"  merged: {ev.get('pane', '')}")
+            elif kind in ("dag_completed", "dag_failed"):
+                click.echo(f"  DAG {kind.split('_')[1]}")
+            elif kind == "evals_verified":
+                run = get_dag_run(session_root, new_run_id)
+                status = run["status"] if run else "unknown"
+                eval_results = run.get("eval_results", []) if run else []
+                passed = sum(1 for r in eval_results if r["passed"])
+                failed_count = sum(1 for r in eval_results if not r["passed"])
+                click.echo(f"\nDAG run {new_run_id}: {status}")
+                for r in eval_results:
+                    m = "PASS" if r["passed"] else "FAIL"
+                    c = "green" if r["passed"] else "red"
+                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
+                if eval_results:
+                    click.echo(f"  {passed} passed, {failed_count} failed")
+                if status != "completed":
+                    raise SystemExit(1)
+                if failed_count:
+                    raise SystemExit(2)
+                return
