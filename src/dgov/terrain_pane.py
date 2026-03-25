@@ -45,6 +45,82 @@ def _detect_pane_size(console: Console) -> tuple[int, int]:
     )
 
 
+def _compute_hud(model: ErosionModel) -> Text:
+    """Compute terrain maturity metrics and format as Rich Text HUD.
+
+    Returns a single-line HUD with 5 compact metrics:
+    - dz: mean |delta_z| (terrain change rate)
+    - mat: maturity (0.0 youthful to 1.0 settled)
+    - e/u: erosion/uplift balance ratio
+    - ch: active channel count
+    - state label (youthful/organizing/mature/settled) with color coding
+
+    Example output: "dz:0.0042  mat:0.73  e/u:1.42  ch:47  [settled]"
+    """
+    hud = Text()
+
+    # 1. mean |dz|: Average of recent deltas if non-empty, else 0.0
+    if model._ring_buffer:
+        mean_dz = sum(model._ring_buffer) / len(model._ring_buffer)
+    else:
+        mean_dz = 0.0
+    hud.append(f"dz:{mean_dz:.4f}", "dim white")
+
+    # 2. maturity: model.maturity property (0.0 to 1.0)
+    maturity = model.maturity
+    hud.append("  ", "none")
+    hud.append(f"mat:{maturity:.2f}", "cyan")
+
+    # 3. erosion/uplift balance: compare recent trend of mean deltas
+    if len(model._ring_buffer) >= 2:
+        # Take last two values to determine trend
+        recent = model._ring_buffer[-1]
+        older = model._ring_buffer[-2]
+        if recent < older:
+            # Erosion winning (terrain settling down)
+            ratio_str = f"{older / recent:.2f}" if recent > 0 else "inf"
+            hud.append("  ", "none")
+            hud.append(f"e/u:{ratio_str}", "bold bright_cyan")
+        else:
+            # Uplift winning (terrain building up)
+            ratio_str = f"{recent / older:.2f}" if older > 0 else "inf"
+            hud.append("  ", "none")
+            hud.append(f"e/u:{ratio_str}", "bold bright_green")
+    else:
+        hud.append("  ", "none")
+        hud.append("e/u:—", "dim white")
+
+    # 4. active channels: count cells where area exceeds river threshold
+    river_thresh = model.width * 0.4
+    channel_count = sum(
+        1
+        for r in range(model.height_count)
+        for c in range(model.width)
+        if model.area[r][c] > river_thresh
+    )
+    hud.append("  ", "none")
+    hud.append(f"ch:{channel_count}", "yellow")
+
+    # 5. state label: derived from maturity thresholds with color coding
+    if maturity < 0.25:
+        state = "youthful"
+        style = "bold bright_green"
+    elif maturity < 0.50:
+        state = "organizing"
+        style = "bold yellow"
+    elif maturity < 0.75:
+        state = "mature"
+        style = "bold cyan"
+    else:
+        state = "settled"
+        style = "dim white"
+
+    hud.append("  ", "none")
+    hud.append(f"[{state}]", style)
+
+    return hud
+
+
 def _clamp_rendered(rendered: Text, width: int, height: int) -> Text:
     """Crop rendered terrain to the visible panel area and disable wrapping."""
     lines = rendered.split(allow_blank=True)
@@ -162,7 +238,11 @@ def run_terrain(refresh: float = 0.5) -> None:
         tick += 1
         n = len(agents_cache)
         title = f"Terrain  t={tick}" + (f"  [{n} agents]" if n else "")
-        return Panel(rendered, title=title, border_style="green")
+
+        # Compute HUD metrics
+        hud = _compute_hud(model) if model is not None else Text("")
+
+        return Panel(rendered, title=title, subtitle=hud, border_style="green")
 
     time.sleep(_STARTUP_DELAY_S)
 
