@@ -50,7 +50,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
 [decision system]
   src/dgov/context_packet.py (S): Compiled task context shared across preflight, prompts, and instructions. -> test_context_packet.py
   src/dgov/decision.py (L): Typed decision requests, records, and provider wrappers. -> test_decision.py
-  src/dgov/decision_providers.py (M): Concrete decision providers built on existing dgov transports. -> test_decision_providers.py
+  src/dgov/decision_providers.py (S): # Error parsing: invalid syntax (decision_providers.py, line 443) -> test_decision_providers.py
   src/dgov/provider_registry.py (S): Central provider selection and optional decision journaling. -> test_provider_registry.py
 [higher-level workflows]
   src/dgov/batch.py (M): Batch execution and checkpoint management. -> test_batch.py

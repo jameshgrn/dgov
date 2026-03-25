@@ -209,17 +209,88 @@ def plan_run(plan_file, max_concurrent, wait):
                 return
 
 
+def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
+    """Generate a complete plan TOML using PlanGenerationProvider."""
+    from pathlib import Path
+
+    from dgov.decision import DecisionKind, GeneratePlanRequest
+    from dgov.provider_registry import get_provider
+
+    file_contents: list[tuple[str, str]] = []
+    for f in files:
+        try:
+            file_contents.append((f, Path(f).read_text()[:10000]))
+        except OSError:
+            pass
+
+    plan_examples: list[str] = []
+    plans_dir = Path(".dgov/plans")
+    if plans_dir.is_dir():
+        for plan_file in sorted(plans_dir.glob("*.toml"))[:2]:
+            try:
+                plan_examples.append(plan_file.read_text()[:3000])
+            except OSError:
+                pass
+
+    active_claims: list[str] = []
+    try:
+        from dgov.persistence import list_active_dag_runs
+
+        session_root = os.path.abspath(".")
+        for run in list_active_dag_runs(session_root):
+            try:
+                import json
+
+                defn = json.loads(run.get("definition_json", "{}"))
+                for task in defn.get("tasks", []):
+                    active_claims.extend(task.get("file_claims", []))
+            except (json.JSONDecodeError, TypeError):
+                pass
+    except Exception:
+        pass
+
+    request = GeneratePlanRequest(
+        goal=goal,
+        files=tuple(files),
+        file_contents=tuple(file_contents),
+        plan_examples=tuple(plan_examples),
+        active_claims=tuple(sorted(set(active_claims))),
+    )
+
+    provider = get_provider(DecisionKind.GENERATE_PLAN, session_root=os.path.abspath("."))
+    result = provider.generate_plan(request)
+    decision = result.decision
+
+    if decision.questions:
+        click.secho("Planner has questions:", fg="yellow")
+        for q in decision.questions:
+            click.secho(f"  ? {q}", fg="yellow")
+        click.echo()
+
+    if not decision.valid:
+        click.secho("Warning: generated plan has validation issues:", fg="yellow")
+        for issue in decision.validation_issues:
+            click.secho(f"  - {issue}", fg="yellow")
+        click.echo()
+
+    return decision.plan_toml
+
+
 @plan_cmd.command("scaffold")
 @click.option("--goal", required=True, help="Plan goal statement")
 @click.option("--files", required=True, multiple=True, help="Files to edit (repeat for multiple)")
 @click.option("--name", default="", help="Plan name (derived from goal if empty)")
 @click.option("-o", "--output", default="", help="Write to file instead of stdout")
 @click.option("--dry-run", is_flag=True, help="Print to stdout even if -o is set")
-def plan_scaffold(goal, files, name, output, dry_run):
+@click.option("--auto", is_flag=True, help="Use LLM to generate complete plan (not just template)")
+def plan_scaffold(goal, files, name, output, dry_run, auto):
     """Generate a TOML plan template from goal and file list."""
-    from dgov.plan import scaffold_plan
+    if auto:
+        toml_text = _scaffold_auto(goal, list(files), name)
+    else:
+        from dgov.plan import scaffold_plan
 
-    toml_text = scaffold_plan(goal, list(files), name=name)
+        toml_text = scaffold_plan(goal, list(files), name=name)
     if output and not dry_run:
         with open(output, "w") as f:
             f.write(toml_text)

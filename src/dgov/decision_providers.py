@@ -428,34 +428,43 @@ def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
 
 @dataclass
 class PlanGenerationProvider(DecisionProvider):
-    """Generate plan TOML from goal + file context via LLM.
+    """Generate plan TOML from goal + file context via Claude CLI.
 
     The provider is pure: all file contents and examples are pre-loaded
     in the request. No file I/O happens here — the CLI is the I/O boundary.
+
+    Uses `claude -p --model claude-sonnet-4-6` via subprocess with OAuth,
+    not an API call. Falls back to OpenRouter if claude CLI is unavailable.
     """
 
     provider_id: str = "plan-generation"
-    model: str = "qwen/qwen3.5-122b"
+    model: str = "claude-sonnet-4-6"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return frozenset({DecisionKind.GENERATE_PLAN})
 
     def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        from dgov.openrouter import _openrouter_request
+        import subprocess
 
         started = time.perf_counter()
         prompt = self._build_prompt(request)
 
         try:
-            response = _openrouter_request(
-                messages=[{"role": "user", "content": prompt}],
-                model=self.model,
-                max_tokens=4000,
-                temperature=0.2,
+            result = subprocess.run(
+                ["claude", "-p", "--model", self.model],
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=120,
             )
-            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if result.returncode != 0:
+                raise RuntimeError(f"claude exit {result.returncode}: {result.stderr[:500]}")
+            content = result.stdout
+        except FileNotFoundError:
+            # claude CLI not available — fall back to OpenRouter
+            content = self._fallback_openrouter(prompt)
         except Exception as exc:
-            raise ProviderError(f"Plan generation LLM call failed: {exc}") from exc
+            raise ProviderError(f"Plan generation failed: {exc}") from exc
 
         toml_text = self._extract_toml(content)
         valid, issues = self._validate_toml(toml_text)
@@ -469,10 +478,23 @@ class PlanGenerationProvider(DecisionProvider):
                 valid=valid,
                 validation_issues=tuple(issues),
             ),
-            model_id=response.get("model", self.model),
+            model_id=self.model,
             latency_ms=latency_ms,
             trace_id=request.trace_id,
         )
+
+    @staticmethod
+    def _fallback_openrouter(prompt: str) -> str:
+        """Fall back to OpenRouter if claude CLI is unavailable."""
+        from dgov.openrouter import _openrouter_request
+
+        response = _openrouter_request(
+            messages=[{"role": "user", "content": prompt}],
+            model="anthropic/claude-sonnet-4-6",
+            max_tokens=4000,
+            temperature=0.2,
+        )
+        return response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
     def _build_prompt(self, request: GeneratePlanRequest) -> str:
         """Build the plan generation prompt from request context."""
@@ -504,7 +526,7 @@ class PlanGenerationProvider(DecisionProvider):
             'prompt = """\n'
             "<worker instructions>\n"
             '"""\n'
-            'commit_message = "<imperative, ≤72 chars>"\n'
+            'commit_message = "<imperative, <=72 chars>"\n'
             'satisfies = ["E1"]\n'
             "\n"
             "[units.<slug>.files]\n"
@@ -513,7 +535,7 @@ class PlanGenerationProvider(DecisionProvider):
 
         sections.append(
             "## Rules\n"
-            "- EVAL-FIRST: write evals before units. Every unit satisfies ≥1 eval.\n"
+            "- EVAL-FIRST: write evals before units. Every unit satisfies >= 1 eval.\n"
             "- Evidence: use 'uv run pytest <test_file> -q -m unit' for regression evals.\n"
             "  Use 'uv run python3 -c \"...\"' for happy_path evals.\n"
             "  NEVER reference specific test function names — use whole test files.\n"
@@ -567,17 +589,14 @@ class PlanGenerationProvider(DecisionProvider):
     @staticmethod
     def _extract_toml(content: str) -> str:
         """Extract TOML from LLM response, handling markdown fences."""
-        # Try to extract from ```toml ... ``` fences
         match = re.search(r"```toml\s*\n(.*?)```", content, re.DOTALL)
         if match:
             return match.group(1).strip()
 
-        # Try generic ``` fences
         match = re.search(r"```\s*\n(.*?)```", content, re.DOTALL)
         if match:
             return match.group(1).strip()
 
-        # No fences — assume the whole thing is TOML
         return content.strip()
 
     @staticmethod
