@@ -220,6 +220,7 @@ def cli(ctx, governor):
         "codebase",
         "transcript",
         "plan",
+        "config",
     ):
         _check_governor_context()
 
@@ -457,6 +458,7 @@ def refresh_cmd(project_root):
 from dgov.cli.admin import (  # noqa: E402
     blame,
     codebase_cmd,
+    config_cmd,
     dashboard,
     doctor_cmd,
     gc_cmd,
@@ -494,6 +496,7 @@ cli.add_command(status)
 cli.add_command(rebase)
 cli.add_command(blame)
 cli.add_command(codebase_cmd)
+cli.add_command(config_cmd)
 cli.add_command(list_agents)
 cli.add_command(version_cmd)
 cli.add_command(stats)

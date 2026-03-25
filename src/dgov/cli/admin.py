@@ -1108,6 +1108,41 @@ def recover_cmd(project_root, session_root):
     click.echo("Run dgov pane land <slug> or dgov pane close <slug> to resolve.")
 
 
+@click.group("config")
+def config_cmd():
+    """View and manage dgov configuration."""
+    pass
+
+
+@config_cmd.command("show")
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+def config_show(project_root):
+    """Print effective configuration (merged defaults + user + project)."""
+    from dgov.config import load_config
+
+    config = load_config(project_root=os.path.abspath(project_root))
+    _print_toml(config)
+
+
+def _print_toml(d: dict, prefix: str = ""):
+    """Print a nested dict as TOML to stdout."""
+    # Print simple keys first
+    for k, v in d.items():
+        if not isinstance(v, dict):
+            if isinstance(v, str):
+                click.echo(f'{prefix}{k} = "{v}"')
+            elif isinstance(v, bool):
+                click.echo(f"{prefix}{k} = {'true' if v else 'false'}")
+            elif isinstance(v, int):
+                click.echo(f"{prefix}{k} = {v}")
+    # Then nested tables
+    for k, v in d.items():
+        if isinstance(v, dict):
+            section = f"{prefix}{k}" if not prefix else f"{prefix}{k}"
+            click.echo(f"\n[{section}]")
+            _print_toml(v, prefix=f"{section}.")
+
+
 @click.command("gc")
 @click.option("--project-root", "-r", default=".", help="Project root")
 @SESSION_ROOT_OPTION

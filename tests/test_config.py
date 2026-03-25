@@ -9,6 +9,19 @@ from dgov.config import _deep_merge, get_provider_config, load_config
 pytestmark = pytest.mark.unit
 
 
+def test_config_show_prints_toml(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from dgov.cli.admin import config_show
+
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path / "fakehome")
+    runner = CliRunner()
+    result = runner.invoke(config_show, ["--project-root", str(tmp_path)])
+    assert result.exit_code == 0
+    assert "plan_generation" in result.output
+    assert "claude-cli" in result.output
+
+
 def test_load_config_returns_defaults_when_no_files(tmp_path, monkeypatch):
     monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path / "fakehome")
     config = load_config(project_root=str(tmp_path / "noproject"))
