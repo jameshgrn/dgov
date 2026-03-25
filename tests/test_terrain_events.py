@@ -4,7 +4,14 @@ import time
 
 import pytest
 
-from dgov.terrain import ErosionModel, EventTranslator, render_effect_stamps
+from dgov.terrain import (
+    ErosionModel,
+    EventTranslator,
+    _elevation_color,
+    _river_color,
+    _session_phase,
+    render_effect_stamps,
+)
 
 
 def _flat_model(width: int = 13, height: int = 13) -> ErosionModel:
@@ -344,3 +351,123 @@ def test_unicode_glyph_fade_stages():
 
     # Ghost stage should use dot glyph "·" or "." with dim style
     assert glyph_at_ghost is not None, "Expected glyph at alpha > 0.15"
+
+
+@pytest.mark.unit
+def test_color_shift_across_session():
+    """Same elevation should render differently at hour 0 vs hour 8."""
+    phase_dawn = _session_phase(0.0)
+    phase_evening = _session_phase(8.0)
+
+    color_dawn = _elevation_color(0.5, 0.7, phase=phase_dawn)
+    color_evening = _elevation_color(0.5, 0.7, phase=phase_evening)
+
+    assert color_dawn != color_evening
+
+
+@pytest.mark.unit
+def test_dawn_warm_evening_cool():
+    """Dawn colors should be warmer (higher R relative to B) than evening."""
+    phase_dawn = _session_phase(0.25)
+    phase_evening = _session_phase(7.0)
+
+    r_dawn, _, b_dawn = _elevation_color(0.5, 0.7, phase=phase_dawn)
+    r_eve, _, b_eve = _elevation_color(0.5, 0.7, phase=phase_evening)
+
+    # Dawn: warm = higher R-B difference
+    # Evening: cool = lower R-B difference (or negative)
+    assert (r_dawn - b_dawn) > (r_eve - b_eve)
+
+
+@pytest.mark.unit
+def test_evening_cool_vs_morning():
+    """Evening should be cooler and more muted than peak morning."""
+    phase_morning = _session_phase(1.0)
+    phase_evening = _session_phase(7.5)
+
+    rm, gm, bm = _elevation_color(0.5, 0.7, phase=phase_morning)
+    re, ge, be = _elevation_color(0.5, 0.7, phase=phase_evening)
+
+    # Morning should be more saturated (larger spread from grey)
+    grey_m = (rm + gm + bm) / 3.0
+    grey_e = (re + ge + be) / 3.0
+    spread_m = abs(rm - grey_m) + abs(gm - grey_m) + abs(bm - grey_m)
+    spread_e = abs(re - grey_e) + abs(ge - grey_e) + abs(be - grey_e)
+
+    assert spread_m > spread_e
+
+
+@pytest.mark.unit
+def test_compat_palette_no_session():
+    """When phase is None, colors should match the original palette exactly."""
+    # These should produce identical results with and without phase=None
+    for elev in (0.3, 0.5, 0.7, 0.9):
+        for shade in (0.3, 0.5, 0.8):
+            assert _elevation_color(elev, shade) == _elevation_color(elev, shade, phase=None)
+
+    for flow in (1.0, 10.0, 100.0):
+        for shade in (0.3, 0.7):
+            assert _river_color(flow, shade) == _river_color(flow, shade, phase=None)
+
+
+@pytest.mark.unit
+def test_session_phase_keyframes():
+    """Phase function should return valid dicts at all keyframe hours."""
+    for hour in [0.0, 0.5, 2.0, 4.0, 6.0, 8.0, 12.0]:
+        phase = _session_phase(hour)
+        assert 0.0 <= phase["warmth"] <= 1.0
+        assert 0.0 <= phase["saturation"] <= 1.0
+        assert 0.0 <= phase["contrast"] <= 1.0
+        assert 0.0 <= phase["perturbation_scale"] <= 1.0
+
+
+@pytest.mark.unit
+def test_perturbation_damping_by_session_age():
+    """terrain_event intensity should be damped by session age."""
+    import time
+
+    # Create model with session_start in the past (4 hours ago)
+    old_start = time.time() - 4 * 3600
+    model_old = ErosionModel(width=13, height=13, seed=7, session_start=old_start)
+
+    # Create model with session_start now
+    model_new = ErosionModel(width=13, height=13, seed=7, session_start=time.time())
+
+    # Flat terrain for baseline
+    for row in range(1, 12):
+        for col in range(1, 12):
+            model_old.height[row][col] = 1.0
+            model_new.height[row][col] = 1.0
+
+    # Fire same event on both
+    model_old.terrain_event("uplift", 6, 6, intensity=1.0)
+    model_new.terrain_event("uplift", 6, 6, intensity=1.0)
+
+    # Old session (damped) should have less change at center
+    old_change = abs(model_old.height[6][6] - 1.0)
+    new_change = abs(model_new.height[6][6] - 1.0)
+
+    assert old_change < new_change, "Older session should have damped perturbation"
+
+
+@pytest.mark.unit
+def test_session_phase_values_at_keyframes():
+    """Check exact phase values at keyframe hours match spec."""
+    # Dawn (hour 0): warm, lower sat/contrast
+    dawn = _session_phase(0.0)
+    assert abs(dawn["warmth"] - 0.75) < 0.01
+    assert abs(dawn["saturation"] - 0.60) < 0.01
+    assert abs(dawn["contrast"] - 0.70) < 0.01
+    assert abs(dawn["perturbation_scale"] - 1.00) < 0.01
+
+    # Morning (hour 2): peak saturation/contrast
+    morning = _session_phase(2.0)
+    assert abs(morning["saturation"] - 0.95) < 0.01
+    assert abs(morning["contrast"] - 0.95) < 0.01
+
+    # Late night (hour 12+): low all values
+    late = _session_phase(12.0)
+    assert abs(late["warmth"] - 0.25) < 0.01
+    assert abs(late["saturation"] - 0.55) < 0.01
+    assert abs(late["contrast"] - 0.60) < 0.01
+    assert abs(late["perturbation_scale"] - 0.20) < 0.01

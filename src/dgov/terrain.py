@@ -15,6 +15,95 @@ from rich.text import Text
 _D8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 _D8_DIST = [math.sqrt(2), 1.0, math.sqrt(2), 1.0, 1.0, math.sqrt(2), 1.0, math.sqrt(2)]
 
+# Keyframes: (session_age_hrs, warmth, sat, contrast, perturbation_scale)
+# Dawn: warm golden light (high warmth, low-medium sat)
+# Morning: vibrant and punchy (lower warmth, high sat/contrast)
+# Midday: bright but less intense (moderate warmth/sat/contrast)
+# Afternoon: gentle warmth building (higher warmth)
+# Evening: calm cool tones (low warmth/sat/contrast)
+# Late night: subdued and grey (very low values)
+_PHASE_KEYS = [
+    (0.0, 0.75, 0.60, 0.70, 1.00),
+    (0.5, 0.45, 1.00, 1.00, 0.90),
+    (2.0, 0.50, 0.95, 0.95, 0.70),
+    (4.0, 0.60, 0.85, 0.85, 0.50),
+    (6.0, 0.35, 0.65, 0.70, 0.30),
+    (8.0, 0.25, 0.55, 0.60, 0.20),
+]
+
+
+def _clamp(v: int) -> int:
+    clamped = max(0, min(255, v))
+    return (clamped // _Q) * _Q
+
+
+def _session_phase(session_age_hours: float) -> dict:
+    """Compute visual parameters from session age for workday dramaturgy.
+
+    Returns dict with:
+        warmth: float 0.0 (cool blue) to 1.0 (warm amber)
+        saturation: float 0.0 (grey) to 1.0 (vivid)
+        contrast: float 0.5 (flat) to 1.0 (punchy)
+        perturbation_scale: float 0.0 to 1.0 (event intensity multiplier)
+    """
+    if session_age_hours <= 0.0:
+        return _phase_at_hour(0.0)
+    if session_age_hours >= _PHASE_KEYS[-1][0]:
+        return _phase_at_hour(_PHASE_KEYS[-1][0])
+
+    # Find the two keyframes to lerp between
+    for i in range(len(_PHASE_KEYS) - 1):
+        hour_a, _, _, _, _ = _PHASE_KEYS[i]
+        hour_b, _, _, _, _ = _PHASE_KEYS[i + 1]
+        if hour_a <= session_age_hours <= hour_b:
+            return _lerp_between(session_age_hours, _PHASE_KEYS[i], _PHASE_KEYS[i + 1])
+
+    # Should never reach here due to clamp above
+    return _phase_at_hour(0.0)
+
+
+def _phase_at_hour(hour: float) -> dict:
+    """Return phase dict for an exact hour (used as helper for clamping)."""
+    for h, warmth, saturation, contrast, perturbation in _PHASE_KEYS:
+        if abs(h - hour) < 1e-9:
+            return {
+                "warmth": warmth,
+                "saturation": saturation,
+                "contrast": contrast,
+                "perturbation_scale": perturbation,
+            }
+    # Fallback to last keyframe
+    h, warmth, saturation, contrast, perturbation = _PHASE_KEYS[-1]
+    return {
+        "warmth": warmth,
+        "saturation": saturation,
+        "contrast": contrast,
+        "perturbation_scale": perturbation,
+    }
+
+
+def _lerp_between(age_hours: float, key_a: tuple, key_b: tuple) -> dict:
+    """Lerp between two phase keyframes."""
+    hour_a, w_a, s_a, c_a, p_a = key_a
+    hour_b, w_b, s_b, c_b, p_b = key_b
+
+    if abs(hour_b - hour_a) < 1e-9:
+        return {
+            "warmth": w_a,
+            "saturation": s_a,
+            "contrast": c_a,
+            "perturbation_scale": p_a,
+        }
+
+    t = (age_hours - hour_a) / (hour_b - hour_a)
+    return {
+        "warmth": w_a + (w_b - w_a) * t,
+        "saturation": s_a + (s_b - s_a) * t,
+        "contrast": c_a + (c_b - c_a) * t,
+        "perturbation_scale": p_a + (p_b - p_a) * t,
+    }
+
+
 _LETTER_D = ["11110", "10001", "10001", "10001", "10001", "10001", "11110"]
 _LETTER_G = ["01110", "10001", "10000", "10110", "10001", "10001", "01110"]
 _LETTER_O = ["01110", "10001", "10001", "10001", "10001", "10001", "01110"]
@@ -513,12 +602,24 @@ class ErosionModel:
         return max(1, round(2.5 * age_factor))
 
     def terrain_event(self, event_type: str, row: int, col: int, intensity: float = 1.0) -> None:
-        """Apply a localized terrain perturbation around an interior cell."""
+        """Apply a localized terrain perturbation around an interior cell.
+
+        Perturbation intensity is damped by session phase when session_start is set.
+        Events later in the day have less impact — the landscape becomes calmer.
+        """
         if not (0 <= row < self.height_count and 0 <= col < self.width):
             raise ValueError(
                 f"terrain_event position out of bounds: row={row}, col={col}, "
                 f"size={self.height_count}x{self.width}"
             )
+
+        # Apply perturbation damping based on session age
+        if self.session_start is not None:
+            import time
+
+            age_hours = (time.time() - self.session_start) / 3600.0
+            phase = _session_phase(age_hours)
+            intensity = intensity * phase["perturbation_scale"]
 
         event_specs = {
             "uplift": (5, 0.08),
@@ -621,31 +722,85 @@ def _clamp(v: int) -> int:
     return (clamped // _Q) * _Q
 
 
-def _elevation_color(elev: float, shade: float) -> tuple[int, int, int]:
-    """Map elevation to RGB, modulated by hillshade for 3D effect."""
+def _elevation_color(elev: float, shade: float, phase: dict | None = None) -> tuple[int, int, int]:
+    """Map elevation to RGB, modulated by hillshade for 3D effect.
+
+    When phase is provided, applies session-based color adjustments:
+        warmth: shifts temperature (warmth > 0.5 adds red/amber)
+        saturation: scales deviation from grey
+        contrast: scales deviation from midpoint (128)
+    """
     s = 0.3 + 0.7 * shade
     if elev > 0.85:
         # Snow/peaks
-        return (_clamp(int(230 * s)), _clamp(int(225 * s)), _clamp(int(215 * s)))
-    if elev > 0.65:
+        r, g, b = _clamp(int(230 * s)), _clamp(int(225 * s)), _clamp(int(215 * s))
+    elif elev > 0.65:
         # Rocky/tan ridges
-        return (_clamp(int(165 * s)), _clamp(int(130 * s)), _clamp(int(85 * s)))
-    if elev > 0.40:
+        r, g, b = _clamp(int(165 * s)), _clamp(int(130 * s)), _clamp(int(85 * s))
+    elif elev > 0.40:
         # Green slopes
-        return (_clamp(int(65 * s)), _clamp(int(140 * s)), _clamp(int(55 * s)))
-    # Dark green lowland
-    return (_clamp(int(45 * s)), _clamp(int(100 * s)), _clamp(int(40 * s)))
+        r, g, b = _clamp(int(65 * s)), _clamp(int(140 * s)), _clamp(int(55 * s))
+    else:
+        # Dark green lowland
+        r, g, b = _clamp(int(45 * s)), _clamp(int(100 * s)), _clamp(int(40 * s))
+
+    if phase is not None:
+        # Apply warmth shift (temperature)
+        w = phase["warmth"]
+        warm_shift = (w - 0.5) * 40  # -20 to +20 range
+        r = _clamp(int(r + warm_shift))
+        b = _clamp(int(b - warm_shift))
+
+        # Apply saturation scaling from grey
+        sat = phase["saturation"]
+        grey = (r + g + b) // 3
+        r = _clamp(int(grey + (r - grey) * sat))
+        g = _clamp(int(grey + (g - grey) * sat))
+        b = _clamp(int(grey + (b - grey) * sat))
+
+        # Apply contrast scaling from midpoint
+        con = phase["contrast"]
+        r = _clamp(int(128 + (r - 128) * con))
+        g = _clamp(int(128 + (g - 128) * con))
+        b = _clamp(int(128 + (b - 128) * con))
+
+    return (r, g, b)
 
 
-def _river_color(flow: float, shade: float) -> tuple[int, int, int]:
-    """Blue river, brighter with more flow."""
+def _river_color(flow: float, shade: float, phase: dict | None = None) -> tuple[int, int, int]:
+    """Blue river, brighter with more flow.
+
+    When phase is provided, applies session-based color adjustments same as elevation.
+    """
     s = 0.4 + 0.6 * shade
     intensity = min(1.0, 0.5 + 0.5 * math.log(max(flow, 1)) / 6.0)
-    return (
+    r, g, b = (
         _clamp(int(30 * s)),
         _clamp(int(80 * intensity * s)),
         _clamp(int(200 * intensity * s)),
     )
+
+    if phase is not None:
+        # Apply warmth shift (temperature)
+        w = phase["warmth"]
+        warm_shift = (w - 0.5) * 40  # -20 to +20 range
+        r = _clamp(int(r + warm_shift))
+        b = _clamp(int(b - warm_shift))
+
+        # Apply saturation scaling from grey
+        sat = phase["saturation"]
+        grey = (r + g + b) // 3
+        r = _clamp(int(grey + (r - grey) * sat))
+        g = _clamp(int(grey + (g - grey) * sat))
+        b = _clamp(int(grey + (b - grey) * sat))
+
+        # Apply contrast scaling from midpoint
+        con = phase["contrast"]
+        r = _clamp(int(128 + (r - 128) * con))
+        g = _clamp(int(128 + (g - 128) * con))
+        b = _clamp(int(128 + (b - 128) * con))
+
+    return (r, g, b)
 
 
 def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
@@ -659,6 +814,14 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
     display_cols = cols // supersample
 
     river_thresh = max(display_cols * 0.4, 20.0) * (supersample**2)
+
+    # Compute session phase for visual adjustments
+    phase: dict | None = None
+    if model.session_start is not None:
+        import time
+
+        age_hours = (time.time() - model.session_start) / 3600.0
+        phase = _session_phase(age_hours)
 
     # Compute hillshade per cell
     shade = [[0.5] * cols for _ in range(rows)]
@@ -722,9 +885,9 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
             heat /= supersample * supersample
 
         if flow > river_thresh and elev < 0.80:
-            base_color = _river_color(flow, s)
+            base_color = _river_color(flow, s, phase=phase)
         else:
-            base_color = _elevation_color(elev, s)
+            base_color = _elevation_color(elev, s, phase=phase)
 
         # Blend activity heat into color (warm amber tint for recent activity)
         r_val, g_val, b_val = base_color
