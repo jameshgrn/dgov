@@ -616,7 +616,6 @@ def _apply_monitor_events(
         state.event_cursor = max(state.event_cursor, int(event.get("id", state.event_cursor)))
         kind = str(event.get("event", ""))
         slug = str(event.get("pane", ""))
-        data = json.loads(event.get("data", "{}"))
 
         if kind == "dispatch_queued":
             state.queue_dirty = True
@@ -624,7 +623,7 @@ def _apply_monitor_events(
 
         # DAG-level events
         if kind == "dag_started":
-            run_id = data.get("dag_run_id")
+            run_id = event.get("dag_run_id")
             if run_id and run_id not in state.active_dags:
                 run = get_dag_run(session_root, run_id)
                 if run:
@@ -634,7 +633,7 @@ def _apply_monitor_events(
             continue
 
         if kind in ("dag_completed", "dag_failed"):
-            run_id = data.get("dag_run_id")
+            run_id = event.get("dag_run_id")
             if run_id in state.active_dags:
                 del state.active_dags[run_id]
             # Pane cleanup happens inline in _drive_dag after DagDone.
@@ -675,7 +674,7 @@ def _apply_monitor_events(
             elif kind == "pane_closed":
                 dag_ev = TaskClosed(task_slug)
             elif kind == "dag_resumed":
-                dag_ev = TaskGovernorResumed(task_slug, action=data.get("action", "retry"))
+                dag_ev = TaskGovernorResumed(task_slug, action=event.get("action", "retry"))
 
         if dag_to_drive and dag_ev:
             new_actions = dag_to_drive.kernel.handle(dag_ev)

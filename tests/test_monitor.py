@@ -620,6 +620,49 @@ class TestMonitorEventState:
         assert "worker-2" in state.retry_candidates
 
 
+class TestApplyDagEvents:
+    """Regression test: dag_run_id must be read from event dict, not parsed data blob."""
+
+    def test_dag_started_reads_run_id_from_event(self, monkeypatch):
+        from dgov.monitor import MonitorLoopState, _apply_monitor_events
+
+        # Simulate event dict as returned by wait_for_events:
+        # data fields are merged into the top-level dict, no "data" key.
+        events = [
+            {"id": 10, "event": "dag_started", "pane": "dag/99", "dag_run_id": 99},
+        ]
+        state = MonitorLoopState(event_cursor=9)
+
+        # Mock _load_dag_run to track if it was called
+        loaded = []
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda sr, rid: {"id": rid, "status": "running"} if rid == 99 else None,
+        )
+        monkeypatch.setattr(
+            "dgov.monitor._load_dag_run",
+            lambda pr, sr, run: loaded.append(run["id"]) or "fake_state",
+        )
+
+        _apply_monitor_events("/p", "/s", state, events, auto_merge=False, auto_retry=False)
+
+        assert loaded == [99], "dag_started must trigger _load_dag_run with the correct run_id"
+        assert 99 in state.active_dags
+
+    def test_dag_completed_reads_run_id_from_event(self):
+        from dgov.monitor import MonitorLoopState, _apply_monitor_events
+
+        events = [
+            {"id": 11, "event": "dag_completed", "pane": "dag/99", "dag_run_id": 99},
+        ]
+        state = MonitorLoopState(event_cursor=10)
+        state.active_dags[99] = "placeholder"
+
+        _apply_monitor_events("/p", "/s", state, events, auto_merge=False, auto_retry=False)
+
+        assert 99 not in state.active_dags, "dag_completed must remove the run from active_dags"
+
+
 class TestTryAutoRetry:
     """Test _try_auto_retry auto-retry logic."""
 
