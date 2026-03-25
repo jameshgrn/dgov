@@ -1376,6 +1376,7 @@ def run_complete_pane(
     *,
     session_root: str | None = None,
     reason: str = "auto_complete",
+    allow_abandoned: bool = False,
 ) -> StateTransitionResult:
     """Executor syscall: mark a pane as done (e.g., monitor auto-complete)."""
     import os
@@ -1383,7 +1384,9 @@ def run_complete_pane(
     from dgov.persistence import emit_event, settle_completion_state
 
     session_root = os.path.abspath(session_root or project_root)
-    transition = settle_completion_state(session_root, slug, "done")
+    transition = settle_completion_state(
+        session_root, slug, "done", allow_abandoned=allow_abandoned
+    )
     if transition.changed:
         emit_event(session_root, "pane_done", slug, reason=reason)
     return StateTransitionResult(
@@ -1399,6 +1402,7 @@ def run_fail_pane(
     *,
     session_root: str | None = None,
     reason: str = "idle_timeout",
+    allow_abandoned: bool = False,
 ) -> StateTransitionResult:
     """Executor syscall: mark a pane as failed (e.g., monitor idle timeout)."""
     import os
@@ -1406,7 +1410,9 @@ def run_fail_pane(
     from dgov.persistence import emit_event, settle_completion_state
 
     session_root = os.path.abspath(session_root or project_root)
-    transition = settle_completion_state(session_root, slug, "failed")
+    transition = settle_completion_state(
+        session_root, slug, "failed", allow_abandoned=allow_abandoned
+    )
     if transition.changed:
         emit_event(session_root, "pane_failed", slug, reason=reason)
     return StateTransitionResult(
@@ -1433,6 +1439,71 @@ def run_mark_reviewed(
     update_pane_state(session_root, slug, target, force=True)
     emit_event(session_root, f"pane_{target}", slug)
     return StateTransitionResult(slug=slug, new_state=target, changed=True)
+
+
+def run_enqueue_merge(
+    session_root: str,
+    slug: str,
+    requester: str = "governor",
+) -> dict:
+    """Executor syscall: enqueue a merge request."""
+    from dgov.persistence import emit_event, enqueue_merge
+
+    ticket = enqueue_merge(session_root, slug, requester)
+    emit_event(session_root, "merge_enqueued", slug, ticket=ticket, requester=requester)
+    return {"ticket": ticket, "slug": slug, "requester": requester}
+
+
+def run_process_merge(
+    project_root: str,
+    session_root: str,
+    *,
+    resolve: str = "skip",
+    squash: bool = True,
+    rebase: bool = False,
+) -> dict:
+    """Executor syscall: claim and execute next pending merge."""
+    from dgov.persistence import claim_next_merge, complete_merge, emit_event
+
+    claimed = claim_next_merge(session_root)
+    if not claimed:
+        return {"status": "empty"}
+    slug = claimed["branch"]
+    ticket = claimed["ticket"]
+    try:
+        landed = run_land_only(
+            project_root,
+            slug,
+            session_root=session_root,
+            resolve=resolve,
+            squash=squash,
+            rebase=rebase,
+        )
+        result = landed.merge_result or {"error": landed.error or "Review failed"}
+        success = "error" not in result
+        complete_merge(session_root, ticket, success, json.dumps(result))
+        if success:
+            emit_event(session_root, "merge_completed", slug, ticket=ticket, success=True)
+        return {"ticket": ticket, "slug": slug, "result": result, "success": success}
+    except Exception as exc:
+        complete_merge(session_root, ticket, False, json.dumps({"error": str(exc)}))
+        return {"ticket": ticket, "slug": slug, "error": str(exc), "success": False}
+
+
+def run_resume_dag(session_root: str, run_id: int) -> None:
+    """Executor syscall: mark a DAG run as resumed."""
+    from dgov.persistence import emit_event, update_dag_run
+
+    update_dag_run(session_root, run_id, status="resumed")
+    emit_event(session_root, "dag_resumed", f"dag/{run_id}", dag_run_id=run_id)
+
+
+def run_worker_checkpoint(session_root: str, slug: str, message: str) -> None:
+    """Executor syscall: record a worker checkpoint."""
+    from dgov.persistence import emit_event, set_pane_metadata
+
+    set_pane_metadata(session_root, slug, last_checkpoint=message)
+    emit_event(session_root, "checkpoint_created", slug, message=message)
 
 
 # ---------------------------------------------------------------------------

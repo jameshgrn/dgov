@@ -682,3 +682,141 @@ class TestResolveTouches:
     def test_empty(self, tmp_path):
         result = resolve_touches()
         assert result == []
+
+
+# =============================================================================
+# New Executor Syscalls Tests
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestNewSyscalls:
+    """Tests for new executor syscalls that replace direct persistence calls."""
+
+    def test_run_enqueue_merge(self, tmp_path, monkeypatch):
+        """Test run_enqueue_merge creates ticket and emits event."""
+        enqueued = []
+        events = []
+
+        def _enqueue(_sr, slug, req):
+            enqueued.append((slug, req))
+            return 42
+
+        monkeypatch.setattr("dgov.persistence.enqueue_merge", _enqueue)
+        monkeypatch.setattr("dgov.persistence.emit_event", lambda *a, **kw: events.append((a, kw)))
+        from dgov.executor import run_enqueue_merge
+
+        result = run_enqueue_merge(str(tmp_path), "test-slug", "governor")
+
+        assert result["ticket"] == 42
+        assert result["slug"] == "test-slug"
+        assert result["requester"] == "governor"
+        assert enqueued == [("test-slug", "governor")]
+        assert len(events) == 1
+
+    def test_run_process_merge_empty(self, tmp_path):
+        """Test run_process_merge returns empty when no merges pending."""
+        from dgov.executor import run_process_merge
+
+        with patch("dgov.persistence.claim_next_merge", return_value=None):
+            result = run_process_merge("/repo", str(tmp_path))
+
+        assert result == {"status": "empty"}
+
+    def test_run_process_merge_success(self, tmp_path, monkeypatch):
+        """Test run_process_merge handles successful merge."""
+        claimed = {"branch": "test-branch", "ticket": "TKT-123"}
+
+        def _claim(_sr):
+            return claimed
+
+        def _land(*_args, **_kwargs):
+            return MagicMock(merge_result={"merged": "test-branch"}, error=None)
+
+        monkeypatch.setattr("dgov.persistence.claim_next_merge", _claim)
+        monkeypatch.setattr("dgov.executor.run_land_only", _land)
+
+        complete_called = []
+        emit_called = []
+
+        def _complete(_sr, t, s, r):
+            complete_called.append((t, s))
+
+        monkeypatch.setattr("dgov.persistence.complete_merge", _complete)
+
+        def _emit(*a, **kw):
+            emit_called.append((a, kw))
+
+        monkeypatch.setattr("dgov.persistence.emit_event", _emit)
+
+        from dgov.executor import run_process_merge
+
+        result = run_process_merge("/repo", str(tmp_path), resolve="skip", squash=True)
+
+        assert result["ticket"] == "TKT-123"
+        assert result["slug"] == "test-branch"
+        assert result["success"] is True
+        assert result["result"] == {"merged": "test-branch"}
+        assert complete_called[0] == ("TKT-123", True)
+        assert len(emit_called) == 1
+
+    def test_run_process_merge_error(self, tmp_path, monkeypatch):
+        """Test run_process_merge handles merge failure."""
+        claimed = {"branch": "test-branch", "ticket": "TKT-456"}
+
+        def _claim(_sr):
+            return claimed
+
+        def _land(*_args, **_kwargs):
+            return MagicMock(merge_result={"error": "review failed"}, error="review failed")
+
+        monkeypatch.setattr("dgov.persistence.claim_next_merge", _claim)
+        monkeypatch.setattr("dgov.executor.run_land_only", _land)
+
+        complete_called = []
+
+        def _complete(_sr, t, s, r):
+            complete_called.append((t, s))
+
+        monkeypatch.setattr("dgov.persistence.complete_merge", _complete)
+
+        from dgov.executor import run_process_merge
+
+        result = run_process_merge("/repo", str(tmp_path))
+
+        assert result["ticket"] == "TKT-456"
+        assert result["slug"] == "test-branch"
+        assert result["success"] is False
+        assert complete_called[0] == ("TKT-456", False)
+
+    def test_run_resume_dag(self, tmp_path, monkeypatch):
+        """Test run_resume_dag updates DAG run status."""
+        updated = []
+        events = []
+        monkeypatch.setattr(
+            "dgov.persistence.update_dag_run", lambda sr, rid, **kw: updated.append((rid, kw))
+        )
+        monkeypatch.setattr("dgov.persistence.emit_event", lambda *a, **kw: events.append((a, kw)))
+        from dgov.executor import run_resume_dag
+
+        run_resume_dag(str(tmp_path), 5)
+
+        assert updated == [(5, {"status": "resumed"})]
+        assert len(events) == 1
+
+    def test_run_worker_checkpoint(self, tmp_path, monkeypatch):
+        """Test run_worker_checkpoint sets metadata and emits event."""
+        meta_calls = []
+        events = []
+
+        def _set_meta(_sr, slug, **kw):
+            meta_calls.append((slug, kw))
+
+        monkeypatch.setattr("dgov.persistence.set_pane_metadata", _set_meta)
+        monkeypatch.setattr("dgov.persistence.emit_event", lambda *a, **kw: events.append((a, kw)))
+        from dgov.executor import run_worker_checkpoint
+
+        run_worker_checkpoint(str(tmp_path), "test-slug", "halfway done")
+
+        assert meta_calls == [("test-slug", {"last_checkpoint": "halfway done"})]
+        assert len(events) == 1
