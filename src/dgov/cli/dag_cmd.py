@@ -105,7 +105,6 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
     from dgov.persistence import (
         ensure_dag_tables,
         get_dag_run,
-        update_dag_run,
     )
 
     abs_path = str(Path(dagfile).resolve())
@@ -151,7 +150,9 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
         already_done = {r["slug"] for r in task_rows if r.get("status") in ("merged",)}
         click.echo(f"Skipping {len(already_done)} already-merged tasks: {sorted(already_done)}")
 
-        update_dag_run(session_root, run_id, status="resumed")
+        from dgov.executor import run_resume_dag
+
+        run_resume_dag(session_root, run_id)
 
         from dgov.dag import run_dag
 
