@@ -625,6 +625,26 @@ def _lint_fix_merged_files(project_root: str, changed_files: list[str]) -> dict:
     return result
 
 
+def _check_conflict_markers(project_root: str, changed_files: list[str]) -> list[str]:
+    """Check changed files for unresolved git conflict markers.
+
+    Returns list of files containing markers, or empty list if clean.
+    """
+    markers = (b"<<<<<<<", b"=======", b">>>>>>>")
+    contaminated: list[str] = []
+    for fname in changed_files:
+        fpath = Path(project_root) / fname
+        if not fpath.exists() or not fpath.is_file():
+            continue
+        try:
+            content = fpath.read_bytes()
+            if any(m in content for m in markers):
+                contaminated.append(fname)
+        except OSError:
+            continue
+    return contaminated
+
+
 # -- Conflict detection --
 
 
@@ -1111,15 +1131,31 @@ def merge_worker_pane(
                 stderr=_merge_r.stderr.strip() if _merge_r.returncode != 0 else "",
             )
             if merge.success:
-                # Run post-merge validation on main directly
-                lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
-                from dgov.inspection import _run_related_tests
-
-                test_result = _run_related_tests(pane_project_root, changed_file_names)
+                # Check for unresolved conflict markers FIRST
+                conflict_files = _check_conflict_markers(pane_project_root, changed_file_names)
                 validation_failed = False
-                if test_result and not test_result.get("no_tests_found"):
-                    if not test_result.get("tests_passed"):
-                        validation_failed = True
+                validation_error: str | None = None
+                if conflict_files:
+                    validation_failed = True
+                    validation_error = (
+                        f"Unresolved conflict markers in: {', '.join(conflict_files)}"
+                    )
+                    logger.error("%s", validation_error)
+
+                if not validation_failed:
+                    # Run post-merge validation on main directly
+                    lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
+                    from dgov.inspection import _run_related_tests
+
+                    test_result = _run_related_tests(pane_project_root, changed_file_names)
+                    if test_result and not test_result.get("no_tests_found"):
+                        if not test_result.get("tests_passed"):
+                            validation_failed = True
+                            validation_error = (
+                                f"Post-merge tests failed: "
+                                f"{test_result.get('tests_failed', 'unknown')} failures "
+                                f"in {test_result.get('tests_ran', 0)} tests ran"
+                            )
                 if validation_failed:
                     # Revert: reset main to pre-merge state
                     subprocess.run(
@@ -1127,7 +1163,7 @@ def merge_worker_pane(
                         capture_output=True,
                     )
                     return {
-                        "error": "Post-merge tests failed",
+                        "error": validation_error or "Post-merge tests failed",
                         "slug": slug,
                         "branch": branch_name,
                         "test_result": test_result,
@@ -1229,12 +1265,23 @@ def merge_worker_pane(
                     )
 
             if merge.success:
+                # Check for unresolved conflict markers FIRST
+                conflict_files = _check_conflict_markers(candidate_root, changed_file_names)
+                validation_failed = False
+                validation_error: str | None = None
+                if conflict_files:
+                    validation_failed = True
+                    validation_error = (
+                        f"Unresolved conflict markers in: {', '.join(conflict_files)}"
+                    )
+                    logger.error("%s", validation_error)
+
                 # Post-merge: lint + verify protected files BEFORE mutating main
                 damaged: list[str] = []
                 lint_result: dict = {}
                 test_result: dict = {}
                 base_sha = target.get("base_sha", "")
-                if base_sha:
+                if base_sha and not validation_failed:
                     for fname in PROTECTED_FILES:
                         check = subprocess.run(
                             ["git", "-C", candidate_root, "diff", base_sha, "HEAD", "--", fname],
@@ -1253,27 +1300,10 @@ def merge_worker_pane(
                         test_result.get("tests_ran"),
                     )
 
-                validation_failed = False
-                validation_error: str | None = None
-
-                tests_failed = False
-                if test_result and not test_result.get("no_tests_found"):
-                    if not test_result.get("tests_passed"):
-                        tests_failed = True
-
                 warning_msg: str | None = None
                 if damaged:
                     warning_msg = f"protected files changed: {damaged}"
                     logger.warning("Protected files changed after merge: %s", damaged)
-
-                if tests_failed:
-                    validation_failed = True
-                    validation_error = (
-                        f"Post-merge tests failed: "
-                        f"{test_result.get('tests_failed', 'unknown')} failures "
-                        f"in {test_result.get('tests_ran', 0)} tests ran"
-                    )
-                    logger.error("%s", validation_error)
 
                 if lint_result.get("lint_unfixable"):
                     # Lint issues are advisory after merge has landed — warn instead of fail
