@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from dgov.terrain import ErosionModel, EventTranslator
+from dgov.terrain import ErosionModel, EventTranslator, render_effect_stamps
 
 
 def _flat_model(width: int = 13, height: int = 13) -> ErosionModel:
@@ -180,3 +180,67 @@ def test_stability_no_extreme_values():
             assert -0.1 <= model.height[r][c] <= 3.0, (
                 f"Extreme value {model.height[r][c]} at ({r},{c})"
             )
+
+
+@pytest.mark.unit
+def test_effect_stamp_appears_after_terrain_event():
+    """terrain_event should add an active effect to the buffer."""
+    model = _flat_model()
+    assert len(model._active_effects) == 0
+    model.terrain_event("uplift", 6, 6, intensity=1.0)
+    assert len(model._active_effects) == 1
+    effect = model._active_effects[0]
+    assert effect.event_type == "uplift"
+    assert effect.row == 6
+    assert effect.col == 6
+
+
+@pytest.mark.unit
+def test_effects_fade_after_max_age():
+    """Effects should be pruned from the buffer after max_age ticks."""
+    model = _flat_model()
+    model.terrain_event("uplift", 6, 6, intensity=1.0)
+    max_age = model._active_effects[0].max_age
+
+    # Step past the max age
+    for _ in range(max_age + 5):
+        model.step()
+
+    assert len(model._active_effects) == 0
+
+
+@pytest.mark.unit
+def test_no_clutter_after_decay():
+    """After 50 ticks with no new events, effects buffer should be empty."""
+    model = _flat_model()
+    # Fire several events
+    for etype in ("uplift", "erode", "deposit", "meteor"):
+        model.terrain_event(etype, 6, 6, intensity=1.0)
+
+    for _ in range(50):
+        model.step()
+
+    assert len(model._active_effects) == 0
+
+
+@pytest.mark.unit
+def test_glyph_differentiation():
+    """Different event types should produce different glyphs."""
+    model = ErosionModel(width=30, height=30, seed=42)
+    # Fire different events at different locations
+    model.terrain_event("uplift", 5, 5, intensity=1.0)
+    model.terrain_event("meteor", 10, 10, intensity=1.5)
+    model.terrain_event("erode", 15, 15, intensity=1.0)
+
+    stamps = render_effect_stamps(model, 15, 15, supersample=2)
+    glyphs = {glyph for glyph, style in stamps.values() if glyph != "."}
+    # Should have at least 2 distinct glyphs (3 event types, but display coords may collide)
+    assert len(glyphs) >= 2
+
+
+@pytest.mark.unit
+def test_render_effect_stamps_empty_when_no_effects():
+    """No effects = empty stamps dict."""
+    model = _flat_model()
+    stamps = render_effect_stamps(model, 6, 6, supersample=1)
+    assert stamps == {}

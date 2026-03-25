@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import math
 import random
+from dataclasses import dataclass
 
 from rich.text import Text
 
@@ -18,6 +19,29 @@ _LETTER_D = ["11110", "10001", "10001", "10001", "10001", "10001", "11110"]
 _LETTER_G = ["01110", "10001", "10000", "10110", "10001", "10001", "01110"]
 _LETTER_O = ["01110", "10001", "10001", "10001", "10001", "10001", "01110"]
 _LETTER_V = ["10001", "10001", "10001", "10001", "01010", "01010", "00100"]
+
+
+@dataclass
+class ActiveEffect:
+    """A transient visual effect from a terrain event."""
+
+    event_type: str
+    row: int
+    col: int
+    intensity: float
+    birth_tick: int
+    max_age: int = 20
+
+
+# Event type to glyph/color mapping for visual feedback
+_EFFECT_GLYPHS = {
+    "uplift": ("^", "bold bright_green"),
+    "erode": ("v", "bold bright_cyan"),
+    "deposit": ("~", "bold yellow"),
+    "tremor": ("*", "dim white"),
+    "meteor": ("X", "bold bright_red"),
+    "volcano": ("!", "bold bright_magenta"),
+}
 
 
 def _build_dgov_bitmap():
@@ -113,6 +137,10 @@ class ErosionModel:
         self.uplift = uplift
         self.session_start: float | None = session_start
         self._rng = random.Random(seed)
+
+        # Effect tracking buffer (max 100 active effects)
+        self._active_effects: list[ActiveEffect] = []
+        self._tick: int = 0
 
         # Session-scale pacing state
         self._ring_buffer: list[float] = []  # last N mean |delta_z| values
@@ -330,7 +358,16 @@ class ErosionModel:
 
         Applies exponential decay to K and uplift based on session age,
         tracks mean |delta_z| in ring buffer for maturity metric.
+        Prunes effects older than max_age.
         """
+        # Increment tick counter and prune expired effects
+        self._tick += 1
+        self._active_effects = [
+            e for e in self._active_effects if (self._tick - e.birth_tick) <= e.max_age
+        ]
+        # Enforce max buffer size (FIFO drop oldest on overflow)
+        if len(self._active_effects) > 100:
+            self._active_effects = self._active_effects[-100:]
         h = self.height
         rows = self.height_count
         cols = self.width
@@ -496,6 +533,24 @@ class ErosionModel:
                     self.area[nr][nc] += weight * intensity
 
         self._apply_boundary_drains(self.height)
+
+        # Record the active effect for visual overlay
+        max_age = 20  # ticks before removal
+        effect = ActiveEffect(
+            event_type=event_type,
+            row=row,
+            col=col,
+            intensity=intensity,
+            birth_tick=self._tick,
+            max_age=max_age,
+        )
+        self._active_effects.append(effect)
+
+
+class EffectBufferOverflowError(Exception):
+    """Raised when the effect buffer exceeds its capacity."""
+
+    pass
 
 
 class EventTranslator:
@@ -837,3 +892,77 @@ def overlay_stamps(text: Text, stamps: dict[tuple[int, int], tuple[str, str]]) -
     for offset, style_str in offsets.items():
         result.stylize(style_str, offset, offset + 1)
     return result
+
+
+def render_effect_stamps(
+    model: ErosionModel,
+    display_rows: int,
+    display_cols: int,
+    supersample: int = 1,
+) -> dict[tuple[int, int], tuple[str, str]]:
+    """Render transient effect glyphs with fade and splash radius.
+
+    For each active effect:
+    - Map grid coords to display coords (divide by supersample)
+    - Compute fade alpha. Skip if < 0.1
+    - Alpha > 0.6: bright glyph
+    - Alpha 0.3-0.6: dim version
+    - Alpha < 0.3: "." fading dot
+
+    High-intensity events (intensity > 1.0) get a small splash radius:
+    glyph at center, "." at 4 cardinal neighbors if within bounds.
+
+    Returns dict in same format as AgentSim.update() stamps.
+    """
+    stamps: dict[tuple[int, int], tuple[str, str]] = {}
+
+    for effect in model._active_effects:
+        # Compute fade alpha
+        age = model._tick - effect.birth_tick
+        alpha = 1.0 - (age / float(effect.max_age))
+
+        if alpha < 0.1:
+            continue
+
+        # Map grid coords to display coords
+        dr = effect.row // supersample
+        dc = effect.col // supersample
+
+        # Skip if outside display bounds
+        if dr >= display_rows or dc >= display_cols:
+            continue
+
+        # Get glyph and base style for this event type
+        if effect.event_type not in _EFFECT_GLYPHS:
+            continue
+        glyph, base_style = _EFFECT_GLYPHS[effect.event_type]
+
+        # Determine visibility based on alpha
+        if alpha > 0.6:
+            # Bright - use full intensity style
+            visible_glyph = glyph
+            visible_style = base_style
+        elif alpha >= 0.3:
+            # Dimmer phase - prepend "dim" to style
+            # Rich allows multiple styles; dim will override the bright aspect
+            visible_glyph = glyph
+            visible_style = f"dim {base_style}"
+        else:
+            # Fading dot
+            visible_glyph = "."
+            visible_style = base_style
+
+        # Don't overwrite existing stamps (agent stamps render on top)
+        if (dr, dc) not in stamps:
+            stamps[(dr, dc)] = (visible_glyph, visible_style)
+
+        # Splash radius for high-intensity events (> 1.0)
+        if effect.intensity > 1.0:
+            cardinal_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            for dr_off, dc_off in cardinal_offsets:
+                nr, nc = dr + dr_off, dc + dc_off
+                if 0 <= nr < display_rows and 0 <= nc < display_cols:
+                    if (nr, nc) not in stamps:
+                        stamps[(nr, nc)] = (".", base_style)
+
+    return stamps

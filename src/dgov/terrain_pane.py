@@ -17,6 +17,7 @@ from dgov.terrain import (
     EventTranslator,
     _spawn_position_from_slug,
     overlay_stamps,
+    render_effect_stamps,
     render_terrain,
 )
 
@@ -148,6 +149,11 @@ def run_terrain(refresh: float = 0.5) -> None:
         except Exception as exc:
             rendered = Text(f"(terrain error: {exc})")
             rendered.no_wrap = True
+
+        # Overlay transient event effects (before agent stamps so agents render on top)
+        if model._active_effects:
+            effect_stamps = render_effect_stamps(model, panel_rows, w, supersample=2)
+            rendered = overlay_stamps(rendered, effect_stamps)
 
         if agents_cache and model is not None:
             stamps = sim.update(agents_cache, panel_rows, w, model)
