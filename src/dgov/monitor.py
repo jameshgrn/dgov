@@ -655,6 +655,12 @@ def _apply_monitor_events(
             if dag_to_drive:
                 break
 
+        # Update pane→task mapping when retries spawn new panes
+        if kind == "pane_retry_spawned" and dag_to_drive and task_slug:
+            new_slug = event.get("new_slug", "")
+            if new_slug:
+                dag_to_drive.kernel.pane_slugs[task_slug] = new_slug
+
         # Map pane events to DagEvents
         dag_ev = None
         if dag_to_drive and task_slug:
