@@ -79,7 +79,8 @@ def run_terrain(refresh: float = 0.5) -> None:
     translator = EventTranslator()
 
     def _make_model(w: int, h: int) -> ErosionModel:
-        m = ErosionModel(width=max(w * 2, 1), height=max(h * 2, 2))
+        # Pass session_start to enable session-scale pacing
+        m = ErosionModel(width=max(w * 2, 1), height=max(h * 2, 2), session_start=time.time())
         for _ in range(5):
             m.step()
         return m
@@ -139,7 +140,9 @@ def run_terrain(refresh: float = 0.5) -> None:
             agents_last_read = now
 
         try:
-            model.step()
+            # Run multiple substeps per frame based on session maturity
+            for _ in range(model.substeps):
+                model.step()
             rendered = render_terrain(model, supersample=2)
             rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
         except Exception as exc:

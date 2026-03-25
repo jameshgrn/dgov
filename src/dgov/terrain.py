@@ -73,7 +73,26 @@ def _spawn_position_from_slug(slug: str, rows: int, cols: int) -> tuple[float, f
 
 
 class ErosionModel:
-    """Stream-power-law erosion on a 2D heightfield."""
+    """Stream-power-law erosion on a 2D heightfield with session-scale pacing.
+
+    Session controller parameters (tunable):
+    - tau: decay time constant in hours, default 3.0
+      Determines how quickly the simulation transitions from youthful to mature state.
+    - k_floor_fraction: floor fraction for erodibility K, default 0.3
+      Effective K decays to this percentage of original as session ages.
+    - uplift_floor_fraction: floor fraction for uplift rate, default 0.2
+      Effective uplift decays to this percentage of original as session ages.
+    - reference_delta: initial mean |delta_z| for maturity normalization
+      Used to compute the maturity metric from current delta statistics.
+    - ring_buffer_size: number of recent delta samples for smoothing, default 50
+    """
+
+    # Controller tunables
+    TAU_HOURS = 3.0
+    K_FLOOR_FRACTION = 0.3
+    UPLIFT_FLOOR_FRACTION = 0.2
+    REFERENCE_DELTA = 0.015  # typical initial mean |delta_z| after first ~10 steps
+    RING_BUFFER_SIZE = 50
 
     def __init__(
         self,
@@ -84,6 +103,7 @@ class ErosionModel:
         n: float = 1.0,
         uplift: float = 0.001,
         seed: int | None = None,
+        session_start: float | None = None,
     ) -> None:
         self.width = width
         self.height_count = height
@@ -91,7 +111,11 @@ class ErosionModel:
         self.m = m
         self.n = n
         self.uplift = uplift
+        self.session_start: float | None = session_start
         self._rng = random.Random(seed)
+
+        # Session-scale pacing state
+        self._ring_buffer: list[float] = []  # last N mean |delta_z| values
         self.erodibility = [[1.0] * width for _ in range(height)]
 
         # Random base [0.25, 0.65] + center-high bias so terrain drains to all edges.
@@ -302,9 +326,27 @@ class ErosionModel:
             grid[r][cols - 1] = 0.0
 
     def step(self) -> None:
+        """Advance one erosion step with session-age pacing and maturity tracking.
+
+        Applies exponential decay to K and uplift based on session age,
+        tracks mean |delta_z| in ring buffer for maturity metric.
+        """
         h = self.height
         rows = self.height_count
         cols = self.width
+
+        # Compute session age and effective parameters
+        age_factor: float = 1.0
+        if self.session_start is not None:
+            import time
+
+            session_age_hours = (time.time() - self.session_start) / 3600.0
+            age_factor = math.exp(-session_age_hours / self.TAU_HOURS)
+
+        effective_K = self.K * (self.K_FLOOR_FRACTION + (1.0 - self.K_FLOOR_FRACTION) * age_factor)
+        effective_uplift = self.uplift * (
+            self.UPLIFT_FLOOR_FRACTION + (1.0 - self.UPLIFT_FLOOR_FRACTION) * age_factor
+        )
 
         # 1. Collect and sort cells by decreasing elevation
         cells = []
@@ -342,26 +384,75 @@ class ErosionModel:
 
         self.area = area
 
-        # 4. Erosion: E = K * Erodibility * A^m * S^n, subtract, clamp at 0
-        K, m, n = self.K, self.m, self.n
+        # 4. Capture pre-erosion height state for delta computation
+        pre_step_height = [[h[r][c] for c in range(cols)] for r in range(rows)]
+
+        # 5. Erosion: E = K * Erodibility * A^m * S^n, subtract, clamp at 0
+        m, n = self.m, self.n
         for _, r, c in cells:
             if r in (0, rows - 1) or c in (0, cols - 1):
                 continue  # skip drain row
             a = area[r][c]
             s = slope[r][c]
             if s > 0:
-                erosion = (K * self.erodibility[r][c]) * (a**m) * (s**n)
+                erosion = (effective_K * self.erodibility[r][c]) * (a**m) * (s**n)
                 h[r][c] = max(0.0, h[r][c] - erosion)
 
-        # 5. Uplift: add constant to all non-drain cells
-        u = self.uplift
-        if u > 0:
+        # 6. Uplift: add scaled constant to all non-drain cells
+        if effective_uplift > 0:
             for r in range(1, max(rows - 1, 1)):
                 row = h[r]
                 for c in range(1, max(cols - 1, 1)):
-                    row[c] += u
+                    row[c] += effective_uplift
 
         self._apply_boundary_drains(h)
+
+        # 7. Compute mean |delta_z| and update ring buffer
+        total_delta = 0.0
+        for r in range(rows):
+            for c in range(cols):
+                total_delta += abs(h[r][c] - pre_step_height[r][c])
+        mean_delta = total_delta / (rows * cols)
+
+        # Update ring buffer with new mean delta
+        self._ring_buffer.append(mean_delta)
+        if len(self._ring_buffer) > self.RING_BUFFER_SIZE:
+            self._ring_buffer.pop(0)
+
+    @property
+    def maturity(self) -> float:
+        """Return terrain maturity in [0, 1].
+
+        0.0 = youthful (high change), 1.0 = settled (low change).
+        Uses current mean |delta_z| normalized against reference_delta from early steps.
+        """
+        if not self._ring_buffer:
+            return 0.0
+
+        current_mean = sum(self._ring_buffer) / len(self._ring_buffer)
+        # Clamp the ratio and invert: higher delta -> lower maturity
+        ratio = current_mean / self.REFERENCE_DELTA
+        normalized = max(0.0, min(1.0, ratio))
+        return 1.0 - normalized
+
+    @property
+    def substeps(self) -> int:
+        """Return recommended substeps per render based on session age.
+
+        Early session (high activity): 2-3 substeps for faster visual response.
+        Late session (settled): 1 substep as changes are minimal.
+        """
+        if self.session_start is None or not self._ring_buffer:
+            return 1
+
+        # Compute current age_factor
+        import time
+
+        session_age_hours = (time.time() - self.session_start) / 3600.0
+        age_factor = math.exp(-session_age_hours / self.TAU_HOURS)
+
+        # Map age_factor to substeps: ~2.5 at start, ~1 at end
+        return max(1, round(2.5 * age_factor))
 
     def terrain_event(self, event_type: str, row: int, col: int, intensity: float = 1.0) -> None:
         """Apply a localized terrain perturbation around an interior cell."""

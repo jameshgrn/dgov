@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from dgov.terrain import ErosionModel, EventTranslator
@@ -115,3 +117,66 @@ def test_terrain_event_rejects_out_of_bounds_position():
 
     with pytest.raises(ValueError, match="out of bounds"):
         model.terrain_event("uplift", -1, 3)
+
+
+@pytest.mark.unit
+def test_maturity_increases_over_steps():
+    """Maturity should increase (terrain settles) over many erosion steps."""
+    model = ErosionModel(width=20, height=20, seed=42)
+    # Run 20 steps to get initial dynamics going
+    for _ in range(20):
+        model.step()
+    early_maturity = model.maturity
+
+    # Run 80 more steps
+    for _ in range(80):
+        model.step()
+    late_maturity = model.maturity
+
+    # Terrain should be more mature (higher maturity) after more steps
+    assert late_maturity > early_maturity
+
+
+@pytest.mark.unit
+def test_effective_k_decays_with_session_age():
+    """Effective K at session start should exceed effective K at 8 hours."""
+    # Model with session_start in the past (8 hours ago)
+    old_start = time.time() - 8 * 3600
+    model_old = ErosionModel(width=13, height=13, seed=7, session_start=old_start)
+
+    # Model with session_start now
+    model_new = ErosionModel(width=13, height=13, seed=7, session_start=time.time())
+
+    # The new-session model should have higher effective K
+    # We test this indirectly: run one step on each and compare erosion magnitude
+    h_old_before = [row[:] for row in model_old.height]
+    h_new_before = [row[:] for row in model_new.height]
+
+    model_old.step()
+    model_new.step()
+
+    # Compute total absolute change
+    def total_change(before, after, rows, cols):
+        total = 0.0
+        for r in range(rows):
+            for c in range(cols):
+                total += abs(after[r][c] - before[r][c])
+        return total
+
+    change_old = total_change(h_old_before, model_old.height, 13, 13)
+    change_new = total_change(h_new_before, model_new.height, 13, 13)
+
+    assert change_new > change_old
+
+
+@pytest.mark.unit
+def test_stability_no_extreme_values():
+    """After 200 steps with controller active, no cell should be extreme."""
+    model = ErosionModel(width=20, height=20, seed=42, session_start=time.time())
+    for _ in range(200):
+        model.step()
+    for r in range(model.height_count):
+        for c in range(model.width):
+            assert -0.1 <= model.height[r][c] <= 3.0, (
+                f"Extreme value {model.height[r][c]} at ({r},{c})"
+            )
