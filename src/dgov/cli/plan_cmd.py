@@ -176,7 +176,9 @@ def plan_run(plan_file, max_concurrent, wait):
             elif kind == "review_pass":
                 click.echo(f"  review pass: {ev.get('pane', '')}")
             elif kind == "review_fail":
-                click.echo(f"  review fail: {ev.get('pane', '')}")
+                reason = ev.get("reason", "")
+                reason_str = f" — {reason}" if reason else ""
+                click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
             elif kind == "merge_completed":
                 click.echo(f"  merged: {ev.get('pane', '')}")
             elif kind in ("dag_completed", "dag_failed"):
@@ -442,7 +444,9 @@ def plan_resume(plan_file, run_id, wait, max_concurrent):
             elif kind == "review_pass":
                 click.echo(f"  review pass: {ev.get('pane', '')}")
             elif kind == "review_fail":
-                click.echo(f"  review fail: {ev.get('pane', '')}")
+                reason = ev.get("reason", "")
+                reason_str = f" — {reason}" if reason else ""
+                click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
             elif kind == "merge_completed":
                 click.echo(f"  merged: {ev.get('pane', '')}")
             elif kind in ("dag_completed", "dag_failed"):
