@@ -185,11 +185,41 @@ def review_worker_pane(
 
 
 def _run_lint_checks(project_root: str, changed_files: list[str]) -> dict:
-    """Run ruff check on changed files."""
+    """Auto-fix lint issues, then verify clean. Amends worker commit if fixes applied."""
     python_files = [f for f in changed_files if f.endswith(".py")]
     if not python_files:
         return {"passed": True, "output": "no python files to lint"}
 
+    # Auto-fix: ruff check --fix + ruff format
+    subprocess.run(
+        ["uv", "run", "ruff", "check", "--fix", *python_files],
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
+    subprocess.run(
+        ["uv", "run", "ruff", "format", *python_files],
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
+
+    # If auto-fix changed files, amend the worker's last commit
+    diff = subprocess.run(
+        ["git", "diff", "--name-only"],
+        capture_output=True,
+        text=True,
+        cwd=project_root,
+    )
+    if diff.stdout.strip():
+        subprocess.run(["git", "add", *python_files], cwd=project_root, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "--amend", "--no-edit"],
+            cwd=project_root,
+            capture_output=True,
+        )
+
+    # Now verify: should be clean after auto-fix
     cmd = ["uv", "run", "ruff", "check", *python_files]
     result = subprocess.run(cmd, capture_output=True, text=True, cwd=project_root)
     return {"passed": result.returncode == 0, "output": result.stdout + result.stderr}

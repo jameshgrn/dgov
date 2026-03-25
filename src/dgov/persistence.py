@@ -168,6 +168,7 @@ VALID_EVENTS = frozenset(
         "quality_escalate",
         "evals_verified",
         "worker_contradiction",
+        "pane_pruned",
     }
 )
 

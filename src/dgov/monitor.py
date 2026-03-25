@@ -1116,8 +1116,8 @@ def _wait_for_monitor_wakeup(
 ) -> list[dict]:
     """Wait for journal activity that should wake the monitor early."""
     if not Path(project_root).is_dir():
-        # Fallback to avoid infinite loop if directory gone
-        time.sleep(timeout_s)
+        # Project root is gone — return empty to let the main loop exit cleanly.
+        # No sleep: the caller checks is_dir() and breaks the loop.
         return []
 
     return wait_for_events(

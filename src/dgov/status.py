@@ -15,6 +15,7 @@ from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
     all_panes,
+    emit_event,
     get_pane,
     get_preserved_artifacts,
     remove_pane,
@@ -369,13 +370,14 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
 
             if should_prune:
                 remove_pane(session_root, slug)
+                emit_event(session_root, "pane_pruned", slug, reason="stale")
                 done_path = Path(session_root) / STATE_DIR / "done" / slug
                 done_path.unlink(missing_ok=True)
                 pruned.append(slug)
                 pruned_slugs.add(slug)
             elif pane_id and not alive and wt_exists and state == "active":
                 # Dead process with orphaned worktree — force to failed
-                from dgov.persistence import emit_event, settle_completion_state
+                from dgov.persistence import settle_completion_state
 
                 settle_completion_state(session_root, slug, "failed")
                 emit_event(session_root, "pane_failed", slug, reason="dead_process_pruned")

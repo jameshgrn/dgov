@@ -1117,7 +1117,7 @@ def gc_cmd(project_root, session_root, dry_run):
     import shutil
 
     from dgov.backend import get_backend
-    from dgov.persistence import STATE_DIR, all_panes, remove_pane
+    from dgov.persistence import STATE_DIR, all_panes, emit_event, remove_pane
 
     project_root = Path(project_root).resolve()
     session_root = Path(session_root).resolve() if session_root else project_root
@@ -1155,6 +1155,7 @@ def gc_cmd(project_root, session_root, dry_run):
                 click.echo(f"[dry-run] remove pane entry: {slug} ({state})")
             else:
                 remove_pane(str(session_root), slug)
+                emit_event(str(session_root), "pane_pruned", slug, reason="gc")
                 done_path = session_root / STATE_DIR / "done" / slug
                 done_path.unlink(missing_ok=True)
             removed.append(f"pane:{slug}")
