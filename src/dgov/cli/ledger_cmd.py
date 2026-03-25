@@ -39,7 +39,12 @@ def ledger_cmd():
 def ledger_add_cmd(
     project_root, session_root, category, summary, detail, severity, status, tag, slug
 ):
-    """Add a ledger entry. Categories: bug, fix, rule, pattern, debt, capability, decision."""
+    """Add a ledger entry. Categories: bug, fix, rule, pattern, debt, capability, decision.
+
+    Examples:
+      dgov ledger add bug "Parser fails on empty input" -r . -s medium -t parser
+      dgov ledger add rule "Always run preflight" -r . --status accepted
+    """
     from dgov.spans import ledger_add
 
     session_root = os.path.abspath(session_root or project_root)
@@ -72,7 +77,12 @@ def ledger_add_cmd(
 @click.option("--limit", "-n", default=20, type=int)
 @click.option("--json-output", "--json", is_flag=True, help="Raw JSON")
 def ledger_list_cmd(project_root, session_root, category, status, tag, limit, json_output):
-    """List ledger entries."""
+    """List ledger entries.
+
+    Examples:
+      dgov ledger list -r . -c bug -s open
+      dgov ledger list -r . -c rule --json
+    """
     from dgov.spans import ledger_query
 
     session_root = os.path.abspath(session_root or project_root)
@@ -106,7 +116,12 @@ def ledger_list_cmd(project_root, session_root, category, status, tag, limit, js
     type=click.Choice(["fixed", "accepted", "wontfix"]),
 )
 def ledger_resolve_cmd(entry_id, project_root, session_root, status):
-    """Resolve a ledger entry."""
+    """Resolve a ledger entry.
+
+    Examples:
+      dgov ledger resolve 42 -r .
+      dgov ledger resolve 42 -s wontfix
+    """
     from dgov.spans import ledger_update
 
     session_root = os.path.abspath(session_root or project_root)

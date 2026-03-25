@@ -33,7 +33,13 @@ def dag():
     help="Max tasks dispatched simultaneously per tier (0=unlimited)",
 )
 def dag_run(dagfile, project_root, dry_run, tier, skip, auto_merge, max_concurrent):
-    """Execute a TOML DAG file."""
+    """Execute a TOML DAG file.
+
+    Examples:
+      dgov dag run dag.toml -r .
+      dgov dag run dag.toml --dry-run
+      dgov dag run dag.toml --skip task-a --max-concurrent 2
+    """
     from dgov.dag import compute_tiers, parse_dag_file, render_dry_run, run_dag
 
     try:
@@ -68,7 +74,11 @@ def dag_run(dagfile, project_root, dry_run, tier, skip, auto_merge, max_concurre
     help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 def dag_merge(dagfile, project_root):
-    """Merge an awaiting_merge DAG run in topological order."""
+    """Merge an awaiting_merge DAG run in topological order.
+
+    Examples:
+      dgov dag merge dag.toml -r .
+    """
     from dgov.dag import merge_dag
 
     try:
@@ -97,7 +107,12 @@ def dag_merge(dagfile, project_root):
 )
 @click.option("--max-concurrent", type=int, default=0, help="Max tasks per tier (0=unlimited)")
 def dag_resume(dagfile, project_root, run_id, max_concurrent):
-    """Resume a failed DAG run, re-executing unmerged tasks."""
+    """Resume a failed DAG run, re-executing unmerged tasks.
+
+    Examples:
+      dgov dag resume dag.toml -r .
+      dgov dag resume dag.toml --run-id 5
+    """
     import os
     from pathlib import Path
 
@@ -173,8 +188,15 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
 @dag.command("status")
 @click.argument("dagfile", type=click.Path(exists=True))
 @click.option("--run-id", type=int, default=None, help="Specific run ID (default: most recent)")
-def dag_status(dagfile, run_id):
-    """Show status of a DAG run: tasks, agents, states, and eval contract."""
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+def dag_status(dagfile, run_id, output_json):
+    """Show status of a DAG run: tasks, agents, states, and eval contract.
+
+    Examples:
+      dgov dag status dag.toml
+      dgov dag status dag.toml --json
+      dgov dag status dag.toml --run-id 3
+    """
     import os
     from pathlib import Path
 
@@ -207,6 +229,24 @@ def dag_status(dagfile, run_id):
 
     run_id = run["id"]
     tasks = list_dag_tasks(session_root, run_id)
+
+    if output_json:
+        evals = run.get("evals", [])
+        links = run.get("unit_eval_links", [])
+        eval_results = {r["eval_id"]: r for r in run.get("eval_results", [])}
+        result = {
+            "run_id": run_id,
+            "status": run["status"],
+            "dag_file": run["dag_file"],
+            "started_at": run.get("started_at"),
+            "current_tier": run.get("current_tier"),
+            "evals": evals,
+            "unit_eval_links": links,
+            "eval_results": [eval_results.get(e["eval_id"], {}) for e in evals],
+            "tasks": tasks,
+        }
+        click.echo(json.dumps(result, indent=2, default=str))
+        return
 
     click.echo(f"DAG run {run_id}: {run['status']}")
     click.echo(f"  file: {run['dag_file']}")
@@ -287,7 +327,11 @@ def dag_status(dagfile, run_id):
 @click.argument("run_id", type=int)
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 def dag_force_complete(run_id, project_root):
-    """Force-complete a DAG run: mark all pending tasks as done."""
+    """Force-complete a DAG run: mark all pending tasks as done.
+
+    Examples:
+      dgov dag force-complete 42 -r .
+    """
     import os
 
     from dgov.executor import run_force_complete_dag
@@ -304,7 +348,11 @@ def dag_force_complete(run_id, project_root):
 @click.argument("task_slug")
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 def dag_skip_task(run_id, task_slug, project_root):
-    """Skip a single task in a DAG run and let the kernel advance."""
+    """Skip a single task in a DAG run and let the kernel advance.
+
+    Examples:
+      dgov dag skip-task 42 fix-parser -r .
+    """
     import os
 
     from dgov.executor import run_skip_dag_task

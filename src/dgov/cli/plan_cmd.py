@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import asdict
 
 import click
 
@@ -22,7 +23,11 @@ def plan_cmd():
 @SESSION_ROOT_OPTION
 @click.option("--force", is_flag=True, help="Overwrite an existing scratch plan")
 def plan_scratch(name, project_root, session_root, force):
-    """Create a scratch plan under .dgov/plans/."""
+    """Create a scratch plan under .dgov/plans/.
+
+    Examples:
+      dgov plan scratch my-feature
+    """
     from dgov.plan import write_scratch_plan
 
     project_root = os.path.abspath(project_root)
@@ -44,8 +49,13 @@ def plan_scratch(name, project_root, session_root, force):
 
 @plan_cmd.command("validate")
 @click.argument("plan_file", type=click.Path(exists=True))
-def plan_validate(plan_file):
-    """Validate a plan TOML file and print any issues."""
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+def plan_validate(plan_file, output_json):
+    """Validate a plan TOML file and print any issues.
+
+    Examples:
+      dgov plan validate .dgov/plans/my-plan.toml
+    """
     from dgov.plan import parse_plan_file, validate_plan
 
     try:
@@ -62,6 +72,19 @@ def plan_validate(plan_file):
     errors = [i for i in issues if i.severity == "error"]
     warnings = [i for i in issues if i.severity == "warning"]
 
+    if output_json:
+        result = {
+            "valid": len(errors) == 0,
+            "plan": plan.name,
+            "units": len(plan.units),
+            "errors": [{"unit": i.unit, "message": i.message} for i in errors],
+            "warnings": [{"unit": i.unit, "message": i.message} for i in warnings],
+        }
+        click.echo(json.dumps(result, indent=2))
+        if errors:
+            raise SystemExit(1)
+        return
+
     for issue in issues:
         color = "red" if issue.severity == "error" else "yellow"
         prefix = "ERROR" if issue.severity == "error" else "WARN"
@@ -75,8 +98,13 @@ def plan_validate(plan_file):
 
 @plan_cmd.command("compile")
 @click.argument("plan_file", type=click.Path(exists=True))
-def plan_compile(plan_file):
-    """Compile a plan into a DAG and show the tier view."""
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+def plan_compile(plan_file, output_json):
+    """Compile a plan into a DAG and show the tier view.
+
+    Examples:
+      dgov plan compile .dgov/plans/my-plan.toml
+    """
     from dgov.dag_graph import compute_tiers, render_dry_run
     from dgov.plan import compile_plan, parse_plan_file, validate_plan
 
@@ -96,6 +124,18 @@ def plan_compile(plan_file):
 
     dag = compile_plan(plan)
     tiers = compute_tiers(dag.tasks)
+
+    if output_json:
+        result = {
+            "plan": plan.name,
+            "goal": plan.goal,
+            "tasks": len(dag.tasks),
+            "tiers": len(tiers),
+            "dag": asdict(dag),
+        }
+        click.echo(json.dumps(result, indent=2, default=str))
+        return
+
     click.echo(render_dry_run(tiers, dag.tasks))
     click.echo(f"\nPlan '{plan.name}': {len(dag.tasks)} tasks, {len(tiers)} tiers")
     click.echo(f"Goal: {plan.goal}")
@@ -106,7 +146,12 @@ def plan_compile(plan_file):
 @click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
 @click.option("--wait", is_flag=True, help="Block until DAG completes (pipe-driven, no polling)")
 def plan_run(plan_file, max_concurrent, wait):
-    """Execute a plan through the DAG kernel."""
+    """Execute a plan through the DAG kernel.
+
+    Examples:
+      dgov plan run .dgov/plans/my-plan.toml
+      dgov plan run .dgov/plans/my-plan.toml --wait
+    """
     from dgov.plan import check_cross_plan_claims, parse_plan_file, run_plan
 
     try:
@@ -212,7 +257,12 @@ def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
 @click.option("--run", is_flag=True, help="With --auto: validate and execute the generated plan")
 @click.option("--wait", "wait_for_run", is_flag=True, help="With --run: block until DAG completes")
 def plan_scaffold(goal, files, name, output, dry_run, auto, run, wait_for_run):
-    """Generate a TOML plan template from goal and file list."""
+    """Generate a TOML plan template from goal and file list.
+
+    Examples:
+      dgov plan scaffold --goal "Add logging" --files src/dgov/cli.py
+      dgov plan scaffold --goal "Fix parser" --files src/dgov/parser.py --auto --run --wait
+    """
     if run and not auto:
         click.secho("--run requires --auto", fg="red")
         raise SystemExit(1)
@@ -367,7 +417,11 @@ def _wait_for_dag(run_id: int) -> None:
 @SESSION_ROOT_OPTION
 @click.option("--timeout", default=60, help="Timeout per evidence command (seconds)")
 def plan_verify(run_id, project_root, session_root, timeout):
-    """Run eval evidence commands for a DAG run and report pass/fail."""
+    """Run eval evidence commands for a DAG run and report pass/fail.
+
+    Examples:
+      dgov plan verify 42 -r .
+    """
     from dgov.plan import verify_eval_evidence
 
     project_root = os.path.abspath(project_root)
@@ -407,7 +461,11 @@ def plan_verify(run_id, project_root, session_root, timeout):
 @click.option("--wait", is_flag=True, help="Block until DAG completes")
 @click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
 def plan_resume(plan_file, run_id, wait, max_concurrent):
-    """Resume a failed or partial plan run, skipping already-merged units."""
+    """Resume a failed or partial plan run, skipping already-merged units.
+
+    Examples:
+      dgov plan resume .dgov/plans/my-plan.toml --wait
+    """
     from pathlib import Path
 
     from dgov.persistence import (
