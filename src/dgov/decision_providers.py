@@ -428,15 +428,15 @@ def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
 
 @dataclass
 class PlanGenerationProvider(DecisionProvider):
-    """Generate plan TOML from goal + file context via Claude CLI.
+    """Generate plan TOML from goal + file context via transport-configured LLM.
 
-    Uses `claude -p` with OAuth subscription — no API credits.
+    Reads transport/model/auth/timeout from get_provider_config("plan_generation").
+    Supports claude-cli, openrouter, and gemini-cli transports.
     The provider is pure: all file contents and examples are pre-loaded
-    in the request. No file I/O happens here — the CLI is the I/O boundary.
+    in the request. No file I/O happens here — the CLI/API is the I/O boundary.
     """
 
     provider_id: str = "plan-generation"
-    model: str = "claude-sonnet-4-6"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return frozenset({DecisionKind.GENERATE_PLAN})
@@ -444,25 +444,71 @@ class PlanGenerationProvider(DecisionProvider):
     def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
         import subprocess
 
+        from dgov.config import get_provider_config
+        from dgov.openrouter import _openrouter_request
+
+        cfg = get_provider_config("plan_generation")
+        transport = cfg.get("transport", "claude-cli")
+        model = cfg.get("model", "claude-sonnet-4-6")
+        auth = cfg.get("auth", "oauth")
+        timeout_s = cfg.get("timeout_s", 120)
+
         started = time.perf_counter()
         prompt = self._build_prompt(request)
 
-        try:
-            result = subprocess.run(
-                ["claude", "-p", "--model", self.model],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=120,
+        if transport == "claude-cli":
+            # Use claude -p subprocess (OAuth or API depending on auth config)
+            try:
+                result = subprocess.run(
+                    ["claude", "-p", "--model", model],
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+                if result.returncode != 0:
+                    stderr = result.stderr.strip()
+                    if "credit" in stderr.lower() and auth == "oauth":
+                        err = "claude -p failed"
+                        reauth = "re-auth with `claude auth login` (not --console): "
+                        raise ProviderError(err + " — " + reauth + stderr[:200])
+                    msg = f"claude -p failed (exit {result.returncode})"
+                    raise ProviderError(msg + ": " + stderr[:300])
+                content = result.stdout
+            except FileNotFoundError as exc:
+                raise ProviderError("claude CLI not found — install Claude Code") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise ProviderError(f"claude -p timed out after {timeout_s}s") from exc
+
+        elif transport == "openrouter":
+            response = _openrouter_request(
+                messages=[{"role": "user", "content": prompt}],
+                model=model,
+                max_tokens=4000,
+                temperature=0.2,
             )
-            if result.returncode != 0:
-                stderr = result.stderr.strip()
-                raise ProviderError(f"claude -p failed (exit {result.returncode}): {stderr[:300]}")
-            content = result.stdout
-        except FileNotFoundError as exc:
-            raise ProviderError("claude CLI not found — install Claude Code") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ProviderError("claude -p timed out after 120s") from exc
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+        elif transport == "gemini-cli":
+            try:
+                result = subprocess.run(
+                    ["gemini", "-p", "--model", model],
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+                if result.returncode != 0:
+                    msg = f"gemini failed (exit {result.returncode})"
+                    raise ProviderError(msg + ": " + result.stderr[:300])
+                content = result.stdout
+            except FileNotFoundError as exc:
+                raise ProviderError("gemini CLI not found — install Google Gemini CLI") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise ProviderError(f"gemini -p timed out after {timeout_s}s") from exc
+
+        else:
+            raise ProviderError(f"Unknown transport: {transport}")
 
         toml_text = self._extract_toml(content)
         valid, issues = self._validate_toml(toml_text)
@@ -476,7 +522,7 @@ class PlanGenerationProvider(DecisionProvider):
                 valid=valid,
                 validation_issues=tuple(issues),
             ),
-            model_id=self.model,
+            model_id=model,
             latency_ms=latency_ms,
             trace_id=request.trace_id,
         )

@@ -643,3 +643,31 @@ def test_plan_generation_provider_rejects_invalid_toml():
     valid, issues = PlanGenerationProvider._validate_toml("not valid toml {{{}}")
     assert not valid
     assert len(issues) > 0
+
+
+def test_plan_generation_config_transport_openrouter(monkeypatch):
+    """PlanGenerationProvider uses OpenRouter when config says so."""
+    from unittest.mock import patch
+
+    from dgov.decision import GeneratePlanRequest
+    from dgov.decision_providers import PlanGenerationProvider
+
+    monkeypatch.setattr(
+        "dgov.config.get_provider_config",
+        lambda name: {
+            "transport": "openrouter",
+            "model": "qwen/qwen3.5-35b",
+            "auth": "api",
+            "timeout_s": 60,
+        },
+    )
+
+    mock_response = {
+        "choices": [{"message": {"content": '[plan]\nversion = 1\nname = "x"\ngoal = "x"'}}],
+        "model": "qwen/qwen3.5-35b",
+    }
+    with patch("dgov.openrouter._openrouter_request", return_value=mock_response):
+        provider = PlanGenerationProvider()
+        request = GeneratePlanRequest(goal="test", files=("a.py",))
+        result = provider.generate_plan(request)
+        assert result.decision.plan_toml  # got something back
