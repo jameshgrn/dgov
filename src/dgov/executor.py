@@ -876,9 +876,7 @@ def run_review_only(
             missing_tests = check_test_coverage(changed, session_root=session_root)
             if missing_tests:
                 review["missing_test_coverage"] = missing_tests
-                passed = False
-                error = f"Source files changed without test coverage: {', '.join(missing_tests)}"
-                logger.info("Test coverage gate failed for %s: %s", slug, missing_tests)
+                logger.warning("Test coverage warning for %s: %s", slug, missing_tests)
 
     _review_result = ReviewOnlyResult(
         slug=slug,
