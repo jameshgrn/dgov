@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -10,6 +11,12 @@ from typing import Any
 import click
 
 from dgov.agents import detect_installed_agents
+
+
+def want_json() -> bool:
+    """Check if JSON output is requested via env var or context."""
+    return os.environ.get("DGOV_JSON", "").strip() in ("1", "true", "yes")
+
 
 SESSION_ROOT_OPTION: Any = click.option(
     "--session-root",
@@ -257,19 +264,17 @@ def cli(ctx, governor):
             write_project_config(project_root, "governor_agent", agent_id)
         if agent_id is not None:
             return agent_id, _normalize_governor_permissions(project_root, perm)
-        # First-time setup — prompt for preferences
+        # First-time setup — auto-select (never prompt, agents can't interact)
         registry = load_registry(project_root)
         installed = detect_installed_agents(registry)
         if not installed:
-            click.echo("No agents found on PATH. Install claude, codex, or gemini first.")
+            msg = json.dumps(
+                {"error": "No agents found on PATH. Install claude, codex, or gemini first."}
+            )
+            click.echo(msg, err=True)
             raise SystemExit(1)
-        default_agent = "claude" if "claude" in installed else installed[0]
-        agent_id = click.prompt(
-            "Governor agent for this repo",
-            type=click.Choice(installed),
-            default=default_agent,
-        )
-        assert agent_id is not None
+        agent_id = "claude" if "claude" in installed else installed[0]
+        click.echo(json.dumps({"auto_selected_governor": agent_id}), err=True)
         write_project_config(project_root, "governor_agent", agent_id)
         perm = _normalize_governor_permissions(project_root, None)
         return agent_id, perm
