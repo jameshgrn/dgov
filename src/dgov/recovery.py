@@ -57,6 +57,11 @@ _MODEL_TO_ROLE: dict[str, str] = {
     "qwen35-35b": "supervisor",
     "qwen35-122b": "manager",
     "qwen35-397b": "manager",
+    # LT-GOV tier (not in worker escalation chain — governor picks directly)
+    "claude-sonnet": "lt-gov",
+    "gemini-flash": "lt-gov",
+    "gemini-flash-25": "lt-gov",
+    "codex-mini": "lt-gov",
 }
 
 # Backward-compat alias: maps each known agent to its escalation target.
