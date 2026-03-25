@@ -107,7 +107,18 @@ def plan_compile(plan_file):
 @click.option("--wait", is_flag=True, help="Block until DAG completes (pipe-driven, no polling)")
 def plan_run(plan_file, max_concurrent, wait):
     """Execute a plan through the DAG kernel."""
-    from dgov.plan import run_plan
+    from dgov.plan import check_cross_plan_claims, parse_plan_file, run_plan
+
+    try:
+        plan = parse_plan_file(plan_file)
+    except ValueError:
+        plan = None
+
+    if plan:
+        session_root = os.path.abspath(".")
+        claim_warnings = check_cross_plan_claims(plan, session_root)
+        for w in claim_warnings:
+            click.secho(f"  WARN: {w.message}", fg="yellow")
 
     try:
         result = run_plan(plan_file, max_concurrent=max_concurrent)

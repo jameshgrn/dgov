@@ -1121,3 +1121,75 @@ class TestEvidenceSyntaxCheck:
         assert any(
             "syntax" in i.message.lower() or "evidence" in i.message.lower() for i in warnings
         )
+
+
+@pytest.mark.unit
+def test_cross_plan_claim_overlap_detected(tmp_path):
+    from unittest.mock import patch
+
+    from dgov.plan import PlanSpec, PlanUnit, PlanUnitFiles, check_cross_plan_claims
+
+    plan = PlanSpec(
+        name="test",
+        goal="test",
+        units={
+            "u1": PlanUnit(
+                slug="u1",
+                summary="t",
+                prompt="t",
+                commit_message="t",
+                files=PlanUnitFiles(edit=("src/foo.py",)),
+            )
+        },
+    )
+
+    mock_runs = [
+        {
+            "id": 99,
+            "dag_file": "other-plan.toml",
+            "status": "running",
+            "definition_json": '{"tasks": [{"slug": "t1", "file_claims": ["src/foo.py"]}]}',
+        }
+    ]
+
+    with patch("dgov.persistence.list_active_dag_runs", return_value=mock_runs):
+        issues = check_cross_plan_claims(plan, str(tmp_path))
+
+    assert len(issues) >= 1
+    assert any("foo.py" in i.message for i in issues)
+    assert all(i.severity == "warning" for i in issues)
+
+
+@pytest.mark.unit
+def test_cross_plan_no_overlap(tmp_path):
+    from unittest.mock import patch
+
+    from dgov.plan import PlanSpec, PlanUnit, PlanUnitFiles, check_cross_plan_claims
+
+    plan = PlanSpec(
+        name="test",
+        goal="test",
+        units={
+            "u1": PlanUnit(
+                slug="u1",
+                summary="t",
+                prompt="t",
+                commit_message="t",
+                files=PlanUnitFiles(edit=("src/bar.py",)),
+            )
+        },
+    )
+
+    mock_runs = [
+        {
+            "id": 99,
+            "dag_file": "other-plan.toml",
+            "status": "running",
+            "definition_json": '{"tasks": [{"slug": "t1", "file_claims": ["src/foo.py"]}]}',
+        }
+    ]
+
+    with patch("dgov.persistence.list_active_dag_runs", return_value=mock_runs):
+        issues = check_cross_plan_claims(plan, str(tmp_path))
+
+    assert len(issues) == 0

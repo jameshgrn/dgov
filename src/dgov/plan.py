@@ -952,6 +952,59 @@ def scaffold_plan(goal: str, files: list[str], name: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
+def check_cross_plan_claims(plan: PlanSpec, session_root: str) -> list[PlanIssue]:
+    """Check for file claim overlaps between this plan and active DAG runs.
+
+    Returns warnings (not errors) for each overlapping file.
+    """
+    try:
+        from dgov.persistence import list_active_dag_runs
+
+        active_runs = list_active_dag_runs(session_root)
+    except Exception:
+        return []
+
+    if not active_runs:
+        return []
+
+    # Collect all files claimed by this plan
+    plan_files: set[str] = set()
+    for unit in plan.units.values():
+        plan_files.update(unit.files.create)
+        plan_files.update(unit.files.edit)
+        plan_files.update(unit.files.delete)
+
+    if not plan_files:
+        return []
+
+    issues: list[PlanIssue] = []
+    for run in active_runs:
+        run_id = run.get("id", "?")
+        run_name = run.get("dag_file", "unknown")
+        # Extract file claims from active run's definition
+        import json
+
+        try:
+            defn = json.loads(run.get("definition_json", "{}"))
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        run_files: set[str] = set()
+        for task in defn.get("tasks", []):
+            for fc in task.get("file_claims", []):
+                run_files.add(fc)
+
+        # Check overlaps
+        for pf in plan_files:
+            for rf in run_files:
+                if _paths_overlap(pf, rf):
+                    stem = Path(run_name).stem
+                    msg = f"File '{pf}' overlaps with '{rf} in active DAG run {run_id} ({stem})"
+                    issues.append(PlanIssue(severity="warning", message=msg))
+
+    return issues
+
+
 def run_plan(
     plan_file: str,
     *,
