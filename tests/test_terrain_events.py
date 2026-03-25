@@ -413,7 +413,7 @@ def test_compat_palette_no_session():
 @pytest.mark.unit
 def test_session_phase_keyframes():
     """Phase function should return valid dicts at all keyframe hours."""
-    for hour in [0.0, 0.5, 2.0, 4.0, 6.0, 8.0, 12.0]:
+    for hour in [0.0, 0.5, 2.0, 4.0, 5.0, 6.0, 8.0, 12.0]:
         phase = _session_phase(hour)
         assert 0.0 <= phase["warmth"] <= 1.0
         assert 0.0 <= phase["saturation"] <= 1.0
@@ -464,6 +464,13 @@ def test_session_phase_values_at_keyframes():
     morning = _session_phase(2.0)
     assert abs(morning["saturation"] - 0.95) < 0.01
     assert abs(morning["contrast"] - 0.95) < 0.01
+
+    # Afternoon transition (hour 5): smooth intermediate
+    afternoon = _session_phase(5.0)
+    assert abs(afternoon["warmth"] - 0.48) < 0.01
+    assert abs(afternoon["saturation"] - 0.75) < 0.01
+    assert abs(afternoon["contrast"] - 0.78) < 0.01
+    assert abs(afternoon["perturbation_scale"] - 0.40) < 0.01
 
     # Late night (hour 12+): low all values
     late = _session_phase(12.0)
