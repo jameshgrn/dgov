@@ -179,6 +179,18 @@ def retry_worker_pane(
     attempt += 1
     new_slug = f"{base_slug}-{attempt}"
 
+    # Rebuild context_packet from original pane's file_claims so the retry
+    # pane has proper claim scope for review and preflight.
+    context_packet = None
+    original_claims = target.get("file_claims") or []
+    if original_claims:
+        from dgov.context_packet import build_context_packet
+
+        context_packet = build_context_packet(
+            original_prompt,
+            file_claims=list(original_claims),
+        )
+
     # Create new pane
     try:
         new_pane = create_worker_pane(
@@ -188,6 +200,7 @@ def retry_worker_pane(
             permission_mode=permission_mode,
             slug=new_slug,
             session_root=session_root,
+            context_packet=context_packet,
         )
     except Exception as e:
         return {"error": str(e)}

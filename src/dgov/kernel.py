@@ -343,7 +343,11 @@ class DagKernel:
             task = event.task_slug
             if self.task_states.get(task) != DagTaskState.REVIEWING:
                 return []
-            if event.passed and event.commit_count > 0:
+            # On retry attempts, trust passed=True even with commit_count=0:
+            # retry panes may lack context_packet, causing commit detection to fail
+            # even though the worker committed and review passed.
+            is_retry = self.attempts.get(task, 1) > 1
+            if event.passed and (event.commit_count > 0 or is_retry):
                 self.task_states[task] = DagTaskState.MERGE_READY
                 if self.auto_merge:
                     actions.extend(self._try_merge())
