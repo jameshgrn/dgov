@@ -321,6 +321,170 @@ class TestValidatePlan:
         issues = validate_plan(spec)
         assert issues == []
 
+    def test_role_validation_error(self, tmp_path):
+        """Invalid role produces error-severity PlanIssue containing 'invalid role'."""
+        unit = PlanUnit(
+            slug="bad",
+            summary="bad unit",
+            prompt="do it",
+            commit_message="commit",
+            files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
+            role="invalid",
+        )
+        plan = PlanSpec(
+            name="test",
+            goal="test goal",
+            units={"bad": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Task must complete.",
+                    evidence="uv run pytest tests/test.py -q",
+                ),
+            ),
+        )
+        issues = validate_plan(plan)
+        assert len(issues) >= 1
+        error_issues = [i for i in issues if i.severity == "error"]
+        assert any("invalid role" in issue.message for issue in error_issues)
+
+    def test_role_validation_valid_worker(self, tmp_path):
+        """Valid role='worker' produces no 'invalid role' issues."""
+        unit = PlanUnit(
+            slug="good",
+            summary="good unit",
+            prompt="do it",
+            commit_message="commit",
+            files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
+            role="worker",
+        )
+        plan = PlanSpec(
+            name="test",
+            goal="test goal",
+            units={"good": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Task must complete.",
+                    evidence="uv run pytest tests/test.py -q",
+                ),
+            ),
+        )
+        issues = validate_plan(plan)
+        invalid_role_issues = [i for i in issues if "invalid role" in i.message]
+        assert len(invalid_role_issues) == 0
+
+    def test_role_validation_valid_ltgov(self, tmp_path):
+        """Valid role='lt-gov' produces no 'invalid role' issues."""
+        unit = PlanUnit(
+            slug="good",
+            summary="good unit",
+            prompt="do it",
+            commit_message="commit",
+            files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
+            role="lt-gov",
+        )
+        plan = PlanSpec(
+            name="test",
+            goal="test goal",
+            units={"good": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Task must complete.",
+                    evidence="uv run pytest tests/test.py -q",
+                ),
+            ),
+        )
+        issues = validate_plan(plan)
+        invalid_role_issues = [i for i in issues if "invalid role" in i.message]
+        assert len(invalid_role_issues) == 0
+
+    def test_agent_validation_warning(self, tmp_path, monkeypatch):
+        """Unresolvable agent produces warning-severity PlanIssue about agent not found."""
+
+        # Monkeypatch is_routable to return False and load_registry to return empty dict
+        def mock_is_routable(agent: str) -> bool:
+            return False
+
+        def mock_load_registry(root: str) -> dict:
+            return {}
+
+        monkeypatch.setattr("dgov.router.is_routable", mock_is_routable)
+        monkeypatch.setattr("dgov.agents.load_registry", mock_load_registry)
+
+        unit = PlanUnit(
+            slug="test",
+            summary="test unit",
+            prompt="do test",
+            commit_message="commit",
+            files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
+            agent="nonexistent-agent",
+        )
+        plan = PlanSpec(
+            name="test",
+            goal="test goal",
+            units={"test": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Task must complete.",
+                    evidence="uv run pytest tests/test.py -q",
+                ),
+            ),
+        )
+        issues = validate_plan(plan)
+        warning_issues = [
+            i for i in issues if i.severity == "warning" and "agent" in i.message.lower()
+        ]
+        assert len(warning_issues) >= 1
+        assert any("nonexistent-agent" in issue.message for issue in warning_issues)
+
+    def test_agent_validation_routable_ok(self, tmp_path, monkeypatch):
+        """Routable agent produces no agent-related warnings."""
+
+        # Monkeypatch is_routable to return True
+        def mock_is_routable(agent: str) -> bool:
+            return True
+
+        monkeypatch.setattr("dgov.router.is_routable", mock_is_routable)
+
+        unit = PlanUnit(
+            slug="test",
+            summary="test unit",
+            prompt="do test",
+            commit_message="commit",
+            files=PlanUnitFiles(edit=("a.py",)),
+            satisfies=("E1",),
+            agent="qwen-35b",
+        )
+        plan = PlanSpec(
+            name="test",
+            goal="test goal",
+            units={"test": unit},
+            evals=(
+                PlanEval(
+                    eval_id="E1",
+                    kind="regression",
+                    statement="Task must complete.",
+                    evidence="uv run pytest tests/test.py -q",
+                ),
+            ),
+        )
+        issues = validate_plan(plan)
+        agent_warnings = [
+            i for i in issues if "agent" in i.message.lower() and i.severity == "warning"
+        ]
+        assert len(agent_warnings) == 0
+
     def test_missing_evals_is_error(self, tmp_path):
         """Plans must define evals before units."""
         toml_content = """

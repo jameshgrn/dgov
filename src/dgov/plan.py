@@ -113,6 +113,7 @@ _ALLOWED_EVAL_KINDS = {
     "performance",
     "integration_test",
 }
+_VALID_ROLES = {"worker", "lt-gov"}
 
 
 def _validate_scratch_name(name: str) -> str:
@@ -514,6 +515,20 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
                 )
             )
 
+    # Check role is valid (error)
+    for slug, unit in units.items():
+        if unit.role not in _VALID_ROLES:
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=(
+                        f"Unit {slug!r}: invalid role {unit.role!r} — "
+                        f"must be one of {sorted(_VALID_ROLES)}"
+                    ),
+                    unit=slug,
+                )
+            )
+
     # Check prompt non-empty (error)
     for slug, unit in units.items():
         if not unit.satisfies:
@@ -555,6 +570,42 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
 
     # Check file conflicts for parallel units
     issues.extend(_check_file_conflicts(units))
+
+    # Check agent names against registry (warning, fault-tolerant)
+    try:
+        from dgov.agents import load_registry
+
+        registry_names = set(load_registry(plan.project_root or ".").keys())
+    except Exception:
+        registry_names = set()
+
+    for slug, unit in units.items():
+        effective_agent = unit.agent or plan.default_agent
+        if not effective_agent:
+            continue
+        # Try to check against registry first
+        found_in_registry = False
+        if registry_names and effective_agent in registry_names:
+            found_in_registry = True
+
+        # If not in registry, check if it's routable (this is optional/fallback)
+        if not found_in_registry:
+            try:
+                from dgov.router import is_routable as _is_routable
+
+                if not _is_routable(effective_agent):
+                    issues.append(
+                        PlanIssue(
+                            severity="warning",
+                            message=(
+                                f"Unit {slug!r}: agent {effective_agent!r} "
+                                "not found in registry and not routable"
+                            ),
+                            unit=slug,
+                        )
+                    )
+            except Exception:
+                pass
 
     for plan_eval in plan.evals:
         if not any(plan_eval.eval_id in unit.satisfies for unit in units.values()):
