@@ -166,6 +166,7 @@ def pane_util(command, title, cwd):
     type=int,
     help="Max seconds to wait when --land is used (default: 600)",
 )
+@click.option("--stdin", "use_stdin", is_flag=True, default=False, help="Read prompt from stdin")
 def pane_create(
     agent,
     prompt,
@@ -241,6 +242,11 @@ def pane_create(
         if agent is None:
             agent = tpl.default_agent or get_default_agent(registry)
         skip_auto_structure = True
+
+    if use_stdin:
+        prompt = sys.stdin.read().strip()
+        if not prompt:
+            raise click.ClickException("No prompt received on stdin")
     elif not prompt:
         raise click.ClickException("Prompt required: use -p, --prompt-file, or -T/--template")
 
