@@ -513,6 +513,51 @@ class TestReviewMerge:
             message="merge task",
         )
 
+    def test_dag_retry_resets_attempt_on_escalation(self, tmp_path):
+        """_dag_retry returns attempt=0 when retry_or_escalate escalates (ledger #71)."""
+        from dgov.executor import _dag_retry
+        from dgov.kernel import TaskRetryStarted
+
+        with (
+            patch(
+                "dgov.recovery.retry_or_escalate",
+                return_value={
+                    "action": "escalate",
+                    "agent": "qwen-35b",
+                    "new_slug": "pane-2",
+                    "from_agent": "qwen-9b",
+                },
+            ),
+            patch("dgov.persistence.upsert_dag_task"),
+        ):
+            event = _dag_retry("/repo", str(tmp_path), 1, "task-a", "pane-1", 2, 2, lambda _: None)
+
+        assert isinstance(event, TaskRetryStarted)
+        assert event.task_slug == "task-a"
+        assert event.new_pane_slug == "pane-2"
+        assert event.attempt == 0  # reset for new tier
+
+    def test_dag_retry_preserves_attempt_on_same_tier(self, tmp_path):
+        """_dag_retry keeps attempt unchanged on same-tier retry."""
+        from dgov.executor import _dag_retry
+        from dgov.kernel import TaskRetryStarted
+
+        with (
+            patch(
+                "dgov.recovery.retry_or_escalate",
+                return_value={
+                    "action": "retry",
+                    "agent": "qwen-9b",
+                    "new_slug": "pane-2",
+                },
+            ),
+            patch("dgov.persistence.upsert_dag_task"),
+        ):
+            event = _dag_retry("/repo", str(tmp_path), 1, "task-a", "pane-1", 2, 2, lambda _: None)
+
+        assert isinstance(event, TaskRetryStarted)
+        assert event.attempt == 2  # unchanged
+
     def test_run_review_merge_blocks_non_safe_review(self, tmp_path):
         with patch(
             "dgov.inspection.review_worker_pane",
@@ -557,6 +602,17 @@ class TestReviewMerge:
             squash=False,
             rebase=False,
         )
+
+    def test_run_review_merge_blocks_zero_commits(self, tmp_path):
+        """run_review_merge should fail-fast on 0 commits (ledger #73)."""
+        with patch(
+            "dgov.inspection.review_worker_pane",
+            return_value={"slug": "task", "verdict": "safe", "commit_count": 0},
+        ):
+            result = run_review_merge("/repo", "task", session_root=str(tmp_path))
+
+        assert result.error == "No commits to merge"
+        assert result.merge_result is None
 
     def test_run_land_only_closes_after_successful_merge(self, tmp_path):
         with (

@@ -871,6 +871,56 @@ class TestCheckFileLocksEdgeCases:
         r = check_file_locks(str(tmp_path), ["src/foo.py"])
         assert r.passed is True
 
+    @pytest.mark.parametrize(
+        "state",
+        [
+            "done",
+            "failed",
+            "merged",
+            "closed",
+            "abandoned",
+            "superseded",
+            "timed_out",
+            "escalated",
+        ],
+    )
+    def test_terminal_state_panes_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path, state: str
+    ) -> None:
+        """Panes in terminal states should not block new dispatches (ledger #72)."""
+        monkeypatch.setattr(
+            "dgov.persistence.all_panes",
+            lambda *a, **kw: [
+                {
+                    "slug": "old-task",
+                    "state": state,
+                    "file_claims": '["src/foo.py"]',
+                    "worktree_path": str(tmp_path / "wt"),
+                    "base_sha": "abc123",
+                }
+            ],
+        )
+        r = check_file_locks(str(tmp_path), ["src/foo.py"])
+        assert r.passed is True
+
+    def test_active_state_pane_blocks(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        """Panes in active states should still block on overlapping claims."""
+        monkeypatch.setattr(
+            "dgov.persistence.all_panes",
+            lambda *a, **kw: [
+                {
+                    "slug": "active-task",
+                    "state": "working",
+                    "file_claims": '["src/foo.py"]',
+                    "worktree_path": str(tmp_path / "wt"),
+                    "base_sha": "abc123",
+                }
+            ],
+        )
+        r = check_file_locks(str(tmp_path), ["src/foo.py"])
+        assert r.passed is False
+        assert "active-task" in r.message
+
     def test_git_diff_timeout(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         import subprocess as sp
 

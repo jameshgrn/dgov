@@ -303,3 +303,77 @@ def test_kernel_governor_resume_retry() -> None:
     actions = kernel.handle(TaskGovernorResumed("a", action="retry"))
     assert kernel.task_states["a"] == DagTaskState.DISPATCHED
     assert any(isinstance(a, DispatchTask) and a.task_slug == "a" for a in actions)
+
+
+def test_kernel_cross_tier_escalation_resets_attempts() -> None:
+    """After escalation (attempt=0 in TaskRetryStarted), the new tier gets full retry budget."""
+    deps = {"a": ()}
+    kernel = DagKernel(deps=deps, max_retries=2)
+
+    kernel.start()
+    kernel.handle(TaskDispatched("a", "pane-1"))
+    kernel.handle(TaskWaitDone("a", "pane-1", "done"))
+
+    # 1st review failure → retry at worker tier
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert isinstance(actions[0], RetryTask)
+    assert actions[0].attempt == 1
+
+    # Retry at same tier (attempt=1)
+    kernel.handle(TaskRetryStarted("a", "pane-2", attempt=1))
+    assert kernel.attempts["a"] == 2
+    kernel.handle(TaskWaitDone("a", "pane-2", "done"))
+
+    # 2nd review failure → retry again (attempt 2 <= max_retries 2)
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert isinstance(actions[0], RetryTask)
+
+    # Runtime escalates to supervisor, sends attempt=0 to signal reset
+    kernel.handle(TaskRetryStarted("a", "pane-3", attempt=0))
+    assert kernel.attempts["a"] == 1  # reset: 0 + 1 = 1
+
+    # New tier now has full budget — failure should retry, not block
+    kernel.handle(TaskWaitDone("a", "pane-3", "done"))
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert isinstance(actions[0], RetryTask)
+    assert kernel.task_states["a"] == DagTaskState.DISPATCHED
+
+
+def test_kernel_escalation_eventually_blocks_governor() -> None:
+    """After all tiers exhaust retries, kernel blocks on governor."""
+    deps = {"a": ()}
+    kernel = DagKernel(deps=deps, max_retries=1)
+
+    kernel.start()
+    kernel.handle(TaskDispatched("a", "pane-1"))
+    kernel.handle(TaskWaitDone("a", "pane-1", "done"))
+
+    # Worker tier: 1st review failure → retry
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert isinstance(actions[0], RetryTask)
+
+    # Escalation to supervisor (attempt=0 reset)
+    kernel.handle(TaskRetryStarted("a", "pane-2", attempt=0))
+    kernel.handle(TaskWaitDone("a", "pane-2", "done"))
+
+    # Supervisor tier: 1st review failure → retry
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert isinstance(actions[0], RetryTask)
+
+    # Escalation to manager (attempt=0 reset again)
+    kernel.handle(TaskRetryStarted("a", "pane-3", attempt=0))
+    kernel.handle(TaskWaitDone("a", "pane-3", "done"))
+
+    # Manager tier: 1st review failure → retry
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert isinstance(actions[0], RetryTask)
+
+    # Manager ceiling — retry_or_escalate returns same agent, no reset
+    # attempt=1 this time (not escalation)
+    kernel.handle(TaskRetryStarted("a", "pane-4", attempt=1))
+    kernel.handle(TaskWaitDone("a", "pane-4", "done"))
+
+    # Manager retries exhausted → BLOCKED_ON_GOVERNOR
+    actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
+    assert kernel.task_states["a"] == DagTaskState.BLOCKED_ON_GOVERNOR
+    assert any(isinstance(a, InterruptGovernor) for a in actions)

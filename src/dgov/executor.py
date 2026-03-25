@@ -569,7 +569,7 @@ def run_post_dispatch_lifecycle(
                 current_slug,
                 session_root=session_root,
                 require_safe=False,
-                require_commits=False,
+                require_commits=True,
             )
             if review_res.error is not None:
                 state = "failed"
@@ -929,7 +929,7 @@ def run_review_merge(
         slug,
         session_root=session_root,
         require_safe=False,
-        require_commits=False,
+        require_commits=True,
     )
 
     if review_res.error is not None:
@@ -1999,7 +1999,7 @@ def _dag_review(
         pane_slug,
         session_root=session_root,
         require_safe=True,
-        require_commits=False,
+        require_commits=True,
         review_agent=review_agent,
         tests_pass=task.tests_pass,
         lint_clean=task.lint_clean,
@@ -2095,6 +2095,11 @@ def _dag_retry(
             return TaskDispatchFailed(task_slug, "Retry failed to produce new slug")
 
         target_agent = res.get("agent", "")
+        escalated = res.get("action") == "escalate"
+
+        # On escalation, reset attempt so the new tier gets its full retry budget.
+        # kernel.handle(TaskRetryStarted) sets attempts[task] = event.attempt + 1.
+        effective_attempt = 0 if escalated else attempt
 
         upsert_dag_task(
             session_root,
@@ -2102,10 +2107,12 @@ def _dag_retry(
             task_slug,
             "dispatched",
             target_agent,
-            attempt=attempt + 1,
+            attempt=effective_attempt + 1,
             pane_slug=new_slug,
         )
-        return TaskRetryStarted(task_slug, new_slug, attempt)
+        if escalated:
+            progress(f"  escalated {task_slug} to {target_agent}")
+        return TaskRetryStarted(task_slug, new_slug, effective_attempt)
 
     except Exception as exc:
         logger.error("Retry failed for %s: %s", task_slug, exc)

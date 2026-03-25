@@ -323,7 +323,16 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
         pane_state = pane.get("state", "")
 
         # Skip terminal-state panes — they're no longer working
-        if pane_state in ("merged", "closed", "abandoned", "superseded"):
+        if pane_state in (
+            "done",
+            "failed",
+            "merged",
+            "closed",
+            "abandoned",
+            "superseded",
+            "timed_out",
+            "escalated",
+        ):
             continue
 
         try:
