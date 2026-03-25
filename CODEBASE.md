@@ -62,7 +62,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/api.py (M): Public Python API for dgov.
   src/dgov/backend.py (M): Abstract worker backend interface and tmux implementation. -> test_backend.py
   src/dgov/blame.py (M): Blame: query event journal + git history to attribute file changes to agents. -> test_blame.py
-  src/dgov/cli/admin.py (L): Administrative and diagnostic commands.
+  src/dgov/cli/admin.py (L): Administrative and diagnostic commands. -> test_admin.py
   src/dgov/cli/batch_cmd.py (S): Checkpoint and batch commands.
   src/dgov/cli/briefing_cmd.py (S): CLI command: dgov briefing — on-demand document viewer via glow.
   src/dgov/cli/dag_cmd.py (M): CLI commands for DAG execution.
