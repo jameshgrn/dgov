@@ -13,7 +13,7 @@ from typing import Any
 import click
 
 from dgov.agents import detect_installed_agents
-from dgov.cli import SESSION_ROOT_OPTION
+from dgov.cli import SESSION_ROOT_OPTION, want_json
 from dgov.cli.pane import _autocorrect_roots
 
 
@@ -461,7 +461,7 @@ def status(project_root, session_root, output_json):
     registry = load_registry(project_root)
     installed = set(detect_installed_agents(registry))
 
-    if output_json:
+    if output_json or want_json():
         # Machine-readable JSON output
         click.echo(
             json.dumps(
@@ -724,7 +724,7 @@ def stats(project_root, session_root, output_json):
     session_root = os.path.abspath(session_root) if session_root else project_root
     data = compute_stats(session_root)
 
-    if output_json:
+    if output_json or want_json():
         click.echo(json.dumps(data, indent=2))
     else:
         reliability = data.get("reliability", {})
@@ -861,8 +861,7 @@ def init_cmd(project_root, agent, output_json):
             click.echo("Already initialized.")
         return
 
-    # Interactive prompt or use provided agent
-    if agent is None and not output_json:
+    if agent is None and not (output_json or want_json()):
         governor = click.prompt("Governor agent", default="claude", type=str)
     elif agent is not None:
         governor = agent
@@ -931,7 +930,7 @@ def doctor_cmd(project_root, output_json):
         if not passed:
             ok = False
         checks.append({"check": label, "passed": passed, "detail": detail})
-        if not output_json:
+        if not (output_json or want_json()):
             icon = "[ok]" if passed else "[FAIL]"
             msg = f"  {icon} {label}"
             if detail:
@@ -1088,7 +1087,7 @@ def doctor_cmd(project_root, output_json):
                     "OAuth configured, no conflicting env var",
                 )
 
-    if output_json:
+    if output_json or want_json():
         click.echo(json.dumps({"checks": checks, "all_passed": ok}, indent=2))
         return
 
@@ -1222,7 +1221,7 @@ def recover_cmd(project_root, session_root, output_json):
         click.echo("No recovery needed — all panes consistent with event log.")
         return
 
-    if output_json:
+    if output_json or want_json():
         click.echo(json.dumps({"recoveries": recs, "count": len(recs)}, indent=2, default=str))
         return
 
