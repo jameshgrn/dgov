@@ -77,6 +77,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/cli/trace_cmd.py (M): Span and tool-trace CLI commands.
   src/dgov/cli/wait_cmd.py (S): CLI command for event-driven waiting and governor interrupts.
   src/dgov/cli/worker_cmd.py (S): Worker status reporting commands.
+  src/dgov/config.py (S): Unified dgov configuration loader. -> test_config.py
   src/dgov/dashboard.py (L): Rich-based live dashboard for dgov pane management. -> test_dashboard.py
   src/dgov/plan.py (L): Plan schema, validator, and compiler for dgov. -> test_plan.py
   src/dgov/preflight.py (L): Pre-flight validation for dgov dispatch.
