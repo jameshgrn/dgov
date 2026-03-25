@@ -966,7 +966,8 @@ def pane_retry_or_escalate(slug, project_root, session_root, max_retries, permis
 )
 @SESSION_ROOT_OPTION
 @click.option("--tail", "-n", default=50, help="Number of lines from end")
-def pane_output(slug, project_root, session_root, tail):
+@click.option("--follow", "-f", is_flag=True, help="Stream output continuously (like tail -f)")
+def pane_output(slug, project_root, session_root, tail, follow):
     """Show worker output (auto-routes: log for headless workers, capture for TUI)."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
@@ -992,6 +993,28 @@ def pane_output(slug, project_root, session_root, tail):
         click.echo(json.dumps({"error": f"No output for: {slug}"}), err=True)
         sys.exit(1)
     click.echo(text)
+
+    if follow:
+        import time
+        from pathlib import Path
+
+        from dgov.persistence import STATE_DIR
+
+        log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
+        if not log_path.exists():
+            click.echo("(no log file to follow)")
+            return
+        try:
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)  # seek to end
+                while True:
+                    line = f.readline()
+                    if line:
+                        click.echo(line.decode("utf-8", errors="replace").rstrip())
+                    else:
+                        time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
 
 
 @pane.command("message")
