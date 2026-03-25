@@ -2564,12 +2564,13 @@ class TestWaitWorkerPane:
     def test_done_on_first_poll(self, tmp_path: Path) -> None:
         from dgov.waiter import wait_worker_pane
 
-        with (
-            patch("dgov.persistence.get_pane", return_value={"slug": "s1", "agent": "claude"}),
-            patch("dgov.waiter._is_done", return_value=True),
+        # Pane already in terminal state → returns immediately without blocking
+        with patch(
+            "dgov.persistence.get_pane",
+            return_value={"slug": "s1", "agent": "claude", "state": "done"},
         ):
             result = wait_worker_pane(str(tmp_path), "s1", timeout=5, poll=0)
-        assert result == {"done": "s1", "method": "signal_or_commit"}
+        assert result == {"done": "s1", "method": "already:done"}
 
     def test_poll_once_detects_blocked_output_without_stable_strategy(
         self, tmp_path: Path, mock_backend: MagicMock
@@ -2722,15 +2723,18 @@ class TestWaitWorkerPane:
     def test_timeout_raises(self, tmp_path: Path) -> None:
         from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
+        # Pane is active (not terminal), wait_for_events returns nothing,
+        # and time jumps past timeout → PaneTimeoutError
         with (
-            patch("dgov.persistence.get_pane", return_value={"slug": "s1", "agent": "pi"}),
+            patch(
+                "dgov.persistence.get_pane",
+                return_value={"slug": "s1", "agent": "pi", "state": "active"},
+            ),
             patch("dgov.persistence.latest_event_id", return_value=0),
             patch("dgov.persistence.wait_for_events", return_value=[]),
-            patch("dgov.waiter._is_done", return_value=False),
-            patch("dgov.status.capture_worker_output", return_value=None),
             patch("dgov.persistence.settle_completion_state"),
             patch("dgov.persistence.emit_event"),
-            patch("dgov.waiter.time.monotonic", side_effect=[0, 0, 0, 100]),
+            patch("dgov.waiter.time.monotonic", side_effect=[0, 0, 100]),
         ):
             with pytest.raises(PaneTimeoutError) as exc_info:
                 wait_worker_pane(str(tmp_path), "s1", timeout=10, poll=1)
