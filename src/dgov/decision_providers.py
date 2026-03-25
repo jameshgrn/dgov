@@ -428,42 +428,32 @@ def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
 
 @dataclass
 class PlanGenerationProvider(DecisionProvider):
-    """Generate plan TOML from goal + file context via Claude CLI.
+    """Generate plan TOML from goal + file context via OpenRouter.
 
     The provider is pure: all file contents and examples are pre-loaded
     in the request. No file I/O happens here — the CLI is the I/O boundary.
-
-    Uses `claude -p --model claude-sonnet-4-6` via subprocess with OAuth,
-    not an API call. Falls back to OpenRouter if claude CLI is unavailable.
     """
 
     provider_id: str = "plan-generation"
-    model: str = "claude-sonnet-4-6"
+    model: str = "anthropic/claude-sonnet-4-6"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return frozenset({DecisionKind.GENERATE_PLAN})
 
     def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        import subprocess
+        from dgov.openrouter import _openrouter_request
 
         started = time.perf_counter()
         prompt = self._build_prompt(request)
 
         try:
-            result = subprocess.run(
-                ["claude", "-p", "--model", self.model],
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=120,
+            response = _openrouter_request(
+                messages=[{"role": "user", "content": prompt}],
+                model=self.model,
+                max_tokens=4000,
+                temperature=0.2,
             )
-            if result.returncode != 0:
-                # Claude CLI failed (no credits, not installed, etc.) — fall back
-                content = self._fallback_openrouter(prompt)
-            else:
-                content = result.stdout
-        except (FileNotFoundError, OSError):
-            content = self._fallback_openrouter(prompt)
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
         except Exception as exc:
             raise ProviderError(f"Plan generation failed: {exc}") from exc
 
@@ -479,23 +469,10 @@ class PlanGenerationProvider(DecisionProvider):
                 valid=valid,
                 validation_issues=tuple(issues),
             ),
-            model_id=self.model,
+            model_id=response.get("model", self.model),
             latency_ms=latency_ms,
             trace_id=request.trace_id,
         )
-
-    @staticmethod
-    def _fallback_openrouter(prompt: str) -> str:
-        """Fall back to OpenRouter if claude CLI is unavailable."""
-        from dgov.openrouter import _openrouter_request
-
-        response = _openrouter_request(
-            messages=[{"role": "user", "content": prompt}],
-            model="anthropic/claude-sonnet-4-6",
-            max_tokens=4000,
-            temperature=0.2,
-        )
-        return response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
     def _build_prompt(self, request: GeneratePlanRequest) -> str:
         """Build the plan generation prompt from request context."""
