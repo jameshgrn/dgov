@@ -55,7 +55,6 @@ _MODEL_TO_ROLE: dict[str, str] = {
     "river-35b-2": "supervisor",
     "qwen35-9b": "worker",
     "qwen35-35b": "supervisor",
-    "qwen35-flash": "worker",
     "qwen35-122b": "manager",
     "qwen35-397b": "manager",
 }
