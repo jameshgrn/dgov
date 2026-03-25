@@ -143,7 +143,7 @@ def review_worker_pane(
     verdict = "safe" if not issues else "review"
 
     if verdict == "safe":
-        emit_event(session_root, "review_pass", slug)
+        emit_event(session_root, "review_pass", slug, commit_count=commit_count)
     else:
         emit_event(session_root, "review_fail", slug, issues=issues)
 

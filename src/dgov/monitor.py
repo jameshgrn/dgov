@@ -671,10 +671,9 @@ def _apply_monitor_events(
             elif kind == "pane_timed_out":
                 dag_ev = TaskWaitDone(task_slug, slug, "timed_out")
             elif kind == "review_pass":
-                # Deterministic check passed
-                dag_ev = TaskReviewDone(task_slug, passed=True, verdict="safe", commit_count=1)
+                cc = int(event.get("commit_count", 0) or 0)
+                dag_ev = TaskReviewDone(task_slug, passed=True, verdict="safe", commit_count=cc)
             elif kind == "review_fail":
-                # Deterministic check failed
                 dag_ev = TaskReviewDone(task_slug, passed=False, verdict="unsafe", commit_count=0)
             elif kind == "merge_completed":
                 dag_ev = TaskMergeDone(task_slug)

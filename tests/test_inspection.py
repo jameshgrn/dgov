@@ -119,7 +119,7 @@ class TestReviewWorkerPane:
         assert "feature.txt" in result["stat"]
         assert "Add feature file" in result["commit_log"]
         inspection_mocks["emit_event"].assert_called_once_with(
-            str(tmp_path), "review_pass", "worker-a"
+            str(tmp_path), "review_pass", "worker-a", commit_count=1
         )
 
     def test_missing_pane(self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]) -> None:
