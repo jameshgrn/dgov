@@ -9,7 +9,7 @@ import sys
 
 import click
 
-from dgov.cli import SESSION_ROOT_OPTION
+from dgov.cli import SESSION_ROOT_OPTION, want_json
 from dgov.context_packet import build_context_packet
 
 
@@ -516,16 +516,40 @@ def pane_batch(toml_file, project_root, session_root):
 )
 @SESSION_ROOT_OPTION
 @click.option("--force", "-f", is_flag=True, help="Remove worktree even if dirty")
-def pane_close(slug, project_root, session_root, force):
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Preview what would be closed without executing"
+)
+def pane_close(slug, project_root, session_root, force, dry_run):
     """Close a worker pane: kill tmux pane, remove worktree.
 
     \b
     Examples:
       dgov pane close fix-parser -r .
       dgov pane close fix-parser add-tests -r . --force
-      dgov pane close stuck-pane -r . -f
+      dgov pane close stuck-pane -r . --dry-run
     """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
+
+    if dry_run:
+        from dgov.persistence import get_pane as _get_pane
+
+        session_root_abs = os.path.abspath(session_root or project_root)
+        results = []
+        for s in slug:
+            rec = _get_pane(session_root_abs, s)
+            if rec:
+                results.append(
+                    {
+                        "slug": s,
+                        "would_close": True,
+                        "state": rec.get("state", "unknown"),
+                        "agent": rec.get("agent", "unknown"),
+                    }
+                )
+            else:
+                results.append({"slug": s, "would_close": False, "reason": "not found"})
+        click.echo(json.dumps({"dry_run": True, "panes": results}, indent=2))
+        return
 
     from dgov.executor import run_close_only
 
@@ -534,7 +558,15 @@ def pane_close(slug, project_root, session_root, force):
         if result.closed:
             click.echo(json.dumps({"closed": s}))
         else:
-            click.echo(json.dumps({"not_found": s}), err=True)
+            click.echo(
+                json.dumps(
+                    {
+                        "error": f"Pane not found: {s}",
+                        "hint": "Run 'dgov pane list -r .' to see active panes",
+                    }
+                ),
+                err=True,
+            )
             sys.exit(1)
 
 
@@ -736,7 +768,15 @@ def pane_wait(slug, project_root, session_root, timeout, poll, stable, auto_retr
 
     for s in slug:
         if s not in known:
-            click.echo(json.dumps({"error": f"Pane not found: {s}"}), err=True)
+            click.echo(
+                json.dumps(
+                    {
+                        "error": f"Pane not found: {s}",
+                        "hint": "Run 'dgov pane list -r .' to see active panes",
+                    }
+                ),
+                err=True,
+            )
             exit_code = 1
             continue
         wait_result = run_wait_only(
@@ -788,7 +828,7 @@ def pane_list(project_root, session_root, as_json, verbose):
 
     panes = list_worker_panes(project_root, session_root=session_root)
 
-    if as_json or os.environ.get("DGOV_JSON"):
+    if as_json or want_json():
         click.echo(json.dumps(panes, indent=2))
         return
 

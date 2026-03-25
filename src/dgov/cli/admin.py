@@ -861,12 +861,7 @@ def init_cmd(project_root, agent, output_json):
             click.echo("Already initialized.")
         return
 
-    if agent is None and not (output_json or want_json()):
-        governor = click.prompt("Governor agent", default="claude", type=str)
-    elif agent is not None:
-        governor = agent
-    else:
-        governor = "claude"
+    governor = agent or "claude"
     permissions = "bypassPermissions"
 
     # Create directories
@@ -937,7 +932,8 @@ def doctor_cmd(project_root, output_json):
                 msg += f" -- {detail}"
             click.echo(msg)
 
-    click.echo("dgov doctor\n")
+    if not (output_json or want_json()):
+        click.echo("dgov doctor\n")
 
     # 1. tmux installed
     tmux_path = shutil.which("tmux")
@@ -1075,11 +1071,20 @@ def doctor_cmd(project_root, output_json):
         if auth_mode == "oauth" and transport == "claude-cli":
             has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
             if has_api_key:
-                click.echo(
-                    "  [WARN] auth: "
-                    f"{provider_name} — ANTHROPIC_API_KEY env var overrides OAuth"
-                    " — remove from .zshrc"
+                checks.append(
+                    {
+                        "check": f"auth: {provider_name}",
+                        "passed": True,
+                        "detail": "ANTHROPIC_API_KEY env var overrides OAuth — remove from .zshrc",
+                        "warning": True,
+                    }
                 )
+                if not (output_json or want_json()):
+                    click.echo(
+                        "  [WARN] auth: "
+                        f"{provider_name} — ANTHROPIC_API_KEY env var overrides OAuth"
+                        " — remove from .zshrc"
+                    )
             else:
                 _check(
                     f"auth: {provider_name}",
