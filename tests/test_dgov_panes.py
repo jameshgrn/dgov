@@ -2208,6 +2208,8 @@ class TestValidEvents:
             "quality_escalate",
             "evals_verified",
             "worker_contradiction",
+            "monitor_alive",
+            "pane_pruned",
         }
         assert expected == VALID_EVENTS
 
