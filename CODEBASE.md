@@ -34,7 +34,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/waiter.py (L): Wait/poll logic for worker panes. -> test_waiter.py
 [merge and review]
   src/dgov/inspection.py (L): Pane inspection: review, diff, rebase. -> test_inspection.py
-  src/dgov/merger.py (L): Git merge, conflict resolution, and post-merge operations.
+  src/dgov/merger.py (L): Git merge, conflict resolution, and post-merge operations. -> test_merger.py
 [automation and recovery]
   src/dgov/monitor.py (L): Lightweight polling daemon for worker state classification and auto-remediation. -> test_monitor.py
   src/dgov/monitor_hooks.py (S): Configurable monitor hooks via TOML configuration files. -> test_monitor_hooks.py
@@ -50,7 +50,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
 [decision system]
   src/dgov/context_packet.py (S): Compiled task context shared across preflight, prompts, and instructions. -> test_context_packet.py
   src/dgov/decision.py (L): Typed decision requests, records, and provider wrappers. -> test_decision.py
-  src/dgov/decision_providers.py (S): # Error parsing: invalid syntax (decision_providers.py, line 443) -> test_decision_providers.py
+  src/dgov/decision_providers.py (L): Concrete decision providers built on existing dgov transports. -> test_decision_providers.py
   src/dgov/provider_registry.py (S): Central provider selection and optional decision journaling. -> test_provider_registry.py
 [higher-level workflows]
   src/dgov/batch.py (M): Batch execution and checkpoint management. -> test_batch.py
