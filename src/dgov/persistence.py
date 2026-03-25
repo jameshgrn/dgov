@@ -803,6 +803,13 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     if d.get("owns_worktree") is not None:
         d["owns_worktree"] = bool(d["owns_worktree"])
+    # Deserial file_claims from JSON string back to list/tuple
+    fc = d.get("file_claims")
+    if isinstance(fc, str):
+        try:
+            d["file_claims"] = json.loads(fc)
+        except (json.JSONDecodeError, TypeError):
+            d["file_claims"] = []
     # Legacy metadata JSON — merge for backward compat, but typed columns win
     metadata = d.pop("metadata", None)
     if metadata:
@@ -826,6 +833,11 @@ def _insert_pane_dict(conn: sqlite3.Connection, pane_dict: dict) -> None:
     for k, v in pane_dict.items():
         if k in _PANE_COLUMNS:
             values[k] = v
+        elif k in _PANE_TYPED_COLS:
+            if isinstance(v, (dict, list, tuple)):
+                values[k] = json.dumps(v, default=str)
+            else:
+                values[k] = v
         else:
             extras[k] = v
 
