@@ -1,4 +1,4 @@
-"""Unit tests for post-merge lint fix functionality in merger.py."""
+"""Unit tests for post-merge validation including conflict marker detection."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dgov.merger import _lint_fix_merged_files
+from dgov.merger import _check_conflict_markers, _lint_fix_merged_files
 
 pytestmark = pytest.mark.unit
 
@@ -131,3 +131,33 @@ buggy.py:5:1: E741 ambiguous variable name 'e'"""
     assert len(result["lint_unfixable"]) == 5
     assert len(result["lint_unfixable_files"]) == 1
     assert result["lint_unfixable_files"] == ["buggy.py"]
+
+
+@pytest.mark.unit
+def test_conflict_marker_detection_finds_markers(tmp_path: Path) -> None:
+    """Test that conflict markers are detected in merged files."""
+    clean = tmp_path / "clean.py"
+    clean.write_text("def hello(): pass\n")
+
+    dirty = tmp_path / "dirty.py"
+    dirty.write_text("def hello():\n<<<<<<< HEAD\n    pass\n=======\n    return\n>>>>>>> branch\n")
+
+    result = _check_conflict_markers(str(tmp_path), ["clean.py", "dirty.py"])
+    assert result == ["dirty.py"]
+
+
+@pytest.mark.unit
+def test_conflict_marker_detection_clean_files(tmp_path: Path) -> None:
+    """Test that clean files return empty list."""
+    clean = tmp_path / "ok.py"
+    clean.write_text("x = 1\n")
+
+    result = _check_conflict_markers(str(tmp_path), ["ok.py"])
+    assert result == []
+
+
+@pytest.mark.unit
+def test_conflict_marker_detection_missing_file(tmp_path: Path) -> None:
+    """Test that missing files are skipped gracefully."""
+    result = _check_conflict_markers(str(tmp_path), ["nonexistent.py"])
+    assert result == []
