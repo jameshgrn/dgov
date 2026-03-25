@@ -281,3 +281,36 @@ def dag_status(dagfile, run_id):
         if satisfies:
             line += f"  satisfies: {', '.join(satisfies)}"
         click.echo(line)
+
+
+@dag.command("force-complete")
+@click.argument("run_id", type=int)
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+def dag_force_complete(run_id, project_root):
+    """Force-complete a DAG run: mark all pending tasks as done."""
+    import os
+
+    from dgov.executor import run_force_complete_dag
+
+    session_root = os.path.abspath(project_root)
+    result = run_force_complete_dag(session_root, run_id)
+    if result.get("error"):
+        raise click.ClickException(result["error"])
+    click.echo(json.dumps(result, indent=2))
+
+
+@dag.command("skip-task")
+@click.argument("run_id", type=int)
+@click.argument("task_slug")
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+def dag_skip_task(run_id, task_slug, project_root):
+    """Skip a single task in a DAG run and let the kernel advance."""
+    import os
+
+    from dgov.executor import run_skip_dag_task
+
+    session_root = os.path.abspath(project_root)
+    result = run_skip_dag_task(session_root, run_id, task_slug)
+    if result.get("error"):
+        raise click.ClickException(result["error"])
+    click.echo(json.dumps(result, indent=2))
