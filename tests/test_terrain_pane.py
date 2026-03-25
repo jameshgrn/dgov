@@ -131,3 +131,36 @@ class TestHUD:
         # Both should contain state labels
         assert any(label in young_hud.plain for label in ["youthful", "organizing"])
         assert any(label in mature_hud.plain for label in ["mature", "settled"])
+
+    def test_hud_hysteresis_prevents_flicker(self):
+        """Maturity label should not flicker when oscillating near a threshold."""
+        from dgov.terrain_pane import _hud_state
+
+        # Reset hysteresis state
+        _hud_state["last_label"] = ""
+        _hud_state["last_maturity"] = 0.0
+
+        # Create models with maturity oscillating around 0.50
+        labels = []
+        for mat_value in [0.48, 0.51, 0.49, 0.52, 0.48, 0.51]:
+            model = ErosionModel(width=13, height=13, seed=7)
+            # Mock maturity by stuffing the ring buffer
+            # maturity = 1 - (current_mean / REFERENCE_DELTA)
+            # So current_mean = REFERENCE_DELTA * (1 - mat_value)
+            target_mean = model.REFERENCE_DELTA * (1.0 - mat_value)
+            model._ring_buffer = [target_mean] * 10
+            hud = _compute_hud(model)
+            # Extract label from HUD text
+            for label in ["youthful", "organizing", "mature", "settled"]:
+                if label in hud.plain:
+                    labels.append(label)
+                    break
+
+        # With hysteresis, label should NOT alternate between organizing and mature
+        # It should stay stable (all same label, or at most one transition)
+        transitions = sum(1 for i in range(1, len(labels)) if labels[i] != labels[i - 1])
+        assert transitions <= 1, f"Too many label transitions (flickering): {labels}"
+
+        # Reset state for other tests
+        _hud_state["last_label"] = ""
+        _hud_state["last_maturity"] = 0.0

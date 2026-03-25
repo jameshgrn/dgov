@@ -26,6 +26,66 @@ _PANEL_BORDER_HEIGHT = 2
 _STARTUP_DELAY_S = 0.3
 _AGENT_POLL_INTERVAL_S = 5.0
 
+# Hysteresis state to prevent HUD label flickering near thresholds
+_hud_state: dict[str, object] = {"last_label": "", "last_maturity": 0.0}
+_HYSTERESIS_MARGIN = 0.03
+
+
+def _get_label_for_maturity(maturity: float) -> str:
+    """Return the state label for a given maturity value.
+
+    Thresholds: 0.25, 0.50, 0.75
+    """
+    if maturity < 0.25:
+        return "youthful"
+    elif maturity < 0.50:
+        return "organizing"
+    elif maturity < 0.75:
+        return "mature"
+    else:
+        return "settled"
+
+
+def _get_threshold_band(last_label: str, new_label: str) -> dict[str, float] | None:
+    """Determine if changing from last_label to new_label requires crossing a threshold.
+
+    Returns a dict with 'lower' and 'upper' bounds for the hysteresis band,
+    or None if no threshold needs to be crossed.
+
+    Example:
+        - last_label="organizing", new_label="mature" -> crosses 0.50 threshold
+          returns {"lower": 0.47, "upper": 0.53}
+        - last_label="mature", new_label="organizing" -> crosses 0.50 threshold
+          returns {"lower": 0.47, "upper": 0.53}
+        - last_label="youthful", new_label="organizing" -> crosses 0.25 threshold
+          returns {"lower": 0.22, "upper": 0.28}
+        - same labels -> None
+        - non-adjacent labels (e.g., youthful->mature) -> None (must pass through intermediate)
+    """
+    # Define threshold boundaries with hysteresis margin
+    thresholds = {
+        ("youthful", "organizing"): (0.25 - _HYSTERESIS_MARGIN, 0.25 + _HYSTERESIS_MARGIN),
+        ("organizing", "youthful"): (0.25 - _HYSTERESIS_MARGIN, 0.25 + _HYSTERESIS_MARGIN),
+        ("organizing", "mature"): (0.50 - _HYSTERESIS_MARGIN, 0.50 + _HYSTERESIS_MARGIN),
+        ("mature", "organizing"): (0.50 - _HYSTERESIS_MARGIN, 0.50 + _HYSTERESIS_MARGIN),
+        ("mature", "settled"): (0.75 - _HYSTERESIS_MARGIN, 0.75 + _HYSTERESIS_MARGIN),
+        ("settled", "mature"): (0.75 - _HYSTERESIS_MARGIN, 0.75 + _HYSTERESIS_MARGIN),
+    }
+
+    key = (last_label, new_label)
+    if key in thresholds:
+        lower, upper = thresholds[key]
+        return {"lower": lower, "upper": upper}
+
+    # Same label - no transition needed
+    if last_label == new_label:
+        return None
+
+    # Non-adjacent labels (e.g., youthful->mature, youthful->settled, etc.)
+    # These must pass through intermediate states, so we handle them step by step
+    # For now, allow the transition since there's no direct threshold between them
+    return None
+
 
 def _detect_pane_size(console: Console) -> tuple[int, int]:
     """Return pane columns/rows available inside the panel border."""
@@ -102,21 +162,48 @@ def _compute_hud(model: ErosionModel) -> Text:
     hud.append(f"ch:{channel_count}", "yellow")
 
     # 5. state label: derived from maturity thresholds with color coding
-    if maturity < 0.25:
-        state = "youthful"
+    # Use hysteresis to prevent flickering when maturity oscillates near thresholds
+    raw_label = _get_label_for_maturity(maturity)
+    last_label = _hud_state["last_label"]
+
+    if last_label == "":
+        # First call - use raw label and initialize state
+        chosen_label = raw_label
+    else:
+        # Check if we should change labels based on hysteresis
+        threshold_band = _get_threshold_band(last_label, raw_label)
+        if threshold_band is None:
+            # No threshold to cross (same label or non-adjacent bands)
+            # Just use the raw label
+            chosen_label = raw_label
+        else:
+            # Need to cross a threshold - check if we've crossed by enough margin
+            if maturity > threshold_band["upper"]:
+                # Crossed upward past threshold + margin
+                chosen_label = raw_label
+            elif maturity < threshold_band["lower"]:
+                # Crossed downward past threshold - margin
+                chosen_label = raw_label
+            else:
+                # Still in hysteresis zone - keep previous label
+                chosen_label = last_label
+
+    # Update hysteresis state
+    _hud_state["last_label"] = chosen_label
+    _hud_state["last_maturity"] = maturity
+
+    # Apply style for chosen label
+    if chosen_label == "youthful":
         style = "bold bright_green"
-    elif maturity < 0.50:
-        state = "organizing"
+    elif chosen_label == "organizing":
         style = "bold yellow"
-    elif maturity < 0.75:
-        state = "mature"
+    elif chosen_label == "mature":
         style = "bold cyan"
     else:
-        state = "settled"
         style = "dim white"
 
     hud.append("  ", "none")
-    hud.append(f"[{state}]", style)
+    hud.append(f"[{chosen_label}]", style)
 
     return hud
 
