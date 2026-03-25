@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from dgov.config import _deep_merge, get_provider_config, load_config
+from dgov.config import (
+    _coerce_value,
+    _deep_merge,
+    _read_toml,
+    get_provider_config,
+    load_config,
+    write_config,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -67,3 +74,68 @@ def test_get_provider_config_defaults(tmp_path, monkeypatch):
     assert cfg["transport"] == "claude-cli"
     assert cfg["auth"] == "oauth"
     assert cfg["model"] == "claude-sonnet-4-6"
+
+
+def test_write_config_creates_nested_key(tmp_path, monkeypatch):
+    write_config("providers.review.model", "qwen/qwen3.5-35b", scope="user")
+
+    # Verify it persists
+    config = load_config(project_root=str(tmp_path / "noproject"))
+    assert config["providers"]["review"]["model"] == "qwen/qwen3.5-35b"
+
+
+def test_write_config_coerces_int(tmp_path, monkeypatch):
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path)
+    write_config("defaults.timeout_s", "600", scope="user")
+    data = _read_toml(tmp_path / ".dgov" / "config.toml")
+    assert data["defaults"]["timeout_s"] == 600
+
+
+def test_write_config_coerces_bool(tmp_path, monkeypatch):
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path)
+    write_config("debug.verbose", "true", scope="user")
+    data = _read_toml(tmp_path / ".dgov" / "config.toml")
+    assert data["debug"]["verbose"] is True
+
+
+def test_write_config_project_scope(tmp_path, monkeypatch):
+    write_config("defaults.agent", "qwen-9b", scope="project", project_root=str(tmp_path))
+    data = _read_toml(tmp_path / ".dgov" / "config.toml")
+    assert data["defaults"]["agent"] == "qwen-9b"
+
+
+def test_write_config_preserves_existing(tmp_path, monkeypatch):
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path)
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "config.toml").write_text('[defaults]\nagent = "qwen-35b"\n')
+
+    write_config("defaults.timeout_s", "999", scope="user")
+    data = _read_toml(dgov_dir / "config.toml")
+    assert data["defaults"]["agent"] == "qwen-35b"
+    assert data["defaults"]["timeout_s"] == 999
+
+
+def test_coerce_value_string():
+    assert _coerce_value("hello") == "hello"
+
+
+def test_coerce_value_int():
+    assert _coerce_value("42") == 42
+
+
+def test_coerce_value_float():
+    assert _coerce_value("3.14") == 3.14
+
+
+def test_coerce_value_true():
+    assert _coerce_value("true") is True
+
+
+def test_coerce_value_false():
+    assert _coerce_value("false") is False
+
+
+def test_coerce_value_case_insensitive():
+    assert _coerce_value("TRUE") is True
+    assert _coerce_value("False") is False

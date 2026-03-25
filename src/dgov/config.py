@@ -80,3 +80,65 @@ def _read_toml(path: Path) -> dict[str, Any]:
             return tomllib.load(f)
     except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
         return {}
+
+
+def _coerce_value(value: str) -> str | int | float | bool:
+    """Auto-coerce string values to appropriate types."""
+    if value.lower() == "true":
+        return True
+    if value.lower() == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value
+
+
+def write_config(
+    key: str,
+    value: str,
+    scope: str = "user",
+    project_root: str = ".",
+) -> Path:
+    """Set a dotted key in the config file.
+
+    Args:
+        key: Dotted key path like "providers.plan_generation.model"
+        value: Value to set (strings stay strings, ints/bools auto-coerced)
+        scope: "user" for ~/.dgov/config.toml, "project" for .dgov/config.toml
+        project_root: Project root (used when scope="project")
+
+    Returns:
+        Path to the written config file.
+    """
+    import tomli_w
+
+    if scope == "user":
+        path = Path.home() / ".dgov" / "config.toml"
+    elif scope == "project":
+        path = Path(project_root) / ".dgov" / "config.toml"
+    else:
+        msg = f"Unknown scope: {scope!r} (expected 'user' or 'project')"
+        raise ValueError(msg)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = _read_toml(path)
+
+    # Parse dotted key into nested dict
+    parts = key.split(".")
+    target = existing
+    for part in parts[:-1]:
+        if part not in target or not isinstance(target[part], dict):
+            target[part] = {}
+        target = target[part]
+    target[parts[-1]] = _coerce_value(value)
+
+    with open(path, "wb") as f:
+        tomli_w.dump(existing, f)
+
+    return path
