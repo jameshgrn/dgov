@@ -1193,3 +1193,15 @@ def test_cross_plan_no_overlap(tmp_path):
         issues = check_cross_plan_claims(plan, str(tmp_path))
 
     assert len(issues) == 0
+
+
+def test_scaffold_auto_run_flag_requires_auto():
+    """--run without --auto should fail."""
+    from click.testing import CliRunner
+
+    from dgov.cli.plan_cmd import plan_scaffold
+
+    runner = CliRunner()
+    result = runner.invoke(plan_scaffold, ["--goal", "test", "--files", "a.py", "--run"])
+    assert result.exit_code != 0
+    assert "--run requires --auto" in result.output

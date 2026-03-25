@@ -132,83 +132,7 @@ def plan_run(plan_file, max_concurrent, wait):
     if not wait:
         return
 
-    # Stream progress events, then block on evals_verified for the terminal signal.
-    from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
-
-    session_root = os.path.abspath(".")
-    cursor = latest_event_id(session_root)
-
-    _PROGRESS_EVENTS = (
-        "dag_task_dispatched",
-        "pane_done",
-        "pane_failed",
-        "review_pass",
-        "review_fail",
-        "merge_completed",
-        "dag_completed",
-        "dag_failed",
-        "evals_verified",
-    )
-
-    while True:
-        events = wait_for_events(
-            session_root,
-            after_id=cursor,
-            event_types=_PROGRESS_EVENTS,
-            timeout_s=3600.0,
-        )
-        for ev in events:
-            cursor = max(cursor, ev["id"])
-            kind = ev.get("event", "")
-
-            # Print progress for events belonging to our run
-            dag_rid = ev.get("dag_run_id")
-            if dag_rid is not None and dag_rid != run_id:
-                continue
-
-            if kind == "dag_task_dispatched":
-                task = ev.get("task", ev.get("pane", ""))
-                click.echo(f"  dispatched: {task}")
-            elif kind == "pane_done":
-                click.echo(f"  done: {ev.get('pane', '')}")
-            elif kind == "pane_failed":
-                click.echo(f"  failed: {ev.get('pane', '')}")
-            elif kind == "review_pass":
-                click.echo(f"  review pass: {ev.get('pane', '')}")
-            elif kind == "review_fail":
-                reason = ev.get("reason", "")
-                reason_str = f" — {reason}" if reason else ""
-                click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
-            elif kind == "merge_completed":
-                click.echo(f"  merged: {ev.get('pane', '')}")
-            elif kind in ("dag_completed", "dag_failed"):
-                click.echo(f"  DAG {kind.split('_')[1]}")
-            elif kind == "evals_verified":
-                run = get_dag_run(session_root, run_id)
-                status = run["status"] if run else "unknown"
-                eval_results = run.get("eval_results", []) if run else []
-                passed = sum(1 for r in eval_results if r["passed"])
-                failed = sum(1 for r in eval_results if not r["passed"])
-
-                click.echo(f"\nDAG run {run_id}: {status}")
-                for r in eval_results:
-                    m = "PASS" if r["passed"] else "FAIL"
-                    c = "green" if r["passed"] else "red"
-                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
-                    if not r["passed"] and r.get("output"):
-                        # Show first 200 chars of failure output, indented
-                        output_preview = r["output"][:200].replace("\n", " ").strip()
-                        if output_preview:
-                            click.secho(f"         {output_preview}", fg="yellow")
-                if eval_results:
-                    click.echo(f"  {passed} passed, {failed} failed")
-                if status != "completed":
-                    # DAG itself failed (crashed, stuck, etc.)
-                    raise SystemExit(1)
-                if failed:
-                    # DAG completed but some evals failed — different exit code
-                    raise SystemExit(2)
-                return
+    _wait_for_dag(run_id)
 
 
 def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
@@ -285,20 +209,156 @@ def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
 @click.option("-o", "--output", default="", help="Write to file instead of stdout")
 @click.option("--dry-run", is_flag=True, help="Print to stdout even if -o is set")
 @click.option("--auto", is_flag=True, help="Use LLM to generate complete plan (not just template)")
-def plan_scaffold(goal, files, name, output, dry_run, auto):
+@click.option("--run", is_flag=True, help="With --auto: validate and execute the generated plan")
+@click.option("--wait", "wait_for_run", is_flag=True, help="With --run: block until DAG completes")
+def plan_scaffold(goal, files, name, output, dry_run, auto, run, wait_for_run):
     """Generate a TOML plan template from goal and file list."""
+    if run and not auto:
+        click.secho("--run requires --auto", fg="red")
+        raise SystemExit(1)
+
     if auto:
         toml_text = _scaffold_auto(goal, list(files), name)
     else:
         from dgov.plan import scaffold_plan
 
         toml_text = scaffold_plan(goal, list(files), name=name)
+
+    if run:
+        _scaffold_and_run(toml_text, output, wait_for_run)
+        return
+
     if output and not dry_run:
         with open(output, "w") as f:
             f.write(toml_text)
         click.echo(f"Wrote {output}")
     else:
         click.echo(toml_text)
+
+
+def _scaffold_and_run(toml_text: str, output: str, wait: bool) -> None:
+    """Write generated plan to tempfile, validate, and execute."""
+    import tempfile
+
+    from dgov.plan import parse_plan_file, run_plan, validate_plan
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".toml", prefix="dgov-plan-", delete=False
+    ) as f:
+        f.write(toml_text)
+        tmp_path = f.name
+
+    if output:
+        with open(output, "w") as f:
+            f.write(toml_text)
+        click.echo(f"Wrote {output}")
+
+    try:
+        plan = parse_plan_file(tmp_path)
+    except ValueError as e:
+        click.secho(f"Generated plan failed to parse: {e}", fg="red")
+        raise SystemExit(1) from None
+
+    issues = validate_plan(plan)
+    errors = [i for i in issues if i.severity == "error"]
+    if errors:
+        for issue in errors:
+            unit_str = f" [{issue.unit}]" if issue.unit else ""
+            click.secho(f"  ERROR{unit_str}: {issue.message}", fg="red")
+        click.secho(f"Plan saved to {tmp_path}", fg="yellow")
+        raise SystemExit(1)
+
+    for issue in issues:
+        if issue.severity == "warning":
+            click.secho(f"  WARN: {issue.message}", fg="yellow")
+
+    click.secho(f"Plan valid ({len(plan.units)} units). Executing...", fg="green")
+
+    try:
+        result = run_plan(tmp_path)
+    except ValueError as e:
+        click.secho(str(e), fg="red")
+        raise SystemExit(1) from None
+
+    run_id = result.run_id
+    click.echo(json.dumps({"run_id": run_id, "status": result.status, "plan_file": tmp_path}))
+
+    if not wait:
+        return
+
+    _wait_for_dag(run_id)
+
+
+def _wait_for_dag(run_id: int) -> None:
+    """Block on DAG events until evals_verified."""
+    from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
+
+    session_root = os.path.abspath(".")
+    cursor = latest_event_id(session_root)
+
+    _PROGRESS_EVENTS = (
+        "dag_task_dispatched",
+        "pane_done",
+        "pane_failed",
+        "review_pass",
+        "review_fail",
+        "merge_completed",
+        "dag_completed",
+        "dag_failed",
+        "evals_verified",
+    )
+
+    while True:
+        events = wait_for_events(
+            session_root,
+            after_id=cursor,
+            event_types=_PROGRESS_EVENTS,
+            timeout_s=3600.0,
+        )
+        for ev in events:
+            cursor = max(cursor, ev["id"])
+            kind = ev.get("event", "")
+            dag_rid = ev.get("dag_run_id")
+            if dag_rid is not None and dag_rid != run_id:
+                continue
+            if kind == "dag_task_dispatched":
+                click.echo(f"  dispatched: {ev.get('task', ev.get('pane', ''))}")
+            elif kind == "pane_done":
+                click.echo(f"  done: {ev.get('pane', '')}")
+            elif kind == "pane_failed":
+                click.echo(f"  failed: {ev.get('pane', '')}")
+            elif kind == "review_pass":
+                click.echo(f"  review pass: {ev.get('pane', '')}")
+            elif kind == "review_fail":
+                reason = ev.get("reason", "")
+                reason_str = f" — {reason}" if reason else ""
+                click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
+            elif kind == "merge_completed":
+                click.echo(f"  merged: {ev.get('pane', '')}")
+            elif kind in ("dag_completed", "dag_failed"):
+                click.echo(f"  DAG {kind.split('_')[1]}")
+            elif kind == "evals_verified":
+                run = get_dag_run(session_root, run_id)
+                status = run["status"] if run else "unknown"
+                eval_results = run.get("eval_results", []) if run else []
+                passed = sum(1 for r in eval_results if r["passed"])
+                failed_count = sum(1 for r in eval_results if not r["passed"])
+                click.echo(f"\nDAG run {run_id}: {status}")
+                for r in eval_results:
+                    m = "PASS" if r["passed"] else "FAIL"
+                    c = "green" if r["passed"] else "red"
+                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
+                    if not r["passed"] and r.get("output"):
+                        output_preview = r["output"][:200].replace("\n", " ").strip()
+                        if output_preview:
+                            click.secho(f"         {output_preview}", fg="yellow")
+                if eval_results:
+                    click.echo(f"  {passed} passed, {failed_count} failed")
+                if status != "completed":
+                    raise SystemExit(1)
+                if failed_count:
+                    raise SystemExit(2)
+                return
 
 
 @plan_cmd.command("verify")
@@ -409,63 +469,4 @@ def plan_resume(plan_file, run_id, wait, max_concurrent):
     if not wait:
         return
 
-    # Same --wait event loop as plan_run
-    from dgov.persistence import latest_event_id, wait_for_events
-
-    cursor = latest_event_id(session_root)
-    _PROGRESS_EVENTS = (
-        "dag_task_dispatched",
-        "pane_done",
-        "pane_failed",
-        "review_pass",
-        "review_fail",
-        "merge_completed",
-        "dag_completed",
-        "dag_failed",
-        "evals_verified",
-    )
-
-    while True:
-        events = wait_for_events(
-            session_root, after_id=cursor, event_types=_PROGRESS_EVENTS, timeout_s=3600.0
-        )
-        for ev in events:
-            cursor = max(cursor, ev["id"])
-            kind = ev.get("event", "")
-            dag_rid = ev.get("dag_run_id")
-            if dag_rid is not None and dag_rid != new_run_id:
-                continue
-            if kind == "dag_task_dispatched":
-                click.echo(f"  dispatched: {ev.get('task', ev.get('pane', ''))}")
-            elif kind == "pane_done":
-                click.echo(f"  done: {ev.get('pane', '')}")
-            elif kind == "pane_failed":
-                click.echo(f"  failed: {ev.get('pane', '')}")
-            elif kind == "review_pass":
-                click.echo(f"  review pass: {ev.get('pane', '')}")
-            elif kind == "review_fail":
-                reason = ev.get("reason", "")
-                reason_str = f" — {reason}" if reason else ""
-                click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
-            elif kind == "merge_completed":
-                click.echo(f"  merged: {ev.get('pane', '')}")
-            elif kind in ("dag_completed", "dag_failed"):
-                click.echo(f"  DAG {kind.split('_')[1]}")
-            elif kind == "evals_verified":
-                run = get_dag_run(session_root, new_run_id)
-                status = run["status"] if run else "unknown"
-                eval_results = run.get("eval_results", []) if run else []
-                passed = sum(1 for r in eval_results if r["passed"])
-                failed_count = sum(1 for r in eval_results if not r["passed"])
-                click.echo(f"\nDAG run {new_run_id}: {status}")
-                for r in eval_results:
-                    m = "PASS" if r["passed"] else "FAIL"
-                    c = "green" if r["passed"] else "red"
-                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
-                if eval_results:
-                    click.echo(f"  {passed} passed, {failed_count} failed")
-                if status != "completed":
-                    raise SystemExit(1)
-                if failed_count:
-                    raise SystemExit(2)
-                return
+    _wait_for_dag(new_run_id)
