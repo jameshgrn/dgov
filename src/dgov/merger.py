@@ -1300,6 +1300,16 @@ def merge_worker_pane(
                         test_result.get("tests_ran"),
                     )
 
+                if test_result and not test_result.get("no_tests_found"):
+                    if not test_result.get("tests_passed"):
+                        validation_failed = True
+                        validation_error = (
+                            f"Post-merge tests failed: "
+                            f"{test_result.get('tests_failed', 'unknown')} failures "
+                            f"in {test_result.get('tests_ran', 0)} tests ran"
+                        )
+                        logger.error("%s", validation_error)
+
                 warning_msg: str | None = None
                 if damaged:
                     warning_msg = f"protected files changed: {damaged}"
