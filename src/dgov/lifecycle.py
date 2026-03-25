@@ -1101,14 +1101,24 @@ def _full_cleanup(
     remove git worktree + branch.
 
     Returns {"cleaned": bool, "skipped_worktree": bool, "branch_kept": bool,
-             "worktree_removal_failed": bool or None}.
+             "worktree_removal_failed": bool or None, "crash_log": str}.
     """
-    # 1. Delete done signal, exit signal, and log file
+    # 1. Read log file content before deletion to preserve crash logs
+    crash_log = ""
+    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
+    if log_path.exists():
+        try:
+            raw = log_path.read_text(errors="replace")
+            lines = raw.splitlines()
+            if len(lines) > 500:
+                lines = lines[-500:]
+            crash_log = "\n".join(lines)
+        except OSError:
+            pass
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.unlink(missing_ok=True)
     exit_path = Path(session_root) / STATE_DIR / "done" / (slug + ".exit")
     exit_path.unlink(missing_ok=True)
-    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
     log_path.unlink(missing_ok=True)
 
     # 2. Kill process group with bounded wait, then tmux pane
@@ -1236,6 +1246,7 @@ def _full_cleanup(
         "skipped_worktree": skipped_worktree,
         "branch_kept": branch_kept,
         "worktree_removal_failed": worktree_removal_failed,
+        "crash_log": crash_log,
     }
 
 
@@ -1306,6 +1317,9 @@ def close_worker_pane(
         skip_worktree_if_dirty=not force,
     )
 
+    # Extract crash_log from cleanup result for archival
+    crash_log = result.get("crash_log", "")
+
     # Ingest transcript into tool_traces table
     transcript_captured = 0
     transcript_path = Path(clean_project_root) / ".dgov" / "logs" / f"{slug}.transcript.jsonl"
@@ -1351,7 +1365,7 @@ def close_worker_pane(
             logger.info("Worktree invalid/gone for %s — cleaning up pane record", slug)
             update_pane_state(session_root, slug, "closed")
             emit_event(session_root, "pane_closed", slug)
-            remove_pane(session_root, slug)
+            remove_pane(session_root, slug, crash_log=crash_log)
         else:
             mark_preserved_artifacts(
                 session_root,
@@ -1368,7 +1382,7 @@ def close_worker_pane(
         # Normal close - worktree removed, transition to closed and delete record
         update_pane_state(session_root, slug, "closed")
         emit_event(session_root, "pane_closed", slug)
-        remove_pane(session_root, slug)
+        remove_pane(session_root, slug, crash_log=crash_log)
 
     # Close the close span
     if close_span_id is not None:

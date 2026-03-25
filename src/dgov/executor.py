@@ -1902,6 +1902,7 @@ def _dag_dispatch(
             f"dag/{run_id}",
             task=task_slug,
             pane_slug=pane_slug,
+            dag_run_id=run_id,
         )
         progress(f"  dispatched {task_slug} ({task.agent})")
         return TaskDispatched(task_slug, pane_slug)

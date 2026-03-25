@@ -1358,8 +1358,10 @@ def merge_worker_pane(
                     else:
                         raise
                 target["state"] = "merged"
-                _full_cleanup(pane_project_root, session_root, slug, target)
-                _persist.remove_pane(session_root, slug)
+                cleanup_result = _full_cleanup(pane_project_root, session_root, slug, target)
+                _persist.remove_pane(
+                    session_root, slug, crash_log=cleanup_result.get("crash_log", "")
+                )
                 _persist.emit_event(
                     session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
                 )
@@ -1429,8 +1431,10 @@ def merge_worker_pane(
                     else:
                         raise
                 target["state"] = "merged"
-                _full_cleanup(pane_project_root, session_root, slug, target)
-                _persist.remove_pane(session_root, slug)
+                cleanup_result = _full_cleanup(pane_project_root, session_root, slug, target)
+                _persist.remove_pane(
+                    session_root, slug, crash_log=cleanup_result.get("crash_log", "")
+                )
                 _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
                 return {"merged": slug, "branch": branch_name, "resolved_by": "agent"}
             return {

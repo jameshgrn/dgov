@@ -61,8 +61,9 @@ def _wrap_done_signal(
     """Wrap *cmd* so done-signal is only touched on success.
 
     When *worktree_path* is provided, auto-commits any uncommitted changes
-    before touching the done signal. This ensures headless workers that
-    forget to commit still have their work product captured.
+    on BOTH success and failure paths. This ensures headless workers that
+    forget to commit still have their work product captured — the review
+    gate judges quality, not the commit wrapper.
     """
     ok = shlex.quote(done_signal)
     fail = shlex.quote(done_signal + ".exit")
@@ -73,7 +74,10 @@ def _wrap_done_signal(
             f" && {{ git -C {wt} diff --cached --quiet"
             f" || git -C {wt} commit -m 'Auto-commit on agent exit'; }}"
         )
-        return f"if {cmd}; then {auto_commit}; touch {ok}; else echo $? > {fail}; fi"
+        return (
+            f"{cmd}; __dgov_rc=$?; {auto_commit}; "
+            f"if [ $__dgov_rc -eq 0 ]; then touch {ok}; else echo $__dgov_rc > {fail}; fi"
+        )
     return f"if {cmd}; then touch {ok}; else echo $? > {fail}; fi"
 
 

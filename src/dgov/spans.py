@@ -125,6 +125,7 @@ CREATE TABLE IF NOT EXISTS archived_panes (
     max_retries         INTEGER NOT NULL DEFAULT 0,
     monitor_reason      TEXT NOT NULL DEFAULT '',
     last_checkpoint     TEXT NOT NULL DEFAULT '',
+    crash_log           TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (slug, archived_at)
 )"""
 
@@ -345,7 +346,7 @@ def get_prompt(session_root: str, phash: str) -> str:
     return row[0] if row else ""
 
 
-def archive_pane(session_root: str, pane: dict) -> None:
+def archive_pane(session_root: str, pane: dict, crash_log: str = "") -> None:
     """Snapshot a pane record before deletion. Idempotent per (slug, archived_at)."""
     now = datetime.now(timezone.utc).isoformat()
     meta = pane.get("metadata") or {}
@@ -364,8 +365,8 @@ def archive_pane(session_root: str, pane: dict) -> None:
         "branch_name, base_sha, created_at, final_state, "
         "landing, file_claims, circuit_breaker, retried_from, "
         "superseded_by, retry_count, max_retries, monitor_reason, "
-        "last_checkpoint) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "last_checkpoint, crash_log) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             pane.get("slug", ""),
             now,
@@ -386,6 +387,7 @@ def archive_pane(session_root: str, pane: dict) -> None:
             int(meta.get("max_retries", 0) or 0),
             str(meta.get("monitor_reason", "")),
             str(meta.get("last_checkpoint", "")),
+            crash_log,
         ),
     )
     conn.commit()

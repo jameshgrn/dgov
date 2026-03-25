@@ -763,6 +763,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
         ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
         ("monitor_reason", "TEXT NOT NULL DEFAULT ''"),
         ("last_checkpoint", "TEXT NOT NULL DEFAULT ''"),
+        ("crash_log", "TEXT NOT NULL DEFAULT ''"),
     ]
     for col, coldef in _archive_cols:
         try:
@@ -864,7 +865,7 @@ def add_pane(session_root: str, pane: WorkerPane) -> None:
     _retry_on_lock(_do)
 
 
-def remove_pane(session_root: str, slug: str) -> None:
+def remove_pane(session_root: str, slug: str, crash_log: str = "") -> None:
     def _do() -> None:
         conn = _get_db(session_root)
         # Archive before delete
@@ -875,7 +876,7 @@ def remove_pane(session_root: str, slug: str) -> None:
             try:
                 from dgov.spans import archive_pane
 
-                archive_pane(session_root, pane_dict)
+                archive_pane(session_root, pane_dict, crash_log=crash_log)
             except Exception:
                 pass  # archive failure must not block deletion
         conn.execute("DELETE FROM panes WHERE slug = ?", (slug,))

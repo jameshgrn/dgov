@@ -364,6 +364,38 @@ class TestArchivePane:
         count = conn.execute("SELECT COUNT(*) FROM archived_panes").fetchone()[0]
         assert count >= 1  # at least 1, possibly 2 if timestamps differ
 
+    def test_archive_pane_crash_log(self, session):
+        """Test that archive_pane stores crash_log content."""
+        from dgov.spans import _get_db, archive_pane
+
+        pane = {"slug": "crash-test", "state": "failed"}
+        error_output = "Error: division by zero\n  File 'main.py', line 42"
+        archive_pane(session, pane, crash_log=error_output)
+
+        conn = _get_db(session)
+        row = conn.execute(
+            "SELECT slug, crash_log FROM archived_panes WHERE slug = ?", ("crash-test",)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "crash-test"
+        assert row[1] == error_output
+
+    def test_archive_pane_empty_crash_log(self, session):
+        """Test that archive_pane defaults crash_log to empty string."""
+        from dgov.spans import _get_db, archive_pane
+
+        pane = {"slug": "normal-close", "state": "merged"}
+        # Call without crash_log parameter - should default to ""
+        archive_pane(session, pane)
+
+        conn = _get_db(session)
+        row = conn.execute(
+            "SELECT slug, crash_log FROM archived_panes WHERE slug = ?", ("normal-close",)
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "normal-close"
+        assert row[1] == ""
+
 
 @pytest.mark.unit
 class TestStoreTranscript:
