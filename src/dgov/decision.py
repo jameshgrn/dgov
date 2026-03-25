@@ -17,11 +17,13 @@ __all__ = [
     "ReviewOutputRequest",
     "CompletionParseRequest",
     "ClarifyRequest",
+    "GeneratePlanRequest",
     "RouteTaskDecision",
     "MonitorOutputDecision",
     "ReviewOutputDecision",
     "CompletionParseDecision",
     "ClarifyDecision",
+    "GeneratePlanDecision",
     "DecisionRequest",
     "DecisionPayload",
     "DecisionRecord",
@@ -48,6 +50,7 @@ class DecisionKind(StrEnum):
     REVIEW_OUTPUT = "review_output"
     PARSE_COMPLETION = "parse_completion"
     DISAMBIGUATE = "disambiguate"
+    GENERATE_PLAN = "generate_plan"
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,19 @@ class ClarifyRequest:
 
 
 @dataclass(frozen=True)
+class GeneratePlanRequest:
+    """Request to generate a plan TOML from goal and file context."""
+
+    goal: str
+    files: tuple[str, ...] = ()
+    file_contents: tuple[tuple[str, str], ...] = ()  # (path, content) pairs
+    plan_examples: tuple[str, ...] = ()  # past plan TOML strings for few-shot
+    constraints: tuple[str, ...] = ()  # e.g. "single unit only", "no new files"
+    active_claims: tuple[str, ...] = ()  # files claimed by active DAGs
+    trace_id: str | None = None
+
+
+@dataclass(frozen=True)
 class RouteTaskDecision:
     agent: str
     reason: str | None = None
@@ -132,12 +148,24 @@ class ClarifyDecision:
     clarification_question: str | None = None
 
 
+@dataclass(frozen=True)
+class GeneratePlanDecision:
+    """Generated plan TOML with validation status."""
+
+    plan_toml: str
+    valid: bool = False
+    validation_issues: tuple[str, ...] = ()
+    questions: tuple[str, ...] = ()  # planner needs clarification
+    reason: str | None = None
+
+
 DecisionRequest = (
     RouteTaskRequest
     | MonitorOutputRequest
     | ReviewOutputRequest
     | CompletionParseRequest
     | ClarifyRequest
+    | GeneratePlanRequest
 )
 DecisionPayload = (
     RouteTaskDecision
@@ -145,6 +173,7 @@ DecisionPayload = (
     | ReviewOutputDecision
     | CompletionParseDecision
     | ClarifyDecision
+    | GeneratePlanDecision
 )
 
 TDecision = TypeVar("TDecision")
@@ -234,6 +263,11 @@ class DecisionProvider(ABC):
             f"{self.provider_id} does not support {DecisionKind.DISAMBIGUATE}"
         )
 
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
+        raise UnsupportedDecisionError(
+            f"{self.provider_id} does not support {DecisionKind.GENERATE_PLAN}"
+        )
+
 
 @dataclass
 class StaticDecisionProvider(DecisionProvider):
@@ -251,6 +285,9 @@ class StaticDecisionProvider(DecisionProvider):
         Callable[[CompletionParseRequest], DecisionRecord[CompletionParseDecision]] | None
     ) = None
     disambiguate_fn: Callable[[ClarifyRequest], DecisionRecord[ClarifyDecision]] | None = None
+    generate_plan_fn: (
+        Callable[[GeneratePlanRequest], DecisionRecord[GeneratePlanDecision]] | None
+    ) = None
 
     def capabilities(self) -> frozenset[DecisionKind]:
         kinds: set[DecisionKind] = set()
@@ -264,6 +301,8 @@ class StaticDecisionProvider(DecisionProvider):
             kinds.add(DecisionKind.PARSE_COMPLETION)
         if self.disambiguate_fn is not None:
             kinds.add(DecisionKind.DISAMBIGUATE)
+        if self.generate_plan_fn is not None:
+            kinds.add(DecisionKind.GENERATE_PLAN)
         return frozenset(kinds)
 
     def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
@@ -294,6 +333,11 @@ class StaticDecisionProvider(DecisionProvider):
         if self.disambiguate_fn is None:
             return super().disambiguate(request)
         return self.disambiguate_fn(request)
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
+        if self.generate_plan_fn is None:
+            return super().generate_plan(request)
+        return self.generate_plan_fn(request)
 
 
 @overload
@@ -326,6 +370,12 @@ def _call_kind(
 ) -> DecisionRecord[ClarifyDecision]: ...
 
 
+@overload
+def _call_kind(
+    provider: DecisionProvider, request: GeneratePlanRequest
+) -> DecisionRecord[GeneratePlanDecision]: ...
+
+
 def _call_kind[TDecision](
     provider: DecisionProvider,
     request: DecisionRequest,
@@ -340,6 +390,8 @@ def _call_kind[TDecision](
         return provider.parse_completion(request)  # type: ignore[return-value]
     if isinstance(request, ClarifyRequest):
         return provider.disambiguate(request)  # type: ignore[return-value]
+    if isinstance(request, GeneratePlanRequest):
+        return provider.generate_plan(request)  # type: ignore[return-value]
     raise ProviderError(f"Unsupported decision request: {type(request).__name__}")
 
 
@@ -431,6 +483,9 @@ class AuditProvider(DecisionProvider):
     def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
         return self._call(request)  # type: ignore[return-value]
 
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
 
 @dataclass
 class TimeoutProvider(DecisionProvider):
@@ -469,6 +524,9 @@ class TimeoutProvider(DecisionProvider):
         return self._call(request)  # type: ignore[return-value]
 
     def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
         return self._call(request)  # type: ignore[return-value]
 
 
@@ -524,6 +582,9 @@ class ShadowProvider(DecisionProvider):
         return self._call(request)  # type: ignore[return-value]
 
     def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
         return self._call(request)  # type: ignore[return-value]
 
 
@@ -600,6 +661,9 @@ class CascadeProvider(DecisionProvider):
         return self._call(request)  # type: ignore[return-value]
 
     def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
         return self._call(request)  # type: ignore[return-value]
 
 
@@ -685,4 +749,7 @@ class ConsensusProvider(DecisionProvider):
         return self._call(request)  # type: ignore[return-value]
 
     def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
         return self._call(request)  # type: ignore[return-value]
