@@ -955,8 +955,6 @@ def run_review_merge(
             slug=slug,
             review=review_res.review,
             review_record=review_res.review_record,
-            failure_stage="review_failed",
-            error="No commits to merge",
         )
 
     merge_res = run_merge_only(
