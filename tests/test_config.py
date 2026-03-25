@@ -156,3 +156,40 @@ def test_config_set_cli_round_trip(tmp_path, monkeypatch):
     result = runner.invoke(config_show, ["--project-root", str(tmp_path / "noproject")])
     assert result.exit_code == 0
     assert "qwen-9b" in result.output
+
+
+def test_config_get_cli(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from dgov.cli.admin import config_get, config_set
+
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path)
+    runner = CliRunner()
+
+    # Set a value and then get it
+    runner.invoke(config_set, ["test.key", "test_value"])
+    result = runner.invoke(config_get, ["test.key"])
+    assert result.exit_code == 0
+    assert "test_value" in result.output.strip()
+
+    # Get a nested value
+    runner.invoke(config_set, ["test.nested.key", "nested_value"])
+    result = runner.invoke(config_get, ["test.nested.key"])
+    assert result.exit_code == 0
+    assert "nested_value" in result.output.strip()
+
+    # Test boolean output
+    runner.invoke(config_set, ["test.bool_true", "true"])
+    result = runner.invoke(config_get, ["test.bool_true"])
+    assert result.exit_code == 0
+    assert "true" in result.output.strip()
+
+    runner.invoke(config_set, ["test.bool_false", "false"])
+    result = runner.invoke(config_get, ["test.bool_false"])
+    assert result.exit_code == 0
+    assert "false" in result.output.strip()
+
+    # Try to get a non-existent key
+    result = runner.invoke(config_get, ["non.existent.key"])
+    assert result.exit_code == 1
+    assert "not set" in result.output.strip()

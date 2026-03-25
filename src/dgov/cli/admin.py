@@ -1163,6 +1163,31 @@ def config_set(key, value, project_root, project):
     click.echo(f"{key} = {value!r} -> {path}")
 
 
+@config_cmd.command("get")
+@click.argument("key")
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+def config_get(key, project_root):
+    """Get a config value. KEY is a dotted path like providers.review.model."""
+    from dgov.config import load_config
+
+    config = load_config(project_root=os.path.abspath(project_root))
+
+    # Traverse the dictionary using the dotted key
+    value = config
+    for part in key.split("."):
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            click.echo("not set")
+            sys.exit(1)
+
+    # Handle boolean values for consistent output with `set`
+    if isinstance(value, bool):
+        click.echo("true" if value else "false")
+    else:
+        click.echo(str(value))
+
+
 def _print_toml(d: dict, prefix: str = ""):
     """Print a nested dict as TOML to stdout."""
     # Print simple keys first
