@@ -1044,7 +1044,8 @@ def pane_merge_request(slug, project_root, session_root):
     """Submit a merge request to the queue (used by LT-GOVs)."""
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
-    from dgov.persistence import emit_event, enqueue_merge, get_pane
+    from dgov.executor import run_enqueue_merge
+    from dgov.persistence import get_pane
 
     session_root_abs = os.path.abspath(session_root or project_root)
     target = get_pane(session_root_abs, slug)
@@ -1053,9 +1054,8 @@ def pane_merge_request(slug, project_root, session_root):
         sys.exit(1)
 
     requester = os.environ.get("DGOV_SLUG", "governor")
-    ticket = enqueue_merge(session_root_abs, slug, requester)
-    emit_event(session_root_abs, "merge_enqueued", slug, ticket=ticket, requester=requester)
-    click.echo(json.dumps({"ticket": ticket, "slug": slug, "requester": requester}))
+    result = run_enqueue_merge(session_root_abs, slug, requester)
+    click.echo(json.dumps(result))
 
 
 @pane.command("signal")

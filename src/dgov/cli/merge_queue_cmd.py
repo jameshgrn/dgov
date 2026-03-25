@@ -38,17 +38,6 @@ def process_merge(project_root, session_root, resolve, squash, rebase, timeout):
     """Claim and execute the next pending merge from the queue."""
     import signal
 
-    from dgov.persistence import claim_next_merge, complete_merge, emit_event
-
-    session_root_abs = os.path.abspath(session_root or project_root)
-    claimed = claim_next_merge(session_root_abs)
-    if not claimed:
-        click.echo(json.dumps({"status": "empty", "message": "No pending merges"}))
-        return
-
-    slug = claimed["branch"]  # branch field stores the pane slug
-    ticket = claimed["ticket"]
-
     def _timeout_handler(signum, frame):  # noqa: ARG001
         raise TimeoutError(f"merge-queue process timed out after {timeout}s")
 
@@ -56,31 +45,22 @@ def process_merge(project_root, session_root, resolve, squash, rebase, timeout):
     signal.alarm(timeout)
 
     try:
-        from dgov.executor import run_land_only
+        from dgov.executor import run_process_merge
 
-        landed = run_land_only(
+        result = run_process_merge(
             project_root,
-            slug,
-            session_root=session_root,
+            session_root or "",
             resolve=resolve,
             squash=squash,
             rebase=rebase,
         )
-        result = landed.merge_result or {"error": landed.error or "Review failed"}
-        success = "error" not in result
-        complete_merge(session_root_abs, ticket, success, json.dumps(result))
-        if success:
-            emit_event(session_root_abs, "merge_completed", slug, ticket=ticket, success=True)
-        click.echo(json.dumps({"ticket": ticket, "slug": slug, "result": result}))
-        if not success:
+        click.echo(json.dumps(result, indent=2))
+        if result.get("status") == "empty":
+            return
+        if not result.get("success", False):
             sys.exit(1)
     except TimeoutError as exc:
-        complete_merge(session_root_abs, ticket, False, json.dumps({"error": str(exc)}))
-        click.echo(json.dumps({"ticket": ticket, "slug": slug, "error": str(exc)}), err=True)
-        sys.exit(1)
-    except Exception as exc:
-        complete_merge(session_root_abs, ticket, False, json.dumps({"error": str(exc)}))
-        click.echo(json.dumps({"ticket": ticket, "slug": slug, "error": str(exc)}), err=True)
+        click.echo(json.dumps({"error": str(exc)}), err=True)
         sys.exit(1)
     finally:
         signal.alarm(0)
