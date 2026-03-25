@@ -322,7 +322,12 @@ def regenerate_codebase_md(project_root: str) -> None:
     help="Stage and commit CODEBASE.md after regeneration",
 )
 def codebase_cmd(project_root: str, dry_run: bool, commit: bool) -> None:
-    """Scan source tree and generate CODEBASE.md."""
+    """Scan source tree and generate CODEBASE.md.
+
+    Examples:
+      dgov codebase -r .
+      dgov codebase -r . --dry-run
+    """
     from dgov.cli.pane import _autocorrect_roots
 
     project_root, _ = _autocorrect_roots(project_root, None)
@@ -391,7 +396,12 @@ def _scaffold_dgov_dirs(root: Path) -> None:
 )
 @click.option("--branch", "-b", default=None, help="Expected branch name")
 def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
-    """Run pre-flight checks before dispatch."""
+    """Run pre-flight checks before dispatch.
+
+    Examples:
+      dgov preflight -r .
+      dgov preflight -r . -a qwen-35b --fix
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import get_default_agent, load_registry
@@ -432,7 +442,12 @@ def preflight_cmd(project_root, session_root, agent, fix, touches, branch):
     help="Output raw JSON instead of human-readable summary",
 )
 def status(project_root, session_root, output_json):
-    """Get dgov status."""
+    """Get dgov status.
+
+    Examples:
+      dgov status -r .
+      dgov status -r . --json
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import detect_installed_agents, load_registry
@@ -553,6 +568,10 @@ def rebase(project_root, onto):
 
     Stashes dirty changes, rebases onto upstream (or main), and pops stash.
     On conflict: aborts rebase and restores working tree.
+
+    Examples:
+      dgov rebase -r .
+      dgov rebase -r . --onto main
     """
     project_root, _ = _autocorrect_roots(project_root)
 
@@ -579,7 +598,12 @@ def rebase(project_root, onto):
 @click.option("--line-level", is_flag=True, default=False, help="Show line-level blame")
 @click.option("--lines", "-L", default=None, help="Line range for line-level blame (e.g. 10-20)")
 def blame(file_path, project_root, session_root, show_all, agent, line_level, lines):
-    """Show which agent/pane last touched a file."""
+    """Show which agent/pane last touched a file.
+
+    Examples:
+      dgov blame src/dgov/merger.py -r .
+      dgov blame src/dgov/cli.py --line-level -L 10-20
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     if lines or line_level:
@@ -629,7 +653,11 @@ def blame(file_path, project_root, session_root, show_all, agent, line_level, li
     help="Project root for registry loading ($DGOV_PROJECT_ROOT or cwd)",
 )
 def list_agents(project_root):
-    """List available agents and which are installed."""
+    """List available agents and which are installed.
+
+    Examples:
+      dgov agents -r .
+    """
     project_root, _ = _autocorrect_roots(project_root)
 
     from dgov.agents import load_registry
@@ -654,7 +682,11 @@ def list_agents(project_root):
 
 @click.command("version")
 def version_cmd():
-    """Show dgov version."""
+    """Show dgov version.
+
+    Examples:
+      dgov version
+    """
     from dgov import __version__
 
     result = {"dgov": __version__}
@@ -678,7 +710,12 @@ def version_cmd():
     help="Output raw JSON instead of human-readable table",
 )
 def stats(project_root, session_root, output_json):
-    """Show pane and agent statistics."""
+    """Show pane and agent statistics.
+
+    Examples:
+      dgov stats -r .
+      dgov stats -r . --json
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.inspection import compute_stats
@@ -721,7 +758,12 @@ def stats(project_root, session_root, output_json):
 @click.option("--refresh", default=1, type=float, help="Refresh interval in seconds")
 @click.option("--pane", is_flag=True, help="Launch dashboard in a tmux split pane")
 def dashboard(project_root, session_root, refresh, pane):
-    """Launch live terminal dashboard."""
+    """Launch live terminal dashboard.
+
+    Examples:
+      dgov dashboard -r .
+      dgov dashboard -r . --pane
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     # Ensure the headless engine is running
@@ -747,7 +789,11 @@ def dashboard(project_root, session_root, refresh, pane):
 @click.command("terrain")
 @click.option("--refresh", default=0.5, help="Seconds between steps")
 def terrain_cmd(refresh):
-    """Run standalone terrain erosion simulation."""
+    """Run standalone terrain erosion simulation.
+
+    Examples:
+      dgov terrain
+    """
     from dgov.terrain_pane import run_terrain
 
     run_terrain(refresh)
@@ -755,7 +801,11 @@ def terrain_cmd(refresh):
 
 @click.command("tunnel")
 def tunnel_cmd():
-    """Establish or refresh the River SSH tunnel."""
+    """Establish or refresh the River SSH tunnel.
+
+    Examples:
+      dgov tunnel
+    """
     click.echo("Refreshing River multiplexed tunnel...")
     try:
         # We use zsh -c so we can pick up the function from .zshrc
@@ -786,19 +836,38 @@ def tunnel_cmd():
 @click.option(
     "--agent", "-a", default=None, help="Governor agent (skip interactive prompt if provided)"
 )
-def init_cmd(project_root, agent):
-    """Initialize a new dgov project: scaffold .dgov/ and write config."""
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+def init_cmd(project_root, agent, output_json):
+    """Initialize a new dgov project: scaffold .dgov/ and write config.
+
+    Examples:
+      dgov init -r .
+      dgov init -r . --agent claude
+    """
     project_root, _ = _autocorrect_roots(project_root)
 
     root = Path(project_root).resolve()
     config_path = root / ".dgov" / "config.toml"
 
     if config_path.is_file():
-        click.echo("Already initialized.")
+        if output_json:
+            result = {
+                "initialized": True,
+                "config": str(config_path),
+                "governor": agent,
+            }
+            click.echo(json.dumps(result))
+        else:
+            click.echo("Already initialized.")
         return
 
     # Interactive prompt or use provided agent
-    governor = agent or click.prompt("Governor agent", default="claude", type=str)
+    if agent is None and not output_json:
+        governor = click.prompt("Governor agent", default="claude", type=str)
+    elif agent is not None:
+        governor = agent
+    else:
+        governor = "claude"
     permissions = "bypassPermissions"
 
     # Create directories
@@ -815,10 +884,18 @@ def init_cmd(project_root, agent):
 
     ensure_dgov_gitignored(str(root))
 
-    click.echo("Initialized dgov project:")
-    click.echo(f"  {config_path}")
-    for name in ("hooks", "templates", "batch"):
-        click.echo(f"  {root / '.dgov' / name}/")
+    if output_json:
+        result = {
+            "initialized": True,
+            "config": str(config_path),
+            "governor": governor,
+        }
+        click.echo(json.dumps(result))
+    else:
+        click.echo("Initialized dgov project:")
+        click.echo(f"  {config_path}")
+        for name in ("hooks", "templates", "batch"):
+            click.echo(f"  {root / '.dgov' / name}/")
 
 
 @click.command("doctor")
@@ -829,8 +906,14 @@ def init_cmd(project_root, agent):
     envvar="DGOV_PROJECT_ROOT",
     help="Project root to diagnose ($DGOV_PROJECT_ROOT or cwd)",
 )
-def doctor_cmd(project_root):
-    """Run diagnostics on the dgov environment."""
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+def doctor_cmd(project_root, output_json):
+    """Run diagnostics on the dgov environment.
+
+    Examples:
+      dgov doctor -r .
+      dgov doctor -r . --json
+    """
     project_root, _ = _autocorrect_roots(project_root)
 
     import platform
@@ -841,16 +924,19 @@ def doctor_cmd(project_root):
 
     root = Path(project_root).resolve()
     ok = True
+    checks: list[dict] = []
 
     def _check(label, passed, detail=""):
         nonlocal ok
-        icon = "[ok]" if passed else "[FAIL]"
         if not passed:
             ok = False
-        msg = f"  {icon} {label}"
-        if detail:
-            msg += f" -- {detail}"
-        click.echo(msg)
+        checks.append({"check": label, "passed": passed, "detail": detail})
+        if not output_json:
+            icon = "[ok]" if passed else "[FAIL]"
+            msg = f"  {icon} {label}"
+            if detail:
+                msg += f" -- {detail}"
+            click.echo(msg)
 
     click.echo("dgov doctor\n")
 
@@ -1002,6 +1088,10 @@ def doctor_cmd(project_root):
                     "OAuth configured, no conflicting env var",
                 )
 
+    if output_json:
+        click.echo(json.dumps({"checks": checks, "all_passed": ok}, indent=2))
+        return
+
     click.echo()
     if ok:
         click.echo("All checks passed.")
@@ -1022,7 +1112,12 @@ def doctor_cmd(project_root):
 @SESSION_ROOT_OPTION
 @click.option("--json", "output_json", is_flag=True, help="Output raw JSONL")
 def transcript_cmd(slug, project_root, session_root, output_json):
-    """View a worker session transcript."""
+    """View a worker session transcript.
+
+    Examples:
+      dgov transcript fix-parser-1 -r .
+      dgov transcript fix-parser-1 --json
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     # Default session_root to project_root if not provided
@@ -1109,8 +1204,14 @@ def transcript_cmd(slug, project_root, session_root, output_json):
     help="Project root ($DGOV_PROJECT_ROOT or cwd)",
 )
 @SESSION_ROOT_OPTION
-def recover_cmd(project_root, session_root):
-    """Recover pane states from event log after crash."""
+@click.option("--json", "output_json", is_flag=True, default=False, help="Output as JSON")
+def recover_cmd(project_root, session_root, output_json):
+    """Recover pane states from event log after crash.
+
+    Examples:
+      dgov recover -r .
+      dgov recover -r . --json
+    """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.recovery import recover_from_events
@@ -1119,6 +1220,10 @@ def recover_cmd(project_root, session_root):
     recs = recover_from_events(sr)
     if not recs:
         click.echo("No recovery needed — all panes consistent with event log.")
+        return
+
+    if output_json:
+        click.echo(json.dumps({"recoveries": recs, "count": len(recs)}, indent=2, default=str))
         return
 
     click.echo(f"Found {len(recs)} pane(s) needing recovery:\n")
@@ -1142,7 +1247,11 @@ def config_cmd():
 @config_cmd.command("show")
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 def config_show(project_root):
-    """Print effective configuration (merged defaults + user + project)."""
+    """Print effective configuration (merged defaults + user + project).
+
+    Examples:
+      dgov config show -r .
+    """
     from dgov.config import load_config
 
     config = load_config(project_root=os.path.abspath(project_root))
@@ -1155,7 +1264,11 @@ def config_show(project_root):
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 @click.option("--project", is_flag=True, help="Write to project config instead of user config")
 def config_set(key, value, project_root, project):
-    """Set a config value. KEY is a dotted path like providers.review.model."""
+    """Set a config value. KEY is a dotted path like providers.review.model.
+
+    Examples:
+      dgov config set providers.review.model "qwen/qwen3.5-122b"
+    """
     from dgov.config import write_config
 
     scope = "project" if project else "user"
@@ -1167,7 +1280,11 @@ def config_set(key, value, project_root, project):
 @click.argument("key")
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
 def config_get(key, project_root):
-    """Get a config value. KEY is a dotted path like providers.review.model."""
+    """Get a config value. KEY is a dotted path like providers.review.model.
+
+    Examples:
+      dgov config get defaults.agent
+    """
     from dgov.config import load_config
 
     config = load_config(project_root=os.path.abspath(project_root))
@@ -1212,7 +1329,12 @@ def _print_toml(d: dict, prefix: str = ""):
 @SESSION_ROOT_OPTION
 @click.option("--dry-run", is_flag=True, help="Show what would be cleaned")
 def gc_cmd(project_root, session_root, dry_run):
-    """Garbage-collect stale tmux sessions, worktrees, and branches."""
+    """Garbage-collect stale tmux sessions, worktrees, and branches.
+
+    Examples:
+      dgov gc -r .
+      dgov gc -r . --dry-run
+    """
     import shutil
 
     from dgov.backend import get_backend
