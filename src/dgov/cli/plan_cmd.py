@@ -182,10 +182,19 @@ def plan_run(plan_file, max_concurrent, wait):
                     m = "PASS" if r["passed"] else "FAIL"
                     c = "green" if r["passed"] else "red"
                     click.secho(f"  [{m}] {r['eval_id']}", fg=c)
+                    if not r["passed"] and r.get("output"):
+                        # Show first 200 chars of failure output, indented
+                        output_preview = r["output"][:200].replace("\n", " ").strip()
+                        if output_preview:
+                            click.secho(f"         {output_preview}", fg="yellow")
                 if eval_results:
                     click.echo(f"  {passed} passed, {failed} failed")
-                if status != "completed" or failed:
+                if status != "completed":
+                    # DAG itself failed (crashed, stuck, etc.)
                     raise SystemExit(1)
+                if failed:
+                    # DAG completed but some evals failed — different exit code
+                    raise SystemExit(2)
                 return
 
 
@@ -217,8 +226,11 @@ def plan_verify(run_id, project_root, session_root, timeout):
         color = "green" if r["passed"] else "red"
         click.secho(f"  [{marker}] {r['eval_id']} ({r['kind']}): {r['statement']}", fg=color)
         if not r["passed"] and r["output"]:
-            click.echo(f"         {r['output'][:100]}")
+            # Show first 200 chars of failure output, indented
+            output_preview = r["output"][:200].replace("\n", " ").strip()
+            if output_preview:
+                click.secho(f"         {output_preview}", fg="yellow")
 
     click.echo(f"\n{passed} passed, {failed} failed, {len(results)} total")
     if failed:
-        raise SystemExit(1)
+        raise SystemExit(2)
