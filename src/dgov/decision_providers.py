@@ -458,10 +458,11 @@ class PlanGenerationProvider(DecisionProvider):
                 timeout=120,
             )
             if result.returncode != 0:
-                raise RuntimeError(f"claude exit {result.returncode}: {result.stderr[:500]}")
-            content = result.stdout
-        except FileNotFoundError:
-            # claude CLI not available — fall back to OpenRouter
+                # Claude CLI failed (no credits, not installed, etc.) — fall back
+                content = self._fallback_openrouter(prompt)
+            else:
+                content = result.stdout
+        except (FileNotFoundError, OSError):
             content = self._fallback_openrouter(prompt)
         except Exception as exc:
             raise ProviderError(f"Plan generation failed: {exc}") from exc

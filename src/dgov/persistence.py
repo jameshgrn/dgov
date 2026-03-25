@@ -1735,6 +1735,7 @@ def _decision_kind_name(request: object) -> str:
         ClarifyRequest,
         CompletionParseRequest,
         DecisionKind,
+        GeneratePlanRequest,
         MonitorOutputRequest,
         ReviewOutputRequest,
         RouteTaskRequest,
@@ -1750,6 +1751,8 @@ def _decision_kind_name(request: object) -> str:
         return DecisionKind.PARSE_COMPLETION.value
     if isinstance(request, ClarifyRequest):
         return DecisionKind.DISAMBIGUATE.value
+    if isinstance(request, GeneratePlanRequest):
+        return DecisionKind.GENERATE_PLAN.value
     raise ValueError(f"Unsupported decision request type: {type(request).__name__}")
 
 
