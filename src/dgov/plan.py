@@ -146,38 +146,53 @@ def scratch_plan_path(
 def _scratch_plan_template(name: str) -> str:
     """Build the default scratch plan skeleton."""
     scratch_name = _validate_scratch_name(name)
-    return f"""# Scratch plans live under .dgov/plans/ and are safe to delete when finished.
-# The plan is the contract. Keep file claims exact and dependencies minimal.
-# Optional plan-level routing stays here if needed:
-# default_agent = "qwen-9b"
+    return f"""# dgov plan template — edit, then: dgov plan validate / compile / run
+# Eval kinds: happy_path, regression, edge, invariant, non_goal,
+#             manual, performance, integration_test
 
 [plan]
 version = 1
 name = "{scratch_name}"
-goal = "Replace with the concrete goal before running."
+goal = "TODO: one-sentence goal"
+default_agent = "qwen-35b"
+# max_concurrent = 2
+# max_retries = 2
+# default_review_agent = "qwen-35b"
 
 [[evals]]
 id = "E1"
+kind = "happy_path"
+statement = "TODO: falsifiable success condition"
+evidence = "uv run pytest tests/test_TODO.py -q"
+
+[[evals]]
+id = "E2"
 kind = "regression"
-statement = "The scratch plan is created under .dgov/plans/ and not in the repo root."
-evidence = "uv run dgov plan scratch {scratch_name}"
-scope = ["src/dgov/plan.py", "src/dgov/cli/plan_cmd.py"]
+statement = "TODO: what must not break"
+evidence = "uv run pytest tests/ -q -m unit -k TODO"
 
-[units.first_change]
-summary = "Describe one concrete unit of work"
+[units.impl]
+summary = "TODO: one-line summary (<=80 chars)"
 prompt = \"\"\"
-1. Read the target files first.
-2. Make the requested change.
-3. Run targeted validation for the claimed files.
-4. git add the changed files.
-5. git commit -m "Describe the completed change"
+1. Read src/TODO.py.
+2. TODO: describe the change.
+3. git add src/TODO.py
+4. git commit -m "TODO: commit message"
 \"\"\"
-commit_message = "Describe the completed change"
-satisfies = ["E1"]
+commit_message = "TODO: commit message"
+satisfies = ["E1", "E2"]
+# depends_on = ["other-unit"]
+# role = "worker"           # or "lt-gov"
+# review_agent = "qwen-35b"
 
-[units.first_change.files]
-edit = ["src/path/to/file.py"]
-read = ["tests/test_path_to_file.py"]
+[units.impl.files]
+edit = ["src/TODO.py"]
+read = ["tests/test_TODO.py"]
+
+[units.impl.acceptance]
+tests_pass = true
+lint_clean = true
+# custom_check = "uv run ruff check src/TODO.py"
 """
 
 

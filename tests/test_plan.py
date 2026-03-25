@@ -293,10 +293,11 @@ class TestScratchPlans:
 
         spec = parse_plan_file(str(path))
         assert spec.name == "review_refactor"
-        assert spec.goal == "Replace with the concrete goal before running."
+        assert spec.goal == "TODO: one-sentence goal"
         assert spec.evals[0].eval_id == "E1"
-        assert "first_change" in spec.units
-        assert spec.units["first_change"].satisfies == ("E1",)
+        assert spec.evals[1].eval_id == "E2"
+        assert "impl" in spec.units
+        assert spec.units["impl"].satisfies == ("E1", "E2")
 
     def test_write_scratch_plan_rejects_invalid_name(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="Invalid scratch plan name"):
