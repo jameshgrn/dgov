@@ -33,14 +33,14 @@ class ActiveEffect:
     max_age: int = 20
 
 
-# Event type to glyph/color mapping for visual feedback
+# Event type to glyph/color mapping for visual feedback (Unicode glyphs)
 _EFFECT_GLYPHS = {
-    "uplift": ("^", "bold bright_green"),
-    "erode": ("v", "bold bright_cyan"),
-    "deposit": ("~", "bold yellow"),
-    "tremor": ("*", "dim white"),
-    "meteor": ("X", "bold bright_red"),
-    "volcano": ("!", "bold bright_magenta"),
+    "uplift": ("△", "bold bright_green"),  # tectonic rise
+    "erode": ("≋", "bold bright_cyan"),  # water/incision
+    "deposit": ("▽", "bold yellow"),  # sediment settling
+    "tremor": ("∿", "dim white"),  # seismic wave
+    "meteor": ("✸", "bold bright_red"),  # impact burst
+    "volcano": ("◉", "bold bright_magenta"),  # eruptive center
 }
 
 
@@ -141,6 +141,9 @@ class ErosionModel:
         # Effect tracking buffer (max 100 active effects)
         self._active_effects: list[ActiveEffect] = []
         self._tick: int = 0
+
+        # Activity memory field for channel scars / perturbation traces
+        self._activity_memory: list[list[float]] = [[0.0] * width for _ in range(height)]
 
         # Session-scale pacing state
         self._ring_buffer: list[float] = []  # last N mean |delta_z| values
@@ -432,8 +435,18 @@ class ErosionModel:
             a = area[r][c]
             s = slope[r][c]
             if s > 0:
-                erosion = (effective_K * self.erodibility[r][c]) * (a**m) * (s**n)
-                h[r][c] = max(0.0, h[r][c] - erosion)
+                erosion_mag = (effective_K * self.erodibility[r][c]) * (a**m) * (s**n)
+                h[r][c] = max(0.0, h[r][c] - erosion_mag)
+
+        # Update activity memory from erosion magnitude (after erosion loop)
+        for _, r, c in cells:
+            if r in (0, rows - 1) or c in (0, cols - 1):
+                continue
+            a = area[r][c]
+            s = slope[r][c]
+            if s > 0:
+                erosion_mag = (effective_K * self.erodibility[r][c]) * (a**m) * (s**n)
+                self._activity_memory[r][c] += erosion_mag * 2.0
 
         # 6. Uplift: add scaled constant to all non-drain cells
         if effective_uplift > 0:
@@ -455,6 +468,14 @@ class ErosionModel:
         self._ring_buffer.append(mean_delta)
         if len(self._ring_buffer) > self.RING_BUFFER_SIZE:
             self._ring_buffer.pop(0)
+
+        # Decay activity memory (half-life ~30 ticks)
+        _MEMORY_DECAY = 0.97  # per-tick multiplicative decay
+        for r in range(rows):
+            for c in range(cols):
+                self._activity_memory[r][c] *= _MEMORY_DECAY
+                if self._activity_memory[r][c] < 0.001:
+                    self._activity_memory[r][c] = 0.0
 
     @property
     def maturity(self) -> float:
@@ -531,6 +552,15 @@ class ErosionModel:
                 self.height[nr][nc] = max(0.0, min(2.0, self.height[nr][nc] + delta))
                 if event_type == "erode":
                     self.area[nr][nc] += weight * intensity
+
+        # Boost activity memory at perturbation site
+        for nr in range(row_min, row_max + 1):
+            for nc in range(col_min, col_max + 1):
+                dist_sq = float((nr - row) ** 2 + (nc - col) ** 2)
+                if dist_sq > radius * radius:
+                    continue
+                weight = math.exp(-dist_sq / (2.0 * sigma_sq))
+                self._activity_memory[nr][nc] += abs(base_amplitude) * intensity * weight * 3.0
 
         self._apply_boundary_drains(self.height)
 
@@ -678,9 +708,35 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
                     ts += shade[r2][c2]
                     tf += area[r2][c2]
             elev, s, flow = te / n, ts / n, tf / n
+
+        # Check activity memory for this cell
+        if supersample == 1:
+            heat = model._activity_memory[dr][dc] if model._activity_memory else 0.0
+        else:
+            heat = 0.0
+            for sr in range(supersample):
+                for sc in range(supersample):
+                    r2 = dr * supersample + sr
+                    c2 = dc * supersample + sc
+                    heat += model._activity_memory[r2][c2]
+            heat /= supersample * supersample
+
         if flow > river_thresh and elev < 0.80:
-            return _river_color(flow, s)
-        return _elevation_color(elev, s)
+            base_color = _river_color(flow, s)
+        else:
+            base_color = _elevation_color(elev, s)
+
+        # Blend activity heat into color (warm amber tint for recent activity)
+        r_val, g_val, b_val = base_color
+        heat_clamped = min(5.0, heat)  # clamp to prevent blowout
+        if heat_clamped > 0.01:
+            heat_weight = min(1.0, heat_clamped / 5.0)
+            r_out = _clamp(int(r_val + heat_weight * 60))
+            g_out = _clamp(int(g_val + heat_weight * 20))
+            b_out = _clamp(int(b_val - heat_weight * 30))
+            return (r_out, g_out, b_out)
+
+        return base_color
 
     # Half-block rendering: ▀ with fg=top row, bg=bottom row
     text = Text()
@@ -904,13 +960,14 @@ def render_effect_stamps(
 
     For each active effect:
     - Map grid coords to display coords (divide by supersample)
-    - Compute fade alpha. Skip if < 0.1
-    - Alpha > 0.6: bright glyph
-    - Alpha 0.3-0.6: dim version
-    - Alpha < 0.3: "." fading dot
+    - Compute fade alpha. Skip if < 0.15
+    - Alpha > 0.7: full intensity glyph (bold bright style)
+    - Alpha 0.4-0.7: dimmed glyph (muted color, no bold/bright)
+    - Alpha 0.15-0.4: ghost dot "·" with faint color
+    - Alpha < 0.15: invisible
 
-    High-intensity events (intensity > 1.0) get a small splash radius:
-    glyph at center, "." at 4 cardinal neighbors if within bounds.
+    High-intensity events (intensity > 1.0) get a small splash radius when alpha > 0.5:
+    glyph at center, "·" (middle dot) at 4 cardinal neighbors if within bounds.
 
     Returns dict in same format as AgentSim.update() stamps.
     """
@@ -937,32 +994,33 @@ def render_effect_stamps(
             continue
         glyph, base_style = _EFFECT_GLYPHS[effect.event_type]
 
-        # Determine visibility based on alpha
-        if alpha > 0.6:
-            # Bright - use full intensity style
+        # Determine visibility based on alpha (3 visual stages)
+        if alpha > 0.7:
+            # Full intensity — bold glyph
             visible_glyph = glyph
             visible_style = base_style
-        elif alpha >= 0.3:
-            # Dimmer phase - prepend "dim" to style
-            # Rich allows multiple styles; dim will override the bright aspect
+        elif alpha > 0.4:
+            # Dimming — same glyph, muted color
             visible_glyph = glyph
-            visible_style = f"dim {base_style}"
+            visible_style = base_style.replace("bold ", "").replace("bright_", "")
+        elif alpha > 0.15:
+            # Ghost — small dot with faint color
+            visible_glyph = "·"
+            visible_style = f"dim {base_style.replace('bold ', '').replace('bright_', '')}"
         else:
-            # Fading dot
-            visible_glyph = "."
-            visible_style = base_style
+            continue  # invisible
 
         # Don't overwrite existing stamps (agent stamps render on top)
         if (dr, dc) not in stamps:
             stamps[(dr, dc)] = (visible_glyph, visible_style)
 
-        # Splash radius for high-intensity events (> 1.0)
-        if effect.intensity > 1.0:
+        # Splash radius for high-intensity events (> 1.0) - only when alpha > 0.5
+        if effect.intensity > 1.0 and alpha > 0.5:
             cardinal_offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
             for dr_off, dc_off in cardinal_offsets:
                 nr, nc = dr + dr_off, dc + dc_off
                 if 0 <= nr < display_rows and 0 <= nc < display_cols:
                     if (nr, nc) not in stamps:
-                        stamps[(nr, nc)] = (".", base_style)
+                        stamps[(nr, nc)] = ("·", visible_style)
 
     return stamps

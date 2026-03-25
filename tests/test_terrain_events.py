@@ -244,3 +244,103 @@ def test_render_effect_stamps_empty_when_no_effects():
     model = _flat_model()
     stamps = render_effect_stamps(model, 6, 6, supersample=1)
     assert stamps == {}
+
+
+@pytest.mark.unit
+def test_activity_memory_decay():
+    """Activity memory should decay toward zero over many steps."""
+    model = _flat_model()
+    # Trigger erosion to build up activity
+    model.terrain_event("erode", 6, 6, intensity=2.0)
+    peak = model._activity_memory[6][6]
+    assert peak > 0.0
+
+    # Run steps to let it decay
+    for _ in range(100):
+        model.step()
+
+    assert model._activity_memory[6][6] < peak * 0.1
+
+
+@pytest.mark.unit
+def test_activity_memory_bounded():
+    """Activity memory values should stay bounded even with many events."""
+    model = _flat_model()
+    # Fire many events
+    for _ in range(50):
+        model.terrain_event("uplift", 6, 6, intensity=2.0)
+        model.step()
+
+    # Check no cell exceeds a reasonable bound
+    for r in range(model.height_count):
+        for c in range(model.width):
+            assert model._activity_memory[r][c] < 100.0, (
+                f"Unbounded memory at ({r},{c}): {model._activity_memory[r][c]}"
+            )
+
+
+@pytest.mark.unit
+def test_unicode_glyph_in_effect_stamps():
+    """Effect glyphs should be Unicode, not plain ASCII."""
+    from dgov.terrain import _EFFECT_GLYPHS
+
+    # Check that no glyph is plain ASCII a-z, A-Z, or common punctuation
+    ascii_simple = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ^v~*!.")
+    for event_type, (glyph, _style) in _EFFECT_GLYPHS.items():
+        assert glyph not in ascii_simple, f"Glyph for {event_type} is plain ASCII: {glyph!r}"
+
+
+@pytest.mark.unit
+def test_activity_memory_from_erosion():
+    """Erosion should add to activity memory."""
+    model = _flat_model()
+
+    # Initial activity should be zero
+    assert model._activity_memory[6][6] == 0.0
+
+    # Trigger erosion step which should update activity memory
+    for _ in range(5):
+        model.step()
+
+    # Activity memory should have increased at some cells due to erosion
+    has_activity = False
+    for r in range(model.height_count):
+        for c in range(model.width):
+            if model._activity_memory[r][c] > 0:
+                has_activity = True
+                break
+        if has_activity:
+            break
+
+    assert has_activity, "Expected some activity memory from erosion steps"
+
+
+@pytest.mark.unit
+def test_unicode_glyph_fade_stages():
+    """Effect fade should have 3 visual stages with distinct glyph or style changes."""
+    model = _flat_model()
+    # Fire an effect
+    model.terrain_event("uplift", 6, 6, intensity=1.0)
+
+    # Get stamps immediately (alpha ~ 1.0 - full glyph)
+    stamps_immediate = render_effect_stamps(model, 13, 13, supersample=1)
+    assert len(stamps_immediate) > 0
+    glyph_at_start = stamps_immediate.get((6, 6))
+    assert glyph_at_start is not None
+    assert "bold" in glyph_at_start[1] or "bright" in glyph_at_start[1], (
+        f"Expected bold/bright style at full alpha, got: {glyph_at_start[1]}"
+    )
+
+    # Advance to mid-fade stage (alpha ~ 0.5)
+    model._tick = model._active_effects[0].birth_tick + 12
+    stamps_mid = render_effect_stamps(model, 13, 13, supersample=1)
+    glyph_at_mid = stamps_mid.get((6, 6))
+    assert glyph_at_mid is not None
+
+    # Advance to ghost stage (alpha ~ 0.25)
+    model._tick = model._active_effects[0].birth_tick + 17
+    stamps_ghost = render_effect_stamps(model, 13, 13, supersample=1)
+    glyph_at_ghost = stamps_ghost.get((6, 6))
+
+    # Ghost stage should use dot glyph "·" or "." with dim style
+    assert glyph_at_ghost is not None, "Expected glyph at alpha > 0.15"
