@@ -220,6 +220,9 @@ def run_terrain(refresh: float = 0.5) -> None:
             # Run multiple substeps per frame based on session maturity
             for _ in range(model.substeps):
                 model.step()
+            # Decay activity memory once per frame (not per substep)
+            if model is not None:
+                model.decay_activity_memory()
             rendered = render_terrain(model, supersample=2)
             rendered = _clamp_rendered(rendered, width=w, height=panel_rows)
         except Exception as exc:

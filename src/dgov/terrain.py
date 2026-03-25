@@ -558,10 +558,14 @@ class ErosionModel:
         if len(self._ring_buffer) > self.RING_BUFFER_SIZE:
             self._ring_buffer.pop(0)
 
-        # Decay activity memory (half-life ~30 ticks)
-        _MEMORY_DECAY = 0.97  # per-tick multiplicative decay
-        for r in range(rows):
-            for c in range(cols):
+    def decay_activity_memory(self) -> None:
+        """Apply one frame's worth of activity memory decay.
+
+        Call once per render frame, NOT per erosion substep.
+        """
+        _MEMORY_DECAY = 0.97
+        for r in range(self.height_count):
+            for c in range(self.width):
                 self._activity_memory[r][c] *= _MEMORY_DECAY
                 if self._activity_memory[r][c] < 0.001:
                     self._activity_memory[r][c] = 0.0

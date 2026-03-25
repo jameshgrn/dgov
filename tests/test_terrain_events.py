@@ -255,16 +255,16 @@ def test_render_effect_stamps_empty_when_no_effects():
 
 @pytest.mark.unit
 def test_activity_memory_decay():
-    """Activity memory should decay toward zero over many steps."""
+    """Activity memory should decay toward zero over many decay calls."""
     model = _flat_model()
     # Trigger erosion to build up activity
     model.terrain_event("erode", 6, 6, intensity=2.0)
     peak = model._activity_memory[6][6]
     assert peak > 0.0
 
-    # Run steps to let it decay
+    # Run decay calls (steps don't decay anymore - it's separate)
     for _ in range(100):
-        model.step()
+        model.decay_activity_memory()
 
     assert model._activity_memory[6][6] < peak * 0.1
 
@@ -471,3 +471,51 @@ def test_session_phase_values_at_keyframes():
     assert abs(late["saturation"] - 0.55) < 0.01
     assert abs(late["contrast"] - 0.60) < 0.01
     assert abs(late["perturbation_scale"] - 0.20) < 0.01
+
+
+@pytest.mark.unit
+def test_decay_per_frame_not_per_step():
+    """decay_activity_memory should be a separate call from step()."""
+    model = _flat_model()
+    model.terrain_event("erode", 6, 6, intensity=2.0)
+    heat_after_event = model._activity_memory[6][6]
+
+    # Call step() 3 times (simulating substeps=3)
+    for _ in range(3):
+        model.step()
+
+    # Heat should NOT have decayed (decay removed from step)
+    assert model._activity_memory[6][6] >= heat_after_event * 0.95, "tiny float drift from erosion"
+
+    # Now call decay once
+    model.decay_activity_memory()
+    assert model._activity_memory[6][6] < heat_after_event
+
+
+@pytest.mark.unit
+def test_decay_substep_independent():
+    """Decay rate should be identical regardless of how many steps ran."""
+    model_a = _flat_model()
+    model_b = _flat_model()
+
+    # Both get same event
+    model_a.terrain_event("erode", 6, 6, intensity=2.0)
+    model_b.terrain_event("erode", 6, 6, intensity=2.0)
+
+    heat_initial = model_a._activity_memory[6][6]
+
+    # Model A: 1 step + 1 decay (like substeps=1)
+    model_a.step()
+    model_a.decay_activity_memory()
+
+    # Model B: 3 steps + 1 decay (like substeps=3)
+    for _ in range(3):
+        model_b.step()
+    model_b.decay_activity_memory()
+
+    # Both should have decayed by the same fraction
+    ratio_a = model_a._activity_memory[6][6] / heat_initial
+    ratio_b = model_b._activity_memory[6][6] / heat_initial
+
+    # Allow small tolerance for erosion-induced heat additions during step()
+    assert abs(ratio_a - ratio_b) < 0.05
