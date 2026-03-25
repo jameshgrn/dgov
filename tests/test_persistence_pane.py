@@ -244,3 +244,67 @@ class TestEventNotification:
 
         assert results.get("a") is True
         assert results.get("b") is True
+
+
+class TestFileClaimsPersistence:
+    """Test that file_claims is persisted in the typed column, not metadata blob."""
+
+    def test_file_claims_in_typed_column(self, tmp_path):
+        """Regression test: file_claims should be in file_claims column, not metadata."""
+        session = _make_session(tmp_path)
+        # Create a pane with file claims
+        pane = _pane(
+            "claims-1",
+            prompt="test claims",
+            pane_id="%9",
+            file_claims=["file1.py", "file2.py", "subdir/file3.py"],
+        )
+        add_pane(session, pane)
+
+        # Retrieve and verify file_claims is correct type and value
+        result = get_pane(session, "claims-1")
+        assert result is not None
+        assert result["file_claims"] == ["file1.py", "file2.py", "subdir/file3.py"]
+        assert isinstance(result["file_claims"], list)
+
+    def test_file_claims_empty_tuple(self, tmp_path):
+        """file_claims as empty tuple should persist and deserialize correctly."""
+        session = _make_session(tmp_path)
+        pane = _pane("claims-2", prompt="test", pane_id="%10", file_claims=())
+        add_pane(session, pane)
+
+        result = get_pane(session, "claims-2")
+        assert result is not None
+        assert result["file_claims"] == []
+        assert isinstance(result["file_claims"], list)
+
+    def test_file_claims_not_in_metadata(self, tmp_path):
+        """file_claims should NOT appear in the metadata JSON blob."""
+        session = _make_session(tmp_path)
+        pane = _pane(
+            "claims-3",
+            prompt="test claims",
+            pane_id="%11",
+            file_claims=["important.txt"],
+        )
+        add_pane(session, pane)
+
+        # Check the raw database to ensure file_claims is in typed column
+        from dgov.persistence import _get_db
+
+        conn = _get_db(session)
+        row = conn.execute(
+            "SELECT file_claims, metadata FROM panes WHERE slug = ?",
+            ("claims-3",),
+        ).fetchone()
+
+        # file_claims should be a JSON array string in the typed column
+        assert row[0] is not None
+        import json
+
+        claims_from_column = json.loads(row[0])
+        assert "important.txt" in claims_from_column
+
+        # metadata should NOT contain file_claims
+        metadata = json.loads(row[1] if row[1] else "{}")
+        assert "file_claims" not in metadata
