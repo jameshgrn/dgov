@@ -300,3 +300,33 @@ class TestPaneCreateUnknownAgentFiltering:
         assert "pi" in output
         # Should NOT show physical backend river-35b
         assert "river-35b" not in output
+
+
+class TestPaneTail:
+    def test_tail_pane_not_found(self, runner: CliRunner) -> None:
+        with patch("dgov.persistence.get_pane", return_value=None):
+            result = runner.invoke(cli, ["pane", "tail", "ghost", "-r", "."])
+        assert result.exit_code != 0
+        assert "not found" in (result.output + (result.stderr or "")).lower()
+
+    def test_tail_terminal_state_shows_status(self, runner: CliRunner) -> None:
+        pane = {"slug": "done-task", "state": "merged", "role": "worker"}
+        with (
+            patch("dgov.persistence.get_pane", return_value=pane),
+            patch("dgov.status.tail_worker_log", return_value="final output"),
+        ):
+            result = runner.invoke(cli, ["pane", "tail", "done-task", "-r", "."])
+        assert result.exit_code == 0
+        assert "final output" in result.output
+        assert "merged" in result.output
+
+    def test_tail_failed_state_shows_yellow(self, runner: CliRunner) -> None:
+        pane = {"slug": "bad-task", "state": "failed", "role": "worker"}
+        with (
+            patch("dgov.persistence.get_pane", return_value=pane),
+            patch("dgov.status.tail_worker_log", return_value=None),
+            patch("dgov.status.capture_worker_output", return_value="error log"),
+        ):
+            result = runner.invoke(cli, ["pane", "tail", "bad-task", "-r", "."])
+        assert result.exit_code == 0
+        assert "failed" in result.output

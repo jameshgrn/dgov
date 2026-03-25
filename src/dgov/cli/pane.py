@@ -1017,6 +1017,116 @@ def pane_output(slug, project_root, session_root, tail, follow):
             pass
 
 
+_TAIL_TERMINAL_STATES = frozenset(
+    {"done", "failed", "merged", "closed", "abandoned", "timed_out", "escalated", "superseded"}
+)
+
+
+@pane.command("tail")
+@click.argument("slug")
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@SESSION_ROOT_OPTION
+@click.option("-n", "--lines", default=50, help="Number of lines to show initially")
+def pane_tail(slug, project_root, session_root, lines):
+    """Stream worker output in real-time, auto-stop on completion."""
+    import time
+    from pathlib import Path
+
+    from dgov.persistence import STATE_DIR, get_pane
+    from dgov.status import capture_worker_output, tail_worker_log
+
+    project_root, session_root = _autocorrect_roots(project_root, session_root)
+    session_root = os.path.abspath(session_root or project_root)
+
+    pane_record = get_pane(session_root, slug)
+    if not pane_record:
+        click.secho(f"Pane not found: {slug}", fg="red", err=True)
+        sys.exit(1)
+
+    # Check if already terminal before streaming
+    state = pane_record.get("state", "")
+    if state in _TAIL_TERMINAL_STATES:
+        # Show final output snapshot
+        text = tail_worker_log(session_root, slug, lines=lines)
+        if text is None:
+            text = capture_worker_output(
+                project_root, slug, lines=lines, session_root=session_root
+            )
+        if text:
+            click.echo(text)
+        click.secho(f"--- {slug} {state} ---", fg="green" if state == "merged" else "yellow")
+        return
+
+    # Show initial output
+    is_headless = pane_record.get("role", "worker") == "worker"
+    if is_headless:
+        text = tail_worker_log(session_root, slug, lines=lines)
+        if text is None:
+            text = capture_worker_output(
+                project_root, slug, lines=lines, session_root=session_root
+            )
+    else:
+        text = capture_worker_output(project_root, slug, lines=lines, session_root=session_root)
+        if text is None:
+            text = tail_worker_log(session_root, slug, lines=lines)
+    if text:
+        click.echo(text)
+
+    # Follow loop
+    log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
+    try:
+        if log_path.exists():
+            with open(log_path, "rb") as f:
+                f.seek(0, 2)
+                while True:
+                    line = f.readline()
+                    if line:
+                        click.echo(line.decode("utf-8", errors="replace").rstrip())
+                    else:
+                        time.sleep(0.5)
+                        rec = get_pane(session_root, slug)
+                        st = rec.get("state", "") if rec else "closed"
+                        if st in _TAIL_TERMINAL_STATES:
+                            # Drain remaining lines before exiting
+                            while True:
+                                remaining = f.readline()
+                                if not remaining:
+                                    break
+                                click.echo(remaining.decode("utf-8", errors="replace").rstrip())
+                            click.secho(
+                                f"--- {slug} {st} ---",
+                                fg="green" if st == "merged" else "yellow",
+                            )
+                            return
+        else:
+            # No log file — poll capture output
+            last_text = ""
+            while True:
+                time.sleep(1)
+                rec = get_pane(session_root, slug)
+                st = rec.get("state", "") if rec else "closed"
+                if st in _TAIL_TERMINAL_STATES:
+                    click.secho(
+                        f"--- {slug} {st} ---",
+                        fg="green" if st == "merged" else "yellow",
+                    )
+                    return
+                new_text = capture_worker_output(
+                    project_root, slug, lines=lines, session_root=session_root
+                )
+                if new_text and new_text != last_text:
+                    click.echo(new_text)
+                    last_text = new_text
+    except KeyboardInterrupt:
+        pass
+
+
 @pane.command("message")
 @click.argument("slug")
 @click.argument("text")
