@@ -198,6 +198,25 @@ def plan_run(plan_file, max_concurrent, wait):
                 return
 
 
+@plan_cmd.command("scaffold")
+@click.option("--goal", required=True, help="Plan goal statement")
+@click.option("--files", required=True, multiple=True, help="Files to edit (repeat for multiple)")
+@click.option("--name", default="", help="Plan name (derived from goal if empty)")
+@click.option("-o", "--output", default="", help="Write to file instead of stdout")
+@click.option("--dry-run", is_flag=True, help="Print to stdout even if -o is set")
+def plan_scaffold(goal, files, name, output, dry_run):
+    """Generate a TOML plan template from goal and file list."""
+    from dgov.plan import scaffold_plan
+
+    toml_text = scaffold_plan(goal, list(files), name=name)
+    if output and not dry_run:
+        with open(output, "w") as f:
+            f.write(toml_text)
+        click.echo(f"Wrote {output}")
+    else:
+        click.echo(toml_text)
+
+
 @plan_cmd.command("verify")
 @click.argument("run_id", type=int)
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
