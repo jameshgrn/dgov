@@ -217,6 +217,38 @@ def _normalize_relative_paths(paths: list[str], *, label: str) -> tuple[str, ...
     return tuple(sorted(paths))
 
 
+def _check_evidence_syntax(evidence: str) -> list[str]:
+    """Check an eval evidence command for shell syntax issues.
+
+    Returns a list of warning messages. Empty list = no issues found.
+    Does NOT execute the command — only static/syntax checks.
+    """
+    warnings = []
+
+    # 1. bash -n syntax check (parses but does not execute)
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["bash", "-n", "-c", evidence],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            stderr = result.stderr.strip()
+            warnings.append(f"Shell syntax error: {stderr}")
+    except (subprocess.TimeoutExpired, OSError):
+        pass  # Can't check, skip
+
+    # 2. Common anti-pattern: escaped pipe in grep -qE (vim syntax, not ERE)
+    # grep -qE 'foo\|bar' should be grep -qE 'foo|bar'
+    if "\\|" in evidence and "grep" in evidence:
+        warnings.append("Evidence uses '\\|' with grep — did you mean '|' for ERE alternation?")
+
+    return warnings
+
+
 def _parse_eval(raw: dict) -> PlanEval:
     """Parse and validate a single eval block."""
     for req in ("id", "kind", "statement", "evidence"):
@@ -404,6 +436,19 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
                 PlanIssue(
                     severity="error",
                     message=f"Eval {plan_eval.eval_id!r} evidence must not be empty",
+                )
+            )
+
+    # Check eval evidence commands for shell syntax issues
+    for plan_eval in plan.evals:
+        if not plan_eval.evidence.strip():
+            continue
+        syntax_warnings = _check_evidence_syntax(plan_eval.evidence)
+        for warning in syntax_warnings:
+            issues.append(
+                PlanIssue(
+                    severity="warning",
+                    message=f"Eval {plan_eval.eval_id!r} evidence: {warning}",
                 )
             )
 
