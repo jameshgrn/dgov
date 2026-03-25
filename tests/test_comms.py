@@ -284,36 +284,13 @@ class TestPaneBlockedEvent:
 
 class TestWaitWorkerPane:
     def test_wait_worker_pane_reloads_pane_state_each_poll(self, tmp_path: Path) -> None:
+        """Event-driven waiter returns immediately when pane is already done."""
         session_root = _setup_pane(tmp_path)
-        pane = get_pane(session_root, "test-worker")
-        assert pane is not None
 
-        poll_states: list[str] = []
-        get_calls = {"count": 0}
-
-        def fake_get_pane(_session_root: str, _slug: str) -> dict:
-            get_calls["count"] += 1
-            state = "active" if get_calls["count"] == 1 else "failed"
-            return {**pane, "state": state}
-
-        def fake_poll_once(
-            _session_root: str,
-            _project_root: str,
-            _slug: str,
-            pane_record: dict | None,
-            _stable_state: dict,
-            _stable: int,
-            done_strategy=None,
-            alive=None,
-        ) -> tuple[bool, str]:
-            poll_states.append(pane_record["state"] if pane_record else "")
-            return (len(poll_states) > 1, "exit_signal" if len(poll_states) > 1 else "")
-
-        with (
-            patch("dgov.persistence.get_pane", side_effect=fake_get_pane),
-            patch("dgov.waiter._poll_once", side_effect=fake_poll_once),
-            patch("dgov.waiter._strategy_for_pane", return_value=None),
-            patch("dgov.waiter.time.sleep"),
+        # Pane already in terminal state → immediate return
+        with patch(
+            "dgov.persistence.get_pane",
+            return_value={"slug": "test-worker", "agent": "pi", "state": "failed"},
         ):
             result = wait_worker_pane(
                 session_root,
@@ -323,8 +300,7 @@ class TestWaitWorkerPane:
                 auto_retry=False,
             )
 
-        assert result == {"done": "test-worker", "method": "exit_signal"}
-        assert poll_states == ["active", "failed"]
+        assert result == {"done": "test-worker", "method": "already:failed"}
 
 
 # ---------------------------------------------------------------------------

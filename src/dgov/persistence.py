@@ -154,6 +154,7 @@ VALID_EVENTS = frozenset(
         "merge_completed",
         "yap_received",
         "pane_circuit_breaker",
+        "pane_merge_conflict",
         "monitor_nudge",
         "monitor_auto_complete",
         "monitor_idle_timeout",

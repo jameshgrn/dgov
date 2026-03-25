@@ -287,34 +287,32 @@ class TestMaybeAutoRetry:
 
 class TestWaitWithAutoRetry:
     @patch("dgov.recovery.maybe_auto_retry")
-    @patch("dgov.waiter._is_done")
     @patch("dgov.persistence.get_pane")
-    @patch("dgov.persistence.update_pane_state")
     def test_auto_retry_on_failure(
         self,
-        mock_update,
         mock_get_pane,
-        mock_is_done,
         mock_maybe_retry,
         tmp_path: Path,
     ) -> None:
-        """When _is_done returns True and state is 'failed', auto-retry is invoked."""
+        """Event-driven waiter: pane in failed state triggers auto-retry."""
         from dgov.waiter import wait_worker_pane
 
         session_root = str(tmp_path)
 
-        # First call: original pane is already in failed state.
-        # Second call: retried pane completes successfully.
-        mock_is_done.side_effect = [True, True]
+        # First call: pane active → enters event loop
+        # After event: pane failed → triggers auto-retry → slug changes to w1-2
+        # Second event check: pane w1-2 already done → return
+        call_count = {"n": 0}
 
-        # wait_worker_pane calls get_pane twice per loop iteration: once at the
-        # top and once after _is_done returns True (to get the fresh state).
-        mock_get_pane.side_effect = [
-            {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "failed"},  # iter 1 top
-            {"slug": "w1", "agent": "pi", "pane_id": "%1", "state": "failed"},  # iter 1 re-read
-            {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "done"},  # iter 2 top
-            {"slug": "w1-2", "agent": "pi", "pane_id": "%2", "state": "done"},  # iter 2 re-read
-        ]
+        def _get_pane(_sr, slug):
+            call_count["n"] += 1
+            if slug == "w1":
+                if call_count["n"] == 1:
+                    return {"slug": "w1", "agent": "pi", "state": "active"}
+                return {"slug": "w1", "agent": "pi", "state": "failed"}
+            return {"slug": "w1-2", "agent": "pi", "state": "done"}
+
+        mock_get_pane.side_effect = _get_pane
 
         mock_maybe_retry.return_value = {
             "retried": "w1",
@@ -322,15 +320,24 @@ class TestWaitWithAutoRetry:
             "attempt": 1,
         }
 
-        result = wait_worker_pane(
-            "/fake",
-            "w1",
-            session_root=session_root,
-            timeout=30,
-            poll=0,
-            stable=15,
-            auto_retry=True,
-        )
+        with (
+            patch("dgov.persistence.latest_event_id", return_value=0),
+            patch(
+                "dgov.persistence.wait_for_events",
+                side_effect=[
+                    [{"id": 1, "event": "pane_failed", "pane": "w1"}],
+                    [{"id": 2, "event": "pane_done", "pane": "w1-2"}],
+                ],
+            ),
+        ):
+            result = wait_worker_pane(
+                "/fake",
+                "w1",
+                session_root=session_root,
+                timeout=30,
+                poll=1,
+                auto_retry=True,
+            )
         assert result["done"] == "w1-2"
         mock_maybe_retry.assert_called_once()
 
