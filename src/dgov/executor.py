@@ -1504,6 +1504,60 @@ def run_worker_checkpoint(session_root: str, slug: str, message: str) -> None:
     emit_event(session_root, "checkpoint_created", slug, message=message)
 
 
+def run_force_complete_dag(session_root: str, run_id: int) -> dict:
+    """Executor syscall: force-complete a DAG run, marking all non-terminal tasks as done."""
+    from dgov.persistence import emit_event, get_dag_run, update_dag_run, upsert_dag_task
+
+    run = get_dag_run(session_root, run_id)
+    if not run:
+        return {"error": f"DAG run {run_id} not found"}
+
+    # Reconstruct kernel state and force all non-terminal tasks to MERGED
+    state_json = run.get("state_json", {})
+    task_states = state_json.get("task_states", {})
+    forced = []
+    for task_slug, ts in task_states.items():
+        if ts not in ("merged", "failed", "skipped"):
+            task_states[task_slug] = "merged"
+            upsert_dag_task(session_root, run_id, task_slug, "merged", "governor-override")
+            forced.append(task_slug)
+
+    state_json["state"] = "completed"
+    state_json["task_states"] = task_states
+    update_dag_run(session_root, run_id, status="completed", state_json=state_json)
+    emit_event(
+        session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id, status="completed"
+    )
+
+    return {"run_id": run_id, "forced": forced, "status": "completed"}
+
+
+def run_skip_dag_task(session_root: str, run_id: int, task_slug: str) -> dict:
+    """Executor syscall: skip a single DAG task and let the kernel advance."""
+    from dgov.persistence import emit_event, get_dag_run, update_dag_run, upsert_dag_task
+
+    run = get_dag_run(session_root, run_id)
+    if not run:
+        return {"error": f"DAG run {run_id} not found"}
+
+    state_json = run.get("state_json", {})
+    task_states = state_json.get("task_states", {})
+    if task_slug not in task_states:
+        return {"error": f"Task {task_slug!r} not found in DAG run {run_id}"}
+    if task_states[task_slug] in ("merged", "skipped"):
+        return {"error": f"Task {task_slug!r} already in terminal state: {task_states[task_slug]}"}
+
+    task_states[task_slug] = "skipped"
+    state_json["task_states"] = task_states
+    upsert_dag_task(session_root, run_id, task_slug, "skipped", "governor-override")
+    update_dag_run(session_root, run_id, state_json=state_json)
+    emit_event(
+        session_root, "dag_task_completed", f"dag/{run_id}", task=task_slug, dag_run_id=run_id
+    )
+
+    return {"run_id": run_id, "task": task_slug, "status": "skipped"}
+
+
 # ---------------------------------------------------------------------------
 # DagKernel runtime adapter
 # ---------------------------------------------------------------------------
