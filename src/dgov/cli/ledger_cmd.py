@@ -7,7 +7,7 @@ import os
 
 import click
 
-from dgov.cli import SESSION_ROOT_OPTION
+from dgov.cli import SESSION_ROOT_OPTION, want_json
 
 
 @click.group("ledger")
@@ -87,7 +87,7 @@ def ledger_list_cmd(project_root, session_root, category, status, tag, limit, js
 
     session_root = os.path.abspath(session_root or project_root)
     entries = ledger_query(session_root, category=category, status=status, tag=tag, limit=limit)
-    if json_output:
+    if json_output or want_json():
         click.echo(json.dumps(entries, indent=2, default=str))
         return
     if not entries:

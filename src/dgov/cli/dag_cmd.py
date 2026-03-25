@@ -7,6 +7,8 @@ from dataclasses import asdict
 
 import click
 
+from dgov.cli import want_json
+
 
 @click.group("dag")
 def dag():
@@ -230,7 +232,7 @@ def dag_status(dagfile, run_id, output_json):
     run_id = run["id"]
     tasks = list_dag_tasks(session_root, run_id)
 
-    if output_json:
+    if output_json or want_json():
         evals = run.get("evals", [])
         links = run.get("unit_eval_links", [])
         eval_results = {r["eval_id"]: r for r in run.get("eval_results", [])}
@@ -326,13 +328,41 @@ def dag_status(dagfile, run_id, output_json):
 @dag.command("force-complete")
 @click.argument("run_id", type=int)
 @click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
-def dag_force_complete(run_id, project_root):
+@click.option(
+    "--dry-run", is_flag=True, default=False, help="Preview what would be force-completed"
+)
+def dag_force_complete(run_id, project_root, dry_run):
     """Force-complete a DAG run: mark all pending tasks as done.
 
     Examples:
       dgov dag force-complete 42 -r .
+      dgov dag force-complete 42 --dry-run -r .
     """
     import os
+
+    if dry_run:
+        from dgov.persistence import get_dag_run, list_dag_tasks
+
+        session_root = os.path.abspath(project_root)
+        run = get_dag_run(session_root, run_id)
+        if not run:
+            raise click.ClickException(f"DAG run {run_id} not found")
+        tasks = list_dag_tasks(session_root, run_id)
+        pending = [t for t in tasks if t.get("status") not in ("merged", "skipped")]
+        click.echo(
+            json.dumps(
+                {
+                    "dry_run": True,
+                    "run_id": run_id,
+                    "would_complete": len(pending),
+                    "tasks": [
+                        {"slug": t["slug"], "status": t.get("status", "pending")} for t in pending
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
 
     from dgov.executor import run_force_complete_dag
 
