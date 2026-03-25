@@ -519,3 +519,49 @@ def test_decay_substep_independent():
 
     # Allow small tolerance for erosion-induced heat additions during step()
     assert abs(ratio_a - ratio_b) < 0.05
+
+
+@pytest.mark.unit
+def test_stream_order_computed():
+    """After step(), stream_order grid should have non-zero values."""
+    model = ErosionModel(width=20, height=20, seed=42)
+    for _ in range(10):
+        model.step()
+
+    max_order = max(
+        model.stream_order[r][c] for r in range(model.height_count) for c in range(model.width)
+    )
+    assert max_order >= 2, f"Expected stream orders >= 2, got max {max_order}"
+
+
+@pytest.mark.unit
+def test_river_order_color_differentiation():
+    """Different stream orders should produce different river colors."""
+    from dgov.terrain import _river_color
+
+    color_1 = _river_color(50.0, 0.7, order=1)
+    color_3 = _river_color(50.0, 0.7, order=3)
+
+    # Higher order should be bluer (higher B component)
+    assert color_3[2] > color_1[2], (
+        f"Order 3 blue ({color_3[2]}) should exceed order 1 blue ({color_1[2]})"
+    )
+
+
+@pytest.mark.unit
+def test_stream_order_hierarchy():
+    """Trunk streams (high flow) should have higher order than headwaters."""
+    model = ErosionModel(width=30, height=30, seed=42)
+    for _ in range(20):
+        model.step()
+
+    # Only check interior cells (excluding boundary drains which have order=0 by design)
+    max_flow_order = 0
+    max_flow_val = 0.0
+    for r in range(1, model.height_count - 1):
+        for c in range(1, model.width - 1):
+            if model.area[r][c] > max_flow_val:
+                max_flow_val = model.area[r][c]
+                max_flow_order = model.stream_order[r][c]
+
+    assert max_flow_order >= 2

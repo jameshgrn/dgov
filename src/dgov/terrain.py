@@ -238,6 +238,9 @@ class ErosionModel:
         self._ring_buffer: list[float] = []  # last N mean |delta_z| values
         self.erodibility = [[1.0] * width for _ in range(height)]
 
+        # Stream order grid for Strahler-like river classification
+        self.stream_order: list[list[int]] = [[0] * width for _ in range(height)]
+
         # Random base [0.25, 0.65] + center-high bias so terrain drains to all edges.
         grid: list[list[float]] = []
         max_edge_dist = max((min(height, width) / 2.0) - 1.0, 1.0)
@@ -513,10 +516,41 @@ class ErosionModel:
 
         self.area = area
 
-        # 4. Capture pre-erosion height state for delta computation
+        # 4. Compute Strahler-like stream order for river rendering
+        # Process cells from HIGH to LOW elevation (headwaters at high elevations first)
+        order = [[0] * cols for _ in range(rows)]
+        for _, r, c in cells:  # Already sorted HIGH to LOW by construction
+            if r in (0, rows - 1) or c in (0, cols - 1):
+                continue
+            # Count how many neighbors flow INTO this cell via receiver tuple comparison
+            incoming_orders = []
+            for k in range(8):
+                nr = r + _D8[k][0]
+                nc = c + _D8[k][1]
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    # receiver[nr][nc] is a tuple (row, col) - check if flows into us
+                    if receiver[nr][nc] == (r, c):
+                        incoming_orders.append(order[nr][nc])
+
+            if not incoming_orders:
+                # Headwater: every cell with no incoming neighbors is a headwater
+                order[r][c] = 1
+            else:
+                max_incoming = max(incoming_orders)
+                count_at_max = incoming_orders.count(max_incoming)
+                if count_at_max >= 2 and max_incoming > 0:
+                    # Two or more streams of same max order -> increase order
+                    order[r][c] = max_incoming + 1
+                elif max_incoming > 0:
+                    # Single stream carries its order forward
+                    order[r][c] = max_incoming
+
+        self.stream_order = order
+
+        # 5. Capture pre-erosion height state for delta computation
         pre_step_height = [[h[r][c] for c in range(cols)] for r in range(rows)]
 
-        # 5. Erosion: E = K * Erodibility * A^m * S^n, subtract, clamp at 0
+        # 6. Erosion: E = K * Erodibility * A^m * S^n, subtract, clamp at 0
         m, n = self.m, self.n
         for _, r, c in cells:
             if r in (0, rows - 1) or c in (0, cols - 1):
@@ -537,7 +571,7 @@ class ErosionModel:
                 erosion_mag = (effective_K * self.erodibility[r][c]) * (a**m) * (s**n)
                 self._activity_memory[r][c] += erosion_mag * 2.0
 
-        # 6. Uplift: add scaled constant to all non-drain cells
+        # 7. Uplift: add scaled constant to all non-drain cells
         if effective_uplift > 0:
             for r in range(1, max(rows - 1, 1)):
                 row = h[r]
@@ -546,7 +580,7 @@ class ErosionModel:
 
         self._apply_boundary_drains(h)
 
-        # 7. Compute mean |delta_z| and update ring buffer
+        # 8. Compute mean |delta_z| and update ring buffer
         total_delta = 0.0
         for r in range(rows):
             for c in range(cols):
@@ -771,10 +805,17 @@ def _elevation_color(elev: float, shade: float, phase: dict | None = None) -> tu
     return (r, g, b)
 
 
-def _river_color(flow: float, shade: float, phase: dict | None = None) -> tuple[int, int, int]:
-    """Blue river, brighter with more flow.
+def _river_color(
+    flow: float, shade: float, phase: dict | None = None, order: int = 0
+) -> tuple[int, int, int]:
+    """Blue river, brighter with more flow and higher stream order.
 
     When phase is provided, applies session-based color adjustments same as elevation.
+    Order parameter scales the blue channel intensity to distinguish stream hierarchy:
+      - Order 0 (backward compat): original behavior
+      - Order 1: faint tributaries (~70% intensity)
+      - Order 2: medium streams (~90% intensity)
+      - Order 3+: full brightness (100%)
     """
     s = 0.4 + 0.6 * shade
     intensity = min(1.0, 0.5 + 0.5 * math.log(max(flow, 1)) / 6.0)
@@ -783,6 +824,12 @@ def _river_color(flow: float, shade: float, phase: dict | None = None) -> tuple[
         _clamp(int(80 * intensity * s)),
         _clamp(int(200 * intensity * s)),
     )
+
+    # Apply stream order factor to blue channel primarily
+    if order > 0:
+        # order 1 = 0.7, order 2 = 0.9, order 3+ = 1.0
+        order_factor = min(1.0, 0.5 + order * 0.2)
+        b = _clamp(int(b * order_factor))
 
     if phase is not None:
         # Apply warmth shift (temperature)
@@ -813,6 +860,7 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
     rows = model.height_count
     cols = model.width
     area = model.area
+    stream_order = model.stream_order
 
     display_rows = rows // supersample
     display_cols = cols // supersample
@@ -864,9 +912,11 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
             elev = h[dr][dc]
             s = shade[dr][dc]
             flow = area[dr][dc]
+            cell_order = stream_order[dr][dc]
         else:
             te = ts = tf = 0.0
             n = supersample * supersample
+            max_order = 0
             for sr in range(supersample):
                 for sc in range(supersample):
                     r2 = dr * supersample + sr
@@ -874,7 +924,10 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
                     te += h[r2][c2]
                     ts += shade[r2][c2]
                     tf += area[r2][c2]
+                    if stream_order[r2][c2] > max_order:
+                        max_order = stream_order[r2][c2]
             elev, s, flow = te / n, ts / n, tf / n
+            cell_order = max_order
 
         # Check activity memory for this cell
         if supersample == 1:
@@ -888,7 +941,10 @@ def render_terrain(model: ErosionModel, supersample: int = 1) -> Text:
                     heat += model._activity_memory[r2][c2]
             heat /= supersample * supersample
 
-        if flow > river_thresh and elev < 0.80:
+        # Use stream order as primary river detection signal
+        if cell_order >= 1 and elev < 0.80:
+            base_color = _river_color(flow, s, phase=phase, order=cell_order)
+        elif flow > river_thresh and elev < 0.80:
             base_color = _river_color(flow, s, phase=phase)
         else:
             base_color = _elevation_color(elev, s, phase=phase)
