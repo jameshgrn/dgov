@@ -77,6 +77,7 @@ def test_get_provider_config_defaults(tmp_path, monkeypatch):
 
 
 def test_write_config_creates_nested_key(tmp_path, monkeypatch):
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path)
     write_config("providers.review.model", "qwen/qwen3.5-35b", scope="user")
 
     # Verify it persists
@@ -139,3 +140,19 @@ def test_coerce_value_false():
 def test_coerce_value_case_insensitive():
     assert _coerce_value("TRUE") is True
     assert _coerce_value("False") is False
+
+
+def test_config_set_cli_round_trip(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from dgov.cli.admin import config_set, config_show
+
+    monkeypatch.setattr("dgov.config.Path.home", lambda: tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(config_set, ["defaults.agent", "qwen-9b"])
+    assert result.exit_code == 0
+
+    result = runner.invoke(config_show, ["--project-root", str(tmp_path / "noproject")])
+    assert result.exit_code == 0
+    assert "qwen-9b" in result.output

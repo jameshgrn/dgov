@@ -977,6 +977,26 @@ def doctor_cmd(project_root):
             f"stale: {', '.join(stale)}" if stale else f"{len(active_panes)} active",
         )
 
+    # 9. Auth validation: env vars conflicting with config auth mode
+    from dgov.config import load_config
+
+    config = load_config(str(root))
+    providers = config.get("providers", {})
+    for provider_name, provider_cfg in providers.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        auth_mode = provider_cfg.get("auth", "")
+        transport = provider_cfg.get("transport", "")
+        if auth_mode == "oauth" and transport == "claude-cli":
+            has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+            _check(
+                f"auth: {provider_name}",
+                not has_api_key,
+                "ANTHROPIC_API_KEY env var overrides OAuth — remove from .zshrc"
+                if has_api_key
+                else "OAuth configured, no conflicting env var",
+            )
+
     click.echo()
     if ok:
         click.echo("All checks passed.")
@@ -1122,6 +1142,20 @@ def config_show(project_root):
 
     config = load_config(project_root=os.path.abspath(project_root))
     _print_toml(config)
+
+
+@config_cmd.command("set")
+@click.argument("key")
+@click.argument("value")
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+@click.option("--project", is_flag=True, help="Write to project config instead of user config")
+def config_set(key, value, project_root, project):
+    """Set a config value. KEY is a dotted path like providers.review.model."""
+    from dgov.config import write_config
+
+    scope = "project" if project else "user"
+    path = write_config(key, value, scope=scope, project_root=os.path.abspath(project_root))
+    click.echo(f"{key} = {value!r} -> {path}")
 
 
 def _print_toml(d: dict, prefix: str = ""):
