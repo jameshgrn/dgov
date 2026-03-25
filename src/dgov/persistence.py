@@ -161,6 +161,7 @@ VALID_EVENTS = frozenset(
         "monitor_blocked",
         "monitor_auto_merge",
         "monitor_auto_retry",
+        "monitor_alive",
         "monitor_tick",
         "claim_violation",
         "quality_retry",

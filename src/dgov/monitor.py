@@ -87,6 +87,7 @@ _MONITOR_WAKE_EVENTS = (
     "monitor_blocked",
     "monitor_auto_merge",
     "monitor_auto_retry",
+    "monitor_alive",
 )
 
 _ACTIVE_ADD_EVENTS = frozenset({"pane_created", "pane_resumed"})
@@ -1264,6 +1265,7 @@ def run_monitor(
     print("Monitor active: event-driven (per-process notify pipes)")
 
     last_prune = 0.0
+    last_heartbeat = 0.0
     try:
         while True:
             # Safety: ensure project_root still exists (daemon might have started in a deleted dir)
@@ -1284,8 +1286,13 @@ def run_monitor(
                 # Reload hooks each tick for live updates
                 hooks = load_monitor_hooks(session_root)
 
-                # Prune stale panes periodically
+                # Heartbeat: emit monitor_alive every 60s
                 now = time.time()
+                if now - last_heartbeat >= 60:
+                    emit_event(session_root, "monitor_alive", "monitor")
+                    last_heartbeat = now
+
+                # Prune stale panes periodically
                 if now - last_prune > 120:  # Every 2 minutes
                     pruned = prune_stale_panes(project_root, session_root)
                     if pruned:
