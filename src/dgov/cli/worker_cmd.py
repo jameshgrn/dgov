@@ -41,7 +41,7 @@ def worker_complete(message):
     import subprocess
     from pathlib import Path
 
-    from dgov.persistence import emit_event, settle_completion_state
+    from dgov.executor import run_complete_pane
 
     session_root, slug = _require_worker_env()
     worktree = os.environ.get("DGOV_WORKTREE_PATH", "")
@@ -118,9 +118,13 @@ def worker_complete(message):
     done_path = Path(session_root) / STATE_DIR / "done" / slug
     done_path.parent.mkdir(parents=True, exist_ok=True)
     done_path.touch()
-    transition = settle_completion_state(session_root, slug, "done", allow_abandoned=True)
-    if transition.changed:
-        emit_event(session_root, "pane_done", slug, message=message)
+    run_complete_pane(
+        ".",
+        slug,
+        session_root=session_root,
+        reason=message or "worker_complete",
+        allow_abandoned=True,
+    )
     click.echo(json.dumps({"status": "complete", "slug": slug}))
 
 
@@ -130,15 +134,13 @@ def worker_fail(reason):
     """Signal that this worker has failed."""
     from pathlib import Path
 
-    from dgov.persistence import emit_event, settle_completion_state
+    from dgov.executor import run_fail_pane
 
     session_root, slug = _require_worker_env()
     exit_path = Path(session_root) / STATE_DIR / "done" / f"{slug}.exit"
     exit_path.parent.mkdir(parents=True, exist_ok=True)
     exit_path.write_text(reason, encoding="utf-8")
-    transition = settle_completion_state(session_root, slug, "failed", allow_abandoned=True)
-    if transition.changed:
-        emit_event(session_root, "pane_failed", slug, reason=reason)
+    run_fail_pane(".", slug, session_root=session_root, reason=reason, allow_abandoned=True)
     click.echo(json.dumps({"status": "failed", "slug": slug, "reason": reason}))
 
 
@@ -146,9 +148,8 @@ def worker_fail(reason):
 @click.argument("message")
 def worker_checkpoint(message):
     """Record a progress checkpoint."""
-    from dgov.persistence import emit_event, set_pane_metadata
+    from dgov.executor import run_worker_checkpoint
 
     session_root, slug = _require_worker_env()
-    set_pane_metadata(session_root, slug, last_checkpoint=message)
-    emit_event(session_root, "checkpoint_created", slug, message=message)
+    run_worker_checkpoint(session_root, slug, message)
     click.echo(json.dumps({"status": "checkpoint", "slug": slug, "message": message}))
