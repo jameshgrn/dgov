@@ -512,6 +512,19 @@ def maybe_auto_retry(
     if state not in ("failed", "abandoned"):
         return None
 
+    # Don't retry if the branch's work is already on main
+    branch = rec.get("branch_name", "")
+    if branch:
+        import subprocess
+
+        check = subprocess.run(
+            ["git", "-C", project_root, "merge-base", "--is-ancestor", branch, "HEAD"],
+            capture_output=True,
+        )
+        if check.returncode == 0:
+            logger.info("Skipping retry for %s: branch %s already on main", slug, branch)
+            return None
+
     policy = get_retry_policy(session_root, slug)
     original_prompt = rec.get("prompt", "")
     context = retry_context(slug, session_root)

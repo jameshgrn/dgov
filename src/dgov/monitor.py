@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1103,8 +1104,38 @@ def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | No
     return None
 
 
+def _pane_work_already_on_main(project_root: str, session_root: str, slug: str) -> bool:
+    """Check if a pane's branch commits are already reachable from main.
+
+    Prevents retrying work that already merged — the #1 cause of wasted retries.
+    """
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return False
+    branch = pane.get("branch_name", "")
+    if not branch:
+        return False
+    # Check if branch HEAD is an ancestor of main (i.e., already merged)
+    result = subprocess.run(
+        ["git", "-C", project_root, "merge-base", "--is-ancestor", branch, "HEAD"],
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        logger.info("Skipping retry for %s: branch %s already on main", slug, branch)
+        return True
+    # Also check: did a sibling pane (same prompt) already merge?
+    state = pane.get("state", "")
+    if state in ("merged", "done", "closed"):
+        logger.info("Skipping retry for %s: pane state is %s", slug, state)
+        return True
+    return False
+
+
 def _try_auto_retry(project_root: str, session_root: str, slug: str) -> str | None:
     """Attempt to auto-retry a failed pane using its agent retry policy."""
+    if _pane_work_already_on_main(project_root, session_root, slug):
+        return None
+
     from dgov.executor import run_retry_or_escalate
 
     result = run_retry_or_escalate(project_root, slug, session_root=session_root)
