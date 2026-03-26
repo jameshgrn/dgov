@@ -141,7 +141,6 @@ def test_run_review_only_fails_on_stale_files(tmp_path):
                 base_sha="abc123",
                 file_claims=("src/foo.py",),
                 paths_written=("src/foo.py",),
-                claim_violations=(),
             ),
         ),
         patch(
@@ -178,7 +177,6 @@ def test_run_review_only_passes_when_manifest_fresh(tmp_path):
                 base_sha="abc123",
                 file_claims=("src/foo.py",),
                 paths_written=("src/foo.py",),
-                claim_violations=(),
             ),
         ),
         patch(

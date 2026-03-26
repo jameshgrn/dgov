@@ -611,7 +611,13 @@ class SemanticManifest:
     base_sha: str = ""
     file_claims: tuple[str, ...] = ()
     paths_written: tuple[str, ...] = ()
-    claim_violations: tuple[str, ...] = ()  # paths_written not in file_claims
+
+    @property
+    def claim_violations(self) -> tuple[str, ...]:
+        if not self.file_claims:
+            return ()
+        claim_set = set(self.file_claims)
+        return tuple(p for p in self.paths_written if p not in claim_set)
 
 
 def _topo_sort(deps: dict[str, tuple[str, ...]]) -> list[str]:

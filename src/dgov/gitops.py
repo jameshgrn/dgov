@@ -50,14 +50,10 @@ def build_manifest_on_completion(
         tuple(f for f in result.stdout.strip().splitlines() if f) if result.returncode == 0 else ()
     )
 
-    claim_set = set(file_claims)
-    violations = tuple(p for p in paths_written if p not in claim_set) if claim_set else ()
-
     return SemanticManifest(
         base_sha=base_sha,
         file_claims=file_claims,
         paths_written=paths_written,
-        claim_violations=violations,
     )
 
 
