@@ -244,6 +244,118 @@ def run_cleanup_only(
     )
 
 
+def _should_suggest_escalate(session_root: str, project_root: str, slug: str) -> bool:
+    """Check if a stronger agent is available for escalation."""
+    from dgov.persistence import get_pane
+    from dgov.recovery import _resolve_escalation_target
+
+    try:
+        rec = get_pane(session_root, slug)
+    except Exception:  # noqa: BLE001
+        return False
+    if not rec:
+        return False
+    agent = rec.get("agent", "")
+    return bool(agent) and _resolve_escalation_target(agent, project_root) != agent
+
+
+def _read_exit_message(session_root: str, slug: str) -> str:
+    """Read exit code from .exit file for a human-readable failure message."""
+    from dgov.persistence import STATE_DIR
+
+    try:
+        exit_path = Path(session_root) / STATE_DIR / "done" / (slug + ".exit")
+        if exit_path.exists():
+            code = exit_path.read_text().strip()
+            return f"Worker exited with code {code}"
+    except Exception:
+        logger.debug("failed to read exit code for %s", slug, exc_info=True)
+    return "Worker exited with an error"
+
+
+def _handle_timeout_recovery(
+    project_root: str,
+    session_root: str,
+    current_slug: str,
+    *,
+    escalate_to: str | None,
+    retry_agent: str | None,
+    permission_mode: str,
+) -> tuple[str | None, str | None]:
+    """Handle recovery after PaneTimeoutError. Returns (new_slug, error)."""
+    from dgov.recovery import escalate_worker_pane, retry_worker_pane
+
+    if escalate_to:
+        esc_result = escalate_worker_pane(
+            project_root,
+            current_slug,
+            target_agent=escalate_to,
+            session_root=session_root,
+            permission_mode=permission_mode,
+        )
+        if esc_result.get("error"):
+            return None, f"Escalation failed: {esc_result['error']}"
+        return esc_result["new_slug"], None
+
+    retry_result = retry_worker_pane(
+        project_root,
+        current_slug,
+        session_root=session_root,
+        agent=retry_agent,
+    )
+    if retry_result.get("error"):
+        return None, f"Retry failed: {retry_result['error']}"
+    return retry_result["new_slug"], None
+
+
+def _handle_failed_pane(
+    project_root: str,
+    session_root: str,
+    current_slug: str,
+    *,
+    auto_retry: bool,
+    retries_left: int,
+    timeout: int,
+    poll: int,
+    stable: int,
+) -> tuple[str, dict | None, str | None, int]:
+    """Handle a pane that finished in 'failed' state.
+
+    Returns (slug, wait_result, pane_state, retries_left).
+    """
+    from dgov.persistence import get_pane
+    from dgov.waiter import PaneTimeoutError, wait_worker_pane
+
+    if not (auto_retry and retries_left > 0):
+        pane = get_pane(session_root, current_slug)
+        return current_slug, None, pane.get("state") if pane else "failed", retries_left
+
+    from dgov.recovery import maybe_auto_retry
+
+    retry_result = maybe_auto_retry(session_root, current_slug, project_root)
+    if not retry_result or not retry_result.get("new_slug"):
+        pane = get_pane(session_root, current_slug)
+        return current_slug, None, pane.get("state") if pane else "failed", retries_left
+
+    new_slug = retry_result["new_slug"]
+    retries_left -= 1
+    try:
+        wait_result = wait_worker_pane(
+            project_root,
+            new_slug,
+            session_root=session_root,
+            timeout=timeout,
+            poll=poll,
+            stable=stable,
+            auto_retry=False,
+        )
+    except PaneTimeoutError:
+        return new_slug, None, "timed_out", retries_left
+
+    pane = get_pane(session_root, new_slug)
+    return new_slug, wait_result, pane.get("state") if pane else None, retries_left
+
+
 def run_wait_only(
     project_root: str,
     slug: str,
@@ -263,7 +375,6 @@ def run_wait_only(
     import os
 
     from dgov.persistence import get_pane
-    from dgov.recovery import escalate_worker_pane, retry_worker_pane
     from dgov.waiter import PaneTimeoutError, wait_worker_pane
 
     session_root = os.path.abspath(session_root or project_root)
@@ -285,18 +396,7 @@ def run_wait_only(
     retries_left = max_retries
     wait_result: dict | None = None
 
-    def _should_suggest_escalate(slug: str) -> bool:
-        from dgov.recovery import _resolve_escalation_target
-
-        try:
-            rec = get_pane(session_root, slug)
-        except Exception:  # noqa: BLE001
-            return False
-        if not rec:
-            return False
-        agent = rec.get("agent", "")
-        return bool(agent) and _resolve_escalation_target(agent, project_root) != agent
-
+    # --- Wait loop with timeout recovery ---
     _phase("waiting", current_slug)
     while True:
         try:
@@ -318,99 +418,52 @@ def run_wait_only(
                     slug=current_slug,
                     error=f"Worker timed out after {timeout}s (retries exhausted)",
                     failure_stage="timeout",
-                    suggest_escalate=_should_suggest_escalate(current_slug),
+                    suggest_escalate=_should_suggest_escalate(
+                        session_root, project_root, current_slug
+                    ),
                 )
 
-            if escalate_to:
-                esc_result = escalate_worker_pane(
-                    project_root,
-                    current_slug,
-                    target_agent=escalate_to,
-                    session_root=session_root,
-                    permission_mode=permission_mode,
-                )
-                if esc_result.get("error"):
-                    _phase("failed", current_slug)
-                    return WaitOnlyResult(
-                        state="failed",
-                        slug=current_slug,
-                        error=f"Escalation failed: {esc_result['error']}",
-                        failure_stage="recovery",
-                        suggest_escalate=_should_suggest_escalate(current_slug),
-                    )
-                current_slug = esc_result["new_slug"]
-                retries_left -= 1
-                _phase("waiting", current_slug)
-                continue
-
-            retry_result = retry_worker_pane(
+            new_slug, error = _handle_timeout_recovery(
                 project_root,
+                session_root,
                 current_slug,
-                session_root=session_root,
-                agent=retry_agent,
+                escalate_to=escalate_to,
+                retry_agent=retry_agent,
+                permission_mode=permission_mode,
             )
-            if retry_result.get("error"):
+            if error:
                 _phase("failed", current_slug)
                 return WaitOnlyResult(
                     state="failed",
                     slug=current_slug,
-                    error=f"Retry failed: {retry_result['error']}",
+                    error=error,
                     failure_stage="recovery",
-                    suggest_escalate=_should_suggest_escalate(current_slug),
+                    suggest_escalate=_should_suggest_escalate(
+                        session_root, project_root, current_slug
+                    ),
                 )
-            current_slug = retry_result["new_slug"]
+            current_slug = new_slug  # type: ignore[assignment]
             retries_left -= 1
             _phase("waiting", current_slug)
 
+    # --- Post-wait state evaluation ---
     pane = get_pane(session_root, current_slug)
     pane_state = pane.get("state") if pane else None
-    if pane_state == "failed":
-        if auto_retry and retries_left > 0:
-            from dgov.recovery import maybe_auto_retry
 
-            retry_result = maybe_auto_retry(session_root, current_slug, project_root)
-            if retry_result and retry_result.get("new_slug"):
-                current_slug = retry_result["new_slug"]
-                retries_left -= 1
-                wait_result = None
-                _phase("waiting", current_slug)
-                # loop back to wait on the new pane
-                try:
-                    wait_result = wait_worker_pane(
-                        project_root,
-                        current_slug,
-                        session_root=session_root,
-                        timeout=timeout,
-                        poll=poll,
-                        stable=stable,
-                        auto_retry=False,
-                    )
-                except PaneTimeoutError:
-                    _phase("failed", current_slug)
-                    return WaitOnlyResult(
-                        state="failed",
-                        slug=current_slug,
-                        error=f"Retried pane timed out after {timeout}s",
-                        failure_stage="timeout",
-                        suggest_escalate=_should_suggest_escalate(current_slug),
-                    )
-                pane = get_pane(session_root, current_slug)
-                pane_state = pane.get("state") if pane else None
+    if pane_state == "failed":
+        current_slug, wait_result, pane_state, retries_left = _handle_failed_pane(
+            project_root,
+            session_root,
+            current_slug,
+            auto_retry=auto_retry,
+            retries_left=retries_left,
+            timeout=timeout,
+            poll=poll,
+            stable=stable,
+        )
         if pane_state == "failed":
             _phase("failed", current_slug)
-            # Try to read exit code from .exit file for a better error message
-            exit_msg = "Worker exited with an error"
-            try:
-                from pathlib import Path as _Path
-
-                from dgov.persistence import STATE_DIR
-
-                exit_path = _Path(session_root) / STATE_DIR / "done" / (current_slug + ".exit")
-                if exit_path.exists():
-                    code = exit_path.read_text().strip()
-                    exit_msg = f"Worker exited with code {code}"
-            except Exception:
-                logger.debug("failed to read exit code for %s", current_slug, exc_info=True)
+            exit_msg = _read_exit_message(session_root, current_slug)
             return WaitOnlyResult(
                 state="failed",
                 slug=current_slug,
@@ -418,8 +471,11 @@ def run_wait_only(
                 pane_state=pane_state,
                 error=f"{exit_msg} (check logs with: dgov pane output {current_slug})",
                 failure_stage="worker_failed",
-                suggest_escalate=_should_suggest_escalate(current_slug),
+                suggest_escalate=_should_suggest_escalate(
+                    session_root, project_root, current_slug
+                ),
             )
+
     if pane_state in ("timed_out", "abandoned"):
         _phase("failed", current_slug)
         return WaitOnlyResult(
@@ -429,16 +485,16 @@ def run_wait_only(
             pane_state=pane_state,
             error=f"Worker ended in {pane_state} state",
             failure_stage="worker_failed",
-            suggest_escalate=_should_suggest_escalate(current_slug),
+            suggest_escalate=_should_suggest_escalate(session_root, project_root, current_slug),
         )
 
+    # --- Success ---
     _wait_result = WaitOnlyResult(
         state="completed",
         slug=current_slug,
         wait_result=wait_result,
         pane_state=pane_state,
     )
-    # Close wait span
     if _wait_span_id is not None:
         try:
             from dgov.spans import SpanOutcome, close_span
@@ -744,6 +800,132 @@ def review_merge_gate(
     )
 
 
+def _run_model_review(
+    request: ReviewOutputRequest,
+    record: DecisionRecord[ReviewOutputDecision],
+    slug: str,
+) -> DecisionRecord[ReviewOutputDecision]:
+    """Run model-backed review if deterministic passed and review_agent is set.
+
+    Returns the model record if it flags concerns, otherwise the original.
+    """
+    from dgov.decision import ProviderError
+
+    try:
+        from dgov.decision_providers import ModelReviewProvider
+
+        model_provider = ModelReviewProvider()
+        model_record = model_provider.review_output(request)
+        if model_record.decision.verdict != ReviewVerdict.SAFE:
+            logger.info(
+                "Model review (%s) flagged concerns for %s: %s",
+                request.review_agent,
+                slug,
+                model_record.decision.issues,
+            )
+            return model_record
+    except ProviderError:
+        logger.debug("Model review failed for %s, using deterministic result", slug)
+    return record
+
+
+def _build_review_info(record: DecisionRecord[ReviewOutputDecision], slug: str) -> ReviewInfo:
+    """Construct ReviewInfo from a review DecisionRecord."""
+    artifact = record.artifact if isinstance(record.artifact, ReviewInfo) else None
+    if artifact:
+        review = artifact
+    else:
+        review = ReviewInfo(
+            slug=slug,
+            verdict=record.decision.verdict,
+            commit_count=record.decision.commit_count,
+        )
+    if record.decision.issues:
+        review.issues = list(record.decision.issues)
+    if record.decision.reason and not review.error:
+        review.error = record.decision.reason
+    return review
+
+
+def _apply_review_policy(
+    verdict: ReviewVerdict,
+    commit_count: int,
+    error: str | None,
+    *,
+    require_safe: bool,
+    require_commits: bool,
+    session_root: str | None,
+    slug: str,
+) -> tuple[bool, str | None]:
+    """Apply review pass/fail policy. Returns (passed, error)."""
+    passed = error is None
+    if passed and require_commits and commit_count == 0:
+        _pane_state = None
+        if session_root:
+            try:
+                from dgov.persistence import get_pane
+
+                _p = get_pane(session_root, slug)
+                _pane_state = _p.get("state") if _p else None
+            except Exception:
+                logger.debug("failed to get pane state for %s", slug, exc_info=True)
+        if _pane_state not in ("done", "merged"):
+            passed = False
+            error = "No commits to merge"
+    if passed and require_safe and verdict != ReviewVerdict.SAFE:
+        passed = False
+        error = f"Review verdict is {verdict}; refusing to merge"
+    return passed, error
+
+
+def _validate_review_manifest(
+    project_root: str, session_root: str, slug: str, review: ReviewInfo
+) -> None:
+    """Check claim violations and staleness, mutating review in place."""
+    import os
+
+    from dgov.gitops import build_manifest_on_completion, validate_manifest_freshness
+    from dgov.persistence import get_pane
+
+    sr = os.path.abspath(session_root)
+    try:
+        pane = get_pane(sr, slug)
+    except (OSError, Exception):
+        pane = None
+    if not pane:
+        return
+
+    base_sha = pane.get("base_sha", "")
+    file_claims = tuple(pane.get("file_claims", ()) or ())
+    wt = pane.get("worktree_path", "")
+    manifest_root = wt if wt else project_root
+    manifest = build_manifest_on_completion(manifest_root, slug, base_sha, file_claims=file_claims)
+    if manifest.claim_violations:
+        review.claim_violations = list(manifest.claim_violations)
+        logger.info("Claim violations for %s: %s", slug, manifest.claim_violations)
+    is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
+    if not is_fresh:
+        review.stale_files = stale_files
+        review.freshness = "warn"
+        logger.warning(
+            "Stale dependency for %s: main changed %s since base (will attempt merge)",
+            slug,
+            stale_files,
+        )
+
+
+def _check_review_test_coverage(session_root: str, slug: str, review: ReviewInfo) -> None:
+    """Check test coverage for changed files, mutating review in place."""
+    from dgov.inspection import check_test_coverage
+
+    changed = review.changed_files
+    if changed:
+        missing_tests = check_test_coverage(changed, session_root=session_root)
+        if missing_tests:
+            review.missing_test_coverage = missing_tests
+            logger.warning("Test coverage warning for %s: %s", slug, missing_tests)
+
+
 def run_review_only(
     project_root: str,
     slug: str,
@@ -767,7 +949,7 @@ def run_review_only(
     except Exception:
         logger.debug("failed to open review span for %s", slug, exc_info=True)
 
-    from dgov.decision import DecisionKind, ProviderError
+    from dgov.decision import DecisionKind
 
     # Get agent_id from pane if available
     agent_id = None
@@ -805,107 +987,26 @@ def run_review_only(
         and record.decision.verdict == ReviewVerdict.SAFE
         and record.decision.commit_count > 0
     ):
-        try:
-            from dgov.decision_providers import ModelReviewProvider
+        record = _run_model_review(request, record, slug)
 
-            model_provider = ModelReviewProvider()
-            model_record = model_provider.review_output(request)
-            if model_record.decision.verdict != ReviewVerdict.SAFE:
-                record = model_record
-                logger.info(
-                    "Model review (%s) flagged concerns for %s: %s",
-                    review_agent,
-                    slug,
-                    model_record.decision.issues,
-                )
-        except ProviderError:
-            logger.debug("Model review failed for %s, using deterministic result", slug)
-
-    # Build ReviewInfo from artifact (which is already a ReviewInfo now)
-    artifact = record.artifact if isinstance(record.artifact, ReviewInfo) else None
-    if artifact:
-        review = artifact
-    else:
-        review = ReviewInfo(
-            slug=slug,
-            verdict=record.decision.verdict,
-            commit_count=record.decision.commit_count,
-        )
-
-    if record.decision.issues:
-        review.issues = list(record.decision.issues)
-    if record.decision.reason and not review.error:
-        review.error = record.decision.reason
-
+    # Build ReviewInfo + apply policy
+    review = _build_review_info(record, slug)
     verdict = record.decision.verdict
     commit_count = record.decision.commit_count
-    error = record.decision.reason
-    passed = error is None
-    if passed and require_commits and commit_count == 0:
-        # Check if worker explicitly signaled done (0-commit is intentional)
-        _pane_state = None
-        if session_root:
-            try:
-                from dgov.persistence import get_pane as _get_pane
+    passed, error = _apply_review_policy(
+        verdict,
+        commit_count,
+        record.decision.reason,
+        require_safe=require_safe,
+        require_commits=require_commits,
+        session_root=session_root,
+        slug=slug,
+    )
 
-                _p = _get_pane(session_root, slug)
-                _pane_state = _p.get("state") if _p else None
-            except Exception:
-                logger.debug("failed to get pane state for %s", slug, exc_info=True)
-        if _pane_state not in ("done", "merged"):
-            passed = False
-            error = "No commits to merge"
-    if passed and require_safe and verdict != ReviewVerdict.SAFE:
-        passed = False
-        error = f"Review verdict is {verdict}; refusing to merge"
-
-    # Build semantic manifest and check for claim violations / staleness
+    # Post-review validation (manifest + test coverage)
     if passed and commit_count > 0 and session_root:
-        import os
-
-        from dgov.gitops import build_manifest_on_completion, validate_manifest_freshness
-        from dgov.persistence import get_pane
-
-        sr = os.path.abspath(session_root)
-        try:
-            pane = get_pane(sr, slug)
-        except (OSError, Exception):
-            pane = None
-        if pane:
-            base_sha = pane.get("base_sha", "")
-            file_claims = tuple(pane.get("file_claims", ()) or ())
-            wt = pane.get("worktree_path", "")
-            manifest_root = wt if wt else project_root
-            manifest = build_manifest_on_completion(
-                manifest_root, slug, base_sha, file_claims=file_claims
-            )
-            if manifest.claim_violations:
-                review.claim_violations = list(manifest.claim_violations)
-                logger.info(
-                    "Claim violations for %s: %s",
-                    slug,
-                    manifest.claim_violations,
-                )
-            is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
-            if not is_fresh:
-                review.stale_files = stale_files
-                review.freshness = "warn"
-                logger.warning(
-                    "Stale dependency for %s: main changed %s since base (will attempt merge)",
-                    slug,
-                    stale_files,
-                )
-
-    # Check test coverage for changed source files
-    if passed and commit_count > 0 and session_root:
-        from dgov.inspection import check_test_coverage
-
-        changed = review.changed_files
-        if changed:
-            missing_tests = check_test_coverage(changed, session_root=session_root)
-            if missing_tests:
-                review.missing_test_coverage = missing_tests
-                logger.warning("Test coverage warning for %s: %s", slug, missing_tests)
+        _validate_review_manifest(project_root, session_root, slug, review)
+        _check_review_test_coverage(session_root, slug, review)
 
     _review_result = ReviewOnlyResult(
         slug=slug,
