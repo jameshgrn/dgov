@@ -36,7 +36,7 @@ class MergeResult:
     warnings: list[str] = field(default_factory=list)
 
 
-def review_worker_pane(
+def _inspect_worker_pane(
     project_root: str,
     slug: str,
     session_root: str | None = None,
@@ -45,10 +45,11 @@ def review_worker_pane(
     lint_clean: bool = True,
     post_merge_check: str = "",
 ) -> dict:
-    """Preview a worker pane's changes before merging.
+    """Inspect a worker pane's changes without emitting events.
 
     Returns diff stat, protected file status, commit log, and safe-to-merge verdict.
     With ``full=True``, includes the complete diff.
+    This is a pure function that does not emit events.
     """
     session_root = os.path.abspath(session_root or project_root)
     target = get_pane(session_root, slug)
@@ -131,7 +132,7 @@ def review_worker_pane(
             issues.append(f"tests failed: {test_res.get('test_output', 'unknown error')}")
 
     if lint_clean and commit_count > 0:
-        lint_res = _run_lint_checks(wt, list(changed_files))
+        lint_res = _apply_lint_fixes(wt, list(changed_files))
         if not lint_res["passed"]:
             issues.append(f"lint failed: {lint_res['output']}")
 
@@ -141,11 +142,6 @@ def review_worker_pane(
             issues.append(f"custom check failed: {custom_res['output']}")
 
     verdict = "safe" if not issues else "review"
-
-    if verdict == "safe":
-        emit_event(session_root, "review_pass", slug, commit_count=commit_count)
-    else:
-        emit_event(session_root, "review_fail", slug, issues=issues)
 
     freshness = _compute_freshness(project_root, target, worker_changed_files=changed_files)
 
@@ -184,8 +180,34 @@ def review_worker_pane(
     return result
 
 
-def _run_lint_checks(project_root: str, changed_files: list[str]) -> dict:
-    """Auto-fix lint issues, then verify clean. Amends worker commit if fixes applied."""
+def review_worker_pane(
+    project_root: str,
+    slug: str,
+    session_root: str | None = None,
+    full: bool = False,
+    tests_pass: bool = True,
+    lint_clean: bool = True,
+    post_merge_check: str = "",
+) -> dict:
+    """Preview a worker pane's changes before merging.
+
+    Returns diff stat, protected file status, commit log, and safe-to-merge verdict.
+    With ``full=True``, includes the complete diff. Emits review_pass or review_fail events.
+    """
+    result = _inspect_worker_pane(
+        project_root, slug, session_root, full, tests_pass, lint_clean, post_merge_check
+    )
+    if "error" not in result:
+        sr = os.path.abspath(session_root or project_root)
+        if result.get("verdict") == "safe":
+            emit_event(sr, "review_pass", slug, commit_count=result.get("commit_count", 0))
+        else:
+            emit_event(sr, "review_fail", slug, issues=result.get("issues", []))
+    return result
+
+
+def _apply_lint_fixes(project_root: str, changed_files: list[str]) -> dict:
+    """Auto-fix lint issues and amend worker commit."""
     python_files = [f for f in changed_files if f.endswith(".py")]
     if not python_files:
         return {"passed": True, "output": "no python files to lint"}
