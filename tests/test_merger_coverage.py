@@ -262,6 +262,47 @@ def test_merge_worker_pane_does_not_amend_unrelated_dirty_main_files(
     assert _git(repo, "status", "--porcelain").stdout.splitlines() == [" M README.md"]
 
 
+def test_merge_blocks_when_governor_dirty_overlaps_worker_changes(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """Bug #84: governor uncommitted changes to files workers also touched must block merge."""
+    repo = _init_repo(tmp_path, "gov-overlap")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-gov-overlap")
+
+    # Worker modifies README.md on branch
+    (worktree / "README.md").write_text("worker edit\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "worker changes README")
+
+    # Governor modifies same file on main (uncommitted)
+    (repo / "README.md").write_text("governor edit\n")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="gov-overlap",
+        branch_name="dgov-gov-overlap",
+        base_sha=base_sha,
+    )
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state"),
+        patch("dgov.persistence.emit_event"),
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+    ):
+        result = merge_worker_pane(str(repo), "gov-overlap", session_root=str(repo))
+
+    assert result.error is not None
+    assert "uncommitted" in result.error.lower()
+    assert "README.md" in result.error
+    # Governor's file should be untouched
+    assert (repo / "README.md").read_text() == "governor edit\n"
+
+
 def test_merge_worker_pane_returns_error_when_pane_missing(tmp_path: Path) -> None:
     repo = _init_repo(tmp_path, "missing-pane")
 
@@ -908,6 +949,57 @@ def test_no_squash_merge_stash_pop_failure_returns_success_with_warning(
     assert len(result.warnings) == 1
     assert "stash" in result.warnings[0].lower()
     assert (repo / "worker.txt").read_text() == "worker content\n"
+
+
+def test_advance_branch_rejects_dirty_overlap_with_merge(tmp_path: Path) -> None:
+    """_advance_current_branch_to_commit fails when dirty files overlap with merge."""
+    from dgov.merger import _advance_current_branch_to_commit
+
+    repo = _init_repo(tmp_path, "advance-overlap")
+    worktree = _add_worktree(repo, tmp_path, "dgov-advance-overlap")
+
+    # Worker changes README.md on branch
+    (worktree / "README.md").write_text("worker edit\n")
+    _git(worktree, "add", "README.md")
+    _git(worktree, "commit", "-m", "worker changes README")
+
+    _git(repo, "checkout", "main")
+
+    # Governor dirties README.md (uncommitted)
+    (repo / "README.md").write_text("governor edit\n")
+
+    # Merge the branch in-memory to get a commit SHA
+    merge_sha_r = _git(worktree, "rev-parse", "HEAD")  # use branch tip as the "merge commit"
+
+    result = _advance_current_branch_to_commit(str(repo), merge_sha_r.stdout.strip())
+    assert result.success is False
+    assert "uncommitted" in result.stderr.lower()
+    # Governor's file should be untouched
+    assert (repo / "README.md").read_text() == "governor edit\n"
+
+
+def test_advance_branch_succeeds_when_dirty_no_overlap(tmp_path: Path) -> None:
+    """_advance_current_branch_to_commit succeeds when dirty files don't overlap."""
+    from dgov.merger import _advance_current_branch_to_commit
+
+    repo = _init_repo(tmp_path, "advance-no-overlap")
+    worktree = _add_worktree(repo, tmp_path, "dgov-advance-nooverlap")
+
+    # Worker adds a new file (doesn't touch README.md)
+    (worktree / "worker.txt").write_text("worker content\n")
+    _git(worktree, "add", "worker.txt")
+    _git(worktree, "commit", "-m", "add worker file")
+
+    _git(repo, "checkout", "main")
+
+    # Governor dirties README.md (no overlap with worker)
+    (repo / "README.md").write_text("governor edit\n")
+
+    merge_sha_r = _git(worktree, "rev-parse", "HEAD")
+    result = _advance_current_branch_to_commit(str(repo), merge_sha_r.stdout.strip())
+    assert result.success is True
+    # Governor's dirty file should be restored via stash pop
+    assert (repo / "README.md").read_text() == "governor edit\n"
 
 
 def test_merge_worker_pane_surfaces_stash_warnings(

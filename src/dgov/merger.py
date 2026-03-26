@@ -197,6 +197,43 @@ def _candidate_worktree(project_root: str, slug: str):
         )
 
 
+def _dirty_merge_overlap(project_root: str, commit_sha: str) -> list[str]:
+    """Return governor dirty files that overlap with changes introduced by commit_sha.
+
+    An empty list means no overlap — safe to proceed. Non-empty means the
+    merge would clobber the governor's uncommitted work.
+    """
+    dirty = _check_dirty_worktree(project_root, exclude_protected=True)
+    if not dirty:
+        return []
+    head_sha_r = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if head_sha_r.returncode != 0:
+        return []
+    diff_r = subprocess.run(
+        [
+            "git",
+            "-C",
+            project_root,
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--name-only",
+            head_sha_r.stdout.strip(),
+            commit_sha,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if diff_r.returncode != 0:
+        return []
+    merge_changed = set(diff_r.stdout.strip().splitlines())
+    return sorted(set(dirty) & merge_changed)
+
+
 def _advance_current_branch_to_commit(project_root: str, commit_sha: str) -> MergeResult:
     """Advance the current branch to a validated commit while preserving dirty work."""
     current_branch = subprocess.run(
@@ -206,6 +243,18 @@ def _advance_current_branch_to_commit(project_root: str, commit_sha: str) -> Mer
     )
     if current_branch.returncode != 0:
         return MergeResult(success=False, stderr="Detached HEAD — cannot advance ref")
+
+    # Pre-check: fail if governor has uncommitted changes to files the merge touches.
+    # Stash-pop after reset --hard would clobber these (bug #84).
+    overlap = _dirty_merge_overlap(project_root, commit_sha)
+    if overlap:
+        return MergeResult(
+            success=False,
+            stderr=(
+                f"Uncommitted governor changes overlap with merge: {overlap}. "
+                f"Commit or stash your changes before merging."
+            ),
+        )
 
     with _stash_guard(project_root, "validated-merge") as (_stashed, warnings):
         branch_ref = f"refs/heads/{current_branch.stdout.strip()}"
@@ -1456,6 +1505,22 @@ def merge_worker_pane(
     _restore_protected_files(pane_project_root, target)
     base_sha = target.get("base_sha", "")
     merge_stat, merge_files_changed, changed_file_names = _capture_pre_merge_stats(target)
+
+    # Phase 2.5: Guard uncommitted governor changes (bug #84).
+    # Stash-pop after reset --hard silently clobbers these.
+    governor_dirty = _check_dirty_worktree(pane_project_root, exclude_protected=True)
+    if governor_dirty and changed_file_names:
+        overlap = sorted(set(governor_dirty) & set(changed_file_names))
+        if overlap:
+            return PaneMergeResult(
+                error=(
+                    f"Governor has uncommitted changes to files worker also touched: {overlap}. "
+                    f"Commit governor changes before merging."
+                ),
+                slug=slug,
+                dirty_files=overlap,
+                hint="git add <files> && git commit -m 'save governor changes before merge'",
+            )
 
     # Phase 3: Execute merge under lock
     with _MergeLock(pane_project_root):
