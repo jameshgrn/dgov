@@ -498,7 +498,6 @@ class TestPaneCreate:
             agent="claude",
             touches=[
                 "src/dgov/merger.py",
-                "src/dgov/inspection.py",
             ],
             expected_branch=None,
             session_root=None,

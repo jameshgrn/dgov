@@ -110,8 +110,10 @@ def test_touches_excludes_tests_from_conflict_scope(monkeypatch):
     assert "tests/test_merger_conflicts.py" not in packet.touches
     assert "tests/test_dgov_merger.py" not in packet.touches
 
-    # Only primary and also_check should be in touches
-    assert packet.touches == ("src/dgov/merger.py", "src/dgov/inspection.py")
+    # Only primary_files should be in touches (also_check is read-only context)
+    assert packet.touches == ("src/dgov/merger.py",)
+    # also_check stays in also_check for worker read context
+    assert "src/dgov/inspection.py" in packet.also_check
 
 
 def test_touches_with_file_claims_excludes_tests(monkeypatch):
@@ -137,8 +139,8 @@ def test_touches_with_file_claims_excludes_tests(monkeypatch):
     assert packet.touches == ("src/dgov/retry.py",)
 
 
-def test_touches_also_check_included_without_tests(monkeypatch):
-    """Also check files should be in touches when no file_claims."""
+def test_touches_excludes_also_check(monkeypatch):
+    """Also-check files are read-only context, not edit targets — excluded from touches."""
     monkeypatch.setattr(
         "dgov.strategy.extract_task_context",
         lambda prompt: {
@@ -153,9 +155,8 @@ def test_touches_also_check_included_without_tests(monkeypatch):
     # Tests should be in .tests
     assert "tests/test_recovery_dogfood.py" in packet.tests
 
-    # touches should include primary and also_check, but NOT tests
-    assert packet.touches == (
-        "src/dgov/merger.py",
-        "src/dgov/persistence.py",
-        "src/dgov/responder.py",
-    )
+    # touches should only include primary_files, not also_check or tests
+    assert packet.touches == ("src/dgov/merger.py",)
+    # also_check stays accessible for worker read context
+    assert "src/dgov/persistence.py" in packet.also_check
+    assert "src/dgov/responder.py" in packet.also_check

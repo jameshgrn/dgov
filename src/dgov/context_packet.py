@@ -50,7 +50,7 @@ class ContextPacket:
     def touches(self) -> tuple[str, ...]:
         if self.file_claims:
             return self.file_claims
-        return _dedupe([*self.primary_files, *self.also_check])
+        return self.primary_files
 
 
 def infer_commit_message(prompt: str, explicit: str | None = None, max_len: int = 50) -> str:
