@@ -483,10 +483,12 @@ def compute_stats(session_root: str) -> dict:
     for p in panes:
         by_state[p["state"]] += 1
 
-    # -- by_agent --
+    # -- by_agent (normalize physical → logical names) --
+    from dgov.router import physical_to_logical
+
     agent_panes: dict[str, list[dict]] = defaultdict(list)
     for p in panes:
-        agent_panes[p["agent"]].append(p)
+        agent_panes[physical_to_logical(p["agent"])].append(p)
 
     # Build per-slug event index for duration calculation
     slug_events: dict[str, list[dict]] = defaultdict(list)

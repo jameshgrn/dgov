@@ -154,6 +154,8 @@ def trace_stats(project_root, session_root):
             click.echo(f"  {name}: {count}")
 
     # Per-agent breakdown
+    from dgov.router import physical_to_logical
+
     agent_rows = conn.execute(
         "SELECT agent, outcome, COUNT(*), AVG(duration_ms) "
         "FROM spans WHERE agent != '' "
@@ -161,8 +163,14 @@ def trace_stats(project_root, session_root):
     ).fetchall()
     if agent_rows:
         click.echo("\n=== By Agent ===")
+        # Merge rows with the same logical name
+        merged: dict[tuple[str, str], tuple[int, float]] = {}
         for agent, outcome, count, avg_ms in agent_rows:
-            avg = f"{avg_ms:.0f}ms" if avg_ms and avg_ms >= 0 else "-"
+            key = (physical_to_logical(agent), outcome)
+            prev_count, prev_total = merged.get(key, (0, 0.0))
+            merged[key] = (prev_count + count, prev_total + (avg_ms or 0) * count)
+        for (agent, outcome), (count, total_ms) in sorted(merged.items()):
+            avg = f"{total_ms / count:.0f}ms" if count and total_ms >= 0 else "-"
             click.echo(f"  {agent:<16s} {outcome:<8s} {count:>5d}  avg {avg:>8s}")
 
 
