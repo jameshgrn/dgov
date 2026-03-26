@@ -859,6 +859,45 @@ def _process_candidate_set(
     return actions
 
 
+# Hook dispatch table: maps hook kinds to (handler function, action name).
+# Uses lambdas to handle varying argument signatures.
+_HOOK_ACTIONS: dict[str, tuple[callable, str]] = {
+    "nudge": (
+        lambda pr, sr, sl, hd: _nudge_stuck(
+            pr, sr, sl, message=hd.get("message"), keystroke=hd.get("keystroke")
+        ),
+        "hook_nudge",
+    ),
+    "fail": (
+        lambda pr, sr, sl, hd: _mark_idle_failed(pr, sr, sl, reason="hook_fail"),
+        "hook_fail",
+    ),
+    "auto_complete": (lambda pr, sr, sl, hd: _auto_complete(pr, sr, sl), "hook_auto_complete"),
+}
+
+# Terminal state rules: list of (predicate, handlers, action_name).
+# Predicates take (classification, worker dict, consecutive count) and return bool.
+# Handlers are called with (project_root, session_root, slug).
+_TERMINAL_RULES: list[tuple[callable, list[callable], str]] = [
+    (
+        lambda cls, w, n: cls == "done" and (w["has_commits"] or n >= 2),
+        [_auto_complete],
+        "auto_complete",
+    ),
+    (
+        lambda cls, w, n: cls == "idle" and w["has_commits"],
+        [_auto_complete],
+        "proactive_auto_complete",
+    ),
+    (lambda cls, w, n: cls == "stuck" and n >= 3, [_nudge_stuck], "nudge"),
+    (
+        lambda cls, w, n: cls == "idle" and n >= 4,
+        [_mark_idle_failed, lambda pr, sr, sl: _record_fast_failure(sr, sl)],
+        "idle_timeout",
+    ),
+]
+
+
 def _take_action(project_root: str, session_root: str, worker: dict, history: dict) -> str | None:
     """Evaluate history and take automated action if rules match.
 
@@ -875,28 +914,16 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
 
     hist = history[slug]
 
-    # Handle hook-based actions first
+    # Handle hook-based actions first via dispatch table
     if classification == "hook_match" and worker.get("hook_match"):
         hook_data = worker["hook_match"]
         kind = hook_data["kind"]
-        if kind == "nudge":
-            _nudge_stuck(
-                project_root,
-                session_root,
-                slug,
-                message=hook_data.get("message"),
-                keystroke=hook_data.get("keystroke"),
-            )
+        handler_info = _HOOK_ACTIONS.get(kind)
+        if handler_info:
+            handler_fn, action_name = handler_info
+            handler_fn(project_root, session_root, slug, hook_data)
             hist["last_action_at"] = time.time()
-            return "hook_nudge"
-        if kind == "fail":
-            _mark_idle_failed(project_root, session_root, slug, reason="hook_fail")
-            hist["last_action_at"] = time.time()
-            return "hook_fail"
-        if kind == "auto_complete":
-            _auto_complete(project_root, session_root, slug)
-            hist["last_action_at"] = time.time()
-            return "hook_auto_complete"
+            return action_name
         # If it's a state override, treat it as that state for default rules below
         if kind in {"done", "stuck", "idle", "working", "waiting_input", "committing"}:
             classification = kind
@@ -920,7 +947,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     if not raw or raw.get("state") != "active" or raw.get("landing"):
         return None
 
-    # Handle stale workers (active but not alive)
+    # Handle stale workers (active but not alive) - special case with dual logic
     if not worker.get("is_alive", True):
         if worker.get("has_commits"):
             _auto_complete(project_root, session_root, slug)
@@ -952,30 +979,13 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
     if time.time() - hist["last_action_at"] < 60:
         return None
 
-    # Terminal state rules only
-    if classification == "done":
-        # If we have commits, one 'done' is enough. If not, wait for 2.
-        if worker["has_commits"] or consecutive >= 2:
-            _auto_complete(project_root, session_root, slug)
+    # Terminal state rules via dispatch table
+    for predicate, handlers, action_name in _TERMINAL_RULES:
+        if predicate(classification, worker, consecutive):
+            for handler in handlers:
+                handler(project_root, session_root, slug)
             hist["last_action_at"] = time.time()
-            return "auto_complete"
-
-    # Proactive cleanup: if worker has commits but is idling, auto-complete it
-    if classification == "idle" and worker["has_commits"]:
-        _auto_complete(project_root, session_root, slug)
-        hist["last_action_at"] = time.time()
-        return "proactive_auto_complete"
-
-    if classification == "stuck" and consecutive >= 3:
-        _nudge_stuck(project_root, session_root, slug)
-        hist["last_action_at"] = time.time()
-        return "nudge"
-
-    if classification == "idle" and consecutive >= 4:
-        _mark_idle_failed(project_root, session_root, slug)
-        _record_fast_failure(session_root, slug)
-        hist["last_action_at"] = time.time()
-        return "idle_timeout"
+            return action_name
 
     return None
 
