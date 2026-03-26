@@ -133,6 +133,15 @@ _EFFECT_GLYPHS = {
     "volcano": ("◉", "bold bright_magenta"),  # eruptive center
 }
 
+# Agent role/state to glyph/color mapping for terrain display
+_AGENT_STAMPS = {
+    "lt-gov": ("★", "bold yellow"),
+    "done": ("●", "dim white"),
+    "merged": ("●", "dim white"),
+    "failed": ("✖", "bold red"),
+}
+_DEFAULT_STAMP = ("@", "bold green")
+
 
 def _build_dgov_bitmap():
     letters = [_LETTER_D, _LETTER_G, _LETTER_O, _LETTER_V]
@@ -1116,13 +1125,9 @@ class AgentSim:
             ir, ic = int(round(r)), int(round(c))
             if ir >= 0 and ir < rows and ic >= 0 and ic < cols:
                 if role == "lt-gov":
-                    char, color = "★", "bold yellow"
-                elif state in ("done", "merged"):
-                    char, color = "●", "dim white"
-                elif state == "failed":
-                    char, color = "✖", "bold red"
+                    char, color = _AGENT_STAMPS["lt-gov"]
                 else:
-                    char, color = "@", "bold green"
+                    char, color = _AGENT_STAMPS.get(state, _DEFAULT_STAMP)
                 stamps[(ir, ic)] = (char, color)
 
         # Interaction sparks: adjacent agents get a lightning bolt between them
