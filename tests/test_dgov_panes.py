@@ -2282,10 +2282,10 @@ class TestRetryWorkerPane:
         assert result["attempt"] == 2
         assert result["original_slug"] == "fix-bug"
 
-        # Check that old pane is superseded
+        # Old pane is closed + cleaned up (no stale superseded entries)
         panes = all_panes(str(tmp_path))
-        old = next(p for p in panes if p["slug"] == "fix-bug")
-        assert old["state"] == "superseded"
+        old_slugs = [p["slug"] for p in panes if p["slug"] == "fix-bug"]
+        assert old_slugs == [], "superseded pane should be removed after close"
 
         # Links derived from events, not stored metadata (derive-dont-store)
         from dgov.persistence import read_events

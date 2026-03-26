@@ -150,13 +150,16 @@ def retry_worker_pane(
     agent: str | None = None,
     prompt: str | None = None,
     permission_mode: str = "bypassPermissions",
-    close: bool = False,
+    close: bool = True,
 ) -> dict:
     """Retry a pane by creating a new one linked to the original.
 
     Reads original pane record (prompt, agent, base_sha), computes a new
     slug ``<original-base>-<attempt+1>``, creates a new worktree + branch +
     pane via the normal create path, then cross-links the old and new records.
+
+    The old pane is closed by default (worktree + tmux removed) to prevent
+    stale superseded entries lingering in the dashboard.
     """
     session_root = os.path.abspath(session_root or project_root)
     target = get_pane(session_root, slug)
@@ -165,11 +168,6 @@ def retry_worker_pane(
 
     original_prompt = prompt or target.get("prompt", "")
     original_agent = agent or target.get("agent", "claude")
-
-    if close:
-        from dgov.lifecycle import close_worker_pane
-
-        close_worker_pane(project_root, slug, session_root=session_root)
 
     # Derive attempt from event lineage (not slug parsing — avoids suffix stacking)
     lineage = _slug_lineage(session_root, slug)
@@ -211,6 +209,12 @@ def retry_worker_pane(
     emit_event(session_root, "pane_retry_spawned", slug, new_slug=new_slug, attempt=attempt)
     emit_event(session_root, "pane_retry_spawned", new_slug, retried_from=slug, attempt=attempt)
     emit_event(session_root, "pane_superseded", slug, superseded_by=new_slug)
+
+    # Close old pane after superseding (worktree + tmux cleanup)
+    if close:
+        from dgov.lifecycle import close_worker_pane
+
+        close_worker_pane(project_root, slug, session_root=session_root)
 
     return {
         "retried": True,
