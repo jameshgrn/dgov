@@ -13,6 +13,7 @@ from dgov.persistence import (
     WorkerPane,
     add_pane,
     get_pane,
+    list_panes_slim,
     update_pane_state,
 )
 
@@ -82,3 +83,12 @@ class TestLtGovNoWorktree:
         # The key invariant: owns_worktree=False means _full_cleanup
         # skips git worktree remove. We verify the flag is persisted correctly.
         # Full integration test of close_worker_pane would require tmux mocking.
+
+    def test_ltgov_list_panes_with_empty_branch(self, tmp_path: Path) -> None:
+        session = _make_session(tmp_path)
+        pane = _ltgov_pane("ltgov-list")
+        add_pane(session, pane)
+        panes = list_panes_slim(session)
+        ltgov = [p for p in panes if p["slug"] == "ltgov-list"][0]
+        assert ltgov["branch_name"] == ""
+        assert ltgov["role"] == "lt-gov"
