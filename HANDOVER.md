@@ -1,96 +1,61 @@
-# HANDOVER — 2026-03-25 (Plan Generation + Config System + Hardening)
+# HANDOVER — 2026-03-26 (Discipline Audit + MLX Fleet + Bug Fixes)
 
 ## Current State
 
-Zero open bugs. 1698 unit tests passing. 24 commits on main this session. Clean dashboard (0 panes).
+Zero active panes. MLX 9B pool operational (4 instances). All discipline refactors landed. Three bugs fixed. Clean main.
 
-## Completed (24 commits)
+## Completed
 
-### Terrain tuning (5 commits, plan-driven)
+### Discipline Audit (clanker-discipline skill)
+- Audited dgov against 4 rules: derive-don't-store, impossible states, function contracts, data-over-procedure
+- 20 files changed, +276/-155 lines across 17 commits
+- **Rule 1 (derive)**: `PreflightReport.passed`, `PaneTrajectory.outcome/total_duration_ms`, `SemanticManifest.claim_violations` → `@property`
+- **Rule 2 (sentinels)**: 25+ `str = ""` fields → `str | None = None` across 8 source files + 4 test files
+- **Rule 3 (contracts)**: `review_worker_pane` split into pure `_inspect_worker_pane` + event wrapper; `_run_lint_checks` → `_apply_lint_fixes`
+- **Rule 4 (tables)**: 4 if/elif chains → dicts (terrain glyphs, monitor event factory, preflight fixer registry, executor cleanup policy)
 
-1. **River threshold fix** (`a6b1bbc`) — render order >= 2 only, headwater cells no longer blue
-2. **Maturity hysteresis** (`94a6c93`) — HUD label doesn't flicker near thresholds (±0.03 margin)
-3. **Hour-5 keyframe** (`0c40b87`) — smoother afternoon→evening transition
-4. **Performance benchmarks** (`1ecf354`) — step < 100ms, render < 200ms, full frame < 500ms
-5. **Terrain tests** — 65 terrain tests total
+### Bug Fixes
+- **Triple retry** (ledger #94, fixed): `_pane_work_already_on_main()` guard in monitor + `maybe_auto_retry()`. Checks `git merge-base --is-ancestor` before retrying.
+- **Codex double-exec** (fixed): `build_launch_command` produced `codex exec exec -m ...`. Now strips leading `exec` from default_flags when force_headless adds it.
+- **CLI test failures** (fixed): Updated 3 test assertions for command restructure (pane preflight, agent list, close error format, parent_slug None).
 
-### Plan DX (4 commits, plan-driven + governor fix)
-
-6. **Plan scaffold** (`bdcad67`) — `dgov plan scaffold --goal "..." --files a.py` generates TOML template
-7. **Cross-plan claim checks** (`628493b`) — warns on overlapping file claims between active DAGs
-8. **Plan resume** (`a79a8f5`) — `dgov plan resume <file> --wait` skips merged units, re-dispatches failed
-9. **Eval quality** (`d058afc`) — prompt tuning with GOOD/BAD evidence patterns, forbids AST/regex fragility
-
-### Plan generation provider (6 commits, architecture)
-
-10. **GENERATE_PLAN decision kind** (`30905fc`) — GeneratePlanRequest/Decision types in decision.py
-11. **PlanGenerationProvider** (`36b024c`) — builds prompt, calls LLM, validates output TOML
-12. **Claude CLI transport** (`3896ff0`, `c93644f`, `26094f1`) — iterating on transport: OpenRouter → claude -p → config-driven
-13. **Audit sink fix** (`5674429`) — persistence._decision_kind_name didn't know GeneratePlanRequest
-14. **`--auto` wired** — `dgov plan scaffold --auto --goal "..." --files a.py` calls Sonnet, returns complete plan
-
-### Config system (3 commits, plan-driven)
-
-15. **Config loader** (`11598a4`) — `src/dgov/config.py` with `load_config()`, deep merge, typed defaults
-16. **Config CLI** (`1e06479`) — `dgov config show` prints effective config
-17. **Provider wiring** (`647da22`) — PlanGenerationProvider reads transport/auth/model from config
-
-### Hardening (4 commits, investigation + fixes)
-
-18. **Lint scope fix** (`2d9fc7c`) — count distinct files not error lines, downgrade unfixable to warning
-19. **Conflict markers** (`e0ac99b`) — `_check_conflict_markers()` rejects unresolved markers before commit
-20. **Preflight superseded fix** (`ea51a3c`) — `check_file_locks()` skips superseded panes (was blocking dispatch)
-21. **Test failure gate restored** (`3fe46c5`) — squash merge path had test failure check accidentally deleted by worker
+### MLX 9B Worker Pool
+- 4x `mlx_lm.server` 0.31.1 on ports 8088-8091
+- Model: `mlx-community/Qwen3.5-9B-MLX-4bit`, thinking disabled
+- Sampling: `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0`
+- Routing: River first → MLX overflow → OpenRouter fallback
+- ~85 tok/s on M3 Max. Smoke tested end-to-end.
+- Script: `~/bin/mlx-9b` (start/stop/status)
 
 ## Key Decisions
 
-- **API policy (ledger #56):** OpenRouter for open-source models (Qwen) only. Proprietary models (Anthropic, OpenAI, Google) always go through their own CLI with OAuth — never through OpenRouter. `claude -p` for Sonnet, `codex exec` for Codex, `gemini` for Gemini.
-- **PlanGenerationProvider (ledger #54):** Structured co-consultation, not shared context. Governor calls provider with goal+files, gets back valid TOML. Provider is pure (no I/O) — CLI pre-reads files and examples.
-- **Config system:** Single `~/.dgov/config.toml` for user preferences. Project `.dgov/config.toml` overrides. `agents.toml` stays for agent definitions only.
-- **Auth:** `ANTHROPIC_API_KEY` env var in `.zshrc` was hijacking `claude -p` away from OAuth. Should be removed — OAuth subscription is the intended auth path.
+- **River-first routing**: faster GPU, MLX provides 4 parallel overflow slots
+- **mlx_lm.server over mlx_vlm.server**: 0.31.1 supports Qwen 3.5 natively, has `--chat-template-args`
+- **Speculative decoding not viable yet**: 0.8B draft corrupts output (VL/text architecture mismatch)
+- **LT-GOV sub-dispatch plumbing exists**: `DGOV_PROJECT_ROOT` env var, `_autocorrect_roots`, LT-GOV template. Needs design decision on worktree vs no-worktree.
 
 ## Open Issues
 
-Zero open bugs. One env var to clean up:
-
-| Item | Action |
-|------|--------|
-| `.zshrc:14` | Remove/comment `ANTHROPIC_API_KEY` export — it overrides OAuth for `claude -p` |
-
-## Bugs Found & Fixed
-
-| Ledger | Bug | Root Cause |
-|--------|-----|------------|
-| #53 | Post-merge lint "10 files" false positive | Counted error lines not files; unfixable was hard fail |
-| #57 | Plan-resume dispatch fails silently | Superseded panes not in preflight skip list |
-| #60 | Squash merge ignores test failures | Lint-scope worker deleted adjacent test failure check |
-
-## Pattern Discovered (ledger #64)
-
-Workers can accidentally delete adjacent code when editing a function. The lint-scope worker removed the test failure → validation_failed logic while downgrading lint to a warning. **Always verify surrounding logic after worker merges, especially validation gates.**
+- **LT-GOV architecture** (next step): Should LT-GOVs get worktrees? They don't edit code — just read and dispatch. No-worktree or branch-only mode would be simpler. Plumbing for dispatch from worktrees already works.
+- **Ledger #84**: Plumbing merge clobbers governor changes to files workers also touch
+- **Ledger #83**: Prompt-inferred file claims too aggressive
+- **Ledger #82**: File claim conflicts not enforced properly
+- **Ledger #74**: Concurrent plan run --wait sees cross-run events
 
 ## Next Steps
 
-1. **`dgov config set`** — CLI for quick config edits without opening TOML
-2. **`dgov doctor` auth validation** — warn when config says `auth = "oauth"` but `claude auth status` shows API key
-3. **`--auto --run`** — generate plan + validate + dispatch in one command
-4. **Review failure reason in `--wait`** — surface why, not just "review fail"
-5. **Per-plan `--wait` output** — don't interleave events from multiple DAGs
-6. **Cost tracking** — accumulate OpenRouter spend per plan/session
-7. **Implicit worker epilogue** — lint + format + commit as default lifecycle, not prompt boilerplate
+1. **Design LT-GOV sub-governor mode** — worktree vs no-worktree vs branch-only. Key insight: LT-GOVs read broadly + dispatch workers. They don't need isolated file state. Could just run in a tmux pane with `DGOV_PROJECT_ROOT` set.
+2. **Remaining discipline items** (optional): `NewType` domain concepts, `StrEnum` for pane states, discriminated unions
+3. **Speculative decoding** (optional): needs matching text-only 9B + 0.8B pair
 
-## Important Files Changed
+## Important Files
 
-- `src/dgov/config.py` — NEW: unified config loader
-- `src/dgov/decision.py` — GeneratePlanRequest/Decision, GENERATE_PLAN kind
-- `src/dgov/decision_providers.py` — PlanGenerationProvider with config-driven transport
-- `src/dgov/provider_registry.py` — GENERATE_PLAN registration
-- `src/dgov/persistence.py` — GeneratePlanRequest in audit sink
-- `src/dgov/cli/plan_cmd.py` — scaffold --auto, plan resume --wait
-- `src/dgov/cli/admin.py` — dgov config show
-- `src/dgov/merger.py` — conflict markers, lint scope fix, test failure gate restoration
-- `src/dgov/preflight.py` — superseded pane skip
-- `src/dgov/terrain.py` — river threshold, keyframe, Strahler order fix
-- `src/dgov/terrain_pane.py` — maturity hysteresis
-- `tests/test_config.py` — NEW: config loader tests
-- `tests/test_terrain_perf.py` — NEW: performance benchmarks
+- `src/dgov/monitor.py` — retry guard (`_pane_work_already_on_main`)
+- `src/dgov/agents.py` — codex double-exec fix, `build_launch_command`
+- `src/dgov/inspection.py` — contract split (`_inspect_worker_pane` + `_apply_lint_fixes`)
+- `src/dgov/templates.py:88-101` — LT-GOV dispatch template
+- `src/dgov/cli/pane.py:16-24` — `_autocorrect_roots` (worktree → main redirect)
+- `src/dgov/lifecycle.py:863` — `DGOV_PROJECT_ROOT` env var injection
+- `~/bin/mlx-9b` — MLX pool launcher
+- `~/.dgov/agents.toml` — MLX agent config + routing chains
+- `~/.pi/agent/models.json` — pi provider URLs for MLX (ports 8088-8091/v1)
