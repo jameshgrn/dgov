@@ -57,7 +57,7 @@ class WaitForAny:
 class ReviewTask:
     task_slug: str
     pane_slug: str
-    review_agent: str = ""
+    review_agent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -320,7 +320,7 @@ class DagKernel:
                 return []
             if event.pane_state in ("done", "reviewed_pass", "merged"):
                 self.task_states[task] = DagTaskState.REVIEWING
-                review_agent = self.review_agents.get(task, "")
+                review_agent = self.review_agents.get(task)
                 actions.append(ReviewTask(task, event.pane_slug, review_agent=review_agent))
             else:
                 # Wait failed (timeout or crash) -> try retry/escalate
