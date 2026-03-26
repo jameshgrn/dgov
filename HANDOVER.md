@@ -1,61 +1,67 @@
-# HANDOVER — 2026-03-26 (Discipline Audit + MLX Fleet + Bug Fixes)
+# HANDOVER
 
 ## Current State
-
-Zero active panes. MLX 9B pool operational (4 instances). All discipline refactors landed. Three bugs fixed. Clean main.
+- **Clanker discipline audit applied** — 4-principle code quality audit completed, partial fixes landed on main
+- Branch: `main` at `ddf2ed1`
+- All 172 unit tests pass, lint clean, format clean
+- Net result: **-102 lines** across 4 files (4 commits this session)
 
 ## Completed
-
-### Discipline Audit (clanker-discipline skill)
-- Audited dgov against 4 rules: derive-don't-store, impossible states, function contracts, data-over-procedure
-- 20 files changed, +276/-155 lines across 17 commits
-- **Rule 1 (derive)**: `PreflightReport.passed`, `PaneTrajectory.outcome/total_duration_ms`, `SemanticManifest.claim_violations` → `@property`
-- **Rule 2 (sentinels)**: 25+ `str = ""` fields → `str | None = None` across 8 source files + 4 test files
-- **Rule 3 (contracts)**: `review_worker_pane` split into pure `_inspect_worker_pane` + event wrapper; `_run_lint_checks` → `_apply_lint_fixes`
-- **Rule 4 (tables)**: 4 if/elif chains → dicts (terrain glyphs, monitor event factory, preflight fixer registry, executor cleanup policy)
-
-### Bug Fixes
-- **Triple retry** (ledger #94, fixed): `_pane_work_already_on_main()` guard in monitor + `maybe_auto_retry()`. Checks `git merge-base --is-ancestor` before retrying.
-- **Codex double-exec** (fixed): `build_launch_command` produced `codex exec exec -m ...`. Now strips leading `exec` from default_flags when force_headless adds it.
-- **CLI test failures** (fixed): Updated 3 test assertions for command restructure (pane preflight, agent list, close error format, parent_slug None).
-
-### MLX 9B Worker Pool
-- 4x `mlx_lm.server` 0.31.1 on ports 8088-8091
-- Model: `mlx-community/Qwen3.5-9B-MLX-4bit`, thinking disabled
-- Sampling: `--temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0`
-- Routing: River first → MLX overflow → OpenRouter fallback
-- ~85 tok/s on M3 Max. Smoke tested end-to-end.
-- Script: `~/bin/mlx-9b` (start/stop/status)
+- **Full clanker audit** of dgov codebase: 10 derive-dont-store, 9 wrong-states, 12 function-contracts, 7 data-over-procedure violations identified
+- **decision.py refactor** (`4b1be71`): -109 lines
+  - `ReviewVerdict` StrEnum (safe/concerns/approved/unsafe)
+  - `_REQUEST_DISPATCH` table replaces `_call_kind` isinstance chain
+  - `_FN_TO_KIND` / `_METHOD_TO_FN` tables for `StaticDecisionProvider`
+  - `_DelegatingProvider` mixin — 5 wrapper classes deduped, 30 boilerplate methods deleted
+  - `StaticDecisionProvider` inherits `_DelegatingProvider`, dispatches via `_call()`
+- **kernel.py enums** (`2d72de1`): `DagDone.status` → `DagState`, new `GovernorAction` StrEnum
+- **Verdict typing** (`ddf2ed1`): `ReviewGate.verdict`, `ReviewOnlyResult.verdict`, `api.ReviewResult.verdict` → `ReviewVerdict`
+- Audit results logged to ledger: #101 (audit summary), #102-104 (deferred debt)
+- Worker bug caught and fixed: `StaticDecisionProvider.__getattr__` doesn't work when parent defines methods in MRO — replaced with `_call()` dispatch through tables
 
 ## Key Decisions
-
-- **River-first routing**: faster GPU, MLX provides 4 parallel overflow slots
-- **mlx_lm.server over mlx_vlm.server**: 0.31.1 supports Qwen 3.5 natively, has `--chat-template-args`
-- **Speculative decoding not viable yet**: 0.8B draft corrupts output (VL/text architecture mismatch)
-- **LT-GOV sub-dispatch plumbing exists**: `DGOV_PROJECT_ROOT` env var, `_autocorrect_roots`, LT-GOV template. Needs design decision on worktree vs no-worktree.
+- **Kept `TaskReviewDone.verdict: str`** in kernel.py — kernel has no decision.py dependency, StrEnum passes through as string at boundary
+- **Kept `MonitorOutputDecision.classification: str`** and `CompletionParseDecision.status: str` — value spaces too broad to enum now (ledger #102)
+- **DagKernel.handle() isinstance chain stays** — branches have different control flow, not just different return values; clanker discipline says keep as code
+- **DagReactor.execute() isinstance chain stays** — same reason
+- **ClarifyDecision left alone** — never constructed anywhere, impossible-state fix would have zero impact
 
 ## Open Issues
-
-- **LT-GOV architecture** (next step): Should LT-GOVs get worktrees? They don't edit code — just read and dispatch. No-worktree or branch-only mode would be simpler. Plumbing for dispatch from worktrees already works.
-- **Ledger #84**: Plumbing merge clobbers governor changes to files workers also touch
-- **Ledger #83**: Prompt-inferred file claims too aggressive
-- **Ledger #82**: File claim conflicts not enforced properly
-- **Ledger #74**: Concurrent plan run --wait sees cross-run events
+- **Merger lost changes during rebase**: Worker commit `08bf956` had full refactor (-86 lines), but only the enum subset made it to main via `--land`. The tables/mixin changes were recovered manually. Root cause: merger's rebase strategy dropped hunks. This is a known fragility (ledger #68 area).
+- **Ledger debt items remain open**: #102, #103, #104
 
 ## Next Steps
+**For next governor session — continue clanker discipline fixes:**
 
-1. **Design LT-GOV sub-governor mode** — worktree vs no-worktree vs branch-only. Key insight: LT-GOVs read broadly + dispatch workers. They don't need isolated file state. Could just run in a tmux pane with `DGOV_PROJECT_ROOT` set.
-2. **Remaining discipline items** (optional): `NewType` domain concepts, `StrEnum` for pane states, discriminated unions
-3. **Speculative decoding** (optional): needs matching text-only 9B + 0.8B pair
+1. **`review: dict` → typed `ReviewInfo` dataclass** (wrong states, medium effort)
+   - Affects 6 result types in executor.py: `ReviewGate`, `PostDispatchResult`, `ReviewMergeResult`, `LandResult`, `ReviewOnlyResult`, `PaneFinalizeResult`
+   - Find where the dict is built, define the shape, propagate
+   - Dispatch to qwen-35b worker (autonomous mode, 4-5 files)
+
+2. **persistence.py sentinel strings → NULL** (wrong states, high effort)
+   - 12 columns use `DEFAULT ''` instead of `DEFAULT NULL`
+   - Needs schema migration + update all `if field != ""` → `if field is not None`
+   - Dispatch to worker, verify with existing tests
+
+3. **Function decomposition** (function contracts, high effort)
+   - `merge_worker_pane()` 551 lines → 5 focused functions
+   - `run_review_only()` 182 lines → pure review + I/O orchestrator
+   - `run_wait_only()` 209 lines → pure wait + retry policy
+   - Each is a separate worker task
+
+4. **observe_worker() / poll_workers() side effects** (function contracts, medium effort)
+   - Named like pure read-only but mutate pane metadata
+   - Extract persistence to caller
+
+5. **Derive-dont-store metadata pruning** (derive, high effort)
+   - `retry_count`, `superseded_by`/`retried_from`, `circuit_breaker`, `landing` → derive from events
+   - `_count_retries()` and `_slug_lineage()` already exist for event-based derivation
 
 ## Important Files
-
-- `src/dgov/monitor.py` — retry guard (`_pane_work_already_on_main`)
-- `src/dgov/agents.py` — codex double-exec fix, `build_launch_command`
-- `src/dgov/inspection.py` — contract split (`_inspect_worker_pane` + `_apply_lint_fixes`)
-- `src/dgov/templates.py:88-101` — LT-GOV dispatch template
-- `src/dgov/cli/pane.py:16-24` — `_autocorrect_roots` (worktree → main redirect)
-- `src/dgov/lifecycle.py:863` — `DGOV_PROJECT_ROOT` env var injection
-- `~/bin/mlx-9b` — MLX pool launcher
-- `~/.dgov/agents.toml` — MLX agent config + routing chains
-- `~/.pi/agent/models.json` — pi provider URLs for MLX (ports 8088-8091/v1)
+- `/Users/jakegearon/projects/dgov/src/dgov/decision.py` — main refactor target, now 666 lines (was 762)
+- `/Users/jakegearon/projects/dgov/src/dgov/kernel.py` — enum additions (GovernorAction, DagDone.status typed)
+- `/Users/jakegearon/projects/dgov/src/dgov/executor.py` — verdict fields typed, still has `review: dict` debt
+- `/Users/jakegearon/projects/dgov/src/dgov/api.py` — ReviewResult.verdict typed
+- `/Users/jakegearon/projects/dgov/src/dgov/persistence.py` — sentinel strings debt (ledger #103)
+- `/Users/jakegearon/projects/dgov/src/dgov/merger.py` — 551-line monolith (ledger #104)
+- `/Users/jakegearon/projects/dgov/src/dgov/monitor.py` — function contract violations (observe_worker, poll_workers)
