@@ -323,8 +323,8 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
         return CheckResult(
             name="file_locks",
             passed=True,
-            critical=True,
-            message="No file touches declared",
+            critical=False,
+            message="No file touches declared — claim conflicts unverifiable",
         )
 
     from dgov.persistence import all_panes
