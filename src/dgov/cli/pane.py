@@ -325,7 +325,7 @@ def pane_create(
             extra_flags=extra_flags,
             skip_auto_structure=skip_auto_structure,
             role=role,
-            parent_slug=parent or "",
+            parent_slug=parent,
             context_packet=packet,
         )
     except (ValueError, RuntimeError) as exc:

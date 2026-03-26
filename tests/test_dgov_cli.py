@@ -565,7 +565,9 @@ class TestPaneCommands:
         assert ok.exit_code == 0
         assert json.loads(ok.output) == {"closed": "task"}
         assert missing.exit_code == 1
-        assert json.loads(missing.output) == {"not_found": "missing"}
+        out = json.loads(missing.output)
+        assert "error" in out
+        assert "missing" in out["error"]
 
     def test_wait_success_and_timeout(self, runner: CliRunner) -> None:
         with (
@@ -742,6 +744,7 @@ class TestTopLevelCommands:
             preflight = runner.invoke(
                 cli,
                 [
+                    "pane",
                     "preflight",
                     "--project-root",
                     "/repo",
@@ -766,7 +769,7 @@ class TestTopLevelCommands:
         ) as mock_rebase:
             rebase = runner.invoke(cli, ["rebase", "--project-root", "/repo", "--onto", "develop"])
         with patch("dgov.cli.admin.detect_installed_agents", return_value=["claude"]):
-            agents = runner.invoke(cli, ["agents"])
+            agents = runner.invoke(cli, ["agent", "list"])
         version = runner.invoke(cli, ["version"])
 
         assert preflight.exit_code == 0
