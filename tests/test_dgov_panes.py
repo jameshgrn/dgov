@@ -2261,13 +2261,13 @@ class TestRetryWorkerPane:
         )
 
         new_pane = WorkerPane(
-            slug="fix-bug-2",
+            slug="fix-bug-a2",
             prompt="Fix the bug",
             pane_id="%42",
             agent="pi",
             project_root=str(tmp_path),
             worktree_path="/wt",
-            branch_name="fix-bug-2",
+            branch_name="fix-bug-a2",
         )
 
         def fake_create(**kwargs):
@@ -2278,7 +2278,7 @@ class TestRetryWorkerPane:
             result = retry_worker_pane(str(tmp_path), "fix-bug", session_root=str(tmp_path))
 
         assert result["retried"] is True
-        assert result["new_slug"] == "fix-bug-2"
+        assert result["new_slug"] == "fix-bug-a2"
         assert result["attempt"] == 2
         assert result["original_slug"] == "fix-bug"
 
@@ -2292,11 +2292,16 @@ class TestRetryWorkerPane:
 
         events = read_events(str(tmp_path), slug="fix-bug")
         assert any(
-            e.get("event") == "pane_retry_spawned" and e.get("new_slug") == "fix-bug-2"
+            e.get("event") == "pane_retry_spawned" and e.get("new_slug") == "fix-bug-a2"
             for e in events
         )
 
-    def test_attempt_increments_past_existing(self, tmp_path: Path) -> None:
+    def test_attempt_uses_event_lineage_not_slug_scan(self, tmp_path: Path) -> None:
+        """Attempt count derives from event lineage, not coincidental slug patterns.
+
+        Even with sibling panes (task, task-2, task-3), retrying task-3
+        with no retry events produces attempt=2 (lineage is just [task-3]).
+        """
         from dgov.recovery import retry_worker_pane
 
         replace_all_panes(
@@ -2316,19 +2321,20 @@ class TestRetryWorkerPane:
         )
 
         new_pane = WorkerPane(
-            slug="task-4",
+            slug="task-3-a2",
             prompt="Do it",
             pane_id="%50",
             agent="claude",
             project_root=str(tmp_path),
             worktree_path="/wt",
-            branch_name="task-4",
+            branch_name="task-3-a2",
         )
         with patch("dgov.recovery.create_worker_pane", return_value=new_pane):
             result = retry_worker_pane(str(tmp_path), "task-3", session_root=str(tmp_path))
 
-        assert result["attempt"] == 4
-        assert result["new_slug"] == "task-4"
+        # No retry events → lineage is [task-3] → attempt=2
+        assert result["attempt"] == 2
+        assert result["new_slug"] == "task-3-a2"
 
     def test_create_failure_returns_error(self, tmp_path: Path) -> None:
         from dgov.recovery import retry_worker_pane

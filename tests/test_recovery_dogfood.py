@@ -12,7 +12,7 @@ pytestmark = pytest.mark.unit
 
 class TestRetrySlugComputation:
     def test_retry_increments_slug(self, tmp_path, monkeypatch):
-        """Retry of 'foo' creates 'foo-2', retry of 'foo-2' creates 'foo-3'."""
+        """Retry of 'foo' creates 'foo-a2' (lineage-based, no suffix stacking)."""
         from dgov.persistence import _get_db
 
         _get_db(str(tmp_path))
@@ -30,7 +30,7 @@ class TestRetrySlugComputation:
 
         # Mock create_worker_pane to avoid real tmux
         class FakePane:
-            slug = "foo-2"
+            slug = "foo-a2"
             pane_id = "%999"
             worktree_path = str(tmp_path / "wt2")
 
@@ -38,7 +38,7 @@ class TestRetrySlugComputation:
         monkeypatch.setattr("dgov.recovery.close_worker_pane", lambda *a, **kw: {"closed": True})
         result = retry_worker_pane(str(tmp_path), "foo", session_root=str(tmp_path))
         assert result["retried"] is True
-        assert result["new_slug"] == "foo-2"
+        assert result["new_slug"] == "foo-a2"
         assert result["attempt"] == 2
 
     def test_retry_not_found(self, tmp_path):

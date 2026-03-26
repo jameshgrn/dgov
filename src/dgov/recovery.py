@@ -106,15 +106,15 @@ def escalate_worker_pane(
         )
 
     # Create the new pane first, then close the old one
-    # Compute escalation slug with collision avoidance
-    base_slug = re.sub(r"-esc(-\d+)?$", "", slug)  # strip existing -esc or -esc-N
-    esc_num = 1
-    existing = all_panes(session_root)
-    for p in existing:
-        m = re.match(rf"^{re.escape(base_slug)}-esc-(\d+)$", p.get("slug", ""))
-        if m:
-            esc_num = max(esc_num, int(m.group(1)) + 1)
-    new_slug = f"{base_slug}-esc-{esc_num}"
+    # Derive escalation number from retry+escalation lineage (avoids suffix stacking)
+    lineage = _slug_lineage(session_root, slug)
+    base_slug = lineage[-1] if lineage else slug
+    esc_count = sum(
+        1
+        for ev in read_events(session_root)
+        if ev.get("event") == "pane_escalated" and ev.get("pane", "").startswith(base_slug)
+    )
+    new_slug = f"{base_slug}-esc{esc_count + 1}"
     try:
         new_pane = create_worker_pane(
             project_root=project_root,
@@ -171,16 +171,12 @@ def retry_worker_pane(
 
         close_worker_pane(project_root, slug, session_root=session_root)
 
-    # Compute attempt number from slug pattern
-    base_slug = re.sub(r"-\d+$", "", slug)  # strip trailing -N
-    attempt = 1
-    existing = all_panes(session_root)
-    for p in existing:
-        m = re.match(rf"^{re.escape(base_slug)}-(\d+)$", p.get("slug", ""))
-        if m:
-            attempt = max(attempt, int(m.group(1)))
-    attempt += 1
-    new_slug = f"{base_slug}-{attempt}"
+    # Derive attempt from event lineage (not slug parsing — avoids suffix stacking)
+    lineage = _slug_lineage(session_root, slug)
+    attempt = len(lineage) + 1
+    # Walk lineage to find the original (root) slug — always use it as base
+    base_slug = lineage[-1] if lineage else slug
+    new_slug = f"{base_slug}-a{attempt}"
 
     # Rebuild context_packet from original pane's file_claims so the retry
     # pane has proper claim scope for review and preflight.

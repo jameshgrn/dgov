@@ -236,27 +236,21 @@ def read_events(
     _typed = ", ".join(_EVENT_TYPED_COLS)
     _select = f"ts, event, pane, data, {_typed}"
     conn = _get_db(session_root)
+    where = ""
+    params: list[str | int] = []
     if slug is not None:
-        if limit is not None:
-            rows = conn.execute(
-                f"SELECT {_select} FROM events WHERE pane = ? ORDER BY id DESC LIMIT ?",
-                (slug, limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT {_select} FROM events WHERE pane = ? ORDER BY id",
-                (slug,),
-            ).fetchall()
-    else:
-        if limit is not None:
-            rows = conn.execute(
-                f"SELECT {_select} FROM events ORDER BY id DESC LIMIT ?",
-                (limit,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"SELECT {_select} FROM events ORDER BY id",
-            ).fetchall()
+        where = " WHERE pane = ?"
+        params.append(slug)
+    # Limited queries fetch newest-first for perf, reversed below for chronological order
+    order = "ORDER BY id DESC" if limit is not None else "ORDER BY id"
+    limit_clause = ""
+    if limit is not None:
+        limit_clause = " LIMIT ?"
+        params.append(limit)
+    rows = conn.execute(
+        f"SELECT {_select} FROM events{where} {order}{limit_clause}",
+        tuple(params),
+    ).fetchall()
     typed_col_names = list(_EVENT_TYPED_COLS)
     events = []
     # For limited queries we fetch newest-first for performance, then reverse to keep
@@ -1103,11 +1097,7 @@ def settle_completion_state(
             f"settle_completion_state only supports {_COMPLETION_TARGET_STATES}, got {new_state!r}"
         )
 
-    changed = False
-
     def _do() -> CompletionTransitionResult:
-        nonlocal changed
-
         conn = _get_db(session_root)
         conn.row_factory = sqlite3.Row
 
@@ -1125,7 +1115,6 @@ def settle_completion_state(
 
         if cur.rowcount:
             conn.commit()
-            changed = True
             return CompletionTransitionResult(state=new_state, changed=True)
 
         row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
@@ -1144,7 +1133,7 @@ def settle_completion_state(
         raise IllegalTransitionError(current_state, new_state, slug)
 
     result = _retry_on_lock(_do)
-    if changed:
+    if result.changed:
         _maybe_update_pane_title(session_root, slug, new_state)
     return result
 
