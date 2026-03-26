@@ -77,6 +77,21 @@ def physical_to_logical(physical_name: str) -> str:
     return physical_name
 
 
+def resolve_role(agent_name: str) -> str:
+    """Derive pane role from routing tables.
+
+    Returns "lt-gov" if agent_name is in the lt-gov routing backends
+    (or is the logical name "lt-gov" itself). Returns "worker" otherwise.
+    """
+    tables = _load_routing_tables()
+    if agent_name == "lt-gov":
+        return "lt-gov"
+    lt_gov_backends = tables.get("lt-gov", [])
+    if agent_name in lt_gov_backends:
+        return "lt-gov"
+    return "worker"
+
+
 def record_backend_failure(session_root: str, backend_id: str) -> None:
     """Record a backend failure and prune old entries.
 

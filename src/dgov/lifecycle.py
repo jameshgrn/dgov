@@ -799,6 +799,11 @@ def create_worker_pane(
     ensure_dgov_gitignored(project_root)
     base_slug = slug or _generate_slug(prompt)
     _validate_slug(base_slug)
+    # Auto-detect role from routing tables when caller uses default "worker".
+    if role == "worker":
+        from dgov.router import resolve_role
+
+        role = resolve_role(agent)
     # LT-GOVs don't edit code — run them on main, no worktree needed.
     if role == "lt-gov" and existing_worktree is None:
         existing_worktree = project_root
