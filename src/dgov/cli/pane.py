@@ -380,7 +380,7 @@ def pane_create(
                 {
                     "lifecycle": lifecycle.state,
                     "slug": lifecycle.slug,
-                    "review": dataclasses.asdict(lifecycle.review) if lifecycle.review else None,
+                    "review": lifecycle.review.to_dict() if lifecycle.review else None,
                     "merge": dataclasses.asdict(lifecycle.merge_result)
                     if lifecycle.merge_result
                     else None,
@@ -694,7 +694,7 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase, dry_run
         from dgov.executor import run_review_only
 
         review = run_review_only(project_root, slug, session_root=session_root).review
-        result = asdict(review)
+        result = review.to_dict()
         result["dry_run"] = True
         result["would_merge"] = review.verdict == "safe"
         click.echo(json.dumps(result, indent=2))
@@ -945,7 +945,7 @@ def pane_review(slug, project_root, session_root, full, show_diff):
 
         diff_result = diff_worker_pane(project_root, slug, session_root=session_root)
         result.diff = diff_result.get("diff", "")
-    click.echo(json.dumps(dataclasses.asdict(result), indent=2))
+    click.echo(json.dumps(result.to_dict(), indent=2))
     if result.error is not None:
         sys.exit(1)
 

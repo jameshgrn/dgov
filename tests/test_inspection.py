@@ -116,6 +116,8 @@ class TestReviewWorkerPane:
         assert result.retry_count == 2
         assert result.auto_responses == 1
         assert result.freshness == "fresh"
+        assert result.automation.retry_count == 2
+        assert result.freshness_info.status == "fresh"
         assert "feature.txt" in result.stat
         assert "Add feature file" in result.commit_log
         inspection_mocks["emit_event"].assert_called_once_with(

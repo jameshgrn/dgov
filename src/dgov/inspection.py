@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ---------------------------------------------------------------------------
 # Data models
 # ---------------------------------------------------------------------------
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +37,38 @@ class MergeResult:
 
 
 @dataclass
+class ReviewTests:
+    passed: bool | None = None
+    ran: list[str] = field(default_factory=list)
+    output: str = ""
+    no_tests_found: bool = False
+    timed_out: bool = False
+
+
+@dataclass
+class ReviewFreshness:
+    status: str | None = None
+    commits_since_base: int = 0
+    overlapping_files: list[str] = field(default_factory=list)
+    pane_age_hours: float = 0.0
+    stale_files: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ReviewAutomation:
+    retry_count: int = 0
+    auto_responses: int = 0
+    lt_gov: bool = False
+
+
+@dataclass
+class ReviewContract:
+    claim_violations: list[str] = field(default_factory=list)
+    missing_test_coverage: list[str] = field(default_factory=list)
+    evals: list[dict] | None = None
+
+
+@dataclass
 class ReviewInfo:
     slug: str
     verdict: str = "unknown"
@@ -51,27 +83,223 @@ class ReviewInfo:
     protected_touched: list[str] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     error: str | None = None
-    # Test results
-    tests_passed: bool | None = None
-    tests_ran: list[str] = field(default_factory=list)
-    test_output: str = ""
-    no_tests_found: bool = False
-    timed_out: bool = False
-    # Freshness
-    freshness: str | None = None
-    commits_since_base: int = 0
-    overlapping_files: list[str] = field(default_factory=list)
-    pane_age_hours: float = 0.0
-    stale_files: list[str] = field(default_factory=list)
-    # Metadata
-    retry_count: int = 0
-    auto_responses: int = 0
-    lt_gov: bool = False
-    # Manifest
-    claim_violations: list[str] = field(default_factory=list)
-    missing_test_coverage: list[str] = field(default_factory=list)
-    # Eval contract (populated by decision provider)
-    evals: list[dict] | None = None
+    tests: ReviewTests = field(default_factory=ReviewTests)
+    freshness_info: ReviewFreshness = field(default_factory=ReviewFreshness)
+    automation: ReviewAutomation = field(default_factory=ReviewAutomation)
+    contract: ReviewContract = field(default_factory=ReviewContract)
+    tests_passed_init: InitVar[bool | None] = None
+    tests_ran_init: InitVar[list[str] | None] = None
+    test_output_init: InitVar[str] = ""
+    no_tests_found_init: InitVar[bool] = False
+    timed_out_init: InitVar[bool] = False
+    freshness_init: InitVar[str | None] = None
+    commits_since_base_init: InitVar[int] = 0
+    overlapping_files_init: InitVar[list[str] | None] = None
+    pane_age_hours_init: InitVar[float] = 0.0
+    stale_files_init: InitVar[list[str] | None] = None
+    retry_count_init: InitVar[int] = 0
+    auto_responses_init: InitVar[int] = 0
+    lt_gov_init: InitVar[bool] = False
+    claim_violations_init: InitVar[list[str] | None] = None
+    missing_test_coverage_init: InitVar[list[str] | None] = None
+    evals_init: InitVar[list[dict] | None] = None
+
+    def __post_init__(
+        self,
+        tests_passed_init: bool | None,
+        tests_ran_init: list[str] | None,
+        test_output_init: str,
+        no_tests_found_init: bool,
+        timed_out_init: bool,
+        freshness_init: str | None,
+        commits_since_base_init: int,
+        overlapping_files_init: list[str] | None,
+        pane_age_hours_init: float,
+        stale_files_init: list[str] | None,
+        retry_count_init: int,
+        auto_responses_init: int,
+        lt_gov_init: bool,
+        claim_violations_init: list[str] | None,
+        missing_test_coverage_init: list[str] | None,
+        evals_init: list[dict] | None,
+    ) -> None:
+        self.tests.passed = tests_passed_init
+        self.tests.ran = list(tests_ran_init or [])
+        self.tests.output = test_output_init
+        self.tests.no_tests_found = no_tests_found_init
+        self.tests.timed_out = timed_out_init
+        self.freshness_info.status = freshness_init
+        self.freshness_info.commits_since_base = commits_since_base_init
+        self.freshness_info.overlapping_files = list(overlapping_files_init or [])
+        self.freshness_info.pane_age_hours = pane_age_hours_init
+        self.freshness_info.stale_files = list(stale_files_init or [])
+        self.automation.retry_count = retry_count_init
+        self.automation.auto_responses = auto_responses_init
+        self.automation.lt_gov = lt_gov_init
+        self.contract.claim_violations = list(claim_violations_init or [])
+        self.contract.missing_test_coverage = list(missing_test_coverage_init or [])
+        self.contract.evals = list(evals_init) if evals_init is not None else None
+
+    @property
+    def tests_passed(self) -> bool | None:
+        return self.tests.passed
+
+    @tests_passed.setter
+    def tests_passed(self, value: bool | None) -> None:
+        self.tests.passed = value
+
+    @property
+    def tests_ran(self) -> list[str]:
+        return self.tests.ran
+
+    @tests_ran.setter
+    def tests_ran(self, value: list[str]) -> None:
+        self.tests.ran = value
+
+    @property
+    def test_output(self) -> str:
+        return self.tests.output
+
+    @test_output.setter
+    def test_output(self, value: str) -> None:
+        self.tests.output = value
+
+    @property
+    def no_tests_found(self) -> bool:
+        return self.tests.no_tests_found
+
+    @no_tests_found.setter
+    def no_tests_found(self, value: bool) -> None:
+        self.tests.no_tests_found = value
+
+    @property
+    def timed_out(self) -> bool:
+        return self.tests.timed_out
+
+    @timed_out.setter
+    def timed_out(self, value: bool) -> None:
+        self.tests.timed_out = value
+
+    @property
+    def freshness(self) -> str | None:
+        return self.freshness_info.status
+
+    @freshness.setter
+    def freshness(self, value: str | None) -> None:
+        self.freshness_info.status = value
+
+    @property
+    def commits_since_base(self) -> int:
+        return self.freshness_info.commits_since_base
+
+    @commits_since_base.setter
+    def commits_since_base(self, value: int) -> None:
+        self.freshness_info.commits_since_base = value
+
+    @property
+    def overlapping_files(self) -> list[str]:
+        return self.freshness_info.overlapping_files
+
+    @overlapping_files.setter
+    def overlapping_files(self, value: list[str]) -> None:
+        self.freshness_info.overlapping_files = value
+
+    @property
+    def pane_age_hours(self) -> float:
+        return self.freshness_info.pane_age_hours
+
+    @pane_age_hours.setter
+    def pane_age_hours(self, value: float) -> None:
+        self.freshness_info.pane_age_hours = value
+
+    @property
+    def stale_files(self) -> list[str]:
+        return self.freshness_info.stale_files
+
+    @stale_files.setter
+    def stale_files(self, value: list[str]) -> None:
+        self.freshness_info.stale_files = value
+
+    @property
+    def retry_count(self) -> int:
+        return self.automation.retry_count
+
+    @retry_count.setter
+    def retry_count(self, value: int) -> None:
+        self.automation.retry_count = value
+
+    @property
+    def auto_responses(self) -> int:
+        return self.automation.auto_responses
+
+    @auto_responses.setter
+    def auto_responses(self, value: int) -> None:
+        self.automation.auto_responses = value
+
+    @property
+    def lt_gov(self) -> bool:
+        return self.automation.lt_gov
+
+    @lt_gov.setter
+    def lt_gov(self, value: bool) -> None:
+        self.automation.lt_gov = value
+
+    @property
+    def claim_violations(self) -> list[str]:
+        return self.contract.claim_violations
+
+    @claim_violations.setter
+    def claim_violations(self, value: list[str]) -> None:
+        self.contract.claim_violations = value
+
+    @property
+    def missing_test_coverage(self) -> list[str]:
+        return self.contract.missing_test_coverage
+
+    @missing_test_coverage.setter
+    def missing_test_coverage(self, value: list[str]) -> None:
+        self.contract.missing_test_coverage = value
+
+    @property
+    def evals(self) -> list[dict] | None:
+        return self.contract.evals
+
+    @evals.setter
+    def evals(self, value: list[dict] | None) -> None:
+        self.contract.evals = value
+
+    def to_dict(self) -> dict:
+        return {
+            "slug": self.slug,
+            "verdict": self.verdict,
+            "commit_count": self.commit_count,
+            "branch": self.branch,
+            "stat": self.stat,
+            "diff": self.diff,
+            "commit_log": self.commit_log,
+            "uncommitted": self.uncommitted,
+            "files_changed": self.files_changed,
+            "changed_files": self.changed_files,
+            "protected_touched": self.protected_touched,
+            "issues": self.issues,
+            "error": self.error,
+            "tests_passed": self.tests_passed,
+            "tests_ran": self.tests_ran,
+            "test_output": self.test_output,
+            "no_tests_found": self.no_tests_found,
+            "timed_out": self.timed_out,
+            "freshness": self.freshness,
+            "commits_since_base": self.commits_since_base,
+            "overlapping_files": self.overlapping_files,
+            "pane_age_hours": self.pane_age_hours,
+            "stale_files": self.stale_files,
+            "retry_count": self.retry_count,
+            "auto_responses": self.auto_responses,
+            "lt_gov": self.lt_gov,
+            "claim_violations": self.claim_violations,
+            "missing_test_coverage": self.missing_test_coverage,
+            "evals": self.evals,
+        }
 
 
 def _inspect_worker_pane(
@@ -96,7 +324,7 @@ def _inspect_worker_pane(
         return ReviewInfo(slug=slug, error=f"Pane not found: {slug}")
 
     if target.get("role") == "lt-gov":
-        return ReviewInfo(slug=slug, verdict="safe", lt_gov=True)
+        return ReviewInfo(slug=slug, verdict="safe", lt_gov_init=True)
 
     wt = target.get("worktree_path", "")
     branch = target.get("branch_name", "")
@@ -208,12 +436,12 @@ def _inspect_worker_pane(
         files_changed=len(changed_files),
         changed_files=sorted(changed_files),
         issues=issues,
-        retry_count=retry_count,
-        auto_responses=auto_respond_count,
-        freshness=freshness.get("freshness"),
-        commits_since_base=freshness.get("commits_since_base", 0),
-        overlapping_files=freshness.get("overlapping_files", []),
-        pane_age_hours=freshness.get("pane_age_hours", 0.0),
+        retry_count_init=retry_count,
+        auto_responses_init=auto_respond_count,
+        freshness_init=freshness.get("freshness"),
+        commits_since_base_init=freshness.get("commits_since_base", 0),
+        overlapping_files_init=freshness.get("overlapping_files", []),
+        pane_age_hours_init=freshness.get("pane_age_hours", 0.0),
     )
     if f_full is not None:
         diff_result = f_full.result()

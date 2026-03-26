@@ -115,6 +115,8 @@ class TestPaneReview:
         output = json.loads(result.output)
         assert output["verdict"] == "safe"
         assert output["commit_count"] == 3
+        assert "tests" not in output
+        assert "freshness_info" not in output
 
     def test_review_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
