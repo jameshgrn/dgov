@@ -361,16 +361,16 @@ def pane_create(
             permission_mode=permission_mode,
         )
         # One-line summary for quick scanning (especially in background notifications)
-        review = lifecycle.review or {}
+        review = lifecycle.review
         summary_parts = [f"[{lifecycle.state}]", lifecycle.slug]
-        if review.get("commit_count"):
-            summary_parts.append(f"{review['commit_count']} commits")
-        if review.get("tests_passed") is True:
+        if review and review.commit_count:
+            summary_parts.append(f"{review.commit_count} commits")
+        if review and review.tests_passed is True:
             summary_parts.append("tests✓")
-        elif review.get("tests_passed") is False:
+        elif review and review.tests_passed is False:
             summary_parts.append("tests✗")
-        if review.get("stale_files"):
-            summary_parts.append(f"stale:{len(review['stale_files'])} files")
+        if review and review.stale_files:
+            summary_parts.append(f"stale:{len(review.stale_files)} files")
         if lifecycle.error:
             summary_parts.append(f"error: {lifecycle.error[:80]}")
         click.echo(" ".join(summary_parts))
