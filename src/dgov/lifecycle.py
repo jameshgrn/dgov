@@ -527,7 +527,7 @@ def _git_exclude_files(worktree_path: str, filenames: list[str]) -> None:
 # -- Pane title --
 
 
-def _state_icon(state: str) -> str:
+def _state_icon(state: str | None) -> str:
     """Return the pane-title icon for a worker state."""
     return {
         "active": "~",
@@ -538,7 +538,13 @@ def _state_icon(state: str) -> str:
     }.get(state, "")
 
 
-def _build_pane_title(agent: str, slug: str, project_root: str, *, state: str = "") -> str:
+def _build_pane_title(
+    agent: str,
+    slug: str,
+    project_root: str,
+    *,
+    state: str | None = None,
+) -> str:
     """Build pane title for tmux pane border display.
 
     Format: ``[agent] slug`` or ``[agent] slug icon`` when *state* has a title icon.
@@ -590,9 +596,9 @@ def _setup_and_launch_agent(
     prompt: str,
     hook_prompt: str,
     all_env: dict[str, str],
-    extra_flags: str = "",
+    extra_flags: str | None = None,
     owns_worktree: bool = True,
-    base_sha: str = "",
+    base_sha: str | None = None,
     skip_auto_structure: bool = False,
     clear_done_signal: bool = False,
     role: str = "worker",
@@ -679,7 +685,7 @@ def _setup_and_launch_agent(
     # When forcing headless on a normally-interactive agent, add agent-specific flags
     if not use_interactive and agent_def.interactive and role == "worker":
         if agent_id == "claude":
-            extra_flags = f"-p {extra_flags}".strip()
+            extra_flags = f"-p {extra_flags}".strip() if extra_flags else "-p"
 
     if use_interactive:
         # Interactive TUI mode: launch without prompt, send prompt via tmux after ready.
@@ -768,12 +774,12 @@ def create_worker_pane(
     permission_mode: str = "bypassPermissions",
     slug: str | None = None,
     env_vars: dict[str, str] | None = None,
-    extra_flags: str = "",
+    extra_flags: str | None = None,
     session_root: str | None = None,
     existing_worktree: str | None = None,
     skip_auto_structure: bool = False,
     role: str = "worker",
-    parent_slug: str = "",
+    parent_slug: str | None = None,
     context_packet: ContextPacket | None = None,
 ) -> WorkerPane:
     """Create a worker pane: worktree + tmux split + agent launch.
@@ -808,7 +814,7 @@ def create_worker_pane(
         capture_output=True,
         text=True,
     )
-    base_sha = base_sha_result.stdout.strip() if base_sha_result.returncode == 0 else ""
+    base_sha = base_sha_result.stdout.strip() if base_sha_result.returncode == 0 else None
 
     # Compute context packet early for overlay logic
     packet_for_overlay = context_packet or build_context_packet(prompt)
@@ -923,10 +929,12 @@ def create_worker_pane(
 
             # 4. Setup and launch agent
             if agent_def.prompt_command == "pi":
-                extra_flags = f"{extra_flags} --no-extensions".strip()
+                extra_flags = (
+                    f"{extra_flags} --no-extensions".strip() if extra_flags else "--no-extensions"
+                )
             pi_ext = _pi_extension_flags(project_root) if agent_def.prompt_command == "pi" else ""
             if pi_ext:
-                extra_flags = f"{extra_flags} {pi_ext}".strip()
+                extra_flags = f"{extra_flags} {pi_ext}".strip() if extra_flags else pi_ext
             _setup_and_launch_agent(
                 pane_id=pane_id,
                 slug=slug,
@@ -1530,7 +1538,7 @@ def resume_worker_pane(
         hook_prompt=original_prompt,
         all_env=all_env,
         owns_worktree=True,
-        base_sha=target.get("base_sha", ""),
+        base_sha=target.get("base_sha"),
         clear_done_signal=True,
         role=target.get("role", "worker"),
     )
