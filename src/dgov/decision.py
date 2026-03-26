@@ -74,15 +74,15 @@ class ReviewOutputRequest:
     slug: str | None = None
     session_root: str | None = None
     full: bool = False
-    diff: str = ""
+    diff: str | None = None
     task_prompt: str | None = None
     file_claims: tuple[str, ...] = ()
     trace_id: str | None = None
     agent_id: str | None = None
-    review_agent: str = ""  # model to use for model-backed review
+    review_agent: str | None = None  # model to use for model-backed review
     tests_pass: bool = True
     lint_clean: bool = True
-    post_merge_check: str = ""
+    post_merge_check: str | None = None
     # Eval contract context from typed persistence (never reparsed from blobs)
     evals: tuple[dict, ...] = ()  # eval dicts this unit satisfies
 
