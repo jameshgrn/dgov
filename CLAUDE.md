@@ -29,28 +29,42 @@ Read these before doing anything:
 
 ## Policy Core
 
-These are architecture rules, not optional style preferences.
+These are architecture rules, not optional style preferences. Zero tolerance for violations — fix immediately, don't ship and plan to clean up later. If a rule conflicts with a task requirement, raise it before writing code.
 
-- **One canonical executor pipeline.** dgov must have exactly one policy owner for `preflight -> dispatch -> wait -> review -> merge -> cleanup -> recovery`. Governors and LT-GOVs should invoke that pipeline, not reimplement pieces of it in parallel entrypoints.
-- **No policy drift across surfaces.** `pane`, `mission`, `batch`, `dag`, `monitor`, dashboard actions, and merge-queue must enforce the same merge, cleanup, and recovery rules. If one path gets stricter, the others must converge.
-- **Execution graph != merge graph.** Work may run in parallel whenever dependencies, file claims, and agent capacity allow it. Merge/land may still need strict serialization on `main`. Do not couple worker utilization to merge order.
-- **File claims are first-class and exact.** Declarative task file sets are the source of truth for scheduling, preflight, conflict checks, and targeted validation. Prompt-derived touches are a fallback for freeform pane prompts, not the preferred control plane.
-- **Event-driven progression beats polling.** State transitions should advance from emitted events and persisted pane state, not tier barriers, `sleep` loops, or governor polling when a direct signal exists.
-- **Preserve recovery artifacts.** Failed review/merge/post-merge validation paths should default to leaving the pane, worktree, branch, and failure context inspectable. Do not auto-clean evidence unless the failure is fully recoverable and intentionally handled.
-- **Intelligence hierarchy: determinism → statistics → LLM.** Use the cheapest sufficient signal. Deterministic checks first (state machine, file claims, freshness). Statistical data second (reliability scores, latency, retry rates from the decision journal). LLM judgment only when the first two are insufficient.
-- **Separate judgment from execution.** The kernel computes what kind of decision is needed. A provider returns a structured decision. The kernel executes the deterministic consequence. No module should both gather facts and act on them in the same call.
-- **Consensus and validation over self-reported confidence.** Never use LLM confidence scores as escalation signals — models are overconfident when wrong. Escalation triggers: two cheap providers disagree (consensus), output fails property tests (validation), or historical accuracy is low (calibration). Disagreement is a real signal; confidence is vibes.
-- **Zero tolerance for policy violations.** Every rule in this Policy Core section is an architecture constraint, not a style preference. If you find code that violates a rule, fix it immediately — do not ship the violation and plan to fix it later. If a rule conflicts with a task requirement, raise it before writing code. No exceptions, no "we'll clean it up next sprint."
-- **Wide typed columns over JSON blobs.** All queryable data in SQLite must be typed columns — never JSON that requires `json_extract` to query. `WHERE verdict = 'safe'` must work, not `WHERE json_extract(data, '$.verdict') = 'safe'`. The only acceptable TEXT blobs are: (1) opaque archives not intended for SQL queries (raw transcripts, prompt text), (2) variable-length lists serialized as JSON where the list itself is the value (file_claims, stale_files), never nested objects. If you catch yourself writing `json_extract` in a query, the schema is wrong — add typed columns.
-- **Plan contracts persist as typed data.** Evals and unit-to-eval links are part of the executable contract. They must be stored in typed SQLite tables tied to the DAG run, not only in TOML or `definition_json`. Archive blobs may duplicate them, but queries and review logic must not depend on reparsing blobs.
-- **No `time.sleep` in orchestration.** Named pipe (`events.pipe`) notification for all wait operations. `select()` blocks on kernel event, never CPU spin. Acceptable sleeps: tmux sequencing delays, UI refresh loops, SQLite lock backoff. Nothing else.
-- **Roles, not models.** Governor dispatches `worker`/`supervisor`/`manager` — never model names. Router resolves roles to physical models via `agents.toml` routing tables. Governor never judges model capability; routing policy and task-level outcome data do. Frontier-model bias against small models is a bug, not a feature.
-- **Every state transition emits an event.** No silent state changes anywhere. Events are the audit trail AND the notification mechanism (pipe wakeup). If it didn't emit, it didn't happen.
-- **Quality gates are deterministic first.** Test existence, lint pass, file claims, diff structure — all checked without an LLM. Model-backed review only fires after deterministic gates pass. The intelligence hierarchy (determinism → statistics → LLM) applies to review too.
-- **Bounded retry with role escalation.** 2 attempts per tier, 3 tiers (worker → supervisor → manager), then governor alert. Max 6 attempts before human intervention. Each retry gets the specific failure context. Escalation is policy, not judgment.
+### Pipeline
+
+- **One canonical pipeline, no drift.** Exactly one policy owner for `preflight → dispatch → wait → review → merge → cleanup → recovery`. All surfaces (`pane`, `dag`, `monitor`, merge-queue) enforce the same rules. If one path gets stricter, the others must converge. Governors and LT-GOVs invoke the pipeline, not reimplement pieces.
+- **Plans are the contract.** Governor writes PlanSpec, compiler produces DagDefinition, kernel executes. Plan compilation is deterministic code, not LLM reasoning. Plans over ad-hoc dispatch — ad-hoc `pane create` is for single-file micro-tasks and emergency recovery only. Plans declare file claims, evals, and dependencies up front.
+
+### State & Events
+
+- **Events are the source of truth.** Every state transition emits an event — no silent changes. Events are the audit trail AND the notification mechanism (pipe wakeup). State advances from emitted events, not polling or `sleep` loops. No `time.sleep` in orchestration — `select()` on named pipe. Acceptable sleeps: tmux sequencing, UI refresh, SQLite lock backoff only.
+- **Derive, don't store.** If a value can be computed from events, don't cache it in a flag or column. Cached derived state drifts from truth. Compute on read; the events are the ledger.
+- **Make wrong states impossible.** Discriminated unions over optional bags. If two fields are mutually exclusive, model them as enum variants, not two `Optional` fields where both-set or neither-set are "impossible but representable." StrEnum members over raw strings.
+- **Typed columns over JSON blobs.** All queryable data in SQLite must be typed columns — never `json_extract` to query. `WHERE verdict = 'safe'` must work. Acceptable TEXT blobs: opaque archives (transcripts, prompts) and variable-length lists where the list itself is the value. Evals and unit-to-eval links persist as typed tables, not only in TOML or `definition_json`.
 - **The kernel never sleeps.** Pure state machine: `(state, event) → (new_state, actions)`. No I/O, no blocking, no subprocess calls, no imports at module level. The kernel computes; the executor acts.
-- **Plans are the contract.** Governor writes PlanSpec, compiler produces DagDefinition, kernel executes. Plan compilation is deterministic code, not LLM reasoning. The plan is immutable during execution, and its eval contract must remain queryable after submission.
-- **Plans over ad-hoc dispatch.** Governor dispatches implementation work via `dgov plan run`, not `dgov pane create`. Ad-hoc `pane create` is for single-file micro-tasks and emergency recovery only. Plans declare file claims, evals, and dependencies up front — ad-hoc dispatch skips all three. If a task touches more than one file or needs a test, it needs a plan.
+
+### Intelligence & Review
+
+- **Intelligence hierarchy: determinism → statistics → LLM.** Use the cheapest sufficient signal. Deterministic checks first (state machine, file claims, freshness, test existence, lint, diff structure). Statistical data second (reliability scores, retry rates). LLM judgment only when the first two are insufficient. This applies to review too — model review fires only after deterministic gates pass.
+- **Separate judgment from execution.** The kernel computes what decision is needed. A provider returns a structured decision. The kernel executes the deterministic consequence. No module should both gather facts and act on them in the same call.
+- **Consensus and validation over self-reported confidence.** Never use LLM confidence scores as escalation signals — models are overconfident when wrong. Escalation triggers: providers disagree (consensus), output fails property tests (validation), or historical accuracy is low (calibration). Disagreement is a real signal; confidence is vibes.
+
+### Scheduling & Dispatch
+
+- **Execution graph != merge graph.** Work runs in parallel when dependencies, file claims, and agent capacity allow. Merge/land may still serialize on `main`. Do not couple worker utilization to merge order.
+- **File claims are first-class and exact.** Declarative task file sets are the source of truth for scheduling, preflight, conflict checks, and targeted validation. Prompt-derived touches are a fallback, not the preferred control plane.
+- **Roles, not models.** Governor dispatches `worker`/`supervisor`/`manager` — never model names. Router resolves roles to physical backends via `agents.toml`. Governor never judges model capability; routing policy and outcome data do. Frontier-model bias against small models is a bug.
+- **Bounded retry with role escalation.** 2 attempts per tier, 3 tiers (worker → supervisor → manager), then governor alert. Max 6 attempts before human. Each retry gets the specific failure context. Escalation is policy, not judgment.
+
+### Recovery
+
+- **Preserve recovery artifacts.** Failed paths default to leaving the pane, worktree, branch, and failure context inspectable. Do not auto-clean evidence unless the failure is fully recoverable and intentionally handled.
+
+### Code Quality
+
+- **Enforce function contracts.** Pure functions stay pure — no side effects, no I/O, no state mutation. Functions that mutate return `None` (mutate+void) or clone first (clone+return). Never mutate an input AND return it.
+- **Data over procedure.** If every branch returns the same shape, replace the conditional with a lookup table. Dispatch tables, dicts, and enums over if/elif chains. The table is the spec; the procedure is just the table with extra steps.
 
 ## DAG Principles
 

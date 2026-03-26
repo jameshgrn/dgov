@@ -5,8 +5,8 @@ description: |
   enters governor role. Use when user asks to "spin up a worker", "dispatch
   a pane", "run dgov", or delegates a task to an agent.
 author: Jake Gearon
-version: 3.0.0
-date: 2026-03-18
+version: 4.0.0
+date: 2026-03-26
 ---
 
 # dgov — governor bootstrap
@@ -18,35 +18,40 @@ When this skill is invoked, perform the following steps IN ORDER before doing an
 Read these if they exist (do NOT fail if missing):
 
 1. `HANDOVER.md` in project root — previous session summary
-2. `.napkin.md` in project root — running session log with mistakes and patterns
+2. `CODEBASE.md` in project root — module map, call graphs (auto-generated)
 
-## Step 2: Verify environment
+## Step 2: Read operational ledger
 
-Run these checks in parallel:
+```bash
+uv run dgov ledger list -r . -c bug -s open 2>/dev/null || echo "no open bugs"
+uv run dgov ledger list -r . -c rule 2>/dev/null || echo "no rules"
+uv run dgov ledger list -r . -c debt -s open 2>/dev/null || echo "no open debt"
+```
+
+## Step 3: Verify environment (run in parallel)
 
 1. **tmux session**: `tmux list-sessions 2>&1 | grep dgov` — confirm a dgov session exists
 2. **Branch**: `git rev-parse --abbrev-ref HEAD` — must be `main`
 3. **Role**: `git rev-parse --git-dir` — must return `.git` (not a worktree)
-4. **Active panes**: `dgov status -r .` — show current worker state
+4. **Active panes**: `uv run dgov status -r .` — show current worker state
 
-## Step 3: Check agent availability
+## Step 4: Check agent availability (run in parallel)
 
-Run in parallel:
+1. **Tunnel health**: `curl -sf http://localhost:8080/health --max-time 3` — if unreachable, note "River tunnel down — workers will route to OpenRouter"
+2. **GPU status** (if tunnel healthy): `ssh river "nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader" 2>/dev/null` — show GPU load
 
-1. **pi health**: `curl -sf http://localhost:11434/api/tags --max-time 3` — if unreachable, note "pi unavailable (River tunnel down?)"
-2. **GPU status** (if pi healthy): `ssh river "nvidia-smi --query-gpu=index,utilization.gpu --format=csv,noheader" 2>/dev/null` — show GPU load
-
-## Step 4: Report readiness
+## Step 5: Report readiness
 
 Print a compact status block:
 
 ```
 dgov governor ready
-  session: dgov-dgov (attached)
-  branch:  main
+  session: dgov (attached)
+  branch:  main @ <sha>
   panes:   0 active / 0 done / 0 failed
-  pi:      healthy (GPU 0: 0%, GPU 1: 0%)
-  handover: found (3 open issues)
+  tunnel:  healthy (GPU 0: 0%, GPU 1: 0%)
+  ledger:  N open bugs, N rules, N debt
+  handover: found (N open issues) | not found
 ```
 
 Or if something is wrong:
@@ -55,18 +60,20 @@ Or if something is wrong:
 dgov governor NOT READY
   session: none found — run `dgov` to create one
   branch:  feature-x — switch to main first
-  pi:      unreachable — check River tunnel
+  tunnel:  unreachable — run `dgov tunnel`
 ```
 
-## Step 5: Enter governor mode
+## Step 6: Enter governor mode
 
-After reporting status, you are the governor. Rules:
+After reporting status, you are the governor. All rules from CLAUDE.md apply. Key reminders:
 
-- You dispatch workers via `dgov pane create`. You do not edit `src/` or `tests/` directly.
-- Default agent: `hunter` (free, OpenRouter). Escalate to `claude`, `codex`, `codex-mini`, `gemini` when needed.
-- Always `review` before `merge`. Run lint + targeted tests after merge.
-- Don't block on `dgov pane wait` — poll with `dgov pane list`, update .napkin.md and HANDOVER.md while waiting.
-- One action per turn. Use the action grammar from CLAUDE.md.
+- You dispatch workers via `uv run dgov plan run` (preferred) or `uv run dgov pane create --land` (micro-tasks)
+- Default role: `worker` (routes to qwen-9b). Use `--agent qwen-35b` for multi-file.
+- Always use logical agent names — never physical names
+- Run `--land` dispatches with `run_in_background: true` — stay responsive
+- Use `/dgov-dispatch` to build worker prompts
+- Use `/dgov-handover` before ending a session
+- Use `/dgov-debrief` after failures or at session end
 
 Then either:
 - **If HANDOVER.md exists**: summarize open issues and ask which to tackle
@@ -75,24 +82,26 @@ Then either:
 ## Reference: core commands
 
 ```bash
-dgov pane create -a <agent> -p "<prompt>" -r .   # dispatch
-dgov pane list                                     # poll status (prefer over wait)
-dgov pane review <slug>                            # inspect diff
-dgov pane merge <slug>                             # integrate
-dgov pane land <slug>                              # review+merge+close
-dgov pane close <slug>                             # cleanup
-dgov dashboard --pane                              # launch dashboard
-dgov refresh -r .                                  # reinstall + restart dashboard/terrain/lazygit
+uv run dgov pane create --land -a <agent> -s <slug> -r . -p "<prompt>"  # dispatch + full lifecycle
+uv run dgov plan run .dgov/plans/<name>.toml --wait                     # plan-driven dispatch
+uv run dgov status -r .                                                 # current state
+uv run dgov pane land <slug>                                            # manual review+merge+close
+uv run dgov pane review <slug>                                          # inspect diff
+uv run dgov pane close <slug>                                           # cleanup only
+uv run dgov pane transcript <slug>                                      # view worker session
+uv run dgov agent list -r .                                             # installed agents
+uv run dgov agent stats -r .                                            # reliability metrics
+uv run dgov ledger add <category> "<summary>" -r .                      # record knowledge
+uv run dgov ledger resolve <id> -s fixed                                # resolve items
 ```
 
-## Reference: agent selection
+## Reference: agent roles
 
-| Agent | When to use |
-|-------|-------------|
-| `hunter` | Default. Free via OpenRouter, 1M context. Single-file, well-scoped tasks |
-| `pi` | Like hunter but local GPU (River). Use when tunnel is up and GPU is idle |
-| `claude` | Multi-file reasoning, architecture, ambiguous debugging |
-| `codex` | Adversarial review, security audit, algorithms (default model gpt-5.4) |
-| `codex-mini` | Like codex but gpt-5.1-codex-mini (400K context, 128K output, cheaper) |
-| `gemini` | Large context analysis, broad refactors touching many files |
-| `cursor` | Cursor agent with opus-4.6-thinking |
+| Role | Routes to | When to use |
+|------|-----------|-------------|
+| `worker` | qwen-9b (default) | Single-file, well-scoped, mechanical |
+| `worker --agent qwen-35b` | qwen-35b | Multi-file (2-4), needs judgment, autonomous mode |
+| `lt-gov` | codex-mini | Adversarial review, security audit, large refactors |
+| governor | claude/gemini | Exception handling, planning (you) |
+
+Escalation: 9b -> 35b -> 122b -> 397b (ceiling). Never dispatch governor-tier as workers.
