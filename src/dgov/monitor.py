@@ -330,10 +330,6 @@ def poll_workers(
                 "keystroke": hook.keystroke,
             }
             classification = "hook_match"
-            # Persist to metadata so dgov status can see it (only if changed)
-            last_match = w.get("metadata", {}).get("last_hook_match")
-            if last_match != hook_info:
-                set_pane_metadata(session_root, slug, last_hook_match=hook_info)
 
         results.append(
             {
@@ -1399,6 +1395,9 @@ def run_monitor(
                 )
 
                 for w in workers:
+                    # Persist hook match metadata (extracted from poll_workers)
+                    if w.get("hook_match"):
+                        set_pane_metadata(session_root, w["slug"], last_hook_match=w["hook_match"])
                     action = _take_action(project_root, session_root, w, history)
                     if action:
                         actions.append({"slug": w["slug"], "action": action})
