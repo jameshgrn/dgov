@@ -423,9 +423,9 @@ class WorkerPane:
     branch_name: str
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
-    base_sha: str = ""
-    parent_slug: str = ""
-    tier_id: str = ""
+    base_sha: str | None = None
+    parent_slug: str | None = None
+    tier_id: str | None = None
     role: str = "worker"
     state: str = "active"
     file_claims: tuple[str, ...] = ()
