@@ -23,7 +23,7 @@ from dgov.executor import (
     run_wait_only,
 )
 from dgov.inspection import ReviewInfo
-from dgov.merger import PaneMergeResult
+from dgov.merger import MergeError, MergeSuccess
 
 pytestmark = pytest.mark.unit
 
@@ -291,7 +291,7 @@ class TestPostDispatchLifecycle:
             ),
             patch(
                 "dgov.merger.merge_worker_pane",
-                return_value=PaneMergeResult(merged="task", branch="task"),
+                return_value=MergeSuccess(merged="task", branch="task"),
             ),
         ):
             result = run_post_dispatch_lifecycle(
@@ -377,7 +377,7 @@ class TestPostDispatchLifecycle:
             ),
             patch(
                 "dgov.merger.merge_worker_pane",
-                return_value=PaneMergeResult(merged="task-2", branch="task-2"),
+                return_value=MergeSuccess(merged="task-2", branch="task-2"),
             ),
         ):
             result = run_post_dispatch_lifecycle(
@@ -578,7 +578,7 @@ class TestReviewMerge:
                 "dgov.executor.run_merge_only",
                 return_value=MagicMock(
                     error=None,
-                    merge_result=PaneMergeResult(merged="task", branch="task"),
+                    merge_result=MergeSuccess(merged="task", branch="task"),
                 ),
             ) as mock_merge,
         ):
@@ -622,7 +622,7 @@ class TestReviewMerge:
                     slug="task",
                     review={"slug": "task", "verdict": "safe", "commit_count": 2},
                     review_record=None,
-                    merge_result=PaneMergeResult(merged="task", branch="task"),
+                    merge_result=MergeSuccess(merged="task", branch="task"),
                     failure_stage=None,
                     error=None,
                 ),
@@ -786,9 +786,12 @@ class TestNewSyscalls:
             return claimed
 
         def _land(*_args, **_kwargs):
-            from dgov.merger import PaneMergeResult
+            from dgov.merger import MergeSuccess
 
-            return MagicMock(merge_result=PaneMergeResult(merged="test-branch"), error=None)
+            return MagicMock(
+                merge_result=MergeSuccess(merged="test-branch", branch="test-branch"),
+                error=None,
+            )
 
         monkeypatch.setattr("dgov.persistence.claim_next_merge", _claim)
         monkeypatch.setattr("dgov.executor.run_land_only", _land)
@@ -825,8 +828,9 @@ class TestNewSyscalls:
             return claimed
 
         def _land(*_args, **_kwargs):
+
             return MagicMock(
-                merge_result=PaneMergeResult(error="review failed"),
+                merge_result=MergeError(error="review failed", slug="test"),
                 error="review failed",
             )
 

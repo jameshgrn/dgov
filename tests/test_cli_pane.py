@@ -11,7 +11,7 @@ from click.testing import CliRunner
 from dgov.cli import cli
 from dgov.executor import PaneFinalizeResult
 from dgov.inspection import ReviewInfo
-from dgov.merger import PaneMergeResult
+from dgov.merger import MergeSuccess
 
 pytestmark = pytest.mark.unit
 
@@ -137,7 +137,7 @@ class TestPaneLand:
                 PaneFinalizeResult(
                     slug="task",
                     review=ReviewInfo(slug="task", verdict="safe", commit_count=2),
-                    merge_result=PaneMergeResult(merged="task", branch="task", files_changed=1),
+                    merge_result=MergeSuccess(merged="task", branch="task", files_changed=1),
                     error=None,
                     cleanup_error=None,
                 )

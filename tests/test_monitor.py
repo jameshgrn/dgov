@@ -14,7 +14,7 @@ from dgov.decision import (
     StaticDecisionProvider,
 )
 from dgov.inspection import ReviewInfo
-from dgov.merger import PaneMergeResult
+from dgov.merger import MergeSuccess
 
 pytestmark = pytest.mark.unit
 
@@ -556,7 +556,7 @@ class TestTryAutoMerge:
             (),
             {
                 "review": ReviewInfo(slug="test-1", verdict="safe", commit_count=1),
-                "merge_result": PaneMergeResult(merged="test-1", branch="dgov-test-1"),
+                "merge_result": MergeSuccess(merged="test-1", branch="dgov-test-1"),
                 "error": None,
             },
         )()

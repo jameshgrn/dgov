@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dgov.merger import PaneMergeResult
+from dgov.merger import MergeSuccess
 from dgov.review_fix import (
     ReviewFinding,
     ReviewParseError,
@@ -408,7 +408,7 @@ class TestPipelineFull:
         )
         mock_merge.return_value = MagicMock(
             error=None,
-            merge_result=PaneMergeResult(merged="fix-foo", branch="fix-foo", tests_passed=True),
+            merge_result=MergeSuccess(merged="fix-foo", branch="fix-foo", tests_passed=True),
         )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
@@ -627,7 +627,7 @@ class TestPipelineFull:
         )
         mock_merge.return_value = MagicMock(
             error=None,
-            merge_result=PaneMergeResult(merged="fix-foo", branch="fix-foo", tests_passed=False),
+            merge_result=MergeSuccess(merged="fix-foo", branch="fix-foo", tests_passed=False),
         )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)

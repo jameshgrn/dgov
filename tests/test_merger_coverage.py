@@ -10,6 +10,8 @@ import pytest
 from dgov.backend import set_backend
 from dgov.inspection import MergeResult
 from dgov.merger import (
+    MergeConflict,
+    MergeSuccess,
     _lint_fix_merged_files,
     _no_squash_merge,
     _pick_resolver_agent,
@@ -398,7 +400,8 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
         result = merge_worker_pane(str(repo), "conflict-pane", session_root=str(repo))
 
     # Rebase fails, falls back to plumbing merge which detects the conflict
-    assert result.error == "Merge conflict in dgov-conflict"
+    assert isinstance(result, MergeConflict), f"Expected MergeConflict, got {type(result)}"
+    assert result.hint == "Re-run with --resolve agent or --resolve manual."
     assert result.slug == "conflict-pane"
     assert result.branch == "dgov-conflict"
     assert (repo / "README.md").read_text() == "main change\n"
@@ -635,11 +638,11 @@ def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
         )
 
     # Rebase fails → plumbing merge → conflict → manual resolution path
-    assert result.error is None
+    assert isinstance(result, MergeConflict)
     assert result.slug == "manual-pane"
     assert result.branch == "dgov-manual"
     assert result.resolve == "manual"
-    assert result.conflicts is not None
+    assert len(result.conflicts) > 0
     mock_update_state.assert_called_once_with(str(repo), "manual-pane", "merge_conflict")
     mock_emit_event.assert_called_once_with(
         str(repo), "pane_merge_conflict", "manual-pane", branch="dgov-manual"
@@ -1084,7 +1087,7 @@ def test_merge_worker_pane_falls_back_when_rebase_fails(
         result = merge_worker_pane(str(repo), "rebase-fb", session_root=session_root)
 
     # Should succeed via plumbing merge fallback, not error
-    assert result.error is None, f"Unexpected error: {result}"
+    assert isinstance(result, MergeSuccess), f"Expected MergeSuccess, got {type(result)}"
     assert result.merged == "rebase-fb"
     assert result.rebase_fallback is True
 
@@ -1248,8 +1251,9 @@ def test_lint_unfixable_issues_block_merge_completion(
         result = merge_worker_pane(str(repo), "lint-unfixable", session_root=str(repo))
 
     # Lint issues are advisory — should still succeed and be marked merged
+    assert isinstance(result, MergeSuccess)
     assert result.merged == "lint-unfixable"
-    assert result.validation_failed is False
+    assert len(result.lint_unfixable_files) > 0
     # Worktree gets cleaned up after successful merge
     mock_update_state.assert_called_once()
 

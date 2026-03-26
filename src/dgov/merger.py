@@ -17,16 +17,12 @@ from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PaneMergeResult:
-    """Typed result from merge_worker_pane replacing the untyped dict.
+@dataclass(frozen=True)
+class MergeSuccess:
+    """Merge succeeded - represents successful merge outcomes."""
 
-    Mutable because it is built incrementally during the merge process.
-    """
-
-    # Success fields
-    merged: str | None = None
-    branch: str = ""
+    merged: str
+    branch: str
     stat: str = ""
     files_changed: int = 0
     changed_files: list[str] = field(default_factory=list)
@@ -36,29 +32,44 @@ class PaneMergeResult:
     rebase_fallback: bool = False
     stash_warnings: list[str] = field(default_factory=list)
     warning: str | None = None
-    # Error fields
-    error: str | None = None
+    tests_passed: bool | None = None
+    tests_ran: list[str] = field(default_factory=list)
+    test_output: str = ""
+    no_tests_found: bool = False
+    timed_out: bool = False
+    fixed: list[str] = field(default_factory=list)
+    unfixable: list[str] = field(default_factory=list)
+    lint_unfixable: bool = False
+    lint_unfixable_files: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MergeError:
+    """Merge failed - represents error outcomes."""
+
+    error: str
     slug: str | None = None
+    branch: str = ""
     hint: str | None = None
     current_state: str | None = None
     pane_id: str | None = None
     dirty_files: list[str] = field(default_factory=list)
     claim_violations: list[str] = field(default_factory=list)
     validation_failed: bool = False
-    # Conflict fields
-    conflicts: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class MergeConflict:
+    """Merge has unresolved conflicts - represents conflict outcomes."""
+
+    conflicts: list[str]
+    slug: str | None = None
+    branch: str = ""
+    hint: str | None = None
     resolve: str | None = None
-    # Post-merge artifacts
-    tests_passed: bool | None = None
-    tests_ran: list[str] = field(default_factory=list)
-    test_output: str = ""
-    no_tests_found: bool = False
-    timed_out: bool = False
-    # Lint artifacts
-    fixed: list[str] = field(default_factory=list)
-    unfixable: list[str] = field(default_factory=list)
-    lint_unfixable: bool = False
-    lint_unfixable_files: list[str] = field(default_factory=list)
+
+
+PaneMergeResult = MergeSuccess | MergeError | MergeConflict
 
 
 def _count_branch_commits(project_root: str, branch_name: str) -> int:
@@ -1038,9 +1049,9 @@ def _check_merge_preconditions(
 
     # State checks
     if pane_state == "merged":
-        return PaneMergeResult(merged=slug, branch=branch_name, already_merged=True)
+        return MergeSuccess(merged=slug, branch=branch_name, already_merged=True)
     if pane_state not in ("done", "reviewed_pass"):
-        return PaneMergeResult(
+        return MergeError(
             error=f"Pane {slug} is in state '{pane_state}', not 'done'",
             slug=slug,
             current_state=pane_state,
@@ -1050,7 +1061,7 @@ def _check_merge_preconditions(
     # Agent-attached check (only for non-done panes)
     pane_id = target.get("pane_id", "")
     if pane_state not in ("done", "reviewed_pass") and pane_id and _agent_still_running(pane_id):
-        return PaneMergeResult(
+        return MergeError(
             error=f"Agent process still attached to pane {slug}",
             slug=slug,
             pane_id=pane_id,
@@ -1060,7 +1071,7 @@ def _check_merge_preconditions(
     # Dirty worktree check
     dirty_files = _check_dirty_worktree(worktree_path, exclude_protected=True)
     if dirty_files:
-        return PaneMergeResult(
+        return MergeError(
             error=f"Worktree for pane {slug} has uncommitted changes",
             slug=slug,
             dirty_files=dirty_files,
@@ -1120,7 +1131,7 @@ def _check_merge_preconditions(
                         error=f"Undeclared files: {sorted(undeclared)}",
                     )
                     if strict_claims:
-                        return PaneMergeResult(
+                        return MergeError(
                             error=violation_msg,
                             slug=slug,
                             claim_violations=sorted(undeclared),
@@ -1290,9 +1301,9 @@ def _build_success_result(
     lint_result: dict,
     test_result: dict,
     warning_msg: str | None,
-) -> PaneMergeResult:
-    """Build PaneMergeResult for a successful merge."""
-    return PaneMergeResult(
+) -> MergeSuccess:
+    """Build a successful merge result."""
+    return MergeSuccess(
         merged=slug,
         branch=branch_name,
         stat=merge_stat,
@@ -1328,7 +1339,7 @@ def _handle_merge_conflicts(
     if not conflicts:
         error_msg = merge.stderr.strip() if merge.stderr else f"Merge failed for {branch_name}"
         _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
-        return PaneMergeResult(error=error_msg)
+        return MergeError(error=error_msg)
 
     _persist.update_pane_state(session_root, slug, "merge_conflict")
     _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
@@ -1339,11 +1350,11 @@ def _handle_merge_conflicts(
         )
         if resolved:
             _finalize_merged_pane(pane_project_root, session_root, slug, target, branch_name)
-            return PaneMergeResult(merged=slug, branch=branch_name, resolved_by="agent")
-        return PaneMergeResult(
+            return MergeSuccess(merged=slug, branch=branch_name, resolved_by="agent")
+        return MergeConflict(
+            conflicts=conflicts,
             slug=slug,
             branch=branch_name,
-            conflicts=conflicts,
             hint="Agent resolution failed. Resolve conflicts manually.",
         )
     if resolve == "manual":
@@ -1352,22 +1363,21 @@ def _handle_merge_conflicts(
             capture_output=True,
             text=True,
         )
-        return PaneMergeResult(
+        return MergeConflict(
+            conflicts=conflicts,
             slug=slug,
             branch=branch_name,
-            conflicts=conflicts,
             resolve="manual",
             hint="Conflict markers left in working tree. Resolve manually.",
         )
     if resolve == "skip":
-        return PaneMergeResult(
-            error=f"Merge conflict in {branch_name}",
+        return MergeConflict(
+            conflicts=conflicts,
             slug=slug,
             branch=branch_name,
-            conflicts=conflicts,
             hint="Re-run with --resolve agent or --resolve manual.",
         )
-    return PaneMergeResult(error=f"Unknown resolve strategy: {resolve}")
+    return MergeError(error=f"Unknown resolve strategy: {resolve}")
 
 
 def _execute_candidate_merge(
@@ -1475,8 +1485,9 @@ def merge_worker_pane(
 ) -> PaneMergeResult:
     """Merge a worker pane's branch with configurable conflict resolution.
 
-    Returns PaneMergeResult. Check ``result.merged`` for success,
-    ``result.error`` for failure, ``result.conflicts`` for conflict details.
+    Returns MergeSuccess on success, MergeError on failure, MergeConflict on unresolved conflicts.
+    Check the type to access appropriate fields: ``merged`` on success, ``error`` on error,
+    ``conflicts`` on conflict.
     """
     import dgov.persistence as _persist
 
@@ -1484,17 +1495,15 @@ def merge_worker_pane(
     target = _persist.get_pane(session_root, slug)
 
     if not target:
-        return PaneMergeResult(error=f"Pane not found: {slug}")
+        return MergeError(error=f"Pane not found: {slug}")
     if target.get("role") == "lt-gov":
-        return PaneMergeResult(
-            error=f"LT-GOV pane {slug} does not produce code — nothing to merge"
-        )
+        return MergeError(error=f"LT-GOV pane {slug} does not produce code — nothing to merge")
 
     branch_name = target.get("branch_name")
     pane_project_root = target.get("project_root") or project_root
     worktree_path = target.get("worktree_path", "")
     if not branch_name:
-        return PaneMergeResult(error=f"Pane {slug} is missing branch_name")
+        return MergeError(error=f"Pane {slug} is missing branch_name")
 
     # Phase 1: Preconditions
     error = _check_merge_preconditions(
@@ -1514,7 +1523,7 @@ def merge_worker_pane(
     if governor_dirty and changed_file_names:
         overlap = sorted(set(governor_dirty) & set(changed_file_names))
         if overlap:
-            return PaneMergeResult(
+            return MergeError(
                 error=(
                     f"Governor has uncommitted changes to files worker also touched: {overlap}. "
                     f"Commit governor changes before merging."
@@ -1565,7 +1574,7 @@ def merge_worker_pane(
                         ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
                         capture_output=True,
                     )
-                    return PaneMergeResult(
+                    return MergeError(
                         error=err or "Post-merge tests failed",
                         slug=slug,
                         branch=branch_name,
@@ -1573,7 +1582,7 @@ def merge_worker_pane(
                     )
                 _persist.update_pane_state(session_root, slug, "merged")
                 _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
-                return PaneMergeResult(
+                return MergeSuccess(
                     merged=slug,
                     branch=branch_name,
                     no_squash_direct=True,
@@ -1595,7 +1604,7 @@ def merge_worker_pane(
                 )
                 if failed:
                     _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
-                    return PaneMergeResult(
+                    return MergeError(
                         error=err, slug=slug, branch=branch_name, validation_failed=True
                     )
 
@@ -1610,7 +1619,7 @@ def merge_worker_pane(
                 if not apply_result.success:
                     err = apply_result.stderr or "Failed to apply validated merge to main"
                     _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
-                    return PaneMergeResult(error=err)
+                    return MergeError(error=err)
 
                 _finalize_merged_pane(
                     pane_project_root, session_root, slug, target, branch_name, merge_sha

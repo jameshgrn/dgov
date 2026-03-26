@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Callable
 from dgov.context_packet import ContextPacket, build_context_packet
 from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest, ReviewVerdict
 from dgov.inspection import ReviewInfo
+from dgov.merger import MergeError, MergeSuccess
 
 if TYPE_CHECKING:
     from dgov.merger import PaneMergeResult
@@ -1306,7 +1307,7 @@ def run_merge_only(
             strict_claims=strict_claims,
         )
 
-    _merge_error = merge_result.error or ""
+    _merge_error = merge_result.error if isinstance(merge_result, MergeError) else ""
     _merge_out = MergeOnlyResult(
         slug=slug,
         merge_result=merge_result,
@@ -1322,7 +1323,9 @@ def run_merge_only(
                 session_root or "",
                 _merge_span_id,
                 _mo,
-                files_changed=merge_result.files_changed,
+                files_changed=merge_result.files_changed
+                if isinstance(merge_result, MergeSuccess)
+                else 0,
                 error=_merge_error or "",
             )
         except Exception:
