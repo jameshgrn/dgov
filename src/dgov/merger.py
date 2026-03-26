@@ -724,7 +724,9 @@ def _check_conflict_markers(project_root: str, changed_files: list[str]) -> list
 
     Returns list of files containing markers, or empty list if clean.
     """
-    markers = (b"<<<<<<<", b"=======", b">>>>>>>")
+    import re
+
+    conflict_re = re.compile(rb"^(?:<{7}|={7}|>{7})", re.MULTILINE)
     contaminated: list[str] = []
     for fname in changed_files:
         fpath = Path(project_root) / fname
@@ -732,7 +734,7 @@ def _check_conflict_markers(project_root: str, changed_files: list[str]) -> list
             continue
         try:
             content = fpath.read_bytes()
-            if any(m in content for m in markers):
+            if conflict_re.search(content):
                 contaminated.append(fname)
         except OSError:
             continue
