@@ -1600,9 +1600,17 @@ class TestMergeWorkerPane:
     @patch("dgov.merger._plumbing_merge")
     @patch("dgov.merger._restore_protected_files")
     @patch("dgov.merger._advance_current_branch_to_commit")
+    @patch("dgov.merger._check_dirty_worktree", return_value=[])
     @patch("dgov.merger.subprocess.run")
     def test_successful_merge(
-        self, mock_run, mock_advance, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
+        self,
+        mock_run,
+        mock_dirty,
+        mock_advance,
+        mock_restore,
+        mock_merge,
+        mock_cleanup,
+        tmp_path: Path,
     ) -> None:
         from dgov.inspection import MergeResult
         from dgov.merger import merge_worker_pane
@@ -1630,9 +1638,17 @@ class TestMergeWorkerPane:
     @patch("dgov.merger._plumbing_merge")
     @patch("dgov.merger._restore_protected_files")
     @patch("dgov.merger._advance_current_branch_to_commit")
+    @patch("dgov.merger._check_dirty_worktree", return_value=[])
     @patch("dgov.merger.subprocess.run")
     def test_successful_merge_ignores_stale_abandoned_state(
-        self, mock_run, mock_advance, mock_restore, mock_merge, mock_cleanup, tmp_path: Path
+        self,
+        mock_run,
+        mock_dirty,
+        mock_advance,
+        mock_restore,
+        mock_merge,
+        mock_cleanup,
+        tmp_path: Path,
     ) -> None:
         from dgov.inspection import MergeResult
         from dgov.merger import merge_worker_pane
@@ -2270,11 +2286,15 @@ class TestRetryWorkerPane:
         panes = all_panes(str(tmp_path))
         old = next(p for p in panes if p["slug"] == "fix-bug")
         assert old["state"] == "superseded"
-        assert old["superseded_by"] == "fix-bug-2"
 
-        # Check new pane has retried_from
-        new = next(p for p in panes if p["slug"] == "fix-bug-2")
-        assert new["retried_from"] == "fix-bug"
+        # Links derived from events, not stored metadata (derive-dont-store)
+        from dgov.persistence import read_events
+
+        events = read_events(str(tmp_path), slug="fix-bug")
+        assert any(
+            e.get("event") == "pane_retry_spawned" and e.get("new_slug") == "fix-bug-2"
+            for e in events
+        )
 
     def test_attempt_increments_past_existing(self, tmp_path: Path) -> None:
         from dgov.recovery import retry_worker_pane

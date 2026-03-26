@@ -16,7 +16,6 @@ from dgov.persistence import (
     emit_event,
     get_pane,
     read_events,
-    set_pane_metadata,
     update_pane_state,
 )
 
@@ -209,9 +208,7 @@ def retry_worker_pane(
     except Exception as e:
         return {"error": str(e)}
 
-    # Link records via SQLite metadata
-    set_pane_metadata(session_root, new_slug, retried_from=slug)
-    set_pane_metadata(session_root, slug, superseded_by=new_slug)
+    # Derived from events — no stored retried_from/superseded_by (derive-dont-store).
     update_pane_state(session_root, slug, "superseded", force=True)
 
     # Emit events
@@ -251,7 +248,7 @@ def retry_or_escalate(
         return {"error": f"Pane not found: {slug}"}
 
     current_agent = rec.get("agent", "unknown")
-    retry_count = int(rec.get("retry_count", 0))
+    retry_count = len(_slug_lineage(session_root, slug)) - 1
 
     # Per-pane max_retries override takes priority (0 means "not set")
     pane_max = int(rec.get("max_retries") or 0)
@@ -278,7 +275,7 @@ def retry_or_escalate(
             return result
 
         new_count = retry_count + 1
-        set_pane_metadata(session_root, result["new_slug"], retry_count=new_count)
+        # retry_count derived from lineage length — no stored counter.
 
         return {
             "action": "retry",
@@ -319,8 +316,7 @@ def retry_or_escalate(
     if result.get("error"):
         return result
 
-    # Reset retry_count on the new (escalated) pane
-    set_pane_metadata(session_root, result["new_slug"], retry_count=0)
+    # retry_count resets naturally — escalated pane starts a new lineage.
 
     return {
         "action": "escalate",
@@ -350,16 +346,28 @@ def _resolve_escalation_target(current_agent: str, project_root: str) -> str:
 
 
 def _slug_lineage(session_root: str, slug: str) -> list[str]:
-    """Walk retried_from links back to the original slug, return all slugs in chain."""
+    """Walk retry chain back to the original slug via event log.
+
+    Derives the chain from ``pane_retry_spawned`` events rather than stored
+    ``retried_from`` fields (derive-dont-store policy).  The chain naturally
+    breaks at escalation boundaries because ``escalate_worker_pane`` emits
+    ``pane_escalated``, not ``pane_retry_spawned``.
+    """
+    # Build reverse map: child → parent from retry events
+    retried_from: dict[str, str] = {}
+    for ev in read_events(session_root):
+        if ev.get("event") == "pane_retry_spawned":
+            new = ev.get("new_slug")
+            parent = ev.get("pane")
+            if new and parent:
+                retried_from[new] = parent
+
     chain = [slug]
     visited: set[str] = {slug}
     current = slug
-    while True:
-        rec = get_pane(session_root, current)
-        if not rec:
-            break
-        parent = rec.get("retried_from")
-        if not parent or parent in visited:
+    while current in retried_from:
+        parent = retried_from[current]
+        if parent in visited:
             break
         chain.append(parent)
         visited.add(parent)

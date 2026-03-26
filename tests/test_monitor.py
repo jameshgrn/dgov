@@ -745,19 +745,8 @@ class TestTryAutoRetry:
         result = _try_auto_retry("/tmp/proj", "/tmp/proj", "test-1")
         assert result is None
 
-    @patch("dgov.monitor.read_events", return_value=[])
-    @patch("dgov.monitor.get_pane", return_value={"superseded_by": "test-1-2"})
-    def test_resolve_retry_successor_prefers_pane_metadata(self, mock_get_pane, mock_read_events):
-        from dgov.monitor import _resolve_retry_successor_slug
-
-        result = _resolve_retry_successor_slug("/tmp/proj", "test-1")
-
-        assert result == "test-1-2"
-        mock_read_events.assert_not_called()
-
     @patch("dgov.monitor.read_events", return_value=[{"new_slug": "test-1-2"}])
-    @patch("dgov.monitor.get_pane", return_value={})
-    def test_resolve_retry_successor_falls_back_to_events(self, mock_get_pane, mock_read_events):
+    def test_resolve_retry_successor_derives_from_events(self, mock_read_events):
         from dgov.monitor import _resolve_retry_successor_slug
 
         result = _resolve_retry_successor_slug("/tmp/proj", "test-1")
@@ -765,8 +754,15 @@ class TestTryAutoRetry:
         assert result == "test-1-2"
         mock_read_events.assert_called_once_with("/tmp/proj", slug="test-1", limit=5)
 
-    @patch("dgov.monitor._try_auto_retry", return_value="auto_retry")
     @patch("dgov.monitor.read_events", return_value=[])
+    def test_resolve_retry_successor_returns_none_when_no_events(self, mock_read_events):
+        from dgov.monitor import _resolve_retry_successor_slug
+
+        result = _resolve_retry_successor_slug("/tmp/proj", "test-1")
+        assert result is None
+
+    @patch("dgov.monitor._try_auto_retry", return_value="auto_retry")
+    @patch("dgov.monitor.read_events", return_value=[{"new_slug": "test-1-2"}])
     @patch("dgov.monitor.get_pane")
     def test_process_auto_retry_candidates_tracks_new_active_slug(
         self,
@@ -778,7 +774,6 @@ class TestTryAutoRetry:
 
         mock_get_pane.side_effect = [
             {"slug": "test-1", "state": "failed"},
-            {"superseded_by": "test-1-2"},
         ]
         state = MonitorLoopState(
             event_cursor=0,

@@ -786,11 +786,10 @@ def _process_auto_merge_candidates(
 
 
 def _resolve_retry_successor_slug(session_root: str, slug: str) -> str | None:
-    """Resolve the new pane slug created by retry/escalation side effects."""
-    pane_after = get_pane(session_root, slug) or {}
-    new_slug = str(pane_after.get("superseded_by", ""))
-    if new_slug:
-        return new_slug
+    """Resolve the new pane slug created by retry/escalation side effects.
+
+    Derived from events — no stored superseded_by field (derive-dont-store).
+    """
     for event in reversed(read_events(session_root, slug=slug, limit=5)):
         candidate = str(event.get("new_slug", ""))
         if candidate:

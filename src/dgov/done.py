@@ -560,7 +560,7 @@ def _is_done(
                         "failed",
                     )
                     if transition.changed:
-                        _persist.set_pane_metadata(session_root, slug, circuit_breaker=True)
+                        # Derived from event — no stored field.
                         _persist.emit_event(session_root, "pane_circuit_breaker", slug)
                     _set_done_reason(_stable_state, "circuit_breaker")
                     return True

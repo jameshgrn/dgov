@@ -174,7 +174,11 @@ class TestCircuitBreakerInIsDone:
         pane = get_pane(sr, "test-slug")
         assert pane is not None
         assert pane["state"] == "failed"
-        assert pane.get("circuit_breaker")
+        # circuit_breaker derived from event, not stored on pane
+        from dgov.persistence import read_events
+
+        events = read_events(sr, slug="test-slug")
+        assert any(e.get("event") == "pane_circuit_breaker" for e in events)
 
     def test_no_trigger_below_threshold(self, tmp_path: Path) -> None:
         """Two repeated errors shouldn't trigger the circuit breaker."""

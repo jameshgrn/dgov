@@ -28,6 +28,23 @@ def _seed_pane(tmp_path, slug="task-1", agent="river-35b", state="failed", **met
         set_pane_metadata(str(tmp_path), slug, **meta)
 
 
+def _seed_retry_chain(tmp_path, slug: str, retry_count: int, agent: str = "river-35b") -> None:
+    """Emit pane_retry_spawned events to build a retry lineage of length retry_count.
+
+    Creates ancestor pane records and events so _slug_lineage(slug) returns
+    a chain of length retry_count + 1 (current + ancestors).
+    """
+    from dgov.persistence import emit_event
+
+    sr = str(tmp_path)
+    prev = slug
+    for i in range(retry_count, 0, -1):
+        ancestor = f"{slug}-ancestor-{i}"
+        _seed_pane(tmp_path, slug=ancestor, agent=agent, state="superseded")
+        emit_event(sr, "pane_retry_spawned", ancestor, new_slug=prev)
+        prev = ancestor
+
+
 class _FakePane:
     """Minimal stand-in for WorkerPane returned by create_worker_pane."""
 
@@ -66,7 +83,8 @@ class TestRetryOrEscalate:
 
     def test_second_retry_still_retries(self, tmp_path, monkeypatch):
         """Second failure (retry_count=1, max=2) still retries."""
-        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=1)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b")
+        _seed_retry_chain(tmp_path, "task-1", retry_count=1)
         monkeypatch.setattr(
             "dgov.recovery.create_worker_pane",
             lambda **kw: _FakePane("task-1-2"),
@@ -84,7 +102,8 @@ class TestRetryOrEscalate:
 
     def test_escalates_after_max_retries(self, tmp_path, monkeypatch):
         """After max_retries, escalates to next agent in chain."""
-        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=2)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b")
+        _seed_retry_chain(tmp_path, "task-1", retry_count=2)
 
         created_slugs = []
 
@@ -108,7 +127,8 @@ class TestRetryOrEscalate:
 
     def test_terminal_agent_no_escalation(self, tmp_path, monkeypatch):
         """qwen3-max maps to itself — no further escalation possible."""
-        _seed_pane(tmp_path, slug="task-1", agent="qwen-max", retry_count=2)
+        _seed_pane(tmp_path, slug="task-1", agent="qwen-max")
+        _seed_retry_chain(tmp_path, "task-1", retry_count=2)
         monkeypatch.setattr(
             "dgov.agents.load_registry",
             lambda *a, **kw: {},
@@ -137,7 +157,8 @@ class TestRetryOrEscalate:
         assert result["retry_count"] == 1
 
         # Now retry_count=1, pane max_retries=1 → should escalate
-        _seed_pane(tmp_path, slug="task-2", agent="river-35b", retry_count=1, max_retries=1)
+        _seed_pane(tmp_path, slug="task-2", agent="river-35b", max_retries=1)
+        _seed_retry_chain(tmp_path, "task-2", retry_count=1)
 
         def fake_create(**kw):
             return _FakePane(kw.get("slug", "esc-1"))
@@ -153,7 +174,7 @@ class TestRetryOrEscalate:
 
     def test_retry_propagates_error(self, tmp_path, monkeypatch):
         """If retry_worker_pane returns an error, it bubbles up."""
-        _seed_pane(tmp_path, slug="task-1", agent="river-35b", retry_count=0)
+        _seed_pane(tmp_path, slug="task-1", agent="river-35b")
         monkeypatch.setattr(
             "dgov.recovery.create_worker_pane",
             lambda **kw: (_ for _ in ()).throw(RuntimeError("tmux dead")),
