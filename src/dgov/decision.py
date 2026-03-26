@@ -12,6 +12,7 @@ from typing import Callable, Generic, TypeVar, cast, overload
 
 __all__ = [
     "DecisionKind",
+    "ReviewVerdict",
     "RouteTaskRequest",
     "MonitorOutputRequest",
     "ReviewOutputRequest",
@@ -276,8 +277,65 @@ class DecisionProvider(ABC):
         )
 
 
+_FN_TO_KIND: dict[str, DecisionKind] = {
+    "route_task_fn": DecisionKind.ROUTE_TASK,
+    "classify_output_fn": DecisionKind.CLASSIFY_OUTPUT,
+    "review_output_fn": DecisionKind.REVIEW_OUTPUT,
+    "parse_completion_fn": DecisionKind.PARSE_COMPLETION,
+    "disambiguate_fn": DecisionKind.DISAMBIGUATE,
+    "generate_plan_fn": DecisionKind.GENERATE_PLAN,
+}
+
+_REQUEST_DISPATCH: dict[type, str] = {
+    RouteTaskRequest: "route_task",
+    MonitorOutputRequest: "classify_output",
+    ReviewOutputRequest: "review_output",
+    CompletionParseRequest: "parse_completion",
+    ClarifyRequest: "disambiguate",
+    GeneratePlanRequest: "generate_plan",
+}
+
+_METHOD_TO_FN: dict[str, str] = {
+    "route_task": "route_task_fn",
+    "classify_output": "classify_output_fn",
+    "review_output": "review_output_fn",
+    "parse_completion": "parse_completion_fn",
+    "disambiguate": "disambiguate_fn",
+    "generate_plan": "generate_plan_fn",
+}
+
+
+class _DelegatingProvider(DecisionProvider):
+    """Base for wrappers that route all 6 methods through _call()."""
+
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        raise NotImplementedError
+
+    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def classify_output(
+        self, request: MonitorOutputRequest
+    ) -> DecisionRecord[MonitorOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def parse_completion(
+        self, request: CompletionParseRequest
+    ) -> DecisionRecord[CompletionParseDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
+        return self._call(request)  # type: ignore[return-value]
+
+
 @dataclass
-class StaticDecisionProvider(DecisionProvider):
+class StaticDecisionProvider(_DelegatingProvider):
     """Testing and bootstrap provider with preconfigured callables."""
 
     provider_id: str = "static"
@@ -297,54 +355,19 @@ class StaticDecisionProvider(DecisionProvider):
     ) = None
 
     def capabilities(self) -> frozenset[DecisionKind]:
-        kinds: set[DecisionKind] = set()
-        if self.route_task_fn is not None:
-            kinds.add(DecisionKind.ROUTE_TASK)
-        if self.classify_output_fn is not None:
-            kinds.add(DecisionKind.CLASSIFY_OUTPUT)
-        if self.review_output_fn is not None:
-            kinds.add(DecisionKind.REVIEW_OUTPUT)
-        if self.parse_completion_fn is not None:
-            kinds.add(DecisionKind.PARSE_COMPLETION)
-        if self.disambiguate_fn is not None:
-            kinds.add(DecisionKind.DISAMBIGUATE)
-        if self.generate_plan_fn is not None:
-            kinds.add(DecisionKind.GENERATE_PLAN)
-        return frozenset(kinds)
+        return frozenset(
+            kind for attr, kind in _FN_TO_KIND.items() if getattr(self, attr) is not None
+        )
 
-    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
-        if self.route_task_fn is None:
-            return super().route_task(request)
-        return self.route_task_fn(request)
-
-    def classify_output(
-        self, request: MonitorOutputRequest
-    ) -> DecisionRecord[MonitorOutputDecision]:
-        if self.classify_output_fn is None:
-            return super().classify_output(request)
-        return self.classify_output_fn(request)
-
-    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
-        if self.review_output_fn is None:
-            return super().review_output(request)
-        return self.review_output_fn(request)
-
-    def parse_completion(
-        self, request: CompletionParseRequest
-    ) -> DecisionRecord[CompletionParseDecision]:
-        if self.parse_completion_fn is None:
-            return super().parse_completion(request)
-        return self.parse_completion_fn(request)
-
-    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
-        if self.disambiguate_fn is None:
-            return super().disambiguate(request)
-        return self.disambiguate_fn(request)
-
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        if self.generate_plan_fn is None:
-            return super().generate_plan(request)
-        return self.generate_plan_fn(request)
+    def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        method_name = _REQUEST_DISPATCH.get(type(request))
+        if method_name is None:
+            raise UnsupportedDecisionError(f"Unsupported request: {type(request).__name__}")
+        fn_attr = _METHOD_TO_FN.get(method_name)
+        fn = getattr(self, fn_attr, None) if fn_attr else None
+        if fn is None:
+            raise UnsupportedDecisionError(f"{self.provider_id} does not support {method_name}")
+        return fn(request)
 
 
 @overload
@@ -387,19 +410,10 @@ def _call_kind[TDecision](
     provider: DecisionProvider,
     request: DecisionRequest,
 ) -> DecisionRecord[TDecision]:
-    if isinstance(request, RouteTaskRequest):
-        return provider.route_task(request)  # type: ignore[return-value]
-    if isinstance(request, MonitorOutputRequest):
-        return provider.classify_output(request)  # type: ignore[return-value]
-    if isinstance(request, ReviewOutputRequest):
-        return provider.review_output(request)  # type: ignore[return-value]
-    if isinstance(request, CompletionParseRequest):
-        return provider.parse_completion(request)  # type: ignore[return-value]
-    if isinstance(request, ClarifyRequest):
-        return provider.disambiguate(request)  # type: ignore[return-value]
-    if isinstance(request, GeneratePlanRequest):
-        return provider.generate_plan(request)  # type: ignore[return-value]
-    raise ProviderError(f"Unsupported decision request: {type(request).__name__}")
+    method = _REQUEST_DISPATCH.get(type(request))
+    if method is None:
+        raise ProviderError(f"Unsupported decision request: {type(request).__name__}")
+    return getattr(provider, method)(request)  # type: ignore[return-value]
 
 
 def _run_with_timeout[TDecision](
@@ -429,7 +443,7 @@ def _run_with_timeout[TDecision](
 
 
 @dataclass
-class AuditProvider(DecisionProvider):
+class AuditProvider(_DelegatingProvider):
     """Wrapper that records every request/result boundary."""
 
     provider_id: str = field(init=False)
@@ -471,31 +485,9 @@ class AuditProvider(DecisionProvider):
         )
         return result  # type: ignore[return-value]
 
-    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def classify_output(
-        self, request: MonitorOutputRequest
-    ) -> DecisionRecord[MonitorOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def parse_completion(
-        self, request: CompletionParseRequest
-    ) -> DecisionRecord[CompletionParseDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
 
 @dataclass
-class TimeoutProvider(DecisionProvider):
+class TimeoutProvider(_DelegatingProvider):
     """Wrapper that bounds provider latency."""
 
     provider_id: str = field(init=False)
@@ -514,31 +506,9 @@ class TimeoutProvider(DecisionProvider):
             _run_with_timeout(lambda: _call_kind(self.inner, request), self.timeout_s),
         )
 
-    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def classify_output(
-        self, request: MonitorOutputRequest
-    ) -> DecisionRecord[MonitorOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def parse_completion(
-        self, request: CompletionParseRequest
-    ) -> DecisionRecord[CompletionParseDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
 
 @dataclass
-class ShadowProvider(DecisionProvider):
+class ShadowProvider(_DelegatingProvider):
     """Wrapper that runs a shadow provider for comparison without affecting control."""
 
     provider_id: str = field(init=False)
@@ -572,31 +542,9 @@ class ShadowProvider(DecisionProvider):
             )
         return primary  # type: ignore[return-value]
 
-    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def classify_output(
-        self, request: MonitorOutputRequest
-    ) -> DecisionRecord[MonitorOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def parse_completion(
-        self, request: CompletionParseRequest
-    ) -> DecisionRecord[CompletionParseDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
 
 @dataclass
-class CascadeProvider(DecisionProvider):
+class CascadeProvider(_DelegatingProvider):
     """Wrapper that tries providers in order (cheap → expensive), falling through on failure.
 
     Tries each provider in sequence. If a provider succeeds and passes an optional
@@ -627,55 +575,27 @@ class CascadeProvider(DecisionProvider):
             try:
                 result = _call_kind(inner_provider, request)
             except ProviderError as exc:
-                # Fall through to next provider
                 last_error = exc
                 continue
 
-            # Apply optional validator
             if self.validator is not None:
                 try:
                     if not self.validator(result):  # type: ignore[arg-type]
-                        # Validator rejected, try next provider
                         last_error = ProviderError("Validator rejected result")
                         continue
                 except Exception as exc:
-                    # Validator raised exception, treat as rejection
                     last_error = exc
                     continue
 
-            # Success - return a new record with the inner provider's ID
             return dataclasses_replace(result, provider_id=inner_provider.provider_id)  # type: ignore[return-value]
 
-        # All providers failed
         if last_error is not None:
             raise last_error
         raise ProviderError("All cascade providers failed")
 
-    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def classify_output(
-        self, request: MonitorOutputRequest
-    ) -> DecisionRecord[MonitorOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def parse_completion(
-        self, request: CompletionParseRequest
-    ) -> DecisionRecord[CompletionParseDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
 
 @dataclass
-class ConsensusProvider(DecisionProvider):
+class ConsensusProvider(_DelegatingProvider):
     """Wrapper that runs two providers and escalates to tiebreaker on disagreement.
 
     Implements the 'disagreement as escalation signal' pattern from Policy Core:
@@ -702,7 +622,6 @@ class ConsensusProvider(DecisionProvider):
         return frozenset(kinds)
 
     def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
-        # Run both cheap providers
         result_a: DecisionRecord[DecisionPayload] | None = None
         result_b: DecisionRecord[DecisionPayload] | None = None
         error_a: BaseException | None = None
@@ -718,45 +637,17 @@ class ConsensusProvider(DecisionProvider):
         except ProviderError as exc:
             error_b = exc
 
-        # Both failed - raise
         if result_a is None and result_b is None:
             raise ProviderError(f"Both consensus providers failed: A={error_a}, B={error_b}")
 
-        # Only A succeeded - return it (graceful degradation)
         if result_a is not None and result_b is None:
             return result_a  # type: ignore[return-value]
 
-        # Only B succeeded - return it (graceful degradation)
         if result_a is None and result_b is not None:
             return result_b  # type: ignore[return-value]
 
-        # Both succeeded - check agreement
         if self.agree_fn(result_a, result_b):
-            # Agree - return provider_a's result
             return result_a  # type: ignore[return-value]
 
-        # Disagree - escalate to tiebreaker
         tiebreaker_result = _call_kind(self.tiebreaker, request)
         return tiebreaker_result  # type: ignore[return-value]
-
-    def route_task(self, request: RouteTaskRequest) -> DecisionRecord[RouteTaskDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def classify_output(
-        self, request: MonitorOutputRequest
-    ) -> DecisionRecord[MonitorOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def review_output(self, request: ReviewOutputRequest) -> DecisionRecord[ReviewOutputDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def parse_completion(
-        self, request: CompletionParseRequest
-    ) -> DecisionRecord[CompletionParseDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def disambiguate(self, request: ClarifyRequest) -> DecisionRecord[ClarifyDecision]:
-        return self._call(request)  # type: ignore[return-value]
-
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        return self._call(request)  # type: ignore[return-value]
