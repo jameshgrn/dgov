@@ -16,6 +16,7 @@ from dgov.decision import (
     GeneratePlanRequest,
     MonitorOutputDecision,
     MonitorOutputRequest,
+    OutputClassification,
     ProviderError,
     ReviewOutputDecision,
     ReviewOutputRequest,
@@ -53,7 +54,7 @@ class DeterministicClassificationProvider(DecisionProvider):
         return DecisionRecord(
             kind=DecisionKind.CLASSIFY_OUTPUT,
             provider_id=self.provider_id,
-            decision=MonitorOutputDecision(classification=classification),
+            decision=MonitorOutputDecision(classification=OutputClassification(classification)),
             model_id="deterministic",
             confidence=1.0,
             trace_id=request.trace_id,
@@ -211,16 +212,11 @@ class LocalOutputClassificationProvider(DecisionProvider):
             raise ProviderError("Output classifier returned no choices")
 
         content = choices[0].get("message", {}).get("content") or ""
-        classification = content.strip().lower()
-        if classification not in {
-            "working",
-            "done",
-            "stuck",
-            "idle",
-            "waiting_input",
-            "committing",
-        }:
-            classification = "unknown"
+        raw = content.strip().lower()
+        try:
+            classification = OutputClassification(raw)
+        except ValueError:
+            classification = OutputClassification.UNKNOWN
 
         return DecisionRecord(
             kind=DecisionKind.CLASSIFY_OUTPUT,

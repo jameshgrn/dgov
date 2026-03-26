@@ -12,6 +12,8 @@ from typing import Callable, Generic, TypeVar, cast, overload
 
 __all__ = [
     "DecisionKind",
+    "OutputClassification",
+    "CompletionStatus",
     "ReviewVerdict",
     "RouteTaskRequest",
     "MonitorOutputRequest",
@@ -52,6 +54,23 @@ class DecisionKind(StrEnum):
     PARSE_COMPLETION = "parse_completion"
     DISAMBIGUATE = "disambiguate"
     GENERATE_PLAN = "generate_plan"
+
+
+class OutputClassification(StrEnum):
+    WORKING = "working"
+    COMMITTING = "committing"
+    DONE = "done"
+    STUCK = "stuck"
+    IDLE = "idle"
+    WAITING_INPUT = "waiting_input"
+    UNKNOWN = "unknown"
+
+
+class CompletionStatus(StrEnum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PARTIAL = "partial"
+    UNKNOWN = "unknown"
 
 
 class ReviewVerdict(StrEnum):
@@ -130,7 +149,7 @@ class RouteTaskDecision:
 
 @dataclass(frozen=True)
 class MonitorOutputDecision:
-    classification: str
+    classification: OutputClassification
     reason: str | None = None
 
 
@@ -144,7 +163,7 @@ class ReviewOutputDecision:
 
 @dataclass(frozen=True)
 class CompletionParseDecision:
-    status: str
+    status: CompletionStatus
     files_modified: tuple[str, ...] = ()
     reason: str | None = None
 
