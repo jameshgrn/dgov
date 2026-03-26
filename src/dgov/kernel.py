@@ -81,7 +81,7 @@ class CloseTask:
 
 @dataclass(frozen=True)
 class DagDone:
-    status: str
+    status: DagState
     merged: tuple[str, ...]
     failed: tuple[str, ...]
     skipped: tuple[str, ...]
@@ -163,10 +163,16 @@ class TaskRetryStarted:
     attempt: int
 
 
+class GovernorAction(StrEnum):
+    RETRY = "retry"
+    FAIL = "fail"
+    SKIP = "skip"
+
+
 @dataclass(frozen=True)
 class TaskGovernorResumed:
     task_slug: str
-    action: str  # "retry", "fail", "skip"
+    action: GovernorAction
 
 
 DagEvent = (
@@ -385,17 +391,16 @@ class DagKernel:
             task = event.task_slug
             if self.task_states.get(task) != DagTaskState.BLOCKED_ON_GOVERNOR:
                 return []
-            if event.action == "retry":
-                # Reset attempts and re-dispatch
+            if event.action == GovernorAction.RETRY:
                 self.attempts[task] = 1
                 self.task_states[task] = DagTaskState.PENDING
                 actions.extend(self._schedule())
-            elif event.action == "fail":
+            elif event.action == GovernorAction.FAIL:
                 self.task_states[task] = DagTaskState.FAILED
                 actions.extend(self._skip_dependents(task))
                 actions.extend(self._schedule())
                 actions.extend(self._check_done())
-            elif event.action == "skip":
+            elif event.action == GovernorAction.SKIP:
                 self.task_states[task] = DagTaskState.SKIPPED
                 actions.extend(self._skip_dependents(task))
                 actions.extend(self._schedule())
