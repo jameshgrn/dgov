@@ -31,12 +31,14 @@ class CheckResult:
 @dataclass
 class PreflightReport:
     checks: list[CheckResult]
-    passed: bool = field(init=False)
     timestamp: str = field(init=False)
 
     def __post_init__(self) -> None:
-        self.passed = all(c.passed for c in self.checks if c.critical)
         self.timestamp = datetime.now(timezone.utc).isoformat()
+
+    @property
+    def passed(self) -> bool:
+        return all(c.passed for c in self.checks if c.critical)
 
     def to_dict(self) -> dict:
         return {
