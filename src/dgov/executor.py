@@ -163,6 +163,18 @@ def run_dispatch_only(
     )
 
 
+# Policy lookup for cleanup decisions based on (state, failure_stage).
+# Each entry maps to a dict of parameters for close_worker_pane.
+# Special entries can override the default close path with early returns.
+_CLEANUP_POLICY: dict[tuple[str, str | None], dict] = {
+    ("failed", "timeout"): {"force": False},
+    ("failed", "recovery"): {"force": False},
+    ("failed", "review"): {"force": False},
+    ("failed", "worker_failed"): {"force": True},
+    ("closed", None): {"force": True, "action": "closed", "reason": "completed_no_commits"},
+}
+
+
 def run_cleanup_only(
     project_root: str,
     slug: str,
@@ -181,15 +193,18 @@ def run_cleanup_only(
         reason=failure_stage or state,
     )
 
-    if state == "failed" and failure_stage in {"timeout", "recovery", "review"}:
-        force = False
-    elif state == "failed" and failure_stage == "worker_failed":
-        force = True
-    elif state == "closed":
-        # 0-commit completed panes: close cleanly (captures transcripts)
-        session_root = session_root or project_root
-        close_worker_pane(project_root, slug, session_root, force=True)
-        return CleanupOnlyResult(slug=slug, action="closed", reason="completed_no_commits")
+    policy = _CLEANUP_POLICY.get((state, failure_stage))
+    if policy is not None:
+        if policy.get("action") == "closed":
+            # 0-commit completed panes: close cleanly (captures transcripts)
+            session_root = session_root or project_root
+            close_worker_pane(project_root, slug, session_root, force=policy["force"])
+            return CleanupOnlyResult(
+                slug=slug,
+                action=policy["action"],
+                reason=policy["reason"],
+            )
+        force = policy.get("force", False)
     else:
         if session_root:
             try:
