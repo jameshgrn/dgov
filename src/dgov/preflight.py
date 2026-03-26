@@ -655,6 +655,21 @@ def _fix_stale_worktrees(project_root: str) -> bool:
 _FIXER_NAMES = {"deps", "stale_worktrees", "agent_health", "river_tunnel"}
 
 
+def _fix_river_tunnel(project_root: str) -> bool:
+    """Start the river SSH tunnel via shell."""
+    try:
+        shell = shutil.which("zsh") or shutil.which("bash")
+        if shell:
+            subprocess.run(
+                [shell, "-c", f"source ~/{shell.split('/')[-1]}rc && river-tunnel"],
+                timeout=30,
+            )
+            return True
+    except Exception:
+        logger.debug("Failed to start river-tunnel via shell fix attempt", exc_info=True)
+    return False
+
+
 def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
     """Run the failing agent's health_fix command.
 
@@ -700,34 +715,32 @@ def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
     return False
 
 
+# Registry mapping fixer names to (fix function, check function) tuples.
+FIXER_REGISTRY: dict[str, tuple] = {
+    "stale_worktrees": (_fix_stale_worktrees, check_stale_worktrees),
+    "deps": (_fix_deps, check_deps),
+    "agent_health": (_fix_agent_health, check_agent_health),
+    "river_tunnel": (_fix_river_tunnel, check_river_tunnel),
+}
+
+
 def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport:
     """Auto-fix fixable failures, then re-run those checks."""
     recheck: list[str] = []
     for check in report.checks:
         if not check.passed and check.fixable and check.name in _FIXER_NAMES:
-            if check.name == "stale_worktrees":
-                if _fix_stale_worktrees(project_root):
-                    recheck.append(check.name)
-            elif check.name == "deps":
-                if _fix_deps(project_root):
-                    recheck.append(check.name)
-
-            elif check.name == "river_tunnel":
+            fixer, _ = FIXER_REGISTRY[check.name]
+            # river_tunnel uses a special fix function that doesn't take project_root
+            if check.name == "river_tunnel":
                 try:
-                    shell = shutil.which("zsh") or shutil.which("bash")
-                    if shell:
-                        subprocess.run(
-                            [shell, "-c", f"source ~/{shell.split('/')[-1]}rc && river-tunnel"],
-                            timeout=30,
-                        )
+                    if fixer():
                         recheck.append(check.name)
                 except Exception:
                     logger.debug(
                         "Failed to start river-tunnel via shell fix attempt", exc_info=True
                     )
-
-            elif check.name == "agent_health":
-                if _fix_agent_health(project_root):
+            else:
+                if fixer(project_root):
                     recheck.append(check.name)
 
     if not recheck:
@@ -737,12 +750,10 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
     new_checks = []
     for check in report.checks:
         if check.name in recheck:
-            if check.name == "deps":
-                new_checks.append(check_deps(project_root))
-            elif check.name == "stale_worktrees":
-                new_checks.append(check_stale_worktrees(project_root))
-            elif check.name == "river_tunnel":
-                new_checks.append(check_river_tunnel())
+            _, checker = FIXER_REGISTRY[check.name]
+            # river_tunnel has special recheck logic - also re-run stale_worktrees and agent_health
+            if check.name == "river_tunnel":
+                new_checks.append(checker())
                 new_checks.append(check_stale_worktrees(project_root))
 
                 # Re-run all agent health checks
@@ -758,7 +769,7 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
                         )
                         break  # only one agent_health check in the report
             else:
-                new_checks.append(check)
+                new_checks.append(checker(project_root))
         else:
             new_checks.append(check)
 

@@ -11,7 +11,9 @@ from dgov.agents import AgentDef
 from dgov.preflight import (
     CheckResult,
     PreflightReport,
+    _fix_agent_health,
     _fix_deps,
+    _fix_river_tunnel,
     _fix_stale_worktrees,
     check_agent_cli,
     check_agent_concurrency,
@@ -20,6 +22,7 @@ from dgov.preflight import (
     check_file_locks,
     check_git_branch,
     check_git_clean,
+    check_river_tunnel,
     check_stale_worktrees,
     fix_preflight,
     run_preflight,
@@ -633,10 +636,22 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
 
 
 def test_fix_preflight_deps(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("dgov.preflight._fix_deps", lambda pr: True)
     monkeypatch.setattr(
-        "dgov.preflight.check_deps",
-        lambda *a, **kw: CheckResult("deps", True, False, "synced"),
+        "dgov.preflight.FIXER_REGISTRY",
+        {
+            "stale_worktrees": (
+                lambda pr: True,
+                check_stale_worktrees,
+            ),
+            "deps": (lambda pr: True, lambda *a, **kw: CheckResult("deps", True, False, "synced")),
+            "agent_health": (
+                lambda pr, agent_id=None: True,
+                lambda agent, *, registry=None, project_root=None: CheckResult(
+                    "agent_health", True, True, "ok"
+                ),
+            ),
+            "river_tunnel": (lambda pr: True, check_river_tunnel),
+        },
     )
     report = PreflightReport(
         checks=[CheckResult("deps", False, False, "out of sync", fixable=True)]
@@ -997,10 +1012,25 @@ class TestFixHelpers:
 
 class TestFixPreflightEdgeCases:
     def test_fix_deps(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.preflight._fix_deps", lambda pr: True)
         monkeypatch.setattr(
-            "dgov.preflight.check_deps",
-            lambda *a, **kw: CheckResult("deps", True, False, "synced"),
+            "dgov.preflight.FIXER_REGISTRY",
+            {
+                "stale_worktrees": (
+                    lambda pr: True,
+                    check_stale_worktrees,
+                ),
+                "deps": (
+                    lambda pr: True,
+                    lambda *a, **kw: CheckResult("deps", True, False, "synced"),
+                ),
+                "agent_health": (
+                    lambda pr, agent_id=None: True,
+                    lambda agent, *, registry=None, project_root=None: CheckResult(
+                        "agent_health", True, True, "ok"
+                    ),
+                ),
+                "river_tunnel": (lambda pr: True, check_river_tunnel),
+            },
         )
         report = PreflightReport(
             checks=[CheckResult("deps", False, False, "out of sync", fixable=True)]
@@ -1010,10 +1040,17 @@ class TestFixPreflightEdgeCases:
         assert deps.passed is True
 
     def test_fix_stale_worktrees(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.preflight._fix_stale_worktrees", lambda root: True)
         monkeypatch.setattr(
-            "dgov.preflight.check_stale_worktrees",
-            lambda *a, **kw: CheckResult("stale_worktrees", True, False, "clean"),
+            "dgov.preflight.FIXER_REGISTRY",
+            {
+                "stale_worktrees": (
+                    lambda root: True,
+                    lambda *a, **kw: CheckResult("stale_worktrees", True, False, "clean"),
+                ),
+                "deps": (_fix_deps, check_deps),
+                "agent_health": (lambda pr, agent_id=None: True, check_agent_health),
+                "river_tunnel": (_fix_river_tunnel, check_river_tunnel),
+            },
         )
         report = PreflightReport(
             checks=[CheckResult("stale_worktrees", False, False, "stale", fixable=True)]
@@ -1023,7 +1060,15 @@ class TestFixPreflightEdgeCases:
         assert wt.passed is True
 
     def test_fix_fails_no_recheck(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("dgov.preflight._fix_deps", lambda pr: False)
+        monkeypatch.setattr(
+            "dgov.preflight.FIXER_REGISTRY",
+            {
+                "stale_worktrees": (_fix_stale_worktrees, check_stale_worktrees),
+                "deps": (lambda pr: False, check_deps),
+                "agent_health": (_fix_agent_health, check_agent_health),
+                "river_tunnel": (_fix_river_tunnel, check_river_tunnel),
+            },
+        )
         report = PreflightReport(
             checks=[CheckResult("deps", False, False, "out of sync", fixable=True)]
         )
