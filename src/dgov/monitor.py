@@ -11,6 +11,7 @@ import logging
 import re
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -859,45 +860,6 @@ def _process_candidate_set(
     return actions
 
 
-# Hook dispatch table: maps hook kinds to (handler function, action name).
-# Uses lambdas to handle varying argument signatures.
-_HOOK_ACTIONS: dict[str, tuple[callable, str]] = {
-    "nudge": (
-        lambda pr, sr, sl, hd: _nudge_stuck(
-            pr, sr, sl, message=hd.get("message"), keystroke=hd.get("keystroke")
-        ),
-        "hook_nudge",
-    ),
-    "fail": (
-        lambda pr, sr, sl, hd: _mark_idle_failed(pr, sr, sl, reason="hook_fail"),
-        "hook_fail",
-    ),
-    "auto_complete": (lambda pr, sr, sl, hd: _auto_complete(pr, sr, sl), "hook_auto_complete"),
-}
-
-# Terminal state rules: list of (predicate, handlers, action_name).
-# Predicates take (classification, worker dict, consecutive count) and return bool.
-# Handlers are called with (project_root, session_root, slug).
-_TERMINAL_RULES: list[tuple[callable, list[callable], str]] = [
-    (
-        lambda cls, w, n: cls == "done" and (w["has_commits"] or n >= 2),
-        [_auto_complete],
-        "auto_complete",
-    ),
-    (
-        lambda cls, w, n: cls == "idle" and w["has_commits"],
-        [_auto_complete],
-        "proactive_auto_complete",
-    ),
-    (lambda cls, w, n: cls == "stuck" and n >= 3, [_nudge_stuck], "nudge"),
-    (
-        lambda cls, w, n: cls == "idle" and n >= 4,
-        [_mark_idle_failed, lambda pr, sr, sl: _record_fast_failure(sr, sl)],
-        "idle_timeout",
-    ),
-]
-
-
 def _take_action(project_root: str, session_root: str, worker: dict, history: dict) -> str | None:
     """Evaluate history and take automated action if rules match.
 
@@ -980,10 +942,9 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
         return None
 
     # Terminal state rules via dispatch table
-    for predicate, handlers, action_name in _TERMINAL_RULES:
+    for predicate, handler, action_name in _TERMINAL_RULES:
         if predicate(classification, worker, consecutive):
-            for handler in handlers:
-                handler(project_root, session_root, slug)
+            handler(project_root, session_root, slug)
             hist["last_action_at"] = time.time()
             return action_name
 
@@ -1090,6 +1051,54 @@ def _mark_idle_failed(
         return
     set_pane_metadata(session_root, slug, monitor_reason=reason or "idle_timeout")
     logger.info("Monitor: timed out idle worker %s (reason=%s)", slug, reason)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch tables for _take_action (placed after handler definitions)
+# ---------------------------------------------------------------------------
+
+# Hook dispatch: maps hook kinds to (handler_fn(pr, sr, sl, hook_data), action_name).
+_HOOK_ACTIONS: dict[str, tuple[Callable, str]] = {
+    "nudge": (
+        lambda pr, sr, sl, hd: _nudge_stuck(
+            pr, sr, sl, message=hd.get("message"), keystroke=hd.get("keystroke")
+        ),
+        "hook_nudge",
+    ),
+    "fail": (
+        lambda pr, sr, sl, hd: _mark_idle_failed(pr, sr, sl, reason="hook_fail"),
+        "hook_fail",
+    ),
+    "auto_complete": (
+        lambda pr, sr, sl, hd: _auto_complete(pr, sr, sl),
+        "hook_auto_complete",
+    ),
+}
+
+# Terminal state rules: (predicate(cls, worker, consecutive), handler(pr, sr, sl), action_name).
+# All handlers use lambdas for late binding (allows monkeypatch in tests).
+_TERMINAL_RULES: list[tuple[Callable, Callable, str]] = [
+    (
+        lambda cls, w, n: cls == "done" and (w["has_commits"] or n >= 2),
+        lambda pr, sr, sl: _auto_complete(pr, sr, sl),
+        "auto_complete",
+    ),
+    (
+        lambda cls, w, n: cls == "idle" and w["has_commits"],
+        lambda pr, sr, sl: _auto_complete(pr, sr, sl),
+        "proactive_auto_complete",
+    ),
+    (
+        lambda cls, w, n: cls == "stuck" and n >= 3,
+        lambda pr, sr, sl: _nudge_stuck(pr, sr, sl),
+        "nudge",
+    ),
+    (
+        lambda cls, w, n: cls == "idle" and n >= 4,
+        lambda pr, sr, sl: (_mark_idle_failed(pr, sr, sl), _record_fast_failure(sr, sl)),
+        "idle_timeout",
+    ),
+]
 
 
 def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | None:
