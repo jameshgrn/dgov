@@ -23,6 +23,7 @@ from dgov.executor import (
     run_wait_only,
 )
 from dgov.inspection import ReviewInfo
+from dgov.merger import PaneMergeResult
 
 pytestmark = pytest.mark.unit
 
@@ -290,7 +291,7 @@ class TestPostDispatchLifecycle:
             ),
             patch(
                 "dgov.merger.merge_worker_pane",
-                return_value={"merged": "task", "branch": "task"},
+                return_value=PaneMergeResult(merged="task", branch="task"),
             ),
         ):
             result = run_post_dispatch_lifecycle(
@@ -302,7 +303,7 @@ class TestPostDispatchLifecycle:
 
         assert result.state == "completed"
         assert result.slug == "task"
-        assert result.merge_result == {"merged": "task", "branch": "task"}
+        assert result.merge_result.merged == "task"
         assert result.cleanup == CleanupOnlyResult(
             slug="task",
             action="preserve",
@@ -376,7 +377,7 @@ class TestPostDispatchLifecycle:
             ),
             patch(
                 "dgov.merger.merge_worker_pane",
-                return_value={"merged": "task-2", "branch": "task-2"},
+                return_value=PaneMergeResult(merged="task-2", branch="task-2"),
             ),
         ):
             result = run_post_dispatch_lifecycle(
@@ -577,7 +578,7 @@ class TestReviewMerge:
                 "dgov.executor.run_merge_only",
                 return_value=MagicMock(
                     error=None,
-                    merge_result={"merged": "task", "branch": "task"},
+                    merge_result=PaneMergeResult(merged="task", branch="task"),
                 ),
             ) as mock_merge,
         ):
@@ -591,7 +592,7 @@ class TestReviewMerge:
             )
 
         assert result.error is None
-        assert result.merge_result == {"merged": "task", "branch": "task"}
+        assert result.merge_result.merged == "task"
         mock_merge.assert_called_once_with(
             "/repo",
             "task",
@@ -621,7 +622,7 @@ class TestReviewMerge:
                     slug="task",
                     review={"slug": "task", "verdict": "safe", "commit_count": 2},
                     review_record=None,
-                    merge_result={"merged": "task", "branch": "task"},
+                    merge_result=PaneMergeResult(merged="task", branch="task"),
                     failure_stage=None,
                     error=None,
                 ),
@@ -631,7 +632,7 @@ class TestReviewMerge:
             result = run_land_only("/repo", "task", session_root=str(tmp_path))
 
         assert result.error is None
-        assert result.merge_result == {"merged": "task", "branch": "task"}
+        assert result.merge_result.merged == "task"
         assert result.cleanup == CleanupOnlyResult(
             slug="task",
             action="close",

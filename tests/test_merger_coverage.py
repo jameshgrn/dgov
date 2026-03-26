@@ -145,8 +145,8 @@ def test_merge_worker_pane_restores_protected_files_before_merge(
         result = merge_worker_pane(str(repo), "protected", session_root=str(repo))
 
     merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert result["merged"] == "protected"
-    assert result["branch"] == "dgov-protected"
+    assert result.merged == "protected"
+    assert result.branch == "dgov-protected"
     assert (repo / "CLAUDE.md").read_text() == "trusted instructions\n"
     assert (repo / "worker.txt").read_text() == "real worker change\n"
     assert _git(repo, "show", "HEAD:CLAUDE.md").stdout == "trusted instructions\n"
@@ -199,9 +199,9 @@ def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
         result = merge_worker_pane(str(repo), "success", session_root=str(repo))
 
     merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert result["merged"] == "success"
-    assert result["branch"] == "dgov-success"
-    assert result["files_changed"] == 1
+    assert result.merged == "success"
+    assert result.branch == "dgov-success"
+    assert result.files_changed == 1
     assert (repo / "worker.txt").read_text() == "merged content\n"
     assert not worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-success", check=False).returncode != 0
@@ -253,8 +253,8 @@ def test_merge_worker_pane_does_not_amend_unrelated_dirty_main_files(
     ):
         result = merge_worker_pane(str(repo), "dirty-main", session_root=str(repo))
 
-    assert result["merged"] == "dirty-main"
-    assert result["lint_fixed"] == ["worker.py"]
+    assert result.merged == "dirty-main"
+    assert result.fixed == ["worker.py"]
     assert (repo / "worker.py").read_text() == "def worker():\n    return 1\n"
     assert (repo / "README.md").read_text() == "dirty main\n"
     assert _git(repo, "show", "HEAD:README.md").stdout == "initial\n"
@@ -274,7 +274,7 @@ def test_merge_worker_pane_returns_error_when_pane_missing(tmp_path: Path) -> No
     ):
         result = merge_worker_pane(str(repo), "missing", session_root=str(repo))
 
-    assert result == {"error": "Pane not found: missing"}
+    assert result.error == "Pane not found: missing"
     mock_get_pane.assert_called_once_with(str(repo), "missing")
     mock_update_state.assert_not_called()
     mock_emit_event.assert_not_called()
@@ -311,8 +311,8 @@ def test_merge_worker_pane_refuses_active_pane_state(
     ):
         result = merge_worker_pane(str(repo), "active-pane", session_root=str(repo))
 
-    assert result["error"] == "Pane active-pane is in state 'active', not 'done'"
-    assert result["current_state"] == "active"
+    assert result.error == "Pane active-pane is in state 'active', not 'done'"
+    assert result.current_state == "active"
     assert (worktree / "worker.txt").read_text() == "merged before state update\n"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-active").returncode == 0
@@ -357,9 +357,9 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
         result = merge_worker_pane(str(repo), "conflict-pane", session_root=str(repo))
 
     # Rebase fails, falls back to plumbing merge which detects the conflict
-    assert result["error"] == "Merge conflict in dgov-conflict"
-    assert result["slug"] == "conflict-pane"
-    assert result["branch"] == "dgov-conflict"
+    assert result.error == "Merge conflict in dgov-conflict"
+    assert result.slug == "conflict-pane"
+    assert result.branch == "dgov-conflict"
     assert (repo / "README.md").read_text() == "main change\n"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-conflict").returncode == 0
@@ -420,7 +420,7 @@ def test_merge_worker_pane_returns_error_when_branch_name_missing(tmp_path: Path
     ):
         result = merge_worker_pane(str(repo), "missing-branch", session_root=str(repo))
 
-    assert result == {"error": "Pane missing-branch is missing branch_name"}
+    assert result.error == "Pane missing-branch is missing branch_name"
     mock_get_pane.assert_called_once_with(str(repo), "missing-branch")
     mock_update_state.assert_not_called()
     mock_emit_event.assert_not_called()
@@ -457,9 +457,9 @@ def test_merge_worker_pane_refuses_dirty_worktree_changes(
     ):
         result = merge_worker_pane(str(repo), "auto-commit", session_root=str(repo))
 
-    assert result["error"] == "Worktree for pane auto-commit has uncommitted changes"
-    assert result["dirty_files"] == ["worker.txt"]
-    assert result["slug"] == "auto-commit"
+    assert result.error == "Worktree for pane auto-commit has uncommitted changes"
+    assert result.dirty_files == ["worker.txt"]
+    assert result.slug == "auto-commit"
     assert (worktree / "worker.txt").read_text() == "committed by merge\n"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
@@ -506,7 +506,7 @@ def test_merge_worker_pane_allows_done_pane_with_attached_agent(
         result = merge_worker_pane(str(repo), "attached-pane", session_root=str(repo))
 
     # Merge should succeed despite agent still running — pane is done
-    assert result.get("merged") == "attached-pane"
+    assert result.merged == "attached-pane"
 
 
 def test_merge_worker_pane_allows_abandoned_transition_after_success(
@@ -544,8 +544,8 @@ def test_merge_worker_pane_allows_abandoned_transition_after_success(
         result = merge_worker_pane(str(repo), "abandoned-pane", session_root=str(repo))
 
     merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert result["merged"] == "abandoned-pane"
-    assert result["branch"] == "dgov-abandoned"
+    assert result.merged == "abandoned-pane"
+    assert result.branch == "dgov-abandoned"
     assert (repo / "worker.txt").read_text() == "merged anyway\n"
     mock_update_state.assert_called_once_with(str(repo), "abandoned-pane", "merged")
     mock_emit_event.assert_called_once_with(
@@ -594,11 +594,11 @@ def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
         )
 
     # Rebase fails → plumbing merge → conflict → manual resolution path
-    assert "error" not in result
-    assert result["slug"] == "manual-pane"
-    assert result["branch"] == "dgov-manual"
-    assert result["resolve"] == "manual"
-    assert result.get("conflicts") is not None
+    assert result.error is None
+    assert result.slug == "manual-pane"
+    assert result.branch == "dgov-manual"
+    assert result.resolve == "manual"
+    assert result.conflicts is not None
     mock_update_state.assert_called_once_with(str(repo), "manual-pane", "merge_conflict")
     mock_emit_event.assert_called_once_with(
         str(repo), "pane_merge_conflict", "manual-pane", branch="dgov-manual"
@@ -642,7 +642,7 @@ def test_merge_worker_pane_returns_unknown_resolve_error_for_conflict(
         )
 
     # Rebase fails, falls back to plumbing merge, then unknown resolve is rejected
-    assert result["error"] == "Unknown resolve strategy: bogus"
+    assert result.error == "Unknown resolve strategy: bogus"
     assert not (repo / ".git" / "MERGE_HEAD").exists()
     mock_update_state.assert_called_once_with(str(repo), "unknown-pane", "merge_conflict")
     mock_emit_event.assert_called_once_with(
@@ -678,7 +678,7 @@ def test_merge_worker_pane_emits_failure_when_merge_fails_without_conflicts(
     ):
         result = merge_worker_pane(str(repo), "merge-error", session_root=str(repo))
 
-    assert result == {"error": "boom"}
+    assert result.error == "boom"
     mock_update_state.assert_not_called()
     mock_emit_event.assert_called_once_with(
         str(repo), "pane_merge_failed", "merge-error", error="boom"
@@ -723,9 +723,9 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
         result = merge_worker_pane(str(repo), "post-merge", session_root=str(repo))
 
     merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-    assert result["merged"] == "post-merge"
-    assert result["warning"] == "protected files changed: ['CLAUDE.md']"
-    assert result["lint_fixed"] == ["worker.py"]
+    assert result.merged == "post-merge"
+    assert result.warning == "protected files changed: ['CLAUDE.md']"
+    assert result.fixed == ["worker.py"]
     mock_update_state.assert_called_once_with(str(repo), "post-merge", "merged")
     mock_emit_event.assert_called_once_with(
         str(repo),
@@ -793,7 +793,7 @@ def test_lint_fix_merged_files_formats_python_and_amends_commit(tmp_path: Path) 
 
     result = _lint_fix_merged_files(str(repo), ["worker.py"])
 
-    assert result == {"lint_fixed": ["worker.py"]}
+    assert result["lint_fixed"] == ["worker.py"]
     assert (repo / "worker.py").read_text() == "def worker():\n    return 1\n"
     assert _git(repo, "status", "--porcelain").stdout.strip() == ""
 
@@ -945,8 +945,8 @@ def test_merge_worker_pane_surfaces_stash_warnings(
     ):
         result = merge_worker_pane(str(repo), "surface-warn", session_root=str(repo))
 
-    assert result["merged"] == "surface-warn"
-    assert result["stash_warnings"] == ["stash pop conflict"]
+    assert result.merged == "surface-warn"
+    assert result.stash_warnings == ["stash pop conflict"]
 
 
 def test_merge_worker_pane_falls_back_when_rebase_fails(
@@ -992,9 +992,9 @@ def test_merge_worker_pane_falls_back_when_rebase_fails(
         result = merge_worker_pane(str(repo), "rebase-fb", session_root=session_root)
 
     # Should succeed via plumbing merge fallback, not error
-    assert "error" not in result, f"Unexpected error: {result}"
-    assert result["merged"] == "rebase-fb"
-    assert result.get("rebase_fallback") is True
+    assert result.error is None, f"Unexpected error: {result}"
+    assert result.merged == "rebase-fb"
+    assert result.rebase_fallback is True
 
 
 def test_rebase_skips_attached_worktree_branch(tmp_path: Path) -> None:
@@ -1092,10 +1092,9 @@ def test_merge_worker_pane_fails_when_post_merge_tests_fail(
         result = merge_worker_pane(str(repo), "post-test-fail", session_root=str(repo))
 
     # Validation failed — should NOT be marked merged, worktree preserved
-    assert "error" in result
-    assert "validation_failed" in result
-    assert result["validation_failed"] is True
-    assert result["slug"] == "post-test-fail"
+    assert result.error is not None
+    assert result.validation_failed is True
+    assert result.slug == "post-test-fail"
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-post-test").returncode == 0
     assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
@@ -1157,8 +1156,8 @@ def test_lint_unfixable_issues_block_merge_completion(
         result = merge_worker_pane(str(repo), "lint-unfixable", session_root=str(repo))
 
     # Lint issues are advisory — should still succeed and be marked merged
-    assert result.get("merged") == "lint-unfixable"
-    assert "validation_failed" not in result or result["validation_failed"] is False
+    assert result.merged == "lint-unfixable"
+    assert result.validation_failed is False
     # Worktree gets cleaned up after successful merge
     mock_update_state.assert_called_once()
 
@@ -1211,6 +1210,6 @@ def test_both_tests_and_lint_fail_show_first_error(
         result = merge_worker_pane(str(repo), "both-fail", session_root=str(repo))
 
     # Test failure comes first in validation order; lint issues don't block
-    assert "error" in result
-    assert "tests failed" in result["error"]
+    assert result.error is not None
+    assert "tests failed" in result.error
     # But lint should only produce warning, not error

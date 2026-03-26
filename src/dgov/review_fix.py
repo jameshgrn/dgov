@@ -338,10 +338,10 @@ def run_review_fix_pipeline(
 
     for slug in fix_slugs:
         review_merge = run_review_merge(project_root, slug, session_root=session_root)
-        merge_result = review_merge.merge_result or {}
-        if not review_merge.error and "merged" in merge_result:
+        merge_result = review_merge.merge_result
+        if not review_merge.error and merge_result and merge_result.merged:
             merged_count += 1
-            if merge_result.get("tests_passed") is False:
+            if merge_result.tests_passed is False:
                 test_failures.append(slug)
         else:
             failed_count += 1

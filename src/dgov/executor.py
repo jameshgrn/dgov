@@ -7,11 +7,14 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from dgov.context_packet import ContextPacket, build_context_packet
 from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest, ReviewVerdict
 from dgov.inspection import ReviewInfo
+
+if TYPE_CHECKING:
+    from dgov.merger import PaneMergeResult
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +34,7 @@ class PostDispatchResult:
     slug: str
     review: ReviewInfo | None = None
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    merge_result: dict | None = None
+    merge_result: PaneMergeResult | None = None
     cleanup: CleanupOnlyResult | None = None
     error: str | None = None
     failure_stage: str | None = None
@@ -42,7 +45,7 @@ class ReviewMergeResult:
     slug: str
     review: ReviewInfo
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    merge_result: dict | None = None
+    merge_result: PaneMergeResult | None = None
     failure_stage: str | None = None
     error: str | None = None
 
@@ -50,7 +53,7 @@ class ReviewMergeResult:
 @dataclass(frozen=True)
 class MergeOnlyResult:
     slug: str
-    merge_result: dict | None = None
+    merge_result: PaneMergeResult | None = None
     error: str | None = None
 
 
@@ -59,7 +62,7 @@ class LandResult:
     slug: str
     review: ReviewInfo
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    merge_result: dict | None = None
+    merge_result: PaneMergeResult | None = None
     cleanup: CleanupOnlyResult | None = None
     failure_stage: str | None = None
     error: str | None = None
@@ -101,7 +104,7 @@ class CleanupOnlyResult:
 class PaneFinalizeResult:
     slug: str
     review: ReviewInfo
-    merge_result: dict | None
+    merge_result: PaneMergeResult | None
     error: str | None
     cleanup_error: str | None
 
@@ -1201,7 +1204,7 @@ def run_merge_only(
             strict_claims=strict_claims,
         )
 
-    _merge_error = merge_result.get("error", "")
+    _merge_error = merge_result.error or ""
     _merge_out = MergeOnlyResult(
         slug=slug,
         merge_result=merge_result,
@@ -1217,7 +1220,7 @@ def run_merge_only(
                 session_root or "",
                 _merge_span_id,
                 _mo,
-                files_changed=merge_result.get("files_changed", 0),
+                files_changed=merge_result.files_changed,
                 error=_merge_error or "",
             )
         except Exception:

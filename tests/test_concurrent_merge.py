@@ -110,13 +110,13 @@ class TestSequentialMerge:
 
         with patch("dgov.done._agent_still_running", return_value=False):
             r1 = merge_worker_pane(str(repo), "worker-1", session_root=session_root)
-            assert r1.get("merged"), f"Worker 1 merge failed: {r1}"
+            assert r1.merged, f"Worker 1 merge failed: {r1}"
 
             r2 = merge_worker_pane(str(repo), "worker-2", session_root=session_root)
-            assert r2.get("merged"), f"Worker 2 merge failed: {r2}"
+            assert r2.merged, f"Worker 2 merge failed: {r2}"
 
             r3 = merge_worker_pane(str(repo), "worker-3", session_root=session_root)
-            assert r3.get("merged"), f"Worker 3 merge failed: {r3}"
+            assert r3.merged, f"Worker 3 merge failed: {r3}"
 
         # Verify: all files present
         assert (repo / "file_a.py").read_text() == "A = 1\n"
@@ -152,11 +152,11 @@ class TestConflictingMerge:
 
         with patch("dgov.done._agent_still_running", return_value=False):
             r1 = merge_worker_pane(str(repo), "conflict-1", session_root=session_root)
-            assert r1.get("merged"), f"First merge should succeed: {r1}"
+            assert r1.merged, f"First merge should succeed: {r1}"
 
             r2 = merge_worker_pane(str(repo), "conflict-2", session_root=session_root)
-            assert r2.get("error"), "Second merge should fail on conflict"
-            assert not r2.get("merged"), "Conflicting merge should not succeed"
+            assert r2.error, "Second merge should fail on conflict"
+            assert not r2.merged, "Conflicting merge should not succeed"
 
 
 class TestSameFileDifferentFunctions:
@@ -192,11 +192,11 @@ class TestSameFileDifferentFunctions:
 
         with patch("dgov.done._agent_still_running", return_value=False):
             r1 = merge_worker_pane(str(repo), "nonoverlap-1", session_root=session_root)
-            assert r1.get("merged"), f"First merge failed: {r1}"
+            assert r1.merged, f"First merge failed: {r1}"
 
             # Second merge detects overlap and warns, but conflicts with squash
             r2 = merge_worker_pane(str(repo), "nonoverlap-2", session_root=session_root)
-            assert r2.get("error"), "Squash merge conflicts on same-file overlap"
+            assert r2.error, "Squash merge conflicts on same-file overlap"
 
     @pytest.mark.skip(reason="Worktree-attached branches don't merge like regular branches")
     def test_no_squash_resolves_overlap(self, tmp_path: Path) -> None:
@@ -224,7 +224,7 @@ class TestSameFileDifferentFunctions:
                 session_root=session_root,
                 squash=False,
             )
-            assert r1.get("merged"), f"First merge failed: {r1}"
+            assert r1.merged, f"First merge failed: {r1}"
 
             r2 = merge_worker_pane(
                 str(repo),
@@ -232,7 +232,7 @@ class TestSameFileDifferentFunctions:
                 session_root=session_root,
                 squash=False,
             )
-            assert r2.get("merged"), f"Second merge failed: {r2}"
+            assert r2.merged, f"Second merge failed: {r2}"
 
         final = (repo / "module.py").read_text()
         assert "return 'alpha'" in final, "Worker 1 changes lost"
@@ -268,6 +268,6 @@ class TestStrictClaimsEnforcement:
                 session_root=session_root,
                 strict_claims=True,
             )
-            assert r.get("error"), f"Should block on undeclared files: {r}"
-            assert "undeclared" in r["error"].lower() or "claim" in r["error"].lower()
-            assert not r.get("merged")
+            assert r.error, f"Should block on undeclared files: {r}"
+            assert "undeclared" in r.error.lower() or "claim" in r.error.lower()
+            assert not r.merged

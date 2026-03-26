@@ -35,10 +35,10 @@ def _declared_touches(task: dict) -> list[str]:
     return list(touches) if isinstance(touches, list | tuple) else []
 
 
-def _review_summary(review: dict, slug: str) -> dict[str, str | int]:
+def _review_summary(review: object, slug: str) -> dict[str, str | int]:
     return {
-        "review": review.get("verdict", "unknown"),
-        "commits": review.get("commit_count", 0),
+        "review": getattr(review, "verdict", "unknown"),
+        "commits": getattr(review, "commit_count", 0),
         "slug": slug,
     }
 
@@ -687,11 +687,14 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase, dry_run
         sys.exit(1)
 
     if dry_run:
+        from dataclasses import asdict
+
         from dgov.executor import run_review_only
 
-        result = run_review_only(project_root, slug, session_root=session_root).review
+        review = run_review_only(project_root, slug, session_root=session_root).review
+        result = asdict(review)
         result["dry_run"] = True
-        result["would_merge"] = result.get("verdict") == "safe"
+        result["would_merge"] = review.verdict == "safe"
         click.echo(json.dumps(result, indent=2))
         return
 
@@ -709,7 +712,9 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase, dry_run
         sys.exit(1)
 
     final = results[0]
-    click.echo(json.dumps(_review_summary(final.review or {}, slug)))
+    from dataclasses import asdict
+
+    click.echo(json.dumps(_review_summary(final.review, slug)))
 
     if final.error:
         click.echo(json.dumps({"error": final.error}), err=True)
@@ -718,7 +723,8 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase, dry_run
         click.echo(json.dumps({"error": final.cleanup_error}), err=True)
         sys.exit(1)
 
-    click.echo(json.dumps(final.merge_result, indent=2))
+    merge_dict = asdict(final.merge_result) if final.merge_result else {}
+    click.echo(json.dumps(merge_dict, indent=2))
 
 
 @pane.command("wait")

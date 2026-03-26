@@ -1092,7 +1092,7 @@ def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | No
         log = logger.warning if result.failure_stage == "review_error" else logger.info
         log("Skip auto-merge %s: %s", slug, result.error)
         return None
-    if result.merge_result and result.merge_result.get("merged"):
+    if result.merge_result and result.merge_result.merged:
         emit_event(session_root, "monitor_auto_merge", slug)
         logger.info("Monitor: auto-merged %s", slug)
         return "auto_merge"

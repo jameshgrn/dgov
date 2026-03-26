@@ -1452,7 +1452,7 @@ class TestReviewWorkerPane:
 
         replace_all_panes(str(tmp_path), {"panes": []})
         result = review_worker_pane(str(tmp_path), "nope")
-        assert "error" in result
+        assert result.error is not None
 
     def test_no_worktree_returns_error(self, tmp_path: Path) -> None:
         from dgov.inspection import review_worker_pane
@@ -1471,7 +1471,7 @@ class TestReviewWorkerPane:
             },
         )
         result = review_worker_pane(str(tmp_path), "test")
-        assert "error" in result
+        assert result.error is not None
 
     def test_no_base_sha_returns_error(self, tmp_path: Path) -> None:
         from dgov.inspection import review_worker_pane
@@ -1492,7 +1492,7 @@ class TestReviewWorkerPane:
             },
         )
         result = review_worker_pane(str(tmp_path), "test")
-        assert "error" in result
+        assert result.error is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1593,8 +1593,8 @@ class TestMergeWorkerPane:
         from dgov.merger import merge_worker_pane
 
         result = merge_worker_pane(str(tmp_path), "nonexistent")
-        assert "error" in result
-        assert "not found" in result["error"]
+        assert result.error is not None
+        assert "not found" in result.error
 
     @patch("dgov.lifecycle._full_cleanup")
     @patch("dgov.merger._plumbing_merge")
@@ -1623,8 +1623,8 @@ class TestMergeWorkerPane:
         )
         add_pane(str(tmp_path), pane)
         result = merge_worker_pane(str(tmp_path), "mergeable")
-        assert result["merged"] == "mergeable"
-        assert result["branch"] == "feat"
+        assert result.merged == "mergeable"
+        assert result.branch == "feat"
 
     @patch("dgov.lifecycle._full_cleanup")
     @patch("dgov.merger._plumbing_merge")
@@ -1658,8 +1658,8 @@ class TestMergeWorkerPane:
             mock_state.side_effect = IllegalTransitionError("abandoned", "merged", "mergeable")
             result = merge_worker_pane(str(tmp_path), "mergeable")
 
-        assert result["merged"] == "mergeable"
-        assert result["branch"] == "feat"
+        assert result.merged == "mergeable"
+        assert result.branch == "feat"
         mock_cleanup.assert_called_once()
 
 
