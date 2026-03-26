@@ -109,14 +109,14 @@ class TestHappyPath:
 
         # 4. Review — should see our commit
         review = review_worker_pane(repo_dir, "add-hello", session_root=session_root)
-        assert "error" not in review
-        assert review["commit_count"] >= 1
-        assert review["verdict"] == "safe"
+        assert review.error is None
+        assert review.commit_count >= 1
+        assert review.verdict == "safe"
 
         # 5. Merge into main
         merge_result = merge_worker_pane(repo_dir, "add-hello", session_root=session_root)
-        assert "merged" in merge_result
-        assert merge_result["merged"] == "add-hello"
+        assert merge_result.merged is not None
+        assert merge_result.merged == "add-hello"
 
         # Verify file landed on main
         assert (Path(repo_dir) / "hello.txt").read_text() == "hello world\n"
@@ -189,8 +189,8 @@ class TestRetryPath:
 
         # 6. Merge retry pane
         merge_result = merge_worker_pane(repo_dir, new_slug, session_root=session_root)
-        assert "merged" in merge_result
-        assert merge_result["merged"] == new_slug
+        assert merge_result.merged is not None
+        assert merge_result.merged == new_slug
 
         # Verify file on main
         assert (Path(repo_dir) / "fix.py").read_text() == "# fixed\n"
@@ -239,7 +239,7 @@ class TestConflictDetection:
         result = merge_worker_pane(
             repo_dir, "conflict-test", session_root=session_root, resolve="manual"
         )
-        assert "error" in result or "conflicts" in result
+        assert result.error is not None or len(result.conflicts) > 0
 
         # 6. Verify pane state is merge_conflict
         record = get_pane(session_root, "conflict-test")

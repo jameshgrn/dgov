@@ -33,13 +33,18 @@ def test_plumbing_success(mock_run, tmp_path):
     from dgov.merger import _plumbing_merge
 
     # Sequence of all subprocess.run calls in _plumbing_merge:
+    head_sha = "a" * 40
+    branch_sha = "b" * 40
+    tree_hash = "c" * 40
+    commit_hash = "d" * 40
     call_seq = [
-        make_subprocess_mock(0, "abc123"),  # rev-parse HEAD
-        make_subprocess_mock(0, "newtree_hash\n"),  # merge-tree
-        make_subprocess_mock(0, "abc123"),  # rev-parse branch_name
-        make_subprocess_mock(0, "commit_hash123\n"),  # commit-tree
+        make_subprocess_mock(0, head_sha),  # rev-parse HEAD
+        make_subprocess_mock(0, branch_sha),  # rev-parse branch_name
+        make_subprocess_mock(0, head_sha),  # merge-base
+        make_subprocess_mock(0, tree_hash + "\n"),  # merge-tree --write-tree
+        make_subprocess_mock(0, commit_hash + "\n"),  # commit-tree
         make_subprocess_mock(0, "main\n"),  # symbolic-ref --short HEAD
-        make_subprocess_mock(0, ""),  # status --porcelain
+        make_subprocess_mock(0, ""),  # status --porcelain (_stash_guard)
         make_subprocess_mock(0),  # update-ref
         make_subprocess_mock(0),  # reset --hard
     ]
@@ -144,8 +149,8 @@ def test_worker_pane_not_found():
     with patch("dgov.persistence.get_pane", return_value=None):
         result = merge_worker_pane("/fake/project", "nonexistent-slug")
 
-        assert "error" in result
-        assert "not found" in result["error"]
+        assert result.error is not None
+        assert "not found" in result.error
 
 
 @patch("subprocess.run")
@@ -199,7 +204,7 @@ def test_worker_pane_branch_not_found(mock_run, tmp_path):
         result = merge_worker_pane(str(fake_project), "test-slug")
 
         # Branch not found should cause error in _plumbing_merge
-        assert "error" in result or "conflicts" in result
+        assert result.error is not None or len(result.conflicts) > 0
 
 
 def test_worker_pane_success_with_merge(tmp_path):
@@ -250,41 +255,51 @@ def test_worker_pane_success_with_merge(tmp_path):
             result = merge_worker_pane(str(fake_project), "test-slug")
 
             # Should succeed or at least not have an error about pane not found
-            assert "not found" not in str(result.get("error", ""))
+            assert "not found" not in str(result.error or "")
 
 
-def test_worker_pane_skip_returns_conflict_error():
+def test_worker_pane_skip_returns_conflict_error(tmp_path):
     """Test skip strategy returns conflict details without starting manual resolution."""
+    from contextlib import contextmanager
+
     from dgov.merger import MergeResult, merge_worker_pane
 
     mock_pane = {
         "slug": "test-slug",
         "branch_name": "test-branch",
-        "project_root": "/fake/project",
+        "project_root": str(tmp_path),
         "worktree_path": "",
         "state": "done",
         "base_sha": "",
     }
 
+    @contextmanager
+    def fake_candidate_worktree(project_root, slug):
+        yield str(tmp_path), "fake-branch"
+
     with (
         patch("dgov.persistence.get_pane", return_value=mock_pane),
-        patch("dgov.merger._commit_worktree", return_value={}),
+        patch("dgov.merger._check_merge_preconditions", return_value=None),
+        patch("dgov.merger._restore_protected_files"),
+        patch("dgov.merger._capture_pre_merge_stats", return_value=("", 0, [])),
+        patch("dgov.merger._check_dirty_worktree", return_value=[]),
         patch("dgov.merger._rebase_onto_head", return_value=MergeResult(True, "")),
-        patch("dgov.merger._plumbing_merge", return_value=MergeResult(False, "conflict")),
+        patch("dgov.merger._candidate_worktree", side_effect=fake_candidate_worktree),
+        patch(
+            "dgov.merger._execute_candidate_merge",
+            return_value=MergeResult(False, "conflict"),
+        ),
         patch("dgov.merger._detect_conflicts", return_value=["test.py"]),
         patch("dgov.persistence.update_pane_state"),
-        patch("subprocess.run") as mock_run,
+        patch("dgov.persistence.emit_event"),
     ):
-        result = merge_worker_pane("/fake/project", "test-slug", resolve="skip")
+        result = merge_worker_pane(str(tmp_path), "test-slug", resolve="skip")
 
-    assert result == {
-        "error": "Merge conflict in test-branch",
-        "slug": "test-slug",
-        "branch": "test-branch",
-        "conflicts": ["test.py"],
-        "hint": "Re-run with --resolve agent or --resolve manual.",
-    }
-    mock_run.assert_not_called()
+    assert result.error == "Merge conflict in test-branch"
+    assert result.slug == "test-slug"
+    assert result.branch == "test-branch"
+    assert result.conflicts == ["test.py"]
+    assert result.hint == "Re-run with --resolve agent or --resolve manual."
 
 
 @patch("subprocess.run")
