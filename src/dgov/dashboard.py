@@ -27,6 +27,7 @@ from rich.text import Text
 
 from dgov import __version__
 
+# MLX overflow test passed
 logger = logging.getLogger(__name__)
 
 _STARTUP_TIME = time.time()
