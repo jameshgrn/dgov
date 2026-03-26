@@ -678,9 +678,11 @@ def _setup_and_launch_agent(
     Path(done_signal + ".exit").unlink(missing_ok=True)
 
     # 9. Launch agent (with exit-only wrapper)
-    # Workers always use headless mode; only LT-GOVs get TUI interactive mode.
+    # Workers always use headless mode; TUI interactive mode for LT-GOVs with real TUIs.
+    # Codex "exec" is always one-shot (prompt on CLI), never TUI — force headless.
     is_cursor = agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent"
-    use_interactive = agent_def.interactive and role != "worker"
+    is_oneshot = agent_def.prompt_command == "codex"
+    use_interactive = agent_def.interactive and role != "worker" and not is_oneshot
 
     # When forcing headless on a normally-interactive agent, add agent-specific flags
     if not use_interactive and agent_def.interactive and role == "worker":
