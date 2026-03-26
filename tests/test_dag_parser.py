@@ -164,7 +164,7 @@ files.edit = ["src/a.py"]
         defn = parse_dag_file(_write_dag(tmp_path, toml_content))
         assert defn.tasks["task-a"].review_agent == "qwen-35b"
 
-    def test_review_agent_default_empty(self, tmp_path):
-        """review_agent defaults to empty string."""
+    def test_review_agent_default_none(self, tmp_path):
+        """review_agent defaults to None."""
         defn = parse_dag_file(_write_dag(tmp_path))
-        assert defn.tasks["task-a"].review_agent == ""
+        assert defn.tasks["task-a"].review_agent is None

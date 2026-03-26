@@ -63,7 +63,7 @@ class TestWorkerPane:
             branch_name="fix-bug",
         )
         assert wp.owns_worktree is True
-        assert wp.base_sha == ""
+        assert wp.base_sha is None
         assert wp.created_at > 0
 
     def test_custom_fields(self) -> None:
@@ -1821,7 +1821,7 @@ class TestWorkerPaneDataclass:
             branch_name="b",
         )
         assert pane.owns_worktree is True
-        assert pane.base_sha == ""
+        assert pane.base_sha is None
         assert isinstance(pane.created_at, float)
 
     def test_custom_fields(self) -> None:

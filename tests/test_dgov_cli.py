@@ -394,7 +394,7 @@ class TestPaneCreate:
         assert kwargs["session_root"] == "/session"
         assert kwargs["skip_auto_structure"] is False
         assert kwargs["role"] == "worker"
-        assert kwargs["parent_slug"] == ""
+        assert kwargs["parent_slug"] is None
         assert kwargs["context_packet"].prompt == "Fix tests"
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:

@@ -474,9 +474,9 @@ class TestPostMergeCheck:
         dag = parse_dag_file(_write_toml(toml))
         assert dag.tasks["T0"].post_merge_check == "uv run pytest tests/ -q"
 
-    def test_post_merge_check_defaults_to_empty(self):
+    def test_post_merge_check_defaults_to_none(self):
         dag = parse_dag_file(_write_toml(MINIMAL_TOML))
-        assert dag.tasks["T0"].post_merge_check == ""
+        assert dag.tasks["T0"].post_merge_check is None
 
     def test_dag_task_spec_has_post_merge_check(self):
         task = DagTaskSpec(
