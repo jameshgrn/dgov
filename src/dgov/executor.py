@@ -114,11 +114,11 @@ def run_dispatch_only(
     permission_mode: str = "bypassPermissions",
     slug: str | None = None,
     env_vars: dict[str, str] | None = None,
-    extra_flags: str = "",
+    extra_flags: str | None = None,
     existing_worktree: str | None = None,
     skip_auto_structure: bool = False,
     role: str = "worker",
-    parent_slug: str = "",
+    parent_slug: str | None = None,
     context_packet: object | None = None,
 ) -> object:
     """Executor syscall: dispatch a worker pane without full lifecycle.
@@ -748,10 +748,10 @@ def run_review_only(
     full: bool = False,
     require_safe: bool = True,
     require_commits: bool = True,
-    review_agent: str = "",
+    review_agent: str | None = None,
     tests_pass: bool = True,
     lint_clean: bool = True,
-    post_merge_check: str = "",
+    post_merge_check: str | None = None,
     evals: tuple[dict, ...] = (),
 ) -> ReviewOnlyResult:
     """Run the canonical review operation without merging."""
@@ -1984,7 +1984,7 @@ def _dag_review(
     task_slug: str,
     pane_slug: str,
     progress: Callable[[str], None],
-    review_agent: str = "",
+    review_agent: str | None = None,
     run_id: int | None = None,
 ) -> object:
     """Execute a ReviewTask action. Returns TaskReviewDone."""
