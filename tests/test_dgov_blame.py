@@ -719,7 +719,7 @@ class TestBlameCLILineLevel:
         with patch("dgov.blame.blame_lines", return_value=mock_result):
             result = runner.invoke(
                 cli,
-                ["blame", "src/foo.py", "--line-level", "-r", str(tmp_path)],
+                ["pane", "blame", "src/foo.py", "--line-level", "-r", str(tmp_path)],
                 catch_exceptions=False,
             )
         assert result.exit_code == 0
@@ -736,7 +736,7 @@ class TestBlameCLILineLevel:
         with patch("dgov.blame.blame_lines", return_value=mock_result) as mock_fn:
             result = runner.invoke(
                 cli,
-                ["blame", "src/foo.py", "--lines", "10-20", "-r", str(tmp_path)],
+                ["pane", "blame", "src/foo.py", "--lines", "10-20", "-r", str(tmp_path)],
                 catch_exceptions=False,
             )
         assert result.exit_code == 0
@@ -754,7 +754,7 @@ class TestBlameCLILineLevel:
         with patch("dgov.blame.blame_lines", return_value=mock_result) as mock_fn:
             result = runner.invoke(
                 cli,
-                ["blame", "src/foo.py", "--lines", "5", "-r", str(tmp_path)],
+                ["pane", "blame", "src/foo.py", "--lines", "5", "-r", str(tmp_path)],
                 catch_exceptions=False,
             )
         assert result.exit_code == 0
@@ -772,7 +772,7 @@ class TestBlameCLILineLevel:
         with patch("dgov.blame.blame_file", return_value=mock_result) as mock_fn:
             result = runner.invoke(
                 cli,
-                ["blame", "src/foo.py", "-r", str(tmp_path)],
+                ["pane", "blame", "src/foo.py", "-r", str(tmp_path)],
                 catch_exceptions=False,
             )
         assert result.exit_code == 0
@@ -788,7 +788,16 @@ class TestBlameCLILineLevel:
         with patch("dgov.blame.blame_lines", return_value=mock_result) as mock_fn:
             result = runner.invoke(
                 cli,
-                ["blame", "src/foo.py", "--line-level", "--agent", "pi", "-r", str(tmp_path)],
+                [
+                    "pane",
+                    "blame",
+                    "src/foo.py",
+                    "--line-level",
+                    "--agent",
+                    "pi",
+                    "-r",
+                    str(tmp_path),
+                ],
                 catch_exceptions=False,
             )
         assert result.exit_code == 0

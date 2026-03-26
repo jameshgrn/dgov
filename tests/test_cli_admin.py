@@ -187,7 +187,7 @@ class TestBlameCmd:
     def test_blame_file_level(self, runner: CliRunner, tmp_path: Path) -> None:
         result_data = {"file": "test.py", "touches": []}
         with patch("dgov.blame.blame_file", return_value=result_data) as mock_blame:
-            result = runner.invoke(cli, ["blame", "test.py", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["pane", "blame", "test.py", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -206,7 +206,7 @@ class TestBlameCmd:
         with patch("dgov.blame.blame_lines", return_value=result_data) as mock_blame:
             result = runner.invoke(
                 cli,
-                ["blame", "test.py", "--line-level", "-r", str(tmp_path)],
+                ["pane", "blame", "test.py", "--line-level", "-r", str(tmp_path)],
             )
 
         assert result.exit_code == 0
@@ -226,7 +226,7 @@ class TestBlameCmd:
         with patch("dgov.blame.blame_lines", return_value={"lines": []}) as mock_blame:
             result = runner.invoke(
                 cli,
-                ["blame", "test.py", "--line-level", "-L", "10-20", "-r", str(tmp_path)],
+                ["pane", "blame", "test.py", "--line-level", "-L", "10-20", "-r", str(tmp_path)],
             )
 
         assert result.exit_code == 0
@@ -258,7 +258,7 @@ class TestListAgentsCmd:
                 return_value=["claude"],
             ),
         ):
-            result = runner.invoke(cli, ["agents", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["agent", "list", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         agents = json.loads(result.output)
@@ -271,7 +271,7 @@ class TestListAgentsCmd:
 class TestStatsCmd:
     def test_stats_outputs_json(self, runner: CliRunner, tmp_path: Path) -> None:
         with patch("dgov.inspection.compute_stats", return_value={"total": 5}) as mock_stats:
-            result = runner.invoke(cli, ["stats", "--json", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["agent", "stats", "--json", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -394,7 +394,7 @@ class TestCodebaseCmd:
 class TestTranscriptCmd:
     def test_transcript_missing_file(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test transcript command with non-existent file."""
-        result = runner.invoke(cli, ["transcript", "nonexistent", "-r", str(tmp_path)])
+        result = runner.invoke(cli, ["pane", "transcript", "nonexistent", "-r", str(tmp_path)])
 
         assert result.exit_code == 1
         assert "No transcript found" in result.output
@@ -413,7 +413,9 @@ class TestTranscriptCmd:
         }
         transcript_path.write_text(json.dumps(entry) + "\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["transcript", "test-task", "--json", "-r", str(tmp_path)])
+        result = runner.invoke(
+            cli, ["pane", "transcript", "test-task", "--json", "-r", str(tmp_path)]
+        )
 
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
@@ -460,7 +462,7 @@ class TestTranscriptCmd:
         ]
         transcript_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-        result = runner.invoke(cli, ["transcript", "test-task", "-r", str(tmp_path)])
+        result = runner.invoke(cli, ["pane", "transcript", "test-task", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         assert "Hi there!" in result.output
@@ -585,7 +587,7 @@ class TestStatsCmdHumanReadable:
         }
 
         with patch("dgov.inspection.compute_stats", return_value=mock_data):
-            result = runner.invoke(cli, ["stats", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["agent", "stats", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         output = result.output
@@ -601,7 +603,7 @@ class TestStatsCmdHumanReadable:
         mock_data = {"reliability": {}}
 
         with patch("dgov.inspection.compute_stats", return_value=mock_data):
-            result = runner.invoke(cli, ["stats", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["agent", "stats", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         assert "No agent statistics available." in result.output
@@ -620,7 +622,7 @@ class TestStatsCmdHumanReadable:
         }
 
         with patch("dgov.inspection.compute_stats", return_value=mock_data):
-            result = runner.invoke(cli, ["stats", "--json", "-r", str(tmp_path)])
+            result = runner.invoke(cli, ["agent", "stats", "--json", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -642,15 +644,17 @@ class TestInitCmdAgentOption:
         # Should not have prompted
         assert "Governor agent" not in result.output
 
-    def test_init_without_agent_option_prompts(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Test init without --agent shows interactive prompt."""
-        result = runner.invoke(cli, ["init", "-r", str(tmp_path)], input="gemini\n")
+    def test_init_without_agent_option_defaults_to_claude(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test init without --agent defaults to claude (no interactive prompt)."""
+        result = runner.invoke(cli, ["init", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         config_path = tmp_path / ".dgov" / "config.toml"
         assert config_path.is_file()
         config_content = config_path.read_text(encoding="utf-8")
-        assert 'governor_agent = "gemini"' in config_content
+        assert 'governor_agent = "claude"' in config_content
 
     def test_init_default_agent_when_no_option(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test init uses claude as default when no --agent provided."""
