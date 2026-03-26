@@ -27,7 +27,7 @@ class AcceptanceCriteria:
 
     tests_pass: bool = True
     lint_clean: bool = True
-    custom_check: str = ""  # shell command, exit 0 = pass
+    custom_check: str | None = None  # shell command, exit 0 = pass
 
 
 @dataclass(frozen=True)
@@ -62,13 +62,13 @@ class PlanUnit:
     files: PlanUnitFiles
     satisfies: tuple[str, ...] = ()
     depends_on: tuple[str, ...] = ()
-    agent: str = ""  # empty = use plan default
+    agent: str | None = None  # empty = use plan default
     acceptance: AcceptanceCriteria = field(default_factory=AcceptanceCriteria)
     timeout_s: int = 0  # 0 = use plan default
     escalation: tuple[str, ...] = ()
-    review_agent: str = ""  # model for reviewing this unit's output
+    review_agent: str | None = None  # model for reviewing this unit's output
     role: str = "worker"
-    template: str = ""
+    template: str | None = None
     template_vars: dict[str, str] = field(default_factory=dict)
 
 
@@ -89,7 +89,7 @@ class PlanSpec:
     permission_mode: str = "bypassPermissions"
     max_retries: int = 1
     merge_resolve: str = "skip"
-    default_review_agent: str = ""
+    default_review_agent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -292,7 +292,7 @@ def _parse_acceptance(raw: dict) -> AcceptanceCriteria:
     return AcceptanceCriteria(
         tests_pass=bool(raw.get("tests_pass", True)),
         lint_clean=bool(raw.get("lint_clean", True)),
-        custom_check=str(raw.get("custom_check", "")),
+        custom_check=str(raw.get("custom_check")) if raw.get("custom_check") is not None else None,
     )
 
 
@@ -339,7 +339,7 @@ def parse_plan_file(path: str) -> PlanSpec:
     permission_mode = plan_section.get("permission_mode", "bypassPermissions")
     max_retries = plan_section.get("max_retries", 1)
     merge_resolve = plan_section.get("merge_resolve", "skip")
-    default_review_agent = plan_section.get("default_review_agent", "")
+    default_review_agent = plan_section.get("default_review_agent")
     evals_raw = raw.get("evals", [])
     evals = tuple(_parse_eval(eval_raw) for eval_raw in evals_raw)
 
@@ -387,13 +387,13 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
         files=files,
         satisfies=tuple(raw.get("satisfies", ())),
         depends_on=tuple(raw.get("depends_on", ())),
-        agent=str(raw.get("agent", "")),
+        agent=str(raw.get("agent")) if raw.get("agent") is not None else None,
         acceptance=acceptance,
         timeout_s=int(raw.get("timeout_s", 0)),
         escalation=tuple(raw.get("escalation", ())),
-        review_agent=str(raw.get("review_agent", "")),
+        review_agent=str(raw.get("review_agent")) if raw.get("review_agent") is not None else None,
         role=str(raw.get("role", "worker")),
-        template=str(raw.get("template", "")),
+        template=str(raw.get("template")) if raw.get("template") is not None else None,
         template_vars=dict(raw.get("vars", {})),
     )
 
@@ -733,9 +733,11 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
 
     for slug, unit in plan.units.items():
         # Resolve defaults
-        agent = unit.agent if unit.agent else plan.default_agent
+        agent = unit.agent if unit.agent is not None else plan.default_agent
         timeout_s = unit.timeout_s if unit.timeout_s else plan.default_timeout_s
-        review_agent = unit.review_agent if unit.review_agent else plan.default_review_agent
+        review_agent = (
+            unit.review_agent if unit.review_agent is not None else plan.default_review_agent
+        )
 
         # Map PlanUnitFiles -> DagFileSpec (drop read files)
         dag_files = DagFileSpec(
@@ -780,7 +782,7 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
                 modified_prompt += (
                     f"\n- Lint must be clean: {'yes' if acceptance.lint_clean else 'no'}"
                 )
-                if acceptance.custom_check:
+                if acceptance.custom_check is not None:
                     modified_prompt += f"\n- Custom check: {acceptance.custom_check}"
 
         if unit.satisfies:
@@ -858,7 +860,7 @@ def serialize_plan(plan: PlanSpec) -> str:
         lines.append(f"max_retries = {plan.max_retries}")
     if plan.merge_resolve != "skip":
         lines.append(f'merge_resolve = "{plan.merge_resolve}"')
-    if plan.default_review_agent:
+    if plan.default_review_agent is not None:
         lines.append(f'default_review_agent = "{plan.default_review_agent}"')
     lines.append("")
 
@@ -882,7 +884,7 @@ def serialize_plan(plan: PlanSpec) -> str:
         else:
             lines.append(f'prompt = "{unit.prompt}"')
         lines.append(f'commit_message = "{unit.commit_message}"')
-        if unit.agent:
+        if unit.agent is not None:
             lines.append(f'agent = "{unit.agent}"')
         if unit.timeout_s:
             lines.append(f"timeout_s = {unit.timeout_s}")
@@ -895,11 +897,11 @@ def serialize_plan(plan: PlanSpec) -> str:
         if unit.escalation:
             escs = ", ".join(f'"{e}"' for e in unit.escalation)
             lines.append(f"escalation = [{escs}]")
-        if unit.review_agent:
+        if unit.review_agent is not None:
             lines.append(f'review_agent = "{unit.review_agent}"')
         if unit.role != "worker":
             lines.append(f'role = "{unit.role}"')
-        if unit.template:
+        if unit.template is not None:
             lines.append(f'template = "{unit.template}"')
         if unit.template_vars:
             lines.append("[units." + slug + ".vars]")
@@ -938,7 +940,7 @@ def serialize_plan(plan: PlanSpec) -> str:
                 lines.append(f"tests_pass = {'true' if acc.tests_pass else 'false'}")
             if acc.lint_clean != default_acc.lint_clean:
                 lines.append(f"lint_clean = {'true' if acc.lint_clean else 'false'}")
-            if acc.custom_check:
+            if acc.custom_check is not None:
                 lines.append(f'custom_check = "{acc.custom_check}"')
             lines.append("")
 

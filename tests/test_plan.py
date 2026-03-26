@@ -126,7 +126,7 @@ class TestParsePlanFile:
         task_a = spec.units["task-a"]
         assert task_a.acceptance.tests_pass is True
         assert task_a.acceptance.lint_clean is True
-        assert task_a.acceptance.custom_check == ""
+        assert task_a.acceptance.custom_check is None
 
     def test_depends_on(self, tmp_path):
         """Check dependency resolution."""
@@ -143,10 +143,10 @@ class TestParsePlanFile:
         assert spec.merge_strategy == "squash"
 
     def test_unit_default_agent(self, tmp_path):
-        """Units without explicit agent get empty string."""
+        """Units without explicit agent get None."""
         spec = parse_plan_file(_write_plan(tmp_path))
         # task-b has no agent set in TOML
-        assert spec.units["task-b"].agent == ""
+        assert spec.units["task-b"].agent is None
 
     def test_unit_default_timeout(self, tmp_path):
         """Units without explicit timeout_s get 0."""
