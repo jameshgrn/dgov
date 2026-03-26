@@ -78,7 +78,11 @@ class TestPaneClose:
             result = runner.invoke(cli, ["pane", "close", "nonexistent"])
 
         assert result.exit_code == 1
-        assert json.loads(result.output) == {"not_found": "nonexistent"}
+        expected = {
+            "error": "Pane not found: nonexistent",
+            "hint": "Run 'dgov pane list -r .' to see active panes",
+        }
+        assert json.loads(result.output) == expected
 
     def test_close_existing_pane(self, runner: CliRunner) -> None:
         with patch("dgov.executor.run_close_only") as mock_close:
