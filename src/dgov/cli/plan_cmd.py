@@ -358,6 +358,9 @@ def _wait_for_dag(run_id: int) -> None:
         "evals_verified",
     )
 
+    pane_prefix = f"r{run_id}-"
+    dag_pane = f"dag/{run_id}"
+
     while True:
         events = wait_for_events(
             session_root,
@@ -369,7 +372,12 @@ def _wait_for_dag(run_id: int) -> None:
             cursor = max(cursor, ev["id"])
             kind = ev.get("event", "")
             dag_rid = ev.get("dag_run_id")
+            pane = ev.get("pane", "")
+            # Skip events from other DAG runs
             if dag_rid is not None and dag_rid != run_id:
+                continue
+            # For events without dag_run_id, check pane belongs to this run
+            if dag_rid is None and not pane.startswith(pane_prefix) and pane != dag_pane:
                 continue
             if kind == "dag_task_dispatched":
                 click.echo(f"  dispatched: {ev.get('task', ev.get('pane', ''))}")
