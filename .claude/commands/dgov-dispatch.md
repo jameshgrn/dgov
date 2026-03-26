@@ -5,6 +5,7 @@ The user will describe a task. You will:
 ## Step 1: Analyze the task
 
 Determine:
+- **Execution surface**: plan-driven work or true micro-task?
 - **Scope**: single-file or multi-file?
 - **Complexity**: micro-task (numbered steps) or design-decision (autonomous)?
 - **Files involved**: read the source to identify exact file paths, function names, line numbers
@@ -15,7 +16,7 @@ Always read the actual code before constructing the prompt. Workers need accurat
 
 ## Step 3: Choose prompt style
 
-**Numbered steps** (single-file, mechanical changes, qwen-9b/4b):
+**Numbered steps** (single-file, mechanical micro-task):
 ```
 1. Read <file>. Find <function/class>.
 2. <Exact edit instruction with code block>
@@ -23,7 +24,7 @@ Always read the actual code before constructing the prompt. Workers need accurat
 4. git commit -m "<message>"
 ```
 
-**Autonomous** (multi-file, design decisions, qwen-35b):
+**Autonomous** (multi-file, design decisions, richer context):
 ```
 Goal: <what and why>
 
@@ -43,13 +44,19 @@ Deliver:
 
 ## Step 4: Choose agent role
 
-- Single file, mechanical: `worker` (routes to qwen-9b)
-- Single file, needs judgment: `worker` with `--agent qwen-35b`
-- Multi-file (2-4 files): `worker` with `--agent qwen-35b`, autonomous prompt
-- Large refactor / security audit: suggest LT-GOV
+- If the task is multi-step, dependent, or spans distinct file claims: stop and recommend `uv run dgov plan run`
+- Single-file micro-task: `pane create --land` is acceptable
+- Start with the cheapest policy-approved worker tier; do not pin physical backends
+- Large refactor / security audit: suggest LT-GOV only when the task actually needs it
 
 ## Step 5: Output the dispatch command
 
+For plan-driven work, output a recommendation to write a plan TOML and run:
+```bash
+uv run dgov plan run .dgov/plans/<name>.toml --wait
+```
+
+For true micro-tasks, output:
 ```bash
 uv run dgov pane create --land -a <agent> -s <slug> -r . -p "<prompt>"
 ```
@@ -59,7 +66,7 @@ Run with `run_in_background: true` so governor stays responsive.
 ## Rules
 - NEVER put function/class names in prompts you haven't verified by reading the source
 - ALWAYS end prompts with explicit git add + git commit
-- ALWAYS use `--land` flag (full lifecycle: dispatch + wait + review + merge + close)
-- Use logical agent names (qwen-35b, qwen-9b), never physical names (river-35b)
+- Use `--land` only on ad-hoc micro-task pane dispatches
+- Use policy-approved logical routing identifiers only; never physical names
 - Slug format: lowercase-kebab, descriptive, <30 chars
-- For plan-driven work (>1 task, dependencies), suggest `dgov plan run` instead
+- Prefer `dgov plan run` for anything beyond a single well-scoped micro-task

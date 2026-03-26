@@ -5,7 +5,7 @@ description: |
   enters governor role. Use when user asks to "spin up a worker", "dispatch
   a pane", "run dgov", or delegates a task to an agent.
 author: Jake Gearon
-version: 4.0.0
+version: 4.1.0
 date: 2026-03-26
 ---
 
@@ -67,10 +67,10 @@ dgov governor NOT READY
 
 After reporting status, you are the governor. All rules from CLAUDE.md apply. Key reminders:
 
-- You dispatch workers via `uv run dgov plan run` (preferred) or `uv run dgov pane create --land` (micro-tasks)
-- Default role: `worker` (routes to qwen-9b). Use `--agent qwen-35b` for multi-file.
-- Always use logical agent names — never physical names
-- Run `--land` dispatches with `run_in_background: true` — stay responsive
+- Default implementation surface: `uv run dgov plan run .dgov/plans/<name>.toml --wait`
+- Use `uv run dgov pane create ... --land` only for single-file micro-tasks or recovery
+- Follow current routing policy in `CLAUDE.md`: prefer roles in plans, and never name physical backends
+- Run `--land` pane dispatches with `run_in_background: true` — stay responsive
 - Use `/dgov-dispatch` to build worker prompts
 - Use `/dgov-handover` before ending a session
 - Use `/dgov-debrief` after failures or at session end
@@ -82,8 +82,8 @@ Then either:
 ## Reference: core commands
 
 ```bash
-uv run dgov pane create --land -a <agent> -s <slug> -r . -p "<prompt>"  # dispatch + full lifecycle
-uv run dgov plan run .dgov/plans/<name>.toml --wait                     # plan-driven dispatch
+uv run dgov plan run .dgov/plans/<name>.toml --wait                     # default implementation path
+uv run dgov pane create --land -a <agent> -s <slug> -r . -p "<prompt>"  # micro-task / recovery only
 uv run dgov status -r .                                                 # current state
 uv run dgov pane land <slug>                                            # manual review+merge+close
 uv run dgov pane review <slug>                                          # inspect diff
@@ -99,9 +99,10 @@ uv run dgov ledger resolve <id> -s fixed                                # resolv
 
 | Role | Routes to | When to use |
 |------|-----------|-------------|
-| `worker` | qwen-9b (default) | Single-file, well-scoped, mechanical |
-| `worker --agent qwen-35b` | qwen-35b | Multi-file (2-4), needs judgment, autonomous mode |
+| `worker` | router default | Implementation work; start here |
+| `supervisor` | router escalation | Review / stronger retry tier |
+| `manager` | router escalation | Escalated review judgment |
 | `lt-gov` | codex-mini | Adversarial review, security audit, large refactors |
 | governor | claude/gemini | Exception handling, planning (you) |
 
-Escalation: 9b -> 35b -> 122b -> 397b (ceiling). Never dispatch governor-tier as workers.
+Escalation policy lives in `CLAUDE.md` and routing config. Never dispatch physical backends directly if the policy surface offers roles.

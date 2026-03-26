@@ -12,10 +12,9 @@ uv run dgov status -r . 2>/dev/null || echo "no active panes"
 uv run dgov ledger list -r . -c bug -s open 2>/dev/null || echo "no open bugs"
 uv run dgov ledger list -r . -c debt -s open 2>/dev/null || echo "no open debt"
 uv run dgov ledger list -r . -c rule 2>/dev/null || echo "no rules"
-
-# Test health
-DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/ -q -m unit --tb=no 2>&1 | tail -3
 ```
+
+For test health, do **not** run the full unit suite during handover. Reuse the latest targeted verification from the session, or if none exists, run only the smallest changed-area test slice and report that explicitly.
 
 ## Step 2: Write HANDOVER.md
 
@@ -82,5 +81,6 @@ grep -qxF 'HANDOVER.md' .gitignore 2>/dev/null || echo 'HANDOVER.md' >> .gitigno
 - Lead with facts, not narrative
 - Lookup Cache is the most important section — list everything discovered
 - Include commit SHAs so next governor can trace changes
+- Do not run the full test suite from handover unless the user explicitly requests a push-time CI pass
 - Open Issues should have enough detail to act on without re-reading code
 - Do NOT include project architecture or background — CLAUDE.md and CODEBASE.md cover that
