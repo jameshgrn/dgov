@@ -21,7 +21,10 @@ from dgov.decision import MonitorOutputRequest, ProviderError
 from dgov.done import _has_new_commits
 from dgov.executor import DagReactor, EscalateResult, RetryResult
 from dgov.kernel import (
+    DagAction,
+    DagEvent,
     DagKernel,
+    GovernorAction,
     TaskClosed,
     TaskGovernorResumed,
     TaskMergeDone,
@@ -30,6 +33,7 @@ from dgov.kernel import (
     WorkerObservation,
     WorkerPhase,
 )
+from dgov.merger import MergeSuccess
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.persistence import (
     STATE_DIR,
@@ -50,6 +54,8 @@ if TYPE_CHECKING:
     from dgov.monitor_hooks import MonitorHook
 
 logger = logging.getLogger(__name__)
+
+_DagEventFactory = Callable[[str, str, dict[str, object]], DagEvent]
 
 
 def _source_hash() -> str:
@@ -151,7 +157,7 @@ _RETRY_CLEAR_EVENTS = frozenset(
 
 # Factory dict for mapping pane events to DAG events.
 # Each value is a lambda that takes (timestamp, slug, event_dict) and returns a DagEvent.
-_DAG_EVENT_FACTORY = {
+_DAG_EVENT_FACTORY: dict[str, _DagEventFactory] = {
     "pane_done": lambda ts, sl, ev: TaskWaitDone(ts, sl, "done"),
     "pane_failed": lambda ts, sl, ev: TaskWaitDone(ts, sl, "failed"),
     "pane_timed_out": lambda ts, sl, ev: TaskWaitDone(ts, sl, "timed_out"),
@@ -163,7 +169,9 @@ _DAG_EVENT_FACTORY = {
     ),
     "merge_completed": lambda ts, sl, ev: TaskMergeDone(ts),
     "pane_closed": lambda ts, sl, ev: TaskClosed(ts),
-    "dag_resumed": lambda ts, sl, ev: TaskGovernorResumed(ts, action=ev.get("action", "retry")),
+    "dag_resumed": lambda ts, sl, ev: TaskGovernorResumed(
+        ts, action=GovernorAction(str(ev.get("action", GovernorAction.RETRY)))
+    ),
 }
 
 
@@ -423,7 +431,9 @@ def observe_worker(
     )
 
 
-def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: list) -> None:
+def _drive_dag(
+    session_root: str, dag_state: DagMonitorState, initial_actions: list[DagAction]
+) -> None:
     """Recursively process kernel actions and handle immediate event feedback."""
     from dgov.kernel import DagDone, TaskDispatched, TaskRetryStarted
 
@@ -495,12 +505,12 @@ def _drive_dag(session_root: str, dag_state: DagMonitorState, initial_actions: l
             continue
 
         event = dag_state.reactor.execute(action)
-        if event:
+        if event is not None:
             # Sync kernel state
             if isinstance(event, TaskDispatched):
-                dag_state.kernel.pane_slugs[action.task_slug] = event.pane_slug
+                dag_state.kernel.pane_slugs[event.task_slug] = event.pane_slug
             elif isinstance(event, TaskRetryStarted):
-                dag_state.kernel.pane_slugs[action.task_slug] = event.new_pane_slug
+                dag_state.kernel.pane_slugs[event.task_slug] = event.new_pane_slug
 
             # Feed event back to kernel
             new_actions = dag_state.kernel.handle(event)
@@ -693,10 +703,10 @@ def _apply_monitor_events(
         # Map pane events to DagEvents using factory dict
         dag_ev = None
         if dag_to_drive and task_slug:
-            factory = _DAG_EVENT_FACTORY.get(kind)
+            factory: _DagEventFactory | None = _DAG_EVENT_FACTORY.get(kind)
             dag_ev = factory(task_slug, slug, event) if factory else None
 
-        if dag_to_drive and dag_ev:
+        if dag_to_drive and dag_ev is not None:
             new_actions = dag_to_drive.kernel.handle(dag_ev)
             _drive_dag(session_root, dag_to_drive, new_actions)
 
@@ -1110,7 +1120,7 @@ def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | No
         log = logger.warning if result.failure_stage == "review_error" else logger.info
         log("Skip auto-merge %s: %s", slug, result.error)
         return None
-    if result.merge_result and result.merge_result.merged:
+    if isinstance(result.merge_result, MergeSuccess):
         emit_event(session_root, "monitor_auto_merge", slug)
         logger.info("Monitor: auto-merged %s", slug)
         return "auto_merge"

@@ -16,7 +16,19 @@ from dgov.inspection import ReviewInfo
 from dgov.merger import MergeError, MergeSuccess
 
 if TYPE_CHECKING:
+    from dgov.dag_parser import DagDefinition
+    from dgov.kernel import (
+        DagAction,
+        DagEvent,
+        TaskDispatched,
+        TaskDispatchFailed,
+        TaskMergeDone,
+        TaskRetryStarted,
+        TaskReviewDone,
+        TaskWaitDone,
+    )
     from dgov.merger import PaneMergeResult
+    from dgov.persistence import WorkerPane
 
 logger = logging.getLogger(__name__)
 
@@ -25,71 +37,9 @@ logger = logging.getLogger(__name__)
 class ReviewGate:
     review: ReviewInfo
     passed: bool
-    verdict: ReviewVerdict
+    verdict: str
     commit_count: int
     error: str | None = None
-
-
-@dataclass(frozen=True)
-class PostDispatchResult:
-    state: str
-    slug: str
-    review: ReviewInfo | None = None
-    review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    merge_result: PaneMergeResult | None = None
-    cleanup: CleanupOnlyResult | None = None
-    error: str | None = None
-    failure_stage: str | None = None
-
-
-@dataclass(frozen=True)
-class ReviewMergeResult:
-    slug: str
-    review: ReviewInfo
-    review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    merge_result: PaneMergeResult | None = None
-    failure_stage: str | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class MergeOnlyResult:
-    slug: str
-    merge_result: PaneMergeResult | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class LandResult:
-    slug: str
-    review: ReviewInfo
-    review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    merge_result: PaneMergeResult | None = None
-    cleanup: CleanupOnlyResult | None = None
-    failure_stage: str | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class ReviewOnlyResult:
-    slug: str
-    review: ReviewInfo
-    passed: bool
-    verdict: ReviewVerdict
-    commit_count: int
-    review_record: DecisionRecord[ReviewOutputDecision] | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
-class WaitOnlyResult:
-    state: str
-    slug: str
-    wait_result: dict | None = None
-    pane_state: str | None = None
-    error: str | None = None
-    failure_stage: str | None = None
-    suggest_escalate: bool = False
 
 
 @dataclass(frozen=True)
@@ -102,6 +52,400 @@ class CleanupOnlyResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _PostDispatchWaitFailed:
+    cleanup: CleanupOnlyResult
+    error: str
+    failure_stage: str
+
+
+@dataclass(frozen=True)
+class _PostDispatchReviewFailed:
+    cleanup: CleanupOnlyResult
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    error: str = ""
+    failure_stage: str = "review"
+
+
+@dataclass(frozen=True)
+class _PostDispatchMergeFailed:
+    cleanup: CleanupOnlyResult
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    merge_result: PaneMergeResult | None = None
+    error: str = ""
+    failure_stage: str = "merge"
+
+
+@dataclass(frozen=True)
+class _PostDispatchReviewPending:
+    cleanup: CleanupOnlyResult
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+
+
+@dataclass(frozen=True)
+class _PostDispatchReviewedPass:
+    cleanup: CleanupOnlyResult
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+
+
+@dataclass(frozen=True)
+class _PostDispatchCompletedNoMerge:
+    cleanup: CleanupOnlyResult
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+
+
+@dataclass(frozen=True)
+class _PostDispatchCompletedMerged:
+    cleanup: CleanupOnlyResult
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision] | None = None
+    merge_result: PaneMergeResult | None = None
+
+
+PostDispatchOutcome = (
+    _PostDispatchWaitFailed
+    | _PostDispatchReviewFailed
+    | _PostDispatchMergeFailed
+    | _PostDispatchReviewPending
+    | _PostDispatchReviewedPass
+    | _PostDispatchCompletedNoMerge
+    | _PostDispatchCompletedMerged
+)
+
+
+@dataclass(frozen=True)
+class PostDispatchResult:
+    slug: str
+    outcome: PostDispatchOutcome
+
+    @property
+    def state(self) -> str:
+        if isinstance(
+            self.outcome,
+            (_PostDispatchWaitFailed, _PostDispatchReviewFailed, _PostDispatchMergeFailed),
+        ):
+            return "failed"
+        if isinstance(self.outcome, _PostDispatchReviewPending):
+            return "review_pending"
+        if isinstance(self.outcome, _PostDispatchReviewedPass):
+            return "reviewed_pass"
+        return "completed"
+
+    @property
+    def review(self) -> ReviewInfo | None:
+        if isinstance(self.outcome, _PostDispatchWaitFailed):
+            return None
+        return self.outcome.review
+
+    @property
+    def review_record(self) -> DecisionRecord[ReviewOutputDecision] | None:
+        if isinstance(self.outcome, _PostDispatchWaitFailed):
+            return None
+        return self.outcome.review_record
+
+    @property
+    def merge_result(self) -> PaneMergeResult | None:
+        if isinstance(self.outcome, (_PostDispatchMergeFailed, _PostDispatchCompletedMerged)):
+            return self.outcome.merge_result
+        return None
+
+    @property
+    def cleanup(self) -> CleanupOnlyResult:
+        return self.outcome.cleanup
+
+    @property
+    def error(self) -> str | None:
+        if isinstance(
+            self.outcome,
+            (_PostDispatchWaitFailed, _PostDispatchReviewFailed, _PostDispatchMergeFailed),
+        ):
+            return self.outcome.error
+        return None
+
+    @property
+    def failure_stage(self) -> str | None:
+        if isinstance(
+            self.outcome,
+            (_PostDispatchWaitFailed, _PostDispatchReviewFailed, _PostDispatchMergeFailed),
+        ):
+            return self.outcome.failure_stage
+        return None
+
+
+@dataclass(frozen=True)
+class ReviewOnlyResult:
+    slug: str
+    review: ReviewInfo
+    passed: bool
+    review_record: DecisionRecord[ReviewOutputDecision]
+    error: str | None = None
+
+    @property
+    def verdict(self) -> str:
+        return self.review.verdict
+
+    @property
+    def commit_count(self) -> int:
+        return self.review.commit_count
+
+
+@dataclass(frozen=True)
+class _WaitCompleted:
+    wait_result: dict | None = None
+    pane_state: str | None = None
+
+
+@dataclass(frozen=True)
+class _WaitFailed:
+    error: str
+    failure_stage: str
+    suggest_escalate: bool
+    wait_result: dict | None = None
+    pane_state: str | None = None
+
+
+WaitOutcome = _WaitCompleted | _WaitFailed
+
+
+@dataclass(frozen=True)
+class WaitOnlyResult:
+    slug: str
+    outcome: WaitOutcome
+
+    @classmethod
+    def completed(
+        cls, slug: str, *, wait_result: dict | None = None, pane_state: str | None = None
+    ) -> WaitOnlyResult:
+        return cls(
+            slug=slug, outcome=_WaitCompleted(wait_result=wait_result, pane_state=pane_state)
+        )
+
+    @classmethod
+    def failed(
+        cls,
+        slug: str,
+        *,
+        error: str,
+        failure_stage: str,
+        suggest_escalate: bool,
+        wait_result: dict | None = None,
+        pane_state: str | None = None,
+    ) -> WaitOnlyResult:
+        return cls(
+            slug=slug,
+            outcome=_WaitFailed(
+                error=error,
+                failure_stage=failure_stage,
+                suggest_escalate=suggest_escalate,
+                wait_result=wait_result,
+                pane_state=pane_state,
+            ),
+        )
+
+    @property
+    def state(self) -> str:
+        return "failed" if isinstance(self.outcome, _WaitFailed) else "completed"
+
+    @property
+    def wait_result(self) -> dict | None:
+        return self.outcome.wait_result
+
+    @property
+    def pane_state(self) -> str | None:
+        return self.outcome.pane_state
+
+    @property
+    def error(self) -> str | None:
+        if isinstance(self.outcome, _WaitFailed):
+            return self.outcome.error
+        return None
+
+    @property
+    def failure_stage(self) -> str | None:
+        if isinstance(self.outcome, _WaitFailed):
+            return self.outcome.failure_stage
+        return None
+
+    @property
+    def suggest_escalate(self) -> bool:
+        if isinstance(self.outcome, _WaitFailed):
+            return self.outcome.suggest_escalate
+        return False
+
+
+@dataclass(frozen=True)
+class MergeOnlyResult:
+    slug: str
+    merge_result: PaneMergeResult
+
+    @property
+    def error(self) -> str | None:
+        return _merge_result_error(self.merge_result)
+
+
+@dataclass(frozen=True)
+class _ReviewMergeReviewError:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    error: str
+    failure_stage: str = "review_error"
+
+
+@dataclass(frozen=True)
+class _ReviewMergeReviewFailed:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    error: str
+    failure_stage: str = "review_failed"
+
+
+@dataclass(frozen=True)
+class _ReviewMergeNoCommits:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+
+
+@dataclass(frozen=True)
+class _ReviewMergeFailed:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    merge_result: PaneMergeResult
+    error: str
+    failure_stage: str = "merge_failed"
+
+
+@dataclass(frozen=True)
+class _ReviewMergeMerged:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    merge_result: PaneMergeResult
+
+
+ReviewMergeOutcome = (
+    _ReviewMergeReviewError
+    | _ReviewMergeReviewFailed
+    | _ReviewMergeNoCommits
+    | _ReviewMergeFailed
+    | _ReviewMergeMerged
+)
+
+
+@dataclass(frozen=True)
+class ReviewMergeResult:
+    slug: str
+    outcome: ReviewMergeOutcome
+
+    @property
+    def review(self) -> ReviewInfo:
+        return self.outcome.review
+
+    @property
+    def review_record(self) -> DecisionRecord[ReviewOutputDecision]:
+        return self.outcome.review_record
+
+    @property
+    def merge_result(self) -> PaneMergeResult | None:
+        if isinstance(self.outcome, (_ReviewMergeFailed, _ReviewMergeMerged)):
+            return self.outcome.merge_result
+        return None
+
+    @property
+    def failure_stage(self) -> str | None:
+        if isinstance(
+            self.outcome, (_ReviewMergeReviewError, _ReviewMergeReviewFailed, _ReviewMergeFailed)
+        ):
+            return self.outcome.failure_stage
+        return None
+
+    @property
+    def error(self) -> str | None:
+        if isinstance(
+            self.outcome, (_ReviewMergeReviewError, _ReviewMergeReviewFailed, _ReviewMergeFailed)
+        ):
+            return self.outcome.error
+        return None
+
+
+@dataclass(frozen=True)
+class _LandMissingPane:
+    error: str
+    failure_stage: str = "land"
+
+
+@dataclass(frozen=True)
+class _LandFailed:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    error: str
+    failure_stage: str
+    merge_result: PaneMergeResult | None = None
+
+
+@dataclass(frozen=True)
+class _LandNoMerge:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    cleanup: CleanupOnlyResult
+
+
+@dataclass(frozen=True)
+class _LandMerged:
+    review: ReviewInfo
+    review_record: DecisionRecord[ReviewOutputDecision]
+    merge_result: PaneMergeResult
+    cleanup: CleanupOnlyResult
+
+
+LandOutcome = _LandMissingPane | _LandFailed | _LandNoMerge | _LandMerged
+
+
+@dataclass(frozen=True)
+class LandResult:
+    slug: str
+    outcome: LandOutcome
+
+    @property
+    def review(self) -> ReviewInfo | None:
+        if isinstance(self.outcome, (_LandFailed, _LandNoMerge, _LandMerged)):
+            return self.outcome.review
+        return None
+
+    @property
+    def review_record(self) -> DecisionRecord[ReviewOutputDecision] | None:
+        if isinstance(self.outcome, (_LandFailed, _LandNoMerge, _LandMerged)):
+            return self.outcome.review_record
+        return None
+
+    @property
+    def merge_result(self) -> PaneMergeResult | None:
+        if isinstance(self.outcome, (_LandFailed, _LandMerged)):
+            return self.outcome.merge_result
+        return None
+
+    @property
+    def cleanup(self) -> CleanupOnlyResult | None:
+        if isinstance(self.outcome, (_LandNoMerge, _LandMerged)):
+            return self.outcome.cleanup
+        return None
+
+    @property
+    def failure_stage(self) -> str | None:
+        if isinstance(self.outcome, (_LandMissingPane, _LandFailed)):
+            return self.outcome.failure_stage
+        return None
+
+    @property
+    def error(self) -> str | None:
+        if isinstance(self.outcome, (_LandMissingPane, _LandFailed)):
+            return self.outcome.error
+        return None
+
+
 @dataclass
 class PaneFinalizeResult:
     slug: str
@@ -109,6 +453,16 @@ class PaneFinalizeResult:
     merge_result: PaneMergeResult | None
     error: str | None
     cleanup_error: str | None
+
+
+def _merge_result_error(result: PaneMergeResult) -> str | None:
+    if isinstance(result, MergeError):
+        return result.error
+    if hasattr(result, "conflicts"):
+        hint = getattr(result, "hint", None)
+        conflicts = ", ".join(getattr(result, "conflicts", []))
+        return hint or f"Merge conflicts: {conflicts}" if conflicts else "Merge conflicts"
+    return None
 
 
 def run_dispatch_only(
@@ -125,8 +479,8 @@ def run_dispatch_only(
     skip_auto_structure: bool = False,
     role: str = "worker",
     parent_slug: str | None = None,
-    context_packet: object | None = None,
-) -> object:
+    context_packet: ContextPacket | None = None,
+) -> WorkerPane:
     """Executor syscall: dispatch a worker pane without full lifecycle.
 
     This is the canonical entrypoint for bare dispatch operations that should
@@ -394,7 +748,7 @@ def run_wait_only(
         if phase_callback is not None:
             phase_callback(name, current_slug)
 
-    current_slug = slug
+    current_slug: str = slug
     retries_left = max_retries
     wait_result: dict | None = None
 
@@ -415,8 +769,7 @@ def run_wait_only(
         except PaneTimeoutError:
             if retries_left <= 0:
                 _phase("failed", current_slug)
-                return WaitOnlyResult(
-                    state="failed",
+                return WaitOnlyResult.failed(
                     slug=current_slug,
                     error=f"Worker timed out after {timeout}s (retries exhausted)",
                     failure_stage="timeout",
@@ -435,8 +788,7 @@ def run_wait_only(
             )
             if error:
                 _phase("failed", current_slug)
-                return WaitOnlyResult(
-                    state="failed",
+                return WaitOnlyResult.failed(
                     slug=current_slug,
                     error=error,
                     failure_stage="recovery",
@@ -444,7 +796,8 @@ def run_wait_only(
                         session_root, project_root, current_slug
                     ),
                 )
-            current_slug = new_slug  # type: ignore[assignment]
+            assert new_slug is not None
+            current_slug = new_slug
             retries_left -= 1
             _phase("waiting", current_slug)
 
@@ -466,8 +819,7 @@ def run_wait_only(
         if pane_state == "failed":
             _phase("failed", current_slug)
             exit_msg = _read_exit_message(session_root, current_slug)
-            return WaitOnlyResult(
-                state="failed",
+            return WaitOnlyResult.failed(
                 slug=current_slug,
                 wait_result=wait_result,
                 pane_state=pane_state,
@@ -480,8 +832,7 @@ def run_wait_only(
 
     if pane_state in ("timed_out", "abandoned"):
         _phase("failed", current_slug)
-        return WaitOnlyResult(
-            state="failed",
+        return WaitOnlyResult.failed(
             slug=current_slug,
             wait_result=wait_result,
             pane_state=pane_state,
@@ -491,8 +842,7 @@ def run_wait_only(
         )
 
     # --- Success ---
-    _wait_result = WaitOnlyResult(
-        state="completed",
+    _wait_result = WaitOnlyResult.completed(
         slug=current_slug,
         wait_result=wait_result,
         pane_state=pane_state,
@@ -707,15 +1057,68 @@ def run_post_dispatch_lifecycle(
             except Exception:
                 logger.debug("failed to unset landing flag for %s", claimed, exc_info=True)
 
+    if state == "failed":
+        if review_res is None:
+            outcome: PostDispatchOutcome = _PostDispatchWaitFailed(
+                cleanup=cleanup_res,
+                error=error or "Unknown failure",
+                failure_stage=failure_stage or "wait",
+            )
+        elif merge_res is not None and merge_res.merge_result is not None:
+            outcome = _PostDispatchMergeFailed(
+                cleanup=cleanup_res,
+                review=review_res.review,
+                review_record=review_res.review_record,
+                merge_result=merge_res.merge_result,
+                error=error or "Unknown merge failure",
+            )
+        else:
+            outcome = _PostDispatchReviewFailed(
+                cleanup=cleanup_res,
+                review=review_res.review,
+                review_record=review_res.review_record,
+                error=error or "Unknown review failure",
+            )
+        return PostDispatchResult(slug=current_slug, outcome=outcome)
+    if state == "review_pending":
+        assert review_res is not None
+        return PostDispatchResult(
+            slug=current_slug,
+            outcome=_PostDispatchReviewPending(
+                cleanup=cleanup_res,
+                review=review_res.review,
+                review_record=review_res.review_record,
+            ),
+        )
+    if state == "reviewed_pass":
+        assert review_res is not None
+        return PostDispatchResult(
+            slug=current_slug,
+            outcome=_PostDispatchReviewedPass(
+                cleanup=cleanup_res,
+                review=review_res.review,
+                review_record=review_res.review_record,
+            ),
+        )
+    if merge_res is not None and merge_res.merge_result is not None:
+        assert review_res is not None
+        return PostDispatchResult(
+            slug=current_slug,
+            outcome=_PostDispatchCompletedMerged(
+                cleanup=cleanup_res,
+                review=review_res.review,
+                review_record=review_res.review_record,
+                merge_result=merge_res.merge_result,
+            ),
+        )
+    assert review_res is not None
     return PostDispatchResult(
-        state=state,
         slug=current_slug,
-        review=review_res.review if review_res else None,
-        review_record=review_res.review_record if review_res else None,
-        merge_result=merge_res.merge_result if merge_res else None,
-        cleanup=cleanup_res,
-        error=error,
-        failure_stage=failure_stage,
+        outcome=_PostDispatchCompletedNoMerge(
+            cleanup=cleanup_res,
+            review=review_res.review,
+            review_record=review_res.review_record,
+        ),
     )
 
 
@@ -1014,8 +1417,6 @@ def run_review_only(
         slug=slug,
         review=review,
         passed=passed,
-        verdict=verdict,
-        commit_count=commit_count,
         review_record=record,
         error=error,
     )
@@ -1067,26 +1468,30 @@ def run_review_merge(
     if review_res.error is not None:
         return ReviewMergeResult(
             slug=slug,
-            review=review_res.review,
-            review_record=review_res.review_record,
-            failure_stage="review_error",
-            error=review_res.error,
+            outcome=_ReviewMergeReviewError(
+                review=review_res.review,
+                review_record=review_res.review_record,
+                error=review_res.error,
+            ),
         )
 
     if review_res.verdict != ReviewVerdict.SAFE:
         return ReviewMergeResult(
             slug=slug,
-            review=review_res.review,
-            review_record=review_res.review_record,
-            failure_stage="review_failed",
-            error=f"Review verdict is {review_res.verdict}; refusing to merge",
+            outcome=_ReviewMergeReviewFailed(
+                review=review_res.review,
+                review_record=review_res.review_record,
+                error=f"Review verdict is {review_res.verdict}; refusing to merge",
+            ),
         )
 
     if review_res.commit_count == 0:
         return ReviewMergeResult(
             slug=slug,
-            review=review_res.review,
-            review_record=review_res.review_record,
+            outcome=_ReviewMergeNoCommits(
+                review=review_res.review,
+                review_record=review_res.review_record,
+            ),
         )
 
     merge_res = run_merge_only(
@@ -1101,18 +1506,21 @@ def run_review_merge(
     if merge_res.error is not None:
         return ReviewMergeResult(
             slug=slug,
-            review=review_res.review,
-            review_record=review_res.review_record,
-            merge_result=merge_res.merge_result,
-            failure_stage="merge_failed",
-            error=merge_res.error,
+            outcome=_ReviewMergeFailed(
+                review=review_res.review,
+                review_record=review_res.review_record,
+                merge_result=merge_res.merge_result,
+                error=merge_res.error,
+            ),
         )
 
     return ReviewMergeResult(
         slug=slug,
-        review=review_res.review,
-        review_record=review_res.review_record,
-        merge_result=merge_res.merge_result,
+        outcome=_ReviewMergeMerged(
+            review=review_res.review,
+            review_record=review_res.review_record,
+            merge_result=merge_res.merge_result,
+        ),
     )
 
 
@@ -1132,7 +1540,10 @@ def run_land_only(
 
     sr = os.path.abspath(session_root) if session_root else os.path.abspath(project_root)
     if not get_pane(sr, slug):
-        return LandResult(slug=slug, error=f"Pane not found: {slug}", failure_stage="land")
+        return LandResult(
+            slug=slug,
+            outcome=_LandMissingPane(error=f"Pane not found: {slug}"),
+        )
 
     result = run_review_merge(
         project_root,
@@ -1145,11 +1556,13 @@ def run_land_only(
     if result.error:
         return LandResult(
             slug=slug,
-            review=result.review,
-            review_record=result.review_record,
-            merge_result=result.merge_result,
-            failure_stage=result.failure_stage,
-            error=result.error,
+            outcome=_LandFailed(
+                review=result.review,
+                review_record=result.review_record,
+                merge_result=result.merge_result,
+                failure_stage=result.failure_stage or "land",
+                error=result.error,
+            ),
         )
 
     # Delegate cleanup to run_cleanup_only with state='completed'
@@ -1170,10 +1583,18 @@ def run_land_only(
         )
     return LandResult(
         slug=slug,
-        review=result.review,
-        review_record=result.review_record,
-        merge_result=result.merge_result,
-        cleanup=cleanup,
+        outcome=_LandMerged(
+            review=result.review,
+            review_record=result.review_record,
+            merge_result=result.merge_result,
+            cleanup=cleanup,
+        )
+        if result.merge_result is not None
+        else _LandNoMerge(
+            review=result.review,
+            review_record=result.review_record,
+            cleanup=cleanup,
+        ),
     )
 
 
@@ -1307,12 +1728,8 @@ def run_merge_only(
             strict_claims=strict_claims,
         )
 
-    _merge_error = merge_result.error if isinstance(merge_result, MergeError) else ""
-    _merge_out = MergeOnlyResult(
-        slug=slug,
-        merge_result=merge_result,
-        error=_merge_error if _merge_error else None,
-    )
+    _merge_error = _merge_result_error(merge_result) or ""
+    _merge_out = MergeOnlyResult(slug=slug, merge_result=merge_result)
 
     if _merge_span_id is not None:
         try:
@@ -1725,10 +2142,10 @@ class DagReactor:
     project_root: str
     session_root: str
     run_id: int
-    dag: object  # DagDefinition
+    dag: DagDefinition
     progress: Callable[[str], None] = lambda msg: None
 
-    def execute(self, action: object) -> object | None:
+    def execute(self, action: DagAction) -> DagEvent | None:
         """Execute a single kernel action and return the resulting event."""
         from dgov.kernel import (
             CloseTask,
@@ -1819,7 +2236,7 @@ class DagReactor:
 
 def run_dag_kernel(
     project_root: str,
-    dag_definition: object,
+    dag_definition: DagDefinition,
     *,
     session_root: str | None = None,
     run_id: int = 0,
@@ -1893,9 +2310,9 @@ def run_dag_kernel(
 
     # Action queue — process non-blocking actions immediately,
     # only block on WaitForAny.
-    queue: list = list(actions)
+    queue: list[DagAction] = list(actions)
 
-    def _extend_queue(new_actions: list) -> None:
+    def _extend_queue(new_actions: list[DagAction]) -> None:
         # If new actions contain a WaitForAny, drop any existing ones
         # from the queue — the new one has the latest waiting set.
         has_new_wait = any(isinstance(a, WaitForAny) for a in new_actions)
@@ -1965,18 +2382,19 @@ def run_dag_kernel(
         merged=merged,
         failed=failed,
         skipped=skipped,
+        blocked=[],
         run_id=run_id,
         error="Kernel queue exhausted without DagDone",
     )
 
 
 def _dag_dispatch(
-    dag: object,
+    dag: DagDefinition,
     task_slug: str,
     run_id: int,
     session_root: str,
     progress: Callable[[str], None],
-) -> object:
+) -> TaskDispatched | TaskDispatchFailed:
     """Execute a DispatchTask action. Returns TaskDispatched or TaskDispatchFailed."""
     from dgov.kernel import TaskDispatched, TaskDispatchFailed
     from dgov.lifecycle import create_worker_pane
@@ -2065,7 +2483,7 @@ def _dag_wait_any(
     stable_states: dict[str, dict],
     task_timeouts: dict[str, int],
     poll_interval: float,
-) -> object:
+) -> TaskWaitDone:
     """Poll active panes round-robin until one completes. Returns TaskWaitDone.
 
     Uses the unified WorkerObservation to check completion — same model
@@ -2100,7 +2518,7 @@ def _dag_wait_any(
 
 
 def _dag_review(
-    dag: object,
+    dag: DagDefinition,
     project_root: str,
     session_root: str,
     task_slug: str,
@@ -2108,7 +2526,7 @@ def _dag_review(
     progress: Callable[[str], None],
     review_agent: str | None = None,
     run_id: int | None = None,
-) -> object:
+) -> TaskReviewDone:
     """Execute a ReviewTask action. Returns TaskReviewDone."""
     from dgov.kernel import TaskReviewDone
 
@@ -2153,13 +2571,13 @@ def _dag_review(
 
 
 def _dag_merge(
-    dag: object,
+    dag: DagDefinition,
     project_root: str,
     session_root: str,
     task_slug: str,
     pane_slug: str,
     progress: Callable[[str], None],
-) -> object:
+) -> TaskMergeDone:
     """Execute a MergeTask action. Returns TaskMergeDone."""
     from dgov.gitops import build_manifest_on_completion, validate_manifest_freshness
     from dgov.kernel import TaskMergeDone
@@ -2209,7 +2627,7 @@ def _dag_retry(
     attempt: int,
     max_retries: int,
     progress: Callable[[str], None],
-) -> object:
+) -> TaskRetryStarted | TaskDispatchFailed:
     """Execute a RetryTask action. Returns TaskRetryStarted or TaskDispatchFailed."""
     from dgov.kernel import TaskDispatchFailed, TaskRetryStarted
     from dgov.persistence import upsert_dag_task
@@ -2260,7 +2678,7 @@ def _dag_skip(
     session_root: str,
     run_id: int,
     task_slug: str,
-    dag: object,
+    dag: DagDefinition,
     reason: str,
     progress: Callable[[str], None],
 ) -> None:

@@ -382,8 +382,8 @@ class TestCLINoAutoRetry:
     def test_no_auto_retry_passed(self, mock_wait, mock_list, runner: CliRunner) -> None:
         from dgov.executor import WaitOnlyResult
 
-        mock_wait.return_value = WaitOnlyResult(
-            state="completed", slug="w1", wait_result={"done": "w1", "method": "signal_or_commit"}
+        mock_wait.return_value = WaitOnlyResult.completed(
+            slug="w1", wait_result={"done": "w1", "method": "signal_or_commit"}
         )
 
         result = runner.invoke(
@@ -402,8 +402,8 @@ class TestCLINoAutoRetry:
     def test_auto_retry_default_on(self, mock_wait, mock_list, runner: CliRunner) -> None:
         from dgov.executor import WaitOnlyResult
 
-        mock_wait.return_value = WaitOnlyResult(
-            state="completed", slug="w1", wait_result={"done": "w1", "method": "signal_or_commit"}
+        mock_wait.return_value = WaitOnlyResult.completed(
+            slug="w1", wait_result={"done": "w1", "method": "signal_or_commit"}
         )
 
         result = runner.invoke(cli, ["pane", "wait", "w1", "-r", "/fake"])

@@ -22,7 +22,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from dgov.decision import ReviewVerdict
+from dgov.merger import MergeSuccess
 
 
 @dataclass
@@ -44,7 +44,7 @@ class WaitResult:
 @dataclass
 class ReviewResult:
     slug: str
-    verdict: ReviewVerdict
+    verdict: str
     commit_count: int = 0
     files_changed: int = 0
     tests_passed: bool | None = None
@@ -169,12 +169,13 @@ class Orchestrator:
             squash=squash,
             strict_claims=strict_claims,
         )
-        mr = result.merge_result or {}
         return MergeResult(
             slug=slug,
-            merged=bool(mr.get("merged")),
-            merge_sha=mr.get("merge_sha"),
-            error=result.error or mr.get("error"),
+            merged=isinstance(result.merge_result, MergeSuccess),
+            merge_sha=result.merge_result.merged
+            if isinstance(result.merge_result, MergeSuccess)
+            else None,
+            error=result.error,
         )
 
     def close(self, slug: str, *, force: bool = False) -> bool:
@@ -224,11 +225,12 @@ class Orchestrator:
             auto_merge=True,
             permission_mode=permission_mode,
         )
-        mr = lifecycle.merge_result or {}
         return LandResult(
             slug=lifecycle.slug,
             state=lifecycle.state,
-            merge_sha=mr.get("merge_sha"),
+            merge_sha=lifecycle.merge_result.merged
+            if isinstance(lifecycle.merge_result, MergeSuccess)
+            else None,
             error=lifecycle.error,
         )
 

@@ -8,6 +8,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from dgov.merger import MergeSuccess
 from dgov.persistence import emit_event
 
 logger = logging.getLogger(__name__)
@@ -339,7 +340,7 @@ def run_review_fix_pipeline(
     for slug in fix_slugs:
         review_merge = run_review_merge(project_root, slug, session_root=session_root)
         merge_result = review_merge.merge_result
-        if not review_merge.error and merge_result and merge_result.merged:
+        if not review_merge.error and isinstance(merge_result, MergeSuccess):
             merged_count += 1
             if merge_result.tests_passed is False:
                 test_failures.append(slug)
