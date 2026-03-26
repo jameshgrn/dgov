@@ -22,6 +22,7 @@ from dgov.executor import (
     run_review_only,
     run_wait_only,
 )
+from dgov.inspection import ReviewInfo
 
 pytestmark = pytest.mark.unit
 
@@ -66,7 +67,7 @@ def test_run_dispatch_preflight_prefers_explicit_touches(tmp_path):
 def test_review_merge_gate_blocks_zero_commit(tmp_path):
     with patch(
         "dgov.inspection.review_worker_pane",
-        return_value={"slug": "task", "verdict": "safe", "commit_count": 0},
+        return_value=ReviewInfo(slug="task", verdict="safe", commit_count=0),
     ):
         gate = review_merge_gate("/repo", "task", session_root=str(tmp_path))
 
@@ -77,7 +78,7 @@ def test_review_merge_gate_blocks_zero_commit(tmp_path):
 def test_review_merge_gate_blocks_non_safe_verdict(tmp_path):
     with patch(
         "dgov.inspection.review_worker_pane",
-        return_value={"slug": "task", "verdict": "review", "commit_count": 2},
+        return_value=ReviewInfo(slug="task", verdict="review", commit_count=2),
     ):
         gate = review_merge_gate("/repo", "task", session_root=str(tmp_path))
 
@@ -88,7 +89,7 @@ def test_review_merge_gate_blocks_non_safe_verdict(tmp_path):
 def test_run_review_only_returns_typed_review_result(tmp_path):
     with patch(
         "dgov.inspection.review_worker_pane",
-        return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+        return_value=ReviewInfo(slug="task", verdict="safe", commit_count=2),
     ):
         result = run_review_only("/repo", "task", session_root=str(tmp_path))
 
@@ -109,7 +110,7 @@ def test_run_review_only_persists_decision_journal(tmp_path):
 
     with patch(
         "dgov.inspection.review_worker_pane",
-        return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+        return_value=ReviewInfo(slug="task", verdict="safe", commit_count=2),
     ):
         result = run_review_only("/repo", "task", session_root=session_root)
 
@@ -132,7 +133,7 @@ def test_run_review_only_fails_on_stale_files(tmp_path):
     with (
         patch(
             "dgov.inspection.review_worker_pane",
-            return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+            return_value=ReviewInfo(slug="task", verdict="safe", commit_count=2),
         ),
         patch("dgov.persistence.get_pane", return_value=pane_data),
         patch(
@@ -150,10 +151,9 @@ def test_run_review_only_fails_on_stale_files(tmp_path):
     ):
         result = run_review_only("/repo", "task", session_root=session_root)
 
-    # Stale files are recorded in review dict as warning, but don't block merge
-    assert "stale_files" in result.review
-    assert result.review["stale_files"] == ["src/foo.py"]
-    assert result.review["freshness"] == "warn"
+    # Stale files are recorded in review as warning, but don't block merge
+    assert result.review.stale_files == ["src/foo.py"]
+    assert result.review.freshness == "warn"
     assert result.passed is True  # staleness is a warning, merge-tree decides
 
 
@@ -168,7 +168,7 @@ def test_run_review_only_passes_when_manifest_fresh(tmp_path):
     with (
         patch(
             "dgov.inspection.review_worker_pane",
-            return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+            return_value=ReviewInfo(slug="task", verdict="safe", commit_count=2),
         ),
         patch("dgov.persistence.get_pane", return_value=pane_data),
         patch(
@@ -186,8 +186,8 @@ def test_run_review_only_passes_when_manifest_fresh(tmp_path):
     ):
         result = run_review_only("/repo", "task", session_root=session_root)
 
-    # No stale files in review dict when fresh
-    assert "stale_files" not in result.review
+    # No stale files in review when fresh
+    assert result.review.stale_files == []
     assert result.passed is True
     assert result.error is None
 
@@ -286,7 +286,7 @@ class TestPostDispatchLifecycle:
             patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
             patch(
                 "dgov.inspection.review_worker_pane",
-                return_value={"slug": "task", "verdict": "safe", "commit_count": 1},
+                return_value=ReviewInfo(slug="task", verdict="safe", commit_count=1),
             ),
             patch(
                 "dgov.merger.merge_worker_pane",
@@ -325,7 +325,7 @@ class TestPostDispatchLifecycle:
             patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
             patch(
                 "dgov.inspection.review_worker_pane",
-                return_value={"slug": "task", "verdict": "safe", "commit_count": 1},
+                return_value=ReviewInfo(slug="task", verdict="safe", commit_count=1),
             ),
             patch("dgov.merger.merge_worker_pane") as mock_merge,
         ):
@@ -372,7 +372,7 @@ class TestPostDispatchLifecycle:
             patch("dgov.persistence.get_pane", return_value={"slug": "task-2", "state": "done"}),
             patch(
                 "dgov.inspection.review_worker_pane",
-                return_value={"slug": "task-2", "verdict": "safe", "commit_count": 1},
+                return_value=ReviewInfo(slug="task-2", verdict="safe", commit_count=1),
             ),
             patch(
                 "dgov.merger.merge_worker_pane",
@@ -415,7 +415,7 @@ class TestPostDispatchLifecycle:
             patch("dgov.persistence.get_pane", return_value={"slug": "task", "state": "done"}),
             patch(
                 "dgov.inspection.review_worker_pane",
-                return_value={"slug": "task", "verdict": "review", "commit_count": 1},
+                return_value=ReviewInfo(slug="task", verdict="review", commit_count=1),
             ),
             patch("dgov.merger.merge_worker_pane") as mock_merge,
         ):
@@ -559,7 +559,7 @@ class TestReviewMerge:
     def test_run_review_merge_blocks_non_safe_review(self, tmp_path):
         with patch(
             "dgov.inspection.review_worker_pane",
-            return_value={"slug": "task", "verdict": "review", "commit_count": 1},
+            return_value=ReviewInfo(slug="task", verdict="review", commit_count=1),
         ):
             result = run_review_merge("/repo", "task", session_root=str(tmp_path))
 
@@ -571,7 +571,7 @@ class TestReviewMerge:
         with (
             patch(
                 "dgov.inspection.review_worker_pane",
-                return_value={"slug": "task", "verdict": "safe", "commit_count": 2},
+                return_value=ReviewInfo(slug="task", verdict="safe", commit_count=2),
             ),
             patch(
                 "dgov.executor.run_merge_only",
@@ -605,7 +605,7 @@ class TestReviewMerge:
         """run_review_merge should fail-fast on 0 commits (ledger #73)."""
         with patch(
             "dgov.inspection.review_worker_pane",
-            return_value={"slug": "task", "verdict": "safe", "commit_count": 0},
+            return_value=ReviewInfo(slug="task", verdict="safe", commit_count=0),
         ):
             result = run_review_merge("/repo", "task", session_root=str(tmp_path))
 

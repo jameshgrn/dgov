@@ -11,13 +11,14 @@ from typing import Callable
 
 from dgov.context_packet import ContextPacket, build_context_packet
 from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest, ReviewVerdict
+from dgov.inspection import ReviewInfo
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class ReviewGate:
-    review: dict
+    review: ReviewInfo
     passed: bool
     verdict: ReviewVerdict
     commit_count: int
@@ -28,7 +29,7 @@ class ReviewGate:
 class PostDispatchResult:
     state: str
     slug: str
-    review: dict | None = None
+    review: ReviewInfo | None = None
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
     merge_result: dict | None = None
     cleanup: CleanupOnlyResult | None = None
@@ -39,7 +40,7 @@ class PostDispatchResult:
 @dataclass(frozen=True)
 class ReviewMergeResult:
     slug: str
-    review: dict
+    review: ReviewInfo
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
     merge_result: dict | None = None
     failure_stage: str | None = None
@@ -56,7 +57,7 @@ class MergeOnlyResult:
 @dataclass(frozen=True)
 class LandResult:
     slug: str
-    review: dict
+    review: ReviewInfo
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
     merge_result: dict | None = None
     cleanup: CleanupOnlyResult | None = None
@@ -67,7 +68,7 @@ class LandResult:
 @dataclass(frozen=True)
 class ReviewOnlyResult:
     slug: str
-    review: dict
+    review: ReviewInfo
     passed: bool
     verdict: ReviewVerdict
     commit_count: int
@@ -99,7 +100,7 @@ class CleanupOnlyResult:
 @dataclass
 class PaneFinalizeResult:
     slug: str
-    review: dict
+    review: ReviewInfo
     merge_result: dict | None
     error: str | None
     cleanup_error: str | None
@@ -816,16 +817,22 @@ def run_review_only(
                 )
         except ProviderError:
             logger.debug("Model review failed for %s, using deterministic result", slug)
-    artifact = record.artifact if isinstance(record.artifact, dict) else None
-    review = artifact or {
-        "slug": slug,
-        "verdict": record.decision.verdict,
-        "commit_count": record.decision.commit_count,
-    }
+
+    # Build ReviewInfo from artifact (which is already a ReviewInfo now)
+    artifact = record.artifact if isinstance(record.artifact, ReviewInfo) else None
+    if artifact:
+        review = artifact
+    else:
+        review = ReviewInfo(
+            slug=slug,
+            verdict=record.decision.verdict,
+            commit_count=record.decision.commit_count,
+        )
+
     if record.decision.issues:
-        review.setdefault("issues", list(record.decision.issues))
-    if record.decision.reason and "error" not in review:
-        review["error"] = record.decision.reason
+        review.issues = list(record.decision.issues)
+    if record.decision.reason and not review.error:
+        review.error = record.decision.reason
 
     verdict = record.decision.verdict
     commit_count = record.decision.commit_count
@@ -870,7 +877,7 @@ def run_review_only(
                 manifest_root, slug, base_sha, file_claims=file_claims
             )
             if manifest.claim_violations:
-                review["claim_violations"] = list(manifest.claim_violations)
+                review.claim_violations = list(manifest.claim_violations)
                 logger.info(
                     "Claim violations for %s: %s",
                     slug,
@@ -878,8 +885,8 @@ def run_review_only(
                 )
             is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
             if not is_fresh:
-                review["stale_files"] = stale_files
-                review["freshness"] = "warn"
+                review.stale_files = stale_files
+                review.freshness = "warn"
                 logger.warning(
                     "Stale dependency for %s: main changed %s since base (will attempt merge)",
                     slug,
@@ -890,11 +897,11 @@ def run_review_only(
     if passed and commit_count > 0 and session_root:
         from dgov.inspection import check_test_coverage
 
-        changed = review.get("changed_files", [])
+        changed = review.changed_files
         if changed:
             missing_tests = check_test_coverage(changed, session_root=session_root)
             if missing_tests:
-                review["missing_test_coverage"] = missing_tests
+                review.missing_test_coverage = missing_tests
                 logger.warning("Test coverage warning for %s: %s", slug, missing_tests)
 
     _review_result = ReviewOnlyResult(
@@ -919,9 +926,9 @@ def run_review_only(
                 verdict=verdict,
                 commit_count=commit_count,
                 tests_passed=1
-                if review.get("tests_passed")
-                else (0 if review.get("tests_passed") is False else -1),
-                stale_files=json.dumps(review.get("stale_files", [])),
+                if review.tests_passed
+                else (0 if review.tests_passed is False else -1),
+                stale_files=json.dumps(review.stale_files),
                 error=error or "",
             )
         except Exception:
@@ -1095,7 +1102,7 @@ def run_finalize_panes(
             results.append(
                 PaneFinalizeResult(
                     slug=slug,
-                    review={},
+                    review=ReviewInfo(slug=slug),
                     merge_result=None,
                     error=f"Pane not found: {slug}",
                     cleanup_error=None,
@@ -1122,7 +1129,7 @@ def run_finalize_panes(
             results.append(
                 PaneFinalizeResult(
                     slug=lifecycle.slug,
-                    review=lifecycle.review or {},
+                    review=lifecycle.review or ReviewInfo(slug=slug),
                     merge_result=lifecycle.merge_result,
                     error=lifecycle.error,
                     cleanup_error=cleanup_error,

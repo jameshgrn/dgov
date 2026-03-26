@@ -260,14 +260,14 @@ class InspectionReviewProvider(DecisionProvider):
         )
         latency_ms = (time.perf_counter() - started) * 1000
 
-        verdict = str(review.get("verdict", "unknown"))
-        commit_count = int(review.get("commit_count", 0) or 0)
-        issues = tuple(str(issue) for issue in review.get("issues", []) or [])
-        reason = str(review.get("error")) if review.get("error") else None
+        verdict = str(review.verdict)
+        commit_count = int(review.commit_count or 0)
+        issues = tuple(str(issue) for issue in review.issues or [])
+        reason = str(review.error) if review.error else None
 
         # Surface eval contract in artifact (from typed persistence, never blobs)
         if request.evals:
-            review["evals"] = [
+            review.evals = [
                 {
                     "eval_id": ev["eval_id"],
                     "kind": ev["kind"],
@@ -324,7 +324,7 @@ class ModelReviewProvider(DecisionProvider):
                 request.slug,
                 session_root=request.session_root,
             )
-            diff = review.get("diff", review.get("stat", ""))
+            diff = review.diff or review.stat
 
         if not diff:
             raise ProviderError("No diff available for model review")

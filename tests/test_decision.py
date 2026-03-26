@@ -180,14 +180,17 @@ def test_local_output_provider_normalizes_unknown_classification() -> None:
 def test_inspection_review_provider_returns_typed_review_record() -> None:
     provider = InspectionReviewProvider()
 
+    from dgov.inspection import ReviewInfo
+
+    mock_review = ReviewInfo(
+        slug="task",
+        verdict="review",
+        commit_count=2,
+        issues=["protected files touched"],
+    )
     with patch(
         "dgov.inspection.review_worker_pane",
-        return_value={
-            "slug": "task",
-            "verdict": "review",
-            "commit_count": 2,
-            "issues": ["protected files touched"],
-        },
+        return_value=mock_review,
     ):
         result = provider.review_output(
             ReviewOutputRequest(
@@ -201,12 +204,9 @@ def test_inspection_review_provider_returns_typed_review_record() -> None:
     assert result.decision.verdict == "review"
     assert result.decision.commit_count == 2
     assert result.decision.issues == ("protected files touched",)
-    assert result.artifact == {
-        "slug": "task",
-        "verdict": "review",
-        "commit_count": 2,
-        "issues": ["protected files touched"],
-    }
+    assert isinstance(result.artifact, ReviewInfo)
+    assert result.artifact.slug == "task"
+    assert result.artifact.verdict == "review"
 
 
 def test_classify_task_uses_provider_boundary(monkeypatch: pytest.MonkeyPatch) -> None:

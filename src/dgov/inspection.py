@@ -36,6 +36,44 @@ class MergeResult:
     warnings: list[str] = field(default_factory=list)
 
 
+@dataclass
+class ReviewInfo:
+    slug: str
+    verdict: str = "unknown"
+    commit_count: int = 0
+    branch: str = ""
+    stat: str = ""
+    diff: str = ""
+    commit_log: str = ""
+    uncommitted: bool = False
+    files_changed: int = 0
+    changed_files: list[str] = field(default_factory=list)
+    protected_touched: list[str] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+    error: str | None = None
+    # Test results
+    tests_passed: bool | None = None
+    tests_ran: list[str] = field(default_factory=list)
+    test_output: str = ""
+    no_tests_found: bool = False
+    timed_out: bool = False
+    # Freshness
+    freshness: str | None = None
+    commits_since_base: int = 0
+    overlapping_files: list[str] = field(default_factory=list)
+    pane_age_hours: float = 0.0
+    stale_files: list[str] = field(default_factory=list)
+    # Metadata
+    retry_count: int = 0
+    auto_responses: int = 0
+    lt_gov: bool = False
+    # Manifest
+    claim_violations: list[str] = field(default_factory=list)
+    missing_test_coverage: list[str] = field(default_factory=list)
+    # Eval contract (populated by decision provider)
+    evals: list[dict] | None = None
+
+
 def _inspect_worker_pane(
     project_root: str,
     slug: str,
@@ -44,29 +82,30 @@ def _inspect_worker_pane(
     tests_pass: bool = True,
     lint_clean: bool = True,
     post_merge_check: str = "",
-) -> dict:
+) -> ReviewInfo:
     """Inspect a worker pane's changes without emitting events.
 
-    Returns diff stat, protected file status, commit log, and safe-to-merge verdict.
+    Returns typed ReviewInfo with diff stat, protected file status,
+    commit log, and safe-to-merge verdict.
     With ``full=True``, includes the complete diff.
     This is a pure function that does not emit events.
     """
     session_root = os.path.abspath(session_root or project_root)
     target = get_pane(session_root, slug)
     if not target:
-        return {"error": f"Pane not found: {slug}"}
+        return ReviewInfo(slug=slug, error=f"Pane not found: {slug}")
 
     if target.get("role") == "lt-gov":
-        return {"verdict": "safe", "commit_count": 0, "lt_gov": True, "files_changed": []}
+        return ReviewInfo(slug=slug, verdict="safe", lt_gov=True)
 
     wt = target.get("worktree_path", "")
     branch = target.get("branch_name", "")
     base_sha = target.get("base_sha", "")
 
     if not wt or not Path(wt).exists():
-        return {"error": f"Worktree not found: {wt}"}
+        return ReviewInfo(slug=slug, error=f"Worktree not found: {wt}")
     if not base_sha:
-        return {"error": "No base_sha recorded — cannot compute diff"}
+        return ReviewInfo(slug=slug, error="No base_sha recorded — cannot compute diff")
 
     # Run 4 independent git reads in parallel (saves ~3 fork latencies)
     def _git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -157,28 +196,35 @@ def _inspect_worker_pane(
         1 for ev in events if ev.get("event") == "pane_auto_responded" and ev.get("pane") == slug
     )
 
-    result = {
-        "slug": slug,
-        "branch": branch,
-        "stat": stat,
-        "protected_touched": protected_touched,
-        "verdict": verdict,
-        "commit_count": commit_count,
-        "commit_log": commit_log,
-        "uncommitted": uncommitted,
-        "files_changed": len(changed_files),
-        "retry_count": retry_count,
-        "auto_responses": auto_respond_count,
-        **freshness,
-    }
-    if issues:
-        result["issues"] = issues
+    result = ReviewInfo(
+        slug=slug,
+        branch=branch,
+        stat=stat,
+        protected_touched=list(protected_touched),
+        verdict=verdict,
+        commit_count=commit_count,
+        commit_log=commit_log,
+        uncommitted=uncommitted,
+        files_changed=len(changed_files),
+        changed_files=sorted(changed_files),
+        issues=issues,
+        retry_count=retry_count,
+        auto_responses=auto_respond_count,
+        freshness=freshness.get("freshness"),
+        commits_since_base=freshness.get("commits_since_base", 0),
+        overlapping_files=freshness.get("overlapping_files", []),
+        pane_age_hours=freshness.get("pane_age_hours", 0.0),
+    )
     if f_full is not None:
         diff_result = f_full.result()
-        result["diff"] = diff_result.stdout if diff_result.returncode == 0 else ""
+        result.diff = diff_result.stdout if diff_result.returncode == 0 else ""
 
     if test_res:
-        result.update(test_res)
+        result.tests_ran = list(test_res.get("tests_ran", []))
+        result.tests_passed = test_res.get("tests_passed")
+        result.test_output = test_res.get("test_output", "")
+        result.no_tests_found = test_res.get("no_tests_found", False)
+        result.timed_out = test_res.get("timed_out", False)
 
     return result
 
@@ -191,7 +237,7 @@ def review_worker_pane(
     tests_pass: bool = True,
     lint_clean: bool = True,
     post_merge_check: str = "",
-) -> dict:
+) -> ReviewInfo:
     """Preview a worker pane's changes before merging.
 
     Returns diff stat, protected file status, commit log, and safe-to-merge verdict.
@@ -200,12 +246,12 @@ def review_worker_pane(
     result = _inspect_worker_pane(
         project_root, slug, session_root, full, tests_pass, lint_clean, post_merge_check
     )
-    if "error" not in result:
+    if not result.error:
         sr = os.path.abspath(session_root or project_root)
-        if result.get("verdict") == "safe":
-            emit_event(sr, "review_pass", slug, commit_count=result.get("commit_count", 0))
+        if result.verdict == "safe":
+            emit_event(sr, "review_pass", slug, commit_count=result.commit_count)
         else:
-            emit_event(sr, "review_fail", slug, issues=result.get("issues", []))
+            emit_event(sr, "review_fail", slug, issues=result.issues)
     return result
 
 

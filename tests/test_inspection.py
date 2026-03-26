@@ -106,18 +106,18 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["slug"] == "worker-a"
-        assert result["branch"] == "worker-a"
-        assert result["verdict"] == "safe"
-        assert result["commit_count"] == 1
-        assert result["files_changed"] == 1
-        assert result["protected_touched"] == []
-        assert result["uncommitted"] is False
-        assert result["retry_count"] == 2
-        assert result["auto_responses"] == 1
-        assert result["freshness"] == "fresh"
-        assert "feature.txt" in result["stat"]
-        assert "Add feature file" in result["commit_log"]
+        assert result.slug == "worker-a"
+        assert result.branch == "worker-a"
+        assert result.verdict == "safe"
+        assert result.commit_count == 1
+        assert result.files_changed == 1
+        assert result.protected_touched == []
+        assert result.uncommitted is False
+        assert result.retry_count == 2
+        assert result.auto_responses == 1
+        assert result.freshness == "fresh"
+        assert "feature.txt" in result.stat
+        assert "Add feature file" in result.commit_log
         inspection_mocks["emit_event"].assert_called_once_with(
             str(tmp_path), "review_pass", "worker-a", commit_count=1
         )
@@ -127,7 +127,7 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(tmp_path), "missing", session_root=str(tmp_path))
 
-        assert result == {"error": "Pane not found: missing"}
+        assert result.error == "Pane not found: missing"
 
     def test_missing_worktree(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -140,7 +140,7 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(tmp_path), "worker-a", session_root=str(tmp_path))
 
-        assert result == {"error": f"Worktree not found: {tmp_path / 'missing'}"}
+        assert result.error == f"Worktree not found: {tmp_path / 'missing'}"
 
     def test_no_base_sha(self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]) -> None:
         repo = tmp_path / "repo"
@@ -153,7 +153,7 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result == {"error": "No base_sha recorded — cannot compute diff"}
+        assert result.error == "No base_sha recorded — cannot compute diff"
 
     def test_protected_files_touched(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -170,10 +170,10 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "review"
-        assert result["protected_touched"] == ["CLAUDE.md"]
-        assert result["issues"] == ["protected files touched: ['CLAUDE.md']"]
-        assert result["commit_count"] == 1
+        assert result.verdict == "review"
+        assert result.protected_touched == ["CLAUDE.md"]
+        assert result.issues == ["protected files touched: ['CLAUDE.md']"]
+        assert result.commit_count == 1
         inspection_mocks["emit_event"].assert_called_once()
         args = inspection_mocks["emit_event"].call_args.args
         kwargs = inspection_mocks["emit_event"].call_args.kwargs
@@ -196,9 +196,9 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "review"
-        assert result["uncommitted"] is True
-        assert result["issues"] == ["uncommitted changes (merge refused until committed)"]
+        assert result.verdict == "review"
+        assert result.uncommitted is True
+        assert result.issues == ["uncommitted changes (merge refused until committed)"]
 
     def test_full_true_includes_diff_output(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -215,8 +215,8 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path), full=True)
 
-        assert "diff --git" in result["diff"]
-        assert "+line from full diff" in result["diff"]
+        assert "diff --git" in result.diff
+        assert "+line from full diff" in result.diff
 
     def test_review_runs_related_tests_in_worker_worktree(
         self,
@@ -267,11 +267,11 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "safe"
-        assert result["uncommitted"] is False
-        assert "uncommitted changes" not in result.get("issues", [])
-        assert result["commit_count"] == 1
-        assert result["files_changed"] == 1
+        assert result.verdict == "safe"
+        assert result.uncommitted is False
+        assert "uncommitted changes" not in result.issues
+        assert result.commit_count == 1
+        assert result.files_changed == 1
 
     def test_uncommitted_agents_md_does_not_block_safe_verdict(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -292,11 +292,11 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "safe"
-        assert result["uncommitted"] is False
-        assert "uncommitted changes" not in result.get("issues", [])
-        assert result["commit_count"] == 1
-        assert result["files_changed"] == 1
+        assert result.verdict == "safe"
+        assert result.uncommitted is False
+        assert "uncommitted changes" not in result.issues
+        assert result.commit_count == 1
+        assert result.files_changed == 1
 
     def test_both_clauDE_md_and_agents_md_uncommitted_still_safe(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -318,9 +318,9 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "safe"
-        assert result["uncommitted"] is False
-        assert "uncommitted changes" not in result.get("issues", [])
+        assert result.verdict == "safe"
+        assert result.uncommitted is False
+        assert "uncommitted changes" not in result.issues
 
     def test_real_uncommitted_source_changes_still_block_safe(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -341,9 +341,9 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "review"
-        assert result["uncommitted"] is True
-        assert "uncommitted changes (merge refused until committed)" in result.get("issues", [])
+        assert result.verdict == "review"
+        assert result.uncommitted is True
+        assert "uncommitted changes (merge refused until committed)" in result.issues
 
     def test_committed_protected_files_still_flagged_as_issues(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -361,9 +361,9 @@ class TestReviewWorkerPane:
 
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result["verdict"] == "review"
-        assert result["protected_touched"] == ["THEORY.md"]
-        assert "protected files touched" in result.get("issues", [])[0]
+        assert result.verdict == "review"
+        assert result.protected_touched == ["THEORY.md"]
+        assert any("protected files touched" in issue for issue in (result.issues or []))
 
     def test_uncommitted_claude_md_porcelain_leading_space_preserved(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -392,10 +392,10 @@ class TestReviewWorkerPane:
         result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
         # CLAUDE.md is protected and worktree-local — should be filtered out
-        assert result["verdict"] == "safe"
-        assert result["uncommitted"] is False
-        assert "uncommitted changes" not in result.get("issues", [])
-        assert "CLAUDE.md" not in result.get("protected_touched", [])
+        assert result.verdict == "safe"
+        assert result.uncommitted is False
+        assert "uncommitted changes" not in result.issues
+        assert "CLAUDE.md" not in result.protected_touched or []
 
 
 class TestDiffWorkerPane:
@@ -452,7 +452,7 @@ class TestDiffWorkerPane:
 
         result = diff_worker_pane(str(tmp_path), "missing", session_root=str(tmp_path))
 
-        assert result == {"error": "Pane not found: missing"}
+        assert result["error"] == "Pane not found: missing"
 
     def test_missing_worktree(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
@@ -464,7 +464,7 @@ class TestDiffWorkerPane:
 
         result = diff_worker_pane(str(tmp_path), "worker-a", session_root=str(tmp_path))
 
-        assert result == {"error": f"Worktree not found: {tmp_path / 'missing'}"}
+        assert result["error"] == f"Worktree not found: {tmp_path / 'missing'}"
 
     def test_no_base_sha(self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]) -> None:
         repo = tmp_path / "repo"
@@ -476,7 +476,7 @@ class TestDiffWorkerPane:
 
         result = diff_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
 
-        assert result == {"error": "No base_sha recorded"}
+        assert result["error"] == "No base_sha recorded"
 
 
 class TestRebaseGovernor:

@@ -142,13 +142,13 @@ class Orchestrator:
             slug,
             session_root=self.session_root,
         )
-        review = result.review or {}
+        review = result.review or None
         return ReviewResult(
             slug=result.slug,
             verdict=result.verdict or "unknown",
             commit_count=result.commit_count,
-            files_changed=review.get("files_changed", 0),
-            tests_passed=review.get("tests_passed"),
+            files_changed=review.files_changed if review else 0,
+            tests_passed=review.tests_passed if review else None,
             error=result.error,
         )
 

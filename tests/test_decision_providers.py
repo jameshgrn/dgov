@@ -22,6 +22,7 @@ from dgov.decision_providers import (
     InspectionReviewProvider,
     StatisticalRoutingProvider,
 )
+from dgov.inspection import ReviewInfo
 
 pytestmark = pytest.mark.unit
 
@@ -249,13 +250,7 @@ def test_inspection_review_provider_returns_correct_verdict(tmp_path):
     provider = InspectionReviewProvider()
 
     # Mock the review_worker_pane call with a "safe" verdict
-    mock_review = {
-        "slug": "task-1",
-        "verdict": "safe",
-        "commit_count": 3,
-        "issues": [],
-        "error": None,
-    }
+    mock_review = ReviewInfo(slug="task-1", verdict="safe", commit_count=3)
 
     with pytest.MonkeyPatch().context() as mp:
         mp.setattr("dgov.inspection.review_worker_pane", lambda *args, **kwargs: mock_review)
@@ -283,13 +278,13 @@ def test_inspection_review_provider_handles_unsafe_verdict():
     provider = InspectionReviewProvider()
 
     # Mock with "fail" verdict and issues
-    mock_review = {
-        "slug": "task-2",
-        "verdict": "fail",
-        "commit_count": 0,
-        "issues": ["protected files touched", "test failures"],
-        "error": "tests failed",
-    }
+    mock_review = ReviewInfo(
+        slug="task-2",
+        verdict="fail",
+        commit_count=0,
+        issues=["protected files touched", "test failures"],
+        error="tests failed",
+    )
 
     with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
         result = provider.review_output(
@@ -337,13 +332,11 @@ def test_inspection_review_provider_handles_unknown_verdict():
 
     provider = InspectionReviewProvider()
 
-    # Mock with missing verdict
-    mock_review = {
-        "slug": "task-3",
-        "verdict": None,  # type: ignore[dict-item]
-        "commit_count": None,  # type: ignore[dict-item]
-        "issues": None,  # type: ignore[dict-item]
-    }
+    # Mock with missing/None verdict
+    mock_review = ReviewInfo(slug="task-3")
+    mock_review.verdict = None  # type: ignore[assignment]
+    mock_review.commit_count = None  # type: ignore[assignment]
+    mock_review.issues = None  # type: ignore[assignment]
 
     with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
         result = provider.review_output(
@@ -364,13 +357,7 @@ def test_inspection_review_provider_handles_empty_issues_list():
 
     provider = InspectionReviewProvider()
 
-    mock_review = {
-        "slug": "task-4",
-        "verdict": "safe",
-        "commit_count": 1,
-        "issues": [],
-        "error": None,
-    }
+    mock_review = ReviewInfo(slug="task-4", verdict="safe", commit_count=1)
 
     with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
         result = provider.review_output(
@@ -389,7 +376,7 @@ def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
 
     provider = InspectionReviewProvider()
 
-    mock_review = {"slug": "task-5", "verdict": "safe"}
+    mock_review = ReviewInfo(slug="task-5", verdict="safe")
 
     with patch("dgov.inspection.review_worker_pane", return_value=mock_review) as mock_func:
         provider.review_output(
@@ -419,7 +406,7 @@ def test_inspection_review_surfaces_evals_in_artifact(tmp_path):
 
     provider = InspectionReviewProvider()
 
-    mock_review = {"slug": "task-e", "verdict": "safe", "commit_count": 1}
+    mock_review = ReviewInfo(slug="task-e", verdict="safe", commit_count=1)
 
     evals = (
         {
@@ -439,7 +426,7 @@ def test_inspection_review_surfaces_evals_in_artifact(tmp_path):
             )
         )
 
-    assert record.artifact["evals"] == [
+    assert record.artifact.evals == [
         {
             "eval_id": "E1",
             "kind": "regression",
@@ -455,7 +442,7 @@ def test_inspection_review_no_evals_no_key_in_artifact(tmp_path):
 
     provider = InspectionReviewProvider()
 
-    mock_review = {"slug": "task-ne", "verdict": "safe", "commit_count": 1}
+    mock_review = ReviewInfo(slug="task-ne", verdict="safe", commit_count=1)
 
     with patch("dgov.inspection.review_worker_pane", return_value=mock_review):
         record = provider.review_output(
@@ -465,7 +452,7 @@ def test_inspection_review_no_evals_no_key_in_artifact(tmp_path):
             )
         )
 
-    assert "evals" not in record.artifact
+    assert record.artifact.evals is None
 
 
 # -- ModelReviewProvider tests --
