@@ -3,12 +3,13 @@
 Usage::
 
     from dgov.api import Orchestrator
+    from dgov.decision import ReviewVerdict
 
     orc = Orchestrator("/path/to/repo")
     pane = orc.dispatch("Fix the parser", agent="qwen-35b")
     result = orc.wait(pane.slug)
     review = orc.review(pane.slug)
-    if review.verdict == "safe":
+    if review.verdict == ReviewVerdict.SAFE:
         orc.merge(pane.slug)
     orc.close(pane.slug)
 

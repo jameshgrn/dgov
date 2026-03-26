@@ -53,6 +53,13 @@ class DecisionKind(StrEnum):
     GENERATE_PLAN = "generate_plan"
 
 
+class ReviewVerdict(StrEnum):
+    SAFE = "safe"
+    CONCERNS = "concerns"
+    APPROVED = "approved"
+    UNSAFE = "unsafe"
+
+
 @dataclass(frozen=True)
 class RouteTaskRequest:
     prompt: str
@@ -128,7 +135,7 @@ class MonitorOutputDecision:
 
 @dataclass(frozen=True)
 class ReviewOutputDecision:
-    verdict: str
+    verdict: ReviewVerdict
     commit_count: int = 0
     issues: tuple[str, ...] = ()
     reason: str | None = None

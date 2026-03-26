@@ -19,6 +19,7 @@ from dgov.decision import (
     ProviderError,
     ReviewOutputDecision,
     ReviewOutputRequest,
+    ReviewVerdict,
     RouteTaskDecision,
     RouteTaskRequest,
 )
@@ -378,7 +379,7 @@ class ModelReviewProvider(DecisionProvider):
                 verdict=verdict,
                 commit_count=-1,  # Not applicable for model review
                 issues=issues,
-                reason=summary if verdict != "approved" else None,
+                reason=summary if verdict != ReviewVerdict.APPROVED else None,
             ),
             model_id=model,
             confidence=0.8,
@@ -398,9 +399,9 @@ def _resolve_review_model(review_agent: str) -> str:
     return _MODEL_MAP.get(review_agent, review_agent)
 
 
-def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
+def _parse_review_response(content: str) -> tuple[ReviewVerdict, tuple[str, ...], str]:
     """Parse the model's review response into (verdict, issues, summary)."""
-    verdict = "approved"
+    verdict = ReviewVerdict.APPROVED
     issues: list[str] = []
     summary = ""
 
@@ -410,9 +411,9 @@ def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
         if upper.startswith("VERDICT:"):
             raw_verdict = line_stripped.split(":", 1)[1].strip().lower()
             if "concern" in raw_verdict or "change" in raw_verdict:
-                verdict = "concerns"
+                verdict = ReviewVerdict.CONCERNS
             else:
-                verdict = "safe"
+                verdict = ReviewVerdict.SAFE
         elif upper.startswith("SUMMARY:"):
             summary = line_stripped.split(":", 1)[1].strip()
         elif upper.startswith("ISSUES:"):

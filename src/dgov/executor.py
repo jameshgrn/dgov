@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from dgov.context_packet import ContextPacket, build_context_packet
-from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest
+from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest, ReviewVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -591,7 +591,7 @@ def run_post_dispatch_lifecycle(
                 failure_stage = "review"
                 error = f"Review failed: {review_res.error}"
                 _phase("failed", current_slug)
-            elif review_res.verdict != "safe":
+            elif review_res.verdict != ReviewVerdict.SAFE:
                 state = "review_pending"
             elif review_res.commit_count == 0:
                 state = "completed"
@@ -796,13 +796,17 @@ def run_review_only(
     record = provider.review_output(request)
 
     # Stage 2: Model review (only if deterministic passed AND review_agent is set)
-    if review_agent and record.decision.verdict == "safe" and record.decision.commit_count > 0:
+    if (
+        review_agent
+        and record.decision.verdict == ReviewVerdict.SAFE
+        and record.decision.commit_count > 0
+    ):
         try:
             from dgov.decision_providers import ModelReviewProvider
 
             model_provider = ModelReviewProvider()
             model_record = model_provider.review_output(request)
-            if model_record.decision.verdict != "safe":
+            if model_record.decision.verdict != ReviewVerdict.SAFE:
                 record = model_record
                 logger.info(
                     "Model review (%s) flagged concerns for %s: %s",
@@ -841,7 +845,7 @@ def run_review_only(
         if _pane_state not in ("done", "merged"):
             passed = False
             error = "No commits to merge"
-    if passed and require_safe and verdict != "safe":
+    if passed and require_safe and verdict != ReviewVerdict.SAFE:
         passed = False
         error = f"Review verdict is {verdict}; refusing to merge"
 
@@ -956,7 +960,7 @@ def run_review_merge(
             error=review_res.error,
         )
 
-    if review_res.verdict != "safe":
+    if review_res.verdict != ReviewVerdict.SAFE:
         return ReviewMergeResult(
             slug=slug,
             review=review_res.review,
