@@ -97,7 +97,7 @@ def record_backend_failure(session_root: str, backend_id: str) -> None:
 
     Appends current timestamp to JSON file at session_root/.dgov/backend_failures.json.
     Prunes all entries older than 10 minutes on each write.
-    Uses fcntl.flock(LOCK_EX) for concurrency safety.
+    Uses a single read-modify-write critical section for concurrency safety.
     If file is unreadable/corrupt, silently resets to empty dict.
     """
     failures_file = Path(session_root) / ".dgov" / "backend_failures.json"
@@ -106,28 +106,26 @@ def record_backend_failure(session_root: str, backend_id: str) -> None:
     now = time.time()
 
     try:
-        with open(failures_file, "r") as f:
+        with open(failures_file, "a+") as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.seek(0)
             try:
                 data = json.load(f)
             except (json.JSONDecodeError, KeyError):
                 data = {}
-    except (OSError, IOError):
-        data = {}
 
-    if backend_id not in data:
-        data[backend_id] = []
-    data[backend_id].append(now)
+            if backend_id not in data:
+                data[backend_id] = []
+            data[backend_id].append(now)
 
-    # Prune all backends' old entries
-    for bid in list(data.keys()):
-        data[bid] = [ts for ts in data[bid] if now - ts < 600]
-        if not data[bid]:
-            del data[bid]
+            # Prune all backends' old entries
+            for bid in list(data.keys()):
+                data[bid] = [ts for ts in data[bid] if now - ts < 600]
+                if not data[bid]:
+                    del data[bid]
 
-    try:
-        with open(failures_file, "w") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            f.seek(0)
+            f.truncate()
             json.dump(data, f)
     except (OSError, IOError):
         pass
@@ -146,6 +144,7 @@ def _check_circuit_breaker(
 
     try:
         with open(failures_file, "r") as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             data = json.load(f)
     except (OSError, IOError, json.JSONDecodeError):
         return False

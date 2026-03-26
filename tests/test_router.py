@@ -2,6 +2,8 @@
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -179,6 +181,31 @@ class TestCircuitBreaker:
         record_backend_failure(str(tmp_path), "test-backend")
         data = json.loads(failures_file.read_text())
         assert len(data["test-backend"]) == 1  # old one pruned
+
+    def test_record_preserves_concurrent_updates(self, tmp_path):
+        from dgov.router import record_backend_failure
+
+        backend_id = "test-backend"
+        rounds = 4
+        writers_per_round = 8
+
+        def record_round() -> None:
+            barrier = Barrier(writers_per_round)
+
+            def write_once() -> None:
+                barrier.wait()
+                record_backend_failure(str(tmp_path), backend_id)
+
+            with ThreadPoolExecutor(max_workers=writers_per_round) as executor:
+                futures = [executor.submit(write_once) for _ in range(writers_per_round)]
+                for future in futures:
+                    future.result()
+
+        for _ in range(rounds):
+            record_round()
+
+        data = json.loads((tmp_path / ".dgov" / "backend_failures.json").read_text())
+        assert len(data[backend_id]) == rounds * writers_per_round
 
     def test_check_true_when_threshold_exceeded(self, tmp_path):
         from dgov.router import _check_circuit_breaker, record_backend_failure
