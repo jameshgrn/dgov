@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 class ReviewGate:
     review: dict
     passed: bool
-    verdict: str
+    verdict: ReviewVerdict
     commit_count: int
     error: str | None = None
 
@@ -69,7 +69,7 @@ class ReviewOnlyResult:
     slug: str
     review: dict
     passed: bool
-    verdict: str
+    verdict: ReviewVerdict
     commit_count: int
     review_record: DecisionRecord[ReviewOutputDecision] | None = None
     error: str | None = None

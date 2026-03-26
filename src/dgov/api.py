@@ -22,6 +22,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from dgov.decision import ReviewVerdict
+
 
 @dataclass
 class DispatchResult:
@@ -42,7 +44,7 @@ class WaitResult:
 @dataclass
 class ReviewResult:
     slug: str
-    verdict: str  # "safe", "unsafe", "unknown"
+    verdict: ReviewVerdict
     commit_count: int = 0
     files_changed: int = 0
     tests_passed: bool | None = None

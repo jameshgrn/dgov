@@ -141,7 +141,7 @@ class TaskWaitDone:
 class TaskReviewDone:
     task_slug: str
     passed: bool
-    verdict: str
+    verdict: str  # kept str: accepts ReviewVerdict (StrEnum) + raw model strings
     commit_count: int
 
 
