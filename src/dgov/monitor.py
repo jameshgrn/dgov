@@ -18,7 +18,16 @@ from dgov.backend import get_backend
 from dgov.decision import MonitorOutputRequest, ProviderError
 from dgov.done import _has_new_commits
 from dgov.executor import DagReactor, EscalateResult, RetryResult
-from dgov.kernel import DagKernel, WorkerObservation, WorkerPhase
+from dgov.kernel import (
+    DagKernel,
+    TaskClosed,
+    TaskGovernorResumed,
+    TaskMergeDone,
+    TaskReviewDone,
+    TaskWaitDone,
+    WorkerObservation,
+    WorkerPhase,
+)
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.persistence import (
     STATE_DIR,
@@ -136,6 +145,24 @@ _RETRY_CLEAR_EVENTS = frozenset(
         "pane_closed",
     }
 )
+
+
+# Factory dict for mapping pane events to DAG events.
+# Each value is a lambda that takes (timestamp, slug, event_dict) and returns a DagEvent.
+_DAG_EVENT_FACTORY = {
+    "pane_done": lambda ts, sl, ev: TaskWaitDone(ts, sl, "done"),
+    "pane_failed": lambda ts, sl, ev: TaskWaitDone(ts, sl, "failed"),
+    "pane_timed_out": lambda ts, sl, ev: TaskWaitDone(ts, sl, "timed_out"),
+    "review_pass": lambda ts, sl, ev: TaskReviewDone(
+        ts, passed=True, verdict="safe", commit_count=int(ev.get("commit_count", 0) or 0)
+    ),
+    "review_fail": lambda ts, sl, ev: TaskReviewDone(
+        ts, passed=False, verdict="unsafe", commit_count=0
+    ),
+    "merge_completed": lambda ts, sl, ev: TaskMergeDone(ts),
+    "pane_closed": lambda ts, sl, ev: TaskClosed(ts),
+    "dag_resumed": lambda ts, sl, ev: TaskGovernorResumed(ts, action=ev.get("action", "retry")),
+}
 
 
 @dataclass
@@ -615,13 +642,6 @@ def _apply_monitor_events(
     auto_retry: bool,
 ) -> None:
     """Update monitor candidate sets from journal events."""
-    from dgov.kernel import (
-        TaskClosed,
-        TaskGovernorResumed,
-        TaskMergeDone,
-        TaskReviewDone,
-        TaskWaitDone,
-    )
     from dgov.persistence import get_dag_run
 
     for event in events:
@@ -672,26 +692,11 @@ def _apply_monitor_events(
             if new_slug:
                 dag_to_drive.kernel.pane_slugs[task_slug] = new_slug
 
-        # Map pane events to DagEvents
+        # Map pane events to DagEvents using factory dict
         dag_ev = None
         if dag_to_drive and task_slug:
-            if kind == "pane_done":
-                dag_ev = TaskWaitDone(task_slug, slug, "done")
-            elif kind == "pane_failed":
-                dag_ev = TaskWaitDone(task_slug, slug, "failed")
-            elif kind == "pane_timed_out":
-                dag_ev = TaskWaitDone(task_slug, slug, "timed_out")
-            elif kind == "review_pass":
-                cc = int(event.get("commit_count", 0) or 0)
-                dag_ev = TaskReviewDone(task_slug, passed=True, verdict="safe", commit_count=cc)
-            elif kind == "review_fail":
-                dag_ev = TaskReviewDone(task_slug, passed=False, verdict="unsafe", commit_count=0)
-            elif kind == "merge_completed":
-                dag_ev = TaskMergeDone(task_slug)
-            elif kind == "pane_closed":
-                dag_ev = TaskClosed(task_slug)
-            elif kind == "dag_resumed":
-                dag_ev = TaskGovernorResumed(task_slug, action=event.get("action", "retry"))
+            factory = _DAG_EVENT_FACTORY.get(kind)
+            dag_ev = factory(task_slug, slug, event) if factory else None
 
         if dag_to_drive and dag_ev:
             new_actions = dag_to_drive.kernel.handle(dag_ev)
