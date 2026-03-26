@@ -654,6 +654,54 @@ def test_consensus_provider_degrades_when_b_fails() -> None:
     assert result.provider_id == "cheap-a"
 
 
+def test_consensus_provider_degrades_without_consensus_or_tiebreaker() -> None:
+    """Single-provider failure should bypass agree_fn and the tiebreaker."""
+
+    agree_calls = 0
+    tiebreaker_calls = 0
+
+    def _agree_fn(a: DecisionRecord[DecisionPayload], b: DecisionRecord[DecisionPayload]) -> bool:
+        nonlocal agree_calls
+        agree_calls += 1
+        return a.decision == b.decision
+
+    def _tiebreaker(_: MonitorOutputRequest) -> DecisionRecord[MonitorOutputDecision]:
+        nonlocal tiebreaker_calls
+        tiebreaker_calls += 1
+        return DecisionRecord(
+            kind=DecisionKind.CLASSIFY_OUTPUT,
+            provider_id="expensive-tiebreaker",
+            decision=MonitorOutputDecision(classification="unknown"),
+        )
+
+    provider = ConsensusProvider(
+        provider_a=StaticDecisionProvider(
+            provider_id="cheap-a",
+            classify_output_fn=lambda _: (_ for _ in ()).throw(ProviderError("provider a failed")),
+        ),
+        provider_b=StaticDecisionProvider(
+            provider_id="cheap-b",
+            classify_output_fn=lambda _: DecisionRecord(
+                kind=DecisionKind.CLASSIFY_OUTPUT,
+                provider_id="cheap-b",
+                decision=MonitorOutputDecision(classification="working"),
+            ),
+        ),
+        tiebreaker=StaticDecisionProvider(
+            provider_id="expensive-tiebreaker",
+            classify_output_fn=_tiebreaker,
+        ),
+        agree_fn=_agree_fn,
+    )
+
+    result = provider.classify_output(MonitorOutputRequest(output="test"))
+
+    assert result.decision.classification == "working"
+    assert result.provider_id == "cheap-b"
+    assert agree_calls == 0
+    assert tiebreaker_calls == 0
+
+
 def test_consensus_provider_raises_when_both_fail() -> None:
     """ConsensusProvider raises ProviderError when both providers fail."""
 

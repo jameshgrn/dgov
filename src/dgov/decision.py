@@ -432,7 +432,7 @@ def _call_kind[TDecision](
     method = _REQUEST_DISPATCH.get(type(request))
     if method is None:
         raise ProviderError(f"Unsupported decision request: {type(request).__name__}")
-    return getattr(provider, method)(request)  # type: ignore[return-value]
+    return cast(DecisionRecord[TDecision], getattr(provider, method)(request))
 
 
 def _run_with_timeout[TDecision](
@@ -641,18 +641,21 @@ class ConsensusProvider(_DelegatingProvider):
         return frozenset(kinds)
 
     def _call(self, request: DecisionRequest) -> DecisionRecord[DecisionPayload]:
+        def _call_provider(provider: DecisionProvider) -> DecisionRecord[DecisionPayload]:
+            return cast(DecisionRecord[DecisionPayload], _call_kind(provider, request))
+
         result_a: DecisionRecord[DecisionPayload] | None = None
         result_b: DecisionRecord[DecisionPayload] | None = None
         error_a: BaseException | None = None
         error_b: BaseException | None = None
 
         try:
-            result_a = _call_kind(self.provider_a, request)
+            result_a = _call_provider(self.provider_a)
         except ProviderError as exc:
             error_a = exc
 
         try:
-            result_b = _call_kind(self.provider_b, request)
+            result_b = _call_provider(self.provider_b)
         except ProviderError as exc:
             error_b = exc
 
@@ -660,13 +663,15 @@ class ConsensusProvider(_DelegatingProvider):
             raise ProviderError(f"Both consensus providers failed: A={error_a}, B={error_b}")
 
         if result_a is not None and result_b is None:
-            return result_a  # type: ignore[return-value]
+            return result_a
 
         if result_a is None and result_b is not None:
-            return result_b  # type: ignore[return-value]
+            return result_b
+
+        if result_a is None or result_b is None:
+            raise ProviderError("Consensus provider reached an impossible state")
 
         if self.agree_fn(result_a, result_b):
-            return result_a  # type: ignore[return-value]
+            return result_a
 
-        tiebreaker_result = _call_kind(self.tiebreaker, request)
-        return tiebreaker_result  # type: ignore[return-value]
+        return _call_provider(self.tiebreaker)
