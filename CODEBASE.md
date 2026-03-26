@@ -21,6 +21,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
 - dgov worker complete auto-commits unstaged changes.
 - protected files restored at merge. changes discarded.
 - no push to remote. no full test suite.
+- lt-gov panes run on main (no worktree, no branch). they dispatch workers only.
 
 ## MODULES
 [orchestration core]
