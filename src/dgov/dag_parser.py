@@ -28,10 +28,10 @@ class DagTaskSpec:
     timeout_s: int
     tests_pass: bool = True
     lint_clean: bool = True
-    post_merge_check: str = ""
-    review_agent: str = ""  # model for reviewing this task's output
+    post_merge_check: str | None = None
+    review_agent: str | None = None  # model for reviewing this task's output
     role: str = "worker"
-    template: str = ""
+    template: str | None = None
     template_vars: dict[str, str] = field(default_factory=dict)
 
 
@@ -145,10 +145,10 @@ def _parse_task(
         timeout_s=raw.get("timeout_s", defaults["timeout_s"]),
         tests_pass=bool(raw.get("tests_pass", True)),
         lint_clean=bool(raw.get("lint_clean", True)),
-        post_merge_check=raw.get("post_merge_check", ""),
-        review_agent=str(raw.get("review_agent", "")),
+        post_merge_check=raw.get("post_merge_check"),
+        review_agent=str(raw.get("review_agent")) if raw.get("review_agent") else None,
         role=str(raw.get("role", "worker")),
-        template=str(raw.get("template", "")),
+        template=str(raw.get("template")) if raw.get("template") else None,
         template_vars=dict(raw.get("vars", {})),
     )
 
