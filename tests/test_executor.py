@@ -786,7 +786,9 @@ class TestNewSyscalls:
             return claimed
 
         def _land(*_args, **_kwargs):
-            return MagicMock(merge_result={"merged": "test-branch"}, error=None)
+            from dgov.merger import PaneMergeResult
+
+            return MagicMock(merge_result=PaneMergeResult(merged="test-branch"), error=None)
 
         monkeypatch.setattr("dgov.persistence.claim_next_merge", _claim)
         monkeypatch.setattr("dgov.executor.run_land_only", _land)
@@ -811,7 +813,7 @@ class TestNewSyscalls:
         assert result["ticket"] == "TKT-123"
         assert result["slug"] == "test-branch"
         assert result["success"] is True
-        assert result["result"] == {"merged": "test-branch"}
+        assert result["result"]["merged"] == "test-branch"
         assert complete_called[0] == ("TKT-123", True)
         assert len(emit_called) == 1
 
@@ -823,7 +825,10 @@ class TestNewSyscalls:
             return claimed
 
         def _land(*_args, **_kwargs):
-            return MagicMock(merge_result={"error": "review failed"}, error="review failed")
+            return MagicMock(
+                merge_result=PaneMergeResult(error="review failed"),
+                error="review failed",
+            )
 
         monkeypatch.setattr("dgov.persistence.claim_next_merge", _claim)
         monkeypatch.setattr("dgov.executor.run_land_only", _land)

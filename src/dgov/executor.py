@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import sqlite3
@@ -1605,8 +1606,11 @@ def run_process_merge(
             squash=squash,
             rebase=rebase,
         )
-        result = landed.merge_result or {"error": landed.error or "Review failed"}
-        success = "error" not in result
+        if landed.merge_result:
+            result = dataclasses.asdict(landed.merge_result)
+        else:
+            result = {"error": landed.error or "Review failed"}
+        success = result.get("error") is None
         complete_merge(session_root, ticket, success, json.dumps(result))
         if success:
             emit_event(session_root, "merge_completed", slug, ticket=ticket, success=True)

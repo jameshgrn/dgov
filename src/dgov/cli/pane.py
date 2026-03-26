@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import os as _os
@@ -379,11 +380,12 @@ def pane_create(
                 {
                     "lifecycle": lifecycle.state,
                     "slug": lifecycle.slug,
-                    "review": lifecycle.review,
-                    "merge": lifecycle.merge_result,
+                    "review": dataclasses.asdict(lifecycle.review) if lifecycle.review else None,
+                    "merge": dataclasses.asdict(lifecycle.merge_result)
+                    if lifecycle.merge_result
+                    else None,
                     "error": lifecycle.error,
                 },
-                default=str,
             )
         )
         if lifecycle.state == "failed":
@@ -938,13 +940,13 @@ def pane_review(slug, project_root, session_root, full, show_diff):
         require_safe=False,
         require_commits=False,
     ).review
-    if show_diff and "error" not in result:
+    if show_diff and result.error is None:
         from dgov.inspection import diff_worker_pane
 
         diff_result = diff_worker_pane(project_root, slug, session_root=session_root)
-        result["diff"] = diff_result.get("diff", "")
-    click.echo(json.dumps(result, indent=2))
-    if "error" in result:
+        result.diff = diff_result.get("diff", "")
+    click.echo(json.dumps(dataclasses.asdict(result), indent=2))
+    if result.error is not None:
         sys.exit(1)
 
 

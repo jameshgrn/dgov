@@ -100,13 +100,13 @@ class TestPaneReview:
         with patch(
             "dgov.executor.run_review_only",
             return_value=MagicMock(
-                review={
-                    "slug": "fix-parser",
-                    "verdict": "safe",
-                    "commit_count": 3,
-                    "files_changed": 2,
-                    "diff_stat": "src/parser.py | 10 +++---",
-                }
+                review=ReviewInfo(
+                    slug="fix-parser",
+                    verdict="safe",
+                    commit_count=3,
+                    files_changed=2,
+                    stat="src/parser.py | 10 +++---",
+                )
             ),
         ):
             result = runner.invoke(cli, ["pane", "review", "fix-parser"])
@@ -119,7 +119,9 @@ class TestPaneReview:
     def test_review_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
             "dgov.executor.run_review_only",
-            return_value=MagicMock(review={"error": "Pane not found: missing"}),
+            return_value=MagicMock(
+                review=ReviewInfo(slug="missing", error="Pane not found: missing")
+            ),
         ):
             result = runner.invoke(cli, ["pane", "review", "missing"])
 
