@@ -672,7 +672,11 @@ def build_launch_command(
     if force_headless and agent.prompt_command == "codex":
         base = "codex exec"
     if agent.default_flags:
-        base = f"{base} {agent.default_flags}"
+        df = agent.default_flags
+        # Avoid "codex exec exec ..." when force_headless already added exec
+        if force_headless and agent.prompt_command == "codex" and df.startswith("exec "):
+            df = df[5:]  # strip leading "exec "
+        base = f"{base} {df}"
     # Skip permission flags if extra_flags already contains any of the same --flag names
     if flags and extra_flags:
         flag_names = {t for t in flags.split() if t.startswith("-")}
