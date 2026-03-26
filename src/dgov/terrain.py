@@ -139,6 +139,7 @@ _AGENT_STAMPS = {
     "done": ("●", "dim white"),
     "merged": ("●", "dim white"),
     "failed": ("✖", "bold red"),
+    "mlx": ("⚡", "bold bright_cyan"),
 }
 _DEFAULT_STAMP = ("@", "bold green")
 
