@@ -963,53 +963,29 @@ def _restore_protected_files(project_root: str, pane_record: dict) -> None:
     logger.info("Restored protected files on %s: %s", branch, restored)
 
 
-# -- Public merge API --
+# -- Sub-functions for merge_worker_pane --
 
 
-def merge_worker_pane(
-    project_root: str,
+def _check_merge_preconditions(
+    target: dict,
     slug: str,
-    session_root: str | None = None,
-    resolve: str = "skip",
-    squash: bool = True,
-    message: str | None = None,
-    rebase: bool = False,
-    strict_claims: bool = False,
-) -> PaneMergeResult:
-    """Merge a worker pane's branch with configurable conflict resolution.
+    pane_project_root: str,
+    worktree_path: str,
+    session_root: str,
+    squash: bool,
+    rebase: bool,
+    strict_claims: bool,
+) -> PaneMergeResult | None:
+    """Validate all preconditions before merge. Returns error result or None if OK."""
+    import json as _json
 
-    Strict preconditions (enforced before any git mutation):
-        1. Pane state must be exactly "done"
-        2. No agent process may still be attached to the pane
-        3. Worktree must have no uncommitted non-protected changes
-
-    Returns PaneMergeResult. Check ``result.merged`` for success,
-    ``result.error`` for failure, ``result.conflicts`` for conflict details.
-    """
     import dgov.persistence as _persist
     from dgov.done import _agent_still_running
-    from dgov.lifecycle import _full_cleanup
 
-    session_root = os.path.abspath(session_root or project_root)
-    target = _persist.get_pane(session_root, slug)
-
-    if not target:
-        return PaneMergeResult(error=f"Pane not found: {slug}")
-
-    if target.get("role") == "lt-gov":
-        return PaneMergeResult(
-            error=f"LT-GOV pane {slug} does not produce code — nothing to merge"
-        )
-
-    branch_name = target.get("branch_name")
-    pane_project_root = target.get("project_root") or project_root
-    worktree_path = target.get("worktree_path", "")
-    if not branch_name:
-        return PaneMergeResult(error=f"Pane {slug} is missing branch_name")
-
-    # Precondition 1: Pane state must be exactly "done"
-    # If already merged (e.g., monitor auto-merged), treat as success.
+    branch_name = target.get("branch_name", "")
     pane_state = target.get("state", "")
+
+    # State checks
     if pane_state == "merged":
         return PaneMergeResult(merged=slug, branch=branch_name, already_merged=True)
     if pane_state not in ("done", "reviewed_pass"):
@@ -1020,10 +996,7 @@ def merge_worker_pane(
             hint="Worker must complete successfully before merge.",
         )
 
-    # Precondition 2: Skip agent-attached check for done/reviewed panes.
-    # If pane state is 'done', the worker has signaled completion via
-    # dgov worker complete — the process lingering is just exit cleanup.
-    # Only block merge for active panes where the agent is still writing.
+    # Agent-attached check (only for non-done panes)
     pane_id = target.get("pane_id", "")
     if pane_state not in ("done", "reviewed_pass") and pane_id and _agent_still_running(pane_id):
         return PaneMergeResult(
@@ -1033,7 +1006,7 @@ def merge_worker_pane(
             hint="Wait for worker to complete or manually clean up the pane.",
         )
 
-    # Precondition 3: Worktree must have no uncommitted non-protected changes
+    # Dirty worktree check
     dirty_files = _check_dirty_worktree(worktree_path, exclude_protected=True)
     if dirty_files:
         return PaneMergeResult(
@@ -1043,38 +1016,32 @@ def merge_worker_pane(
             hint="Commit or stash changes in the worktree before merging.",
         )
 
-    # Auto-rebase when same-file overlap detected.
-    # Squash merge breaks 3-way ancestry for parallel same-file workers.
-    # If main has changed files that this worker also changed, switch to rebase.
+    # Overlap warning (advisory, never blocks)
     _base = target.get("base_sha", "")
-    logger.debug("overlap check: squash=%s rebase=%s base_sha=%s", squash, rebase, _base)
     if squash and not rebase and _base:
-        main_changed_r = subprocess.run(
+        main_r = subprocess.run(
             ["git", "-C", pane_project_root, "diff", "--name-only", f"{_base}..HEAD"],
             capture_output=True,
             text=True,
         )
-        if main_changed_r.returncode == 0:
-            main_changed = set(main_changed_r.stdout.strip().splitlines())
-            worker_changed_r = subprocess.run(
+        if main_r.returncode == 0:
+            worker_r = subprocess.run(
                 ["git", "-C", worktree_path, "diff", "--name-only", f"{_base}..HEAD"],
                 capture_output=True,
                 text=True,
             )
-            if worker_changed_r.returncode == 0:
-                worker_changed = set(worker_changed_r.stdout.strip().splitlines())
-                overlap = main_changed & worker_changed
+            if worker_r.returncode == 0:
+                overlap = set(main_r.stdout.strip().splitlines()) & set(
+                    worker_r.stdout.strip().splitlines()
+                )
                 if overlap:
                     logger.warning(
-                        "File overlap for %s: %s — squash merge may conflict. "
-                        "Use --no-squash or dispatch with non-overlapping file claims.",
+                        "File overlap for %s: %s — squash merge may conflict.",
                         slug,
                         sorted(overlap),
                     )
 
-    # Validate file claims: warn if worker touched undeclared files
-    import json as _json
-
+    # File claim validation
     raw_claims = target.get("file_claims", "[]")
     file_claims = _json.loads(raw_claims) if isinstance(raw_claims, str) else (raw_claims or [])
     if file_claims:
@@ -1088,9 +1055,7 @@ def merge_worker_pane(
             if actual_r.returncode == 0:
                 actual_files = {f for f in actual_r.stdout.strip().splitlines() if f}
                 claimed = set(file_claims)
-                undeclared = actual_files - claimed
-                # Filter out test files — tests are read context, not edit targets
-                undeclared = {f for f in undeclared if not f.startswith("tests/")}
+                undeclared = {f for f in actual_files - claimed if not f.startswith("tests/")}
                 if undeclared:
                     violation_msg = (
                         f"Pane {slug} touched undeclared files: "
@@ -1110,35 +1075,390 @@ def merge_worker_pane(
                             claim_violations=sorted(undeclared),
                         )
 
-    # Pre-merge: restore protected files clobbered by workers
-    _restore_protected_files(pane_project_root, target)
+    return None
 
-    # Capture diff stat before merge (for enriched return)
+
+def _capture_pre_merge_stats(
+    target: dict,
+) -> tuple[str, int, list[str]]:
+    """Capture diff stat and changed file names before merge."""
     base_sha = target.get("base_sha", "")
-    merge_stat = ""
-    merge_files_changed = 0
-    changed_file_names: list[str] = []
-    if base_sha:
-        wt = target.get("worktree_path", "")
-        if wt and Path(wt).exists():
-            stat_r = subprocess.run(
-                ["git", "-C", wt, "diff", "--stat", f"{base_sha}..HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if stat_r.returncode == 0:
-                merge_stat = stat_r.stdout.strip()
-            names_r = subprocess.run(
-                ["git", "-C", wt, "diff", "--name-only", f"{base_sha}..HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if names_r.returncode == 0:
-                changed_file_names = [f for f in names_r.stdout.strip().splitlines() if f]
-                merge_files_changed = len(changed_file_names)
+    if not base_sha:
+        return "", 0, []
+    wt = target.get("worktree_path", "")
+    if not wt or not Path(wt).exists():
+        return "", 0, []
 
+    stat_r = subprocess.run(
+        ["git", "-C", wt, "diff", "--stat", f"{base_sha}..HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    merge_stat = stat_r.stdout.strip() if stat_r.returncode == 0 else ""
+
+    names_r = subprocess.run(
+        ["git", "-C", wt, "diff", "--name-only", f"{base_sha}..HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if names_r.returncode == 0:
+        changed = [f for f in names_r.stdout.strip().splitlines() if f]
+        return merge_stat, len(changed), changed
+    return merge_stat, 0, []
+
+
+def _validate_post_merge(
+    merge_root: str,
+    changed_file_names: list[str],
+    base_sha: str,
+    *,
+    check_protected: bool = True,
+) -> tuple[bool, str | None, dict, dict, str | None]:
+    """Run post-merge validation: conflict markers, protected files, lint, tests.
+
+    Returns (failed, error_msg, lint_result, test_result, warning_msg).
+    """
+    from dgov.inspection import _run_related_tests
+
+    validation_failed = False
+    validation_error: str | None = None
+    warning_msg: str | None = None
+
+    # Conflict markers
+    conflict_files = _check_conflict_markers(merge_root, changed_file_names)
+    if conflict_files:
+        validation_failed = True
+        validation_error = f"Unresolved conflict markers in: {', '.join(conflict_files)}"
+        logger.error("%s", validation_error)
+
+    # Protected file damage
+    damaged: list[str] = []
+    if check_protected and base_sha and not validation_failed:
+        for fname in PROTECTED_FILES:
+            check = subprocess.run(
+                ["git", "-C", merge_root, "diff", base_sha, "HEAD", "--", fname],
+                capture_output=True,
+            )
+            if check.stdout.strip():
+                damaged.append(fname)
+    if damaged:
+        warning_msg = f"protected files changed: {damaged}"
+        logger.warning("Protected files changed after merge: %s", damaged)
+
+    # Lint
+    lint_result = _lint_fix_merged_files(merge_root, changed_file_names)
+    if lint_result.get("lint_unfixable"):
+        files = lint_result.get("lint_unfixable_files", [])
+        logger.warning(
+            "Post-merge lint found unfixable issues in %d file(s): %s",
+            len(files),
+            ", ".join(files) or "unknown",
+        )
+
+    # Tests
+    test_result = _run_related_tests(merge_root, changed_file_names)
+    if test_result:
+        logger.info(
+            "Post-merge tests: passed=%s files=%s",
+            test_result.get("tests_passed"),
+            test_result.get("tests_ran"),
+        )
+    if test_result and not test_result.get("no_tests_found"):
+        if not test_result.get("tests_passed"):
+            validation_failed = True
+            validation_error = (
+                f"Post-merge tests failed: "
+                f"{test_result.get('tests_failed', 'unknown')} failures "
+                f"in {test_result.get('tests_ran', 0)} tests ran"
+            )
+            logger.error("%s", validation_error)
+
+    return validation_failed, validation_error, lint_result, test_result, warning_msg
+
+
+def _finalize_merged_pane(
+    pane_project_root: str,
+    session_root: str,
+    slug: str,
+    target: dict,
+    branch_name: str,
+    merge_sha: str = "",
+) -> None:
+    """Update state, cleanup worktree, emit event, regenerate CODEBASE.md."""
+    import dgov.persistence as _persist
+    from dgov.lifecycle import _full_cleanup
+
+    try:
+        _persist.update_pane_state(session_root, slug, "merged")
+    except IllegalTransitionError as e:
+        if e.current == "abandoned":
+            logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
+        else:
+            raise
+    target["state"] = "merged"
+    cleanup_result = _full_cleanup(pane_project_root, session_root, slug, target)
+    _persist.remove_pane(session_root, slug, crash_log=cleanup_result.get("crash_log", ""))
+    _persist.emit_event(session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name)
+
+    # Regenerate codebase map
+    try:
+        if (Path(pane_project_root) / "src" / "dgov").is_dir():
+            from dgov.cli.admin import regenerate_codebase_md
+
+            regenerate_codebase_md(pane_project_root)
+    except Exception:
+        logger.debug("CODEBASE.md regeneration skipped (non-critical)")
+
+    # Stage and commit CODEBASE.md if changed
+    status = subprocess.run(
+        ["git", "-C", pane_project_root, "status", "--porcelain", "CODEBASE.md"],
+        capture_output=True,
+        text=True,
+    )
+    if status.stdout.strip():
+        subprocess.run(
+            ["git", "-C", pane_project_root, "add", "CODEBASE.md"],
+            capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", pane_project_root, "commit", "-m", "Regenerate CODEBASE.md"],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "DGOV_SKIP_GOVERNOR_CHECK": "1"},
+        )
+
+
+def _build_success_result(
+    slug: str,
+    branch_name: str,
+    merge_stat: str,
+    merge_files_changed: int,
+    rebase_fallback: bool,
+    merge: MergeResult,
+    apply_result: MergeResult,
+    lint_result: dict,
+    test_result: dict,
+    warning_msg: str | None,
+) -> PaneMergeResult:
+    """Build PaneMergeResult for a successful merge."""
+    return PaneMergeResult(
+        merged=slug,
+        branch=branch_name,
+        stat=merge_stat,
+        files_changed=merge_files_changed,
+        rebase_fallback=rebase_fallback,
+        stash_warnings=[*merge.warnings, *apply_result.warnings],
+        warning=warning_msg,
+        tests_passed=test_result.get("tests_passed") if test_result else None,
+        tests_ran=test_result.get("tests_ran", []) if test_result else [],
+        test_output=test_result.get("test_output", "") if test_result else "",
+        no_tests_found=test_result.get("no_tests_found", False) if test_result else False,
+        fixed=lint_result.get("lint_fixed", []) if lint_result else [],
+        unfixable=lint_result.get("lint_unfixable", []) if lint_result else [],
+        lint_unfixable=bool(lint_result.get("lint_unfixable")) if lint_result else False,
+        lint_unfixable_files=lint_result.get("lint_unfixable_files", []) if lint_result else [],
+    )
+
+
+def _handle_merge_conflicts(
+    pane_project_root: str,
+    session_root: str,
+    slug: str,
+    target: dict,
+    branch_name: str,
+    merge: MergeResult,
+    resolve: str,
+) -> PaneMergeResult:
+    """Handle merge failure: detect conflicts, dispatch resolution strategy."""
+    import dgov.persistence as _persist
+
+    conflicts = _detect_conflicts(pane_project_root, branch_name)
+
+    if not conflicts:
+        error_msg = merge.stderr.strip() if merge.stderr else f"Merge failed for {branch_name}"
+        _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
+        return PaneMergeResult(error=error_msg)
+
+    _persist.update_pane_state(session_root, slug, "merge_conflict")
+    _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
+
+    if resolve == "agent":
+        resolved = _resolve_conflicts_with_agent(
+            pane_project_root, branch_name, target, session_root
+        )
+        if resolved:
+            _finalize_merged_pane(pane_project_root, session_root, slug, target, branch_name)
+            return PaneMergeResult(merged=slug, branch=branch_name, resolved_by="agent")
+        return PaneMergeResult(
+            slug=slug,
+            branch=branch_name,
+            conflicts=conflicts,
+            hint="Agent resolution failed. Resolve conflicts manually.",
+        )
+    if resolve == "manual":
+        subprocess.run(
+            ["git", "-C", pane_project_root, "merge", "--no-commit", branch_name],
+            capture_output=True,
+            text=True,
+        )
+        return PaneMergeResult(
+            slug=slug,
+            branch=branch_name,
+            conflicts=conflicts,
+            resolve="manual",
+            hint="Conflict markers left in working tree. Resolve manually.",
+        )
+    if resolve == "skip":
+        return PaneMergeResult(
+            error=f"Merge conflict in {branch_name}",
+            slug=slug,
+            branch=branch_name,
+            conflicts=conflicts,
+            hint="Re-run with --resolve agent or --resolve manual.",
+        )
+    return PaneMergeResult(error=f"Unknown resolve strategy: {resolve}")
+
+
+def _execute_candidate_merge(
+    candidate_root: str,
+    branch_name: str,
+    rebase_fallback: bool,
+    rebase: bool,
+    squash: bool,
+    message: str | None,
+    base_sha: str,
+) -> MergeResult:
+    """Execute merge inside candidate worktree. Returns MergeResult."""
+    merge = None
+
+    # Rebase fallback: try rebase in candidate, then merge fallback
+    if rebase_fallback:
+        candidate_rebase = subprocess.run(
+            ["git", "-C", candidate_root, "rebase", "HEAD", branch_name],
+            capture_output=True,
+            text=True,
+        )
+        if candidate_rebase.returncode != 0:
+            subprocess.run(
+                ["git", "-C", candidate_root, "rebase", "--abort"],
+                capture_output=True,
+            )
+            candidate_merge = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    candidate_root,
+                    "merge",
+                    branch_name,
+                    "-m",
+                    message or f"Merge {branch_name}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if candidate_merge.returncode == 0:
+                logger.info("Merged %s in candidate worktree", branch_name)
+                merge = MergeResult(success=True)
+            else:
+                subprocess.run(
+                    ["git", "-C", candidate_root, "merge", "--abort"],
+                    capture_output=True,
+                )
+                subprocess.run(
+                    ["git", "-C", candidate_root, "reset", "--hard", "HEAD"],
+                    capture_output=True,
+                )
+                logger.warning(
+                    "Candidate merge failed for %s: %s",
+                    branch_name,
+                    candidate_merge.stderr.strip()[:200],
+                )
+        else:
+            logger.info("Rebased %s in candidate worktree", branch_name)
+
+    # Standard merge path
+    if merge is None:
+        if rebase:
+            merge = _rebase_merge(candidate_root, branch_name, message=message)
+            if not merge.success:
+                fallback = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        candidate_root,
+                        "merge",
+                        branch_name,
+                        "-m",
+                        message or f"Merge {branch_name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                if fallback.returncode == 0:
+                    logger.info("Merge fallback for %s (rebase failed)", branch_name)
+                    merge = MergeResult(success=True)
+        else:
+            merge = _plumbing_merge(
+                candidate_root,
+                branch_name,
+                message=message,
+                squash=squash,
+                merge_base=base_sha or None,
+            )
+
+    return merge or MergeResult(success=False, stderr="No merge strategy succeeded")
+
+
+# -- Public merge API --
+
+
+def merge_worker_pane(
+    project_root: str,
+    slug: str,
+    session_root: str | None = None,
+    resolve: str = "skip",
+    squash: bool = True,
+    message: str | None = None,
+    rebase: bool = False,
+    strict_claims: bool = False,
+) -> PaneMergeResult:
+    """Merge a worker pane's branch with configurable conflict resolution.
+
+    Returns PaneMergeResult. Check ``result.merged`` for success,
+    ``result.error`` for failure, ``result.conflicts`` for conflict details.
+    """
+    import dgov.persistence as _persist
+
+    session_root = os.path.abspath(session_root or project_root)
+    target = _persist.get_pane(session_root, slug)
+
+    if not target:
+        return PaneMergeResult(error=f"Pane not found: {slug}")
+    if target.get("role") == "lt-gov":
+        return PaneMergeResult(
+            error=f"LT-GOV pane {slug} does not produce code — nothing to merge"
+        )
+
+    branch_name = target.get("branch_name")
+    pane_project_root = target.get("project_root") or project_root
+    worktree_path = target.get("worktree_path", "")
+    if not branch_name:
+        return PaneMergeResult(error=f"Pane {slug} is missing branch_name")
+
+    # Phase 1: Preconditions
+    error = _check_merge_preconditions(
+        target, slug, pane_project_root, worktree_path, session_root, squash, rebase, strict_claims
+    )
+    if error:
+        return error
+
+    # Phase 2: Pre-merge prep
+    _restore_protected_files(pane_project_root, target)
+    base_sha = target.get("base_sha", "")
+    merge_stat, merge_files_changed, changed_file_names = _capture_pre_merge_stats(target)
+
+    # Phase 3: Execute merge under lock
     with _MergeLock(pane_project_root):
-        # Auto-rebase worker branch onto HEAD to prevent stale-branch conflicts.
         rebase_fallback = False
         if not rebase:
             pre_rebase = _rebase_onto_head(pane_project_root, branch_name)
@@ -1150,8 +1470,7 @@ def merge_worker_pane(
                 )
                 rebase_fallback = True
 
-        # For no-squash merges with attached worktree branches, merge
-        # directly on main (candidate worktree can't access attached branches).
+        # Direct no-squash merge (special case: worktree-attached branch)
         if not squash and rebase_fallback:
             logger.info("Direct no-squash merge for %s", branch_name)
             _msg = message or f"Merge {branch_name}"
@@ -1162,223 +1481,58 @@ def merge_worker_pane(
             )
             if _merge_r.returncode != 0:
                 logger.warning(
-                    "Direct --no-ff merge failed for %s: rc=%d out=%.200s err=%.200s",
+                    "Direct --no-ff merge failed for %s: rc=%d",
                     branch_name,
                     _merge_r.returncode,
-                    _merge_r.stdout.strip(),
-                    _merge_r.stderr.strip(),
                 )
             merge = MergeResult(
                 success=_merge_r.returncode == 0,
                 stderr=_merge_r.stderr.strip() if _merge_r.returncode != 0 else "",
             )
             if merge.success:
-                # Check for unresolved conflict markers FIRST
-                conflict_files = _check_conflict_markers(pane_project_root, changed_file_names)
-                validation_failed = False
-                validation_error: str | None = None
-                if conflict_files:
-                    validation_failed = True
-                    validation_error = (
-                        f"Unresolved conflict markers in: {', '.join(conflict_files)}"
-                    )
-                    logger.error("%s", validation_error)
-
-                if not validation_failed:
-                    # Run post-merge validation on main directly
-                    lint_result = _lint_fix_merged_files(pane_project_root, changed_file_names)
-                    from dgov.inspection import _run_related_tests
-
-                    test_result = _run_related_tests(pane_project_root, changed_file_names)
-                    if test_result and not test_result.get("no_tests_found"):
-                        if not test_result.get("tests_passed"):
-                            validation_failed = True
-                            validation_error = (
-                                f"Post-merge tests failed: "
-                                f"{test_result.get('tests_failed', 'unknown')} failures "
-                                f"in {test_result.get('tests_ran', 0)} tests ran"
-                            )
-                if validation_failed:
-                    # Revert: reset main to pre-merge state
+                failed, err, lint_result, test_result, _ = _validate_post_merge(
+                    pane_project_root, changed_file_names, base_sha, check_protected=False
+                )
+                if failed:
                     subprocess.run(
                         ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
                         capture_output=True,
                     )
                     return PaneMergeResult(
-                        error=validation_error or "Post-merge tests failed",
+                        error=err or "Post-merge tests failed",
                         slug=slug,
                         branch=branch_name,
                         validation_failed=True,
                     )
                 _persist.update_pane_state(session_root, slug, "merged")
                 _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
-                result = PaneMergeResult(
+                return PaneMergeResult(
                     merged=slug,
                     branch=branch_name,
                     no_squash_direct=True,
                     changed_files=changed_file_names,
                     files_changed=len(changed_file_names),
                 )
-                return result
-            # Fall through to candidate worktree path if direct merge failed
+            # Fall through to candidate worktree
 
-        with _candidate_worktree(pane_project_root, slug) as (candidate_root, _candidate_branch):
-            # If auto-rebase failed (worktree-attached branch), rebase in the
-            # candidate worktree where the branch isn't attached.
-            merge = None  # may be set by candidate merge fallback
-            if rebase_fallback:
-                candidate_rebase = subprocess.run(
-                    ["git", "-C", candidate_root, "rebase", "HEAD", branch_name],
-                    capture_output=True,
-                    text=True,
-                )
-                if candidate_rebase.returncode != 0:
-                    subprocess.run(
-                        ["git", "-C", candidate_root, "rebase", "--abort"],
-                        capture_output=True,
-                    )
-                    # git merge in candidate — handles non-overlapping
-                    # same-file edits via ort strategy with proper ancestry.
-                    candidate_merge = subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            candidate_root,
-                            "merge",
-                            branch_name,
-                            "-m",
-                            message or f"Merge {branch_name}",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                    if candidate_merge.returncode == 0:
-                        logger.info("Merged %s in candidate worktree", branch_name)
-                        merge = MergeResult(success=True)
-                    else:
-                        # Abort the failed merge and reset working tree to clean state.
-                        # Without this, conflict markers from the failed merge persist in
-                        # the working tree. Subsequent _plumbing_merge creates a clean commit
-                        # but post-merge validation (lint/tests) runs against the dirty
-                        # working tree files and fails — a false negative.
-                        subprocess.run(
-                            ["git", "-C", candidate_root, "merge", "--abort"],
-                            capture_output=True,
-                        )
-                        subprocess.run(
-                            ["git", "-C", candidate_root, "reset", "--hard", "HEAD"],
-                            capture_output=True,
-                        )
-                        logger.warning(
-                            "Candidate merge failed for %s: %s",
-                            branch_name,
-                            candidate_merge.stderr.strip()[:200],
-                        )
-                else:
-                    logger.info("Rebased %s in candidate worktree", branch_name)
-
-            if merge is None:
-                if rebase:
-                    merge = _rebase_merge(candidate_root, branch_name, message=message)
-                    if not merge.success:
-                        # Rebase failed — merge fallback
-                        fallback_merge = subprocess.run(
-                            [
-                                "git",
-                                "-C",
-                                candidate_root,
-                                "merge",
-                                branch_name,
-                                "-m",
-                                message or f"Merge {branch_name}",
-                            ],
-                            capture_output=True,
-                            text=True,
-                        )
-                        if fallback_merge.returncode == 0:
-                            logger.info("Merge fallback for %s (rebase failed)", branch_name)
-                            merge = MergeResult(success=True)
-                else:
-                    merge = _plumbing_merge(
-                        candidate_root,
-                        branch_name,
-                        message=message,
-                        squash=squash,
-                        merge_base=base_sha or None,
-                    )
+        # Standard path: merge in candidate worktree
+        with _candidate_worktree(pane_project_root, slug) as (candidate_root, _):
+            merge = _execute_candidate_merge(
+                candidate_root, branch_name, rebase_fallback, rebase, squash, message, base_sha
+            )
 
             if merge.success:
-                # Check for unresolved conflict markers FIRST
-                conflict_files = _check_conflict_markers(candidate_root, changed_file_names)
-                validation_failed = False
-                validation_error: str | None = None
-                if conflict_files:
-                    validation_failed = True
-                    validation_error = (
-                        f"Unresolved conflict markers in: {', '.join(conflict_files)}"
-                    )
-                    logger.error("%s", validation_error)
-
-                # Post-merge: lint + verify protected files BEFORE mutating main
-                damaged: list[str] = []
-                lint_result: dict = {}
-                test_result: dict = {}
-                base_sha = target.get("base_sha", "")
-                if base_sha and not validation_failed:
-                    for fname in PROTECTED_FILES:
-                        check = subprocess.run(
-                            ["git", "-C", candidate_root, "diff", base_sha, "HEAD", "--", fname],
-                            capture_output=True,
-                        )
-                        if check.stdout.strip():
-                            damaged.append(fname)
-                lint_result = _lint_fix_merged_files(candidate_root, changed_file_names)
-                from dgov.inspection import _run_related_tests
-
-                test_result = _run_related_tests(candidate_root, changed_file_names)
-                if test_result:
-                    logger.info(
-                        "Post-merge tests: passed=%s files=%s",
-                        test_result.get("tests_passed"),
-                        test_result.get("tests_ran"),
-                    )
-
-                if test_result and not test_result.get("no_tests_found"):
-                    if not test_result.get("tests_passed"):
-                        validation_failed = True
-                        validation_error = (
-                            f"Post-merge tests failed: "
-                            f"{test_result.get('tests_failed', 'unknown')} failures "
-                            f"in {test_result.get('tests_ran', 0)} tests ran"
-                        )
-                        logger.error("%s", validation_error)
-
-                warning_msg: str | None = None
-                if damaged:
-                    warning_msg = f"protected files changed: {damaged}"
-                    logger.warning("Protected files changed after merge: %s", damaged)
-
-                if lint_result.get("lint_unfixable"):
-                    # Lint issues are advisory after merge has landed — warn instead of fail
-                    files = lint_result.get("lint_unfixable_files", [])
-                    n_files = len(files)
-                    file_list = ", ".join(files) or "unknown"
-                    lint_msg = (
-                        f"Post-merge lint found unfixable issues in {n_files} file(s): {file_list}"
-                    )
-                    logger.warning("%s", lint_msg)
-
-                if validation_failed:
-                    _persist.emit_event(
-                        session_root, "pane_merge_failed", slug, error=validation_error
-                    )
+                # Phase 4: Validate
+                failed, err, lint_result, test_result, warning_msg = _validate_post_merge(
+                    candidate_root, changed_file_names, base_sha
+                )
+                if failed:
+                    _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
                     return PaneMergeResult(
-                        error=validation_error,
-                        slug=slug,
-                        branch=branch_name,
-                        validation_failed=True,
+                        error=err, slug=slug, branch=branch_name, validation_failed=True
                     )
 
+                # Phase 5: Apply to main
                 merge_sha_r = subprocess.run(
                     ["git", "-C", candidate_root, "rev-parse", "HEAD"],
                     capture_output=True,
@@ -1387,133 +1541,27 @@ def merge_worker_pane(
                 merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
                 apply_result = _advance_current_branch_to_commit(pane_project_root, merge_sha)
                 if not apply_result.success:
-                    error_msg = apply_result.stderr or "Failed to apply validated merge to main"
-                    _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
-                    return PaneMergeResult(error=error_msg)
+                    err = apply_result.stderr or "Failed to apply validated merge to main"
+                    _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
+                    return PaneMergeResult(error=err)
 
-                try:
-                    _persist.update_pane_state(session_root, slug, "merged")
-                except IllegalTransitionError as e:
-                    if e.current == "abandoned":
-                        logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
-                    else:
-                        raise
-                target["state"] = "merged"
-                cleanup_result = _full_cleanup(pane_project_root, session_root, slug, target)
-                _persist.remove_pane(
-                    session_root, slug, crash_log=cleanup_result.get("crash_log", "")
+                _finalize_merged_pane(
+                    pane_project_root, session_root, slug, target, branch_name, merge_sha
                 )
-                _persist.emit_event(
-                    session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name
+                return _build_success_result(
+                    slug,
+                    branch_name,
+                    merge_stat,
+                    merge_files_changed,
+                    rebase_fallback,
+                    merge,
+                    apply_result,
+                    lint_result,
+                    test_result,
+                    warning_msg,
                 )
 
-                # Regenerate codebase map so future workers get fresh context
-                try:
-                    if (Path(pane_project_root) / "src" / "dgov").is_dir():
-                        from dgov.cli.admin import regenerate_codebase_md
-
-                        regenerate_codebase_md(pane_project_root)
-                except Exception:
-                    logger.debug("CODEBASE.md regeneration skipped (non-critical)")
-
-                # Stage and commit CODEBASE.md if it changed
-                status = subprocess.run(
-                    ["git", "-C", pane_project_root, "status", "--porcelain", "CODEBASE.md"],
-                    capture_output=True,
-                    text=True,
-                )
-                if status.stdout.strip():
-                    subprocess.run(
-                        ["git", "-C", pane_project_root, "add", "CODEBASE.md"],
-                        capture_output=True,
-                    )
-                    subprocess.run(
-                        ["git", "-C", pane_project_root, "commit", "-m", "Regenerate CODEBASE.md"],
-                        capture_output=True,
-                        text=True,
-                        env={**os.environ, "DGOV_SKIP_GOVERNOR_CHECK": "1"},
-                    )
-
-                combined_warnings = [*merge.warnings, *apply_result.warnings]
-                result = PaneMergeResult(
-                    merged=slug,
-                    branch=branch_name,
-                    stat=merge_stat,
-                    files_changed=merge_files_changed,
-                    rebase_fallback=rebase_fallback,
-                    stash_warnings=combined_warnings,
-                    warning=warning_msg,
-                    tests_passed=test_result.get("tests_passed") if test_result else None,
-                    tests_ran=test_result.get("tests_ran", []) if test_result else [],
-                    test_output=test_result.get("test_output", "") if test_result else "",
-                    no_tests_found=test_result.get("no_tests_found", False)
-                    if test_result
-                    else False,
-                    fixed=lint_result.get("lint_fixed", []) if lint_result else [],
-                    unfixable=lint_result.get("lint_unfixable", []) if lint_result else [],
-                    lint_unfixable=bool(lint_result.get("lint_unfixable"))
-                    if lint_result
-                    else False,
-                    lint_unfixable_files=lint_result.get("lint_unfixable_files", [])
-                    if lint_result
-                    else [],
-                )
-                return result
-
-    # Plumbing merge failed — detect conflicts for resolution
-    conflicts = _detect_conflicts(pane_project_root, branch_name)
-
-    if conflicts:
-        _persist.update_pane_state(session_root, slug, "merge_conflict")
-        _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
-        if resolve == "agent":
-            resolved = _resolve_conflicts_with_agent(
-                pane_project_root, branch_name, target, session_root
-            )
-            if resolved:
-                try:
-                    _persist.update_pane_state(session_root, slug, "merged")
-                except IllegalTransitionError as e:
-                    if e.current == "abandoned":
-                        logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
-                    else:
-                        raise
-                target["state"] = "merged"
-                cleanup_result = _full_cleanup(pane_project_root, session_root, slug, target)
-                _persist.remove_pane(
-                    session_root, slug, crash_log=cleanup_result.get("crash_log", "")
-                )
-                _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
-                return PaneMergeResult(merged=slug, branch=branch_name, resolved_by="agent")
-            return PaneMergeResult(
-                slug=slug,
-                branch=branch_name,
-                conflicts=conflicts,
-                hint="Agent resolution failed. Resolve conflicts manually.",
-            )
-        if resolve == "manual":
-            subprocess.run(
-                ["git", "-C", pane_project_root, "merge", "--no-commit", branch_name],
-                capture_output=True,
-                text=True,
-            )
-            return PaneMergeResult(
-                slug=slug,
-                branch=branch_name,
-                conflicts=conflicts,
-                resolve="manual",
-                hint="Conflict markers left in working tree. Resolve manually.",
-            )
-        if resolve == "skip":
-            return PaneMergeResult(
-                error=f"Merge conflict in {branch_name}",
-                slug=slug,
-                branch=branch_name,
-                conflicts=conflicts,
-                hint="Re-run with --resolve agent or --resolve manual.",
-            )
-        return PaneMergeResult(error=f"Unknown resolve strategy: {resolve}")
-
-    error_msg = merge.stderr.strip() if merge.stderr else f"Merge failed for {branch_name}"
-    _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
-    return PaneMergeResult(error=error_msg)
+    # Phase 6: Merge failed — handle conflicts
+    return _handle_merge_conflicts(
+        pane_project_root, session_root, slug, target, branch_name, merge, resolve
+    )
