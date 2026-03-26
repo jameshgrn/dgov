@@ -508,14 +508,14 @@ CREATE TABLE IF NOT EXISTS panes (
     landing INTEGER NOT NULL DEFAULT 0,
     file_claims TEXT NOT NULL DEFAULT '[]',
     circuit_breaker INTEGER NOT NULL DEFAULT 0,
-    retried_from TEXT NOT NULL DEFAULT '',
-    superseded_by TEXT NOT NULL DEFAULT '',
+    retried_from TEXT DEFAULT NULL,
+    superseded_by TEXT DEFAULT NULL,
     retry_count INTEGER NOT NULL DEFAULT 0,
     max_retries INTEGER NOT NULL DEFAULT 0,
-    monitor_reason TEXT NOT NULL DEFAULT '',
-    last_checkpoint TEXT NOT NULL DEFAULT '',
-    last_hook_match TEXT NOT NULL DEFAULT '',
-    preserve_reason TEXT NOT NULL DEFAULT '',
+    monitor_reason TEXT DEFAULT NULL,
+    last_checkpoint TEXT DEFAULT NULL,
+    last_hook_match TEXT DEFAULT NULL,
+    preserve_reason TEXT DEFAULT NULL,
     preserve_recoverable INTEGER NOT NULL DEFAULT 0
 )"""
 
@@ -526,13 +526,13 @@ CREATE TABLE IF NOT EXISTS events (
     event TEXT NOT NULL,
     pane TEXT NOT NULL,
     data TEXT NOT NULL DEFAULT '{}',
-    error TEXT NOT NULL DEFAULT '',
-    reason TEXT NOT NULL DEFAULT '',
-    merge_sha TEXT NOT NULL DEFAULT '',
-    branch TEXT NOT NULL DEFAULT '',
-    new_slug TEXT NOT NULL DEFAULT '',
-    target_agent TEXT NOT NULL DEFAULT '',
-    message TEXT NOT NULL DEFAULT '')
+    error TEXT DEFAULT NULL,
+    reason TEXT DEFAULT NULL,
+    merge_sha TEXT DEFAULT NULL,
+    branch TEXT DEFAULT NULL,
+    new_slug TEXT DEFAULT NULL,
+    target_agent TEXT DEFAULT NULL,
+    message TEXT DEFAULT NULL)
 """
 
 _CREATE_DAG_RUNS_TABLE_SQL = """
@@ -638,6 +638,97 @@ def state_path(session_root: str) -> Path:
     return Path(session_root) / STATE_DIR / _STATE_FILE
 
 
+def _migrate_sentinels_to_null(conn: sqlite3.Connection) -> None:
+    """Convert sentinel empty strings to NULL for text columns.
+
+    Old databases have NOT NULL constraints. We use table recreation
+    (the standard SQLite migration) to drop the constraint, then
+    UPDATE empty strings to NULL.
+    """
+    # Check if panes table has NOT NULL on sentinel columns
+    pane_info = conn.execute("PRAGMA table_info(panes)").fetchall()
+    sentinel_cols = {
+        "retried_from",
+        "superseded_by",
+        "monitor_reason",
+        "last_checkpoint",
+        "last_hook_match",
+        "preserve_reason",
+    }
+    needs_recreate = any(
+        col[1] in sentinel_cols and col[3]  # col[3] = notnull flag
+        for col in pane_info
+    )
+
+    if needs_recreate:
+        conn.execute("DROP TABLE IF EXISTS panes_new")
+        new_ddl = _CREATE_TABLE_SQL.replace(
+            "CREATE TABLE IF NOT EXISTS panes", "CREATE TABLE panes_new"
+        )
+        conn.execute(new_ddl)
+        cols = [col[1] for col in pane_info]
+        col_list = ", ".join(cols)
+        conn.execute(f"INSERT INTO panes_new ({col_list}) SELECT {col_list} FROM panes")
+        conn.execute("DROP TABLE panes")
+        conn.execute("ALTER TABLE panes_new RENAME TO panes")
+
+    # Now safe to set NULL (constraint removed or was never there)
+    for col in sentinel_cols:
+        conn.execute(f"UPDATE panes SET {col} = NULL WHERE {col} = ''")
+
+    # Events table — same pattern
+    event_info = conn.execute("PRAGMA table_info(events)").fetchall()
+    event_sentinel_cols = {
+        "error",
+        "reason",
+        "merge_sha",
+        "branch",
+        "new_slug",
+        "target_agent",
+        "message",
+    }
+    event_needs_recreate = any(col[1] in event_sentinel_cols and col[3] for col in event_info)
+    if event_needs_recreate:
+        conn.execute("DROP TABLE IF EXISTS events_new")
+        conn.execute(
+            _CREATE_EVENTS_TABLE_SQL.replace(
+                "CREATE TABLE IF NOT EXISTS events", "CREATE TABLE events_new"
+            )
+        )
+        event_cols = [col[1] for col in event_info]
+        ecl = ", ".join(event_cols)
+        conn.execute(f"INSERT INTO events_new ({ecl}) SELECT {ecl} FROM events")
+        conn.execute("DROP TABLE events")
+        conn.execute("ALTER TABLE events_new RENAME TO events")
+
+    for col in event_sentinel_cols:
+        try:
+            conn.execute(f"UPDATE events SET {col} = NULL WHERE {col} = ''")
+        except sqlite3.OperationalError:
+            pass  # column may not exist yet in very old databases
+
+    # Archived panes — only if table exists
+    try:
+        archive_info = conn.execute("PRAGMA table_info(archived_panes)").fetchall()
+    except sqlite3.OperationalError:
+        archive_info = []
+    archive_sentinel_cols = {
+        "retried_from",
+        "superseded_by",
+        "monitor_reason",
+        "last_checkpoint",
+        "crash_log",
+    }
+    # Archived panes: write-only table, skip recreation. Convert values
+    # where the constraint allows it (new DBs), silently skip old DBs.
+    if archive_info:
+        for col in archive_sentinel_cols:
+            try:
+                conn.execute(f"UPDATE archived_panes SET {col} = NULL WHERE {col} = ''")
+            except (sqlite3.OperationalError, sqlite3.IntegrityError):
+                pass  # NOT NULL constraint or column missing — skip
+
+
 def _get_db(session_root: str) -> sqlite3.Connection:
     """Return a cached SQLite connection for this (db_path, thread).
 
@@ -720,14 +811,14 @@ def _get_db(session_root: str) -> sqlite3.Connection:
         ("landing", "INTEGER NOT NULL DEFAULT 0"),
         ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
         ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
-        ("retried_from", "TEXT NOT NULL DEFAULT ''"),
-        ("superseded_by", "TEXT NOT NULL DEFAULT ''"),
+        ("retried_from", "TEXT DEFAULT NULL"),
+        ("superseded_by", "TEXT DEFAULT NULL"),
         ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
         ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
-        ("monitor_reason", "TEXT NOT NULL DEFAULT ''"),
-        ("last_checkpoint", "TEXT NOT NULL DEFAULT ''"),
-        ("last_hook_match", "TEXT NOT NULL DEFAULT ''"),
-        ("preserve_reason", "TEXT NOT NULL DEFAULT ''"),
+        ("monitor_reason", "TEXT DEFAULT NULL"),
+        ("last_checkpoint", "TEXT DEFAULT NULL"),
+        ("last_hook_match", "TEXT DEFAULT NULL"),
+        ("preserve_reason", "TEXT DEFAULT NULL"),
         ("preserve_recoverable", "INTEGER NOT NULL DEFAULT 0"),
     ]
     for col, coldef in _pane_meta_cols:
@@ -738,13 +829,13 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
     # Migrate: add typed event columns
     _event_cols = [
-        ("error", "TEXT NOT NULL DEFAULT ''"),
-        ("reason", "TEXT NOT NULL DEFAULT ''"),
-        ("merge_sha", "TEXT NOT NULL DEFAULT ''"),
-        ("branch", "TEXT NOT NULL DEFAULT ''"),
-        ("new_slug", "TEXT NOT NULL DEFAULT ''"),
-        ("target_agent", "TEXT NOT NULL DEFAULT ''"),
-        ("message", "TEXT NOT NULL DEFAULT ''"),
+        ("error", "TEXT DEFAULT NULL"),
+        ("reason", "TEXT DEFAULT NULL"),
+        ("merge_sha", "TEXT DEFAULT NULL"),
+        ("branch", "TEXT DEFAULT NULL"),
+        ("new_slug", "TEXT DEFAULT NULL"),
+        ("target_agent", "TEXT DEFAULT NULL"),
+        ("message", "TEXT DEFAULT NULL"),
     ]
     for col, coldef in _event_cols:
         try:
@@ -757,19 +848,24 @@ def _get_db(session_root: str) -> sqlite3.Connection:
         ("landing", "INTEGER NOT NULL DEFAULT 0"),
         ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
         ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
-        ("retried_from", "TEXT NOT NULL DEFAULT ''"),
-        ("superseded_by", "TEXT NOT NULL DEFAULT ''"),
+        ("retried_from", "TEXT DEFAULT NULL"),
+        ("superseded_by", "TEXT DEFAULT NULL"),
         ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
         ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
-        ("monitor_reason", "TEXT NOT NULL DEFAULT ''"),
-        ("last_checkpoint", "TEXT NOT NULL DEFAULT ''"),
-        ("crash_log", "TEXT NOT NULL DEFAULT ''"),
+        ("monitor_reason", "TEXT DEFAULT NULL"),
+        ("last_checkpoint", "TEXT DEFAULT NULL"),
+        ("crash_log", "TEXT DEFAULT NULL"),
     ]
     for col, coldef in _archive_cols:
         try:
             conn.execute(f"ALTER TABLE archived_panes ADD COLUMN {col} {coldef}")
         except sqlite3.OperationalError:
             pass
+
+    # Migrate: convert sentinel empty strings to NULL.
+    # Old databases have NOT NULL constraints on these columns, so we need
+    # to recreate tables to drop the constraint before setting NULL values.
+    _migrate_sentinels_to_null(conn)
 
     conn.commit()
 
@@ -1155,7 +1251,7 @@ def mark_preserved_artifacts(
 
 def clear_preserved_artifacts(session_root: str, slug: str) -> None:
     """Remove preserved-artifact metadata once a pane is resumed or cleaned."""
-    set_pane_metadata(session_root, slug, preserve_reason="", preserve_recoverable=0)
+    set_pane_metadata(session_root, slug, preserve_reason=None, preserve_recoverable=0)
 
 
 def record_failure(session_root: str, slug: str, failure_hash: str) -> int:

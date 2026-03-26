@@ -166,7 +166,7 @@ def _compute_hud(model: ErosionModel) -> Text:
     raw_label = _get_label_for_maturity(maturity)
     last_label = _hud_state["last_label"]
 
-    if last_label == "":
+    if not last_label:
         # First call - use raw label and initialize state
         chosen_label = raw_label
     else:
