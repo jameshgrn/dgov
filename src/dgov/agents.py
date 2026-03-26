@@ -701,7 +701,9 @@ def build_launch_command(
     snippet = _prompt_read_and_delete_snippet(prompt_file)
 
     # Inject worker instructions as system prompt for pi workers
-    instructions_path = Path(project_root) / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md"
+    instructions_path = Path(project_root) / ".dgov" / "DGOV_SYSTEM_PROMPT.md"
+    if not instructions_path.exists():
+        instructions_path = Path(project_root) / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md"
     if agent.prompt_command == "pi" and instructions_path.exists():
         instr = shlex.quote(str(instructions_path))
         base = f"{base} --append-system-prompt {instr}"

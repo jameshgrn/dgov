@@ -748,6 +748,48 @@ class TestFullCleanup:
         remaining_pane = get_pane(sr, "timed-out-pane")
         assert remaining_pane is None
 
+    def test_close_worker_pane_removes_superseded_pane_when_cleanup_fails(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Superseded panes should not linger as preserved cleanup failures."""
+        from dgov.lifecycle import close_worker_pane
+
+        sr = str(tmp_path)
+        wt_path = tmp_path / "superseded-pane"
+        wt_path.mkdir()
+        _add_pane(
+            tmp_path,
+            "superseded-pane",
+            state="superseded",
+            owns_worktree=True,
+            worktree_path=str(wt_path),
+            branch_name="superseded-branch",
+        )
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "worktree" in cmd and "remove" in cmd:
+                m.returncode = 1
+                m.stderr = "worktree removal failed"
+                return m
+            if "rev-parse" in cmd and "--git-dir" in cmd:
+                m.returncode = 0
+                m.stdout = "/tmp/main/.git/worktrees/superseded-pane\n"
+                return m
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with (
+            patch("subprocess.run", fake_run),
+            patch("dgov.tmux._run", return_value=""),
+        ):
+            result = close_worker_pane(sr, "superseded-pane", session_root=sr)
+
+        assert result is True
+        assert get_pane(sr, "superseded-pane") is None
+
     def test_removes_worktree_when_clean_and_force_applied(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
@@ -1128,6 +1170,32 @@ class TestWriteWorktreeInstructions:
         exclude_content = exclude_file.read_text(encoding="utf-8")
 
         assert ".dgov/DGOV_WORKER_INSTRUCTIONS.md" in exclude_content
+        assert ".dgov/DGOV_SYSTEM_PROMPT.md" in exclude_content
+
+    def test_system_prompt_omits_task_and_codebase_payload(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.lifecycle import _write_worktree_instructions
+
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "CODEBASE.md").write_text("# CODEBASE\n\nheavy content\n", encoding="utf-8")
+
+        _write_worktree_instructions(str(wt), "test-task", "worker", prompt="Fix parser bug")
+
+        instructions_content = (wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md").read_text(
+            encoding="utf-8"
+        )
+        system_prompt_content = (wt / ".dgov" / "DGOV_SYSTEM_PROMPT.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert "## Task" in instructions_content
+        assert "Fix parser bug" in instructions_content
+        assert "## Codebase Map" in instructions_content
+        assert "## Task" not in system_prompt_content
+        assert "## Codebase Map" not in system_prompt_content
+        assert "heavy content" not in system_prompt_content
 
 
 # ──────────────────────────────────────────────────────────────

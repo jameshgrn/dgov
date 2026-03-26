@@ -379,6 +379,7 @@ def _write_worktree_instructions(
     """
     wt = Path(worktree_path)
     instructions_file = wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md"
+    system_prompt_file = wt / ".dgov" / "DGOV_SYSTEM_PROMPT.md"
 
     # Ensure .dgov directory exists in worktree
     instructions_file.parent.mkdir(parents=True, exist_ok=True)
@@ -476,9 +477,15 @@ def _write_worktree_instructions(
             "    run `dgov worker complete -m 'already implemented'`\n"
         )
 
-        # Include the task prompt so workers have it in the instructions file
+        system_prompt_content = preamble
+
+        # Include the task prompt in the on-disk instructions file only.
+        # Pi workers receive the task separately on the CLI, so duplicating it
+        # in the injected system prompt wastes context window.
         if prompt:
             preamble += f"\n## Task\n\n{prompt}\n"
+    if role == "lt-gov":
+        system_prompt_content = preamble
 
     # Append CODEBASE.md content directly so workers/lt-govs have the full
     # module map, task routing table, and test mapping in their context window
@@ -496,9 +503,13 @@ def _write_worktree_instructions(
         content += f"\n## Codebase Map\n\n{codebase_content}\n"
 
     instructions_file.write_text(content, encoding="utf-8")
+    system_prompt_file.write_text(system_prompt_content, encoding="utf-8")
 
-    # Git-exclude DGOV_WORKER_INSTRUCTIONS.md so no `git add` can stage it
-    _git_exclude_files(worktree_path, [".dgov/DGOV_WORKER_INSTRUCTIONS.md"])
+    # Git-exclude generated instruction files so no `git add` can stage them
+    _git_exclude_files(
+        worktree_path,
+        [".dgov/DGOV_WORKER_INSTRUCTIONS.md", ".dgov/DGOV_SYSTEM_PROMPT.md"],
+    )
 
 
 def _git_exclude_files(worktree_path: str, filenames: list[str]) -> None:
@@ -1350,17 +1361,22 @@ def close_worker_pane(
         except Exception:
             logger.debug("transcript ingest failed for %s", slug, exc_info=True)
 
-    # Preserve evidence when worktree removal fails or is skipped (dirty pane)
-    if result.get("skipped_worktree"):
+    pane_state = str(target.get("state", ""))
+    cleanup_must_close = pane_state in {"superseded", "escalated"}
+
+    # Preserve evidence when worktree removal fails or is skipped (dirty pane),
+    # except for superseded/escalated panes where the replacement pane is now
+    # canonical and lingering records become coordination noise.
+    if result.get("skipped_worktree") and not cleanup_must_close:
         mark_preserved_artifacts(
             session_root,
             slug,
             reason="dirty_worktree",
             recoverable=True,
-            state=str(target.get("state", "")),
+            state=pane_state,
         )
-        logger.info("Pane %s preserved for inspection in state %s", slug, target.get("state", ""))
-    elif result.get("worktree_removal_failed"):
+        logger.info("Pane %s preserved for inspection in state %s", slug, pane_state)
+    elif result.get("worktree_removal_failed") and not cleanup_must_close:
         # Check if the path is a real git worktree or just a leftover directory.
         # The orphan pruner race can leave empty dirs that git doesn't recognize.
         wt = target.get("worktree_path", "")
@@ -1390,14 +1406,15 @@ def close_worker_pane(
                 slug,
                 reason="cleanup_failed",
                 recoverable=False,
-                state=str(target.get("state", "")),
+                state=pane_state,
             )
             logger.warning(
                 "Worktree removal failed for %s — pane state preserved for inspection",
                 slug,
             )
     else:
-        # Normal close - worktree removed, transition to closed and delete record
+        # Normal close - worktree removed, or retry/escalation cleanup must be
+        # deterministic even when filesystem cleanup was imperfect.
         update_pane_state(session_root, slug, "closed")
         emit_event(session_root, "pane_closed", slug)
         remove_pane(session_root, slug, crash_log=crash_log)

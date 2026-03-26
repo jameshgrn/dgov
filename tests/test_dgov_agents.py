@@ -335,6 +335,17 @@ class TestBuildLaunchCommand:
         )
         assert "--provider river-gpu0" in cmd
 
+    def test_pi_uses_slim_system_prompt_file_when_present(self, tmp_path: Path) -> None:
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        system_prompt = dgov_dir / "DGOV_SYSTEM_PROMPT.md"
+        system_prompt.write_text("worker system prompt", encoding="utf-8")
+
+        cmd = build_launch_command("pi", "Fix the bug", project_root=str(tmp_path), slug="fix-bug")
+
+        assert "--append-system-prompt" in cmd
+        assert "DGOV_SYSTEM_PROMPT.md" in cmd
+
     def test_unknown_agent_raises(self) -> None:
         with pytest.raises(KeyError):
             build_launch_command("nonexistent", "prompt")
