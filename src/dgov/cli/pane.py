@@ -308,10 +308,6 @@ def pane_create(
         k, v = item.split("=", 1)
         env_vars[k] = v
 
-    if role == "lt-gov":
-        env_vars["DGOV_SKIP_GOVERNOR_CHECK"] = "1"
-        env_vars["DGOV_PROJECT_ROOT"] = os.path.abspath(project_root)
-
     try:
         packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
         pane_obj = run_dispatch_only(

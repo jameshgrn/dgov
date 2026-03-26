@@ -56,6 +56,9 @@ def _inspect_worker_pane(
     if not target:
         return {"error": f"Pane not found: {slug}"}
 
+    if target.get("role") == "lt-gov":
+        return {"verdict": "safe", "commit_count": 0, "lt_gov": True, "files_changed": []}
+
     wt = target.get("worktree_path", "")
     branch = target.get("branch_name", "")
     base_sha = target.get("base_sha", "")

@@ -959,6 +959,9 @@ def merge_worker_pane(
     if not target:
         return {"error": f"Pane not found: {slug}"}
 
+    if target.get("role") == "lt-gov":
+        return {"error": f"LT-GOV pane {slug} does not produce code — nothing to merge"}
+
     branch_name = target.get("branch_name")
     pane_project_root = target.get("project_root") or project_root
     worktree_path = target.get("worktree_path", "")

@@ -797,10 +797,13 @@ def create_worker_pane(
     ensure_dgov_gitignored(project_root)
     base_slug = slug or _generate_slug(prompt)
     _validate_slug(base_slug)
+    # LT-GOVs don't edit code — run them on main, no worktree needed.
+    if role == "lt-gov" and existing_worktree is None:
+        existing_worktree = project_root
     owns_worktree = existing_worktree is None
     slug = base_slug
     worktree_path = os.path.abspath(existing_worktree) if existing_worktree else ""
-    branch_name = base_slug
+    branch_name = "" if role == "lt-gov" else base_slug
 
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
