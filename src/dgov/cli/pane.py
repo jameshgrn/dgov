@@ -1399,13 +1399,22 @@ def pane_signal(slug, signal_type, project_root, session_root):
 
     project_root, session_root = _autocorrect_roots(project_root, session_root)
     session_root = os.path.abspath(session_root or project_root)
+
+    # Idempotent: if already in the target state, no-op
+    target = get_pane(session_root, slug)
+    if target and target.get("state") == signal_type:
+        click.echo(json.dumps({"already": signal_type, "slug": slug}))
+        return
+
     if signal_pane(session_root, slug, signal_type):
         click.echo(json.dumps({"signaled": signal_type, "slug": slug}))
     else:
-        target = get_pane(session_root, slug)
         if target and signal_type == "done":
             error = f"Pane {slug} has no completion commit; cannot signal done."
         else:
             error = f"Pane not found: {slug}"
-        click.echo(json.dumps({"error": error}), err=True)
+        click.echo(
+            json.dumps({"error": error, "hint": "Run 'dgov pane list -r .' to see active panes"}),
+            err=True,
+        )
         sys.exit(1)

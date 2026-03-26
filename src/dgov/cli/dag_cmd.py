@@ -365,8 +365,16 @@ def dag_force_complete(run_id, project_root, dry_run):
         return
 
     from dgov.executor import run_force_complete_dag
+    from dgov.persistence import get_dag_run
 
     session_root = os.path.abspath(project_root)
+
+    # Idempotent: already completed → no-op
+    run = get_dag_run(session_root, run_id)
+    if run and run["status"] == "completed":
+        click.echo(json.dumps({"already_completed": True, "run_id": run_id}))
+        return
+
     result = run_force_complete_dag(session_root, run_id)
     if result.get("error"):
         raise click.ClickException(result["error"])

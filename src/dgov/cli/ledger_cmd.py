@@ -122,8 +122,16 @@ def ledger_resolve_cmd(entry_id, project_root, session_root, status):
       dgov ledger resolve 42 -r .
       dgov ledger resolve 42 -s wontfix
     """
-    from dgov.spans import ledger_update
+    from dgov.spans import ledger_query, ledger_update
 
     session_root = os.path.abspath(session_root or project_root)
+
+    # Idempotent: already in target status → no-op
+    existing = ledger_query(session_root, limit=1)
+    for e in existing:
+        if e["id"] == entry_id and e["status"] == status:
+            click.echo(json.dumps({"already": status, "id": entry_id}))
+            return
+
     ledger_update(session_root, entry_id, status=status)
-    click.echo(f"Ledger #{entry_id} → {status}")
+    click.echo(json.dumps({"resolved": status, "id": entry_id}))

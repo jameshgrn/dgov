@@ -210,14 +210,12 @@ def cli(ctx, governor):
         None,
         "resume",
         "version",
-        "agents",
-        "blame",
+        "agent",
         "checkpoint",
         "template",
         "openrouter",
         "dashboard",
         "briefing",
-        "stats",
         "init",
         "doctor",
         "yap",
@@ -225,7 +223,6 @@ def cli(ctx, governor):
         "worker",
         "monitor",
         "codebase",
-        "transcript",
         "plan",
         "config",
     ):
@@ -495,16 +492,30 @@ from dgov.cli.trace_cmd import trace_cmd  # noqa: E402
 from dgov.cli.wait_cmd import wait_cmd  # noqa: E402
 from dgov.cli.worker_cmd import worker  # noqa: E402
 
+# Pane-scoped commands nest under `dgov pane`
 cli.add_command(pane)
-cli.add_command(preflight_cmd)
+pane.add_command(preflight_cmd, "preflight")
+pane.add_command(blame, "blame")
+pane.add_command(recover_cmd, "recover")
+pane.add_command(transcript_cmd, "transcript")
+
+
+# Agent group: `dgov agent list`, `dgov agent stats`
+@click.group("agent")
+def agent_group():
+    """Agent management: list, stats, routing."""
+
+
+agent_group.add_command(list_agents, "list")
+agent_group.add_command(stats, "stats")
+cli.add_command(agent_group)
+
+# Project-scoped top-level commands
 cli.add_command(status)
 cli.add_command(rebase)
-cli.add_command(blame)
 cli.add_command(codebase_cmd)
 cli.add_command(config_cmd)
-cli.add_command(list_agents)
 cli.add_command(version_cmd)
-cli.add_command(stats)
 cli.add_command(dashboard)
 cli.add_command(template)
 cli.add_command(checkpoint)
@@ -514,7 +525,6 @@ cli.add_command(openrouter)
 cli.add_command(init_cmd)
 cli.add_command(doctor_cmd)
 cli.add_command(gc_cmd)
-cli.add_command(recover_cmd)
 cli.add_command(dag)
 cli.add_command(merge_queue)
 cli.add_command(briefing_cmd)
@@ -524,7 +534,6 @@ cli.add_command(worker)
 cli.add_command(monitor_cmd)
 cli.add_command(journal_cmd)
 cli.add_command(ledger_cmd)
-cli.add_command(transcript_cmd)
 cli.add_command(trace_cmd)
 cli.add_command(plan_cmd)
 cli.add_command(wait_cmd)
