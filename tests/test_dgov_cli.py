@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 from dgov import __version__
 from dgov.cli import _check_governor_context, _ensure_governor_session, cli
+from dgov.inspection import ReviewInfo
 
 pytestmark = pytest.mark.unit
 
@@ -698,7 +699,7 @@ touches = ["src/parser.py", "tests/test_parser.py"]
     def test_review_diff_escalate_and_retry(self, runner: CliRunner) -> None:
         with patch(
             "dgov.executor.run_review_only",
-            return_value=MagicMock(review={"slug": "task", "verdict": "safe"}),
+            return_value=MagicMock(review=ReviewInfo(slug="task", verdict="safe")),
         ):
             review = runner.invoke(cli, ["pane", "review", "task", "--full"])
         with patch(

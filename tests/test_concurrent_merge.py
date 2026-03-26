@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from dgov.merger import merge_worker_pane
+from dgov.merger import MergeConflict, MergeError, MergeSuccess, merge_worker_pane
 from dgov.persistence import WorkerPane, add_pane
 
 pytestmark = pytest.mark.unit
@@ -152,11 +152,13 @@ class TestConflictingMerge:
 
         with patch("dgov.done._agent_still_running", return_value=False):
             r1 = merge_worker_pane(str(repo), "conflict-1", session_root=session_root)
-            assert r1.merged, f"First merge should succeed: {r1}"
+            assert isinstance(r1, MergeSuccess), f"First merge should succeed: {r1}"
 
             r2 = merge_worker_pane(str(repo), "conflict-2", session_root=session_root)
-            assert r2.error, "Second merge should fail on conflict"
-            assert not r2.merged, "Conflicting merge should not succeed"
+            assert isinstance(r2, (MergeError, MergeConflict)), (
+                "Second merge should fail on conflict"
+            )
+            assert not isinstance(r2, MergeSuccess), "Conflicting merge should not succeed"
 
 
 class TestSameFileDifferentFunctions:
@@ -192,11 +194,13 @@ class TestSameFileDifferentFunctions:
 
         with patch("dgov.done._agent_still_running", return_value=False):
             r1 = merge_worker_pane(str(repo), "nonoverlap-1", session_root=session_root)
-            assert r1.merged, f"First merge failed: {r1}"
+            assert isinstance(r1, MergeSuccess), f"First merge failed: {r1}"
 
             # Second merge detects overlap and warns, but conflicts with squash
             r2 = merge_worker_pane(str(repo), "nonoverlap-2", session_root=session_root)
-            assert r2.error, "Squash merge conflicts on same-file overlap"
+            assert isinstance(r2, (MergeError, MergeConflict)), (
+                "Squash merge conflicts on same-file overlap"
+            )
 
     @pytest.mark.skip(reason="Worktree-attached branches don't merge like regular branches")
     def test_no_squash_resolves_overlap(self, tmp_path: Path) -> None:
@@ -224,7 +228,7 @@ class TestSameFileDifferentFunctions:
                 session_root=session_root,
                 squash=False,
             )
-            assert r1.merged, f"First merge failed: {r1}"
+            assert isinstance(r1, MergeSuccess), f"First merge failed: {r1}"
 
             r2 = merge_worker_pane(
                 str(repo),
@@ -268,6 +272,6 @@ class TestStrictClaimsEnforcement:
                 session_root=session_root,
                 strict_claims=True,
             )
-            assert r.error, f"Should block on undeclared files: {r}"
+            assert isinstance(r, MergeError), f"Should block on undeclared files: {r}"
             assert "undeclared" in r.error.lower() or "claim" in r.error.lower()
-            assert not r.merged
+            assert not isinstance(r, MergeSuccess)
