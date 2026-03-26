@@ -190,8 +190,14 @@ class PaneTrajectory:
     agent: str
     spans: list[dict] = field(default_factory=list)
     tool_trace: list[dict] = field(default_factory=list)
-    outcome: str = ""
-    total_duration_ms: float = 0.0
+
+    @property
+    def outcome(self) -> str:
+        return self.spans[-1].get("outcome", "") if self.spans else ""
+
+    @property
+    def total_duration_ms(self) -> float:
+        return sum(s.get("duration_ms", 0.0) for s in self.spans)
 
 
 # ---------------------------------------------------------------------------
