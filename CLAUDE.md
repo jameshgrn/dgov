@@ -35,6 +35,7 @@ These are architecture rules, not optional style preferences. Zero tolerance for
 
 - **One canonical pipeline, no drift.** Exactly one policy owner for `preflight → dispatch → wait → review → merge → cleanup → recovery`. All surfaces (`pane`, `dag`, `monitor`, merge-queue) enforce the same rules. If one path gets stricter, the others must converge. Governors and LT-GOVs invoke the pipeline, not reimplement pieces.
 - **Plans are the contract.** Governor writes PlanSpec, compiler produces DagDefinition, kernel executes. Plan compilation is deterministic code, not LLM reasoning. Plans over ad-hoc dispatch — ad-hoc `pane create` is for single-file micro-tasks and emergency recovery only. Plans declare file claims, evals, and dependencies up front.
+- **Slow is smooth, smooth is fast.** Prefer one clean canonical pass over frantic retries, prompt churn, or ad-hoc recovery. Stabilize state, prompts, and ownership before redispatching; thrash only makes the system slower.
 
 ### State & Events
 
