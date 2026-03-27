@@ -682,6 +682,40 @@ class TestAgentReliabilityStats:
         # Only first two had reviews under river-35b
         assert stats["qwen-35b"]["review_count"] == 2
 
+    def test_role_dispatches_fold_into_logical_route(self, session, monkeypatch):
+        """Dispatch spans recorded under role names should use routed backend identity."""
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-9b":
+                return "qwen-9b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+        for i in range(3):
+            sid = open_span(
+                session_str,
+                f"t{i}",
+                SpanKind.DISPATCH,
+                agent="worker",
+                from_agent="river-9b",
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        for i, verdict in enumerate(("safe", "unsafe", "safe")):
+            sid = open_span(session_str, f"r{i}", SpanKind.REVIEW, agent="river-9b")
+            close_span(session_str, sid, SpanOutcome.SUCCESS, verdict=verdict)
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        assert "worker" not in stats
+        assert "qwen-9b" in stats
+        assert stats["qwen-9b"]["dispatch_count"] == 3
+        assert stats["qwen-9b"]["review_count"] == 3
+        assert stats["qwen-9b"]["pass_rate"] == 2 / 3
+
     def test_no_mapping_found_returns_unchanged(self, session, monkeypatch):
         """Test that agent names without mapping remain unchanged."""
         from dgov.spans import agent_reliability_stats, close_span, open_span

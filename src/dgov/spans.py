@@ -891,17 +891,27 @@ def agent_reliability_stats(
 
     conn = _get_db(session_root)
 
-    # Count dispatches per agent and normalize to logical names
+    def canonical_agent(agent: str, backend_agent: str = "") -> str:
+        if backend_agent:
+            backend_logical = physical_to_logical(backend_agent)
+            if backend_logical != backend_agent:
+                return backend_logical
+        return physical_to_logical(agent) if agent else agent
+
+    # Count dispatches per logical route. Dispatch spans may be opened under a
+    # role name (for example "worker") while the chosen backend is recorded in
+    # from_agent. Canonicalize through the resolved backend when available so
+    # routing history is not split across role/logical/physical identities.
     dispatch_rows = conn.execute(
-        "SELECT agent, COUNT(*) FROM spans "
-        "WHERE span_kind = 'dispatch' AND agent != '' "
-        "GROUP BY agent"
+        "SELECT agent, from_agent FROM spans "
+        "WHERE span_kind = 'dispatch' AND (agent != '' OR from_agent != '')"
     ).fetchall()
-    # Merge physical and logical names - both should map to same logical name
     dispatch_counts: dict[str, int] = {}
-    for a, count in dispatch_rows:
-        logical_a = physical_to_logical(a) if a else a
-        dispatch_counts[logical_a] = dispatch_counts.get(logical_a, 0) + count
+    for agent, backend_agent in dispatch_rows:
+        logical_agent = canonical_agent(agent, backend_agent)
+        if not logical_agent:
+            continue
+        dispatch_counts[logical_agent] = dispatch_counts.get(logical_agent, 0) + 1
 
     # Filter to agents with enough data
     qualifying = {a for a, c in dispatch_counts.items() if c >= min_dispatches}
@@ -915,9 +925,7 @@ def agent_reliability_stats(
         "GROUP BY agent, verdict"
     ).fetchall()
     # Remap review agents from physical to logical
-    review_rows = [
-        (physical_to_logical(a) if a else a, verdict, count) for a, verdict, count in review_rows
-    ]
+    review_rows = [(canonical_agent(a), verdict, count) for a, verdict, count in review_rows]
 
     # Retry counts - normalize physical names to logical
     retry_rows = conn.execute(
@@ -927,7 +935,7 @@ def agent_reliability_stats(
     ).fetchall()
     retry_counts: dict[str, int] = {}
     for a, count in retry_rows:
-        logical_a = physical_to_logical(a) if a else a
+        logical_a = canonical_agent(a)
         retry_counts[logical_a] = retry_counts.get(logical_a, 0) + count
 
     # Average durations - normalize physical names to logical
@@ -938,18 +946,20 @@ def agent_reliability_stats(
         "GROUP BY agent, span_kind"
     ).fetchall()
     # Remap duration agents from physical to logical
-    duration_rows = [
-        (physical_to_logical(a) if a else a, kind, avg_ms) for a, kind, avg_ms in duration_rows
-    ]
+    duration_rows = [(canonical_agent(a), kind, avg_ms) for a, kind, avg_ms in duration_rows]
 
-    # Last seen - normalize physical names to logical
+    # Last seen - normalize through the same canonical route identity.
     last_seen_rows = conn.execute(
-        "SELECT agent, MAX(started_at) FROM spans WHERE agent != '' GROUP BY agent"
+        "SELECT agent, from_agent, MAX(started_at) FROM spans "
+        "WHERE agent != '' OR from_agent != '' "
+        "GROUP BY agent, from_agent"
     ).fetchall()
     last_seen: dict[str, str] = {}
-    for a, ts in last_seen_rows:
-        logical_a = physical_to_logical(a) if a else a
-        last_seen[logical_a] = ts
+    for agent, backend_agent, ts in last_seen_rows:
+        logical_agent = canonical_agent(agent, backend_agent)
+        if not logical_agent:
+            continue
+        last_seen[logical_agent] = max(last_seen.get(logical_agent, ""), ts)
 
     # Build stats per agent
     stats: dict[str, dict] = {}
