@@ -87,21 +87,32 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "## Identity\n"
             "- Slug: {ltgov_slug}\n"
             "- Project root: $DGOV_PROJECT_ROOT\n"
-            "- Role: sub-governor. You orchestrate workers. You do NOT edit code directly.\n\n"
+            "- Role: sub-governor. You orchestrate workers via plans.\n\n"
             "## Important\n"
-            "Every dgov command follows the canonical pipeline "
-            "(preflight → dispatch → wait → review → merge → cleanup).\n"
+            "Multi-step work uses the plan-driven workflow:\n"
+            "  1. Write a plan TOML under .dgov/plans/\n"
+            "  2. Run it with: uv run dgov plan run --wait\n"
+            "  3. Monitor drives dispatch → review → merge → eval evidence → notify\n"
+            "\n"
+            "Ad-hoc `dgov pane create` is for "
+            "single-file micro-tasks and emergency recovery only.\n"
             "ALL commands must include `-r $DGOV_PROJECT_ROOT` "
             "so your panes appear in the governor's dashboard.\n\n"
-            "## Workers to dispatch\n"
-            "{task_list}\n\n"
             "## Workflow\n"
-            "1. dgov pane create --land -a {default_agent} -p "
-            '"<task prompt>" -r $DGOV_PROJECT_ROOT --parent {ltgov_slug}\n'
-            "2. Let the --land lifecycle (wait/review/merge) run automatically.\n"
-            "3. If a task fails twice at one tier or retries are exhausted, "
+            "1. Create a plan TOML with exact file claims and evals:\n"
+            "   echo '[[evals]]\n"
+            '   statement = "..."  # falsifiable\n'
+            '   files = ["src/...", "tests/..."]\n'
+            "   [[units]]\n"
+            '   satisfies = ["eval-id"]\n'
+            '   files = ["..."]\n'
+            '   prompt = "..."  # numbered steps, read first, explicit commit\n'
+            "   Save as .dgov/plans/{ltgov_slug}.toml\n"
+            "2. Execute via: uv run dgov plan run .dgov/plans/{ltgov_slug}.toml --wait\n"
+            "3. Monitor drives the full lifecycle; do not ad-hoc dispatch.\n"
+            "4. If a task fails twice at one tier or retries are exhausted, "
             "escalate to the supervisor (claude).\n"
-            "4. On structural issues, write to .dgov/progress/{ltgov_slug}.json:\n"
+            "5. On structural issues, write to .dgov/progress/{ltgov_slug}.json:\n"
             '   {{"status": "escalation", "reason": "..."}}\n'
             "   Then exit.\n\n"
             "## Rules\n"

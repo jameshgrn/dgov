@@ -122,11 +122,11 @@ class TestBuiltInTemplatesRender:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_lt_gov_template_uses_land_not_merge_request(self) -> None:
+    def test_lt_gov_template_uses_plan_run(self) -> None:
         tpl = BUILT_IN_TEMPLATES["lt-gov"]
 
-        assert "--land" in tpl.template
-        assert "merge-request" not in tpl.template
+        assert "plan run --wait" in tpl.template
+        assert "pane create --land" not in tpl.template
 
 
 class TestListTemplates:
