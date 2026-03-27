@@ -1,60 +1,45 @@
 # HANDOVER
 
 ## Current State
-- Branch: `main` at `e102c3a` (clean working tree)
-- Tests: targeted unit slices passed for changed code; docs refresh did not require rerunning tests, and the full suite was not rerun per project policy
+- Branch: `main`
+- Tests: targeted unit slices passed for the latest routing/retry/output changes; full suite not run per project policy
 - Panes: none
-- Status: `uv run dgov status -r .` reports `0 panes`, `18 healthy / 4 unhealthy` agents, `0` open bugs
+- Status: `uv run dgov status -r .` reports `0 panes`, `18 healthy / 4 unhealthy` agents, and `recent failures: 6`
+- Ledger: `uv run dgov ledger list -r . -c bug -s open` reports no open bugs
 
 ## Completed This Session
-- **Add live worker trace preview** (`444d5ee`): initial dashboard trace-preview implementation landed in `src/dgov/dashboard.py`.
-- **Restore early paste disable before bootstrap** (`4f28288`): moved bracketed-paste disable back in front of long bootstrap pastes in `src/dgov/lifecycle.py`.
-- **Normalize terminal control sequences in logs** (`66d7857`): `src/dgov/done.py` now renders backspace/carriage-return/cursor-motion semantics before ANSI stripping so pane output no longer fabricates `ssource` noise.
-- **Add trace preview to dashboard output** (`6853167`): finished the dashboard preview path and tests, collapsing the partial trace-preview work into a coherent read-only view.
-- **Filter bootstrap noise from pane output** (`718ea74`): `src/dgov/status.py` and `src/dgov/cli/pane.py` now strip internal `dgov-cmd-*.sh` bootstrap echoes and prompt noise from user-facing output/tail paths.
-- **Fix dashboard preview state drift** (`bdfd8a9`): `src/dgov/dashboard.py` no longer renders stale cached preview content for a newly selected pane, and `tests/test_dashboard.py` now covers the drift case.
-- **Refresh governor doc templates** (`e102c3a`): `.claude/skills/dgov/SKILL.md` and related Claude command docs now reflect plan-first dispatch, logical routing, and current handover/debrief conventions.
-- **Clean stale run state**: closed preserved smoke panes, pruned orphaned worktrees, and cleared stale pane state so `uv run dgov pane list -r .` now reports `No panes.`
+- **Stabilize pane retries, routing, and output** (`6fa276e`): reduced worker prompt bloat, preserved retry contract state, fixed stale superseded pane cleanup, added explicit routing degradation behavior, improved live output selection, added `dgov --version`, and tightened the routing/output state model under clanker discipline.
+- **Clean stale run state**: closed preserved smoke panes, removed orphaned retry windows, and brought live pane state back to `0 panes`.
+- **Refresh CODEBASE map**: regenerated `CODEBASE.md` after the router conflict fix so the module map no longer records a stale parse error.
 
 ## Ledger Snapshot
 ### Open Bug
 - None
 
-### Resolved This Session
-- #145 — fixed: lightweight live worker trace preview landed in the dashboard
-- #149 — fixed: original bootstrap corruption bug resolved; residual issue is now narrower output formatting noise
-- #158 — fixed: plan-run review failure on unused `bootstrap_cmd` local is historical only
-- #161 — fixed: stale bug entry claiming fresh panes still reproduced `ssource` was replaced by narrower bug `#163`
-- #163 — fixed: user-facing `pane output` no longer shows internal bootstrap command echoes in the repro case
+### Accepted Rules In Play
+- #154 — accepted: no dual-ownership shims; cut over to one owner in the same change
+- #155 — accepted: fix the first wrong layer when the source-of-truth layer is reachable
+- #156 — accepted: domain-first placement from `CODEBASE.md`
+- #157 — accepted: slow is smooth, smooth is fast
 
 ## Key Verification
-- `uv run ruff check src/dgov/lifecycle.py`
-- `uv run pytest tests/test_lifecycle.py -q -m unit`
-- `uv run ruff check src/dgov/done.py src/dgov/dashboard.py tests/test_status.py tests/test_dashboard.py`
-- `uv run pytest tests/test_done_strategy.py tests/test_status.py tests/test_dashboard.py -q -m unit`
-- `uv run ruff check src/dgov/status.py src/dgov/cli/pane.py tests/test_status.py`
-- `uv run pytest tests/test_done_strategy.py tests/test_status.py tests/test_cli_pane.py -q -m unit`
-- `uv run ruff check src/dgov/dashboard.py tests/test_dashboard.py`
-- `uv run ruff format --check src/dgov/dashboard.py tests/test_dashboard.py`
-- `uv run pytest tests/test_dashboard.py -q -m unit`
-- Manual smoke: fresh `river-35b` pane completed real work and `uv run dgov pane output output-noise-repro --tail 40` returned only `Done.`
+- `uv run ruff check src/dgov/cli/__init__.py src/dgov/executor.py src/dgov/lifecycle.py src/dgov/persistence.py src/dgov/recovery.py src/dgov/router.py src/dgov/spans.py src/dgov/status.py tests/test_dgov_cli.py tests/test_dgov_panes.py tests/test_lifecycle.py tests/test_router.py tests/test_status.py`
+- `uv run pytest tests/test_router.py tests/test_status.py tests/test_dgov_panes.py tests/test_lifecycle.py tests/test_dgov_cli.py -q -m unit`
+- `341 passed`
+- `dgov --version`
+- `uv run dgov status -r .`
 
 ## Lookup Cache
-- `src/dgov/done.py` — `_strip_ansi()` now renders a small subset of terminal control semantics before stripping escape sequences.
-- `src/dgov/dashboard.py` — preview path now uses `_format_trace_data()` first, then falls back to log tail; preview state is now slug-scoped so selection changes cannot render stale preview bodies under a new title.
-- `src/dgov/status.py` — `tail_worker_log()` and `capture_worker_output()` now pass through `_clean_worker_output_text()` to hide internal bootstrap echoes and prompt noise from user-facing output.
-- `src/dgov/cli/pane.py` — `pane output` and `pane tail` follow paths now apply the same output cleaner to streamed log lines.
-- `tests/test_status.py` — includes regression coverage for carriage-return, backspace, cursor-rewrite behavior, and internal bootstrap echo filtering.
-- `tests/test_dashboard.py` — covers structured trace preview rendering, empty/fallback behavior, and the selection/preview drift regression.
-- `src/dgov/lifecycle.py` — early bracketed-paste disable was restored ahead of the first long bootstrap paste.
-- `.claude/skills/dgov/SKILL.md` — bootstrap skill now describes plan-first dispatch, logical routing, and generic local tunnel health instead of provider-specific notes.
-- `.claude/commands/dgov-dispatch.md` — dispatch template now biases toward plans for plan-shaped work and uses logical-agent ad-hoc pane examples.
-- `.claude/commands/dgov-handover.md` — handover template now matches the actual current HANDOVER structure and requires keeping the file aligned with the latest commit.
-- `.claude/commands/dgov-debrief.md` — debrief template now reports at the role level by default and treats physical backend names as secondary evidence.
+- `src/dgov/status.py` — live output now prefers richer Pi transcript tails when tmux/log output is too thin.
+- `src/dgov/spans.py` — owns the canonical Pi session/transcript path mapping used by both lifecycle cleanup and status reads.
+- `src/dgov/router.py` — degradation attempts now always carry a real backend id; dead partial-failure state is gone.
+- `src/dgov/recovery.py` — retry cleanup now deterministically tears down replaced panes instead of leaving idle tmux windows behind.
+- `src/dgov/cli/__init__.py` — root CLI now supports `--version`.
 
 ## Open Issues
-- Agent health is still degraded (`18 healthy / 4 unhealthy`). Investigate before leaning on retries/escalation or local tunnel-backed workers.
+- Agent health is still partially degraded (`18 healthy / 4 unhealthy`), but there are no open repo-tracked bugs at handoff time.
+- Dashboard operator UX is the next active work area: default worker visibility and live preview should improve without reintroducing state drift.
 
 ## Next Steps
-- Triage the `4` unhealthy agents and `recent failures: 8` before treating retry/escalation noise as a code problem.
-- If continuing operator-experience work, build on the dashboard trace preview rather than adding a second live-view surface.
+- Make the dashboard default to the live, useful surface: active panes first, richer preview by default, raw tmux only on explicit drill-in.
+- Keep using plan-driven dispatch for multi-file operator-surface work.
