@@ -1030,7 +1030,7 @@ def agent_reliability_stats(
     review_rows_typed_dict: dict[str, dict[str, int]] = {}
     for route, verdict, count in review_rows_typed:
         if route not in review_rows_typed_dict:
-            review_rows_typed_dict[route] = {"safe": 0, "unsafe": 0, "stuck": 0}
+            review_rows_typed_dict[route] = {}
         review_rows_typed_dict[route][verdict] = (
             review_rows_typed_dict[route].get(verdict, 0) + count
         )
@@ -1042,7 +1042,7 @@ def agent_reliability_stats(
         if not logical_route or logical_route not in qualifying:
             continue
         if logical_route not in review_rows_legacy_dict:
-            review_rows_legacy_dict[logical_route] = {"safe": 0, "unsafe": 0, "stuck": 0}
+            review_rows_legacy_dict[logical_route] = {}
         review_rows_legacy_dict[logical_route][verdict] = (
             review_rows_legacy_dict[logical_route].get(verdict, 0) + count
         )
@@ -1122,14 +1122,8 @@ def agent_reliability_stats(
         review_dict_typed = review_rows_typed_dict.get(agent, {})
         review_dict_legacy = review_rows_legacy_dict.get(agent, {})
         safe = review_dict_typed.get("safe", 0) + review_dict_legacy.get("safe", 0)
-        total_reviews = (
-            review_dict_typed.get("safe", 0)
-            + review_dict_typed.get("unsafe", 0)
-            + review_dict_typed.get("stuck", 0)
-            + review_dict_legacy.get("safe", 0)
-            + review_dict_legacy.get("unsafe", 0)
-            + review_dict_legacy.get("stuck", 0)
-        )
+        # Total reviews = sum of ALL verdict counts (not just safe/unsafe/stuck)
+        total_reviews = sum(review_dict_typed.values()) + sum(review_dict_legacy.values())
 
         pass_rate = safe / total_reviews if total_reviews > 0 else 0.0
 
