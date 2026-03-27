@@ -1,54 +1,44 @@
 # HANDOVER
 
 ## Current State
-- Branch: `main` at `e00ec03` (clean working tree)
+- Branch: `main` at `6853167` (clean working tree)
 - Tests: targeted unit slices passed; full suite not rerun per project policy
 - Panes: none
 - Status: `uv run dgov status -r .` reports `0 panes`, `18 healthy / 4 unhealthy` agents, `1` open bug
 
 ## Completed This Session
-- **Refactor review info model** (`fb254c8`): split `ReviewInfo` into nested review submodels while preserving the flat external contract via compatibility properties and `to_dict()`.
-- **Reject safe zero-commit reviews** (`29bf997`): zero-commit worker panes now review as `review` with `no commits — nothing to merge`; fixed ledger bug `#148`.
-- **Make cleanup failure state explicit** (`9f122e3`): `_full_cleanup()` now returns a real boolean for `worktree_removal_failed`; resolved debt `#134`.
-- **Refactor merge precondition checks** (`643f912`): `_check_merge_preconditions()` in `src/dgov/merger.py` now delegates to distinct helpers instead of acting as a branchy policy sink; resolved debt `#132`.
-- **Drop codebase payload from worker prompts** (`815b346`): worker instruction files no longer embed full `CODEBASE.md`; fixed prompt-discipline debt `#153`.
-- **Tighten governor policy rules** (`ebc9086`): added explicit rules for no dual-ownership shims, root-cause traceability, and domain-first placement.
-- **Remove napkin terminology** (`de1e147`): cleaned remaining `napkin`/`.napkin` surfaces from code and docs; resolved debt `#144`.
-- **Add slow-is-smooth policy** (`e00ec03`): added the rule to `CLAUDE.md` and logged it as ledger rule `#157`.
+- **Add live worker trace preview** (`444d5ee`): initial dashboard trace-preview implementation landed in `src/dgov/dashboard.py`.
+- **Restore early paste disable before bootstrap** (`4f28288`): moved bracketed-paste disable back in front of long bootstrap pastes in `src/dgov/lifecycle.py`.
+- **Normalize terminal control sequences in logs** (`66d7857`): `src/dgov/done.py` now renders backspace/carriage-return/cursor-motion semantics before ANSI stripping so pane output no longer fabricates `ssource` noise.
+- **Add trace preview to dashboard output** (`6853167`): finished the dashboard preview path and tests, collapsing the partial trace-preview work into a coherent read-only view.
+- **Clean stale run state**: closed preserved smoke panes, pruned orphaned worktrees, and cleared stale pane state so `uv run dgov pane list -r .` now reports `No panes.`
 
 ## Ledger Snapshot
 ### Open Bug
-- #149 — pane launch/output command delivery can duplicate or garble shell snippets (`ssource ...`), causing workers to fail before real work starts
+- #163 — `pane output` still shows noisy duplicated command-echo formatting after terminal-control normalization, but fresh panes no longer reproduce the old `ssource` bootstrap corruption
 
-### Open Debt
-- #145 — add a lightweight live worker view in tmux/TUI showing formatted messages and tool calls
-
-### New Rules This Session
-- #154 — no dual-ownership shims
-- #155 — fix the first wrong layer when reachable
-- #156 — domain-first placement
-- #157 — slow is smooth, smooth is fast
+### Resolved This Session
+- #145 — fixed: lightweight live worker trace preview landed in the dashboard
+- #149 — fixed: original bootstrap corruption bug resolved; residual issue is now narrower output formatting noise
+- #158 — fixed: plan-run review failure on unused `bootstrap_cmd` local is historical only
+- #161 — fixed: stale bug entry claiming fresh panes still reproduced `ssource` was replaced by narrower bug `#163`
 
 ## Key Verification
-- `uv run ruff check src/dgov/inspection.py tests/test_inspection.py`
-- `uv run pytest tests/test_inspection.py -q -m unit`
-- `uv run pytest tests/test_executor.py -q -m unit -k 'review or merge_gate'`
-- `uv run ruff check src/dgov/lifecycle.py tests/test_lifecycle.py`
-- `uv run pytest tests/test_lifecycle.py -q -m unit -k 'full_cleanup or worktree_removal_failed'`
-- `uv run ruff check src/dgov/merger.py src/dgov/lifecycle.py tests/test_lifecycle.py tests/test_merger_coverage.py tests/test_concurrent_merge.py`
-- `uv run pytest tests/test_lifecycle.py -q -m unit -k 'worker_prompts_omit_codebase_payload or git_excludes_dgov_worker_instructions'`
-- `uv run pytest tests/test_merger_coverage.py tests/test_concurrent_merge.py -q -m unit -k 'strict_claims or dirty_worktree or illegal_state or attached_agent'`
-- `uv run ruff check src/dgov/cli/briefing_cmd.py src/dgov/cli/ledger_cmd.py src/dgov/spans.py`
+- `uv run ruff check src/dgov/lifecycle.py`
+- `uv run pytest tests/test_lifecycle.py -q -m unit`
+- `uv run ruff check src/dgov/done.py src/dgov/dashboard.py tests/test_status.py tests/test_dashboard.py`
+- `uv run pytest tests/test_done_strategy.py tests/test_status.py tests/test_dashboard.py -q -m unit`
+- Manual smoke: fresh `river-35b` pane completed real work and `uv run dgov pane output ...` no longer showed `ssource`
 
 ## Lookup Cache
-- `src/dgov/inspection.py` — zero-commit review artifacts no longer surface as `safe`; `review_worker_pane()` emits `review_fail` with `no commits — nothing to merge`.
-- `src/dgov/lifecycle.py` — worker prompts are now slim on both system-prompt and fallback instruction paths; no more embedded `CODEBASE.md` payload.
-- `src/dgov/merger.py` — merge preconditions are now split into `_state_precondition_result()`, `_warn_squash_overlap()`, and `_claim_violation_result()`.
-- `CLAUDE.md` — policy core now explicitly includes no dual-ownership shims, root-cause traceability, domain-first placement, and slow-is-smooth.
-- `src/dgov/cli/briefing_cmd.py` — `.napkin` is no longer treated as a special hidden report name.
+- `src/dgov/done.py` — `_strip_ansi()` now renders a small subset of terminal control semantics before stripping escape sequences.
+- `src/dgov/dashboard.py` — preview path now uses `_format_trace_data()` first, then falls back to log tail; duplicate trace-preview implementations were removed.
+- `tests/test_status.py` — includes regression coverage for carriage-return, backspace, and cursor-rewrite behavior in `_strip_ansi()`.
+- `tests/test_dashboard.py` — covers structured trace preview rendering and empty/fallback behavior.
+- `src/dgov/lifecycle.py` — early bracketed-paste disable was restored ahead of the first long bootstrap paste.
 
 ## Open Issues
-- Bug `#149` is still the main operational correctness problem. The pane bootstrap path can still garble pasted shell commands before workers do any real work.
+- Bug `#163` is now the main remaining output-path issue. The catastrophic `ssource` corruption is gone, but `pane output` still prints some noisy duplicated command-echo formatting on fresh panes.
 - Agent health is still degraded (`18 healthy / 4 unhealthy`). Investigate before leaning on retries/escalation or local tunnel-backed workers.
 - Claude-side process docs are still stale in places:
   - `.claude/skills/dgov/SKILL.md`
@@ -56,6 +46,6 @@
   - `.claude/commands/dgov-handover.md`
 
 ## Next Steps
-- If continuing the operator-experience track, tackle debt `#145` as a tightly scoped read-only live worker view that consumes existing state/logs/spans only.
-- If continuing reliability work first, fix bug `#149` in the tmux command-delivery/bootstrap path.
+- If continuing reliability work, narrow bug `#163` to the exact remaining command-echo artifacts in `pane output` / log capture.
+- If continuing operator-experience work, build on the dashboard trace preview rather than adding a second live-view surface.
 - Update the stale Claude skill/command docs so they match current role-based routing and plan-first governor policy.
