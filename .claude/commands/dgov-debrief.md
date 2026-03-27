@@ -67,7 +67,8 @@ Print a compact debrief:
 ```
 Debrief: <date>
   dispatched: N panes (N succeeded, N failed, N retried)
-  agents: qwen-35b (N tasks, M% pass), qwen-9b (N tasks, M% pass)
+  roles: worker (N tasks, M% pass), supervisor (N tasks, M% pass), manager (N tasks, M% pass)
+  routing notes: <logical agent names or backend notes only when evidence makes them relevant>
   patterns: <1-2 line summary of key observations>
   ledger: +N bugs, +N patterns, +N capabilities, N resolved
 ```
@@ -77,3 +78,4 @@ Debrief: <date>
 - Capabilities are positive too — record what worked, not just failures
 - Resolve fixed bugs immediately, don't let them accumulate
 - If a pattern repeats 3+ times, it should become a CLAUDE.md rule — flag it
+- Default to role-level reporting; mention physical backends only when the routing detail is part of the failure

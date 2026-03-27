@@ -24,22 +24,25 @@ Use this structure exactly. Be concise. Bullet points. No prose paragraphs.
 # HANDOVER
 
 ## Current State
-- Branch: main at <sha>
-- Tests: <N> passed, <N> failed
-- Panes: <active/done/failed counts or "none">
+- Branch: `main` at `<sha>` (clean working tree | describe dirt)
+- Tests: targeted slices passed; list the latest commands, or explicitly say none rerun
+- Panes: none | `<status summary>`
+- Status: `uv run dgov status -r .` summary
 
 ## Completed This Session
 - **<summary>** (`<sha>`): <what changed and why, one line>
 - (repeat for each commit this session)
 
 ## Ledger Snapshot
-### Open Bugs
+### Open Bug
 - #<id> — <summary> (<severity>)
 ### Open Debt
 - #<id> — <summary>
 ### Rules
 - #<id> — <summary>
-(omit empty sections)
+### Resolved This Session
+- #<id> — <summary>
+(omit empty sections except keep Resolved This Session when bugs/debt were closed)
 
 ## Lookup Cache
 Every file path, function, class, config key discovered or read this session:
@@ -68,6 +71,8 @@ something that no longer exists (dead agents, removed commands, old flag names),
 - Skill `/dgov-<name>` is stale: <what's wrong and what it should say>
 ```
 
+If you update any stale Claude skill/command docs during the session, record that in Completed This Session and remove the stale-doc item from Open Issues.
+
 Also check: did this session change CLAUDE.md policy, agent routing, or CLI commands? If so,
 verify the skills still match. The skills are static templates — they don't auto-update.
 
@@ -84,3 +89,4 @@ grep -qxF 'HANDOVER.md' .gitignore 2>/dev/null || echo 'HANDOVER.md' >> .gitigno
 - Do not run the full test suite from handover unless the user explicitly requests a push-time CI pass
 - Open Issues should have enough detail to act on without re-reading code
 - Do NOT include project architecture or background — CLAUDE.md and CODEBASE.md cover that
+- Keep HANDOVER.md aligned with the actual latest commit; do not leave it one commit behind

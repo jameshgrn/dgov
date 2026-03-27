@@ -10,6 +10,8 @@ Determine:
 - **Complexity**: micro-task (numbered steps) or design-decision (autonomous)?
 - **Files involved**: read the source to identify exact file paths, function names, line numbers
 
+Default bias: if the task spans multiple files, distinct file claims, or multiple dependent steps, recommend a plan TOML plus `uv run dgov plan run --wait`. Do not force ad-hoc panes onto plan-shaped work.
+
 ## Step 2: Read the target files
 
 Always read the actual code before constructing the prompt. Workers need accurate function names, class names, and line references. Wrong names cause import errors.
@@ -58,10 +60,10 @@ uv run dgov plan run .dgov/plans/<name>.toml --wait
 
 For true micro-tasks, output:
 ```bash
-uv run dgov pane create --land -a <agent> -s <slug> -r . -p "<prompt>"
+uv run dgov pane create --land --role worker -a <logical-agent> -s <slug> -r . -p "<prompt>"
 ```
 
-Run with `run_in_background: true` so governor stays responsive.
+If the repo default worker is acceptable, `-a` may be omitted. When present, `<logical-agent>` must be a router-approved logical name, not a provider-specific backend.
 
 ## Rules
 - NEVER put function/class names in prompts you haven't verified by reading the source
@@ -70,3 +72,4 @@ Run with `run_in_background: true` so governor stays responsive.
 - Use policy-approved logical routing identifiers only; never physical names
 - Slug format: lowercase-kebab, descriptive, <30 chars
 - Prefer `dgov plan run` for anything beyond a single well-scoped micro-task
+- Prefer plan file claims over prompt heuristics whenever the task can be planned
