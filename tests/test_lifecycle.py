@@ -896,6 +896,80 @@ class TestFullCleanup:
         # Should return True since slug was in the DB at some point
         assert result is True
 
+    def test_close_archived_root_closes_live_retry_descendants(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ):
+        """Regression: closing an archived root must close live retry descendants.
+
+        Bug scenario:
+        - Root pane was superseded by a retry (event history exists)
+        - Original root is no longer in panes DB (archived/removed)
+        - A retry descendant pane still exists and is alive
+        - Calling close_worker_pane(root) returns early due to missing root record
+        - The retry descendant pane was never closed, leaving a zombie pane
+
+        This test verifies that:
+        1. An archived root slug with event history has a live retry child
+        2. close_worker_pane(root) finds and closes the retry descendant
+        3. The descendant is removed from both tmux (via backend.destroy) and state DB
+        4. dgov pane list no longer shows the superseded descendant after close
+        """
+        from dgov.lifecycle import close_worker_pane
+        from dgov.persistence import emit_event
+
+        sr = str(tmp_path)
+
+        # Simulate: root pane was superseded (exists in events but not in DB)
+        # Create the initial retry event to establish lineage
+        emit_event(
+            sr,
+            "pane_retry_spawned",
+            "archived-root",
+            new_slug="archived-root-a2",
+            attempt=2,
+        )
+        emit_event(sr, "pane_superseded", "archived-root", superseded_by="archived-root-a2")
+
+        # Simulate: root is archived (removed from DB but has event history)
+        # We do NOT add a pane record for "archived-root"
+
+        # Simulate: retry descendant is still alive and in the DB
+        add_pane(
+            sr,
+            WorkerPane(
+                slug="archived-root-a2",
+                prompt="retry of archived-root",
+                pane_id="%99",
+                agent="claude",
+                project_root=sr,
+                worktree_path=str(tmp_path / "worktrees" / "archived-root-a2"),
+                branch_name="archived-root-a2",
+                owns_worktree=True,
+                role="worker",
+                created_at=time.time(),
+                state="active",
+            ),
+        )
+
+        # Verify the descendant exists before close
+        descendant = get_pane(sr, "archived-root-a2")
+        assert descendant is not None
+        assert descendant["slug"] == "archived-root-a2"
+        assert descendant["pane_id"] == "%99"
+
+        # Close the archived root — it doesn't exist in DB but has event history
+        result = close_worker_pane(sr, "archived-root", session_root=sr)
+
+        # close_worker_pane should return True (slug was known at some point)
+        assert result is True
+
+        # The descendant should be removed from the DB by cascade close
+        remaining_descendant = get_pane(sr, "archived-root-a2")
+        assert remaining_descendant is None
+
+        # The backend should have been called to destroy the tmux pane
+        mock_backend.destroy.assert_called_with("%99")
+
 
 # ──────────────────────────────────────────────────────────────
 # TestPiExtensionFlags

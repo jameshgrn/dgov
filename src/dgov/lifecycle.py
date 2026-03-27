@@ -1285,7 +1285,31 @@ def close_worker_pane(
         events = read_events(session_root, slug=slug)
         if not events:
             return False  # truly nonexistent slug
-        return True  # was cleaned up by merge or close
+
+        # Root is archived but has event history — close any live retry descendants.
+        # This handles the bug where `dgov pane close <root>` returned success for
+        # an archived root but left superseded retry panes alive in tmux/state.
+        from dgov.recovery import _retry_descendants
+
+        descendants_to_close: list[tuple[str, str]] = []  # (descendant_slug, project_root)
+        for descendant_slug in _retry_descendants(session_root, slug):
+            descendant = get_pane(session_root, descendant_slug)
+            if descendant is None:
+                continue
+            descendant_project_root = os.path.abspath(descendant.get("project_root", project_root))
+            descendants_to_close.append((descendant_slug, descendant_project_root))
+
+        # Close each live descendant
+        for descendant_slug, descendant_project_root in descendants_to_close:
+            logger.info(
+                "Cascade-closing archived-root retry descendant %s (root: %s)",
+                descendant_slug,
+                slug,
+            )
+            close_worker_pane(descendant_project_root, descendant_slug, session_root, force=force)
+
+        # Archived root with descendants has been handled — return success
+        return True
 
     # Open close span
     close_span_id = None
