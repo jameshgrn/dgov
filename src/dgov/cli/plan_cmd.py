@@ -363,6 +363,9 @@ def _wait_for_dag(run_id: int) -> None:
     pane_prefix = f"r{run_id}-"
     dag_pane = f"dag/{run_id}"
 
+    # Track whether we saw a completion event (to allow waiting for evals_verified)
+    saw_completion_event = False
+
     while True:
         events = wait_for_events(
             session_root,
@@ -370,6 +373,7 @@ def _wait_for_dag(run_id: int) -> None:
             event_types=_PROGRESS_EVENTS,
             timeout_s=3600.0,
         )
+
         for ev in events:
             cursor = max(cursor, ev["id"])
             kind = ev.get("event", "")
@@ -413,6 +417,7 @@ def _wait_for_dag(run_id: int) -> None:
                 click.echo(f"DAG run {run_id}: {status}")
                 raise SystemExit(1)
             elif kind in ("dag_completed", "dag_failed"):
+                saw_completion_event = True
                 click.echo(f"  DAG {kind.split('_')[1]}")
             elif kind == "evals_verified":
                 run = get_dag_run(session_root, run_id)
@@ -436,6 +441,38 @@ def _wait_for_dag(run_id: int) -> None:
                 if failed_count:
                     raise SystemExit(2)
                 return
+
+        # If no completion event was seen, check terminal state (safety from batch.py)
+        # This handles the bug #181 case where DAG completed before wait started
+        if not saw_completion_event:
+            run = get_dag_run(session_root, run_id)
+            if run and run["status"] in ("completed", "failed", "partial", "cancelled", "blocked"):
+                status = run["status"]
+                if status == "blocked":
+                    click.secho("DAG blocked", fg="red")
+                    raise SystemExit(1)
+                elif status == "cancelled":
+                    click.secho("DAG cancelled", fg="yellow")
+                elif status in ("failed", "partial"):
+                    raise SystemExit(1)
+                # completed - exit cleanly
+                break
+
+        # If we saw completion event but not evals_verified, and now got a timeout,
+        # check status to avoid waiting forever (bug #181 fix)
+        if saw_completion_event and not events:
+            run = get_dag_run(session_root, run_id)
+            if run and run["status"] in ("completed", "failed", "partial", "cancelled", "blocked"):
+                status = run["status"]
+                if status == "blocked":
+                    click.secho("DAG blocked", fg="red")
+                    raise SystemExit(1)
+                elif status == "cancelled":
+                    click.secho("DAG cancelled", fg="yellow")
+                elif status in ("failed", "partial"):
+                    raise SystemExit(1)
+                # completed or already terminal - exit cleanly
+                break
 
 
 @plan_cmd.command("verify")
