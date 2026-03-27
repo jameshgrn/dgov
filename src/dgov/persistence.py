@@ -423,6 +423,7 @@ class WorkerPane:
     role: str = "worker"
     state: str = "active"
     file_claims: tuple[str, ...] = ()
+    commit_message: str | None = None
 
     def __post_init__(self) -> None:
         _validate_state(self.state)
@@ -501,6 +502,7 @@ CREATE TABLE IF NOT EXISTS panes (
     metadata TEXT,
     landing INTEGER NOT NULL DEFAULT 0,
     file_claims TEXT NOT NULL DEFAULT '[]',
+    commit_message TEXT DEFAULT NULL,
     circuit_breaker INTEGER NOT NULL DEFAULT 0,
     retried_from TEXT DEFAULT NULL,
     superseded_by TEXT DEFAULT NULL,
@@ -804,6 +806,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     _pane_meta_cols = [
         ("landing", "INTEGER NOT NULL DEFAULT 0"),
         ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+        ("commit_message", "TEXT DEFAULT NULL"),
         ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
         ("retried_from", "TEXT DEFAULT NULL"),
         ("superseded_by", "TEXT DEFAULT NULL"),
@@ -841,6 +844,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     _archive_cols = [
         ("landing", "INTEGER NOT NULL DEFAULT 0"),
         ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+        ("commit_message", "TEXT DEFAULT NULL"),
         ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
         ("retried_from", "TEXT DEFAULT NULL"),
         ("superseded_by", "TEXT DEFAULT NULL"),
@@ -1142,6 +1146,7 @@ _PANE_TYPED_COLS = frozenset(
     {
         "landing",
         "file_claims",
+        "commit_message",
         "circuit_breaker",
         "retried_from",
         "superseded_by",
@@ -1633,6 +1638,37 @@ def list_dag_tasks(session_root: str, dag_run_id: int) -> list[dict]:
         }
         for r in rows
     ]
+
+
+def get_dag_task_contract_for_pane(session_root: str, pane_slug: str) -> dict | None:
+    """Return the persisted DAG contract for a dispatched pane, if any."""
+    conn = _get_db(session_root)
+    row = conn.execute(
+        "SELECT dt.dag_run_id, dt.slug, dr.definition_json "
+        "FROM dag_tasks dt "
+        "JOIN dag_runs dr ON dr.id = dt.dag_run_id "
+        "WHERE dt.pane_slug = ? "
+        "ORDER BY dt.dag_run_id DESC LIMIT 1",
+        (pane_slug,),
+    ).fetchone()
+    if row is None:
+        return None
+
+    definition = json.loads(row[2] or "{}")
+    task = definition.get("tasks", {}).get(row[1], {})
+    files = task.get("files", {})
+    claims = [
+        *files.get("create", ()),
+        *files.get("edit", ()),
+        *files.get("delete", ()),
+    ]
+    deduped_claims = list(dict.fromkeys(path for path in claims if path))
+    return {
+        "dag_run_id": row[0],
+        "task_slug": row[1],
+        "file_claims": deduped_claims,
+        "commit_message": task.get("commit_message", ""),
+    }
 
 
 def get_dag_task(session_root: str, dag_run_id: int, slug: str) -> dict | None:

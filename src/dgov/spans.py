@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS archived_panes (
     final_state         TEXT NOT NULL DEFAULT '',
     landing             INTEGER NOT NULL DEFAULT 0,
     file_claims         TEXT NOT NULL DEFAULT '[]',
+    commit_message      TEXT DEFAULT NULL,
     circuit_breaker     INTEGER NOT NULL DEFAULT 0,
     retried_from        TEXT DEFAULT NULL,
     superseded_by       TEXT DEFAULT NULL,
@@ -361,18 +362,19 @@ def archive_pane(session_root: str, pane: dict, crash_log: str = "") -> None:
             meta = json.loads(meta)
         except (json.JSONDecodeError, TypeError):
             meta = {}
-    file_claims = meta.get("file_claims", [])
+    file_claims = pane.get("file_claims", meta.get("file_claims", []))
     if isinstance(file_claims, list):
         file_claims = json.dumps(file_claims)
+    commit_message = pane.get("commit_message")
     conn = _get_db(session_root)
     conn.execute(
         "INSERT OR IGNORE INTO archived_panes "
         "(slug, archived_at, prompt, agent, project_root, worktree_path, "
         "branch_name, base_sha, created_at, final_state, "
-        "landing, file_claims, circuit_breaker, retried_from, "
+        "landing, file_claims, commit_message, circuit_breaker, retried_from, "
         "superseded_by, retry_count, max_retries, monitor_reason, "
         "last_checkpoint, crash_log) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             pane.get("slug", ""),
             now,
@@ -386,6 +388,7 @@ def archive_pane(session_root: str, pane: dict, crash_log: str = "") -> None:
             pane.get("state", ""),
             int(bool(meta.get("landing", False))),
             file_claims,
+            commit_message,
             int(bool(meta.get("circuit_breaker", False))),
             meta.get("retried_from"),
             meta.get("superseded_by"),
@@ -526,6 +529,28 @@ def close_orphaned_spans(session_root: str, *, max_age_hours: float = 2.0) -> in
 # ---------------------------------------------------------------------------
 # Transcript ingest
 # ---------------------------------------------------------------------------
+
+
+def pi_session_dir_for_worktree(worktree_path: str) -> Path | None:
+    """Return the Pi session directory for a worker worktree."""
+    if not worktree_path:
+        return None
+    session_dir_name = f"--{worktree_path.lstrip('/').replace('/', '-')}--"
+    return Path.home() / ".pi" / "agent" / "sessions" / session_dir_name
+
+
+def latest_pi_transcript_path(worktree_path: str) -> Path | None:
+    """Return the newest Pi transcript file for a worker worktree."""
+    session_dir = pi_session_dir_for_worktree(worktree_path)
+    if session_dir is None or not session_dir.exists():
+        return None
+    try:
+        jsonl_files = [path for path in session_dir.glob("*.jsonl") if path.is_file()]
+    except OSError:
+        return None
+    if not jsonl_files:
+        return None
+    return max(jsonl_files, key=lambda path: path.stat().st_mtime)
 
 
 def ingest_transcript(session_root: str, trace_id: str, transcript_path: str) -> int:

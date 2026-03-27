@@ -47,7 +47,6 @@ class DegradationState(StrEnum):
     """Current state of degradation for a logical name resolution."""
 
     NONE = "none"
-    PARTIAL_FAILURE = "partial_failure"
     FULL_FAILURE = "full_failure"
 
 
@@ -191,7 +190,7 @@ def resolve_agent(
     Degradation is typed and deterministic:
     - When all candidates fail, raises DegradationError with typed reasons
     - Each failure is categorized by DegradationReason
-    - DegradationState indicates severity (none, partial, full)
+    - DegradationState indicates whether a full failure occurred
     """
     from dgov.agents import load_groups, load_registry
     from dgov.backend import get_backend
@@ -236,21 +235,19 @@ def resolve_agent(
                     for g in agent_groups:
                         group_counts[g] = group_counts.get(g, 0) + 1
 
-    # Track degradation reasons for each backend
     backend_failures: dict[BackendId, list[DegradationReason]] = {}
-
-    tried: list[tuple[BackendId | None, DegradationReason | None]] = []
-
+    tried: list[tuple[BackendId, DegradationReason]] = []
+    degraded_candidates: list[BackendId] = []
     for backend_id in backends:
         agent_def = registry.get(backend_id)
         if agent_def is None:
-            tried.append((None, DegradationReason.NOT_REGISTERED))
+            tried.append((backend_id, DegradationReason.NOT_REGISTERED))
             backend_failures[backend_id] = [DegradationReason.NOT_REGISTERED]
             continue
 
         # Circuit breaker check
         if _check_circuit_breaker(session_root, backend_id):
-            tried.append((None, DegradationReason.CIRCUIT_BREAKER))
+            tried.append((backend_id, DegradationReason.CIRCUIT_BREAKER))
             backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
                 DegradationReason.CIRCUIT_BREAKER
             ]
@@ -266,7 +263,7 @@ def resolve_agent(
                     active = group_counts.get(g, 0)
                     limit = g_def["max_concurrent"]
                     if active >= limit:
-                        tried.append((None, DegradationReason.GROUP_BLOCKED))
+                        tried.append((backend_id, DegradationReason.GROUP_BLOCKED))
                         backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
                             DegradationReason.GROUP_BLOCKED
                         ]
@@ -286,16 +283,18 @@ def resolve_agent(
                     timeout=5,
                 )
                 if hc.returncode != 0:
-                    tried.append((None, DegradationReason.HEALTH_FAILURE))
+                    tried.append((backend_id, DegradationReason.HEALTH_FAILURE))
                     backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
                         DegradationReason.HEALTH_FAILURE
                     ]
+                    degraded_candidates.append(backend_id)
                     continue
             except (subprocess.TimeoutExpired, OSError):
-                tried.append((None, DegradationReason.HEALTH_TIMEOUT))
+                tried.append((backend_id, DegradationReason.HEALTH_TIMEOUT))
                 backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
                     DegradationReason.HEALTH_TIMEOUT
                 ]
+                degraded_candidates.append(backend_id)
                 continue
 
         # Individual Concurrency check
@@ -303,7 +302,7 @@ def resolve_agent(
         if max_concurrent is not None:
             active = _count_active_agent_workers(session_root, backend_id)
             if active >= max_concurrent:
-                tried.append((None, DegradationReason.CONCURRENT_LIMIT))
+                tried.append((backend_id, DegradationReason.CONCURRENT_LIMIT))
                 backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
                     DegradationReason.CONCURRENT_LIMIT
                 ]
@@ -313,84 +312,64 @@ def resolve_agent(
         logger.info("Routed %s -> %s", name, backend_id)
         return backend_id, name
 
-    # All candidates failed - raise deterministic error with typed degradation
+    if degraded_candidates:
+        backend_id = degraded_candidates[0]
+        logger.warning(
+            "Routing %s degraded to %s because all healthy backends were unavailable",
+            name,
+            backend_id,
+        )
+        return backend_id, name
+
     raise DegradationError(tried, backend_failures)
 
 
 class DegradationError(Exception):
-    """Raised when all backend candidates for a logical name are unavailable.
-
-    Contains typed degradation reasons instead of free-form strings.
-    """
+    """Raised when all backend candidates for a logical name are unavailable."""
 
     def __init__(
         self,
-        tried: list[tuple[BackendId | None, DegradationReason | None]],
+        tried: list[tuple[BackendId, DegradationReason]],
         failures: dict[BackendId, list[DegradationReason]],
     ):
         super().__init__(self._build_message(tried, failures))
         self.tried = tried
         self.failures: dict[BackendId, list[DegradationReason]] = failures
 
+    @staticmethod
     def _build_message(
-        self,
-        tried: list[tuple[BackendId | None, DegradationReason | None]],
+        tried: list[tuple[BackendId, DegradationReason]],
         failures: dict[BackendId, list[DegradationReason]],
     ) -> str:
         """Build a deterministic error message from typed degradation reasons."""
         lines: list[str] = []
 
         for backend_id, reason in tried:
-            if reason is None:
-                lines.append(f"  - {backend_id} (not a routing key)")
-            else:
-                lines.append(f"  - {backend_id} ({reason.value})")
+            lines.append(f"  - {backend_id} ({reason.value})")
 
         lines.append("")
         lines.append("Degradation summary:")
 
         for backend_id, reasons in failures.items():
             if reasons:
-                reason_values = sorted(set(r.value for r in reasons))
+                reason_values = sorted({reason.value for reason in reasons})
                 lines.append(f"  {backend_id}: {', '.join(reason_values)}")
 
         return "\n".join(lines)
 
     def get_state(self) -> DegradationState:
-        """Return the current degradation state.
-
-        State is determined by whether any backend in self.tried has no reasons.
-        If all backends have at least one reason, state is FULL_FAILURE.
-        If some backends have no reasons, state is PARTIAL_FAILURE.
-        If no backends were tried, state is NONE.
-        """
-        if not self.tried:
-            return DegradationState.NONE
-        # Check if any backend has NO reasons (i.e., reason is None)
-        has_any_without_reason = any(
-            reason is None
-            for _, reason in self.tried
-            if reason is not None or True  # Always include the check
-        )
-        # Actually, we need to check if any backend has reason is None
-        has_any_without_reason = any(reason is None for _, reason in self.tried)
-        if has_any_without_reason:
-            return DegradationState.PARTIAL_FAILURE
-        return DegradationState.FULL_FAILURE
+        """Return the current degradation state."""
+        return DegradationState.FULL_FAILURE if self.tried else DegradationState.NONE
 
     def get_reasons(self) -> list[DegradationReason]:
         """Return all unique degradation reasons encountered."""
         reasons: set[DegradationReason] = set()
         for _, reason in self.tried:
-            if reason is not None:
-                reasons.add(reason)
-        for backend_id, backend_reasons in self.failures.items():
-            for reason in backend_reasons:
-                reasons.add(reason)
+            reasons.add(reason)
+        for backend_reasons in self.failures.values():
+            reasons.update(backend_reasons)
         return sorted(reasons)
 
     def has_full_failure(self) -> bool:
         """Check if all backends have at least one degradation reason."""
-        if not self.tried:
-            return False
-        return all(reason is not None for _, reason in self.tried)
+        return bool(self.tried)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -45,6 +46,144 @@ def _clean_worker_output_text(text: str) -> str:
     return "\n".join(cleaned_lines)
 
 
+def _tail_text_file(path: Path, *, lines: int, bytes_per_line: int) -> str | None:
+    """Read the tail of a text file without loading it entirely."""
+    if not path.exists():
+        return None
+    try:
+        size = path.stat().st_size
+        if size == 0:
+            return ""
+        chunk_size = min(size, max(4096, lines * bytes_per_line))
+        with open(path, "rb") as f:
+            f.seek(max(0, size - chunk_size))
+            raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        if chunk_size < size:
+            first_nl = text.find("\n")
+            if first_nl != -1:
+                text = text[first_nl + 1 :]
+        return text
+    except OSError:
+        return None
+
+
+def _pi_session_dir(worktree_path: str) -> Path | None:
+    """Return the Pi session directory for a worker worktree."""
+    from dgov.spans import pi_session_dir_for_worktree
+
+    return pi_session_dir_for_worktree(worktree_path)
+
+
+def _latest_pi_transcript_path(worktree_path: str) -> Path | None:
+    """Return the newest live Pi transcript for a worktree, if present."""
+    from dgov.spans import latest_pi_transcript_path
+
+    return latest_pi_transcript_path(worktree_path)
+
+
+def _format_transcript_tool_call(tool_name: str, args: dict) -> str | None:
+    """Render a concise human-readable line for a transcript tool call."""
+    if tool_name == "read" and args.get("path"):
+        return f"Reading {args['path']}"
+    if tool_name == "edit" and args.get("path"):
+        return f"Editing {args['path']}"
+    if tool_name in {"write", "create"} and args.get("path"):
+        return f"Writing {args['path']}"
+    if tool_name == "bash" and args.get("command"):
+        return f"Running {str(args['command'])[:120]}"
+    if tool_name:
+        return tool_name
+    return None
+
+
+def _tail_live_transcript(session_root: str, slug: str, lines: int = 20) -> str | None:
+    """Render a readable tail from the live Pi transcript for *slug*."""
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return None
+    transcript_path = _latest_pi_transcript_path(str(pane.get("worktree_path", "")))
+    if transcript_path is None:
+        return None
+
+    raw_tail = _tail_text_file(transcript_path, lines=max(lines * 4, 40), bytes_per_line=2048)
+    if raw_tail is None:
+        return None
+
+    rendered: list[str] = []
+    for raw_line in raw_tail.splitlines():
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+        try:
+            entry = json.loads(raw_line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") != "message":
+            continue
+
+        message = entry.get("message", {})
+        role = message.get("role", "")
+        content = message.get("content", [])
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+
+        if role == "assistant":
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                item_type = item.get("type", "")
+                if item_type == "text":
+                    for text_line in str(item.get("text", "")).splitlines():
+                        cleaned = _clean_worker_output_text(text_line).strip()
+                        if cleaned:
+                            rendered.append(cleaned[:200])
+                elif item_type in {"toolCall", "tool_use"}:
+                    args = item.get("arguments", item.get("input", {}))
+                    if isinstance(args, dict):
+                        summary = _format_transcript_tool_call(item.get("name", ""), args)
+                        if summary:
+                            rendered.append(summary)
+        elif role == "toolResult":
+            tool_name = str(message.get("toolName", ""))
+            if tool_name == "read":
+                continue
+            for item in content:
+                if not isinstance(item, dict) or item.get("type") != "text":
+                    continue
+                text = str(item.get("text", "")).strip()
+                if not text or text == "(no output)":
+                    continue
+                text_lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+                if len(text_lines) <= 3:
+                    rendered.extend(text_lines[:3])
+
+    if not rendered:
+        return None
+
+    compact: list[str] = []
+    for line in rendered:
+        if compact and compact[-1] == line:
+            continue
+        compact.append(line)
+    return "\n".join(compact[-lines:])
+
+
+def _informative_line_count(text: str | None) -> int:
+    """Count non-noise lines in a worker output sample."""
+    if not text:
+        return 0
+    count = 0
+    for line in text.splitlines():
+        normalized = line.strip()
+        if not normalized or _is_noise_line(normalized):
+            continue
+        if len(normalized) <= 2 and " " not in normalized:
+            continue
+        count += 1
+    return count
+
+
 def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None:
     """Read the last *lines* lines from ``.dgov/logs/<slug>.log``.
 
@@ -54,32 +193,15 @@ def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None
     ``errors='replace'``.
     """
     log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
-    if not log_path.exists():
-        return None
+    raw_log = _tail_text_file(log_path, lines=lines, bytes_per_line=512)
+    cleaned_log = None
+    if raw_log is not None:
+        cleaned_log = _clean_worker_output_text("\n".join(raw_log.splitlines()[-lines:]))
 
-    try:
-        size = log_path.stat().st_size
-        if size == 0:
-            return ""
-
-        # Read a chunk from the end; 512 bytes per line is a generous estimate.
-        chunk_size = min(size, lines * 512)
-        with open(log_path, "rb") as f:
-            f.seek(max(0, size - chunk_size))
-            raw = f.read()
-
-        text = raw.decode("utf-8", errors="replace")
-
-        # If we didn't read from the start, drop the first (likely partial) line
-        if chunk_size < size:
-            first_nl = text.find("\n")
-            if first_nl != -1:
-                text = text[first_nl + 1 :]
-
-        tail_lines = text.splitlines()[-lines:]
-        return _clean_worker_output_text("\n".join(tail_lines))
-    except OSError:
-        return None
+    transcript_tail = _tail_live_transcript(session_root, slug, lines=lines)
+    if _informative_line_count(transcript_tail) > _informative_line_count(cleaned_log):
+        return transcript_tail
+    return cleaned_log
 
 
 # -- Freshness --
@@ -502,9 +624,11 @@ def capture_worker_output(
         return None
 
     output = get_backend().capture_output(pane_id, lines)
-    if output is None:
-        return None
-    return _clean_worker_output_text(output)
+    cleaned_output = _clean_worker_output_text(output) if output is not None else None
+    transcript_tail = _tail_live_transcript(session_root, slug, lines=lines)
+    if _informative_line_count(transcript_tail) > _informative_line_count(cleaned_output):
+        return transcript_tail
+    return cleaned_output
 
 
 # -- Noise filtering --

@@ -10,12 +10,26 @@ from typing import Any
 
 import click
 
+from dgov import __version__
 from dgov.agents import detect_installed_agents
 
 
 def want_json() -> bool:
     """Check if JSON output is requested via env var or context."""
     return os.environ.get("DGOV_JSON", "").strip() in ("1", "true", "yes")
+
+
+def _print_version(
+    ctx: click.Context, param: click.Parameter, value: bool  # noqa: ARG001
+) -> None:
+    """Handle top-level --version without entering governor flow."""
+    if not value or ctx.resilient_parsing:
+        return
+    if want_json():
+        click.echo(json.dumps({"dgov": __version__}, indent=2))
+    else:
+        click.echo(__version__)
+    ctx.exit()
 
 
 SESSION_ROOT_OPTION: Any = click.option(
@@ -205,6 +219,14 @@ def _ensure_governor_session(
 @click.group(invoke_without_command=True)
 @click.option(
     "--governor", "-g", default=None, help="Override governor agent (claude, codex, gemini)"
+)
+@click.option(
+    "--version",
+    is_flag=True,
+    is_eager=True,
+    expose_value=False,
+    callback=_print_version,
+    help="Show dgov version and exit.",
 )
 @click.pass_context
 def cli(ctx, governor):

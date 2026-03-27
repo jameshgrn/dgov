@@ -961,6 +961,65 @@ class TestCaptureWorkerOutput:
         result = capture_worker_output(str(tmp_path), "test")
         assert result == "output here"
 
+    def test_prefers_live_transcript_when_tmux_capture_is_thin(
+        self, tmp_path: Path, mock_backend: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from dgov.persistence import WorkerPane, add_pane
+
+        worktree = tmp_path / ".dgov" / "worktrees" / "mlx-pane"
+        worktree.mkdir(parents=True)
+        add_pane(
+            str(tmp_path),
+            WorkerPane(
+                slug="mlx-pane",
+                prompt="test",
+                pane_id="%5",
+                agent="mlx-9b-0",
+                project_root=str(tmp_path),
+                worktree_path=str(worktree),
+                branch_name="mlx-pane",
+            ),
+        )
+        mock_backend.is_alive.return_value = True
+        mock_backend.capture_output.return_value = "h\n"
+
+        home = tmp_path / "home"
+        session_dir = (
+            home
+            / ".pi"
+            / "agent"
+            / "sessions"
+            / f"--{str(worktree).lstrip('/').replace('/', '-')}--"
+        )
+        session_dir.mkdir(parents=True)
+        (session_dir / "run.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "session"}),
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "message": {
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "toolCall",
+                                        "name": "read",
+                                        "arguments": {"path": "src/dgov/dashboard.py"},
+                                    }
+                                ],
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n"
+        )
+        monkeypatch.setenv("HOME", str(home))
+
+        result = capture_worker_output(str(tmp_path), "mlx-pane")
+        assert result == "Reading src/dgov/dashboard.py"
+
 
 # ---------------------------------------------------------------------------
 # _pick_resolver_agent
@@ -2370,6 +2429,131 @@ class TestRetryWorkerPane:
             )
         assert result["agent"] == "claude"
         assert mock_create.call_args.kwargs["agent"] == "claude"
+
+    def test_retry_recovers_claims_and_commit_message_from_dag_contract(
+        self, tmp_path: Path
+    ) -> None:
+        from dgov.persistence import create_dag_run, upsert_dag_task
+        from dgov.recovery import retry_worker_pane
+
+        replace_all_panes(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "r76-routing-contract-3",
+                        "prompt": "Fix routing degradation",
+                        "agent": "pi",
+                        "state": "timed_out",
+                        "file_claims": [],
+                    }
+                ]
+            },
+        )
+        run_id = create_dag_run(
+            str(tmp_path),
+            dag_file=str(tmp_path / ".dgov" / "plans" / "routing.toml"),
+            started_at="2026-03-26T00:00:00Z",
+            status="running",
+            current_tier=0,
+            state_json={},
+            definition_json={
+                "tasks": {
+                    "routing-contract": {
+                        "prompt": "Fix routing degradation",
+                        "commit_message": "Own routing tables in repo",
+                        "files": {
+                            "create": [".dgov/agents.toml"],
+                            "edit": ["src/dgov/router.py", "tests/test_router.py"],
+                            "delete": [],
+                        },
+                    }
+                }
+            },
+        )
+        upsert_dag_task(
+            str(tmp_path),
+            run_id,
+            "routing-contract",
+            "dispatched",
+            "worker",
+            pane_slug="r76-routing-contract-3",
+        )
+
+        new_pane = WorkerPane(
+            slug="r76-routing-contract-a4",
+            prompt="Fix routing degradation",
+            pane_id="%51",
+            agent="pi",
+            project_root=str(tmp_path),
+            worktree_path="/wt",
+            branch_name="r76-routing-contract-a4",
+        )
+        with patch("dgov.recovery.create_worker_pane", return_value=new_pane) as mock_create:
+            result = retry_worker_pane(
+                str(tmp_path),
+                "r76-routing-contract-3",
+                session_root=str(tmp_path),
+                close=False,
+            )
+
+        assert result["retried"] is True
+        packet = mock_create.call_args.kwargs["context_packet"]
+        assert packet is not None
+        assert packet.file_claims == (
+            ".dgov/agents.toml",
+            "src/dgov/router.py",
+            "tests/test_router.py",
+        )
+        assert packet.commit_message == "Own routing tables in repo"
+
+    def test_retry_force_cleans_stale_superseded_pane(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.persistence import read_events
+        from dgov.recovery import retry_worker_pane
+
+        replace_all_panes(
+            str(tmp_path),
+            {
+                "panes": [
+                    {
+                        "slug": "fix-bug",
+                        "prompt": "Fix the bug",
+                        "agent": "pi",
+                        "pane_id": "%old",
+                        "state": "timed_out",
+                    }
+                ]
+            },
+        )
+
+        new_pane = WorkerPane(
+            slug="fix-bug-a2",
+            prompt="Fix the bug",
+            pane_id="%42",
+            agent="pi",
+            project_root=str(tmp_path),
+            worktree_path="/wt",
+            branch_name="fix-bug-a2",
+        )
+
+        def fake_create(**kwargs):
+            add_pane(str(tmp_path), new_pane)
+            return new_pane
+
+        mock_backend.is_alive.side_effect = lambda pane_id: pane_id == "%old"
+        with (
+            patch("dgov.recovery.create_worker_pane", side_effect=fake_create),
+            patch("dgov.recovery.close_worker_pane", return_value=True),
+        ):
+            result = retry_worker_pane(str(tmp_path), "fix-bug", session_root=str(tmp_path))
+
+        assert result["retried"] is True
+        assert get_pane(str(tmp_path), "fix-bug") is None
+        mock_backend.destroy.assert_called_once_with("%old")
+        events = read_events(str(tmp_path), slug="fix-bug")
+        assert any(ev.get("event") == "pane_closed" for ev in events)
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock
 
 import pytest
@@ -95,6 +96,65 @@ class TestTailWorkerLog:
         root = self._make_log(tmp_path, "bootstrap-noise", content)
         result = tail_worker_log(root, "bootstrap-noise")
         assert result == "Done."
+
+    def test_prefers_live_transcript_when_log_is_thin(self, tmp_path, monkeypatch):
+        from dgov.persistence import WorkerPane, add_pane
+
+        root = self._make_log(tmp_path, "mlx-pane", b"h\n")
+        worktree = tmp_path / ".dgov" / "worktrees" / "mlx-pane"
+        worktree.mkdir(parents=True)
+        add_pane(
+            root,
+            WorkerPane(
+                slug="mlx-pane",
+                prompt="test",
+                pane_id="%7",
+                agent="mlx-9b-0",
+                project_root=root,
+                worktree_path=str(worktree),
+                branch_name="mlx-pane",
+            ),
+        )
+
+        home = tmp_path / "home"
+        session_dir = (
+            home
+            / ".pi"
+            / "agent"
+            / "sessions"
+            / f"--{str(worktree).lstrip('/').replace('/', '-')}--"
+        )
+        session_dir.mkdir(parents=True)
+        (session_dir / "run.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps({"type": "session"}),
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "message": {
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "text", "text": "I am reading the dashboard."},
+                                    {
+                                        "type": "toolCall",
+                                        "name": "read",
+                                        "arguments": {"path": "src/dgov/dashboard.py"},
+                                    },
+                                ],
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n"
+        )
+        monkeypatch.setenv("HOME", str(home))
+
+        result = tail_worker_log(root, "mlx-pane")
+        assert result is not None
+        assert "I am reading the dashboard." in result
+        assert "Reading src/dgov/dashboard.py" in result
 
 
 @pytest.mark.unit

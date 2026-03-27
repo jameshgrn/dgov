@@ -825,6 +825,11 @@ class TestTopLevelCommands:
         assert batch_fail.exit_code == 1
         assert json.loads(batch_fail.output)["failed"] == ["a"]
 
+    def test_root_version_flag(self, runner: CliRunner) -> None:
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert result.output.strip() == __version__
+
     def test_merge_queue_process_blocks_non_safe_review(self, runner: CliRunner) -> None:
         with (
             patch(

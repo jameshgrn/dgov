@@ -415,35 +415,19 @@ def _write_worktree_instructions(
             preamble += start_here_section + "\n"
         preamble += codebase_hint + "\n"
         preamble += f"## When done\nWrite status to .dgov/progress/{slug}.json and exit.\n"
+        system_prompt_content = preamble
     else:
         preamble = (
             f"# Worker Instructions — {slug}\n\n"
             "You are a **worker**. Complete the task, commit, "
             "and signal done.\n\n"
-            "## Your tools\n"
-            "You have these tools — USE THEM to do your work:\n"
-            "- **Read** — read file contents before editing\n"
-            "- **Edit** — make exact string replacements in files\n"
-            "- **Write** — create new files (only when task requires it)\n"
-            "- **Bash** — run shell commands (git, ruff, pytest, etc.)\n\n"
-            "Do NOT just describe changes in text. "
-            "You MUST call the Edit tool to modify files "
-            "and the Bash tool to run commands.\n\n"
             "## Rules\n"
-            "- BEFORE claiming a task is already done or needs no changes,\n"
-            "  you MUST Read the target file and show its current content.\n"
-            "  If you skip reading and guess, you WILL hallucinate.\n"
-            "  Never trust your assumptions about file state.\n"
-            "- ALWAYS Read source files FIRST — discover the real API.\n"
-            "  The task prompt may have wrong function/class names.\n"
-            "  Trust what you read in the code, not what the prompt says.\n"
-            "- Edit ONLY the files specified in your task\n"
-            "- Do NOT modify .gitignore, pyproject.toml\n"
-            "- Do NOT create new files unless the task requires it\n"
-            "- Do NOT push to remote\n"
-            "- You are in a git worktree, not the main repo\n"
+            "- Read the claimed files before editing; trust the code, not the prompt.\n"
+            "- Edit only the task files unless the task explicitly requires more.\n"
+            "- Do not modify `.gitignore` or `pyproject.toml` unless asked.\n"
+            "- Do not push to remote.\n"
+            "- You are in a git worktree, not the main repo.\n"
         )
-        # Inject Start here section before codebase hint when routed context exists
         if start_here_section:
             preamble += start_here_section + "\n"
         preamble += codebase_hint + "\n"
@@ -476,16 +460,27 @@ def _write_worktree_instructions(
             "10. If the task is already done or no changes are needed,\n"
             "    run `dgov worker complete -m 'already implemented'`\n"
         )
-
-        system_prompt_content = preamble
+        system_prompt_content = (
+            f"# Worker System Prompt — {slug}\n\n"
+            "You are a worker operating inside a git worktree.\n\n"
+            "Rules:\n"
+            "- Read the claimed files before editing.\n"
+            "- Edit only claimed files unless the task explicitly expands scope.\n"
+            "- Add or update focused tests for changed behavior.\n"
+            "- Run `uv run ruff check` and targeted `uv run pytest -q -m unit`.\n"
+            "- Never run the full test suite.\n"
+            "- Commit your changes before `dgov worker complete`.\n"
+        )
+        if start_here_section:
+            system_prompt_content += "\n" + start_here_section
+        if codebase_hint:
+            system_prompt_content += "\nReference:\n" + codebase_hint
 
         # Include the task prompt in the on-disk instructions file only.
         # Pi workers receive the task separately on the CLI, so duplicating it
         # in the injected system prompt wastes context window.
         if prompt:
             preamble += f"\n## Task\n\n{prompt}\n"
-    if role == "lt-gov":
-        system_prompt_content = preamble
 
     content = preamble
 
@@ -985,6 +980,7 @@ def create_worker_pane(
                 role=role,
                 parent_slug=parent_slug,
                 file_claims=packet_for_overlay.file_claims,
+                commit_message=packet_for_overlay.commit_message or None,
             )
             add_pane(session_root, pane)
 
@@ -1233,18 +1229,13 @@ def _full_cleanup(
     # 4. Copy pi session transcript (all workers run through pi harness)
     worktree_path = pane_record.get("worktree_path", "")
     if worktree_path:
-        # Transform worktree path to pi session dir format:
-        # /Users/jakegearon/projects/dgov/.dgov/worktrees/my-task
-        # → --Users-jakegearon-projects-dgov-.dgov-worktrees-my-task--
-        session_dir_name = f"--{worktree_path.lstrip('/').replace('/', '-')}--"
-        pi_sessions_root = Path.home() / ".pi" / "agent" / "sessions"
-        session_dir = pi_sessions_root / session_dir_name
+        from dgov.spans import latest_pi_transcript_path, pi_session_dir_for_worktree
 
-        if session_dir.exists():
-            # Find all .jsonl files and get the newest one
-            jsonl_files = list(session_dir.glob("*.jsonl"))
-            if jsonl_files:
-                newest_session = max(jsonl_files, key=lambda p: p.stat().st_mtime)
+        session_dir = pi_session_dir_for_worktree(worktree_path)
+
+        if session_dir and session_dir.exists():
+            newest_session = latest_pi_transcript_path(worktree_path)
+            if newest_session is not None:
                 # Ensure .dgov/logs exists in project root
                 logs_dir = Path(project_root) / ".dgov" / "logs"
                 logs_dir.mkdir(parents=True, exist_ok=True)

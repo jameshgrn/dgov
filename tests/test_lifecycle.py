@@ -1200,6 +1200,33 @@ class TestWriteWorktreeInstructions:
         assert "## Codebase Map" not in system_prompt_content
         assert "heavy content" not in system_prompt_content
 
+    def test_system_prompt_is_smaller_than_worker_instructions(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.lifecycle import _write_worktree_instructions
+
+        wt = tmp_path / "worktree"
+        wt.mkdir()
+        (wt / "CODEBASE.md").write_text("# CODEBASE\n\nheavy content\n", encoding="utf-8")
+
+        _write_worktree_instructions(
+            str(wt),
+            "test-task",
+            "worker",
+            prompt="Fix parser bug and add focused tests",
+        )
+
+        instructions_content = (wt / ".dgov" / "DGOV_WORKER_INSTRUCTIONS.md").read_text(
+            encoding="utf-8"
+        )
+        system_prompt_content = (wt / ".dgov" / "DGOV_SYSTEM_PROMPT.md").read_text(
+            encoding="utf-8"
+        )
+
+        assert len(system_prompt_content) < len(instructions_content)
+        assert "Commit checklist" not in system_prompt_content
+        assert "Rules:" in system_prompt_content
+
 
 # ──────────────────────────────────────────────────────────────
 # TestSlugAllocationHistory

@@ -9,17 +9,66 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.agents import load_registry
+from dgov.backend import get_backend
 from dgov.lifecycle import close_worker_pane, create_worker_pane
 from dgov.persistence import (
     STATE_DIR,
     all_panes,
     emit_event,
+    get_dag_task_contract_for_pane,
     get_pane,
     read_events,
+    remove_pane,
     update_pane_state,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_contract_from_pane(session_root: str, slug: str, target: dict) -> tuple[list[str], str]:
+    """Recover the exact retry contract from pane state or DAG definition."""
+    claims = list(target.get("file_claims") or [])
+    commit_message = str(target.get("commit_message") or "").strip()
+
+    if claims and commit_message:
+        return claims, commit_message
+
+    for candidate_slug in _slug_lineage(session_root, slug):
+        contract = get_dag_task_contract_for_pane(session_root, candidate_slug)
+        if contract is None:
+            continue
+        if not claims:
+            claims = list(contract.get("file_claims") or [])
+        if not commit_message:
+            commit_message = str(contract.get("commit_message") or "").strip()
+        if claims and commit_message:
+            break
+
+    return claims, commit_message
+
+
+def _close_replaced_pane(project_root: str, session_root: str, slug: str) -> None:
+    """Best-effort deterministic cleanup for a pane replaced by retry/escalation."""
+    try:
+        close_worker_pane(project_root, slug, session_root=session_root)
+    except Exception:
+        logger.warning("close_worker_pane failed for replaced pane %s", slug, exc_info=True)
+
+    stale = get_pane(session_root, slug)
+    pane_id = str((stale or {}).get("pane_id") or "")
+    if pane_id and get_backend().is_alive(pane_id):
+        try:
+            get_backend().destroy(pane_id)
+        except Exception:
+            logger.warning("Failed to destroy stale pane %s (%s)", slug, pane_id, exc_info=True)
+
+    stale = get_pane(session_root, slug)
+    if stale is None:
+        return
+
+    if not any(ev.get("event") == "pane_closed" for ev in read_events(session_root, slug=slug)):
+        emit_event(session_root, "pane_closed", slug)
+    remove_pane(session_root, slug)
 
 
 @dataclass(frozen=True)
@@ -130,7 +179,7 @@ def escalate_worker_pane(
     # Mark old pane as escalated then close
     update_pane_state(session_root, slug, "escalated")
     emit_event(session_root, "pane_escalated", slug, new_slug=new_slug, target_agent=target_agent)
-    close_worker_pane(project_root, slug, session_root=session_root)
+    _close_replaced_pane(project_root, session_root, slug)
 
     return {
         "escalated": True,
@@ -179,13 +228,16 @@ def retry_worker_pane(
     # Rebuild context_packet from original pane's file_claims so the retry
     # pane has proper claim scope for review and preflight.
     context_packet = None
-    original_claims = target.get("file_claims") or []
-    if original_claims:
+    original_claims, original_commit_message = _retry_contract_from_pane(
+        session_root, slug, target
+    )
+    if original_claims or original_commit_message:
         from dgov.context_packet import build_context_packet
 
         context_packet = build_context_packet(
             original_prompt,
-            file_claims=list(original_claims),
+            file_claims=original_claims or None,
+            commit_message=original_commit_message or None,
         )
 
     # Create new pane
@@ -212,9 +264,7 @@ def retry_worker_pane(
 
     # Close old pane after superseding (worktree + tmux cleanup)
     if close:
-        from dgov.lifecycle import close_worker_pane
-
-        close_worker_pane(project_root, slug, session_root=session_root)
+        _close_replaced_pane(project_root, session_root, slug)
 
     return {
         "retried": True,

@@ -2398,7 +2398,7 @@ def _dag_dispatch(
     """Execute a DispatchTask action. Returns TaskDispatched or TaskDispatchFailed."""
     from dgov.kernel import TaskDispatched, TaskDispatchFailed
     from dgov.lifecycle import create_worker_pane
-    from dgov.persistence import emit_event, upsert_dag_task
+    from dgov.persistence import emit_event, set_pane_metadata, upsert_dag_task
 
     task = dag.tasks[task_slug]
     touches = [*task.files.create, *task.files.edit, *task.files.delete]
@@ -2443,6 +2443,12 @@ def _dag_dispatch(
             role=task.role,
         )
         pane_slug = pane.slug
+        set_pane_metadata(
+            session_root,
+            pane_slug,
+            file_claims=touches,
+            commit_message=task.commit_message,
+        )
         upsert_dag_task(
             session_root,
             run_id,

@@ -70,29 +70,13 @@ class TestDegradationError:
         assert error.get_state() == DegradationState.FULL_FAILURE
 
     def test_empty_tried(self):
-        tried: list[tuple[BackendId | None, DegradationReason | None]] = []
+        tried: list[tuple[BackendId, DegradationReason]] = []
         failures: dict[BackendId, list[DegradationReason]] = {}
         error = DegradationError(tried, failures)
 
         assert error.tried == []
         assert error.failures == {}
         assert error.get_state() == DegradationState.NONE
-
-    def test_partial_failure(self):
-        tried = [
-            ("backend-a", None),  # Not a routing key
-            ("backend-b", DegradationReason.HEALTH_FAILURE),
-        ]
-        failures = {
-            "backend-a": [],
-            "backend-b": [DegradationReason.HEALTH_FAILURE],
-        }
-        error = DegradationError(tried, failures)
-
-        assert error.tried == tried
-        assert error.failures == failures
-        # State is PARTIAL_FAILURE because some backends have no reasons
-        assert error.get_state() == DegradationState.PARTIAL_FAILURE
 
     def test_get_reasons(self):
         tried = [
@@ -119,20 +103,6 @@ class TestDegradationError:
         error = DegradationError(tried, failures)
 
         assert error.has_full_failure() is True
-
-    def test_has_full_failure_partial(self):
-        tried = [
-            ("backend-a", None),
-            ("backend-b", DegradationReason.HEALTH_FAILURE),
-        ]
-        failures = {
-            "backend-a": [],
-            "backend-b": [DegradationReason.HEALTH_FAILURE],
-        }
-        error = DegradationError(tried, failures)
-
-        assert error.has_full_failure() is False
-
 
 @pytest.mark.unit
 class TestDegradationReason:
@@ -161,7 +131,6 @@ class TestDegradationState:
 
     def test_state_values(self):
         assert DegradationState.NONE.value == "none"
-        assert DegradationState.PARTIAL_FAILURE.value == "partial_failure"
         assert DegradationState.FULL_FAILURE.value == "full_failure"
 
 
@@ -282,9 +251,38 @@ class TestResolveAgent:
             resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
 
         # Verify the error has typed degradation reasons
-        assert exc_info.value.tried == [(None, DegradationReason.NOT_REGISTERED)]
+        assert exc_info.value.tried == [("missing-agent", DegradationReason.NOT_REGISTERED)]
         assert exc_info.value.failures == {"missing-agent": [DegradationReason.NOT_REGISTERED]}
         assert exc_info.value.get_state() == DegradationState.FULL_FAILURE
+
+    def test_degrades_to_first_backend_when_all_are_health_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "dgov.router._load_routing_tables",
+            lambda: {"qwen-test": ["sick-one", "sick-two"]},
+        )
+
+        class SickAgent:
+            health_check = "false"
+            max_concurrent = None
+            groups = ()
+
+        monkeypatch.setattr(
+            "dgov.agents.load_registry",
+            lambda *a, **kw: {"sick-one": SickAgent(), "sick-two": SickAgent()},
+        )
+        monkeypatch.setattr("dgov.agents.load_groups", lambda *a, **kw: {})
+        monkeypatch.setattr("dgov.status._count_active_agent_workers", lambda *a: 0)
+
+        class FakeBackend:
+            def bulk_info(self):
+                return {}
+
+        monkeypatch.setattr("dgov.backend.get_backend", lambda: FakeBackend())
+        monkeypatch.setattr("dgov.persistence.all_panes", lambda *a: [])
+
+        resolved, routed_from = resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
+        assert resolved == "sick-one"
+        assert routed_from == "qwen-test"
 
 
 @pytest.mark.unit
