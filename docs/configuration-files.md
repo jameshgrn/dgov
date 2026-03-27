@@ -108,7 +108,6 @@ These files are protected by dgov and are never carried forward from worker bran
 
 - `CLAUDE.md`, `CLAUDE.md.full`
 - `THEORY.md`, `ARCH-NOTES.md`
-- `.napkin.md`
 
 ## TDD status file
 

@@ -227,7 +227,7 @@ Tests are the primary coordination mechanism of the swarm. Agents do not trust e
 
 ## Operational ledger
 
-The ledger (`dgov ledger`) replaces `.napkin.md` as the structured operational knowledge store. It lives in `state.db` and persists across sessions.
+The ledger (`dgov ledger`) is the structured operational knowledge store. It lives in `state.db` and persists across sessions.
 
 **Read at session start:**
 ```

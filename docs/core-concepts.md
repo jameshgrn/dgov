@@ -57,7 +57,7 @@ active --→ done --→ reviewed_pass --→ merged --→ closed
 
 ## Protected files
 
-dgov enforces a strict boundary for specific files (e.g., `CLAUDE.md`, `.napkin.md`). These files are **never** carried forward from worker branches during a merge. dgov automatically restores the version from the base branch before completing the merge.
+dgov enforces a strict boundary for specific files (e.g., `CLAUDE.md`, `THEORY.md`). These files are **never** carried forward from worker branches during a merge. dgov automatically restores the version from the base branch before completing the merge.
 
 ## Main-branch enforcement
 

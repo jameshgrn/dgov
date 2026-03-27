@@ -1,4 +1,4 @@
-"""Operational ledger CLI — formalized napkin."""
+"""Operational ledger CLI."""
 
 from __future__ import annotations
 

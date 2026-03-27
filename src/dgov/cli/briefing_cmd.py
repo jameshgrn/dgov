@@ -16,7 +16,6 @@ _SKIP_NAMES = frozenset(
         "claude",
         "gemini",
         "handover",
-        ".napkin",
         "changelog",
         "contributing",
         "license",
