@@ -1,8 +1,8 @@
 # HANDOVER
 
 ## Current State
-- Branch: `main` at `718ea74` (clean working tree)
-- Tests: targeted unit slices passed; full suite not rerun per project policy
+- Branch: `main` at `e102c3a` (clean working tree)
+- Tests: targeted unit slices passed for changed code; docs refresh did not require rerunning tests, and the full suite was not rerun per project policy
 - Panes: none
 - Status: `uv run dgov status -r .` reports `0 panes`, `18 healthy / 4 unhealthy` agents, `0` open bugs
 
@@ -12,6 +12,8 @@
 - **Normalize terminal control sequences in logs** (`66d7857`): `src/dgov/done.py` now renders backspace/carriage-return/cursor-motion semantics before ANSI stripping so pane output no longer fabricates `ssource` noise.
 - **Add trace preview to dashboard output** (`6853167`): finished the dashboard preview path and tests, collapsing the partial trace-preview work into a coherent read-only view.
 - **Filter bootstrap noise from pane output** (`718ea74`): `src/dgov/status.py` and `src/dgov/cli/pane.py` now strip internal `dgov-cmd-*.sh` bootstrap echoes and prompt noise from user-facing output/tail paths.
+- **Fix dashboard preview state drift** (`bdfd8a9`): `src/dgov/dashboard.py` no longer renders stale cached preview content for a newly selected pane, and `tests/test_dashboard.py` now covers the drift case.
+- **Refresh governor doc templates** (`e102c3a`): `.claude/skills/dgov/SKILL.md` and related Claude command docs now reflect plan-first dispatch, logical routing, and current handover/debrief conventions.
 - **Clean stale run state**: closed preserved smoke panes, pruned orphaned worktrees, and cleared stale pane state so `uv run dgov pane list -r .` now reports `No panes.`
 
 ## Ledger Snapshot
@@ -32,24 +34,27 @@
 - `uv run pytest tests/test_done_strategy.py tests/test_status.py tests/test_dashboard.py -q -m unit`
 - `uv run ruff check src/dgov/status.py src/dgov/cli/pane.py tests/test_status.py`
 - `uv run pytest tests/test_done_strategy.py tests/test_status.py tests/test_cli_pane.py -q -m unit`
+- `uv run ruff check src/dgov/dashboard.py tests/test_dashboard.py`
+- `uv run ruff format --check src/dgov/dashboard.py tests/test_dashboard.py`
+- `uv run pytest tests/test_dashboard.py -q -m unit`
 - Manual smoke: fresh `river-35b` pane completed real work and `uv run dgov pane output output-noise-repro --tail 40` returned only `Done.`
 
 ## Lookup Cache
 - `src/dgov/done.py` — `_strip_ansi()` now renders a small subset of terminal control semantics before stripping escape sequences.
-- `src/dgov/dashboard.py` — preview path now uses `_format_trace_data()` first, then falls back to log tail; duplicate trace-preview implementations were removed.
+- `src/dgov/dashboard.py` — preview path now uses `_format_trace_data()` first, then falls back to log tail; preview state is now slug-scoped so selection changes cannot render stale preview bodies under a new title.
 - `src/dgov/status.py` — `tail_worker_log()` and `capture_worker_output()` now pass through `_clean_worker_output_text()` to hide internal bootstrap echoes and prompt noise from user-facing output.
 - `src/dgov/cli/pane.py` — `pane output` and `pane tail` follow paths now apply the same output cleaner to streamed log lines.
 - `tests/test_status.py` — includes regression coverage for carriage-return, backspace, cursor-rewrite behavior, and internal bootstrap echo filtering.
-- `tests/test_dashboard.py` — covers structured trace preview rendering and empty/fallback behavior.
+- `tests/test_dashboard.py` — covers structured trace preview rendering, empty/fallback behavior, and the selection/preview drift regression.
 - `src/dgov/lifecycle.py` — early bracketed-paste disable was restored ahead of the first long bootstrap paste.
+- `.claude/skills/dgov/SKILL.md` — bootstrap skill now describes plan-first dispatch, logical routing, and generic local tunnel health instead of provider-specific notes.
+- `.claude/commands/dgov-dispatch.md` — dispatch template now biases toward plans for plan-shaped work and uses logical-agent ad-hoc pane examples.
+- `.claude/commands/dgov-handover.md` — handover template now matches the actual current HANDOVER structure and requires keeping the file aligned with the latest commit.
+- `.claude/commands/dgov-debrief.md` — debrief template now reports at the role level by default and treats physical backend names as secondary evidence.
 
 ## Open Issues
 - Agent health is still degraded (`18 healthy / 4 unhealthy`). Investigate before leaning on retries/escalation or local tunnel-backed workers.
-- Claude-side process docs are still stale in places:
-  - `.claude/skills/dgov/SKILL.md`
-  - `.claude/commands/dgov-dispatch.md`
-  - `.claude/commands/dgov-handover.md`
 
 ## Next Steps
+- Triage the `4` unhealthy agents and `recent failures: 8` before treating retry/escalation noise as a code problem.
 - If continuing operator-experience work, build on the dashboard trace preview rather than adding a second live-view surface.
-- Update the stale Claude skill/command docs so they match current role-based routing and plan-first governor policy.
