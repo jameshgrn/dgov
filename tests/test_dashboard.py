@@ -454,11 +454,11 @@ class TestPreviewState:
         from dgov.dashboard import DashboardState
 
         state = DashboardState()
-        assert state.preview_lines == []
+        assert state.preview is None
         assert state.preview_visible is False
 
     def test_preview_hidden_by_default(self):
-        from dgov.dashboard import DashboardState
+        from dgov.dashboard import DashboardPreview, DashboardState
 
         state = DashboardState(
             panes=[
@@ -472,14 +472,14 @@ class TestPreviewState:
             ],
             branch="main",
             last_refresh=1710000000,
-            preview_lines=["line 1", "line 2"],
+            preview=DashboardPreview("worker-a", ["line 1", "line 2"]),
             preview_visible=False,
         )
         output = _render_dashboard_text(state, width=120, height=30)
         assert "Output:" not in output
 
     def test_preview_shown_when_visible(self):
-        from dgov.dashboard import DashboardState
+        from dgov.dashboard import DashboardPreview, DashboardState
 
         state = DashboardState(
             panes=[
@@ -493,7 +493,7 @@ class TestPreviewState:
             ],
             branch="main",
             last_refresh=1710000000,
-            preview_lines=["hello from worker"],
+            preview=DashboardPreview("worker-a", ["hello from worker"]),
             preview_visible=True,
         )
         output = _render_dashboard_text(state, width=120, height=30)
@@ -501,7 +501,7 @@ class TestPreviewState:
         assert "hello from worker" in output
 
     def test_preview_hidden_when_no_lines(self):
-        from dgov.dashboard import DashboardState
+        from dgov.dashboard import DashboardPreview, DashboardState
 
         state = DashboardState(
             panes=[
@@ -515,11 +515,41 @@ class TestPreviewState:
             ],
             branch="main",
             last_refresh=1710000000,
-            preview_lines=[],
+            preview=DashboardPreview("worker-a", []),
             preview_visible=True,
         )
         output = _render_dashboard_text(state, width=120, height=30)
         assert "Output:" not in output
+
+    def test_preview_hidden_when_cached_slug_differs_from_selection(self):
+        from dgov.dashboard import DashboardPreview, DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "working",
+                    "duration_s": 60,
+                },
+                {
+                    "slug": "worker-b",
+                    "agent": "pi",
+                    "state": "active",
+                    "summary": "working",
+                    "duration_s": 61,
+                },
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            selected=1,
+            preview=DashboardPreview("worker-a", ["hello from worker-a"]),
+            preview_visible=True,
+        )
+        output = _render_dashboard_text(state, width=120, height=30)
+        assert "Output:" not in output
+        assert "hello from worker-a" not in output
 
     def test_footer_includes_preview_key(self):
         from dgov.dashboard import DashboardState
@@ -641,7 +671,7 @@ class TestLayoutRendering:
         assert "q:quit" in output
 
     def test_build_layout_reuses_existing_tree(self):
-        from dgov.dashboard import DashboardState, _build_layout
+        from dgov.dashboard import DashboardPreview, DashboardState, _build_layout
 
         state = DashboardState(
             panes=[
@@ -655,7 +685,7 @@ class TestLayoutRendering:
             ],
             branch="main",
             last_refresh=1710000000,
-            preview_lines=["hello from worker"],
+            preview=DashboardPreview("worker-a", ["hello from worker"]),
             preview_visible=True,
         )
 
@@ -858,7 +888,7 @@ class TestDoneNotifications:
 @pytest.mark.unit
 class TestTracePreview:
     def test_trace_preview_renders_structured_lines(self):
-        from dgov.dashboard import DashboardState
+        from dgov.dashboard import DashboardPreview, DashboardState
 
         state = DashboardState(
             panes=[
@@ -871,7 +901,10 @@ class TestTracePreview:
             ],
             branch="main",
             last_refresh=1710000000,
-            preview_lines=["phases: dispatch[120ms] review[45ms] safe", "tools: Read, Bash"],
+            preview=DashboardPreview(
+                "worker-a",
+                ["phases: dispatch[120ms] review[45ms] safe", "tools: Read, Bash"],
+            ),
             preview_visible=True,
         )
 
@@ -973,7 +1006,7 @@ class TestTracePreview:
         assert lines == ["thought: Need to inspect the dashboard renderer before editing."]
 
     def test_dashboard_preview_empty_fallback(self):
-        from dgov.dashboard import DashboardState
+        from dgov.dashboard import DashboardPreview, DashboardState
 
         state = DashboardState(
             panes=[
@@ -986,7 +1019,7 @@ class TestTracePreview:
             ],
             branch="main",
             last_refresh=1710000000,
-            preview_lines=[],
+            preview=DashboardPreview("worker-empty", []),
             preview_visible=True,
         )
 

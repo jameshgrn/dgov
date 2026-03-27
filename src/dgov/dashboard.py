@@ -68,6 +68,12 @@ def fmt_duration(seconds: float) -> str:
 
 
 @dataclass
+class DashboardPreview:
+    slug: str
+    lines: list[str]
+
+
+@dataclass
 class DashboardState:
     panes: list[dict] = field(default_factory=list)
     events: list[dict] = field(default_factory=list)
@@ -82,7 +88,7 @@ class DashboardState:
     selected: int = 0
     scroll_offset: int = 0
     post_exit_attach: str = ""
-    preview_lines: list[str] = field(default_factory=list)
+    preview: DashboardPreview | None = None
     preview_visible: bool = False
     monitor_timestamp: float = 0.0
     # Done notification tracking
@@ -288,17 +294,18 @@ def fetch_panes(state: DashboardState) -> None:
                     new_done_slugs.append(slug)
 
         # Capture preview lines for the selected pane using trace data when available
-        preview: list[str] = []
+        preview: DashboardPreview | None = None
         with state.lock:
             sel_idx = state.selected
             want_preview = state.preview_visible
         if want_preview and panes and 0 <= sel_idx < len(panes):
             slug = panes[sel_idx].get("slug", "")
-            preview = _format_trace_data(session_root, slug)
-            if not preview:
+            preview_lines = _format_trace_data(session_root, slug)
+            if not preview_lines:
                 raw = tail_worker_log(session_root, slug, lines=5)
                 if raw:
-                    preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
+                    preview_lines = [ln for ln in raw.splitlines() if ln.strip()][-5:]
+            preview = DashboardPreview(slug=slug, lines=preview_lines)
 
         # Compute eval summary from active DAG runs (typed tables)
         eval_summary = ""
@@ -338,7 +345,7 @@ def fetch_panes(state: DashboardState) -> None:
             state.branch = branch
             state.last_refresh = time.time()
             state.error = ""
-            state.preview_lines = preview
+            state.preview = preview
             state.eval_summary = eval_summary
             m_ts = monitor_status.get("timestamp", 0)
             state.monitor_timestamp = float(m_ts) if m_ts else 0.0
@@ -376,6 +383,15 @@ def _wake_dashboard_observer(state: DashboardState) -> None:
     _notify_waiters(state.session_root or state.project_root)
 
 
+def _refresh_preview_for_selection_change(state: DashboardState) -> None:
+    with state.lock:
+        preview_visible = state.preview_visible
+    if not preview_visible:
+        return
+    state.force_refresh.set()
+    _wake_dashboard_observer(state)
+
+
 def data_thread(state: DashboardState, _interval: float) -> None:
     from dgov.persistence import _wait_for_notify
 
@@ -389,6 +405,7 @@ def data_thread(state: DashboardState, _interval: float) -> None:
             break
         state.force_refresh.clear()
         _refresh_dashboard_state(state)
+
 
 def _sort_panes_hierarchical(
     panes: list[dict], selected: int
@@ -548,7 +565,7 @@ def _build_layout(
         last_refresh = state.last_refresh
         error = state.error
         selected = state.selected
-        preview_lines = list(state.preview_lines)
+        preview = state.preview
         preview_visible = state.preview_visible
         monitor_timestamp = state.monitor_timestamp
         scroll_offset = state.scroll_offset
@@ -655,9 +672,13 @@ def _build_layout(
     if panes and 0 <= selected < len(panes):
         selected_slug = panes[selected].get("slug", "")
 
-    show_preview = preview_visible and bool(preview_lines) and bool(selected_slug)
-
-    preview_text = Text("\n".join(preview_lines)) if show_preview else Text("")
+    show_preview = (
+        preview_visible
+        and preview is not None
+        and preview.slug == selected_slug
+        and bool(preview.lines)
+    )
+    preview_text = Text("\n".join(preview.lines)) if show_preview and preview else Text("")
     preview_title = f"Output: {selected_slug}" if selected_slug else "Output"
 
     if layout is None:
@@ -824,12 +845,14 @@ def run_dashboard(
                         state.selected, position = _move_selection(state.panes, state.selected, 1)
                         if position >= state.scroll_offset + _VISIBLE_ROWS:
                             state.scroll_offset = position - _VISIBLE_ROWS + 1
+                    _refresh_preview_for_selection_change(state)
                     live.refresh()
                 elif ch == "k":
                     with state.lock:
                         state.selected, position = _move_selection(state.panes, state.selected, -1)
                         if position < state.scroll_offset:
                             state.scroll_offset = position
+                    _refresh_preview_for_selection_change(state)
                     live.refresh()
                 elif ch == "g":
                     with state.lock:
@@ -837,6 +860,7 @@ def run_dashboard(
                         if order:
                             state.selected = order[0]
                             state.scroll_offset = 0
+                    _refresh_preview_for_selection_change(state)
                     live.refresh()
                 elif ch == "G":
                     with state.lock:
@@ -844,6 +868,7 @@ def run_dashboard(
                         if order:
                             state.selected = order[-1]
                             state.scroll_offset = max(0, len(order) - _VISIBLE_ROWS)
+                    _refresh_preview_for_selection_change(state)
                     live.refresh()
                 elif ch == "r":
                     state.force_refresh.set()
