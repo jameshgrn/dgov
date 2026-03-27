@@ -463,15 +463,15 @@ def review_worker_pane(
     """Preview a worker pane's changes before merging.
 
     Returns diff stat, protected file status, commit log, and safe-to-merge verdict.
-    With ``full=True``, includes the complete diff. Emits review_pass or review_fail
-    events only when ``emit_events`` is True.
+    With ``full=True``, includes the complete diff. Emits review_pass only
+    when the pane has commits; otherwise emits review_fail.
     """
     result = _inspect_worker_pane(
         project_root, slug, session_root, full, tests_pass, lint_clean, post_merge_check
     )
     if emit_events and not result.error:
         sr = os.path.abspath(session_root or project_root)
-        if result.verdict == "safe":
+        if result.verdict == "safe" and result.commit_count > 0:
             emit_event(sr, "review_pass", slug, commit_count=result.commit_count)
         else:
             emit_event(sr, "review_fail", slug, issues=result.issues)

@@ -226,6 +226,37 @@ class TestReviewWorkerPane:
         assert args == (str(tmp_path), "review_fail", "worker-a")
         assert kwargs["issues"] == ["no commits — nothing to merge"]
 
+    def test_review_pass_with_commit_count_zero_does_not_emit_review_pass_event(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        """Regression test for bug #186: review_pass with commit_count=0 should not be emitted.
+
+        A pane with zero commits cannot be merged — the review should be normalized
+        to review_fail, not review_pass.
+        """
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+
+        # Simulate a pane with no commits (done state but no new commits)
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+            "state": "done",
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        # The verdict should be "review" (not "safe") because there are no commits
+        assert result.verdict == "review"
+        assert result.commit_count == 0
+        assert "no commits — nothing to merge" in result.issues
+
+        # The event should be review_fail, not review_pass
+        inspection_mocks["emit_event"].assert_called_once()
+        call_args = inspection_mocks["emit_event"].call_args
+        assert call_args.args[1] == "review_fail"
+
     def test_read_only_review_does_not_emit_events(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
     ) -> None:
