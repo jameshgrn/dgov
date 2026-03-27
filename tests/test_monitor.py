@@ -671,6 +671,16 @@ class TestMonitorEventState:
 class TestApplyDagEvents:
     """Regression test: dag_run_id must be read from event dict, not parsed data blob."""
 
+    def test_review_pass_factory_preserves_commit_count(self):
+        from dgov.kernel import TaskReviewDone
+        from dgov.monitor import _DAG_EVENT_FACTORY
+
+        event = _DAG_EVENT_FACTORY["review_pass"]("task-1", "task-1", {"commit_count": "2"})
+
+        assert isinstance(event, TaskReviewDone)
+        assert event.passed is True
+        assert event.commit_count == 2
+
     def test_dag_started_reads_run_id_from_event(self, monkeypatch):
         from dgov.monitor import MonitorLoopState, _apply_monitor_events
 

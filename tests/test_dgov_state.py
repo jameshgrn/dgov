@@ -492,6 +492,30 @@ class TestDagEvents:
         assert events[0]["event"] == "dag_task_completed"
         assert events[0]["pane"] == "T0"
 
+    def test_wait_for_events_preserves_typed_commit_count(self, tmp_path, monkeypatch):
+        from dgov.persistence import emit_event, latest_event_id, wait_for_events
+
+        session = self._make_session(tmp_path)
+        cursor = latest_event_id(session)
+
+        def fake_wait(session_root: str, timeout: float) -> bool:
+            emit_event(session, "review_pass", "task-1", commit_count=2)
+            return True
+
+        monkeypatch.setattr("dgov.persistence._wait_for_notify", fake_wait)
+        events = wait_for_events(
+            session,
+            after_id=cursor,
+            panes=("task-1",),
+            event_types=("review_pass",),
+            timeout_s=0.5,
+        )
+
+        assert len(events) == 1
+        assert events[0]["event"] == "review_pass"
+        assert events[0]["pane"] == "task-1"
+        assert events[0]["commit_count"] == "2"
+
     def test_wait_for_events_returns_empty_on_timeout(self, tmp_path):
         from dgov.persistence import latest_event_id, wait_for_events
 

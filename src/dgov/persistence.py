@@ -176,6 +176,7 @@ VALID_EVENTS = frozenset(
 
 _EVENT_TYPED_COLS = frozenset(
     {
+        "commit_count",
         "error",
         "reason",
         "merge_sha",
@@ -300,7 +301,9 @@ def wait_for_events(
     pane_filters = tuple(dict.fromkeys(p for p in panes if p))
     event_filters = tuple(dict.fromkeys(e for e in event_types if e))
 
-    query = ["SELECT id, ts, event, pane, data FROM events WHERE id > ?"]
+    typed_col_names = list(_EVENT_TYPED_COLS)
+    typed_select = ", ".join(typed_col_names)
+    query = [f"SELECT id, ts, event, pane, data, {typed_select} FROM events WHERE id > ?"]
     params: list[object] = [after_id]
 
     if pane_filters:
@@ -321,12 +324,17 @@ def wait_for_events(
         rows = conn.execute(sql, tuple(params)).fetchall()
         if rows:
             events: list[dict] = []
-            for event_id, ts, event, pane, data_str in rows:
+            for row in rows:
+                event_id, ts, event, pane, data_str = row[:5]
                 ev = {"id": event_id, "ts": ts, "event": event, "pane": pane}
                 try:
                     ev.update(json.loads(data_str))
                 except (json.JSONDecodeError, TypeError):
                     pass
+                for i, col in enumerate(typed_col_names):
+                    val = row[5 + i]
+                    if val:
+                        ev[col] = val
                 events.append(ev)
             return events
 
@@ -523,6 +531,7 @@ CREATE TABLE IF NOT EXISTS events (
     event TEXT NOT NULL,
     pane TEXT NOT NULL,
     data TEXT NOT NULL DEFAULT '{}',
+    commit_count TEXT DEFAULT NULL,
     error TEXT DEFAULT NULL,
     reason TEXT DEFAULT NULL,
     merge_sha TEXT DEFAULT NULL,
@@ -841,6 +850,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
 
     # Migrate: add typed event columns
     _event_cols = [
+        ("commit_count", "TEXT DEFAULT NULL"),
         ("error", "TEXT DEFAULT NULL"),
         ("reason", "TEXT DEFAULT NULL"),
         ("merge_sha", "TEXT DEFAULT NULL"),
