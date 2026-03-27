@@ -1117,3 +1117,74 @@ class TestTracePreview:
         output = _render_dashboard_text(state, width=120, height=30)
 
         assert "Output:" not in output
+
+
+@pytest.mark.unit
+class TestFetchPanesPreview:
+    def test_fetch_panes_preview_prefers_canonical_live_capture(self, tmp_path, monkeypatch):
+        from dgov.dashboard import DashboardState, fetch_panes
+
+        state = DashboardState(project_root=str(tmp_path), session_root=str(tmp_path))
+        monkeypatch.setattr(
+            "dgov.status.list_worker_panes",
+            lambda *args, **kwargs: [
+                {
+                    "slug": "worker-live",
+                    "agent": "qwen-9b",
+                    "state": "active",
+                    "duration_s": 10,
+                }
+            ],
+        )
+        monkeypatch.setattr("dgov.persistence.read_events", lambda *args, **kwargs: [])
+        monkeypatch.setattr("dgov.dashboard._get_branch_cached", lambda *_: "main")
+        monkeypatch.setattr(
+            "dgov.status.capture_worker_output",
+            lambda *args, **kwargs: "live line 1\nlive line 2",
+        )
+        monkeypatch.setattr(
+            "dgov.dashboard._format_trace_data",
+            lambda *args, **kwargs: ["phases: dispatch[1s]"],
+        )
+        monkeypatch.setattr(
+            "dgov.status.tail_worker_log",
+            lambda *args, **kwargs: "thin fallback",
+        )
+
+        fetch_panes(state)
+
+        assert state.preview is not None
+        assert state.preview.slug == "worker-live"
+        assert state.preview.lines == ["live line 1", "live line 2"]
+
+    def test_fetch_panes_preview_falls_back_to_trace_data(self, tmp_path, monkeypatch):
+        from dgov.dashboard import DashboardState, fetch_panes
+
+        state = DashboardState(project_root=str(tmp_path), session_root=str(tmp_path))
+        monkeypatch.setattr(
+            "dgov.status.list_worker_panes",
+            lambda *args, **kwargs: [
+                {
+                    "slug": "worker-live",
+                    "agent": "qwen-9b",
+                    "state": "active",
+                    "duration_s": 10,
+                }
+            ],
+        )
+        monkeypatch.setattr("dgov.persistence.read_events", lambda *args, **kwargs: [])
+        monkeypatch.setattr("dgov.dashboard._get_branch_cached", lambda *_: "main")
+        monkeypatch.setattr("dgov.status.capture_worker_output", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "dgov.dashboard._format_trace_data",
+            lambda *args, **kwargs: ["phases: dispatch[120ms]", "tools: Read, Bash"],
+        )
+        monkeypatch.setattr(
+            "dgov.status.tail_worker_log",
+            lambda *args, **kwargs: "thin fallback",
+        )
+
+        fetch_panes(state)
+
+        assert state.preview is not None
+        assert state.preview.lines == ["phases: dispatch[120ms]", "tools: Read, Bash"]

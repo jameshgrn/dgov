@@ -228,7 +228,7 @@ def _format_trace_data(session_root: str, slug: str) -> list[str]:
 
 def fetch_panes(state: DashboardState) -> None:
     from dgov.persistence import STATE_DIR, read_events
-    from dgov.status import list_worker_panes, tail_worker_log
+    from dgov.status import capture_worker_output, list_worker_panes, tail_worker_log
 
     try:
         panes = list_worker_panes(
@@ -301,7 +301,17 @@ def fetch_panes(state: DashboardState) -> None:
         selected_pane = _selected_visible_pane(panes, sel_idx)
         if want_preview and selected_pane is not None and selected_pane.get("state") == "active":
             slug = selected_pane.get("slug", "")
-            preview_lines = _format_trace_data(session_root, slug)
+            preview_lines: list[str] = []
+            raw = capture_worker_output(
+                state.project_root,
+                slug,
+                lines=8,
+                session_root=session_root,
+            )
+            if raw:
+                preview_lines = [ln for ln in raw.splitlines() if ln.strip()][-8:]
+            if not preview_lines:
+                preview_lines = _format_trace_data(session_root, slug)
             if not preview_lines:
                 raw = tail_worker_log(session_root, slug, lines=5)
                 if raw:
