@@ -1173,7 +1173,7 @@ class TestWriteWorktreeInstructions:
         assert ".dgov/DGOV_WORKER_INSTRUCTIONS.md" in exclude_content
         assert ".dgov/DGOV_SYSTEM_PROMPT.md" in exclude_content
 
-    def test_system_prompt_omits_task_and_codebase_payload(
+    def test_worker_prompts_omit_codebase_payload(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         from dgov.lifecycle import _write_worktree_instructions
@@ -1193,7 +1193,9 @@ class TestWriteWorktreeInstructions:
 
         assert "## Task" in instructions_content
         assert "Fix parser bug" in instructions_content
-        assert "## Codebase Map" in instructions_content
+        assert "Read CODEBASE.md" in instructions_content
+        assert "## Codebase Map" not in instructions_content
+        assert "heavy content" not in instructions_content
         assert "## Task" not in system_prompt_content
         assert "## Codebase Map" not in system_prompt_content
         assert "heavy content" not in system_prompt_content
