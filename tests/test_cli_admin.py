@@ -46,6 +46,8 @@ class TestStatusCmd:
         data = json.loads(result.output)
         assert data["total"] == 0
         assert data["panes"] == []
+        assert data["preserved"] == []
+        assert data["preserved_total"] == 0
 
     def test_status_with_panes_json(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test status --json outputs correct counts."""
@@ -68,7 +70,30 @@ class TestStatusCmd:
         data = json.loads(result.output)
         assert data["total"] == 2
         assert data["alive"] == 1
-        assert data["done"] == 1
+
+    def test_status_json_separates_preserved_terminal_evidence(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        panes = [
+            {
+                "slug": "preserved-pane",
+                "alive": False,
+                "state": "superseded",
+                "preserved_reason": "dirty_worktree",
+                "preserved_recoverable": True,
+            }
+        ]
+        with patch("dgov.status.list_worker_panes", return_value=panes):
+            result = runner.invoke(cli, ["status", "--json", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["total"] == 0
+        assert data["panes"] == []
+        assert data["preserved_total"] == 1
+        assert len(data["preserved"]) == 1
+        assert data["preserved"][0]["slug"] == "preserved-pane"
+        assert data["done"] == 0
         assert data["merged"] == 0
         assert data["failed"] == 0
 
@@ -156,6 +181,32 @@ class TestStatusCmd:
         assert "1 installed" in output
         assert "0 healthy" in output
         assert "1 unhealthy" in output
+
+    def test_status_human_readable_separates_preserved_terminal_evidence(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        with (
+            patch(
+                "dgov.status.list_worker_panes",
+                return_value=[
+                    {
+                        "slug": "preserved-pane",
+                        "alive": False,
+                        "state": "superseded",
+                        "preserved_reason": "dirty_worktree",
+                        "preserved_recoverable": True,
+                    }
+                ],
+            ),
+            patch("dgov.agents.load_registry", return_value={}),
+            patch("dgov.agents.detect_installed_agents", return_value=[]),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        assert "dgov status: 0 panes" in output
+        assert "preserved evidence: 1 pane" in output
 
 
 class TestRebaseCmd:

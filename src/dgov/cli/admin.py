@@ -458,6 +458,7 @@ def status(project_root, session_root, output_json):
     sr = session_root or project_root
     session_root_abs = os.path.abspath(sr)
     panes = list_worker_panes(project_root, session_root=session_root)
+    live_panes, preserved_panes = _split_live_and_preserved_panes(panes)
     registry = load_registry(project_root)
     installed = set(detect_installed_agents(registry))
 
@@ -466,21 +467,23 @@ def status(project_root, session_root, output_json):
         click.echo(
             json.dumps(
                 {
-                    "panes": panes,
-                    "total": len(panes),
-                    "alive": sum(1 for p in panes if p["alive"]),
-                    "done": sum(1 for p in panes if p.get("state") == "done"),
-                    "merged": sum(1 for p in panes if p.get("state") == "merged"),
-                    "failed": sum(1 for p in panes if p.get("state") == "failed"),
+                    "panes": live_panes,
+                    "preserved": preserved_panes,
+                    "total": len(live_panes),
+                    "preserved_total": len(preserved_panes),
+                    "alive": sum(1 for p in live_panes if p["alive"]),
+                    "done": sum(1 for p in live_panes if p.get("state") == "done"),
+                    "merged": sum(1 for p in live_panes if p.get("state") == "merged"),
+                    "failed": sum(1 for p in live_panes if p.get("state") == "failed"),
                 },
                 indent=2,
             )
         )
     else:
         # Human-readable summary
-        total = len(panes)
+        total = len(live_panes)
         by_state: dict[str, int] = {}
-        for p in panes:
+        for p in live_panes:
             state = p.get("state") or "active"
             by_state[state] = by_state.get(state, 0) + 1
 
@@ -514,6 +517,10 @@ def status(project_root, session_root, output_json):
 
         panes_str = ", ".join(parts)
         lines.append(f"dgov status: {panes_str}")
+        if preserved_panes:
+            preserved_count = len(preserved_panes)
+            noun = "pane" if preserved_count == 1 else "panes"
+            lines.append(f"preserved evidence: {preserved_count} {noun}")
 
         # Failed count on separate line if any
         if failed_count > 0:
@@ -548,6 +555,38 @@ def status(project_root, session_root, output_json):
             pass
 
         click.echo("\n".join(lines))
+
+
+_TERMINAL_EVIDENCE_STATES = {
+    "done",
+    "merged",
+    "failed",
+    "superseded",
+    "closed",
+    "escalated",
+    "timed_out",
+    "abandoned",
+}
+
+
+def _split_live_and_preserved_panes(panes: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Separate live panes from preserved terminal evidence rows."""
+    live: list[dict] = []
+    preserved: list[dict] = []
+    for pane in panes:
+        state = str(pane.get("state") or "active")
+        is_preserved = any(
+            [
+                pane.get("preserved_artifacts"),
+                pane.get("preserved_reason"),
+                pane.get("preserved_recoverable"),
+            ]
+        )
+        if is_preserved and state in _TERMINAL_EVIDENCE_STATES:
+            preserved.append(pane)
+        else:
+            live.append(pane)
+    return live, preserved
 
 
 @click.command("rebase")
