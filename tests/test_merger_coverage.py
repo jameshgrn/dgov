@@ -1205,6 +1205,64 @@ def test_merge_worker_pane_fails_when_post_merge_tests_fail(
     )
 
 
+def test_merge_worker_pane_reports_related_test_files_on_failure(
+    tmp_path: Path,
+    _mock_backend: MagicMock,
+) -> None:
+    """List-shaped test metadata should produce a clear failure summary."""
+    repo = _init_repo(tmp_path, "post-test-fail-files")
+    base_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    worktree = _add_worktree(repo, tmp_path, "dgov-post-test-files")
+
+    (worktree / "worker.py").write_text("def worker():\n    return 1\n")
+    _git(worktree, "add", "worker.py")
+    _git(worktree, "commit", "-m", "add worker module")
+
+    pane = _pane_record(
+        repo,
+        worktree,
+        slug="post-test-fail-files",
+        branch_name="dgov-post-test-files",
+        base_sha=base_sha,
+    )
+
+    fake_test_result = {
+        "tests_ran": ["tests/test_spans.py"],
+        "tests_passed": False,
+        "test_output": "1 failed",
+    }
+
+    with (
+        patch("dgov.persistence.get_pane", return_value=pane),
+        patch("dgov.persistence.update_pane_state") as mock_update_state,
+        patch("dgov.persistence.emit_event") as mock_emit_event,
+        patch("dgov.persistence.set_pane_metadata"),
+        patch("dgov.backend.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
+        patch("dgov.lifecycle.close_worker_pane"),
+        patch("dgov.merger._lint_fix_merged_files", return_value={"lint_fixed": []}),
+        patch(
+            "dgov.inspection._run_related_tests",
+            return_value=fake_test_result,
+        ),
+    ):
+        result = merge_worker_pane(str(repo), "post-test-fail-files", session_root=str(repo))
+
+    assert (
+        result.error == "Post-merge tests failed for 1 related test file(s): tests/test_spans.py"
+    )
+    assert result.validation_failed is True
+    assert worktree.exists()
+    assert _git(repo, "rev-parse", "HEAD").stdout.strip() == base_sha
+    mock_update_state.assert_not_called()
+    mock_emit_event.assert_any_call(
+        str(repo),
+        "pane_merge_failed",
+        "post-test-fail-files",
+        error="Post-merge tests failed for 1 related test file(s): tests/test_spans.py",
+    )
+
+
 def test_lint_unfixable_issues_block_merge_completion(
     tmp_path: Path,
     _mock_backend: MagicMock,

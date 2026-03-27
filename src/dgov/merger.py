@@ -1264,6 +1264,27 @@ def _validate_post_merge(
         )
 
     # Tests
+    def _format_post_merge_test_failure(test_result: dict) -> str:
+        tests_ran = test_result.get("tests_ran", [])
+        tests_failed = test_result.get("tests_failed")
+
+        if isinstance(tests_ran, list):
+            count = len(tests_ran)
+            files = ", ".join(tests_ran)
+            scope = f"for {count} related test file(s): {files}" if files else ""
+        else:
+            count = tests_ran if isinstance(tests_ran, int) else 0
+            scope = f"in {count} tests ran"
+
+        if test_result.get("timed_out"):
+            prefix = "Post-merge tests timed out"
+        elif isinstance(tests_failed, int):
+            prefix = f"Post-merge tests failed: {tests_failed} failures"
+        else:
+            prefix = "Post-merge tests failed"
+
+        return f"{prefix} {scope}".strip()
+
     test_result = _run_related_tests(merge_root, changed_file_names)
     if test_result:
         logger.info(
@@ -1274,11 +1295,7 @@ def _validate_post_merge(
     if test_result and not test_result.get("no_tests_found"):
         if not test_result.get("tests_passed"):
             validation_failed = True
-            validation_error = (
-                f"Post-merge tests failed: "
-                f"{test_result.get('tests_failed', 'unknown')} failures "
-                f"in {test_result.get('tests_ran', 0)} tests ran"
-            )
+            validation_error = _format_post_merge_test_failure(test_result)
             logger.error("%s", validation_error)
 
     return validation_failed, validation_error, lint_result, test_result, warning_msg
