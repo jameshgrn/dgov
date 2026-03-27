@@ -1185,18 +1185,35 @@ def _full_cleanup(
                 skipped_worktree = True
 
         if not skipped_worktree and wt:
-            remove_result = subprocess.run(
-                ["git", "-C", project_root, "worktree", "remove", "--force", wt],
-                capture_output=True,
-                text=True,
-            )
-            if remove_result.returncode != 0:
-                logger.error(
-                    "Failed to remove worktree %s: %s",
-                    wt,
-                    remove_result.stderr.strip(),
+            wt_path = Path(wt)
+            is_valid_worktree = False
+
+            if not wt_path.exists():
+                logger.info("Worktree already gone for %s: %s", slug, wt)
+            else:
+                check = subprocess.run(
+                    ["git", "-C", wt, "rev-parse", "--git-dir"],
+                    capture_output=True,
+                    text=True,
                 )
-                worktree_removal_failed = True
+                is_valid_worktree = check.returncode == 0 and "worktrees" in check.stdout
+                if not is_valid_worktree:
+                    shutil.rmtree(wt, ignore_errors=True)
+                    logger.info("Removed leftover non-worktree path for %s: %s", slug, wt)
+
+            if is_valid_worktree:
+                remove_result = subprocess.run(
+                    ["git", "-C", project_root, "worktree", "remove", "--force", wt],
+                    capture_output=True,
+                    text=True,
+                )
+                if remove_result.returncode != 0:
+                    logger.error(
+                        "Failed to remove worktree %s: %s",
+                        wt,
+                        remove_result.stderr.strip(),
+                    )
+                    worktree_removal_failed = True
 
             if branch and not worktree_removal_failed:
                 pane_state = pane_record.get("state", "")

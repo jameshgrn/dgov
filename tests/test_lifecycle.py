@@ -502,10 +502,18 @@ class TestFullCleanup:
 
         sr = str(tmp_path)
         _add_pane(tmp_path, "owned-pane", owns_worktree=True)
+        (tmp_path / "owned-pane").mkdir()
 
         pane = get_pane(sr, "owned-pane")
-        with patch("dgov.lifecycle.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        def fake_run(cmd, **kw):
+            if cmd[:4] == ["git", "-C", str(tmp_path / "owned-pane"), "rev-parse"]:
+                return MagicMock(
+                    returncode=0, stdout=f"{sr}/.git/worktrees/owned-pane\n", stderr=""
+                )
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("dgov.lifecycle.subprocess.run", side_effect=fake_run) as mock_run:
             result = _full_cleanup(sr, sr, "owned-pane", pane)
 
         # Should have called worktree remove and branch delete
@@ -616,6 +624,7 @@ class TestFullCleanup:
         from dgov.lifecycle import _full_cleanup
 
         sr = str(tmp_path)
+        (tmp_path / "wt").mkdir()
         _add_pane(
             tmp_path, "descendant-pane", owns_worktree=True, worktree_path=str(tmp_path / "wt")
         )
@@ -628,7 +637,10 @@ class TestFullCleanup:
         def fake_run(cmd, **kw):
             git_calls.append(cmd)
             m = MagicMock()
-            if "status" in cmd and "--porcelain" in cmd:
+            if cmd[:4] == ["git", "-C", str(tmp_path / "wt"), "rev-parse"]:
+                m.returncode = 0
+                m.stdout = f"{sr}/.git/worktrees/descendant-pane\n"
+            elif "status" in cmd and "--porcelain" in cmd:
                 m.stdout = ""  # clean worktree
             elif "worktree" in cmd and "remove" in cmd:
                 m.returncode = 0
@@ -791,6 +803,59 @@ class TestFullCleanup:
         assert result is True
         assert get_pane(sr, "superseded-pane") is None
 
+    def test_full_cleanup_skips_git_remove_for_invalid_worktree_path(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Leftover directories should not be treated as git worktree removal failures."""
+        from dgov.lifecycle import _full_cleanup
+
+        sr = str(tmp_path)
+        wt_path = tmp_path / "leftover-pane"
+        wt_path.mkdir()
+        (wt_path / "orphan.txt").write_text("leftover\n")
+        _add_pane(
+            tmp_path,
+            "leftover-pane",
+            state="superseded",
+            owns_worktree=True,
+            worktree_path=str(wt_path),
+            branch_name="leftover-branch",
+        )
+
+        pane = get_pane(sr, "leftover-pane")
+        assert pane is not None
+
+        git_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            git_calls.append(cmd)
+            m = MagicMock()
+            if cmd[:4] == ["git", "-C", str(wt_path), "rev-parse"]:
+                m.returncode = 1
+                m.stdout = ""
+                m.stderr = "not a git repository"
+                return m
+            if "worktree" in cmd and "remove" in cmd:
+                raise AssertionError("git worktree remove should be skipped for invalid paths")
+            m.returncode = 0
+            m.stdout = ""
+            m.stderr = ""
+            return m
+
+        with (
+            patch("subprocess.run", fake_run),
+            patch("dgov.tmux._run", return_value=""),
+        ):
+            result = _full_cleanup(sr, sr, "leftover-pane", pane)
+
+        assert result["cleaned"] is True
+        assert result["worktree_removal_failed"] is False
+        assert result["branch_kept"] is False
+        assert not wt_path.exists()
+        branch_calls = [cmd for cmd in git_calls if "branch" in cmd]
+        assert len(branch_calls) == 1
+        assert branch_calls[0][-1] == "leftover-branch"
+
     def test_close_worker_pane_closes_retry_descendants(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
@@ -850,7 +915,10 @@ class TestFullCleanup:
         def fake_run(cmd, **kw):
             git_calls.append(cmd)
             m = MagicMock()
-            if "status" in cmd and "--porcelain" in cmd:
+            if cmd[:4] == ["git", "-C", str(wt_path), "rev-parse"]:
+                m.returncode = 0
+                m.stdout = f"{sr}/.git/worktrees/clean-pane\n"
+            elif "status" in cmd and "--porcelain" in cmd:
                 m.stdout = ""  # clean worktree
             elif "worktree" in cmd and "remove" in cmd:
                 m.returncode = 0
