@@ -123,12 +123,7 @@ def _get_branch_cached(project_root: str) -> str:
 
 
 def fetch_spans_and_traces(session_root: str, trace_id: str) -> tuple[list[dict], list[dict]]:
-    """Fetch span and tool-trace data for a pane by trace_id (slug).
-
-    Returns (spans, tool_trace) where spans is list of dict with span data
-    and tool_trace is list of dict with tool-call events. Falls back to
-    empty lists if no data exists.
-    """
+    """Fetch span and tool-trace data for a pane by trace_id (slug)."""
     try:
         from dgov.spans import get_spans, get_tool_trace
 
@@ -140,12 +135,7 @@ def fetch_spans_and_traces(session_root: str, trace_id: str) -> tuple[list[dict]
 
 
 def format_span_summary(spans: list[dict]) -> str:
-    """Format a summary line from span data.
-
-    Produces a human-readable string like:
-    "dispatch(45ms,safe) wait(120ms,merged) review(30ms)"
-    or empty string if no spans.
-    """
+    """Format a concise summary line from span data."""
     if not spans:
         return ""
 
@@ -154,6 +144,7 @@ def format_span_summary(spans: list[dict]) -> str:
         kind = s.get("span_kind", "")
         duration_ms = s.get("duration_ms", -1)
         outcome = s.get("outcome", "pending")
+        verdict = s.get("verdict", "")
 
         dur_str = ""
         if duration_ms >= 0:
@@ -162,21 +153,13 @@ def format_span_summary(spans: list[dict]) -> str:
             else:
                 dur_str = f"{duration_ms / 1000:.1f}s"
 
-        outcome_str = ""
-        if outcome == "success":
-            outcome_str = "(safe)"
-        elif outcome == "failure":
-            outcome_str = "(failed)"
-        elif kind == "review":
-            verdict = s.get("verdict", "")
-            if verdict:
-                outcome_str = f"({verdict})"
-
         part = f"{kind}"
         if dur_str:
             part += f"[{dur_str}]"
-        if outcome_str:
-            part += f" {outcome_str}"
+        if kind == "review" and verdict:
+            part += f" {verdict}"
+        elif outcome not in {"", "pending", "success"}:
+            part += f" {outcome}"
 
         parts.append(part)
 
@@ -184,48 +167,57 @@ def format_span_summary(spans: list[dict]) -> str:
 
 
 def format_tool_trace_activity(tool_trace: list[dict], max_lines: int = 5) -> str:
-    """Format recent tool-trace activity for dashboard preview.
-
-    Returns a multiline string showing the last N tool calls and thinking steps,
-    with sensible fallback to empty string when no data exists.
-    """
+    """Format recent tool-trace activity for dashboard preview."""
     if not tool_trace:
         return ""
 
-    # Group by action type
     tool_calls = [t for t in tool_trace if t.get("action_type") == "tool_call"]
     thinking = [t for t in tool_trace if t.get("action_type") == "thinking"]
     results = [t for t in tool_trace if t.get("action_type") == "tool_result"]
 
     lines: list[str] = []
 
-    # Show recent tool calls
     if tool_calls:
-        recent = tool_calls[-3:]  # Last 3 calls
+        recent = tool_calls[-3:]
         call_names = [t.get("tool_name", "unknown") for t in recent]
         lines.append(f"tools: {', '.join(call_names)}")
 
-    # Show thinking snippets (first 60 chars)
     if thinking:
-        recent_thoughts = thinking[-2:]  # Last 2 thoughts
-        thought_lines = []
-        for t in recent_thoughts:
-            thinking_text = t.get("thinking", "")[:60]
-            if thinking_text.strip():
-                thought_lines.append(f"thought: {thinking_text}...")
-        if thought_lines:
-            lines.append("\n".join(thought_lines))
+        for t in thinking[-2:]:
+            thinking_text = " ".join(t.get("thinking", "").split())[:60]
+            if thinking_text:
+                suffix = "..." if len(thinking_text) == 60 else ""
+                lines.append(f"thought: {thinking_text}{suffix}")
 
-    # Show recent tool results (brief)
     if results:
-        recent = results[-1:]
-        for t in recent:
-            status = t.get("tool_status", "")
-            result_text = t.get("tool_result", "")[:50]
-            if status and result_text:
-                lines.append(f"result[{status}]: {result_text}")
+        t = results[-1]
+        status = t.get("tool_status", "")
+        result_text = " ".join(t.get("tool_result", "").split())[:50]
+        if status and result_text:
+            suffix = "..." if len(result_text) == 50 else ""
+            lines.append(f"result[{status}]: {result_text}{suffix}")
 
-    return "\n".join(lines) if lines else ""
+    return "\n".join(lines[:max_lines]) if lines else ""
+
+
+def _format_trace_data(session_root: str, slug: str) -> list[str]:
+    """Format structured trace data for the dashboard preview."""
+
+    spans, tool_trace = fetch_spans_and_traces(session_root, slug)
+    if not spans and not tool_trace:
+        return []
+
+    lines: list[str] = []
+
+    span_summary = format_span_summary(spans)
+    if span_summary:
+        lines.append(f"phases: {span_summary}")
+
+    tool_activity = format_tool_trace_activity(tool_trace, max_lines=5)
+    if tool_activity:
+        lines.extend(tool_activity.splitlines())
+
+    return lines
 
 
 def fetch_panes(state: DashboardState) -> None:
@@ -302,34 +294,8 @@ def fetch_panes(state: DashboardState) -> None:
             want_preview = state.preview_visible
         if want_preview and panes and 0 <= sel_idx < len(panes):
             slug = panes[sel_idx].get("slug", "")
-
-            # Try span/trace data first (formatted tool-call activity)
-            spans, tool_trace = fetch_spans_and_traces(session_root, slug)
-            if spans or tool_trace:
-                # Build formatted preview from structured data
-                parts: list[str] = []
-
-                # Span summary (lifecycle phases)
-                span_summary = format_span_summary(spans)
-                if span_summary:
-                    parts.append(f"[bold cyan]phases:[/bold cyan] {span_summary}")
-
-                # Tool-trace activity (tool calls, thinking, results)
-                tool_activity = format_tool_trace_activity(tool_trace, max_lines=5)
-                if tool_activity:
-                    parts.append("[bold yellow]activity:[/bold yellow]")
-                    for line in tool_activity.splitlines():
-                        parts.append(f"  {line}")
-
-                # Fallback to log tail if no trace data or empty
-                if not parts:
-                    raw = tail_worker_log(session_root, slug, lines=5)
-                    if raw:
-                        preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
-                else:
-                    preview = parts
-            else:
-                # No trace data — fall back to log-tail behavior
+            preview = _format_trace_data(session_root, slug)
+            if not preview:
                 raw = tail_worker_log(session_root, slug, lines=5)
                 if raw:
                     preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
@@ -423,7 +389,6 @@ def data_thread(state: DashboardState, _interval: float) -> None:
             break
         state.force_refresh.clear()
         _refresh_dashboard_state(state)
-
 
 def _sort_panes_hierarchical(
     panes: list[dict], selected: int

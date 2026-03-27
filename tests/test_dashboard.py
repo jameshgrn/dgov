@@ -853,3 +853,143 @@ class TestDoneNotifications:
         assert "worker-x" in output
         assert "worker-y" in output
         assert "worker-z" in output
+
+
+@pytest.mark.unit
+class TestTracePreview:
+    def test_trace_preview_renders_structured_lines(self):
+        from dgov.dashboard import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-a",
+                    "agent": "qwen-9b",
+                    "state": "active",
+                    "duration_s": 60,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            preview_lines=["phases: dispatch[120ms] review[45ms] safe", "tools: Read, Bash"],
+            preview_visible=True,
+        )
+
+        output = _render_dashboard_text(state, width=120, height=30)
+        assert "phases: dispatch[120ms] review[45ms] safe" in output
+        assert "tools: Read, Bash" in output
+        assert "Output: worker-a" in output
+
+    def test_format_trace_data_returns_empty_when_no_data(self, tmp_path):
+        from dgov.dashboard import _format_trace_data
+
+        assert _format_trace_data(str(tmp_path), "nonexistent-slug") == []
+
+    def test_format_trace_data_with_spans_only(self, tmp_path):
+        from dgov.dashboard import _format_trace_data
+        from dgov.spans import SpanKind, SpanOutcome, close_span, open_span
+
+        trace_id = "test-trace-spans-only"
+        span_id = open_span(str(tmp_path), trace_id, SpanKind.DISPATCH)
+        close_span(
+            str(tmp_path),
+            span_id,
+            SpanOutcome.SUCCESS,
+            agent="qwen-9b",
+            verdict="safe",
+            commit_count=2,
+            files_changed=1,
+        )
+
+        lines = _format_trace_data(str(tmp_path), trace_id)
+        assert len(lines) == 1
+        assert lines[0].startswith("phases: dispatch")
+
+    def test_format_trace_data_with_review_verdict(self, tmp_path):
+        from dgov.dashboard import _format_trace_data
+        from dgov.spans import SpanKind, SpanOutcome, close_span, open_span
+
+        trace_id = "test-trace-review"
+        span_id = open_span(str(tmp_path), trace_id, SpanKind.REVIEW)
+        close_span(str(tmp_path), span_id, SpanOutcome.SUCCESS, verdict="safe")
+
+        lines = _format_trace_data(str(tmp_path), trace_id)
+        assert len(lines) == 1
+        assert lines[0].startswith("phases: review")
+        assert "safe" in lines[0]
+
+    def test_format_trace_data_with_tool_call_breakdown(self, tmp_path):
+        from dgov.dashboard import _format_trace_data
+        from dgov.spans import _get_db
+
+        trace_id = "test-trace-breakdown"
+        conn = _get_db(str(tmp_path))
+        conn.execute(
+            (
+                "INSERT INTO tool_traces "
+                "(trace_id, seq, ts, role, action_type, tool_name) "
+                "VALUES (?, ?, ?, ?, ?, ?)"
+            ),
+            (trace_id, 1, "2025-03-27T10:00:01+00:00", "assistant", "tool_call", "Read"),
+        )
+        conn.execute(
+            (
+                "INSERT INTO tool_traces "
+                "(trace_id, seq, ts, role, action_type, tool_name) "
+                "VALUES (?, ?, ?, ?, ?, ?)"
+            ),
+            (trace_id, 2, "2025-03-27T10:00:02+00:00", "assistant", "tool_call", "Bash"),
+        )
+        conn.commit()
+
+        lines = _format_trace_data(str(tmp_path), trace_id)
+        assert lines == ["tools: Read, Bash"]
+
+    def test_format_trace_data_with_tool_traces_only(self, tmp_path):
+        from dgov.dashboard import _format_trace_data
+        from dgov.spans import _get_db
+
+        trace_id = "test-trace-tools-only"
+        conn = _get_db(str(tmp_path))
+        conn.execute(
+            (
+                "INSERT INTO tool_traces "
+                "(trace_id, seq, ts, role, action_type, tool_name, thinking) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)"
+            ),
+            (
+                trace_id,
+                1,
+                "2025-03-27T10:00:00+00:00",
+                "assistant",
+                "thinking",
+                "",
+                "Need to inspect the dashboard renderer before editing.",
+            ),
+        )
+        conn.commit()
+
+        lines = _format_trace_data(str(tmp_path), trace_id)
+        assert lines == ["thought: Need to inspect the dashboard renderer before editing."]
+
+    def test_dashboard_preview_empty_fallback(self):
+        from dgov.dashboard import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-empty",
+                    "agent": "qwen-9b",
+                    "state": "active",
+                    "duration_s": 60,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            preview_lines=[],
+            preview_visible=True,
+        )
+
+        output = _render_dashboard_text(state, width=120, height=30)
+
+        assert "Output:" not in output
