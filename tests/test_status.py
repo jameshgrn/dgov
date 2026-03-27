@@ -215,7 +215,15 @@ class TestShellPromptNoise:
 
     def test_strips_carriage_returns(self):
         text = "line1\rline2"
-        assert _strip_ansi(text) == "line1line2"
+        assert _strip_ansi(text) == "line2"
+
+    def test_applies_backspace_overwrite_semantics(self):
+        text = "s\bsource"
+        assert _strip_ansi(text) == "source"
+
+    def test_applies_cursor_rewrite_semantics(self):
+        text = "source old\x1b[10Dnew"
+        assert _strip_ansi(text) == "newrce old"
 
     def test_preserves_plain_text(self):
         text = "no escape codes here"

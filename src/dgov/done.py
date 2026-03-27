@@ -37,12 +37,113 @@ _ANSI_RE = re.compile(
     r"|\x1b\[\?[\d;]*[hl]"  # Private mode set/reset (DECSET/DECRST)
     r"|\x1b[78]"  # Save/restore cursor (DECSC/DECRC)
     r"|\x1b\[[0-9;]*~"  # Bracketed paste markers (200~/201~)
-    r"|[\x00-\x08\x0e-\x1f\x7f]"  # Control chars (wider range)
-    r"|\r"  # Carriage returns
+    r"|[\x00-\x07\x0e-\x1f\x7f]"  # Control chars other than backspace/tab/newline/cr
 )
+
+_CSI_RE = re.compile(r"\x1b\[([0-9;?]*)([A-Za-z~])")
+_OSC_RE = re.compile(r"\x1b\].*?(?:\x07|\x1b\\)")
+_TMUX_TITLE_RE = re.compile(r"\x1bk.*?\x1b\\")
+
+
+def _render_terminal_text(text: str) -> str:
+    """Render a small subset of terminal control semantics into plain text."""
+
+    lines: list[str] = []
+    current: list[str] = []
+    cursor = 0
+    i = 0
+
+    def ensure_length(pos: int) -> None:
+        if pos > len(current):
+            current.extend(" " * (pos - len(current)))
+
+    def write_char(ch: str) -> None:
+        nonlocal cursor
+        ensure_length(cursor)
+        if cursor == len(current):
+            current.append(ch)
+        else:
+            current[cursor] = ch
+        cursor += 1
+
+    def clear_to_end() -> None:
+        del current[cursor:]
+
+    while i < len(text):
+        ch = text[i]
+
+        if ch == "\n":
+            lines.append("".join(current).rstrip())
+            current = []
+            cursor = 0
+            i += 1
+            continue
+
+        if ch == "\r":
+            cursor = 0
+            i += 1
+            continue
+
+        if ch == "\b":
+            cursor = max(0, cursor - 1)
+            i += 1
+            continue
+
+        if ch == "\x1b":
+            if i + 1 < len(text) and text[i + 1] in "=><()78":
+                i += 2
+                continue
+
+            osc = _OSC_RE.match(text, i)
+            if osc:
+                i = osc.end()
+                continue
+
+            tmux_title = _TMUX_TITLE_RE.match(text, i)
+            if tmux_title:
+                i = tmux_title.end()
+                continue
+
+            csi = _CSI_RE.match(text, i)
+            if csi:
+                params, final = csi.groups()
+                raw_parts = [part for part in params.lstrip("?").split(";") if part]
+                parts = [int(part) if part.isdigit() else 0 for part in raw_parts]
+                amount = parts[0] if parts else 1
+
+                if final == "D":
+                    cursor = max(0, cursor - amount)
+                elif final == "C":
+                    cursor += amount
+                elif final in {"G", "`"}:
+                    cursor = max(0, amount - 1)
+                elif final == "K":
+                    clear_to_end()
+                elif final == "P":
+                    del current[cursor : cursor + amount]
+                i = csi.end()
+                continue
+
+            i += 1
+            continue
+
+        if ch == "\t":
+            write_char("\t")
+            i += 1
+            continue
+
+        if ch >= " ":
+            write_char(ch)
+        i += 1
+
+    if current:
+        lines.append("".join(current).rstrip())
+
+    return "\n".join(lines)
 
 
 def _strip_ansi(text: str) -> str:
+    text = _render_terminal_text(text)
     text = _ANSI_RE.sub("", text)
     return re.sub(r"\[\d{3}~", "", text)
 
