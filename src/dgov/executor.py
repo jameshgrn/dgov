@@ -2721,7 +2721,7 @@ def _dag_interrupt(
 ) -> None:
     """Gather context for a governor interrupt and emit dag_blocked event."""
     from dgov.inspection import diff_worker_pane
-    from dgov.persistence import emit_event, get_pane, upsert_dag_task
+    from dgov.persistence import emit_event, get_pane, update_dag_run, upsert_dag_task
     from dgov.status import tail_worker_log
 
     progress(f"  INTERRUPT: {task_slug} blocked on {reason}")
@@ -2760,7 +2760,10 @@ def _dag_interrupt(
     report_path = report_dir / f"{pane_slug}.json"
     report_path.write_text(json.dumps(interrupt_data, indent=2))
 
-    # 4. Notify governor
+    # 4. Persist run state
+    update_dag_run(session_root, run_id, status="blocked")
+
+    # 5. Notify governor
     emit_event(
         session_root,
         "dag_blocked",

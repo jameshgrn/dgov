@@ -286,10 +286,12 @@ def _dag_summary_to_batch_result(
 ) -> dict:
     """Translate canonical DAG output into the legacy batch result shape."""
     return {
+        "status": summary.status,
         "tiers": _build_batch_tier_results(tiers, task_rows),
         "merged": list(summary.merged),
         "failed": list(summary.failed),
         "skipped": list(summary.skipped),
+        "blocked": list(summary.blocked),
     }
 
 
@@ -349,13 +351,13 @@ def run_batch(
         events = wait_for_events(
             session_root,
             after_id=cursor,
-            event_types=("dag_completed", "dag_failed"),
+            event_types=("dag_completed", "dag_failed", "dag_blocked"),
             timeout_s=60.0,
         )
         finished = False
         for ev in events:
             cursor = max(cursor, ev["id"])
-            data = json.loads(ev["data"])
+            data = json.loads(ev.get("data", "{}"))
             if data.get("dag_run_id") == run_id:
                 finished = True
                 break
@@ -365,7 +367,7 @@ def run_batch(
 
         # Safety: check if it already finished between submission and wait
         run = get_dag_run(session_root, run_id)
-        if run and run["status"] in ("completed", "failed", "partial", "cancelled"):
+        if run and run["status"] in ("completed", "failed", "partial", "cancelled", "blocked"):
             break
 
     # Re-fetch final state

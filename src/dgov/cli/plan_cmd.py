@@ -340,7 +340,7 @@ def _scaffold_and_run(toml_text: str, output: str, wait: bool) -> None:
 
 
 def _wait_for_dag(run_id: int) -> None:
-    """Block on DAG events until evals_verified."""
+    """Block on DAG events until the run reaches a terminal state."""
     from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
 
     session_root = os.path.abspath(".")
@@ -355,6 +355,7 @@ def _wait_for_dag(run_id: int) -> None:
         "merge_completed",
         "dag_completed",
         "dag_failed",
+        "dag_blocked",
         "evals_verified",
     )
 
@@ -393,6 +394,17 @@ def _wait_for_dag(run_id: int) -> None:
                 click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
             elif kind == "merge_completed":
                 click.echo(f"  merged: {ev.get('pane', '')}")
+            elif kind == "dag_blocked":
+                data = json.loads(ev.get("data", "{}"))
+                task = data.get("task", "")
+                reason = data.get("reason", "")
+                detail = ": ".join(part for part in (task, reason) if part)
+                detail_str = f" — {detail}" if detail else ""
+                run = get_dag_run(session_root, run_id)
+                status = run["status"] if run else "unknown"
+                click.secho(f"  DAG blocked{detail_str}", fg="red")
+                click.echo(f"DAG run {run_id}: {status}")
+                raise SystemExit(1)
             elif kind in ("dag_completed", "dag_failed"):
                 click.echo(f"  DAG {kind.split('_')[1]}")
             elif kind == "evals_verified":

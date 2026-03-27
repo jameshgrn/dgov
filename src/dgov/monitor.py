@@ -672,7 +672,7 @@ def _apply_monitor_events(
                         state.active_dags[run_id] = ds
             continue
 
-        if kind in ("dag_completed", "dag_failed"):
+        if kind in ("dag_completed", "dag_failed", "dag_blocked"):
             run_id = event.get("dag_run_id")
             if run_id in state.active_dags:
                 del state.active_dags[run_id]

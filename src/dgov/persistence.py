@@ -1365,9 +1365,9 @@ def get_open_dag_run(session_root: str, dag_file: str) -> dict | None:
     row = conn.execute(
         "SELECT id, dag_file, started_at, status, current_tier, state_json, definition_json"
         " FROM dag_runs"
-        " WHERE dag_file = ? AND status NOT IN (?, ?, ?)"
+        " WHERE dag_file = ? AND status NOT IN (?, ?, ?, ?)"
         " ORDER BY id DESC LIMIT 1",
-        (dag_file, "completed", "failed", "cancelled"),
+        (dag_file, "completed", "failed", "cancelled", "blocked"),
     ).fetchone()
     if row is None:
         return None
@@ -1449,7 +1449,7 @@ def list_active_dag_runs(session_root: str) -> list[dict]:
     rows = conn.execute(
         "SELECT id, dag_file, started_at, status, current_tier, state_json, definition_json"
         " FROM dag_runs"
-        " WHERE status NOT IN ('completed', 'failed', 'cancelled')"
+        " WHERE status NOT IN ('completed', 'failed', 'cancelled', 'blocked')"
     ).fetchall()
     runs = [
         {

@@ -102,6 +102,29 @@ class TestDagPersistence:
         run = get_open_dag_run(session, "/dag.toml")
         assert run is None
 
+    def test_get_open_dag_run_ignores_blocked(self, tmp_path):
+        from dgov.persistence import create_dag_run, get_open_dag_run
+
+        session = self._make_session(tmp_path)
+        create_dag_run(session, "/dag.toml", "2024-01-01T00:00:00Z", "blocked", 0, {})
+        run = get_open_dag_run(session, "/dag.toml")
+        assert run is None
+
+    def test_list_active_dag_runs_excludes_blocked(self, tmp_path):
+        from dgov.persistence import create_dag_run, list_active_dag_runs
+
+        session = self._make_session(tmp_path)
+        create_dag_run(session, "/running.toml", "2024-01-01T00:00:00Z", "running", 0, {})
+        create_dag_run(session, "/blocked.toml", "2024-01-01T00:00:00Z", "blocked", 0, {})
+        create_dag_run(session, "/completed.toml", "2024-01-01T00:00:00Z", "completed", 0, {})
+
+        runs = list_active_dag_runs(session)
+
+        dag_files = {run["dag_file"] for run in runs}
+        assert "/running.toml" in dag_files
+        assert "/blocked.toml" not in dag_files
+        assert "/completed.toml" not in dag_files
+
     def test_update_dag_run(self, tmp_path):
         from dgov.persistence import create_dag_run, get_dag_run, update_dag_run
 

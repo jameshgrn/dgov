@@ -868,6 +868,49 @@ class TestNewSyscalls:
         assert updated == [(5, {"status": "resumed"})]
         assert len(events) == 1
 
+    def test_dag_interrupt_marks_run_blocked(self, tmp_path, monkeypatch):
+        from dgov.executor import _dag_interrupt
+
+        updated = []
+        upserts = []
+        events = []
+
+        monkeypatch.setattr(
+            "dgov.persistence.get_pane",
+            lambda *args, **kwargs: {"role": "worker", "agent": "qwen-35b"},
+        )
+        monkeypatch.setattr("dgov.status.tail_worker_log", lambda *args, **kwargs: "tail")
+        monkeypatch.setattr(
+            "dgov.inspection.diff_worker_pane",
+            lambda *args, **kwargs: {"diff": "diff-text"},
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.upsert_dag_task",
+            lambda *args, **kwargs: upserts.append((args, kwargs)),
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.update_dag_run",
+            lambda session_root, run_id, **kwargs: updated.append((run_id, kwargs)),
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.emit_event",
+            lambda *args, **kwargs: events.append((args, kwargs)),
+        )
+
+        _dag_interrupt(
+            "/repo",
+            str(tmp_path),
+            7,
+            "task-1",
+            "pane-1",
+            "review_failed",
+            lambda _message: None,
+        )
+
+        assert updated == [(7, {"status": "blocked"})]
+        assert upserts[0][0][2:] == ("task-1", "blocked_on_governor", "qwen-35b")
+        assert events[0][0][1] == "dag_blocked"
+
     def test_run_worker_checkpoint(self, tmp_path, monkeypatch):
         """Test run_worker_checkpoint sets metadata and emits event."""
         meta_calls = []

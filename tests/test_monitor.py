@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -959,3 +959,39 @@ class TestRecordFastFailure:
         with patch("dgov.router.record_backend_failure") as mock_record:
             _record_fast_failure(str(tmp_path), "invalid-timestamp-slug")
             mock_record.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Blocked DAG run regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestBlockedDagRunMonitoring:
+    """Tests for blocked DAG run handling in monitor."""
+
+    def test_dag_blocked_reads_run_id_from_event(self):
+        """dag_blocked must remove the run from active_dags."""
+        from dgov.monitor import MonitorLoopState, _apply_monitor_events
+
+        state = MonitorLoopState(event_cursor=11)
+        state.active_dags[99] = Mock()
+
+        events = [
+            {
+                "id": 12,
+                "event": "dag_blocked",
+                "pane": "dag/99",
+                "dag_run_id": 99,
+            }
+        ]
+
+        _apply_monitor_events(
+            "/fake/project",
+            "/fake/session",
+            state,
+            events,
+            auto_merge=False,
+            auto_retry=False,
+        )
+
+        assert 99 not in state.active_dags

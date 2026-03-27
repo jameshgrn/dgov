@@ -288,3 +288,133 @@ touches = ["a.py"]
 
         with pytest.raises(Exception):
             batch_dispatch(str(spec), session_root=str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# Blocked DAG run regression tests for batch
+# ---------------------------------------------------------------------------
+
+
+class TestBatchBlockedDagRun(TestBatchDispatch):
+    """Tests for blocked DAG run handling in batch execution."""
+
+    def test_batch_wait_returns_on_dag_blocked(self, tmp_path, monkeypatch):
+        """run_batch should exit when dag_blocked event is received."""
+        from dgov.batch import run_batch
+        from dgov.dag_parser import DagRunSummary
+
+        spec_path = self._write_spec(
+            tmp_path,
+            """
+project_root = "."
+
+[tasks.t1]
+prompt = "do a thing"
+agent = "agent-one"
+touches = ["a.py"]
+""",
+        )
+
+        run_id = 99
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id,
+                dag_file=str(spec_path),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
+            ),
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+
+        # Simulate dag_blocked event being received
+        def mock_wait_events(*args, **kwargs):
+            return [
+                {
+                    "id": 1,
+                    "event": "dag_blocked",
+                    "pane": "",
+                    "dag_run_id": run_id,
+                    "data": "{}",
+                }
+            ]
+
+        monkeypatch.setattr("dgov.persistence.wait_for_events", mock_wait_events)
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "blocked",
+                "state_json": {"task_states": {"t1": "blocked_on_governor"}},
+            },
+        )
+
+        result = run_batch(str(spec_path), session_root=str(tmp_path))
+
+        assert result["blocked"] == ["t1"]
+        assert result["status"] == "blocked"
+
+    def test_blocked_tasks_included_in_batch_result(self, tmp_path, monkeypatch):
+        """Blocked tasks should be preserved in the returned batch result summary."""
+        from dgov.batch import run_batch
+        from dgov.dag_parser import DagRunSummary
+
+        spec_path = self._write_spec(
+            tmp_path,
+            """
+project_root = "."
+
+[tasks.t1]
+prompt = "first task"
+agent = "agent-one"
+touches = ["a.py"]
+
+[tasks.t2]
+prompt = "second task"
+agent = "agent-two"
+touches = ["b.py"]
+""",
+        )
+
+        run_id = 100
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id,
+                dag_file=str(spec_path),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
+            ),
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+
+        def mock_wait_events(*args, **kwargs):
+            return [
+                {
+                    "id": 1,
+                    "event": "dag_blocked",
+                    "pane": "",
+                    "dag_run_id": run_id,
+                }
+            ]
+
+        monkeypatch.setattr("dgov.persistence.wait_for_events", mock_wait_events)
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "blocked",
+                "state_json": {"task_states": {"t1": "merged", "t2": "blocked_on_governor"}},
+            },
+        )
+
+        result = run_batch(str(spec_path), session_root=str(tmp_path))
+
+        assert result["merged"] == ["t1"]
+        assert result["blocked"] == ["t2"]
