@@ -122,6 +122,112 @@ def _get_branch_cached(project_root: str) -> str:
     return val
 
 
+def fetch_spans_and_traces(session_root: str, trace_id: str) -> tuple[list[dict], list[dict]]:
+    """Fetch span and tool-trace data for a pane by trace_id (slug).
+
+    Returns (spans, tool_trace) where spans is list of dict with span data
+    and tool_trace is list of dict with tool-call events. Falls back to
+    empty lists if no data exists.
+    """
+    try:
+        from dgov.spans import get_spans, get_tool_trace
+
+        spans = get_spans(session_root, trace_id)
+        tool_trace = get_tool_trace(session_root, trace_id)
+        return spans, tool_trace
+    except Exception:
+        return [], []
+
+
+def format_span_summary(spans: list[dict]) -> str:
+    """Format a summary line from span data.
+
+    Produces a human-readable string like:
+    "dispatch(45ms,safe) wait(120ms,merged) review(30ms)"
+    or empty string if no spans.
+    """
+    if not spans:
+        return ""
+
+    parts = []
+    for s in sorted(spans, key=lambda x: x.get("started_at", "")):
+        kind = s.get("span_kind", "")
+        duration_ms = s.get("duration_ms", -1)
+        outcome = s.get("outcome", "pending")
+
+        dur_str = ""
+        if duration_ms >= 0:
+            if duration_ms < 1000:
+                dur_str = f"{duration_ms:.0f}ms"
+            else:
+                dur_str = f"{duration_ms / 1000:.1f}s"
+
+        outcome_str = ""
+        if outcome == "success":
+            outcome_str = "(safe)"
+        elif outcome == "failure":
+            outcome_str = "(failed)"
+        elif kind == "review":
+            verdict = s.get("verdict", "")
+            if verdict:
+                outcome_str = f"({verdict})"
+
+        part = f"{kind}"
+        if dur_str:
+            part += f"[{dur_str}]"
+        if outcome_str:
+            part += f" {outcome_str}"
+
+        parts.append(part)
+
+    return " ".join(parts)
+
+
+def format_tool_trace_activity(tool_trace: list[dict], max_lines: int = 5) -> str:
+    """Format recent tool-trace activity for dashboard preview.
+
+    Returns a multiline string showing the last N tool calls and thinking steps,
+    with sensible fallback to empty string when no data exists.
+    """
+    if not tool_trace:
+        return ""
+
+    # Group by action type
+    tool_calls = [t for t in tool_trace if t.get("action_type") == "tool_call"]
+    thinking = [t for t in tool_trace if t.get("action_type") == "thinking"]
+    results = [t for t in tool_trace if t.get("action_type") == "tool_result"]
+
+    lines: list[str] = []
+
+    # Show recent tool calls
+    if tool_calls:
+        recent = tool_calls[-3:]  # Last 3 calls
+        call_names = [t.get("tool_name", "unknown") for t in recent]
+        lines.append(f"tools: {', '.join(call_names)}")
+
+    # Show thinking snippets (first 60 chars)
+    if thinking:
+        recent_thoughts = thinking[-2:]  # Last 2 thoughts
+        thought_lines = []
+        for t in recent_thoughts:
+            thinking_text = t.get("thinking", "")[:60]
+            if thinking_text.strip():
+                thought_lines.append(f"thought: {thinking_text}...")
+        if thought_lines:
+            lines.append("\n".join(thought_lines))
+
+    # Show recent tool results (brief)
+    if results:
+        recent = results[-1:]
+        for t in recent:
+            status = t.get("tool_status", "")
+            result_text = t.get("tool_result", "")[:50]
+            if status and result_text:
+                lines.append(f"result[{status}]: {result_text}")
+
+    return "\n".join(lines) if lines else ""
+
+
 def fetch_panes(state: DashboardState) -> None:
     from dgov.persistence import STATE_DIR, read_events
     from dgov.status import list_worker_panes, tail_worker_log
@@ -189,16 +295,44 @@ def fetch_panes(state: DashboardState) -> None:
                 if slug and slug not in known_slugs:
                     new_done_slugs.append(slug)
 
-        # Capture preview lines for the selected pane
+        # Capture preview lines for the selected pane using trace data when available
         preview: list[str] = []
         with state.lock:
             sel_idx = state.selected
             want_preview = state.preview_visible
         if want_preview and panes and 0 <= sel_idx < len(panes):
             slug = panes[sel_idx].get("slug", "")
-            raw = tail_worker_log(session_root, slug, lines=5)
-            if raw:
-                preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
+
+            # Try span/trace data first (formatted tool-call activity)
+            spans, tool_trace = fetch_spans_and_traces(session_root, slug)
+            if spans or tool_trace:
+                # Build formatted preview from structured data
+                parts: list[str] = []
+
+                # Span summary (lifecycle phases)
+                span_summary = format_span_summary(spans)
+                if span_summary:
+                    parts.append(f"[bold cyan]phases:[/bold cyan] {span_summary}")
+
+                # Tool-trace activity (tool calls, thinking, results)
+                tool_activity = format_tool_trace_activity(tool_trace, max_lines=5)
+                if tool_activity:
+                    parts.append("[bold yellow]activity:[/bold yellow]")
+                    for line in tool_activity.splitlines():
+                        parts.append(f"  {line}")
+
+                # Fallback to log tail if no trace data or empty
+                if not parts:
+                    raw = tail_worker_log(session_root, slug, lines=5)
+                    if raw:
+                        preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
+                else:
+                    preview = parts
+            else:
+                # No trace data — fall back to log-tail behavior
+                raw = tail_worker_log(session_root, slug, lines=5)
+                if raw:
+                    preview = [ln for ln in raw.splitlines() if ln.strip()][-5:]
 
         # Compute eval summary from active DAG runs (typed tables)
         eval_summary = ""
