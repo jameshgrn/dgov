@@ -59,7 +59,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/dag_parser.py (S): DAG file dataclasses and TOML parser. -> test_dag_parser.py
   src/dgov/review_fix.py (M): Review-then-fix pipeline: dispatch review workers, parse findings, dispatch fix workers. -> test_review_fix.py
 [other]
-  src/dgov/api.py (M): Public Python API for dgov.
+  src/dgov/api.py (M): Public Python API for dgov. -> test_api.py
   src/dgov/backend.py (M): Abstract worker backend interface and tmux implementation. -> test_backend.py
   src/dgov/blame.py (M): Blame: query event journal + git history to attribute file changes to agents. -> test_blame.py
   src/dgov/cli/admin.py (L): Administrative and diagnostic commands. -> test_admin.py
