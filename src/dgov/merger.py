@@ -1027,6 +1027,114 @@ def _restore_protected_files(project_root: str, pane_record: dict) -> None:
 
 # -- Sub-functions for merge_worker_pane --
 
+_MERGE_READY_STATES = frozenset({"done", "reviewed_pass"})
+
+
+def _state_precondition_result(
+    branch_name: str, pane_state: str, slug: str
+) -> PaneMergeResult | None:
+    if pane_state == "merged":
+        return MergeSuccess(merged=slug, branch=branch_name, already_merged=True)
+    if pane_state in _MERGE_READY_STATES:
+        return None
+    return MergeError(
+        error=f"Pane {slug} is in state '{pane_state}', not 'done'",
+        slug=slug,
+        current_state=pane_state,
+        hint="Worker must complete successfully before merge.",
+    )
+
+
+def _warn_squash_overlap(
+    *,
+    base_sha: str,
+    pane_project_root: str,
+    worktree_path: str,
+    slug: str,
+    squash: bool,
+    rebase: bool,
+) -> None:
+    if not (squash and not rebase and base_sha):
+        return
+
+    main_r = subprocess.run(
+        ["git", "-C", pane_project_root, "diff", "--name-only", f"{base_sha}..HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if main_r.returncode != 0:
+        return
+
+    worker_r = subprocess.run(
+        ["git", "-C", worktree_path, "diff", "--name-only", f"{base_sha}..HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if worker_r.returncode != 0:
+        return
+
+    overlap = set(main_r.stdout.strip().splitlines()) & set(worker_r.stdout.strip().splitlines())
+    if overlap:
+        logger.warning(
+            "File overlap for %s: %s — squash merge may conflict.",
+            slug,
+            sorted(overlap),
+        )
+
+
+def _claim_violation_result(
+    *,
+    target: dict,
+    slug: str,
+    worktree_path: str,
+    session_root: str,
+    strict_claims: bool,
+) -> MergeError | None:
+    import json as _json
+
+    import dgov.persistence as _persist
+
+    raw_claims = target.get("file_claims", "[]")
+    file_claims = _json.loads(raw_claims) if isinstance(raw_claims, str) else (raw_claims or [])
+    if not file_claims:
+        return None
+
+    base_sha = target.get("base_sha", "")
+    if not (base_sha and worktree_path):
+        return None
+
+    actual_r = subprocess.run(
+        ["git", "-C", worktree_path, "diff", "--name-only", f"{base_sha}..HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if actual_r.returncode != 0:
+        return None
+
+    actual_files = {f for f in actual_r.stdout.strip().splitlines() if f}
+    claimed = set(file_claims)
+    undeclared = {f for f in actual_files - claimed if not f.startswith("tests/")}
+    if not undeclared:
+        return None
+
+    violation_msg = (
+        f"Pane {slug} touched undeclared files: {sorted(undeclared)} (claimed: {sorted(claimed)})"
+    )
+    logger.warning("%s", violation_msg)
+    _persist.emit_event(
+        session_root,
+        "claim_violation",
+        slug,
+        error=f"Undeclared files: {sorted(undeclared)}",
+    )
+    if not strict_claims:
+        return None
+    return MergeError(
+        error=violation_msg,
+        slug=slug,
+        claim_violations=sorted(undeclared),
+    )
+
 
 def _check_merge_preconditions(
     target: dict,
@@ -1039,36 +1147,14 @@ def _check_merge_preconditions(
     strict_claims: bool,
 ) -> PaneMergeResult | None:
     """Validate all preconditions before merge. Returns error result or None if OK."""
-    import json as _json
-
-    import dgov.persistence as _persist
-    from dgov.done import _agent_still_running
 
     branch_name = target.get("branch_name", "")
     pane_state = target.get("state", "")
 
-    # State checks
-    if pane_state == "merged":
-        return MergeSuccess(merged=slug, branch=branch_name, already_merged=True)
-    if pane_state not in ("done", "reviewed_pass"):
-        return MergeError(
-            error=f"Pane {slug} is in state '{pane_state}', not 'done'",
-            slug=slug,
-            current_state=pane_state,
-            hint="Worker must complete successfully before merge.",
-        )
+    state_error = _state_precondition_result(branch_name, pane_state, slug)
+    if state_error is not None:
+        return state_error
 
-    # Agent-attached check (only for non-done panes)
-    pane_id = target.get("pane_id", "")
-    if pane_state not in ("done", "reviewed_pass") and pane_id and _agent_still_running(pane_id):
-        return MergeError(
-            error=f"Agent process still attached to pane {slug}",
-            slug=slug,
-            pane_id=pane_id,
-            hint="Wait for worker to complete or manually clean up the pane.",
-        )
-
-    # Dirty worktree check
     dirty_files = _check_dirty_worktree(worktree_path, exclude_protected=True)
     if dirty_files:
         return MergeError(
@@ -1078,64 +1164,24 @@ def _check_merge_preconditions(
             hint="Commit or stash changes in the worktree before merging.",
         )
 
-    # Overlap warning (advisory, never blocks)
-    _base = target.get("base_sha", "")
-    if squash and not rebase and _base:
-        main_r = subprocess.run(
-            ["git", "-C", pane_project_root, "diff", "--name-only", f"{_base}..HEAD"],
-            capture_output=True,
-            text=True,
-        )
-        if main_r.returncode == 0:
-            worker_r = subprocess.run(
-                ["git", "-C", worktree_path, "diff", "--name-only", f"{_base}..HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if worker_r.returncode == 0:
-                overlap = set(main_r.stdout.strip().splitlines()) & set(
-                    worker_r.stdout.strip().splitlines()
-                )
-                if overlap:
-                    logger.warning(
-                        "File overlap for %s: %s — squash merge may conflict.",
-                        slug,
-                        sorted(overlap),
-                    )
+    _warn_squash_overlap(
+        base_sha=target.get("base_sha", ""),
+        pane_project_root=pane_project_root,
+        worktree_path=worktree_path,
+        slug=slug,
+        squash=squash,
+        rebase=rebase,
+    )
 
-    # File claim validation
-    raw_claims = target.get("file_claims", "[]")
-    file_claims = _json.loads(raw_claims) if isinstance(raw_claims, str) else (raw_claims or [])
-    if file_claims:
-        base_sha_check = target.get("base_sha", "")
-        if base_sha_check and worktree_path:
-            actual_r = subprocess.run(
-                ["git", "-C", worktree_path, "diff", "--name-only", f"{base_sha_check}..HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            if actual_r.returncode == 0:
-                actual_files = {f for f in actual_r.stdout.strip().splitlines() if f}
-                claimed = set(file_claims)
-                undeclared = {f for f in actual_files - claimed if not f.startswith("tests/")}
-                if undeclared:
-                    violation_msg = (
-                        f"Pane {slug} touched undeclared files: "
-                        f"{sorted(undeclared)} (claimed: {sorted(claimed)})"
-                    )
-                    logger.warning("%s", violation_msg)
-                    _persist.emit_event(
-                        session_root,
-                        "claim_violation",
-                        slug,
-                        error=f"Undeclared files: {sorted(undeclared)}",
-                    )
-                    if strict_claims:
-                        return MergeError(
-                            error=violation_msg,
-                            slug=slug,
-                            claim_violations=sorted(undeclared),
-                        )
+    claim_error = _claim_violation_result(
+        target=target,
+        slug=slug,
+        worktree_path=worktree_path,
+        session_root=session_root,
+        strict_claims=strict_claims,
+    )
+    if claim_error is not None:
+        return claim_error
 
     return None
 
