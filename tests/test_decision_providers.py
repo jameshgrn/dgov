@@ -394,6 +394,7 @@ def test_inspection_review_provider_passes_extra_kwargs_to_review(tmp_path):
         "task-5",
         session_root="/session",
         full=True,
+        emit_events=ANY,
         tests_pass=ANY,
         lint_clean=ANY,
         post_merge_check=ANY,
