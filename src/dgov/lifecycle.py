@@ -1130,7 +1130,7 @@ def _full_cleanup(
     remove git worktree + branch.
 
     Returns {"cleaned": bool, "skipped_worktree": bool, "branch_kept": bool,
-             "worktree_removal_failed": bool or None, "crash_log": str}.
+             "worktree_removal_failed": bool, "crash_log": str}.
     """
     # 1. Read log file content before deletion to preserve crash logs
     crash_log = ""
@@ -1176,7 +1176,7 @@ def _full_cleanup(
     # 3. Remove worktree + branch
     skipped_worktree = False
     branch_kept = False
-    worktree_removal_failed = None
+    worktree_removal_failed = False
     if remove_worktree and pane_record.get("owns_worktree", False):
         wt = pane_record.get("worktree_path")
         branch = pane_record.get("branch_name")

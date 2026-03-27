@@ -506,7 +506,7 @@ class TestFullCleanup:
         pane = get_pane(sr, "owned-pane")
         with patch("dgov.lifecycle.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
-            _full_cleanup(sr, sr, "owned-pane", pane)
+            result = _full_cleanup(sr, sr, "owned-pane", pane)
 
         # Should have called worktree remove and branch delete
         calls_args = [c[0][0] for c in mock_run.call_args_list]
@@ -514,6 +514,7 @@ class TestFullCleanup:
         branch_delete = [a for a in calls_args if "branch" in a and "-d" in a]
         assert len(worktree_remove) >= 1
         assert len(branch_delete) >= 1
+        assert result["worktree_removal_failed"] is False
 
     def test_skips_worktree_removal_when_not_owned(self, tmp_path: Path) -> None:
         from dgov.lifecycle import _full_cleanup
