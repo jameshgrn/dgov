@@ -20,7 +20,9 @@ def want_json() -> bool:
 
 
 def _print_version(
-    ctx: click.Context, param: click.Parameter, value: bool  # noqa: ARG001
+    ctx: click.Context,
+    param: click.Parameter,
+    value: bool,  # noqa: ARG001
 ) -> None:
     """Handle top-level --version without entering governor flow."""
     if not value or ctx.resilient_parsing:
@@ -48,6 +50,7 @@ _GOVERNOR_PROMPT = (
     '  dgov plan scaffold --goal "..." --files "..."  # generate a plan from goal\n'
     "  dgov plan verify <run_id>                     # verify eval evidence\n"
     "  dgov plan resume <plan_file> --wait          # resume a failed/partial plan run\n"
+    "  dgov plan cancel <plan_file>                 # cancel an open plan run\n"
     "  dgov pane wait <slug>                         # wait for completion\n"
     "  dgov pane review <slug>                       # inspect the diff\n"
     "  dgov pane land <slug>                         # review, merge, close\n"

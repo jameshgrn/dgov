@@ -418,3 +418,59 @@ touches = ["b.py"]
 
         assert result["merged"] == ["t1"]
         assert result["blocked"] == ["t2"]
+
+    def test_batch_wait_returns_on_dag_cancelled(self, tmp_path, monkeypatch):
+        """run_batch should exit when dag_cancelled event is received."""
+        from dgov.batch import run_batch
+        from dgov.dag_parser import DagRunSummary
+
+        spec_path = self._write_spec(
+            tmp_path,
+            """
+project_root = "."
+
+[tasks.t1]
+prompt = "do a thing"
+agent = "agent-one"
+touches = ["a.py"]
+""",
+        )
+
+        run_id = 101
+        monkeypatch.setattr(
+            "dgov.dag.run_dag_via_kernel",
+            lambda *args, **kwargs: DagRunSummary(
+                run_id=run_id,
+                dag_file=str(spec_path),
+                status="submitted",
+                merged=[],
+                failed=[],
+                skipped=[],
+                blocked=[],
+            ),
+        )
+        monkeypatch.setattr("dgov.persistence.latest_event_id", lambda *args: 0)
+        monkeypatch.setattr(
+            "dgov.persistence.wait_for_events",
+            lambda *args, **kwargs: [
+                {
+                    "id": 1,
+                    "event": "dag_cancelled",
+                    "pane": "",
+                    "data": json.dumps({"dag_run_id": run_id, "status": "cancelled"}),
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {
+                "id": run_id,
+                "status": "cancelled",
+                "state_json": {"task_states": {"t1": "cancelled"}},
+            },
+        )
+
+        result = run_batch(str(spec_path), session_root=str(tmp_path))
+
+        assert result["status"] == "cancelled"
+        assert result["blocked"] == []

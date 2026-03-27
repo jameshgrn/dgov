@@ -2048,6 +2048,76 @@ def run_resume_dag(session_root: str, run_id: int) -> None:
     emit_event(session_root, "dag_resumed", f"dag/{run_id}", dag_run_id=run_id)
 
 
+def run_cancel_dag(session_root: str, run_id: int) -> dict:
+    """Executor syscall: cancel an open DAG run and close its live panes."""
+    from dgov.lifecycle import close_worker_pane
+    from dgov.persistence import (
+        emit_event,
+        get_dag_run,
+        get_pane,
+        list_dag_tasks,
+        update_dag_run,
+        upsert_dag_task,
+    )
+
+    run = get_dag_run(session_root, run_id)
+    if not run:
+        return {"error": f"DAG run {run_id} not found"}
+
+    status = str(run.get("status", ""))
+    if status == "cancelled":
+        return {"run_id": run_id, "status": "cancelled", "already_cancelled": True}
+    if status in {"completed", "failed"}:
+        return {"error": f"Run {run_id} is already terminal: {status}"}
+
+    state_json = run.get("state_json", {})
+    task_states = dict(state_json.get("task_states", {}))
+    task_rows = list_dag_tasks(session_root, run_id)
+    task_rows_by_slug = {row["slug"]: row for row in task_rows}
+
+    closed: list[str] = []
+    cancelled: list[str] = []
+    pane_slugs = sorted({str(row["pane_slug"]) for row in task_rows if row.get("pane_slug")})
+
+    for pane_slug in pane_slugs:
+        pane = get_pane(session_root, pane_slug)
+        if pane is None:
+            continue
+        pane_project_root = str(pane.get("project_root") or session_root)
+        if close_worker_pane(pane_project_root, pane_slug, session_root=session_root, force=True):
+            closed.append(pane_slug)
+
+    for task_slug, task_state in task_states.items():
+        if task_state in {"merged", "failed", "skipped", "cancelled"}:
+            continue
+        task_states[task_slug] = "cancelled"
+        row = task_rows_by_slug.get(task_slug, {})
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            "cancelled",
+            str(row.get("agent") or "governor-override"),
+            pane_slug=row.get("pane_slug"),
+            error="cancelled_by_governor",
+            attempt=int(row.get("attempt") or 1),
+        )
+        cancelled.append(task_slug)
+
+    state_json["state"] = "cancelled"
+    state_json["task_states"] = task_states
+    update_dag_run(session_root, run_id, status="cancelled", state_json=state_json)
+    emit_event(
+        session_root,
+        "dag_cancelled",
+        f"dag/{run_id}",
+        dag_run_id=run_id,
+        status="cancelled",
+    )
+
+    return {"run_id": run_id, "status": "cancelled", "cancelled": cancelled, "closed": closed}
+
+
 def run_worker_checkpoint(session_root: str, slug: str, message: str) -> None:
     """Executor syscall: record a worker checkpoint."""
     from dgov.persistence import emit_event, set_pane_metadata

@@ -187,6 +187,59 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
         raise click.ClickException(str(exc)) from None
 
 
+@dag.command("cancel")
+@click.argument("dagfile", type=click.Path(exists=True))
+@click.option(
+    "--project-root",
+    "-r",
+    default=".",
+    envvar="DGOV_PROJECT_ROOT",
+    help="Project root ($DGOV_PROJECT_ROOT or cwd)",
+)
+@click.option(
+    "--run-id",
+    type=int,
+    default=None,
+    help="Specific run ID to cancel (default: most recent open)",
+)
+def dag_cancel(dagfile, project_root, run_id):
+    """Cancel an open DAG run and close its live panes.
+
+    Examples:
+      dgov dag cancel dag.toml -r .
+      dgov dag cancel dag.toml --run-id 5
+    """
+    import os
+    from pathlib import Path
+
+    from dgov.cli.pane import _autocorrect_roots
+    from dgov.executor import run_cancel_dag
+    from dgov.persistence import ensure_dag_tables, get_dag_run, get_open_dag_run
+
+    abs_path = str(Path(dagfile).resolve())
+    project_root, session_root = _autocorrect_roots(project_root, None)
+    session_root = os.path.abspath(session_root or project_root)
+
+    ensure_dag_tables(session_root)
+
+    if run_id is not None:
+        run = get_dag_run(session_root, run_id)
+        if not run:
+            raise click.ClickException(f"DAG run {run_id} not found")
+        if run["dag_file"] != abs_path:
+            raise click.ClickException(f"Run {run_id} was for {run['dag_file']}, not {abs_path}")
+    else:
+        run = get_open_dag_run(session_root, abs_path)
+        if not run:
+            raise click.ClickException(f"No open runs found for {abs_path}")
+        run_id = run["id"]
+
+    result = run_cancel_dag(session_root, run_id)
+    if result.get("error"):
+        raise click.ClickException(result["error"])
+    click.echo(json.dumps(result, indent=2))
+
+
 @dag.command("status")
 @click.argument("dagfile", type=click.Path(exists=True))
 @click.option("--run-id", type=int, default=None, help="Specific run ID (default: most recent)")

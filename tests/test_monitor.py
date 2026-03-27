@@ -995,3 +995,30 @@ class TestBlockedDagRunMonitoring:
         )
 
         assert 99 not in state.active_dags
+
+    def test_dag_cancelled_reads_run_id_from_event(self):
+        """dag_cancelled must remove the run from active_dags."""
+        from dgov.monitor import MonitorLoopState, _apply_monitor_events
+
+        state = MonitorLoopState(event_cursor=12)
+        state.active_dags[100] = Mock()
+
+        events = [
+            {
+                "id": 13,
+                "event": "dag_cancelled",
+                "pane": "dag/100",
+                "dag_run_id": 100,
+            }
+        ]
+
+        _apply_monitor_events(
+            "/fake/project",
+            "/fake/session",
+            state,
+            events,
+            auto_merge=False,
+            auto_retry=False,
+        )
+
+        assert 100 not in state.active_dags

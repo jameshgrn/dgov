@@ -2258,6 +2258,7 @@ class TestValidEvents:
             "dag_started",
             "dag_resumed",
             "dag_blocked",
+            "dag_cancelled",
             "dag_tier_started",
             "dag_task_dispatched",
             "dag_task_completed",

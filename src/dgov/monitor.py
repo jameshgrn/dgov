@@ -109,6 +109,7 @@ _MONITOR_WAKE_EVENTS = (
     "dag_completed",
     "dag_failed",
     "dag_blocked",
+    "dag_cancelled",
     "merge_completed",
     "monitor_auto_complete",
     "monitor_idle_timeout",
@@ -672,7 +673,7 @@ def _apply_monitor_events(
                         state.active_dags[run_id] = ds
             continue
 
-        if kind in ("dag_completed", "dag_failed", "dag_blocked"):
+        if kind in ("dag_completed", "dag_failed", "dag_blocked", "dag_cancelled"):
             run_id = event.get("dag_run_id")
             if run_id in state.active_dags:
                 del state.active_dags[run_id]

@@ -356,6 +356,7 @@ def _wait_for_dag(run_id: int) -> None:
         "dag_completed",
         "dag_failed",
         "dag_blocked",
+        "dag_cancelled",
         "evals_verified",
     )
 
@@ -403,6 +404,12 @@ def _wait_for_dag(run_id: int) -> None:
                 run = get_dag_run(session_root, run_id)
                 status = run["status"] if run else "unknown"
                 click.secho(f"  DAG blocked{detail_str}", fg="red")
+                click.echo(f"DAG run {run_id}: {status}")
+                raise SystemExit(1)
+            elif kind == "dag_cancelled":
+                run = get_dag_run(session_root, run_id)
+                status = run["status"] if run else "unknown"
+                click.secho("  DAG cancelled", fg="yellow")
                 click.echo(f"DAG run {run_id}: {status}")
                 raise SystemExit(1)
             elif kind in ("dag_completed", "dag_failed"):
@@ -548,3 +555,46 @@ def plan_resume(plan_file, run_id, wait, max_concurrent):
         return
 
     _wait_for_dag(new_run_id)
+
+
+@plan_cmd.command("cancel")
+@click.argument("plan_file", type=click.Path(exists=True))
+@click.option(
+    "--run-id", type=int, default=None, help="Specific run ID (default: most recent open)"
+)
+def plan_cancel(plan_file, run_id):
+    """Cancel an open plan run and close its live panes.
+
+    Examples:
+      dgov plan cancel .dgov/plans/my-plan.toml
+      dgov plan cancel .dgov/plans/my-plan.toml --run-id 5
+    """
+    from pathlib import Path
+
+    from dgov.executor import run_cancel_dag
+    from dgov.persistence import ensure_dag_tables, get_dag_run, get_open_dag_run
+
+    abs_path = str(Path(plan_file).resolve())
+    session_root = os.path.abspath(".")
+    ensure_dag_tables(session_root)
+
+    if run_id is not None:
+        run = get_dag_run(session_root, run_id)
+        if not run:
+            click.secho(f"DAG run {run_id} not found", fg="red")
+            raise SystemExit(1)
+        if run["dag_file"] != abs_path:
+            click.secho(f"Run {run_id} was for {run['dag_file']}, not {abs_path}", fg="red")
+            raise SystemExit(1)
+    else:
+        run = get_open_dag_run(session_root, abs_path)
+        if not run:
+            click.secho(f"No open runs found for {plan_file}", fg="red")
+            raise SystemExit(1)
+        run_id = run["id"]
+
+    result = run_cancel_dag(session_root, run_id)
+    if result.get("error"):
+        click.secho(result["error"], fg="red")
+        raise SystemExit(1)
+    click.echo(json.dumps(result, indent=2))

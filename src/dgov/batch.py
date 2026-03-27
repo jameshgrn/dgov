@@ -351,7 +351,7 @@ def run_batch(
         events = wait_for_events(
             session_root,
             after_id=cursor,
-            event_types=("dag_completed", "dag_failed", "dag_blocked"),
+            event_types=("dag_completed", "dag_failed", "dag_blocked", "dag_cancelled"),
             timeout_s=60.0,
         )
         finished = False

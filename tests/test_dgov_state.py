@@ -424,6 +424,7 @@ class TestDagEvents:
             "dag_task_failed",
             "dag_task_escalated",
             "dag_tier_completed",
+            "dag_cancelled",
             "dag_completed",
             "dag_failed",
         ],

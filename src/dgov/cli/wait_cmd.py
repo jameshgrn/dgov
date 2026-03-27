@@ -39,7 +39,7 @@ def wait_cmd(interrupts, project_root, session_root):
         events = wait_for_events(
             session_root,
             after_id=cursor,
-            event_types=("dag_blocked", "dag_completed", "dag_failed"),
+            event_types=("dag_blocked", "dag_cancelled", "dag_completed", "dag_failed"),
             timeout_s=60.0,
         )
         for ev in events:
@@ -70,6 +70,13 @@ def wait_cmd(interrupts, project_root, session_root):
                 if interrupts:
                     # Return to governor context
                     return
+
+            if kind == "dag_cancelled":
+                data = json.loads(ev["data"])
+                click.secho(
+                    f"\nDAG CANCELLED: Run {data.get('dag_run_id')}", fg="yellow", bold=True
+                )
+                return
 
             if kind in ("dag_completed", "dag_failed"):
                 data = json.loads(ev["data"])
