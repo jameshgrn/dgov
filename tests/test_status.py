@@ -84,6 +84,18 @@ class TestTailWorkerLog:
         assert result is not None
         assert len(result.splitlines()) == 20
 
+    def test_filters_internal_bootstrap_echo_noise(self, tmp_path):
+        content = (
+            b"s\x08source /tmp/dgov-cmd-abc123.sh; rm -f /tmp/dgov-cmd-abc123.sh \r\x1b[K\n"
+            + b"M                                               source /tmp/dgov-cmd-abc123.sh"
+            + b"  rm    /tmp/dgov-cmd-abc123.sh\n"
+            + b"%\n"
+            + b"Done.\n"
+        )
+        root = self._make_log(tmp_path, "bootstrap-noise", content)
+        result = tail_worker_log(root, "bootstrap-noise")
+        assert result == "Done."
+
 
 @pytest.mark.unit
 class TestExtractSummaryFromLog:

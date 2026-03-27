@@ -24,6 +24,27 @@ from dgov.persistence import (
 logger = logging.getLogger(__name__)
 
 
+_INTERNAL_BOOTSTRAP_RE = re.compile(
+    r"(?:^|\s)source\s+/\S*dgov-cmd-[^\s/]+\.sh\b.*\brm\b.*\bdgov-cmd-[^\s/]+\.sh\b"
+)
+
+
+def _clean_worker_output_text(text: str) -> str:
+    """Normalize worker output for user-facing tails and previews."""
+    stripped = _strip_ansi(text)
+    cleaned_lines: list[str] = []
+    for raw_line in stripped.splitlines():
+        normalized = " ".join(raw_line.split())
+        if not normalized:
+            continue
+        if _INTERNAL_BOOTSTRAP_RE.search(normalized):
+            continue
+        if _is_noise_line(normalized):
+            continue
+        cleaned_lines.append(raw_line.rstrip())
+    return "\n".join(cleaned_lines)
+
+
 def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None:
     """Read the last *lines* lines from ``.dgov/logs/<slug>.log``.
 
@@ -56,7 +77,7 @@ def tail_worker_log(session_root: str, slug: str, lines: int = 20) -> str | None
                 text = text[first_nl + 1 :]
 
         tail_lines = text.splitlines()[-lines:]
-        return _strip_ansi("\n".join(tail_lines))
+        return _clean_worker_output_text("\n".join(tail_lines))
     except OSError:
         return None
 
@@ -480,7 +501,10 @@ def capture_worker_output(
     if not get_backend().is_alive(pane_id):
         return None
 
-    return get_backend().capture_output(pane_id, lines)
+    output = get_backend().capture_output(pane_id, lines)
+    if output is None:
+        return None
+    return _clean_worker_output_text(output)
 
 
 # -- Noise filtering --

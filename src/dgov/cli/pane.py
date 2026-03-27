@@ -1143,7 +1143,7 @@ def pane_output(slug, project_root, session_root, tail, follow):
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.persistence import get_pane
-    from dgov.status import capture_worker_output, tail_worker_log
+    from dgov.status import _clean_worker_output_text, capture_worker_output, tail_worker_log
 
     session_root = os.path.abspath(session_root or project_root)
     pane_record = get_pane(session_root, slug)
@@ -1181,7 +1181,11 @@ def pane_output(slug, project_root, session_root, tail, follow):
                 while True:
                     line = f.readline()
                     if line:
-                        click.echo(line.decode("utf-8", errors="replace").rstrip())
+                        cleaned = _clean_worker_output_text(
+                            line.decode("utf-8", errors="replace")
+                        )
+                        if cleaned:
+                            click.echo(cleaned)
                     else:
                         time.sleep(0.5)
         except KeyboardInterrupt:
@@ -1216,7 +1220,7 @@ def pane_tail(slug, project_root, session_root, lines):
     from pathlib import Path
 
     from dgov.persistence import STATE_DIR, get_pane
-    from dgov.status import capture_worker_output, tail_worker_log
+    from dgov.status import _clean_worker_output_text, capture_worker_output, tail_worker_log
 
     project_root, session_root = _autocorrect_roots(project_root, session_root)
     session_root = os.path.abspath(session_root or project_root)
@@ -1264,7 +1268,11 @@ def pane_tail(slug, project_root, session_root, lines):
                 while True:
                     line = f.readline()
                     if line:
-                        click.echo(line.decode("utf-8", errors="replace").rstrip())
+                        cleaned = _clean_worker_output_text(
+                            line.decode("utf-8", errors="replace")
+                        )
+                        if cleaned:
+                            click.echo(cleaned)
                     else:
                         time.sleep(0.5)
                         rec = get_pane(session_root, slug)
@@ -1275,7 +1283,11 @@ def pane_tail(slug, project_root, session_root, lines):
                                 remaining = f.readline()
                                 if not remaining:
                                     break
-                                click.echo(remaining.decode("utf-8", errors="replace").rstrip())
+                                cleaned = _clean_worker_output_text(
+                                    remaining.decode("utf-8", errors="replace")
+                                )
+                                if cleaned:
+                                    click.echo(cleaned)
                             click.secho(
                                 f"--- {slug} {st} ---",
                                 fg="green" if st == "merged" else "yellow",
