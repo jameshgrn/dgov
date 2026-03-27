@@ -202,6 +202,30 @@ class TestReviewWorkerPane:
         assert result.uncommitted is True
         assert result.issues == ["uncommitted changes (merge refused until committed)"]
 
+    def test_zero_commit_review_is_not_safe(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+            "state": "done",
+        }
+
+        result = review_worker_pane(str(repo), "worker-a", session_root=str(tmp_path))
+
+        assert result.verdict == "review"
+        assert result.commit_count == 0
+        assert result.issues == ["no commits — nothing to merge"]
+        inspection_mocks["emit_event"].assert_called_once()
+        args = inspection_mocks["emit_event"].call_args.args
+        kwargs = inspection_mocks["emit_event"].call_args.kwargs
+        assert args == (str(tmp_path), "review_fail", "worker-a")
+        assert kwargs["issues"] == ["no commits — nothing to merge"]
+
     def test_full_true_includes_diff_output(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
     ) -> None:
