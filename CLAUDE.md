@@ -65,6 +65,9 @@ These are architecture rules, not optional style preferences. Zero tolerance for
 
 - **Enforce function contracts.** Pure functions stay pure — no side effects, no I/O, no state mutation. Functions that mutate return `None` (mutate+void) or clone first (clone+return). Never mutate an input AND return it.
 - **Data over procedure.** If every branch returns the same shape, replace the conditional with a lookup table. Dispatch tables, dicts, and enums over if/elif chains. The table is the spec; the procedure is just the table with extra steps.
+- **No dual-ownership shims.** When replacing a path, hard-cut to the new owner in the same change. Do not keep old and new logic alive behind compatibility glue unless an external interface truly requires it.
+- **Fix the first wrong layer.** If the source-of-truth layer is reachable, repair the bug there. Do not paper over upstream mistakes with call-site guards or UI-only patches.
+- **Domain-first placement.** New behavior belongs in its canonical module from `CODEBASE.md`. If logic seems to fit in two places, extract one owner or shared primitive — do not split responsibility.
 
 ## DAG Principles
 
@@ -173,7 +176,7 @@ For tasks requiring design decisions or multi-file changes, use rich context ins
 - **Never put specific function/class names in prompts** unless you've verified them in the source. Workers discover the real API by reading code. Wrong names cause import errors that crash the worker.
 - Still require the commit checklist at the end
 
-Workers have **256K context windows** — use them. Rich architectural context produces better output than step-by-step hand-holding. CODEBASE.md is auto-read by the worktree hook.
+Workers have large context windows, but that is not a license to dump static documents into prompts. Prefer rich task context, explicit file lists, and scoped reads. Point workers at `CODEBASE.md`; do not paste `CODEBASE.md` wholesale unless a specific excerpt is required.
 
 ## Testing philosophy
 
