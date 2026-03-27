@@ -33,6 +33,7 @@ from dgov.persistence import (
     remove_pane,
     update_pane_state,
 )
+from dgov.spans import _compute_route_from_dispatch
 from dgov.strategy import (
     _generate_slug,
     _structure_pi_prompt,
@@ -1010,6 +1011,7 @@ def create_worker_pane(
                     SpanKind.DISPATCH,
                     agent=logical_agent,
                     from_agent=agent,
+                    route=_compute_route_from_dispatch(logical_agent, agent),
                     prompt_hash=phash,
                     base_sha=base_sha,
                 )

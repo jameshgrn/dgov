@@ -747,6 +747,297 @@ class TestAgentReliabilityStats:
         assert stats["custom-agent"]["review_count"] == 1
 
 
+@pytest.mark.unit
+class TestRouteBackfill:
+    """Tests for backfill_empty_routes and typed route preference."""
+
+    def test_backfills_legacy_dispatch_with_agent_and_from_agent(self, session, monkeypatch):
+        """Legacy dispatch spans with agent/from_agent should get canonical route."""
+        from dgov.spans import _get_db, backfill_empty_routes, close_span, open_span
+
+        # Mock physical_to_logical to map river-35b -> qwen-35b
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-35b":
+                return "qwen-35b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+
+        # Create legacy dispatch span with empty route (agent=worker, from_agent=river-35b)
+        sid1 = open_span(
+            session_str, "t1", SpanKind.DISPATCH, agent="worker", from_agent="river-35b"
+        )
+        close_span(session_str, sid1, SpanOutcome.SUCCESS)
+
+        # Verify route is empty before backfill
+        conn = _get_db(session_str)
+        row = conn.execute("SELECT route FROM spans WHERE id = ?", (sid1,)).fetchone()
+        assert row[0] == ""
+
+        # Backfill should compute canonical route from from_agent
+        count = backfill_empty_routes(session_str)
+        assert count == 1
+
+        # Verify route is now "qwen-35b"
+        row = conn.execute("SELECT route FROM spans WHERE id = ?", (sid1,)).fetchone()
+        assert row[0] == "qwen-35b"
+
+    def test_backfills_legacy_dispatch_only_agent(self, session, monkeypatch):
+        """Legacy dispatch spans with only agent field should get canonical route."""
+        from dgov.spans import _get_db, backfill_empty_routes
+
+        # Mock physical_to_logical to map pi -> qwen-9b (physical->logical)
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "pi":
+                return "qwen-9b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+
+        # Create legacy dispatch span with empty route (agent=pi, from_agent="")
+        sid = open_span(session_str, "t1", SpanKind.DISPATCH, agent="pi", from_agent="")
+        close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Backfill should compute canonical route from agent
+        count = backfill_empty_routes(session_str)
+        assert count == 1
+
+        conn = _get_db(session_str)
+        row = conn.execute("SELECT route FROM spans WHERE id = ?", (sid,)).fetchone()
+        assert row[0] == "qwen-9b"
+
+    def test_backfill_skips_rows_without_agent_or_from_agent(self, session):
+        """Backfill should skip spans with neither agent nor from_agent set."""
+        from dgov.spans import backfill_empty_routes
+
+        session_str = str(session)
+
+        # Create dispatch span with empty agent and from_agent
+        sid = open_span(session_str, "t1", SpanKind.DISPATCH, agent="", from_agent="")
+        close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Backfill should not change anything
+        count = backfill_empty_routes(session_str)
+        assert count == 0
+
+    def test_backfill_preserves_non_empty_routes(self, session):
+        """Backfill should not touch spans that already have a route."""
+        from dgov.spans import backfill_empty_routes, close_span, open_span
+
+        session_str = str(session)
+
+        # Create dispatch span with pre-populated route
+        sid = open_span(
+            session_str,
+            "t1",
+            SpanKind.DISPATCH,
+            agent="qwen-35b",
+            from_agent="river-35b",
+            route="qwen-35b",
+        )
+        close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Backfill should not change anything
+        count = backfill_empty_routes(session_str)
+        assert count == 0
+
+    def test_backfill_multiple_rows(self, session, monkeypatch):
+        """Backfill processes multiple spans correctly."""
+        from dgov.spans import _get_db, backfill_empty_routes
+
+        # Mock physical_to_logical
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-9b":
+                return "qwen-9b"
+            if physical_name == "river-35b":
+                return "qwen-35b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+
+        # Create multiple legacy dispatch spans: 5 worker + 3 supervisor = 8 total
+        for i in range(5):
+            open_span(
+                session_str, f"t{i}", SpanKind.DISPATCH, agent="worker", from_agent="river-9b"
+            )
+        for i in range(8, 11):
+            open_span(
+                session_str,
+                f"t{i}",
+                SpanKind.DISPATCH,
+                agent="supervisor",
+                from_agent="river-35b",
+            )
+
+        # Backfill should process all 8 spans
+        count = backfill_empty_routes(session_str)
+        assert count == 8
+
+        conn = _get_db(session_str)
+        qwen_9b_count = conn.execute(
+            "SELECT COUNT(*) FROM spans WHERE route = ?", ("qwen-9b",)
+        ).fetchone()[0]
+        qwen_35b_count = conn.execute(
+            "SELECT COUNT(*) FROM spans WHERE route = ?", ("qwen-35b",)
+        ).fetchone()[0]
+        assert qwen_9b_count == 5
+        assert qwen_35b_count == 3
+
+
+@pytest.mark.unit
+class TestAgentReliabilityStatsPrefersTypedRoute:
+    """Tests that agent_reliability_stats prefers typed route over alias reconstruction."""
+
+    def test_typed_route_used_over_agent_fields(self, session):
+        """When route is populated, stats should use it directly without reconstructing."""
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        session_str = str(session)
+
+        # Create dispatch spans with typed route (simulating post-backfill state)
+        for i in range(5):
+            sid = open_span(
+                session_str,
+                f"t{i}",
+                SpanKind.DISPATCH,
+                agent="qwen-35b",
+                from_agent="river-35b",
+                route="qwen-35b",
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Add review spans with typed route
+        for i in range(4):
+            sid = open_span(
+                session_str, f"r{i}", SpanKind.REVIEW, verdict="safe", route="qwen-35b"
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+        for i in range(4, 5):
+            sid = open_span(
+                session_str, f"r{i}", SpanKind.REVIEW, verdict="unsafe", route="qwen-35b"
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        # Should use typed route "qwen-35b" as primary identity
+        assert "qwen-35b" in stats
+        assert stats["qwen-35b"]["dispatch_count"] == 5
+        assert stats["qwen-35b"]["review_count"] == 5
+
+    def test_mixed_typed_and_legacy_routes(self, session, monkeypatch):
+        """Stats should correctly merge typed routes and reconstructed legacy routes."""
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        # Mock physical_to_logical for legacy reconstruction
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-9b":
+                return "qwen-9b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+
+        # Create dispatch spans: some with typed route, some legacy (empty route)
+        # Typed route rows (newer)
+        for i in range(3):
+            sid = open_span(
+                session_str,
+                f"typed-{i}",
+                SpanKind.DISPATCH,
+                agent="qwen-9b",
+                from_agent="river-9b",
+                route="qwen-9b",
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Legacy rows with empty route (older, need reconstruction)
+        for i in range(3, 6):
+            sid = open_span(
+                session_str,
+                f"legacy-{i}",
+                SpanKind.DISPATCH,
+                agent="worker",
+                from_agent="river-9b",
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Add reviews: some typed route, some legacy
+        for i in range(3):
+            sid = open_span(
+                session_str, f"typed-r-{i}", SpanKind.REVIEW, verdict="safe", route="qwen-9b"
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Legacy reviews reconstructed from agent
+        for i in range(3, 5):
+            sid = open_span(
+                session_str, f"legacy-r-{i}", SpanKind.REVIEW, verdict="safe", agent="river-9b"
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        # Should aggregate all qwen-9b rows (typed + reconstructed legacy)
+        assert "qwen-9b" in stats
+        # 6 total dispatches (3 typed + 3 legacy)
+        assert stats["qwen-9b"]["dispatch_count"] == 6
+        # 5 total reviews (3 typed + 2 legacy)
+        assert stats["qwen-9b"]["review_count"] == 5
+
+    def test_legacy_rows_reconstructed_for_retry_stats(self, session, monkeypatch):
+        """Retry counts should reconstruct from to_agent when route is empty."""
+        from dgov.spans import agent_reliability_stats, close_span, open_span
+
+        # Mock physical_to_logical
+        def mock_physical_to_logical(physical_name):
+            if physical_name == "river-35b":
+                return "qwen-35b"
+            return physical_name
+
+        monkeypatch.setattr("dgov.router.physical_to_logical", mock_physical_to_logical)
+
+        session_str = str(session)
+
+        # Create dispatch spans with typed route
+        for i in range(5):
+            sid = open_span(
+                session_str,
+                f"t{i}",
+                SpanKind.DISPATCH,
+                agent="qwen-35b",
+                from_agent="river-35b",
+                route="qwen-35b",
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Create retry spans with typed route
+        for i in range(2):
+            sid = open_span(
+                session_str, f"retry-{i}", SpanKind.RETRY, to_agent="river-35b", route="qwen-35b"
+            )
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        # Create retry spans with empty route (legacy - needs reconstruction from to_agent)
+        for i in range(2):
+            sid = open_span(session_str, f"legacy-retry-{i}", SpanKind.RETRY, to_agent="river-35b")
+            close_span(session_str, sid, SpanOutcome.SUCCESS)
+
+        stats = agent_reliability_stats(session_str, min_dispatches=3)
+
+        # Should aggregate retry counts from both typed and legacy routes
+        assert "qwen-35b" in stats
+        # 4 total retries (2 typed + 2 reconstructed from to_agent)
+        assert stats["qwen-35b"]["retry_count"] == 4
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

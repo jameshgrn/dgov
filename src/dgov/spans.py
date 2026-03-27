@@ -226,6 +226,40 @@ _SPAN_COLUMNS = {
 }
 
 
+def _compute_route_from_dispatch(agent: str, from_agent: str) -> str:
+    """Compute canonical route identity for a dispatch span.
+
+    The canonical route is the logical backend name that was actually routed to,
+    not the role name (worker/supervisor/manager) or physical backend name.
+
+    Rules:
+    - If from_agent is set (backend chosen by router), use its logical name
+    - Otherwise, use agent's logical name via physical_to_logical mapping
+    - Returns empty string if neither is available
+
+    This ensures route identity is consistent across role names and physical backends.
+    """
+    if not agent and not from_agent:
+        return ""
+
+    from dgov.router import physical_to_logical
+
+    # Priority 1: use from_agent (backend explicitly routed to)
+    if from_agent:
+        logical = physical_to_logical(from_agent)
+        if logical and logical != from_agent:
+            return logical
+
+    # Priority 2: use agent's logical name
+    if agent:
+        logical = physical_to_logical(agent)
+        if logical and logical != agent:
+            return logical
+
+    # Fallback: return as-is (already a canonical name or no mapping available)
+    return from_agent or agent or ""
+
+
 def _get_db(session_root: str) -> sqlite3.Connection:
     from dgov.persistence import _get_db as _persist_db
 
@@ -878,6 +912,45 @@ def export_training_jsonl(
     return examples
 
 
+def backfill_empty_routes(session_root: str) -> int:
+    """Backfill route column for existing spans with empty route.
+
+    Computes canonical route identity from agent/from_agent fields for rows
+    where route is still empty. Returns count of rows updated.
+    """
+    from datetime import datetime, timezone
+
+    conn = _get_db(session_root)
+
+    # Find spans with empty routes and non-empty agent or from_agent
+    cursor = conn.execute(
+        "SELECT id, agent, from_agent FROM spans "
+        "WHERE route = '' AND (agent <> '' OR from_agent <> '')"
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        return 0
+
+    updated = 0
+    now = datetime.now(timezone.utc).isoformat()
+
+    for span_id, agent, from_agent in rows:
+        route = _compute_route_from_dispatch(agent, from_agent)
+        if route:
+            conn.execute(
+                "UPDATE spans SET route = ?, ended_at = ? WHERE id = ?",
+                (route, now, span_id),
+            )
+            updated += 1
+
+    if updated > 0:
+        conn.commit()
+        logger.info("Backfilled route identity for %d spans", updated)
+
+    return updated
+
+
 def agent_reliability_stats(
     session_root: str,
     *,
@@ -888,104 +961,182 @@ def agent_reliability_stats(
     Returns {agent_name: {pass_rate, dispatch_count, review_count,
     retry_count, avg_wait_ms, avg_review_ms, last_seen}}.
     Only includes agents with >= min_dispatches dispatch spans.
+
+    Prefs canonical route identity over alias reconstruction:
+    - Uses typed `route` column when available (most reliable)
+    - Falls back to agent/from_agent only for legacy rows with empty route
     """
     from dgov.router import physical_to_logical
 
     conn = _get_db(session_root)
 
-    def canonical_agent(agent: str, backend_agent: str = "") -> str:
+    def compute_route_from_aliases(agent: str, backend_agent: str = "") -> str:
+        """Compute route when typed route field is empty."""
         if backend_agent:
             backend_logical = physical_to_logical(backend_agent)
             if backend_logical != backend_agent:
                 return backend_logical
         return physical_to_logical(agent) if agent else agent
 
-    # Count dispatches per logical route. Dispatch spans may be opened under a
-    # role name (for example "worker") while the chosen backend is recorded in
-    # from_agent. Canonicalize through the resolved backend when available so
-    # routing history is not split across role/logical/physical identities.
-    dispatch_rows = conn.execute(
-        "SELECT agent, from_agent FROM spans "
-        "WHERE span_kind = 'dispatch' AND (agent != '' OR from_agent != '')"
+    # Priority 1: use typed route column (backfilled or new rows)
+    # Count dispatches per canonical route from route column first
+    dispatch_rows_with_route = conn.execute(
+        "SELECT DISTINCT(route) FROM spans WHERE span_kind = 'dispatch' AND route != ''"
     ).fetchall()
+
+    # Filter to routes with enough dispatch counts
     dispatch_counts: dict[str, int] = {}
-    for agent, backend_agent in dispatch_rows:
-        logical_agent = canonical_agent(agent, backend_agent)
-        if not logical_agent:
+    for (route,) in dispatch_rows_with_route:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM spans WHERE span_kind = 'dispatch' AND route = ?",
+            (route,),
+        ).fetchone()[0]
+        if count >= min_dispatches:
+            dispatch_counts[route] = count
+
+    # Priority 2: legacy rows with empty route need reconstruction from agent/from_agent
+    dispatch_rows_legacy = conn.execute(
+        "SELECT agent, from_agent FROM spans WHERE span_kind = 'dispatch' AND route = ''"
+    ).fetchall()
+
+    for agent, backend_agent in dispatch_rows_legacy:
+        logical_route = compute_route_from_aliases(agent, backend_agent)
+        if not logical_route:
             continue
-        dispatch_counts[logical_agent] = dispatch_counts.get(logical_agent, 0) + 1
+        # Add to counts (may overlap with typed routes - we merge by canonical identity)
+        dispatch_counts[logical_route] = dispatch_counts.get(logical_route, 0) + 1
 
     # Filter to agents with enough data
     qualifying = {a for a, c in dispatch_counts.items() if c >= min_dispatches}
     if not qualifying:
         return {}
 
-    # Review stats: pass rate from verdict - normalize physical names to logical
-    review_rows = conn.execute(
+    # Review stats: prefer typed route over alias reconstruction
+    # First: review spans with non-empty route (new rows)
+    review_rows_typed = conn.execute(
+        "SELECT route, verdict, COUNT(*) FROM spans "
+        "WHERE span_kind = 'review' AND route != '' "
+        "GROUP BY route, verdict"
+    ).fetchall()
+
+    # Legacy: review spans with empty route need reconstruction from agent
+    review_rows_legacy = conn.execute(
         "SELECT agent, verdict, COUNT(*) FROM spans "
-        "WHERE span_kind = 'review' AND agent != '' "
+        "WHERE span_kind = 'review' AND route = '' AND agent != '' "
         "GROUP BY agent, verdict"
     ).fetchall()
-    # Remap review agents from physical to logical
-    review_rows = [(canonical_agent(a), verdict, count) for a, verdict, count in review_rows]
 
-    # Retry counts - normalize physical names to logical
-    retry_rows = conn.execute(
-        "SELECT from_agent, COUNT(*) FROM spans "
-        "WHERE span_kind = 'retry' AND from_agent != '' "
-        "GROUP BY from_agent"
+    # Merge: use typed rows when available, fall back to reconstructed for legacy
+    review_rows_typed_dict: dict[str, dict[str, int]] = {}
+    for route, verdict, count in review_rows_typed:
+        if route not in review_rows_typed_dict:
+            review_rows_typed_dict[route] = {"safe": 0, "unsafe": 0, "stuck": 0}
+        review_rows_typed_dict[route][verdict] = (
+            review_rows_typed_dict[route].get(verdict, 0) + count
+        )
+
+    # Add legacy rows (reconstructed from agent names)
+    review_rows_legacy_dict: dict[str, dict[str, int]] = {}
+    for agent, verdict, count in review_rows_legacy:
+        logical_route = compute_route_from_aliases(agent, "")
+        if not logical_route or logical_route not in qualifying:
+            continue
+        if logical_route not in review_rows_legacy_dict:
+            review_rows_legacy_dict[logical_route] = {"safe": 0, "unsafe": 0, "stuck": 0}
+        review_rows_legacy_dict[logical_route][verdict] = (
+            review_rows_legacy_dict[logical_route].get(verdict, 0) + count
+        )
+
+    # Retry counts - prefer typed route from to_agent
+    retry_rows_typed = conn.execute(
+        "SELECT route, COUNT(*) FROM spans "
+        "WHERE span_kind = 'retry' AND route != '' "
+        "GROUP BY route"
     ).fetchall()
-    retry_counts: dict[str, int] = {}
-    for a, count in retry_rows:
-        logical_a = canonical_agent(a)
-        retry_counts[logical_a] = retry_counts.get(logical_a, 0) + count
+    retry_counts: dict[str, int] = {route: count for route, count in retry_rows_typed}
 
-    # Average durations - normalize physical names to logical
-    duration_rows = conn.execute(
+    # Legacy retry rows with empty route need reconstruction from to_agent
+    retry_rows_legacy = conn.execute(
+        "SELECT to_agent, COUNT(*) FROM spans "
+        "WHERE span_kind = 'retry' AND route = '' AND to_agent != '' "
+        "GROUP BY to_agent"
+    ).fetchall()
+    for agent, count in retry_rows_legacy:
+        logical_route = compute_route_from_aliases(agent, "")
+        if logical_route in qualifying:
+            retry_counts[logical_route] = retry_counts.get(logical_route, 0) + count
+
+    # Average durations - prefer typed route over agent names
+    duration_rows_typed = conn.execute(
+        "SELECT route, span_kind, AVG(duration_ms) FROM spans "
+        "WHERE route != '' AND duration_ms > 0 "
+        "AND span_kind IN ('wait', 'review') "
+        "GROUP BY route, span_kind"
+    ).fetchall()
+
+    # Legacy durations need reconstruction from agent
+    duration_rows_legacy = conn.execute(
         "SELECT agent, span_kind, AVG(duration_ms) FROM spans "
-        "WHERE agent != '' AND duration_ms > 0 "
+        "WHERE agent != '' AND route = '' AND duration_ms > 0 "
         "AND span_kind IN ('wait', 'review') "
         "GROUP BY agent, span_kind"
     ).fetchall()
-    # Remap duration agents from physical to logical
-    duration_rows = [(canonical_agent(a), kind, avg_ms) for a, kind, avg_ms in duration_rows]
 
-    # Last seen - normalize through the same canonical route identity.
-    last_seen_rows = conn.execute(
+    # Merge typed and legacy durations
+    duration_rows: dict[str, dict[str, float]] = {}
+    for route, kind, avg_ms in duration_rows_typed:
+        if route not in duration_rows:
+            duration_rows[route] = {"wait": 0.0, "review": 0.0}
+        duration_rows[route][kind] = avg_ms or 0.0
+
+    for agent, kind, avg_ms in duration_rows_legacy:
+        logical_route = compute_route_from_aliases(agent, "")
+        if logical_route in qualifying and logical_route not in duration_rows:
+            duration_rows[logical_route] = {"wait": 0.0, "review": 0.0}
+        if logical_route in qualifying and kind in duration_rows.get(logical_route, {}):
+            duration_rows[logical_route][kind] = avg_ms or 0.0
+
+    # Last seen - prefer typed route over agent reconstruction
+    last_seen_typed = conn.execute(
+        "SELECT route, MAX(started_at) FROM spans WHERE route != '' GROUP BY route"
+    ).fetchall()
+
+    # Legacy last seen needs reconstruction from agent/from_agent
+    last_seen_legacy = conn.execute(
         "SELECT agent, from_agent, MAX(started_at) FROM spans "
-        "WHERE agent != '' OR from_agent != '' "
+        "WHERE (agent != '' OR from_agent != '') AND route = '' "
         "GROUP BY agent, from_agent"
     ).fetchall()
-    last_seen: dict[str, str] = {}
-    for agent, backend_agent, ts in last_seen_rows:
-        logical_agent = canonical_agent(agent, backend_agent)
-        if not logical_agent:
-            continue
-        last_seen[logical_agent] = max(last_seen.get(logical_agent, ""), ts)
 
-    # Build stats per agent
+    # Merge typed and legacy last seen
+    last_seen: dict[str, str] = {route: ts for route, ts in last_seen_typed}
+    for agent, backend_agent, ts in last_seen_legacy:
+        logical_route = compute_route_from_aliases(agent, backend_agent)
+        if logical_route and logical_route in qualifying:
+            last_seen[logical_route] = max(last_seen.get(logical_route, ""), ts)
+
+    # Build stats per agent using typed route as primary
     stats: dict[str, dict] = {}
     for agent in qualifying:
-        safe = 0
-        total_reviews = 0
-        for a, verdict, count in review_rows:
-            if a != agent:
-                continue
-            total_reviews += count
-            if verdict == "safe":
-                safe += count
+        # Aggregate review stats from both typed and legacy sources
+        review_dict_typed = review_rows_typed_dict.get(agent, {})
+        review_dict_legacy = review_rows_legacy_dict.get(agent, {})
+        safe = review_dict_typed.get("safe", 0) + review_dict_legacy.get("safe", 0)
+        total_reviews = (
+            review_dict_typed.get("safe", 0)
+            + review_dict_typed.get("unsafe", 0)
+            + review_dict_typed.get("stuck", 0)
+            + review_dict_legacy.get("safe", 0)
+            + review_dict_legacy.get("unsafe", 0)
+            + review_dict_legacy.get("stuck", 0)
+        )
 
         pass_rate = safe / total_reviews if total_reviews > 0 else 0.0
 
-        avg_wait = 0.0
-        avg_review = 0.0
-        for a, kind, avg_ms in duration_rows:
-            if a != agent:
-                continue
-            if kind == "wait":
-                avg_wait = avg_ms or 0.0
-            elif kind == "review":
-                avg_review = avg_ms or 0.0
+        # Get duration stats from typed route dict or legacy reconstruction
+        duration_dict = duration_rows.get(agent, {"wait": 0.0, "review": 0.0})
+        avg_wait = duration_dict.get("wait", 0.0)
+        avg_review = duration_dict.get("review", 0.0)
 
         stats[agent] = {
             "pass_rate": pass_rate,

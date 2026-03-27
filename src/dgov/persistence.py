@@ -787,6 +787,14 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     except sqlite3.OperationalError:
         pass  # column already exists
 
+    # Backfill empty route values with computed canonical identity from agent/from_agent
+    try:
+        from dgov.spans import backfill_empty_routes
+
+        backfill_empty_routes(session_root)
+    except Exception:
+        logger.debug("Route backfill failed, will retry on next connection", exc_info=True)
+
     # Migrate: add hierarchy columns if missing
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
         try:
