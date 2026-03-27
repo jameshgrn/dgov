@@ -1,0 +1,22 @@
+# dgov routing contract for this repository
+# Contains only routing configuration and agent groups
+# No shell commands, env vars, or secrets allowed here
+
+[groups]
+# Agent groups define concurrency limits and shared resources
+# Each group can have: max_concurrent, timeout, resources, etc.
+worker = { max_concurrent = 2, timeout = 300 }
+supervisor = { max_concurrent = 1, timeout = 600 }
+manager = { max_concurrent = 1, timeout = 900 }
+
+[routing.qwen-9b]
+backends = ["river-qwen9"]
+
+[routing.qwen-35b]
+backends = ["river-qwen35"]
+
+[routing.qwen-122b]
+backends = ["river-qwen122"]
+
+[routing.lt-gov]
+backends = ["supervisor"]

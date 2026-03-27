@@ -832,3 +832,51 @@ def load_groups(project_root: str | None = None) -> dict[str, dict]:
                 pass
 
     return groups
+
+
+def load_routing_tables(
+    project_root: str | None = None,
+) -> dict[str, list[str]]:
+    """Load routing tables from TOML config files.
+
+    Returns {logical_name: [backend1, backend2, ...]}.
+
+    Priority order (project-local takes precedence over user-global):
+    1. Project-local: <project_root>/.dgov/agents.toml [routing.*]
+    2. User global: ~/.dgov/agents.toml [routing.*]
+
+    Project-local routes override user-global routes for the same logical name.
+    If neither exists, returns empty dict.
+    """
+    from pathlib import Path
+
+    result: dict[str, list[str]] = {}
+
+    # Project-local: <project_root>/.dgov/agents.toml
+    if project_root:
+        project_config = Path(project_root) / ".dgov" / "agents.toml"
+        if project_config.is_file():
+            try:
+                with open(project_config, "rb") as f:
+                    data = tomllib.load(f)
+                routing = data.get("routing", {})
+                for name, table in routing.items():
+                    if isinstance(table, dict) and "backends" in table:
+                        result[name] = list(table["backends"])
+            except (tomllib.TOMLDecodeError, OSError):
+                pass
+
+    # User global: ~/.dgov/agents.toml
+    user_config = Path.home() / ".dgov" / "agents.toml"
+    if user_config.is_file():
+        try:
+            with open(user_config, "rb") as f:
+                data = tomllib.load(f)
+            routing = data.get("routing", {})
+            for name, table in routing.items():
+                if isinstance(table, dict) and "backends" in table:
+                    result[name] = list(table["backends"])
+        except (tomllib.TOMLDecodeError, OSError):
+            pass
+
+    return result

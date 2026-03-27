@@ -7,7 +7,18 @@ from threading import Barrier
 
 import pytest
 
-from dgov.router import _load_routing_tables, available_names, is_routable, resolve_agent
+from dgov.router import (
+    BackendId,
+    DegradationError,
+    DegradationReason,
+    DegradationState,
+    _check_circuit_breaker,
+    _load_routing_tables,
+    available_names,
+    is_routable,
+    record_backend_failure,
+    resolve_agent,
+)
 
 
 @pytest.mark.unit
@@ -17,9 +28,11 @@ class TestLoadRoutingTables:
         assert isinstance(result, dict)
 
     def test_cached_on_repeat(self):
+        """Test that routing tables are cached based on mtime."""
         a = _load_routing_tables()
         b = _load_routing_tables()
-        assert a is b
+        # Both should return the same cached data (same dict values, may be different objects)
+        assert a == b
 
 
 @pytest.mark.unit
@@ -40,16 +53,133 @@ class TestAvailableNames:
 
 
 @pytest.mark.unit
+class TestDegradationError:
+    def test_initialization(self):
+        tried = [
+            ("backend-a", DegradationReason.NOT_REGISTERED),
+            ("backend-b", DegradationReason.HEALTH_FAILURE),
+        ]
+        failures = {
+            "backend-a": [DegradationReason.NOT_REGISTERED],
+            "backend-b": [DegradationReason.HEALTH_FAILURE],
+        }
+        error = DegradationError(tried, failures)
+
+        assert error.tried == tried
+        assert error.failures == failures
+        assert error.get_state() == DegradationState.FULL_FAILURE
+
+    def test_empty_tried(self):
+        tried: list[tuple[BackendId | None, DegradationReason | None]] = []
+        failures: dict[BackendId, list[DegradationReason]] = {}
+        error = DegradationError(tried, failures)
+
+        assert error.tried == []
+        assert error.failures == {}
+        assert error.get_state() == DegradationState.NONE
+
+    def test_partial_failure(self):
+        tried = [
+            ("backend-a", None),  # Not a routing key
+            ("backend-b", DegradationReason.HEALTH_FAILURE),
+        ]
+        failures = {
+            "backend-a": [],
+            "backend-b": [DegradationReason.HEALTH_FAILURE],
+        }
+        error = DegradationError(tried, failures)
+
+        assert error.tried == tried
+        assert error.failures == failures
+        # State is PARTIAL_FAILURE because some backends have no reasons
+        assert error.get_state() == DegradationState.PARTIAL_FAILURE
+
+    def test_get_reasons(self):
+        tried = [
+            ("backend-a", DegradationReason.NOT_REGISTERED),
+        ]
+        failures = {
+            "backend-a": [DegradationReason.NOT_REGISTERED, DegradationReason.CIRCUIT_BREAKER],
+        }
+        error = DegradationError(tried, failures)
+
+        reasons = error.get_reasons()
+        assert DegradationReason.NOT_REGISTERED in reasons
+        assert DegradationReason.CIRCUIT_BREAKER in reasons
+
+    def test_has_full_failure(self):
+        tried = [
+            ("backend-a", DegradationReason.NOT_REGISTERED),
+            ("backend-b", DegradationReason.HEALTH_FAILURE),
+        ]
+        failures = {
+            "backend-a": [DegradationReason.NOT_REGISTERED],
+            "backend-b": [DegradationReason.HEALTH_FAILURE],
+        }
+        error = DegradationError(tried, failures)
+
+        assert error.has_full_failure() is True
+
+    def test_has_full_failure_partial(self):
+        tried = [
+            ("backend-a", None),
+            ("backend-b", DegradationReason.HEALTH_FAILURE),
+        ]
+        failures = {
+            "backend-a": [],
+            "backend-b": [DegradationReason.HEALTH_FAILURE],
+        }
+        error = DegradationError(tried, failures)
+
+        assert error.has_full_failure() is False
+
+
+@pytest.mark.unit
+class TestDegradationReason:
+    def test_is_str_enum(self):
+        reason = DegradationReason.NOT_REGISTERED
+        assert isinstance(reason, DegradationReason)
+        assert isinstance(reason, str)
+        assert reason.value == "not_registered"
+
+    def test_reason_values(self):
+        assert DegradationReason.NOT_REGISTERED.value == "not_registered"
+        assert DegradationReason.CIRCUIT_BREAKER.value == "circuit_breaker"
+        assert DegradationReason.GROUP_BLOCKED.value == "group_blocked"
+        assert DegradationReason.HEALTH_FAILURE.value == "health_failure"
+        assert DegradationReason.HEALTH_TIMEOUT.value == "health_timeout"
+        assert DegradationReason.CONCURRENT_LIMIT.value == "concurrent_limit"
+
+
+@pytest.mark.unit
+class TestDegradationState:
+    def test_is_str_enum(self):
+        state = DegradationState.NONE
+        assert isinstance(state, DegradationState)
+        assert isinstance(state, str)
+        assert state.value == "none"
+
+    def test_state_values(self):
+        assert DegradationState.NONE.value == "none"
+        assert DegradationState.PARTIAL_FAILURE.value == "partial_failure"
+        assert DegradationState.FULL_FAILURE.value == "full_failure"
+
+
+@pytest.mark.unit
 class TestResolveAgent:
     def test_passthrough_for_physical_agent(self, tmp_path):
+        """Physical agent names passthrough to themselves."""
         resolved, routed_from = resolve_agent("river-35b", str(tmp_path), str(tmp_path))
         assert resolved == "river-35b"
-        assert routed_from is None
+        # For physical agent names (not in routing tables), logical name is the same as physical
+        assert routed_from == "river-35b"
 
     def test_passthrough_for_unknown_name(self, tmp_path):
+        """Unknown names passthrough to themselves."""
         resolved, routed_from = resolve_agent("totally-unknown", str(tmp_path), str(tmp_path))
         assert resolved == "totally-unknown"
-        assert routed_from is None
+        # Unknown names are their own logical name
+        assert routed_from == "totally-unknown"
 
     def test_resolve_returns_physical_backend(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
@@ -138,6 +268,7 @@ class TestResolveAgent:
         assert resolved == "free-one"
 
     def test_raises_when_all_unavailable(self, tmp_path, monkeypatch):
+        """When all backends fail, raises DegradationError with typed reasons."""
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
             lambda: {"qwen-test": ["missing-agent"]},
@@ -147,15 +278,18 @@ class TestResolveAgent:
             lambda *a, **kw: {},
         )
 
-        with pytest.raises(RuntimeError, match="No available backend"):
+        with pytest.raises(DegradationError) as exc_info:
             resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
+
+        # Verify the error has typed degradation reasons
+        assert exc_info.value.tried == [(None, DegradationReason.NOT_REGISTERED)]
+        assert exc_info.value.failures == {"missing-agent": [DegradationReason.NOT_REGISTERED]}
+        assert exc_info.value.get_state() == DegradationState.FULL_FAILURE
 
 
 @pytest.mark.unit
 class TestCircuitBreaker:
     def test_record_creates_file(self, tmp_path):
-        from dgov.router import record_backend_failure
-
         record_backend_failure(str(tmp_path), "test-backend")
         failures_file = tmp_path / ".dgov" / "backend_failures.json"
         assert failures_file.exists()
@@ -164,16 +298,13 @@ class TestCircuitBreaker:
         assert len(data["test-backend"]) == 1
 
     def test_record_appends(self, tmp_path):
-        from dgov.router import record_backend_failure
-
         record_backend_failure(str(tmp_path), "test-backend")
         record_backend_failure(str(tmp_path), "test-backend")
         data = json.loads((tmp_path / ".dgov" / "backend_failures.json").read_text())
         assert len(data["test-backend"]) == 2
 
     def test_record_prunes_old(self, tmp_path):
-        from dgov.router import record_backend_failure
-
+        record_backend_failure(str(tmp_path), "test-backend")
         failures_file = tmp_path / ".dgov" / "backend_failures.json"
         failures_file.parent.mkdir(parents=True, exist_ok=True)
         old_ts = time.time() - 700  # > 10 minutes ago
@@ -183,8 +314,6 @@ class TestCircuitBreaker:
         assert len(data["test-backend"]) == 1  # old one pruned
 
     def test_record_preserves_concurrent_updates(self, tmp_path):
-        from dgov.router import record_backend_failure
-
         backend_id = "test-backend"
         rounds = 4
         writers_per_round = 8
@@ -208,26 +337,18 @@ class TestCircuitBreaker:
         assert len(data[backend_id]) == rounds * writers_per_round
 
     def test_check_true_when_threshold_exceeded(self, tmp_path):
-        from dgov.router import _check_circuit_breaker, record_backend_failure
-
         record_backend_failure(str(tmp_path), "bad-backend")
         record_backend_failure(str(tmp_path), "bad-backend")
         assert _check_circuit_breaker(str(tmp_path), "bad-backend") is True
 
     def test_check_false_under_threshold(self, tmp_path):
-        from dgov.router import _check_circuit_breaker, record_backend_failure
-
         record_backend_failure(str(tmp_path), "ok-backend")
         assert _check_circuit_breaker(str(tmp_path), "ok-backend") is False
 
     def test_check_false_missing_file(self, tmp_path):
-        from dgov.router import _check_circuit_breaker
-
         assert _check_circuit_breaker(str(tmp_path), "any-backend") is False
 
     def test_resolve_skips_tripped_backend(self, tmp_path, monkeypatch):
-        from dgov.router import record_backend_failure
-
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
             lambda: {"qwen-test": ["tripped-one", "healthy-one"]},

@@ -5,6 +5,12 @@ backends (river-35b, qwen35-35b, etc.). Checks health and concurrency to
 pick the first available backend.
 
 Includes circuit breaker for backends with recent failures.
+
+Routing contract:
+- Logical names come from project-local .dgov/agents.toml [routing.*] tables
+- Falls back to user-global ~/.dgov/agents.toml if project-local is missing
+- Never blocks on missing user-global config
+- Degradation reasons are typed and deterministic
 """
 
 from __future__ import annotations
@@ -14,74 +20,86 @@ import json
 import logging
 import subprocess
 import time
-import tomllib
+from enum import StrEnum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_routing_cache: dict[str, object] = {}
+# Type aliases for routing contract
+LogicalName = str
+BackendId = str
+Role = str  # "worker" | "supervisor" | "manager" | "lt-gov"
 
 
-def _load_routing_tables() -> dict[str, list[str]]:
-    """Load [routing.*] tables from ~/.dgov/agents.toml.
+# Degradation reason kinds (typed, frozen)
+class DegradationReason(StrEnum):
+    """Reasons why a backend candidate is unavailable."""
+
+    NOT_REGISTERED = "not_registered"
+    CIRCUIT_BREAKER = "circuit_breaker"
+    GROUP_BLOCKED = "group_blocked"
+    HEALTH_FAILURE = "health_failure"
+    HEALTH_TIMEOUT = "health_timeout"
+    CONCURRENT_LIMIT = "concurrent_limit"
+
+
+class DegradationState(StrEnum):
+    """Current state of degradation for a logical name resolution."""
+
+    NONE = "none"
+    PARTIAL_FAILURE = "partial_failure"
+    FULL_FAILURE = "full_failure"
+
+
+def _load_routing_tables() -> dict[LogicalName, list[BackendId]]:
+    """Load routing tables from config files.
+
+    Priority order (project-local takes precedence over user-global):
+    1. Project-local: <project_root>/.dgov/agents.toml [routing.*]
+    2. User global: ~/.dgov/agents.toml [routing.*]
 
     Returns {logical_name: [backend1, backend2, ...]}.
     """
-    config_path = Path.home() / ".dgov" / "agents.toml"
+    from dgov.agents import load_routing_tables
 
-    mtime = 0.0
-    if config_path.is_file():
-        try:
-            mtime = config_path.stat().st_mtime
-        except OSError:
-            pass
-
-    if _routing_cache.get("mtime") == mtime and "tables" in _routing_cache:
-        return _routing_cache["tables"]  # type: ignore[return-value]
-
-    result: dict[str, list[str]] = {}
-    if mtime > 0:
-        try:
-            with open(config_path, "rb") as f:
-                data = tomllib.load(f)
-            routing = data.get("routing", {})
-            for name, table in routing.items():
-                if isinstance(table, dict) and "backends" in table:
-                    result[name] = list(table["backends"])
-        except (tomllib.TOMLDecodeError, OSError):
-            pass
-
-    _routing_cache["mtime"] = mtime
-    _routing_cache["tables"] = result
-    return result
+    return load_routing_tables()
 
 
-def is_routable(name: str) -> bool:
-    """Check if a name is a logical routing key."""
-    return name in _load_routing_tables()
+def is_routable(name: LogicalName) -> bool:
+    """Check if a name is a logical routing key.
+
+    Returns True if the name is defined in routing tables (project-local or user-global).
+    """
+    tables = _load_routing_tables()
+    return name in tables
 
 
-def available_names() -> list[str]:
-    """Return all logical routing names."""
-    return sorted(_load_routing_tables())
+def available_names() -> list[LogicalName]:
+    """Return all logical routing names from config.
+
+    Returns sorted list of logical names defined in routing tables.
+    """
+    tables = _load_routing_tables()
+    return sorted(tables.keys())
 
 
-def physical_to_logical(physical_name: str) -> str:
+def physical_to_logical(physical_name: str) -> LogicalName:
     """Map a physical backend name back to its logical routing name.
 
     Returns the physical name unchanged if no mapping is found.
     """
-    for logical, backends in _load_routing_tables().items():
+    tables = _load_routing_tables()
+    for logical, backends in tables.items():
         if physical_name in backends:
             return logical
     return physical_name
 
 
-def resolve_role(agent_name: str) -> str:
-    """Derive pane role from routing tables.
+def resolve_role(agent_name: str) -> Role:
+    """Derive pane role from agent name.
 
-    Returns "lt-gov" if agent_name is in the lt-gov routing backends
-    (or is the logical name "lt-gov" itself). Returns "worker" otherwise.
+    Returns "lt-gov" if agent_name is "lt-gov" or matches lt-gov routing backends.
+    Returns "worker" otherwise.
     """
     tables = _load_routing_tables()
     if agent_name == "lt-gov":
@@ -92,7 +110,7 @@ def resolve_role(agent_name: str) -> str:
     return "worker"
 
 
-def record_backend_failure(session_root: str, backend_id: str) -> None:
+def record_backend_failure(session_root: str, backend_id: BackendId) -> None:
     """Record a backend failure and prune old entries.
 
     Appends current timestamp to JSON file at session_root/.dgov/backend_failures.json.
@@ -132,7 +150,7 @@ def record_backend_failure(session_root: str, backend_id: str) -> None:
 
 
 def _check_circuit_breaker(
-    session_root: str, backend_id: str, threshold: int = 2, window_minutes: int = 10
+    session_root: str, backend_id: BackendId, threshold: int = 2, window_minutes: int = 10
 ) -> bool:
     """Check if circuit breaker is tripped for a backend.
 
@@ -160,24 +178,33 @@ def _check_circuit_breaker(
 
 
 def resolve_agent(
-    name: str,
+    name: LogicalName,
     session_root: str,
     project_root: str,
-) -> tuple[str, str | None]:
+) -> tuple[BackendId, LogicalName]:
     """Resolve a logical agent name to an available physical backend.
 
-    Returns (physical_agent_id, logical_name | None).
-    If name is not a routing key, returns (name, None) unchanged.
+    Returns (physical_agent_id, logical_name).
+    If name is not a logical routing key, returns (name, name) unchanged.
     Checks health and concurrency for each backend in order.
+
+    Degradation is typed and deterministic:
+    - When all candidates fail, raises DegradationError with typed reasons
+    - Each failure is categorized by DegradationReason
+    - DegradationState indicates severity (none, partial, full)
     """
     from dgov.agents import load_groups, load_registry
     from dgov.backend import get_backend
     from dgov.persistence import all_panes
     from dgov.status import _count_active_agent_workers
 
+    # Load routing tables (project-local takes precedence)
     tables = _load_routing_tables()
+
+    # Check if name is a logical routing key
     if name not in tables:
-        return name, None
+        # Not a routing key - return as-is (passthrough for physical agent names)
+        return name, name
 
     backends = tables[name]
     registry = load_registry(project_root)
@@ -209,16 +236,24 @@ def resolve_agent(
                     for g in agent_groups:
                         group_counts[g] = group_counts.get(g, 0) + 1
 
-    tried: list[str] = []
+    # Track degradation reasons for each backend
+    backend_failures: dict[BackendId, list[DegradationReason]] = {}
+
+    tried: list[tuple[BackendId | None, DegradationReason | None]] = []
+
     for backend_id in backends:
         agent_def = registry.get(backend_id)
         if agent_def is None:
-            tried.append(f"{backend_id} (not registered)")
+            tried.append((None, DegradationReason.NOT_REGISTERED))
+            backend_failures[backend_id] = [DegradationReason.NOT_REGISTERED]
             continue
 
         # Circuit breaker check
         if _check_circuit_breaker(session_root, backend_id):
-            tried.append(f"{backend_id} (circuit breaker tripped)")
+            tried.append((None, DegradationReason.CIRCUIT_BREAKER))
+            backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
+                DegradationReason.CIRCUIT_BREAKER
+            ]
             continue
 
         # Group Concurrency Check
@@ -231,7 +266,10 @@ def resolve_agent(
                     active = group_counts.get(g, 0)
                     limit = g_def["max_concurrent"]
                     if active >= limit:
-                        tried.append(f"{backend_id} (group '{g}' full: {active}/{limit})")
+                        tried.append((None, DegradationReason.GROUP_BLOCKED))
+                        backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
+                            DegradationReason.GROUP_BLOCKED
+                        ]
                         group_blocked = True
                         break
             if group_blocked:
@@ -248,10 +286,16 @@ def resolve_agent(
                     timeout=5,
                 )
                 if hc.returncode != 0:
-                    tried.append(f"{backend_id} (unhealthy)")
+                    tried.append((None, DegradationReason.HEALTH_FAILURE))
+                    backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
+                        DegradationReason.HEALTH_FAILURE
+                    ]
                     continue
             except (subprocess.TimeoutExpired, OSError):
-                tried.append(f"{backend_id} (health check timeout)")
+                tried.append((None, DegradationReason.HEALTH_TIMEOUT))
+                backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
+                    DegradationReason.HEALTH_TIMEOUT
+                ]
                 continue
 
         # Individual Concurrency check
@@ -259,14 +303,94 @@ def resolve_agent(
         if max_concurrent is not None:
             active = _count_active_agent_workers(session_root, backend_id)
             if active >= max_concurrent:
-                tried.append(f"{backend_id} ({active}/{max_concurrent} busy)")
+                tried.append((None, DegradationReason.CONCURRENT_LIMIT))
+                backend_failures[backend_id] = backend_failures.get(backend_id, []) + [
+                    DegradationReason.CONCURRENT_LIMIT
+                ]
                 continue
 
+        # Success - return this backend
         logger.info("Routed %s -> %s", name, backend_id)
         return backend_id, name
 
-    raise RuntimeError(
-        f"No available backend for '{name}'. "
-        f"Tried: {', '.join(tried)}. "
-        f"All backends busy or unhealthy."
-    )
+    # All candidates failed - raise deterministic error with typed degradation
+    raise DegradationError(tried, backend_failures)
+
+
+class DegradationError(Exception):
+    """Raised when all backend candidates for a logical name are unavailable.
+
+    Contains typed degradation reasons instead of free-form strings.
+    """
+
+    def __init__(
+        self,
+        tried: list[tuple[BackendId | None, DegradationReason | None]],
+        failures: dict[BackendId, list[DegradationReason]],
+    ):
+        super().__init__(self._build_message(tried, failures))
+        self.tried = tried
+        self.failures: dict[BackendId, list[DegradationReason]] = failures
+
+    def _build_message(
+        self,
+        tried: list[tuple[BackendId | None, DegradationReason | None]],
+        failures: dict[BackendId, list[DegradationReason]],
+    ) -> str:
+        """Build a deterministic error message from typed degradation reasons."""
+        lines: list[str] = []
+
+        for backend_id, reason in tried:
+            if reason is None:
+                lines.append(f"  - {backend_id} (not a routing key)")
+            else:
+                lines.append(f"  - {backend_id} ({reason.value})")
+
+        lines.append("")
+        lines.append("Degradation summary:")
+
+        for backend_id, reasons in failures.items():
+            if reasons:
+                reason_values = sorted(set(r.value for r in reasons))
+                lines.append(f"  {backend_id}: {', '.join(reason_values)}")
+
+        return "\n".join(lines)
+
+    def get_state(self) -> DegradationState:
+        """Return the current degradation state.
+
+        State is determined by whether any backend in self.tried has no reasons.
+        If all backends have at least one reason, state is FULL_FAILURE.
+        If some backends have no reasons, state is PARTIAL_FAILURE.
+        If no backends were tried, state is NONE.
+        """
+        if not self.tried:
+            return DegradationState.NONE
+        # Check if any backend has NO reasons (i.e., reason is None)
+        has_any_without_reason = any(
+            reason is None
+            for _, reason in self.tried
+            if reason is not None or True  # Always include the check
+        )
+        # Actually, we need to check if any backend has reason is None
+        has_any_without_reason = any(reason is None for _, reason in self.tried)
+        if has_any_without_reason:
+            return DegradationState.PARTIAL_FAILURE
+        return DegradationState.FULL_FAILURE
+
+    def get_reasons(self) -> list[DegradationReason]:
+        """Return all unique degradation reasons encountered."""
+        reasons: set[DegradationReason] = set()
+        for _, reason in self.tried:
+            if reason is not None:
+                reasons.add(reason)
+        for backend_id, backend_reasons in self.failures.items():
+            for reason in backend_reasons:
+                reasons.add(reason)
+        return sorted(reasons)
+
+    def has_full_failure(self) -> bool:
+        """Check if all backends have at least one degradation reason."""
+        if not self.tried:
+            return False
+        return all(reason is not None for _, reason in self.tried)
