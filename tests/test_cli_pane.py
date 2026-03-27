@@ -108,7 +108,7 @@ class TestPaneReview:
                     stat="src/parser.py | 10 +++---",
                 )
             ),
-        ):
+        ) as mock_review:
             result = runner.invoke(cli, ["pane", "review", "fix-parser"])
 
         assert result.exit_code == 0
@@ -117,6 +117,7 @@ class TestPaneReview:
         assert output["commit_count"] == 3
         assert "tests" not in output
         assert "freshness_info" not in output
+        assert mock_review.call_args.kwargs["emit_events"] is False
 
     def test_review_error_exits_nonzero(self, runner: CliRunner) -> None:
         with patch(
@@ -129,6 +130,39 @@ class TestPaneReview:
 
         assert result.exit_code == 1
         assert "error" in json.loads(result.output)
+
+    def test_land_dry_run_stays_read_only(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.executor.run_review_only",
+            return_value=MagicMock(review=ReviewInfo(slug="task", verdict="safe", commit_count=2)),
+        ) as mock_review:
+            result = runner.invoke(cli, ["pane", "land", "task", "--dry-run"])
+
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["dry_run"] is True
+        assert output["would_merge"] is True
+        assert mock_review.call_args.kwargs["emit_events"] is False
+
+    def test_merge_dry_run_stays_read_only(self, runner: CliRunner) -> None:
+        with patch(
+            "dgov.executor.run_review_only",
+            return_value=MagicMock(
+                review={
+                    "slug": "task",
+                    "verdict": "safe",
+                    "commit_count": 2,
+                    "files_changed": 1,
+                }
+            ),
+        ) as mock_review:
+            result = runner.invoke(cli, ["pane", "merge", "task", "--dry-run"])
+
+        assert result.exit_code == 0
+        output = json.loads(result.output)
+        assert output["dry_run"] is True
+        assert output["verdict"] == "safe"
+        assert mock_review.call_args.kwargs["emit_events"] is False
 
 
 class TestPaneLand:

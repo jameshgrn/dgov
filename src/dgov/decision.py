@@ -101,6 +101,7 @@ class ReviewOutputRequest:
     slug: str | None = None
     session_root: str | None = None
     full: bool = False
+    emit_events: bool = True
     diff: str | None = None
     task_prompt: str | None = None
     file_claims: tuple[str, ...] = ()

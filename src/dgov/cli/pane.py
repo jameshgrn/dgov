@@ -624,7 +624,12 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase, strict
     if dry_run:
         from dgov.executor import run_review_only
 
-        result = run_review_only(project_root, slug, session_root=session_root).review
+        result = run_review_only(
+            project_root,
+            slug,
+            session_root=session_root,
+            emit_events=False,
+        ).review
         result["dry_run"] = True
         click.echo(json.dumps(result, indent=2))
         return
@@ -693,7 +698,12 @@ def pane_land(slug, project_root, session_root, resolve, squash, rebase, dry_run
 
         from dgov.executor import run_review_only
 
-        review = run_review_only(project_root, slug, session_root=session_root).review
+        review = run_review_only(
+            project_root,
+            slug,
+            session_root=session_root,
+            emit_events=False,
+        ).review
         result = review.to_dict()
         result["dry_run"] = True
         result["would_merge"] = review.verdict == "safe"
@@ -937,6 +947,7 @@ def pane_review(slug, project_root, session_root, full, show_diff):
         slug,
         session_root=session_root,
         full=full,
+        emit_events=False,
         require_safe=False,
         require_commits=False,
     ).review
@@ -1181,9 +1192,7 @@ def pane_output(slug, project_root, session_root, tail, follow):
                 while True:
                     line = f.readline()
                     if line:
-                        cleaned = _clean_worker_output_text(
-                            line.decode("utf-8", errors="replace")
-                        )
+                        cleaned = _clean_worker_output_text(line.decode("utf-8", errors="replace"))
                         if cleaned:
                             click.echo(cleaned)
                     else:
@@ -1268,9 +1277,7 @@ def pane_tail(slug, project_root, session_root, lines):
                 while True:
                     line = f.readline()
                     if line:
-                        cleaned = _clean_worker_output_text(
-                            line.decode("utf-8", errors="replace")
-                        )
+                        cleaned = _clean_worker_output_text(line.decode("utf-8", errors="replace"))
                         if cleaned:
                             click.echo(cleaned)
                     else:

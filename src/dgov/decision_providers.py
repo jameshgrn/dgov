@@ -250,6 +250,7 @@ class InspectionReviewProvider(DecisionProvider):
             request.slug,
             session_root=request.session_root,
             full=request.full,
+            emit_events=request.emit_events,
             tests_pass=request.tests_pass,
             lint_clean=request.lint_clean,
             post_merge_check=request.post_merge_check,
@@ -319,6 +320,7 @@ class ModelReviewProvider(DecisionProvider):
                 request.project_root,
                 request.slug,
                 session_root=request.session_root,
+                emit_events=False,
             )
             diff = review.diff or review.stat
 

@@ -104,6 +104,17 @@ def test_run_review_only_returns_typed_review_result(tmp_path):
     assert result.review_record.decision.commit_count == 2
 
 
+def test_run_review_only_can_skip_review_events(tmp_path):
+    with patch(
+        "dgov.inspection.review_worker_pane",
+        return_value=ReviewInfo(slug="task", verdict="safe", commit_count=2),
+    ) as mock_review:
+        result = run_review_only("/repo", "task", session_root=str(tmp_path), emit_events=False)
+
+    assert result.passed is True
+    assert mock_review.call_args.kwargs["emit_events"] is False
+
+
 def test_run_review_only_persists_decision_journal(tmp_path):
     from dgov.persistence import read_decision_journal
 

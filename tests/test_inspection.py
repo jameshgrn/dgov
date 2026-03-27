@@ -226,6 +226,29 @@ class TestReviewWorkerPane:
         assert args == (str(tmp_path), "review_fail", "worker-a")
         assert kwargs["issues"] == ["no commits — nothing to merge"]
 
+    def test_read_only_review_does_not_emit_events(
+        self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
+    ) -> None:
+        repo = tmp_path / "repo"
+        base_sha = _init_repo(repo)
+        _commit_file(repo, "feature.txt", "feature work\n", "Add feature file")
+
+        inspection_mocks["get_pane"].return_value = {
+            "worktree_path": str(repo),
+            "branch_name": "worker-a",
+            "base_sha": base_sha,
+        }
+
+        result = review_worker_pane(
+            str(repo),
+            "worker-a",
+            session_root=str(tmp_path),
+            emit_events=False,
+        )
+
+        assert result.verdict == "safe"
+        inspection_mocks["emit_event"].assert_not_called()
+
     def test_full_true_includes_diff_output(
         self, tmp_path: Path, inspection_mocks: dict[str, MagicMock]
     ) -> None:

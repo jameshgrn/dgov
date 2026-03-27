@@ -141,6 +141,7 @@ class Orchestrator:
             self.project_root,
             slug,
             session_root=self.session_root,
+            emit_events=False,
         )
         review = result.review or None
         return ReviewResult(
