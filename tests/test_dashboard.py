@@ -214,7 +214,7 @@ class TestWorkerTable:
             },
         ]
         table = _build_worker_table(panes, 1)
-        assert table.row_count == 2
+        assert table.row_count == 1
 
     def test_active_state_does_not_render_done_phase_from_monitor(self):
         text = self._render_table_text(
@@ -282,6 +282,41 @@ class TestWorkerTable:
 
         assert "failed" in text
         assert "inspect" in text
+
+    def test_worker_table_prefers_active_panes_when_present(self):
+        text = self._render_table_text(
+            [
+                {
+                    "slug": "worker-active",
+                    "agent": "river-9b",
+                    "state": "active",
+                    "duration_s": 19,
+                },
+                {
+                    "slug": "worker-done",
+                    "agent": "river-9b",
+                    "state": "done",
+                    "duration_s": 43,
+                },
+            ]
+        )
+
+        assert "worker-active" in text
+        assert "worker-done" not in text
+
+    def test_worker_table_falls_back_to_terminal_panes_when_no_active_exist(self):
+        text = self._render_table_text(
+            [
+                {
+                    "slug": "worker-done",
+                    "agent": "river-9b",
+                    "state": "done",
+                    "duration_s": 43,
+                }
+            ]
+        )
+
+        assert "worker-done" in text
 
 
 @pytest.mark.unit
@@ -376,6 +411,29 @@ class TestSortPanesHierarchical:
         selected, position = _move_selection(panes, selected=2, step=1)
         assert (selected, position) == (0, 2)
 
+    def test_selection_order_filters_to_active_panes_when_present(self):
+        from dgov.dashboard import _selection_order
+
+        panes = [
+            {"slug": "done-pane", "role": "worker", "state": "done"},
+            {"slug": "active-pane", "role": "worker", "state": "active"},
+            {"slug": "active-child", "role": "worker", "state": "active"},
+        ]
+
+        assert _selection_order(panes) == [1, 2]
+
+    def test_move_selection_uses_active_subset_when_present(self):
+        from dgov.dashboard import _move_selection
+
+        panes = [
+            {"slug": "done-pane", "role": "worker", "state": "done"},
+            {"slug": "active-pane", "role": "worker", "state": "active"},
+            {"slug": "active-child", "role": "worker", "state": "active"},
+        ]
+
+        selected, position = _move_selection(panes, selected=0, step=1)
+        assert (selected, position) == (2, 1)
+
 
 @pytest.mark.unit
 class TestWorkerTableHierarchy:
@@ -445,7 +503,7 @@ class TestWorkerTableHierarchy:
             },
         ]
         table = _build_worker_table(panes, 1)
-        assert table.row_count == 3
+        assert table.row_count == 2
 
 
 @pytest.mark.unit
@@ -455,9 +513,9 @@ class TestPreviewState:
 
         state = DashboardState()
         assert state.preview is None
-        assert state.preview_visible is False
+        assert state.preview_visible is True
 
-    def test_preview_hidden_by_default(self):
+    def test_preview_shown_by_default_for_active_pane(self):
         from dgov.dashboard import DashboardPreview, DashboardState
 
         state = DashboardState(
@@ -473,10 +531,10 @@ class TestPreviewState:
             branch="main",
             last_refresh=1710000000,
             preview=DashboardPreview("worker-a", ["line 1", "line 2"]),
-            preview_visible=False,
         )
         output = _render_dashboard_text(state, width=120, height=30)
-        assert "Output:" not in output
+        assert "Output: worker-a" in output
+        assert "line 1" in output
 
     def test_preview_shown_when_visible(self):
         from dgov.dashboard import DashboardPreview, DashboardState
@@ -557,6 +615,25 @@ class TestPreviewState:
         state = DashboardState(branch="main", last_refresh=1710000000)
         output = _render_dashboard_text(state, width=120, height=20)
         assert "p:preview" in output
+
+    def test_preview_hidden_by_default_for_terminal_only_pane(self):
+        from dgov.dashboard import DashboardPreview, DashboardState
+
+        state = DashboardState(
+            panes=[
+                {
+                    "slug": "worker-done",
+                    "agent": "pi",
+                    "state": "done",
+                    "duration_s": 60,
+                }
+            ],
+            branch="main",
+            last_refresh=1710000000,
+            preview=DashboardPreview("worker-done", ["completed output"]),
+        )
+        output = _render_dashboard_text(state, width=120, height=30)
+        assert "Output:" not in output
 
 
 @pytest.mark.unit
@@ -735,6 +812,20 @@ class TestLayoutRendering:
         output = _render_dashboard_text(state, width=120, height=16)
         assert "E:1/3" in output
         assert "FAIL" in output
+
+    def test_header_shows_active_subset_count(self):
+        from dgov.dashboard import DashboardState
+
+        state = DashboardState(
+            panes=[
+                {"slug": "worker-done", "agent": "qwen-9b", "state": "done", "duration_s": 10},
+                {"slug": "worker-live", "agent": "qwen-9b", "state": "active", "duration_s": 10},
+            ],
+            branch="main",
+            last_refresh=1710000000,
+        )
+        output = _render_dashboard_text(state, width=120, height=16)
+        assert "1 active / 2 total" in output
 
 
 @pytest.mark.unit

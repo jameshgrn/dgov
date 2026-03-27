@@ -89,7 +89,7 @@ class DashboardState:
     scroll_offset: int = 0
     post_exit_attach: str = ""
     preview: DashboardPreview | None = None
-    preview_visible: bool = False
+    preview_visible: bool = True
     monitor_timestamp: float = 0.0
     # Done notification tracking
     recent_done_slugs: list[str] = field(default_factory=list)
@@ -298,8 +298,9 @@ def fetch_panes(state: DashboardState) -> None:
         with state.lock:
             sel_idx = state.selected
             want_preview = state.preview_visible
-        if want_preview and panes and 0 <= sel_idx < len(panes):
-            slug = panes[sel_idx].get("slug", "")
+        selected_pane = _selected_visible_pane(panes, sel_idx)
+        if want_preview and selected_pane is not None and selected_pane.get("state") == "active":
+            slug = selected_pane.get("slug", "")
             preview_lines = _format_trace_data(session_root, slug)
             if not preview_lines:
                 raw = tail_worker_log(session_root, slug, lines=5)
@@ -392,6 +393,73 @@ def _refresh_preview_for_selection_change(state: DashboardState) -> None:
     _wake_dashboard_observer(state)
 
 
+def _visible_pane_rows(panes: list[dict]) -> tuple[list[tuple[int, dict]], str]:
+    pane_rows = list(enumerate(panes))
+    active_rows = [row for row in pane_rows if row[1].get("state") == "active"]
+    if active_rows:
+        return active_rows, "active"
+    return pane_rows, "all"
+
+
+def _sort_pane_rows_hierarchical(
+    pane_rows: list[tuple[int, dict]],
+) -> list[tuple[dict, int, bool, int]]:
+    """Sort visible pane rows while preserving original pane indices."""
+    ltgovs: list[tuple[int, dict]] = []
+    children: dict[str, list[tuple[int, dict]]] = {}
+    standalone: list[tuple[int, dict]] = []
+
+    for orig_idx, pane in pane_rows:
+        role = pane.get("role", "worker")
+        parent = pane.get("parent_slug", "")
+        if role == "lt-gov":
+            ltgovs.append((orig_idx, pane))
+        elif parent:
+            children.setdefault(parent, []).append((orig_idx, pane))
+        else:
+            standalone.append((orig_idx, pane))
+
+    result: list[tuple[dict, int, bool, int]] = []
+
+    for orig_idx, pane in ltgovs:
+        result.append((pane, 0, False, orig_idx))
+        kids = children.pop(pane.get("slug", ""), [])
+        for child_pos, (child_idx, child) in enumerate(kids):
+            result.append((child, 1, child_pos == len(kids) - 1, child_idx))
+
+    for kids in children.values():
+        for child_pos, (child_idx, child) in enumerate(kids):
+            result.append((child, 1, child_pos == len(kids) - 1, child_idx))
+
+    for orig_idx, pane in standalone:
+        result.append((pane, 0, False, orig_idx))
+
+    return result
+
+
+def _sorted_visible_panes(panes: list[dict]) -> tuple[list[tuple[dict, int, bool, int]], str]:
+    pane_rows, mode = _visible_pane_rows(panes)
+    return _sort_pane_rows_hierarchical(pane_rows), mode
+
+
+def _effective_selected_index(panes: list[dict], selected: int) -> int:
+    """Return a visible selection, defaulting to the first visible pane."""
+    order = _selection_order(panes)
+    if selected in order:
+        return selected
+    return order[0] if order else 0
+
+
+def _selected_visible_pane(panes: list[dict], selected: int) -> dict | None:
+    """Return the selected pane from the currently visible pane set."""
+    effective_selected = _effective_selected_index(panes, selected)
+    sorted_panes, _mode = _sorted_visible_panes(panes)
+    for pane, _indent_level, _is_last_child, orig_idx in sorted_panes:
+        if orig_idx == effective_selected:
+            return pane
+    return None
+
+
 def data_thread(state: DashboardState, _interval: float) -> None:
     from dgov.persistence import _wait_for_notify
 
@@ -448,7 +516,8 @@ def _sort_panes_hierarchical(
 
 
 def _selection_order(panes: list[dict]) -> list[int]:
-    return [orig_idx for _, _, _, orig_idx in _sort_panes_hierarchical(panes, 0)]
+    sorted_panes, _mode = _sorted_visible_panes(panes)
+    return [orig_idx for _, _, _, orig_idx in sorted_panes]
 
 
 def _move_selection(panes: list[dict], selected: int, step: int) -> tuple[int, int]:
@@ -471,14 +540,15 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
     table.add_column("Phase", width=12, no_wrap=True)
     table.add_column("Duration", width=8, no_wrap=True)
 
-    sorted_panes = _sort_panes_hierarchical(panes, selected)
+    sorted_panes, _mode = _sorted_visible_panes(panes)
+    effective_selected = _effective_selected_index(panes, selected)
 
     visible_end = scroll_offset + _VISIBLE_ROWS
     sorted_panes = sorted_panes[scroll_offset:visible_end]
 
     for p, indent_level, is_last_child, orig_idx in sorted_panes:
         pstate = p.get("state", "active")
-        is_selected = orig_idx == selected
+        is_selected = orig_idx == effective_selected
         role = p.get("role", "worker")
 
         color = state_color(pstate)
@@ -576,10 +646,15 @@ def _build_layout(
         if last_refresh
         else "--"
     )
+    sorted_visible_panes, pane_mode = _sorted_visible_panes(panes)
+    visible_count = len(sorted_visible_panes)
     header_text = Text()
-    header_text.append(
-        f" DGOV v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {len(panes)} workers"
+    worker_summary = (
+        f"{visible_count} active / {len(panes)} total"
+        if pane_mode == "active"
+        else f"{len(panes)} panes"
     )
+    header_text.append(f" DGOV v{__version__} \u2502 {branch} \u2502 {ts} \u2502 {worker_summary}")
 
     monitor_alive = bool(monitor_timestamp) and (time.time() - monitor_timestamp < 45)
     mon_color = "green" if monitor_alive else "red"
@@ -668,12 +743,13 @@ def _build_layout(
     worker_panel = Panel(table, title="Workers", border_style="blue", box=box.ROUNDED)
 
     # Determine selected slug for preview title
-    selected_slug = ""
-    if panes and 0 <= selected < len(panes):
-        selected_slug = panes[selected].get("slug", "")
+    selected_pane = _selected_visible_pane(panes, selected)
+    selected_slug = selected_pane.get("slug", "") if selected_pane else ""
 
     show_preview = (
         preview_visible
+        and selected_pane is not None
+        and selected_pane.get("state") == "active"
         and preview is not None
         and preview.slug == selected_slug
         and bool(preview.lines)
@@ -877,18 +953,16 @@ def run_dashboard(
                 elif ch == "\r" or ch == "\n":
                     # Switch to worker's background tmux window
                     with state.lock:
-                        panes = list(state.panes)
-                        sel = state.selected
-                    if panes and 0 <= sel < len(panes):
-                        pane_id = panes[sel].get("pane_id", "")
+                        selected_pane = _selected_visible_pane(state.panes, state.selected)
+                    if selected_pane is not None:
+                        pane_id = selected_pane.get("pane_id", "")
                         if pane_id:
                             _switch_to_worker_window(pane_id)
                 elif ch == "m":
                     with state.lock:
-                        panes = list(state.panes)
-                        sel = state.selected
-                    if panes and 0 <= sel < len(panes):
-                        slug = panes[sel]["slug"]
+                        selected_pane = _selected_visible_pane(state.panes, state.selected)
+                    if selected_pane is not None:
+                        slug = selected_pane["slug"]
                         if old_settings:
                             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
                         live.stop()
@@ -910,10 +984,9 @@ def run_dashboard(
                         live.refresh()
                 elif ch == "x":
                     with state.lock:
-                        panes = list(state.panes)
-                        sel = state.selected
-                    if panes and 0 <= sel < len(panes):
-                        slug = panes[sel]["slug"]
+                        selected_pane = _selected_visible_pane(state.panes, state.selected)
+                    if selected_pane is not None:
+                        slug = selected_pane["slug"]
                         if old_settings:
                             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
                         live.stop()
@@ -942,10 +1015,9 @@ def run_dashboard(
                 elif ch == "a":
                     # Alias for Enter — switch to worker window
                     with state.lock:
-                        panes = list(state.panes)
-                        sel = state.selected
-                    if panes and 0 <= sel < len(panes):
-                        pane_id = panes[sel].get("pane_id", "")
+                        selected_pane = _selected_visible_pane(state.panes, state.selected)
+                    if selected_pane is not None:
+                        pane_id = selected_pane.get("pane_id", "")
                         if pane_id:
                             _switch_to_worker_window(pane_id)
     finally:
