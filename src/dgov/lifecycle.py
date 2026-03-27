@@ -636,19 +636,16 @@ def _setup_and_launch_agent(
     for key, val in dgov_env.items():
         env_lines.append(f"export {key}={shlex.quote(val)}")
 
-    # Combine environment setup with bracketed-paste disable into one atomic command.
-    # This prevents character garbling when bootstrap commands are sent rapidly.
-    bootstrap_cmd = ""
+    from dgov.tmux import wait_for_shell_ready
+
     if agent_def.prompt_command != "pi":
-        bootstrap_cmd = "printf '\\e[?2004l' && "
+        backend.send_shell_command(pane_id, "printf '\\e[?2004l'")
+        if not wait_for_shell_ready(pane_id, timeout=2.0):
+            logger.warning("Shell prompt not detected after paste disable for %s", slug)
+
     env_cmd = " && ".join(env_lines) if env_lines else ""
-
-    # Build single atomic bootstrap command
-    full_bootstrap = f"{bootstrap_cmd}{env_cmd}" if env_cmd else bootstrap_cmd
-
-    if full_bootstrap:
-        backend.send_shell_command(pane_id, full_bootstrap)
-        from dgov.tmux import wait_for_shell_ready
+    if env_cmd:
+        backend.send_shell_command(pane_id, env_cmd)
 
         if not wait_for_shell_ready(pane_id, timeout=2.0):
             logger.warning("Shell prompt not detected after env setup for %s", slug)
