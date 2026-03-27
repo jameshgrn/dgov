@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS spans (
     transcript_captured INTEGER NOT NULL DEFAULT 0,
     from_agent      TEXT NOT NULL DEFAULT '',
     to_agent        TEXT NOT NULL DEFAULT '',
+    route           TEXT NOT NULL DEFAULT '',
     error           TEXT NOT NULL DEFAULT ''
 )"""
 
@@ -220,6 +221,7 @@ _SPAN_COLUMNS = {
     "transcript_captured",
     "from_agent",
     "to_agent",
+    "route",
     "error",
 }
 

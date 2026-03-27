@@ -781,6 +781,12 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(CREATE_LEDGER_SQL)
     conn.execute(CREATE_LEDGER_IDX)
 
+    # Migrate: add route column to spans (canonical route identity persistence)
+    try:
+        conn.execute("ALTER TABLE spans ADD COLUMN route TEXT NOT NULL DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+
     # Migrate: add hierarchy columns if missing
     for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
         try:
@@ -860,6 +866,12 @@ def _get_db(session_root: str) -> sqlite3.Connection:
             conn.execute(f"ALTER TABLE archived_panes ADD COLUMN {col} {coldef}")
         except sqlite3.OperationalError:
             pass
+
+    # Migrate: add route column to archived_panes (canonical route identity persistence)
+    try:
+        conn.execute("ALTER TABLE archived_panes ADD COLUMN route TEXT DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass  # column already exists
 
     # Migrate: convert sentinel empty strings to NULL.
     # Old databases have NOT NULL constraints on these columns, so we need
