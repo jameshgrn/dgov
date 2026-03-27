@@ -1309,6 +1309,16 @@ def close_worker_pane(
         child_project_root = os.path.abspath(child.get("project_root", project_root))
         close_worker_pane(child_project_root, child_slug, session_root, force=force)
 
+    from dgov.recovery import _retry_descendants
+
+    for descendant_slug in _retry_descendants(session_root, slug):
+        descendant = get_pane(session_root, descendant_slug)
+        if descendant is None:
+            continue
+        logger.info("Cascade-closing retry descendant %s (root: %s)", descendant_slug, slug)
+        descendant_project_root = os.path.abspath(descendant.get("project_root", project_root))
+        close_worker_pane(descendant_project_root, descendant_slug, session_root, force=force)
+
     # Auto-enable force for terminal-state panes
     if target.get("state") in (
         "merged",

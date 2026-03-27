@@ -425,6 +425,34 @@ def _slug_lineage(session_root: str, slug: str) -> list[str]:
     return chain
 
 
+def _retry_descendants(session_root: str, slug: str) -> list[str]:
+    """Return retry descendants for *slug* in parent-to-child order.
+
+    The lineage is derived from ``pane_retry_spawned`` events so close/recovery
+    logic does not depend on mutable pane-row linkage.
+    """
+    retry_children: dict[str, list[str]] = {}
+    for ev in read_events(session_root):
+        if ev.get("event") != "pane_retry_spawned":
+            continue
+        parent = ev.get("pane")
+        child = ev.get("new_slug")
+        if parent and child:
+            retry_children.setdefault(parent, []).append(child)
+
+    descendants: list[str] = []
+    queue = list(retry_children.get(slug, ()))
+    seen: set[str] = set()
+    while queue:
+        current = queue.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+        descendants.append(current)
+        queue.extend(retry_children.get(current, ()))
+    return descendants
+
+
 def _count_retries(session_root: str, slug: str, events: list[dict] | None = None) -> int:
     """Count pane_auto_retried events for the slug lineage."""
     lineage = set(_slug_lineage(session_root, slug))

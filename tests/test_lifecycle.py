@@ -791,6 +791,40 @@ class TestFullCleanup:
         assert result is True
         assert get_pane(sr, "superseded-pane") is None
 
+    def test_close_worker_pane_closes_retry_descendants(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        from dgov.lifecycle import close_worker_pane
+        from dgov.persistence import emit_event
+
+        sr = str(tmp_path)
+        _add_pane(tmp_path, "retry-root", state="superseded")
+        _add_pane(tmp_path, "retry-root-a2", state="superseded")
+
+        emit_event(sr, "pane_retry_spawned", "retry-root", new_slug="retry-root-a2", attempt=2)
+        emit_event(sr, "pane_retry_spawned", "retry-root-a2", retried_from="retry-root", attempt=2)
+        emit_event(sr, "pane_superseded", "retry-root", superseded_by="retry-root-a2")
+
+        cleanup_calls: list[str] = []
+
+        def fake_cleanup(project_root, session_root, slug, target, skip_worktree_if_dirty=True):
+            cleanup_calls.append(slug)
+            return {
+                "cleaned": True,
+                "skipped_worktree": False,
+                "branch_kept": False,
+                "worktree_removal_failed": False,
+                "crash_log": "",
+            }
+
+        with patch("dgov.lifecycle._full_cleanup", side_effect=fake_cleanup):
+            result = close_worker_pane(sr, "retry-root", session_root=sr)
+
+        assert result is True
+        assert get_pane(sr, "retry-root") is None
+        assert get_pane(sr, "retry-root-a2") is None
+        assert cleanup_calls == ["retry-root-a2", "retry-root"]
+
     def test_removes_worktree_when_clean_and_force_applied(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
