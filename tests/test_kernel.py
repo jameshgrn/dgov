@@ -377,3 +377,92 @@ def test_kernel_escalation_eventually_blocks_governor() -> None:
     actions = kernel.handle(TaskReviewDone("a", passed=False, verdict="review", commit_count=0))
     assert kernel.task_states["a"] == DagTaskState.BLOCKED_ON_GOVERNOR
     assert any(isinstance(a, InterruptGovernor) for a in actions)
+
+
+class TestTaskReviewDoneCommitCountPolicy:
+    """Regression tests for bug #186: TaskReviewDone requires positive commit_count.
+
+    A first-attempt TaskReviewDone(passed=True, commit_count>0) must not become retryable.
+    A review_pass with commit_count=0 should not trigger merge.
+    """
+
+    def test_review_pass_with_commits_proceeds_to_merge(
+        self,
+    ) -> None:
+        """TaskReviewDone(passed=True, commit_count>0) should proceed to merge."""
+        kernel = DagKernel(deps={"task-a": ()})
+        kernel.start()
+        kernel.handle(TaskDispatched("task-a", "pane-a"))
+        kernel.handle(TaskWaitDone("task-a", "pane-a", "done"))
+
+        # First attempt with commits should proceed to merge
+        actions = kernel.handle(
+            TaskReviewDone("task-a", passed=True, verdict="safe", commit_count=2)
+        )
+
+        assert kernel.task_states["task-a"] == DagTaskState.MERGING
+        merges = [a for a in actions if isinstance(a, MergeTask)]
+        assert len(merges) == 1
+
+    def test_review_pass_with_zero_commits_triggers_retry(
+        self,
+    ) -> None:
+        """TaskReviewDone(passed=True, commit_count=0) should trigger retry."""
+        kernel = DagKernel(deps={"task-a": ()})
+        kernel.start()
+        kernel.handle(TaskDispatched("task-a", "pane-a"))
+        kernel.handle(TaskWaitDone("task-a", "pane-a", "done"))
+
+        # First attempt with zero commits should trigger retry
+        actions = kernel.handle(
+            TaskReviewDone("task-a", passed=True, verdict="safe", commit_count=0)
+        )
+
+        assert kernel.task_states["task-a"] == DagTaskState.DISPATCHED
+        assert any(isinstance(a, RetryTask) for a in actions)
+        retry_task = [a for a in actions if isinstance(a, RetryTask)][0]
+        assert retry_task.attempt == 1
+
+    def test_review_pass_with_null_commit_count_triggers_retry(
+        self,
+    ) -> None:
+        """TaskReviewDone(passed=True, commit_count=None) should trigger retry."""
+        kernel = DagKernel(deps={"task-a": ()})
+        kernel.start()
+        kernel.handle(TaskDispatched("task-a", "pane-a"))
+        kernel.handle(TaskWaitDone("task-a", "pane-a", "done"))
+
+        # First attempt with NULL commit_count should trigger retry
+        actions = kernel.handle(
+            TaskReviewDone("task-a", passed=True, verdict="safe", commit_count=0)
+        )
+
+        assert kernel.task_states["task-a"] == DagTaskState.DISPATCHED
+        assert any(isinstance(a, RetryTask) for a in actions)
+
+    def test_review_pass_with_commits_on_retry_proceeds_to_merge(
+        self,
+    ) -> None:
+        """TaskReviewDone(passed=True, commit_count>0) on retry should proceed to merge."""
+        kernel = DagKernel(deps={"task-a": ()}, max_retries=2)
+        kernel.start()
+        kernel.handle(TaskDispatched("task-a", "pane-a"))
+
+        # First attempt fails (no commits)
+        actions = kernel.handle(TaskWaitDone("task-a", "pane-a", "done"))
+        assert isinstance(actions[0], ReviewTask)
+        actions = kernel.handle(
+            TaskReviewDone("task-a", passed=False, verdict="review", commit_count=0)
+        )
+        assert isinstance(actions[0], RetryTask)
+        kernel.handle(TaskRetryStarted("task-a", "pane-b", attempt=1))
+
+        # Retry attempt succeeds with commits
+        actions = kernel.handle(TaskWaitDone("task-a", "pane-b", "done"))
+        actions = kernel.handle(
+            TaskReviewDone("task-a", passed=True, verdict="safe", commit_count=3)
+        )
+
+        assert kernel.task_states["task-a"] == DagTaskState.MERGING
+        merges = [a for a in actions if isinstance(a, MergeTask)]
+        assert len(merges) == 1
