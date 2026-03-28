@@ -1654,51 +1654,51 @@ def merge_worker_pane(
                 )
             # Fall through to candidate worktree
 
-        # Standard path: merge in candidate worktree
-        with _candidate_worktree(pane_project_root, slug) as (candidate_root, _):
-            merge = _execute_candidate_merge(
-                candidate_root, branch_name, rebase_fallback, rebase, squash, message, base_sha
+        # Standard path: merge directly on main, validate, revert on failure.
+        # _plumbing_merge uses merge-tree --write-tree (pure, no working tree
+        # side effects) then commit-tree + update-ref + reset. No candidate
+        # worktree needed — eliminates ~1s venv creation tax per merge.
+        merge = _execute_candidate_merge(
+            pane_project_root, branch_name, rebase_fallback, rebase, squash, message, base_sha
+        )
+
+        if merge.success:
+            # Capture merge SHA before validation (for revert if needed)
+            merge_sha_r = subprocess.run(
+                ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
             )
+            merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
 
-            if merge.success:
-                # Phase 4: Validate
-                failed, err, lint_result, test_result, warning_msg = _validate_post_merge(
-                    candidate_root, changed_file_names, base_sha
-                )
-                if failed:
-                    _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
-                    return MergeError(
-                        error=err, slug=slug, branch=branch_name, validation_failed=True
-                    )
-
-                # Phase 5: Apply to main
-                merge_sha_r = subprocess.run(
-                    ["git", "-C", candidate_root, "rev-parse", "HEAD"],
+            # Phase 4: Validate on main (lint + tests use main's .venv)
+            failed, err, lint_result, test_result, warning_msg = _validate_post_merge(
+                pane_project_root, changed_file_names, base_sha, check_protected=False
+            )
+            if failed:
+                # Revert the merge commit — established pattern (line 1637)
+                subprocess.run(
+                    ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
                     capture_output=True,
-                    text=True,
                 )
-                merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
-                apply_result = _advance_current_branch_to_commit(pane_project_root, merge_sha)
-                if not apply_result.success:
-                    err = apply_result.stderr or "Failed to apply validated merge to main"
-                    _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
-                    return MergeError(error=err)
+                _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
+                return MergeError(error=err, slug=slug, branch=branch_name, validation_failed=True)
 
-                _finalize_merged_pane(
-                    pane_project_root, session_root, slug, target, branch_name, merge_sha
-                )
-                return _build_success_result(
-                    slug,
-                    branch_name,
-                    merge_stat,
-                    merge_files_changed,
-                    rebase_fallback,
-                    merge,
-                    apply_result,
-                    lint_result,
-                    test_result,
-                    warning_msg,
-                )
+            _finalize_merged_pane(
+                pane_project_root, session_root, slug, target, branch_name, merge_sha
+            )
+            return _build_success_result(
+                slug,
+                branch_name,
+                merge_stat,
+                merge_files_changed,
+                rebase_fallback,
+                merge,
+                MergeResult(success=True),
+                lint_result,
+                test_result,
+                warning_msg,
+            )
 
     # Phase 6: Merge failed — handle conflicts
     return _handle_merge_conflicts(
