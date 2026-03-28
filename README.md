@@ -202,7 +202,7 @@ units with exact file claims and `satisfies` links. See
 
 ### LT-GOV (delegation)
 
-A lieutenant governor is a sub-governor worker that follows the canonical governor pipeline (preflight → dispatch → wait → review → merge → cleanup). The governor delegates a broad task to an LT-GOV, which orchestrates workers via plans (`uv run dgov plan run --wait`), tracks progress in `.dgov/progress/{ltgov_slug}.json`, and escalates structural issues back to the governor instead of editing code directly.
+A lieutenant governor is a sub-governor worker that follows the canonical governor pipeline (preflight → dispatch → wait → review → merge → cleanup). The governor delegates a broad task to an LT-GOV, which orchestrates workers via plans (`uv run dgov plan run`), tracks progress in `.dgov/progress/{ltgov_slug}.json`, and escalates structural issues back to the governor instead of editing code directly.
 
 ```bash
 # 1. Create a plan TOML with exact file claims and evals
@@ -217,8 +217,8 @@ files = ["..."]
 prompt = "..."  # numbered steps, read first, explicit commit
 EOF
 
-# 2. Execute the plan through the DAG kernel
-uv run dgov plan run .dgov/plans/{ltgov_slug}.toml --wait
+# 2. Execute the plan through the DAG kernel (monitor drives lifecycle)
+uv run dgov plan run .dgov/plans/{ltgov_slug}.toml
 dgov dashboard                                            # monitor worker progress
 ```
 
