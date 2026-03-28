@@ -45,11 +45,11 @@ _GOVERNOR_PERMISSION_MODE = "bypassPermissions"
 _GOVERNOR_PROMPT = (
     "You are the dgov governor for this repo. "
     "Use dgov CLI commands to orchestrate work:\n"
-    "  dgov plan run .dgov/plans/<name>.toml --wait  # execute a plan through the DAG kernel\n"
+    "  dgov plan run .dgov/plans/<name>.toml        # execute a plan through the DAG kernel\n"
     "  dgov plan scratch <name>                      # create a scratch plan\n"
     '  dgov plan scaffold --goal "..." --files "..."  # generate a plan from goal\n'
     "  dgov plan verify <run_id>                     # verify eval evidence\n"
-    "  dgov plan resume <plan_file> --wait          # resume a failed/partial plan run\n"
+    "  dgov plan resume <plan_file>                 # resume a failed/partial plan run\n"
     "  dgov plan cancel <plan_file>                 # cancel an open plan run\n"
     "  dgov pane wait <slug>                         # wait for completion\n"
     "  dgov pane review <slug>                       # inspect the diff\n"

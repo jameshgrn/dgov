@@ -91,7 +91,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "## Important\n"
             "Multi-step work uses the plan-driven workflow:\n"
             "  1. Write a plan TOML under .dgov/plans/\n"
-            "  2. Run it with: uv run dgov plan run --wait\n"
+            "  2. Run it with: uv run dgov plan run .dgov/plans/<name>.toml\n"
             "  3. Monitor drives dispatch → review → merge → eval evidence → notify\n"
             "\n"
             "Ad-hoc `dgov pane create` is for "
@@ -108,7 +108,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             '   files = ["..."]\n'
             '   prompt = "..."  # numbered steps, read first, explicit commit\n'
             "   Save as .dgov/plans/{ltgov_slug}.toml\n"
-            "2. Execute via: uv run dgov plan run .dgov/plans/{ltgov_slug}.toml --wait\n"
+            "2. Execute via: uv run dgov plan run .dgov/plans/{ltgov_slug}.toml\n"
             "3. Monitor drives the full lifecycle; do not ad-hoc dispatch.\n"
             "4. If a task fails twice at one tier or retries are exhausted, "
             "escalate to the supervisor (claude).\n"

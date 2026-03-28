@@ -494,7 +494,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             pane_id = p.get("pane_id", "")
             slug = p["slug"]
             state = p.get("state", "")
-            # Skip panes claimed by --land lifecycle
+            # Skip panes in landing lifecycle
             if p.get("landing"):
                 continue
             alive = pane_id in bulk_info if pane_id else False

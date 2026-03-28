@@ -452,7 +452,7 @@ def _drive_dag(
                 status=action.status,
             )
             # Run eval evidence on completion, then always emit evals_verified
-            # so --wait only needs to listen for one terminal event type.
+            # so listeners only need to watch for one terminal event type.
             eval_passed = 0
             eval_failed = 0
             eval_total = 0
@@ -851,7 +851,7 @@ def _process_candidate_set(
         if not pane or pane.get("state") not in valid_states or slug in attempted:
             candidates.discard(slug)
             continue
-        # Skip panes claimed by --land lifecycle
+        # Skip panes in landing lifecycle (manual pane land or monitor-driven)
         if pane.get("landing"):
             continue
         try:

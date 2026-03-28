@@ -34,7 +34,7 @@ def _notify_waiters(session_root: str) -> None:
     """Write a byte to ALL per-reader notify pipes. Non-blocking, fire-and-forget.
 
     Each reader process creates its own FIFO in .dgov/notify/<pid>.pipe.
-    This writes to every pipe so all readers (monitor, dashboard, --wait)
+    This writes to every pipe so all readers (monitor, dashboard, status)
     get woken independently. Stale pipes from dead processes are cleaned up,
     but only if the owning process is actually dead (not just between reads).
     """
@@ -68,7 +68,7 @@ def _wait_for_notify(session_root: str, timeout: float) -> bool:
     """Block on a per-process notify pipe until data arrives or timeout.
 
     Each calling process gets its own FIFO in .dgov/notify/<pid>.pipe,
-    so multiple readers (monitor, dashboard, --wait) all receive every
+    so multiple readers (monitor, dashboard, status queries) all receive every
     notification independently. Uses poll() — no fd limit, no polling.
 
     Returns True if notified, False on timeout.
