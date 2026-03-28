@@ -144,13 +144,11 @@ def plan_compile(plan_file, output_json):
 @plan_cmd.command("run")
 @click.argument("plan_file", type=click.Path(exists=True))
 @click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
-@click.option("--wait", is_flag=True, help="Block until DAG completes (pipe-driven, no polling)")
-def plan_run(plan_file, max_concurrent, wait):
+def plan_run(plan_file, max_concurrent):
     """Execute a plan through the DAG kernel.
 
     Examples:
       dgov plan run .dgov/plans/my-plan.toml
-      dgov plan run .dgov/plans/my-plan.toml --wait
     """
     from dgov.plan import check_cross_plan_claims, parse_plan_file, run_plan
 
@@ -173,11 +171,6 @@ def plan_run(plan_file, max_concurrent, wait):
 
     run_id = result.run_id
     click.echo(json.dumps({"run_id": run_id, "status": result.status}, indent=2))
-
-    if not wait:
-        return
-
-    _wait_for_dag(run_id)
 
 
 def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
@@ -255,13 +248,12 @@ def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
 @click.option("--dry-run", is_flag=True, help="Print to stdout even if -o is set")
 @click.option("--auto", is_flag=True, help="Use LLM to generate complete plan (not just template)")
 @click.option("--run", is_flag=True, help="With --auto: validate and execute the generated plan")
-@click.option("--wait", "wait_for_run", is_flag=True, help="With --run: block until DAG completes")
-def plan_scaffold(goal, files, name, output, dry_run, auto, run, wait_for_run):
+def plan_scaffold(goal, files, name, output, dry_run, auto, run):
     """Generate a TOML plan template from goal and file list.
 
     Examples:
       dgov plan scaffold --goal "Add logging" --files src/dgov/cli.py
-      dgov plan scaffold --goal "Fix parser" --files src/dgov/parser.py --auto --run --wait
+      dgov plan scaffold --goal "Fix parser" --files src/dgov/parser.py --auto --run
     """
     if run and not auto:
         click.secho("--run requires --auto", fg="red")
@@ -275,7 +267,7 @@ def plan_scaffold(goal, files, name, output, dry_run, auto, run, wait_for_run):
         toml_text = scaffold_plan(goal, list(files), name=name)
 
     if run:
-        _scaffold_and_run(toml_text, output, wait_for_run)
+        _scaffold_and_run(toml_text, output)
         return
 
     if output and not dry_run:
@@ -286,7 +278,7 @@ def plan_scaffold(goal, files, name, output, dry_run, auto, run, wait_for_run):
         click.echo(toml_text)
 
 
-def _scaffold_and_run(toml_text: str, output: str, wait: bool) -> None:
+def _scaffold_and_run(toml_text: str, output: str) -> None:
     """Write generated plan to tempfile, validate, and execute."""
     import tempfile
 
@@ -332,147 +324,7 @@ def _scaffold_and_run(toml_text: str, output: str, wait: bool) -> None:
 
     run_id = result.run_id
     click.echo(json.dumps({"run_id": run_id, "status": result.status, "plan_file": tmp_path}))
-
-    if not wait:
-        return
-
-    _wait_for_dag(run_id)
-
-
-def _wait_for_dag(run_id: int) -> None:
-    """Block on DAG events until the run reaches a terminal state."""
-    from dgov.persistence import get_dag_run, latest_event_id, wait_for_events
-
-    session_root = os.path.abspath(".")
-    cursor = latest_event_id(session_root)
-
-    _PROGRESS_EVENTS = (
-        "dag_task_dispatched",
-        "pane_done",
-        "pane_failed",
-        "review_pass",
-        "review_fail",
-        "merge_completed",
-        "dag_completed",
-        "dag_failed",
-        "dag_blocked",
-        "dag_cancelled",
-        "evals_verified",
-    )
-
-    pane_prefix = f"r{run_id}-"
-    dag_pane = f"dag/{run_id}"
-
-    # Track whether we saw a completion event (to allow waiting for evals_verified)
-    saw_completion_event = False
-
-    while True:
-        events = wait_for_events(
-            session_root,
-            after_id=cursor,
-            event_types=_PROGRESS_EVENTS,
-            timeout_s=3600.0,
-        )
-
-        for ev in events:
-            cursor = max(cursor, ev["id"])
-            kind = ev.get("event", "")
-            dag_rid = ev.get("dag_run_id")
-            pane = ev.get("pane", "")
-            # Skip events from other DAG runs
-            if dag_rid is not None and dag_rid != run_id:
-                continue
-            # For events without dag_run_id, check pane belongs to this run
-            if dag_rid is None and not pane.startswith(pane_prefix) and pane != dag_pane:
-                continue
-            if kind == "dag_task_dispatched":
-                click.echo(f"  dispatched: {ev.get('task', ev.get('pane', ''))}")
-            elif kind == "pane_done":
-                click.echo(f"  done: {ev.get('pane', '')}")
-            elif kind == "pane_failed":
-                click.echo(f"  failed: {ev.get('pane', '')}")
-            elif kind == "review_pass":
-                click.echo(f"  review pass: {ev.get('pane', '')}")
-            elif kind == "review_fail":
-                reason = ev.get("reason", "")
-                reason_str = f" — {reason}" if reason else ""
-                click.echo(f"  review fail: {ev.get('pane', '')}{reason_str}")
-            elif kind == "merge_completed":
-                click.echo(f"  merged: {ev.get('pane', '')}")
-            elif kind == "dag_blocked":
-                data = json.loads(ev.get("data", "{}"))
-                task = data.get("task", "")
-                reason = data.get("reason", "")
-                detail = ": ".join(part for part in (task, reason) if part)
-                detail_str = f" — {detail}" if detail else ""
-                run = get_dag_run(session_root, run_id)
-                status = run["status"] if run else "unknown"
-                click.secho(f"  DAG blocked{detail_str}", fg="red")
-                click.echo(f"DAG run {run_id}: {status}")
-                raise SystemExit(1)
-            elif kind == "dag_cancelled":
-                run = get_dag_run(session_root, run_id)
-                status = run["status"] if run else "unknown"
-                click.secho("  DAG cancelled", fg="yellow")
-                click.echo(f"DAG run {run_id}: {status}")
-                raise SystemExit(1)
-            elif kind in ("dag_completed", "dag_failed"):
-                saw_completion_event = True
-                click.echo(f"  DAG {kind.split('_')[1]}")
-            elif kind == "evals_verified":
-                run = get_dag_run(session_root, run_id)
-                status = run["status"] if run else "unknown"
-                eval_results = run.get("eval_results", []) if run else []
-                passed = sum(1 for r in eval_results if r["passed"])
-                failed_count = sum(1 for r in eval_results if not r["passed"])
-                click.echo(f"\nDAG run {run_id}: {status}")
-                for r in eval_results:
-                    m = "PASS" if r["passed"] else "FAIL"
-                    c = "green" if r["passed"] else "red"
-                    click.secho(f"  [{m}] {r['eval_id']}", fg=c)
-                    if not r["passed"] and r.get("output"):
-                        output_preview = r["output"][:200].replace("\n", " ").strip()
-                        if output_preview:
-                            click.secho(f"         {output_preview}", fg="yellow")
-                if eval_results:
-                    click.echo(f"  {passed} passed, {failed_count} failed")
-                if status != "completed":
-                    raise SystemExit(1)
-                if failed_count:
-                    raise SystemExit(2)
-                return
-
-        # If no completion event was seen, check terminal state (safety from batch.py)
-        # This handles the bug #181 case where DAG completed before wait started
-        if not saw_completion_event:
-            run = get_dag_run(session_root, run_id)
-            if run and run["status"] in ("completed", "failed", "partial", "cancelled", "blocked"):
-                status = run["status"]
-                if status == "blocked":
-                    click.secho("DAG blocked", fg="red")
-                    raise SystemExit(1)
-                elif status == "cancelled":
-                    click.secho("DAG cancelled", fg="yellow")
-                elif status in ("failed", "partial"):
-                    raise SystemExit(1)
-                # completed - exit cleanly
-                break
-
-        # If we saw completion event but not evals_verified, and now got a timeout,
-        # check status to avoid waiting forever (bug #181 fix)
-        if saw_completion_event and not events:
-            run = get_dag_run(session_root, run_id)
-            if run and run["status"] in ("completed", "failed", "partial", "cancelled", "blocked"):
-                status = run["status"]
-                if status == "blocked":
-                    click.secho("DAG blocked", fg="red")
-                    raise SystemExit(1)
-                elif status == "cancelled":
-                    click.secho("DAG cancelled", fg="yellow")
-                elif status in ("failed", "partial"):
-                    raise SystemExit(1)
-                # completed or already terminal - exit cleanly
-                break
+    return
 
 
 @plan_cmd.command("verify")
@@ -522,13 +374,12 @@ def plan_verify(run_id, project_root, session_root, timeout):
 @click.option(
     "--run-id", type=int, default=None, help="Specific run ID (default: most recent failed)"
 )
-@click.option("--wait", is_flag=True, help="Block until DAG completes")
 @click.option("--max-concurrent", "-c", default=0, help="Max concurrent workers (0=unlimited)")
-def plan_resume(plan_file, run_id, wait, max_concurrent):
+def plan_resume(plan_file, run_id, max_concurrent):
     """Resume a failed or partial plan run, skipping already-merged units.
 
     Examples:
-      dgov plan resume .dgov/plans/my-plan.toml --wait
+      dgov plan resume .dgov/plans/my-plan.toml
     """
     from pathlib import Path
 
@@ -587,11 +438,6 @@ def plan_resume(plan_file, run_id, wait, max_concurrent):
 
     new_run_id = result.run_id
     click.echo(json.dumps({"run_id": new_run_id, "resumed_from": run_id, "status": result.status}))
-
-    if not wait:
-        return
-
-    _wait_for_dag(new_run_id)
 
 
 @plan_cmd.command("cancel")
