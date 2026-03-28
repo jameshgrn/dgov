@@ -17,6 +17,20 @@ from dgov.persistence import WorkerPane, add_pane, get_pane
 pytestmark = pytest.mark.unit
 
 
+def _fake_tmux_run_for_slug(slug: str, pid: str = "123"):
+    """Return a tmux._run mock that passes the pane-title ownership check."""
+
+    def _run(cmd, silent=False):
+        cmd_str = str(cmd)
+        if "pane_title" in cmd_str:
+            return f"[agent] {slug}"
+        if "pane_pid" in cmd_str:
+            return pid
+        return ""
+
+    return _run
+
+
 @pytest.fixture(autouse=True)
 def mock_backend():
     import dgov.backend as _be
@@ -372,7 +386,10 @@ class TestFullCleanup:
         _add_pane(tmp_path, "test-pane", pane_id="%42")
 
         pane = get_pane(sr, "test-pane")
-        with patch("dgov.lifecycle.subprocess.run"):
+        with (
+            patch("dgov.tmux._run", side_effect=_fake_tmux_run_for_slug("test-pane")),
+            patch("dgov.lifecycle.subprocess.run"),
+        ):
             _full_cleanup(sr, sr, "test-pane", pane)
 
         mock_backend.destroy.assert_called_once_with("%42")
@@ -439,7 +456,7 @@ class TestFullCleanup:
         assert pane is not None
 
         with (
-            patch("dgov.tmux._run", return_value="123"),
+            patch("dgov.tmux._run", side_effect=_fake_tmux_run_for_slug("test-pane")),
             patch("dgov.lifecycle._terminate_pane_process_tree") as mock_terminate,
             patch("dgov.lifecycle.subprocess.run"),
         ):
@@ -460,7 +477,7 @@ class TestFullCleanup:
         assert pane is not None
 
         with (
-            patch("dgov.tmux._run", return_value="123"),
+            patch("dgov.tmux._run", side_effect=_fake_tmux_run_for_slug("warn-pane")),
             patch(
                 "dgov.lifecycle._terminate_pane_process_tree",
                 return_value={"terminated": False, "still_running": [111, 222]},
@@ -485,7 +502,7 @@ class TestFullCleanup:
         assert pane is not None
 
         with (
-            patch("dgov.tmux._run", return_value="123"),
+            patch("dgov.tmux._run", side_effect=_fake_tmux_run_for_slug("quiet-pane")),
             patch(
                 "dgov.lifecycle._terminate_pane_process_tree",
                 return_value={"terminated": False, "still_running": []},
@@ -652,7 +669,10 @@ class TestFullCleanup:
             return m
 
         with (
-            patch("dgov.tmux._run", return_value="123"),
+            patch(
+                "dgov.tmux._run",
+                side_effect=_fake_tmux_run_for_slug("descendant-pane"),
+            ),
             patch("dgov.lifecycle._terminate_pane_process_tree") as mock_terminate,
             patch("subprocess.run", fake_run),
         ):
@@ -1025,8 +1045,17 @@ class TestFullCleanup:
         assert descendant["slug"] == "archived-root-a2"
         assert descendant["pane_id"] == "%99"
 
+        # Make tmux title check pass for the descendant pane
+        def _fake_tmux_run(cmd, silent=False):
+            if "pane_title" in str(cmd):
+                return "[claude] archived-root-a2"
+            if "pane_pid" in str(cmd):
+                return "12345"
+            return ""
+
         # Close the archived root — it doesn't exist in DB but has event history
-        result = close_worker_pane(sr, "archived-root", session_root=sr)
+        with patch("dgov.tmux._run", side_effect=_fake_tmux_run):
+            result = close_worker_pane(sr, "archived-root", session_root=sr)
 
         # close_worker_pane should return True (slug was known at some point)
         assert result is True

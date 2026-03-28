@@ -1157,28 +1157,51 @@ def _full_cleanup(
     exit_path.unlink(missing_ok=True)
     log_path.unlink(missing_ok=True)
 
-    # 2. Kill process group with bounded wait, then tmux pane
+    # 2. Kill process group with bounded wait, then tmux pane.
+    # Guard: verify the pane still belongs to this slug before killing.
+    # tmux can reuse pane IDs after a pane closes, so a stale record
+    # could point at an unrelated process (including the governor).
     pane_id = pane_record.get("pane_id")
     if pane_id:
+        owns_pane = False
         try:
             from dgov.tmux import _run as tmux_run
 
-            pid_str = tmux_run(
-                ["display-message", "-t", pane_id, "-p", "#{pane_pid}"],
+            title = tmux_run(
+                ["display-message", "-t", pane_id, "-p", "#{pane_title}"],
                 silent=True,
-            )
-            if pid_str.strip():
-                terminate_result = _terminate_pane_process_tree(int(pid_str.strip()))
-                still = terminate_result.get("still_running", [])
-                if not terminate_result.get("terminated") and still:
-                    logger.warning(
-                        "Pane %s: %d process(es) survived termination; continuing with cleanup.",
-                        slug,
-                        len(still),
-                    )
+            ).strip()
+            owns_pane = slug in title
+            if not owns_pane:
+                logger.warning(
+                    "Pane %s: tmux %s title %r doesn't match slug "
+                    "— skipping kill (reused pane ID)",
+                    slug,
+                    pane_id,
+                    title,
+                )
         except (RuntimeError, ValueError):
-            pass  # pane already dead or bad PID, skip PGID kill
-        get_backend().destroy(pane_id)
+            pass  # pane already dead, safe to skip
+
+        if owns_pane:
+            try:
+                pid_str = tmux_run(
+                    ["display-message", "-t", pane_id, "-p", "#{pane_pid}"],
+                    silent=True,
+                )
+                if pid_str.strip():
+                    terminate_result = _terminate_pane_process_tree(int(pid_str.strip()))
+                    still = terminate_result.get("still_running", [])
+                    if not terminate_result.get("terminated") and still:
+                        logger.warning(
+                            "Pane %s: %d process(es) survived termination; "
+                            "continuing with cleanup.",
+                            slug,
+                            len(still),
+                        )
+            except (RuntimeError, ValueError):
+                pass  # pane already dead or bad PID, skip PGID kill
+            get_backend().destroy(pane_id)
 
     # 3. Remove worktree + branch
     skipped_worktree = False
