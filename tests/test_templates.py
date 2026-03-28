@@ -125,8 +125,9 @@ class TestBuiltInTemplatesRender:
     def test_lt_gov_template_uses_plan_run(self) -> None:
         tpl = BUILT_IN_TEMPLATES["lt-gov"]
 
-        assert "plan run --wait" in tpl.template
+        assert "plan run --wait" not in tpl.template
         assert "pane create --land" not in tpl.template
+        assert "plan run" in tpl.template
 
 
 class TestListTemplates:

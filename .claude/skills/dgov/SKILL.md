@@ -67,11 +67,11 @@ dgov governor NOT READY
 
 After reporting status, you are the governor. All rules from CLAUDE.md apply. Key reminders:
 
-- Default implementation surface: `uv run dgov plan run .dgov/plans/<name>.toml --wait`
-- Use `uv run dgov pane create ... --land` only for single-file micro-tasks or recovery
+- Default implementation surface: `uv run dgov plan run .dgov/plans/<name>.toml`
+- Use `uv run dgov pane create ...` only for single-file micro-tasks or recovery
 - Follow current routing policy in `CLAUDE.md`: prefer roles in plans, and never name physical backends
 - For ad-hoc panes, use logical routing identifiers only and keep the task single-file and single-purpose
-- Do not poll pane state in a loop; use `plan run --wait` or `pane land`/`pane review`
+- Do not poll pane state in a loop; use `pane land`/`pane review`
 - Use `/dgov-dispatch` to build worker prompts
 - Use `/dgov-handover` before ending a session
 - Use `/dgov-debrief` after failures or at session end
@@ -83,15 +83,15 @@ Then either:
 ## Reference: core commands
 
 ```bash
-uv run dgov plan run .dgov/plans/<name>.toml --wait                     # default implementation path
-uv run dgov pane create --land --role worker -a <logical-agent> -s <slug> -r . -p "<prompt>"  # micro-task / recovery only
-uv run dgov status -r .                                                 # current state
-uv run dgov pane land <slug>                                            # manual review+merge+close
-uv run dgov pane review <slug>                                          # inspect diff
-uv run dgov pane close <slug>                                           # cleanup only
-uv run dgov pane transcript <slug>                                      # view worker session
-uv run dgov agent list -r .                                             # installed agents
-uv run dgov agent stats -r .                                            # reliability metrics
+uv run dgov plan run .dgov/plans/<name>.toml                            # default implementation path
+uv run dgov pane create --role worker -a <logical-agent> -s <slug> -r . -p "<prompt>"  # micro-task / recovery only
+uv run dgov status -r .                                                   # current state
+uv run dgov pane land <slug>                                              # manual review+merge+close
+uv run dgov pane review <slug>                                            # inspect diff
+uv run dgov pane close <slug>                                             # cleanup only
+uv run dgov pane transcript <slug>                                        # view worker session
+uv run dgov agent list -r .                                               # installed agents
+uv run dgov agent stats -r .                                              # reliability metrics
 uv run dgov ledger add <category> "<summary>" -r .                      # record knowledge
 uv run dgov ledger resolve <id> -s fixed                                # resolve items
 ```
