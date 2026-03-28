@@ -441,9 +441,6 @@ class WorkerPane:
 # -- State DB helpers --
 
 STATE_DIR = ".dgov"
-
-# Benchmark versioning for result tracking
-BENCHMARK_VERSION = 1
 PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md"}
 _STATE_FILE = "state.db"
 
