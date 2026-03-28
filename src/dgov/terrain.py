@@ -1,6 +1,5 @@
 """SPIM erosion terrain model for dgov dashboard."""
 
-# bench-b2 marker
 # Adapted from scilint/tui/erosion.py (stream-power-law incision model)
 
 from __future__ import annotations
