@@ -11,6 +11,7 @@
 - **Stabilize pane retries, routing, and output** (`6fa276e`): reduced worker prompt bloat, preserved retry contract state, fixed stale superseded pane cleanup, added explicit routing degradation behavior, improved live output selection, added `dgov --version`, and tightened the routing/output state model under clanker discipline.
 - **Clean stale run state**: closed preserved smoke panes, removed orphaned retry windows, and brought live pane state back to `0 panes`.
 - **Refresh CODEBASE map**: regenerated `CODEBASE.md` after the router conflict fix so the module map no longer records a stale parse error.
+- **Bug #185 - Fix readonly phase timeout** (`r113-fix-readonly-stall`): Fixed `_dag_wait_any` to detect workers stuck in non-terminal phases (STUCK, IDLE, WAITING_INPUT) and emit `timed_out` after `readonly_timeout` (default 30s). Previously, only terminal phases (DONE, FAILED, UNKNOWN) and the global `max_timeout` were checked, allowing workers to stall indefinitely in readonly phases.
 
 ## Ledger Snapshot
 ### Open Bug

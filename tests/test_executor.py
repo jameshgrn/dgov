@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -938,3 +939,210 @@ class TestNewSyscalls:
 
         assert meta_calls == [("test-slug", {"last_checkpoint": "halfway done"})]
         assert len(events) == 1
+
+
+# =============================================================================
+# Bug #185: Readonly phase timeout tests
+# =============================================================================
+
+
+class TestDagWaitAnyReadonlyTimeout:
+    """Tests for Bug #185: Workers stuck in non-terminal phases should timeout."""
+
+    @pytest.fixture(autouse=True)
+    def _mock_wait_notify(self, monkeypatch):
+        """Mock _wait_for_notify to prevent blocking in tests."""
+        monkeypatch.setattr("dgov.persistence._wait_for_notify", lambda *a, **kw: None)
+
+    def test_stuck_phase_triggers_timeout_after_readonly_threshold(self, tmp_path, monkeypatch):
+        """Worker in STUCK phase for >readonly_timeout should return timed_out."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        call_count = [0]
+        start_time = time.monotonic()
+
+        def _observe_stuck(project_root, session_root, pane_slug):
+            call_count[0] += 1
+            # Always return STUCK to trigger readonly timeout
+            return WorkerObservation(slug=pane_slug, phase=WorkerPhase.STUCK, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_stuck)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1",),
+            pane_map={"task-1": "pane-1"},
+            stable_states={},
+            task_timeouts={"task-1": 600},
+            poll_interval=0.001,
+            readonly_timeout=0.01,  # Short timeout for test
+        )
+
+        elapsed = time.monotonic() - start_time
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "timed_out"
+        assert result.task_slug == "task-1"
+        assert result.pane_slug == "pane-1"
+        assert elapsed < 0.5  # Should timeout quickly, not wait 600s
+
+    def test_idle_phase_triggers_timeout_after_readonly_threshold(self, tmp_path, monkeypatch):
+        """Worker in IDLE phase for >readonly_timeout should return timed_out."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        def _observe_idle(project_root, session_root, pane_slug):
+            return WorkerObservation(slug=pane_slug, phase=WorkerPhase.IDLE, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_idle)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1",),
+            pane_map={"task-1": "pane-1"},
+            stable_states={},
+            task_timeouts={"task-1": 600},
+            poll_interval=0.001,
+            readonly_timeout=0.01,
+        )
+
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "timed_out"
+
+    def test_waiting_input_phase_triggers_timeout(self, tmp_path, monkeypatch):
+        """Worker in WAITING_INPUT phase for >readonly_timeout should return timed_out."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        def _observe_waiting_input(project_root, session_root, pane_slug):
+            return WorkerObservation(slug=pane_slug, phase=WorkerPhase.WAITING_INPUT, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_waiting_input)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1",),
+            pane_map={"task-1": "pane-1"},
+            stable_states={},
+            task_timeouts={"task-1": 600},
+            poll_interval=0.001,
+            readonly_timeout=0.01,
+        )
+
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "timed_out"
+
+    def test_done_phase_returns_immediately(self, tmp_path, monkeypatch):
+        """Worker in DONE phase should return immediately with done state."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        def _observe_done(project_root, session_root, pane_slug):
+            return WorkerObservation(slug=pane_slug, phase=WorkerPhase.DONE, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_done)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1",),
+            pane_map={"task-1": "pane-1"},
+            stable_states={},
+            task_timeouts={"task-1": 600},
+            poll_interval=0.001,
+            readonly_timeout=30.0,
+        )
+
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "done"
+
+    def test_failed_phase_returns_immediately(self, tmp_path, monkeypatch):
+        """Worker in FAILED phase should return immediately with failed state."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        def _observe_failed(project_root, session_root, pane_slug):
+            return WorkerObservation(slug=pane_slug, phase=WorkerPhase.FAILED, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_failed)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1",),
+            pane_map={"task-1": "pane-1"},
+            stable_states={},
+            task_timeouts={"task-1": 600},
+            poll_interval=0.001,
+            readonly_timeout=30.0,
+        )
+
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "failed"
+
+    def test_reset_readonly_timer_when_entering_working(self, tmp_path, monkeypatch):
+        """Readonly timer should reset when worker transitions from STUCK to WORKING."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        phases = [WorkerPhase.STUCK, WorkerPhase.WORKING, WorkerPhase.DONE]
+        call_count = [0]
+
+        def _observe_transition(project_root, session_root, pane_slug):
+            idx = min(call_count[0], len(phases) - 1)
+            phase = phases[idx]
+            call_count[0] += 1
+            return WorkerObservation(slug=pane_slug, phase=phase, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_transition)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1",),
+            pane_map={"task-1": "pane-1"},
+            stable_states={},
+            task_timeouts={"task-1": 600},
+            poll_interval=0.001,
+            readonly_timeout=0.01,
+        )
+
+        # Should complete via DONE, not timeout
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "done"
+
+    def test_multiple_tasks_tracks_separate_readonly_timers(self, tmp_path, monkeypatch):
+        """Each task should track its own readonly timer independently."""
+        from dgov.executor import _dag_wait_any
+        from dgov.kernel import TaskWaitDone, WorkerObservation, WorkerPhase
+
+        call_count = [0]
+
+        def _observe_mixed(project_root, session_root, pane_slug):
+            call_count[0] += 1
+            # task-1 is WORKING, task-2 is STUCK
+            if pane_slug == "pane-1":
+                return WorkerObservation(slug=pane_slug, phase=WorkerPhase.WORKING, alive=True)
+            return WorkerObservation(slug=pane_slug, phase=WorkerPhase.STUCK, alive=True)
+
+        monkeypatch.setattr("dgov.monitor.observe_worker", _observe_mixed)
+
+        result = _dag_wait_any(
+            project_root="/repo",
+            session_root=str(tmp_path),
+            task_slugs=("task-1", "task-2"),
+            pane_map={"task-1": "pane-1", "task-2": "pane-2"},
+            stable_states={},
+            task_timeouts={"task-1": 600, "task-2": 600},
+            poll_interval=0.001,
+            readonly_timeout=0.01,
+        )
+
+        # task-2 should timeout first (STUCK), not task-1 (WORKING)
+        assert isinstance(result, TaskWaitDone)
+        assert result.pane_state == "timed_out"
+        assert result.task_slug == "task-2"
+        assert result.pane_slug == "pane-2"

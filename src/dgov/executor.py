@@ -2561,11 +2561,15 @@ def _dag_wait_any(
     stable_states: dict[str, dict],
     task_timeouts: dict[str, int],
     poll_interval: float,
+    readonly_timeout: float = 30.0,
 ) -> TaskWaitDone:
     """Poll active panes round-robin until one completes. Returns TaskWaitDone.
 
     Uses the unified WorkerObservation to check completion — same model
     the monitor uses for classification.
+
+    Bug #185 fix: Workers stuck in non-terminal phases (STUCK, IDLE, WAITING_INPUT)
+    for longer than readonly_timeout are considered timed out.
     """
     import time
 
@@ -2575,18 +2579,37 @@ def _dag_wait_any(
     start = time.monotonic()
     max_timeout = max(task_timeouts.get(s, 600) for s in task_slugs)
 
+    # Track when each worker entered a readonly (non-working, non-terminal) phase
+    # Bug #185: Detect workers stuck in STUCK/IDLE/WAITING_INPUT
+    readonly_phases = frozenset([WorkerPhase.STUCK, WorkerPhase.IDLE, WorkerPhase.WAITING_INPUT])
+    readonly_start: dict[str, float] = {}
+
     while True:
+        now = time.monotonic()
         for task_slug in task_slugs:
             pane_slug = pane_map.get(task_slug, "")
             if not pane_slug:
                 continue
 
             obs = observe_worker(project_root, session_root, pane_slug)
+
+            # Terminal phases: immediate completion
             if obs.phase in (WorkerPhase.DONE, WorkerPhase.FAILED, WorkerPhase.UNKNOWN):
                 pane_state = "done" if obs.phase == WorkerPhase.DONE else "failed"
                 return TaskWaitDone(task_slug, pane_slug, pane_state)
 
-        elapsed = time.monotonic() - start
+            # Bug #185: Check for readonly phase timeout
+            if obs.phase in readonly_phases:
+                if task_slug not in readonly_start:
+                    readonly_start[task_slug] = now
+                elif (now - readonly_start[task_slug]) > readonly_timeout:
+                    # Worker stuck in readonly phase too long - timeout
+                    return TaskWaitDone(task_slug, pane_slug, "timed_out")
+            else:
+                # Working or committing - reset readonly timer
+                readonly_start.pop(task_slug, None)
+
+        elapsed = now - start
         if elapsed > max_timeout:
             return TaskWaitDone(task_slugs[0], pane_map.get(task_slugs[0], ""), "timed_out")
 
