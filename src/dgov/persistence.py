@@ -755,6 +755,13 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
+
+    # Schema version gate: CREATE TABLE is idempotent and fast; ALTER TABLE
+    # migrations and sentinel-to-NULL conversions are expensive and only need
+    # to run once. PRAGMA user_version tracks whether they've been applied.
+    _SCHEMA_VERSION = 1
+    (current_version,) = conn.execute("PRAGMA user_version").fetchone()
+
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.execute(_CREATE_DAG_RUNS_TABLE_SQL)
@@ -790,111 +797,113 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(CREATE_LEDGER_SQL)
     conn.execute(CREATE_LEDGER_IDX)
 
-    # Migrate: add route column to spans (canonical route identity persistence)
-    try:
-        conn.execute("ALTER TABLE spans ADD COLUMN route TEXT NOT NULL DEFAULT ''")
-    except sqlite3.OperationalError:
-        pass  # column already exists
+    if current_version < _SCHEMA_VERSION:
+        # --- One-time migrations (gated by schema version) ---
 
-    # Backfill empty route values with computed canonical identity from agent/from_agent
-    try:
-        from dgov.spans import backfill_empty_routes
-
-        backfill_empty_routes(session_root)
-    except Exception:
-        logger.debug("Route backfill failed, will retry on next connection", exc_info=True)
-
-    # Migrate: add hierarchy columns if missing
-    for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
+        # Migrate: add route column to spans (canonical route identity persistence)
         try:
-            conn.execute(f"ALTER TABLE panes ADD COLUMN {col} TEXT DEFAULT {default}")
+            conn.execute("ALTER TABLE spans ADD COLUMN route TEXT NOT NULL DEFAULT ''")
         except sqlite3.OperationalError:
             pass  # column already exists
 
-    # Migrate: add decision journal columns if missing
-    for col, coltype in [
-        ("model_id", "TEXT"),
-        ("confidence", "REAL"),
-        ("pane_slug", "TEXT"),
-        ("agent_id", "TEXT"),
-    ]:
+        # Backfill empty route values with computed canonical identity from agent/from_agent
         try:
-            conn.execute(f"ALTER TABLE decision_journal ADD COLUMN {col} {coltype}")
+            from dgov.spans import backfill_empty_routes
+
+            backfill_empty_routes(session_root)
+        except Exception:
+            logger.debug("Route backfill failed, will retry on next connection", exc_info=True)
+
+        # Migrate: add hierarchy columns if missing
+        for col, default in [("parent_slug", "''"), ("tier_id", "''"), ("role", "'worker'")]:
+            try:
+                conn.execute(f"ALTER TABLE panes ADD COLUMN {col} TEXT DEFAULT {default}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        # Migrate: add decision journal columns if missing
+        for col, coltype in [
+            ("model_id", "TEXT"),
+            ("confidence", "REAL"),
+            ("pane_slug", "TEXT"),
+            ("agent_id", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE decision_journal ADD COLUMN {col} {coltype}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
+        # Migrate: add typed pane metadata columns
+        _pane_meta_cols = [
+            ("landing", "INTEGER NOT NULL DEFAULT 0"),
+            ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+            ("commit_message", "TEXT DEFAULT NULL"),
+            ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
+            ("retried_from", "TEXT DEFAULT NULL"),
+            ("superseded_by", "TEXT DEFAULT NULL"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
+            ("monitor_reason", "TEXT DEFAULT NULL"),
+            ("last_checkpoint", "TEXT DEFAULT NULL"),
+            ("last_hook_match", "TEXT DEFAULT NULL"),
+            ("preserve_reason", "TEXT DEFAULT NULL"),
+            ("preserve_recoverable", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        for col, coldef in _pane_meta_cols:
+            try:
+                conn.execute(f"ALTER TABLE panes ADD COLUMN {col} {coldef}")
+            except sqlite3.OperationalError:
+                pass
+
+        # Migrate: add typed event columns
+        _event_cols = [
+            ("commit_count", "TEXT DEFAULT NULL"),
+            ("error", "TEXT DEFAULT NULL"),
+            ("reason", "TEXT DEFAULT NULL"),
+            ("merge_sha", "TEXT DEFAULT NULL"),
+            ("branch", "TEXT DEFAULT NULL"),
+            ("new_slug", "TEXT DEFAULT NULL"),
+            ("target_agent", "TEXT DEFAULT NULL"),
+            ("message", "TEXT DEFAULT NULL"),
+        ]
+        for col, coldef in _event_cols:
+            try:
+                conn.execute(f"ALTER TABLE events ADD COLUMN {col} {coldef}")
+            except sqlite3.OperationalError:
+                pass
+
+        # Migrate: add typed archived_panes columns (replace metadata blob)
+        _archive_cols = [
+            ("landing", "INTEGER NOT NULL DEFAULT 0"),
+            ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+            ("commit_message", "TEXT DEFAULT NULL"),
+            ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
+            ("retried_from", "TEXT DEFAULT NULL"),
+            ("superseded_by", "TEXT DEFAULT NULL"),
+            ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
+            ("monitor_reason", "TEXT DEFAULT NULL"),
+            ("last_checkpoint", "TEXT DEFAULT NULL"),
+            ("crash_log", "TEXT DEFAULT NULL"),
+        ]
+        for col, coldef in _archive_cols:
+            try:
+                conn.execute(f"ALTER TABLE archived_panes ADD COLUMN {col} {coldef}")
+            except sqlite3.OperationalError:
+                pass
+
+        # Migrate: add route column to archived_panes (canonical route identity persistence)
+        try:
+            conn.execute("ALTER TABLE archived_panes ADD COLUMN route TEXT DEFAULT NULL")
         except sqlite3.OperationalError:
             pass  # column already exists
 
-    # Migrate: drop unused metadata_json by ignoring it (SQLite cannot DROP COLUMN before 3.35)
-    # No action needed — column is never read. Left in schema for backward compat.
+        # Migrate: convert sentinel empty strings to NULL.
+        # Old databases have NOT NULL constraints on these columns, so we need
+        # to recreate tables to drop the constraint before setting NULL values.
+        _migrate_sentinels_to_null(conn)
 
-    # Migrate: add typed pane metadata columns
-    _pane_meta_cols = [
-        ("landing", "INTEGER NOT NULL DEFAULT 0"),
-        ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
-        ("commit_message", "TEXT DEFAULT NULL"),
-        ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
-        ("retried_from", "TEXT DEFAULT NULL"),
-        ("superseded_by", "TEXT DEFAULT NULL"),
-        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
-        ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
-        ("monitor_reason", "TEXT DEFAULT NULL"),
-        ("last_checkpoint", "TEXT DEFAULT NULL"),
-        ("last_hook_match", "TEXT DEFAULT NULL"),
-        ("preserve_reason", "TEXT DEFAULT NULL"),
-        ("preserve_recoverable", "INTEGER NOT NULL DEFAULT 0"),
-    ]
-    for col, coldef in _pane_meta_cols:
-        try:
-            conn.execute(f"ALTER TABLE panes ADD COLUMN {col} {coldef}")
-        except sqlite3.OperationalError:
-            pass
-
-    # Migrate: add typed event columns
-    _event_cols = [
-        ("commit_count", "TEXT DEFAULT NULL"),
-        ("error", "TEXT DEFAULT NULL"),
-        ("reason", "TEXT DEFAULT NULL"),
-        ("merge_sha", "TEXT DEFAULT NULL"),
-        ("branch", "TEXT DEFAULT NULL"),
-        ("new_slug", "TEXT DEFAULT NULL"),
-        ("target_agent", "TEXT DEFAULT NULL"),
-        ("message", "TEXT DEFAULT NULL"),
-    ]
-    for col, coldef in _event_cols:
-        try:
-            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {coldef}")
-        except sqlite3.OperationalError:
-            pass
-
-    # Migrate: add typed archived_panes columns (replace metadata blob)
-    _archive_cols = [
-        ("landing", "INTEGER NOT NULL DEFAULT 0"),
-        ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
-        ("commit_message", "TEXT DEFAULT NULL"),
-        ("circuit_breaker", "INTEGER NOT NULL DEFAULT 0"),
-        ("retried_from", "TEXT DEFAULT NULL"),
-        ("superseded_by", "TEXT DEFAULT NULL"),
-        ("retry_count", "INTEGER NOT NULL DEFAULT 0"),
-        ("max_retries", "INTEGER NOT NULL DEFAULT 0"),
-        ("monitor_reason", "TEXT DEFAULT NULL"),
-        ("last_checkpoint", "TEXT DEFAULT NULL"),
-        ("crash_log", "TEXT DEFAULT NULL"),
-    ]
-    for col, coldef in _archive_cols:
-        try:
-            conn.execute(f"ALTER TABLE archived_panes ADD COLUMN {col} {coldef}")
-        except sqlite3.OperationalError:
-            pass
-
-    # Migrate: add route column to archived_panes (canonical route identity persistence)
-    try:
-        conn.execute("ALTER TABLE archived_panes ADD COLUMN route TEXT DEFAULT NULL")
-    except sqlite3.OperationalError:
-        pass  # column already exists
-
-    # Migrate: convert sentinel empty strings to NULL.
-    # Old databases have NOT NULL constraints on these columns, so we need
-    # to recreate tables to drop the constraint before setting NULL values.
-    _migrate_sentinels_to_null(conn)
+        conn.execute(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
     conn.commit()
 

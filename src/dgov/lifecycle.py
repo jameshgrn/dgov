@@ -263,6 +263,20 @@ def _terminate_pane_process_tree(root_pid: int, wait_timeout: float = 5.0) -> di
 # -- Git worktree helpers --
 
 
+def _worktree_base(project_root: str) -> Path:
+    """Return the worktree base directory for a project.
+
+    Worktrees live at ``~/.dgov/worktrees/<hash>/`` — outside the repo
+    tree so the worker's cwd never contains the main repo path.
+    """
+    import hashlib
+
+    project_hash = hashlib.sha256(os.path.abspath(project_root).encode()).hexdigest()[:12]
+    base = Path.home() / ".dgov" / "worktrees" / project_hash
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def _create_worktree(project_root: str, worktree_path: str, branch_name: str) -> None:
     # Reject stale worktree reuse on fresh create.
     if Path(worktree_path).is_dir():
@@ -322,8 +336,10 @@ def _find_unique_slug(project_root: str, session_root: str, base_slug: str) -> t
     existing_branches = {p["branch_name"] for p in existing_panes if p.get("branch_name")}
     existing_worktrees = {p["worktree_path"] for p in existing_panes if p.get("worktree_path")}
 
-    # Base path pattern
-    worktrees_dir = Path(project_root) / ".dgov" / "worktrees"
+    # Worktrees live outside the repo tree so the LLM's cwd doesn't
+    # contain the main repo path (workers derive it and cd there,
+    # causing edits to land on main instead of the worktree).
+    worktrees_dir = _worktree_base(project_root)
     candidate_slug = base_slug
     counter = 1
 

@@ -511,6 +511,20 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 if not wt_exists:
                     should_prune = True
 
+            # Superseded/escalated panes were replaced — always force cleanup.
+            # _close_replaced_pane should have removed them, but if it failed
+            # silently the pane lingers with a live tmux process + worktree.
+            if not should_prune and state in {"superseded", "escalated"}:
+                should_prune = True
+                if alive and pane_id:
+                    try:
+                        get_backend().destroy(pane_id)
+                    except Exception:
+                        logger.warning("Failed to destroy replaced pane %s (%s)", slug, pane_id)
+                if wt_exists and wt:
+                    branch = p.get("branch_name", slug)
+                    _remove_worktree(project_root, wt, branch)
+
             if should_prune:
                 remove_pane(session_root, slug)
                 emit_event(session_root, "pane_pruned", slug, reason="stale")
@@ -528,20 +542,22 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 pruned.append(f"dead:{slug}")
 
         # Pass 2: remove orphaned worktree dirs (with grace period)
-        worktrees_dir = Path(project_root) / STATE_DIR / "worktrees"
-        if worktrees_dir.is_dir():
-            known_worktrees = {
-                p.get("worktree_path") for p in panes if p["slug"] not in pruned_slugs
-            }
-            now = time.time()
+        # Scan both the new location (~/.dgov/worktrees/<hash>/) and the
+        # legacy location (.dgov/worktrees/) for orphans.
+        from dgov.lifecycle import _worktree_base
+
+        _wt_dirs = [_worktree_base(project_root), Path(project_root) / STATE_DIR / "worktrees"]
+        known_worktrees = {p.get("worktree_path") for p in panes if p["slug"] not in pruned_slugs}
+        now = time.time()
+        for worktrees_dir in _wt_dirs:
+            if not worktrees_dir.is_dir():
+                continue
             for entry in worktrees_dir.iterdir():
                 if not entry.is_dir():
                     continue
                 entry_str = str(entry)
                 if entry_str in known_worktrees:
                     continue
-                # Grace period: don't remove worktrees younger than 60s.
-                # Prevents race between worktree creation and pane record persistence.
                 try:
                     age_s = now - entry.stat().st_mtime
                 except OSError:

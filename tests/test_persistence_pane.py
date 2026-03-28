@@ -223,27 +223,38 @@ class TestEventNotification:
         assert result.get("notified") is True
 
     def test_multiple_waiters_all_wake(self, tmp_path):
-        """Multiple _wait_for_notify calls in different threads all get woken."""
-        import threading
-        import time as _time
+        """Multiple reader pipes all receive a byte from _notify_waiters.
+
+        _wait_for_notify uses per-PID pipes, so same-process threads share
+        one pipe.  Test the real contract: _notify_waiters writes to every
+        pipe that has a reader attached.
+        """
+        import os as _os
 
         session = _make_session(tmp_path)
-        results = {}
+        notify_dir = Path(session) / ".dgov" / "notify"
+        notify_dir.mkdir(parents=True, exist_ok=True)
 
-        def waiter(name):
-            results[name] = _wait_for_notify(session, 5.0)
+        # Use real PIDs so _notify_waiters doesn't prune the pipes.
+        # PID 1 (launchd/init) is always alive.
+        fake_pids = [_os.getpid(), 1]
+        pipes = []
+        fds = []
+        for pid in fake_pids:
+            pipe_path = notify_dir / f"{pid}.pipe"
+            _os.mkfifo(str(pipe_path))
+            # Open read-end NONBLOCK so _notify_waiters' write-end open succeeds
+            fd = _os.open(str(pipe_path), _os.O_RDONLY | _os.O_NONBLOCK)
+            pipes.append(pipe_path)
+            fds.append(fd)
 
-        t1 = threading.Thread(target=waiter, args=("a",))
-        t2 = threading.Thread(target=waiter, args=("b",))
-        t1.start()
-        t2.start()
-        _time.sleep(0.2)
-        _notify_waiters(session)
-        t1.join(timeout=3.0)
-        t2.join(timeout=3.0)
+        _notify_waiters(str(session))
 
-        assert results.get("a") is True
-        assert results.get("b") is True
+        for fd, pipe_path in zip(fds, pipes):
+            data = _os.read(fd, 4096)
+            _os.close(fd)
+            pipe_path.unlink(missing_ok=True)
+            assert len(data) > 0, f"{pipe_path.name} got no data"
 
 
 class TestFileClaimsPersistence:

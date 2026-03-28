@@ -362,3 +362,41 @@ class TestPruneStalePanes:
             assert "dead-pane" in result
         finally:
             set_backend(None)  # type: ignore[arg-type]
+
+    def test_prunes_superseded_pane_even_if_alive(self, tmp_path):
+        """Superseded panes are force-pruned even with live tmux + worktree.
+
+        Regression test for bug #187: _close_replaced_pane can fail silently,
+        leaving a superseded pane with a live process and existing worktree.
+        prune_stale_panes must force-destroy and remove these.
+        """
+        from dgov.backend import set_backend
+        from dgov.persistence import WorkerPane, add_pane, get_pane
+        from dgov.status import prune_stale_panes
+
+        wt_dir = tmp_path / ".dgov" / "worktrees" / "old-task"
+        wt_dir.mkdir(parents=True)
+
+        pane = WorkerPane(
+            slug="old-task",
+            prompt="test",
+            pane_id="%99",
+            agent="metal-9b",
+            project_root=str(tmp_path),
+            worktree_path=str(wt_dir),
+            branch_name="old-task",
+            state="superseded",
+        )
+        add_pane(str(tmp_path), pane)
+
+        mock_backend = MagicMock()
+        mock_backend.bulk_info.return_value = {"%99": {"current_command": "zsh"}}
+        set_backend(mock_backend)
+
+        try:
+            result = prune_stale_panes(str(tmp_path), str(tmp_path))
+            assert "old-task" in result
+            assert get_pane(str(tmp_path), "old-task") is None
+            mock_backend.destroy.assert_called_once_with("%99")
+        finally:
+            set_backend(None)  # type: ignore[arg-type]

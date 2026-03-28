@@ -456,8 +456,9 @@ class TestIsDone:
         (done_dir / "stale").touch()
 
         record = get_pane(str(tmp_path), "stale")
+        assert record is not None
         assert _is_done(str(tmp_path), "stale", pane_record=record) is False
-        assert get_pane(str(tmp_path), "stale")["state"] == "abandoned"
+        assert record["state"] == "abandoned"
 
     def test_new_commits_on_abandoned_pane_succeeds(self, tmp_path: Path) -> None:
         """Verify abandoned -> done transition works when new commits are found."""
@@ -489,7 +490,9 @@ class TestIsDone:
                 )
                 is True
             )
-        assert get_pane(str(tmp_path), "stale")["state"] == "done"
+        updated = get_pane(str(tmp_path), "stale")
+        assert updated is not None
+        assert updated["state"] == "done"
 
 
 class TestSignalPane:
@@ -527,7 +530,9 @@ class TestSignalPane:
         ):
             assert signal_pane(str(tmp_path), "stale-done", "done") is True
 
-        assert get_pane(str(tmp_path), "stale-done")["state"] == "failed"
+        updated = get_pane(str(tmp_path), "stale-done")
+        assert updated is not None
+        assert updated["state"] == "failed"
 
 
 # ---------------------------------------------------------------------------
@@ -609,9 +614,14 @@ class TestListWorkerPanes:
         assert result[0]["current_command"] == "claude"
         assert result[0]["done"] is False
 
-    def test_skips_is_done_for_superseded_pane(
+    def test_prunes_superseded_pane_before_listing(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
+        """Superseded panes are pruned by prune_stale_panes, not returned.
+
+        Regression: bug #187 — superseded panes lingered in the dashboard
+        because prune_stale_panes only checked liveness, not state.
+        """
         mock_backend.bulk_info.return_value = {
             "%1": {"pane_id": "%1"},
             "%2": {"pane_id": "%2", "current_command": "pi"},
@@ -653,10 +663,11 @@ class TestListWorkerPanes:
         with patch("dgov.status._is_done", side_effect=fake_is_done):
             result = list_worker_panes(str(tmp_path))
 
+        # Superseded pane is pruned — only active pane remains
         assert checked == ["active-task"]
-        superseded = next(pane for pane in result if pane["slug"] == "old-task")
-        assert superseded["state"] == "superseded"
-        assert superseded["done"] is True
+        slugs = [p["slug"] for p in result]
+        assert "old-task" not in slugs
+        assert "active-task" in slugs
 
     def test_reconciles_state_when_is_done_transitions_active(
         self, tmp_path: Path, mock_backend: MagicMock
@@ -1414,6 +1425,13 @@ class TestFullCleanup:
         replace_all_panes(str(tmp_path), {"panes": [{"slug": "test", "pane_id": "%5"}]})
         wt = tmp_path / "wt"
         wt.mkdir()
+        # Initialize as a valid git worktree so rev-parse --git-dir succeeds
+        import subprocess
+
+        subprocess.run(["git", "-C", str(wt), "init"], capture_output=True, check=False)
+        subprocess.run(
+            ["git", "-C", str(wt), "worktree", "add", "--force"], capture_output=True, check=False
+        )
 
         pane_record = {
             "pane_id": "%5",
@@ -1427,8 +1445,13 @@ class TestFullCleanup:
         def fake_run(cmd, **kw):
             calls.append(cmd)
             m = MagicMock()
-            m.returncode = 0
-            m.stdout = ""
+            # rev-parse --git-dir should return the git dir path for valid worktrees
+            if "--git-dir" in cmd:
+                m.returncode = 0
+                m.stdout = str(Path(tmp_path) / ".git/worktrees/test") + "\n"
+            else:
+                m.returncode = 0
+                m.stdout = ""
             return m
 
         mock_backend.is_alive.return_value = False
@@ -1649,9 +1672,10 @@ class TestPaneConstants:
 
 class TestMergeWorkerPane:
     def test_pane_not_found(self, tmp_path: Path) -> None:
-        from dgov.merger import merge_worker_pane
+        from dgov.merger import MergeError, merge_worker_pane
 
         result = merge_worker_pane(str(tmp_path), "nonexistent")
+        assert isinstance(result, MergeError)
         assert result.error is not None
         assert "not found" in result.error
 
@@ -1672,7 +1696,7 @@ class TestMergeWorkerPane:
         tmp_path: Path,
     ) -> None:
         from dgov.inspection import MergeResult
-        from dgov.merger import merge_worker_pane
+        from dgov.merger import MergeSuccess, merge_worker_pane
 
         mock_merge.return_value = MergeResult(success=True)
         mock_advance.return_value = MergeResult(success=True)
@@ -1690,6 +1714,7 @@ class TestMergeWorkerPane:
         )
         add_pane(str(tmp_path), pane)
         result = merge_worker_pane(str(tmp_path), "mergeable")
+        assert isinstance(result, MergeSuccess)
         assert result.merged == "mergeable"
         assert result.branch == "feat"
 
@@ -1710,7 +1735,7 @@ class TestMergeWorkerPane:
         tmp_path: Path,
     ) -> None:
         from dgov.inspection import MergeResult
-        from dgov.merger import merge_worker_pane
+        from dgov.merger import MergeSuccess, merge_worker_pane
         from dgov.persistence import IllegalTransitionError
 
         mock_merge.return_value = MergeResult(success=True)
@@ -1733,6 +1758,7 @@ class TestMergeWorkerPane:
             mock_state.side_effect = IllegalTransitionError("abandoned", "merged", "mergeable")
             result = merge_worker_pane(str(tmp_path), "mergeable")
 
+        assert isinstance(result, MergeSuccess)
         assert result.merged == "mergeable"
         assert result.branch == "feat"
         mock_cleanup.assert_called_once()
@@ -1801,6 +1827,7 @@ class TestPruneStalePane:
         assert pruned == ["dead:has-wt"]
         # Verify state was changed to failed
         pane_after = get_pane(str(tmp_path), "has-wt")
+        assert pane_after is not None
         assert pane_after["state"] == "failed"
         # Verify worktree was NOT deleted
         assert wt.exists()
@@ -1827,6 +1854,7 @@ class TestPruneStalePane:
         # Done pane with worktree should NOT appear in pruned (not active)
         assert pruned == []
         pane_after = get_pane(str(tmp_path), "done-pane")
+        assert pane_after is not None
         assert pane_after["state"] == "done"
 
 

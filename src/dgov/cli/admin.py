@@ -487,16 +487,28 @@ def status(project_root, session_root, output_json):
             state = p.get("state") or "active"
             by_state[state] = by_state.get(state, 0) + 1
 
-        # Count healthy agents
-        unhealthy = []
-        for agent_id in installed:
+        # Count healthy agents (parallel health checks — serial was 3-4s)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _check_health(agent_id: str) -> str | None:
             agent_def = registry.get(agent_id)
-            if agent_def and agent_def.health_check:
+            if not agent_def or not agent_def.health_check:
+                return None
+            try:
                 result = subprocess.run(
                     agent_def.health_check, shell=True, capture_output=True, text=True, timeout=5
                 )
-                if result.returncode != 0:
-                    unhealthy.append(agent_id)
+                return agent_id if result.returncode != 0 else None
+            except (subprocess.TimeoutExpired, OSError):
+                return agent_id
+
+        unhealthy: list[str] = []
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = {pool.submit(_check_health, aid): aid for aid in installed}
+            for fut in as_completed(futures):
+                bad = fut.result()
+                if bad:
+                    unhealthy.append(bad)
 
         # Format human-readable output
         lines = []
