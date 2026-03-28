@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
 import os as _os
@@ -156,17 +155,6 @@ def pane_util(command, title, cwd):
 )
 @click.option("--role", default="worker", help="Pane role: worker or lt-gov")
 @click.option("--parent", default=None, help="Parent pane slug (for LT-GOV-created workers)")
-@click.option(
-    "--land/--no-land",
-    default=False,
-    help="Run full lifecycle after dispatch: wait, review, merge, close",
-)
-@click.option(
-    "--timeout",
-    default=600,
-    type=int,
-    help="Max seconds to wait when --land is used (default: 600)",
-)
 @click.option("--stdin", "use_stdin", is_flag=True, default=False, help="Read prompt from stdin")
 def pane_create(
     agent,
@@ -186,8 +174,6 @@ def pane_create(
     var,
     role,
     parent,
-    land,
-    timeout,
     use_stdin=False,
 ):
     """Create a worker pane: worktree + tmux + agent.
@@ -195,8 +181,7 @@ def pane_create(
     \b
     Examples:
       dgov pane create -a qwen-35b -s fix-parser -r . -p "Fix the parser bug"
-      dgov pane create -a qwen-35b -s add-tests -r . --prompt-file task.txt --land
-      dgov pane create -a qwen-9b -s lint-fix -r . -p "Run ruff fix" --timeout 120
+      dgov pane create -a qwen-9b -s lint-fix -r . -p "Run ruff fix"
       cat prompt.txt | dgov pane create -a qwen-35b -s my-task -r . --stdin
       dgov pane create -a qwen-35b -T default -r . --var key=value
     """
@@ -349,47 +334,6 @@ def pane_create(
 
     if slug and pane_obj.slug != slug:
         click.echo(f"Warning: slug {slug} already in use, renamed to {pane_obj.slug}", err=True)
-
-    if land:
-        from dgov.executor import run_post_dispatch_lifecycle
-
-        lifecycle = run_post_dispatch_lifecycle(
-            project_root=os.path.abspath(project_root),
-            slug=pane_obj.slug,
-            session_root=os.path.abspath(session_root or project_root),
-            timeout=timeout,
-            auto_merge=True,
-            permission_mode=permission_mode,
-        )
-        # One-line summary for quick scanning (especially in background notifications)
-        review = lifecycle.review
-        summary_parts = [f"[{lifecycle.state}]", lifecycle.slug]
-        if review and review.commit_count:
-            summary_parts.append(f"{review.commit_count} commits")
-        if review and review.tests_passed is True:
-            summary_parts.append("tests✓")
-        elif review and review.tests_passed is False:
-            summary_parts.append("tests✗")
-        if review and review.stale_files:
-            summary_parts.append(f"stale:{len(review.stale_files)} files")
-        if lifecycle.error:
-            summary_parts.append(f"error: {lifecycle.error[:80]}")
-        click.echo(" ".join(summary_parts))
-        click.echo(
-            json.dumps(
-                {
-                    "lifecycle": lifecycle.state,
-                    "slug": lifecycle.slug,
-                    "review": lifecycle.review.to_dict() if lifecycle.review else None,
-                    "merge": dataclasses.asdict(lifecycle.merge_result)
-                    if lifecycle.merge_result
-                    else None,
-                    "error": lifecycle.error,
-                },
-            )
-        )
-        if lifecycle.state == "failed":
-            sys.exit(1)
 
 
 @pane.command("batch")
