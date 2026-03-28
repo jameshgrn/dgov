@@ -82,7 +82,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/plan.py (L): Plan schema, validator, and compiler for dgov. -> test_plan.py
   src/dgov/preflight.py (L): Pre-flight validation for dgov dispatch.
   src/dgov/spans.py (L): Structured span and tool-trace observability for dgov. -> test_spans.py
-  src/dgov/terrain.py (L): 
+  src/dgov/terrain.py (L): SPIM erosion terrain model for dgov dashboard.
   src/dgov/terrain_pane.py (M): Standalone terrain simulation pane for dgov governor workspace. -> test_terrain_pane.py
   src/dgov/tmux.py (L): Thin wrappers around tmux commands.
 
