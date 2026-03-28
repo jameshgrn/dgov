@@ -1596,109 +1596,111 @@ def merge_worker_pane(
                 hint="git add <files> && git commit -m 'save governor changes before merge'",
             )
 
-    # Phase 3: Execute merge under lock
-    with _MergeLock(pane_project_root):
-        rebase_fallback = False
-        if not rebase:
+    # Phase 3: Execute merge
+    # No outer _MergeLock here — _plumbing_merge and _execute_candidate_merge
+    # take their own locks internally. A second flock on the same path from the
+    # same process deadlocks on macOS (different fd, same file).
+    rebase_fallback = False
+    if not rebase:
+        with _MergeLock(pane_project_root):
             pre_rebase = _rebase_onto_head(pane_project_root, branch_name)
-            if not pre_rebase.success:
-                logger.warning(
-                    "Auto-rebase failed for %s, falling back: %s",
-                    branch_name,
-                    pre_rebase.stderr,
-                )
-                rebase_fallback = True
+        if not pre_rebase.success:
+            logger.warning(
+                "Auto-rebase failed for %s, falling back: %s",
+                branch_name,
+                pre_rebase.stderr,
+            )
+            rebase_fallback = True
 
-        # Direct no-squash merge (special case: worktree-attached branch)
-        if not squash and rebase_fallback:
-            logger.info("Direct no-squash merge for %s", branch_name)
-            _msg = message or f"Merge {branch_name}"
+    # Direct no-squash merge (special case: worktree-attached branch)
+    if not squash and rebase_fallback:
+        logger.info("Direct no-squash merge for %s", branch_name)
+        _msg = message or f"Merge {branch_name}"
+        with _MergeLock(pane_project_root):
             _merge_r = subprocess.run(
                 ["git", "-C", pane_project_root, "merge", "--no-ff", "-m", _msg, branch_name],
                 capture_output=True,
                 text=True,
             )
-            if _merge_r.returncode != 0:
-                logger.warning(
-                    "Direct --no-ff merge failed for %s: rc=%d",
-                    branch_name,
-                    _merge_r.returncode,
-                )
-            merge = MergeResult(
-                success=_merge_r.returncode == 0,
-                stderr=_merge_r.stderr.strip() if _merge_r.returncode != 0 else "",
+        if _merge_r.returncode != 0:
+            logger.warning(
+                "Direct --no-ff merge failed for %s: rc=%d",
+                branch_name,
+                _merge_r.returncode,
             )
-            if merge.success:
-                failed, err, lint_result, test_result, _ = _validate_post_merge(
-                    pane_project_root, changed_file_names, base_sha, check_protected=False
-                )
-                if failed:
-                    subprocess.run(
-                        ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
-                        capture_output=True,
-                    )
-                    return MergeError(
-                        error=err or "Post-merge tests failed",
-                        slug=slug,
-                        branch=branch_name,
-                        validation_failed=True,
-                    )
-                _persist.update_pane_state(session_root, slug, "merged")
-                _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
-                return MergeSuccess(
-                    merged=slug,
-                    branch=branch_name,
-                    no_squash_direct=True,
-                    changed_files=changed_file_names,
-                    files_changed=len(changed_file_names),
-                )
-            # Fall through to candidate worktree
-
-        # Standard path: merge directly on main, validate, revert on failure.
-        # _plumbing_merge uses merge-tree --write-tree (pure, no working tree
-        # side effects) then commit-tree + update-ref + reset. No candidate
-        # worktree needed — eliminates ~1s venv creation tax per merge.
-        merge = _execute_candidate_merge(
-            pane_project_root, branch_name, rebase_fallback, rebase, squash, message, base_sha
+        merge = MergeResult(
+            success=_merge_r.returncode == 0,
+            stderr=_merge_r.stderr.strip() if _merge_r.returncode != 0 else "",
         )
-
         if merge.success:
-            # Capture merge SHA before validation (for revert if needed)
-            merge_sha_r = subprocess.run(
-                ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-            )
-            merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
-
-            # Phase 4: Validate on main (lint + tests use main's .venv)
-            failed, err, lint_result, test_result, warning_msg = _validate_post_merge(
+            failed, err, lint_result, test_result, _ = _validate_post_merge(
                 pane_project_root, changed_file_names, base_sha, check_protected=False
             )
             if failed:
-                # Revert the merge commit — established pattern (line 1637)
                 subprocess.run(
                     ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
                     capture_output=True,
                 )
-                _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
-                return MergeError(error=err, slug=slug, branch=branch_name, validation_failed=True)
+                return MergeError(
+                    error=err or "Post-merge tests failed",
+                    slug=slug,
+                    branch=branch_name,
+                    validation_failed=True,
+                )
+            _persist.update_pane_state(session_root, slug, "merged")
+            _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
+            return MergeSuccess(
+                merged=slug,
+                branch=branch_name,
+                no_squash_direct=True,
+                changed_files=changed_file_names,
+                files_changed=len(changed_file_names),
+            )
+        # Fall through to standard path
 
-            _finalize_merged_pane(
-                pane_project_root, session_root, slug, target, branch_name, merge_sha
+    # Standard path: merge directly on main, validate, revert on failure.
+    # _plumbing_merge uses merge-tree --write-tree (pure, no working tree
+    # side effects) then commit-tree + update-ref + reset. No candidate
+    # worktree needed — eliminates ~1s venv creation tax per merge.
+    merge = _execute_candidate_merge(
+        pane_project_root, branch_name, rebase_fallback, rebase, squash, message, base_sha
+    )
+
+    if merge.success:
+        merge_sha_r = subprocess.run(
+            ["git", "-C", pane_project_root, "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+        merge_sha = merge_sha_r.stdout.strip() if merge_sha_r.returncode == 0 else ""
+
+        # Phase 4: Validate on main (lint + tests use main's .venv)
+        failed, err, lint_result, test_result, warning_msg = _validate_post_merge(
+            pane_project_root, changed_file_names, base_sha, check_protected=False
+        )
+        if failed:
+            subprocess.run(
+                ["git", "-C", pane_project_root, "reset", "--hard", "HEAD~1"],
+                capture_output=True,
             )
-            return _build_success_result(
-                slug,
-                branch_name,
-                merge_stat,
-                merge_files_changed,
-                rebase_fallback,
-                merge,
-                MergeResult(success=True),
-                lint_result,
-                test_result,
-                warning_msg,
-            )
+            _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
+            return MergeError(error=err, slug=slug, branch=branch_name, validation_failed=True)
+
+        _finalize_merged_pane(
+            pane_project_root, session_root, slug, target, branch_name, merge_sha
+        )
+        return _build_success_result(
+            slug,
+            branch_name,
+            merge_stat,
+            merge_files_changed,
+            rebase_fallback,
+            merge,
+            MergeResult(success=True),
+            lint_result,
+            test_result,
+            warning_msg,
+        )
 
     # Phase 6: Merge failed — handle conflicts
     return _handle_merge_conflicts(
