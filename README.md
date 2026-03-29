@@ -14,54 +14,33 @@ Panes follow a strict state machine enforced by the persistence layer. Transitio
 ```mermaid
 stateDiagram-v2
     [*] --> active: dgov pane create
-    active --> done: task finished (commits or done-file)
-    active --> failed: agent crashed or exit-code file
-    active --> abandoned: tmux pane dead / no output
-    active --> escalated: dgov pane escalate
-    active --> timed_out: wait timeout reached
-    active --> closed: dgov pane close
-    active --> superseded: retried with fresh attempt
-    active --> merged: direct merge (auto-land)
 
-    done --> reviewed_pass: dgov pane review (pass)
-    done --> reviewed_fail: dgov pane review (fail)
+    active --> done: task finished
+    active --> failed: crashed / exit-code
+    active --> timed_out: wait timeout
+    active --> abandoned: pane dead
+
+    done --> reviewed_pass: review (pass)
+    done --> reviewed_fail: review (fail)
     done --> merged: dgov pane land
-    done --> merge_conflict: git merge failed
-    done --> closed: dgov pane close
-    done --> superseded: retried
 
     reviewed_pass --> merged: dgov pane land
     reviewed_pass --> merge_conflict: git merge failed
-    reviewed_pass --> closed: dgov pane close
-
-    reviewed_fail --> closed: dgov pane close
-    reviewed_fail --> superseded: retried
-    reviewed_fail --> escalated: re-dispatch to stronger agent
-
-    merge_conflict --> merged: manual fix + merge
-    merge_conflict --> escalated: re-dispatch fix task
-    merge_conflict --> closed: dgov pane close
+    reviewed_fail --> escalated: re-dispatch
 
     failed --> escalated: dgov pane escalate
-    failed --> superseded: retried
-    failed --> closed: dgov pane close
+    timed_out --> done: late finish
+    timed_out --> escalated: re-dispatch
+    merge_conflict --> merged: conflict resolved
 
-    timed_out --> done: late finish detected
-    timed_out --> merged: late merge
-    timed_out --> escalated: re-dispatch to stronger agent
-    timed_out --> superseded: retried
-    timed_out --> closed: dgov pane close
-
-    abandoned --> escalated: dgov pane escalate
-    abandoned --> superseded: retried
-    abandoned --> closed: cleanup
-
-    merged --> closed: cleanup (automatic)
+    merged --> closed: cleanup
     escalated --> closed: cleanup
-    superseded --> closed: cleanup
+    abandoned --> closed: cleanup
 
     closed --> [*]
 ```
+
+The full transition table (12 states, all legal edges including superseded, retry, and direct-close paths) is enforced in [`src/dgov/persistence.py`](src/dgov/persistence.py).
 
 ## Signal Flow
 
