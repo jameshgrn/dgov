@@ -160,3 +160,31 @@ def test_failure_context_empty_for_clean(tmp_path):
     result = get_dag_task_failure_context(sr, run_id)
 
     assert result == {}
+
+
+def test_failure_context_includes_pane_slug(tmp_path):
+    """Failure context should include the pane slug for debugging."""
+    sr = str(tmp_path)
+    ensure_dag_tables(sr)
+    db = _get_db(sr)
+
+    run_id = create_dag_run(
+        sr,
+        dag_file="/tmp/test.dag",
+        started_at=datetime.now(timezone.utc).isoformat(),
+        status="partial",
+        current_tier=1,
+        state_json={"units": []},
+    )
+
+    db.execute(
+        "INSERT INTO dag_tasks (dag_run_id, slug, status, agent, pane_slug)"
+        " VALUES (?, ?, ?, ?, ?)",
+        (run_id, "task-x", "failed", "kimi", "pane-x-a2"),
+    )
+    db.commit()
+
+    emit_event(sr, "review_fail", "pane-x-a2", verdict="unsafe")
+
+    ctx = get_dag_task_failure_context(sr, run_id)
+    assert ctx["task-x"]["pane_slug"] == "pane-x-a2"
