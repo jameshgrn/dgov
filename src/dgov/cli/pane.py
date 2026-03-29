@@ -1082,10 +1082,9 @@ def pane_output(slug, project_root, session_root, tail, follow):
     click.echo(text)
 
     if follow:
-        import time
         from pathlib import Path
 
-        from dgov.persistence import STATE_DIR
+        from dgov.persistence import STATE_DIR, _wait_for_notify
 
         log_path = Path(session_root) / STATE_DIR / "logs" / f"{slug}.log"
         if not log_path.exists():
@@ -1101,7 +1100,7 @@ def pane_output(slug, project_root, session_root, tail, follow):
                         if cleaned:
                             click.echo(cleaned)
                     else:
-                        time.sleep(0.5)
+                        _wait_for_notify(session_root, 0.5)
         except KeyboardInterrupt:
             pass
 
@@ -1142,10 +1141,15 @@ def pane_tail(slug, project_root, session_root, lines):
       dgov pane tail fix-parser -r .
       dgov pane tail fix-parser -r . --lines 100
     """
-    import time
     from pathlib import Path
 
-    from dgov.persistence import STATE_DIR, get_pane
+    from dgov.persistence import (
+        STATE_DIR,
+        _wait_for_notify,
+        get_pane,
+        latest_event_id,
+        wait_for_events,
+    )
     from dgov.status import _clean_worker_output_text, capture_worker_output, tail_worker_log
 
     project_root, session_root = _autocorrect_roots(project_root, session_root)
@@ -1199,7 +1203,7 @@ def pane_tail(slug, project_root, session_root, lines):
                         if cleaned:
                             click.echo(cleaned)
                     else:
-                        time.sleep(0.5)
+                        _wait_for_notify(session_root, 0.5)
                         rec = get_pane(session_root, slug)
                         st = rec.get("state", "") if rec else "closed"
                         if st in _TAIL_TERMINAL_STATES:
@@ -1219,10 +1223,16 @@ def pane_tail(slug, project_root, session_root, lines):
                             )
                             return
         else:
-            # No log file — poll capture output
+            # No log file — event-driven output polling
             last_text = ""
+            last_eid = latest_event_id(session_root)
             while True:
-                time.sleep(1)
+                # Block until pane event or timeout
+                new_events = wait_for_events(
+                    session_root, after_id=last_eid, panes=(slug,), timeout_s=1.0
+                )
+                if new_events:
+                    last_eid = max(e.get("id", last_eid) for e in new_events)
                 rec = get_pane(session_root, slug)
                 st = rec.get("state", "") if rec else "closed"
                 if st in _TAIL_TERMINAL_STATES:
