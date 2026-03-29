@@ -342,6 +342,34 @@ def test_check_file_locks_derived_only_downgrades_conflict_to_warning(
     assert "derived touches, warning only" in r.message
 
 
+@pytest.mark.unit
+def test_check_file_locks_explicit_claims_still_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """When derived_only=False (explicit claims), conflicts MUST block."""
+    wt_path = tmp_path / "worktrees" / "task-1"
+    wt_path.mkdir(parents=True)
+
+    def fake_panes(*a, **kw):
+        return [{"slug": "task-1", "worktree_path": str(wt_path), "base_sha": "abc123"}]
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            mock.stdout = "src/foo.py\n"
+        else:
+            mock.stdout = ""
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr("dgov.persistence.all_panes", fake_panes)
+    monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+    r = check_file_locks(str(tmp_path), ["src/foo.py"], derived_only=False)
+    # Explicit claims should block
+    assert r.passed is False
+    assert r.critical is True
+
+
 def test_check_git_clean_allows_disjoint_touches(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
