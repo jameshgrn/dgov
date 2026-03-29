@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import asdict
 
 import click
 
-from dgov.cli import want_json
+from dgov.cli import SESSION_ROOT_OPTION, want_json
 from dgov.persistence import PaneState
 
 
@@ -474,3 +476,42 @@ def dag_skip_task(run_id, task_slug, project_root):
     if result.get("error"):
         raise click.ClickException(result["error"])
     click.echo(json.dumps(result, indent=2))
+
+
+@dag.command("wait")
+@click.argument("run_id", type=int)
+@click.option("--project-root", "-r", default=".", envvar="DGOV_PROJECT_ROOT")
+@SESSION_ROOT_OPTION
+@click.option("--timeout", "-t", type=int, default=3600, help="Timeout in seconds")
+def dag_wait(run_id, project_root, session_root, timeout):
+    """Block until a DAG run completes, fails, or is cancelled."""
+    import time
+
+    from dgov.persistence import latest_event_id, wait_for_events
+
+    session_root = os.path.abspath(session_root or project_root)
+    cursor = latest_event_id(session_root)
+    start = time.time()
+    terminal = ("dag_completed", "dag_failed", "dag_blocked", "dag_cancelled")
+
+    while True:
+        remaining = timeout - (time.time() - start)
+        if remaining <= 0:
+            click.echo(json.dumps({"error": f"Timeout after {timeout}s", "run_id": run_id}))
+            sys.exit(1)
+
+        events = wait_for_events(
+            session_root,
+            after_id=cursor,
+            panes=(f"dag/{run_id}",),
+            event_types=terminal,
+            timeout_s=min(60.0, remaining),
+        )
+
+        for ev in events:
+            cursor = max(cursor, ev["id"])
+            kind = ev["event"]
+            result = {"run_id": run_id, "event": kind, "status": kind.replace("dag_", "")}
+            click.echo(json.dumps(result))
+            if kind in terminal:
+                sys.exit(0 if kind == "dag_completed" else 1)
