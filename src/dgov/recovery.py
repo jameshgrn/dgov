@@ -13,6 +13,7 @@ from dgov.backend import get_backend
 from dgov.lifecycle import close_worker_pane, create_worker_pane
 from dgov.persistence import (
     STATE_DIR,
+    PaneState,
     all_panes,
     emit_event,
     get_dag_task_contract_for_pane,
@@ -177,7 +178,7 @@ def escalate_worker_pane(
         return {"error": str(e)}
 
     # Mark old pane as escalated then close
-    update_pane_state(session_root, slug, "escalated")
+    update_pane_state(session_root, slug, PaneState.ESCALATED)
     emit_event(session_root, "pane_escalated", slug, new_slug=new_slug, target_agent=target_agent)
     _close_replaced_pane(project_root, session_root, slug)
 
@@ -255,7 +256,7 @@ def retry_worker_pane(
         return {"error": str(e)}
 
     # Derived from events — no stored retried_from/superseded_by (derive-dont-store).
-    update_pane_state(session_root, slug, "superseded", force=True)
+    update_pane_state(session_root, slug, PaneState.SUPERSEDED, force=True)
 
     # Emit events
     emit_event(session_root, "pane_retry_spawned", slug, new_slug=new_slug, attempt=attempt)
@@ -595,7 +596,7 @@ def maybe_auto_retry(
         return None
 
     state = rec.get("state", "")
-    if state not in ("failed", "abandoned"):
+    if state not in (PaneState.FAILED, PaneState.ABANDONED):
         return None
 
     # Don't retry if the branch's work is already on main
@@ -811,23 +812,23 @@ def recover_from_events(session_root: str) -> dict[str, dict[str, str]]:
         needs_recovery = False
         reason = ""
 
-        if action == "resume_wait" and db_state == "active":
+        if action == "resume_wait" and db_state == PaneState.ACTIVE:
             from dgov.backend import get_backend
 
             pane_id = pane.get("pane_id", "")
             if pane_id and not get_backend().is_alive(pane_id):
                 needs_recovery = True
                 reason = f"dispatched but process dead (last: {ev_info['kind']})"
-        elif action == "resume_review" and db_state == "done":
+        elif action == "resume_review" and db_state == PaneState.DONE:
             needs_recovery = True
             reason = "done but review never completed"
-        elif action == "resume_merge" and db_state in ("done", "reviewed_pass"):
+        elif action == "resume_merge" and db_state in (PaneState.DONE, PaneState.REVIEWED_PASS):
             needs_recovery = True
             reason = "reviewed but merge never completed"
         elif action == "retry" and db_state in ("done", "active"):
             needs_recovery = True
             reason = "merge failed but pane not cleaned up"
-        elif action == "close" and db_state not in ("closed", "merged"):
+        elif action == "close" and db_state not in (PaneState.CLOSED, PaneState.MERGED):
             needs_recovery = True
             reason = f"merged but state is {db_state}"
 
