@@ -752,30 +752,81 @@ def _check_conflict_markers(project_root: str, changed_files: list[str]) -> list
 
 
 def _detect_conflicts(project_root: str, branch_name: str) -> list[str]:
-    """Use git merge-tree to predict conflicts without touching the working tree."""
-    # Get the merge base
-    base_result = subprocess.run(
-        ["git", "-C", project_root, "merge-base", "HEAD", branch_name],
+    """Use git merge-tree --write-tree to predict real overlapping conflicts.
+
+    Unlike the legacy 3-arg merge-tree, this does a proper 3-way merge and
+    only reports files with actual overlapping changes — non-overlapping edits
+    to the same file are auto-resolved.
+    """
+    head_r = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", "HEAD"],
         capture_output=True,
         text=True,
     )
-    if base_result.returncode != 0:
+    if head_r.returncode != 0:
+        return []
+    head_sha = head_r.stdout.strip()
+
+    branch_r = subprocess.run(
+        ["git", "-C", project_root, "rev-parse", branch_name],
+        capture_output=True,
+        text=True,
+    )
+    if branch_r.returncode != 0:
+        return []
+    branch_sha = branch_r.stdout.strip()
+
+    base_r = subprocess.run(
+        ["git", "-C", project_root, "merge-base", head_sha, branch_sha],
+        capture_output=True,
+        text=True,
+    )
+    if base_r.returncode != 0:
+        return []
+    merge_base = base_r.stdout.strip()
+
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            project_root,
+            "merge-tree",
+            "--write-tree",
+            f"--merge-base={merge_base}",
+            head_sha,
+            branch_sha,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    # Exit 0 = clean merge (non-overlapping edits auto-resolved)
+    if result.returncode == 0:
         return []
 
-    merge_base = base_result.stdout.strip()
-    result = subprocess.run(
-        ["git", "-C", project_root, "merge-tree", merge_base, "HEAD", branch_name],
-        capture_output=True,
-        text=True,
-    )
-    # merge-tree outputs conflict markers if there are conflicts
+    # Exit >1 = error (not a merge conflict)
+    if result.returncode > 1:
+        return []
+
+    # Exit 1 = real conflicts. Parse CONFLICT lines from stdout.
     conflicts = []
     for line in result.stdout.splitlines():
-        if line.startswith("changed in both"):
-            # Extract filename from "changed in both" lines
-            parts = line.split()
-            if parts:
-                conflicts.append(parts[-1])
+        if not line.startswith("CONFLICT"):
+            continue
+        # Common patterns:
+        #   CONFLICT (content): Merge conflict in <path>
+        #   CONFLICT (add/add): Merge conflict in <path>
+        #   CONFLICT (modify/delete): <path> deleted in ...
+        idx = line.find("Merge conflict in ")
+        if idx != -1:
+            conflicts.append(line[idx + len("Merge conflict in ") :].strip())
+        else:
+            # Fallback: first path-like token after the type tag
+            after_tag = line.split("): ", 1)
+            if len(after_tag) == 2:
+                token = after_tag[1].split()[0].rstrip(".")
+                if "/" in token or "." in token:
+                    conflicts.append(token)
     return conflicts
 
 

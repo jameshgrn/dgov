@@ -82,17 +82,144 @@ def test_plumbing_conflict(mock_run, tmp_path):
 
     assert result.success is False
 
-    # Now test _detect_conflicts - needs merge-base + merge-tree with conflict output
+    # Now test _detect_conflicts - uses modern merge-tree --write-tree
     mock_run.reset_mock()
 
-    mock_merge_base = make_subprocess_mock(0, "abc123\n")
-    mock_merge_tree_output = make_subprocess_mock(0, "changed in both test.py\n")
+    head_sha = "a" * 40
+    branch_sha = "b" * 40
+    tree_sha = "c" * 40
+    mock_head = make_subprocess_mock(0, head_sha)
+    mock_branch = make_subprocess_mock(0, branch_sha)
+    mock_merge_base = make_subprocess_mock(0, "d" * 40 + "\n")
+    mock_merge_tree_output = make_subprocess_mock(
+        1, f"{tree_sha}\nCONFLICT (content): Merge conflict in test.py\n"
+    )
 
-    mock_run.side_effect = [mock_merge_base, mock_merge_tree_output]
+    mock_run.side_effect = [mock_head, mock_branch, mock_merge_base, mock_merge_tree_output]
 
     conflicts = _detect_conflicts(str(tmp_path), "test-branch")
 
     assert "test.py" in conflicts
+
+
+@pytest.mark.unit
+def test_detect_conflicts_non_overlapping_same_file(tmp_path):
+    """Non-overlapping edits to the same file must NOT be reported as conflicts.
+
+    This is the core regression test for ledger #68: the old 3-arg merge-tree
+    reported 'changed in both' for any file modified on both sides, even when
+    the edits don't overlap. The modern --write-tree form auto-resolves these.
+    """
+    from dgov.merger import _detect_conflicts
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    git("init")
+    git("config", "user.email", "test@test.com")
+    git("config", "user.name", "Test")
+
+    # Create a file with well-separated sections
+    (repo / "shared.py").write_text(
+        "# Section A (lines 1-5)\n"
+        "def func_a():\n"
+        "    return 1\n"
+        "\n"
+        "\n"
+        "# Section B (lines 6-10)\n"
+        "def func_b():\n"
+        "    return 2\n"
+        "\n"
+        "\n"
+    )
+    git("add", ".")
+    git("commit", "-m", "initial")
+
+    # Create worker branch and edit section B only
+    git("checkout", "-b", "worker-branch")
+    (repo / "shared.py").write_text(
+        "# Section A (lines 1-5)\n"
+        "def func_a():\n"
+        "    return 1\n"
+        "\n"
+        "\n"
+        "# Section B (lines 6-10)\n"
+        "def func_b():\n"
+        "    return 99  # worker changed this\n"
+        "\n"
+        "\n"
+    )
+    git("add", ".")
+    git("commit", "-m", "worker edits section B")
+
+    # Back to main, edit section A only (non-overlapping)
+    git("checkout", "main")
+    (repo / "shared.py").write_text(
+        "# Section A (lines 1-5)\n"
+        "def func_a():\n"
+        "    return 42  # main changed this\n"
+        "\n"
+        "\n"
+        "# Section B (lines 6-10)\n"
+        "def func_b():\n"
+        "    return 2\n"
+        "\n"
+        "\n"
+    )
+    git("add", ".")
+    git("commit", "-m", "main edits section A")
+
+    # _detect_conflicts should return [] — no real overlapping conflict
+    conflicts = _detect_conflicts(str(repo), "worker-branch")
+    assert conflicts == [], f"Non-overlapping edits falsely reported as conflicts: {conflicts}"
+
+
+@pytest.mark.unit
+def test_detect_conflicts_overlapping_same_file(tmp_path):
+    """Overlapping edits to the same lines MUST be reported as conflicts."""
+    from dgov.merger import _detect_conflicts
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+    git("init")
+    git("config", "user.email", "test@test.com")
+    git("config", "user.name", "Test")
+
+    (repo / "shared.py").write_text("def func():\n    return 1\n")
+    git("add", ".")
+    git("commit", "-m", "initial")
+
+    # Worker edits the same line
+    git("checkout", "-b", "worker-branch")
+    (repo / "shared.py").write_text("def func():\n    return 99\n")
+    git("add", ".")
+    git("commit", "-m", "worker changes return value")
+
+    # Main also edits the same line — overlapping!
+    git("checkout", "main")
+    (repo / "shared.py").write_text("def func():\n    return 42\n")
+    git("add", ".")
+    git("commit", "-m", "main changes return value")
+
+    conflicts = _detect_conflicts(str(repo), "worker-branch")
+    assert "shared.py" in conflicts, f"Overlapping edits not detected: {conflicts}"
 
 
 @patch("subprocess.run")

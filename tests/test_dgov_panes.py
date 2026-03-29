@@ -1256,7 +1256,7 @@ class TestCloseWorkerPane:
 
 
 class TestDetectConflicts:
-    def test_no_merge_base_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_rev_parse_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.merger import _detect_conflicts
 
         mock = MagicMock()
@@ -1264,33 +1264,87 @@ class TestDetectConflicts:
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: mock)
         assert _detect_conflicts("/repo", "branch") == []
 
-    def test_detects_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_detects_real_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.merger import _detect_conflicts
 
-        calls = []
+        head_sha = "a" * 40
+        branch_sha = "b" * 40
+        tree_sha = "c" * 40
 
         def fake_run(cmd, **kw):
-            calls.append(cmd)
             m = MagicMock()
-            if "merge-base" in cmd:
+            if "rev-parse" in cmd:
                 m.returncode = 0
-                m.stdout = "abc123"
+                m.stdout = head_sha if "HEAD" in cmd else branch_sha
+            elif "merge-base" in cmd:
+                m.returncode = 0
+                m.stdout = "d" * 40
+            elif "merge-tree" in cmd:
+                m.returncode = 1
+                m.stdout = (
+                    f"{tree_sha}\n"
+                    "CONFLICT (content): Merge conflict in src/main.py\n"
+                    "CONFLICT (content): Merge conflict in src/foo.py\n"
+                )
             else:
                 m.returncode = 0
-                m.stdout = "changed in both 'src/main.py'\nchanged in both 'src/foo.py'\n"
+                m.stdout = ""
             return m
 
         monkeypatch.setattr("subprocess.run", fake_run)
         result = _detect_conflicts("/repo", "feature")
-        assert "'src/main.py'" in result or "src/main.py" in str(result)
+        assert "src/main.py" in result
+        assert "src/foo.py" in result
+
+    def test_non_overlapping_edits_no_conflict(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Non-overlapping edits to the same file should NOT be reported as conflicts."""
+        from dgov.merger import _detect_conflicts
+
+        head_sha = "a" * 40
+        branch_sha = "b" * 40
+        tree_sha = "c" * 40
+
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            if "rev-parse" in cmd:
+                m.returncode = 0
+                m.stdout = head_sha if "HEAD" in cmd else branch_sha
+            elif "merge-base" in cmd:
+                m.returncode = 0
+                m.stdout = "d" * 40
+            elif "merge-tree" in cmd:
+                # Exit 0 = clean merge (non-overlapping auto-resolved)
+                m.returncode = 0
+                m.stdout = f"{tree_sha}\n"
+            else:
+                m.returncode = 0
+                m.stdout = ""
+            return m
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        assert _detect_conflicts("/repo", "branch") == []
 
     def test_no_conflicts(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from dgov.merger import _detect_conflicts
 
+        head_sha = "a" * 40
+        branch_sha = "b" * 40
+        tree_sha = "c" * 40
+
         def fake_run(cmd, **kw):
             m = MagicMock()
-            m.returncode = 0
-            m.stdout = "abc123" if "merge-base" in cmd else ""
+            if "rev-parse" in cmd:
+                m.returncode = 0
+                m.stdout = head_sha if "HEAD" in cmd else branch_sha
+            elif "merge-base" in cmd:
+                m.returncode = 0
+                m.stdout = "d" * 40
+            elif "merge-tree" in cmd:
+                m.returncode = 0
+                m.stdout = f"{tree_sha}\n"
+            else:
+                m.returncode = 0
+                m.stdout = ""
             return m
 
         monkeypatch.setattr("subprocess.run", fake_run)
