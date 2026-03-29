@@ -790,6 +790,86 @@ edit = ["a.py"]
         issues = validate_plan(spec)
         assert any("not satisfied by any unit" in issue.message for issue in issues)
 
+    def test_write_read_overlap_warning(self, tmp_path):
+        """Unit A edits file X, unit B reads file X without dep — should warn."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test write/read overlap"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a edits foo"
+evidence = "uv run pytest tests/test_foo.py -q"
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "b reads foo"
+evidence = "uv run pytest tests/test_bar.py -q"
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E1"]
+[units.a.files]
+edit = ["src/foo.py"]
+[units.b]
+summary = "b"
+prompt = "do b"
+commit_message = "commit b"
+satisfies = ["E2"]
+[units.b.files]
+edit = ["src/bar.py"]
+read = ["src/foo.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        issues = validate_plan(spec)
+        # Should have a warning about overlap
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("reads files that unit" in w.message for w in warnings)
+        assert any("src/foo.py" in w.message for w in warnings)
+
+    def test_write_read_no_warning_when_depends(self, tmp_path):
+        """Unit A edits file X, unit B reads file X with B depending on A — no warning."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test write/read with dependency"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "a edits foo"
+evidence = "uv run pytest tests/test_foo.py -q"
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "b reads foo after a"
+evidence = "uv run pytest tests/test_bar.py -q"
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E1"]
+[units.a.files]
+edit = ["src/foo.py"]
+[units.b]
+summary = "b"
+prompt = "do b"
+commit_message = "commit b"
+satisfies = ["E2"]
+depends_on = ["a"]
+[units.b.files]
+edit = ["src/bar.py"]
+read = ["src/foo.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        issues = validate_plan(spec)
+        # Should have NO write/read overlap warning
+        overlap_warnings = [i for i in issues if "reads files that unit" in i.message]
+        assert len(overlap_warnings) == 0
+
     def test_eval_kind_must_be_valid(self, tmp_path):
         """Invalid eval kinds are validation errors."""
 

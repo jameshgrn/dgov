@@ -586,6 +586,9 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     # Check file conflicts for parallel units
     issues.extend(_check_file_conflicts(units))
 
+    # Check write/read overlap for parallel units (warning only)
+    issues.extend(_check_write_read_overlap(units))
+
     # Check agent names against registry (warning, fault-tolerant)
     try:
         from dgov.agents import load_registry
@@ -713,6 +716,84 @@ def _check_file_conflicts(units: dict[str, PlanUnit]) -> list[PlanIssue]:
                         break  # One conflict per pair is enough
 
     return issues
+
+
+def _writes(unit: PlanUnit) -> set[str]:
+    """Return the set of files a unit writes (edit + create)."""
+    return set(unit.files.edit) | set(unit.files.create)
+
+
+def _reads(unit: PlanUnit) -> set[str]:
+    """Return the set of files a unit reads."""
+    return set(unit.files.read)
+
+
+def _check_write_read_overlap(units: dict[str, PlanUnit]) -> list[PlanIssue]:
+    """Check for write/read overlaps between parallel units.
+
+    When unit A edits a file that unit B reads, but B does not depend on A,
+    merging A first can break main (B's code still references old API).
+    This emits a warning, not an error, since the edit may not break the reader.
+    """
+    issues: list[PlanIssue] = []
+    unit_ids = list(units.keys())
+
+    for i, a_slug in enumerate(unit_ids):
+        for b_slug in unit_ids[i + 1 :]:
+            if not _are_parallel(units, a_slug, b_slug):
+                continue  # Sequential units don't need this check
+
+            a_unit = units[a_slug]
+            b_unit = units[b_slug]
+
+            # Check A writes, B reads
+            a_writes = _writes(a_unit)
+            b_reads = _reads(b_unit)
+            overlap_ab = _get_path_overlap(a_writes, b_reads)
+            if overlap_ab:
+                files_str = ", ".join(sorted(overlap_ab))
+                issues.append(
+                    PlanIssue(
+                        severity="warning",
+                        message=(
+                            f"Unit {b_slug!r} reads files that unit {a_slug!r} edits "
+                            f"({files_str}) but does not depend on {a_slug!r} — "
+                            "intermediate state may be broken"
+                        ),
+                        unit=b_slug,
+                    )
+                )
+
+            # Check B writes, A reads
+            b_writes = _writes(b_unit)
+            a_reads = _reads(a_unit)
+            overlap_ba = _get_path_overlap(b_writes, a_reads)
+            if overlap_ba:
+                files_str = ", ".join(sorted(overlap_ba))
+                issues.append(
+                    PlanIssue(
+                        severity="warning",
+                        message=(
+                            f"Unit {a_slug!r} reads files that unit {b_slug!r} edits "
+                            f"({files_str}) but does not depend on {b_slug!r} — "
+                            "intermediate state may be broken"
+                        ),
+                        unit=a_slug,
+                    )
+                )
+
+    return issues
+
+
+def _get_path_overlap(set_a: set[str], set_b: set[str]) -> set[str]:
+    """Return overlapping files between two sets, using path overlap logic."""
+    overlap: set[str] = set()
+    for path_a in set_a:
+        for path_b in set_b:
+            if _paths_overlap(path_a, path_b):
+                overlap.add(path_a)
+                break
+    return overlap
 
 
 def compile_plan(plan: PlanSpec) -> DagDefinition:
