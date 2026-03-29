@@ -388,8 +388,8 @@ def _resolve_escalation_target(current_agent: str, project_root: str) -> str:
 
     registry = load_registry(project_root or None)
     agent_def = registry.get(current_agent)
-    if agent_def and agent_def.retry_escalate_to:
-        return agent_def.retry_escalate_to
+    if agent_def and agent_def.retry.escalate_to:
+        return agent_def.retry.escalate_to
 
     # Normalize to role, then escalate
     role = _MODEL_TO_ROLE.get(current_agent, current_agent)
@@ -562,14 +562,14 @@ def get_retry_policy(session_root: str, slug: str) -> RetryPolicy | None:
     if pane_max > 0:
         max_retries = pane_max
     elif agent_def:
-        max_retries = agent_def.max_retries
+        max_retries = agent_def.retry.max_retries
     else:
         max_retries = 0
 
     if max_retries <= 0:
         return None
 
-    escalate_to = agent_def.retry_escalate_to if agent_def else None
+    escalate_to = agent_def.retry.escalate_to if agent_def else None
     return RetryPolicy(
         max_retries=max_retries,
         escalate_to=escalate_to,
