@@ -10,6 +10,7 @@ from dgov.kernel import (
     DagState,
     DagTaskState,
     DispatchTask,
+    GovernorAction,
     InterruptGovernor,
     MergeTask,
     RetryTask,
@@ -195,19 +196,40 @@ def test_dag_kernel_full_linear_lifecycle() -> None:
     assert kernel.done
 
 
-def test_dag_kernel_dispatch_failure_skips_dependents() -> None:
-    kernel = DagKernel(deps=_simple_dag())
+def test_dag_kernel_dispatch_failure_retries_then_blocks() -> None:
+    """Dispatch failure retries up to max_retries, then blocks on governor."""
+    kernel = DagKernel(deps=_simple_dag(), max_retries=2)
     kernel.start()
 
+    # First failure -> retry
     actions = kernel.handle(TaskDispatchFailed("a", "agent down"))
+    assert kernel.task_states["a"] == DagTaskState.DISPATCHED
+    retries = [a for a in actions if isinstance(a, RetryTask)]
+    assert len(retries) == 1
+    assert retries[0].task_slug == "a"
+    assert retries[0].attempt == 1
 
+    # Simulate retry started, then second failure
+    kernel.handle(TaskRetryStarted("a", "pane-a-2", 1))
+    actions = kernel.handle(TaskDispatchFailed("a", "agent down again"))
+    assert kernel.task_states["a"] == DagTaskState.DISPATCHED
+    retries = [a for a in actions if isinstance(a, RetryTask)]
+    assert len(retries) == 1
+    assert retries[0].attempt == 2
+
+    # Simulate retry started, then third failure -> exhausted, block on governor
+    kernel.handle(TaskRetryStarted("a", "pane-a-3", 2))
+    actions = kernel.handle(TaskDispatchFailed("a", "still down"))
+    assert kernel.task_states["a"] == DagTaskState.BLOCKED_ON_GOVERNOR
+    interrupts = [a for a in actions if isinstance(a, InterruptGovernor)]
+    assert len(interrupts) == 1
+    assert "dispatch_failed" in interrupts[0].reason
+
+    # Governor says fail -> dependents skipped
+    actions = kernel.handle(TaskGovernorResumed("a", GovernorAction.FAIL))
     assert kernel.task_states["a"] == DagTaskState.FAILED
     skips = {a.task_slug for a in actions if isinstance(a, SkipTask)}
     assert skips == {"b", "c"}
-
-    dones = [a for a in actions if isinstance(a, DagDone)]
-    assert len(dones) == 1
-    assert dones[0].status == DagState.FAILED
 
 
 def test_dag_kernel_merge_serialization_follows_topo_order() -> None:
@@ -264,7 +286,7 @@ def test_dag_kernel_partial_skip() -> None:
 
 
 def test_kernel_interrupts_governor_on_exhausted_retries() -> None:
-    deps = {"a": ()}
+    deps: dict[str, tuple[str, ...]] = {"a": ()}
     # Set max_retries to 1, so 1st failure retries, 2nd failure interrupts
     kernel = DagKernel(deps=deps, max_retries=1)
 
@@ -295,19 +317,19 @@ def test_kernel_interrupts_governor_on_exhausted_retries() -> None:
 
 
 def test_kernel_governor_resume_retry() -> None:
-    deps = {"a": ()}
+    deps: dict[str, tuple[str, ...]] = {"a": ()}
     kernel = DagKernel(deps=deps)
     kernel.task_states["a"] = DagTaskState.BLOCKED_ON_GOVERNOR
 
     # Resume with retry
-    actions = kernel.handle(TaskGovernorResumed("a", action="retry"))
+    actions = kernel.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
     assert kernel.task_states["a"] == DagTaskState.DISPATCHED
     assert any(isinstance(a, DispatchTask) and a.task_slug == "a" for a in actions)
 
 
 def test_kernel_cross_tier_escalation_resets_attempts() -> None:
     """After escalation (attempt=0 in TaskRetryStarted), the new tier gets full retry budget."""
-    deps = {"a": ()}
+    deps: dict[str, tuple[str, ...]] = {"a": ()}
     kernel = DagKernel(deps=deps, max_retries=2)
 
     kernel.start()
@@ -341,6 +363,7 @@ def test_kernel_cross_tier_escalation_resets_attempts() -> None:
 
 def test_task_closed_during_reviewing_fails() -> None:
     """TaskClosed while task is REVIEWING should transition to FAILED."""
+    deps: dict[str, tuple[str, ...]] = {"a": ()}
     kernel = DagKernel(deps={"a": ()})
     kernel.start()
     # Manually set state to REVIEWING (simulating: dispatched -> waiting -> reviewing)

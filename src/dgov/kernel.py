@@ -316,10 +316,20 @@ class DagKernel:
             return actions
 
         if isinstance(event, TaskDispatchFailed):
-            self.task_states[event.task_slug] = DagTaskState.FAILED
-            actions.extend(self._skip_dependents(event.task_slug))
-            actions.extend(self._schedule())
-            actions.extend(self._check_done())
+            task = event.task_slug
+            curr_attempt = self.attempts.get(task, 1)
+            if curr_attempt <= self.max_retries:
+                self.task_states[task] = DagTaskState.DISPATCHED
+                pane = self.pane_slugs.get(task, "")
+                actions.append(RetryTask(task, pane, curr_attempt))
+            else:
+                self.task_states[task] = DagTaskState.BLOCKED_ON_GOVERNOR
+                pane = self.pane_slugs.get(task, "")
+                actions.append(
+                    InterruptGovernor(task, pane, reason=f"dispatch_failed: {event.error}")
+                )
+                actions.extend(self._schedule())
+                actions.extend(self._check_done())
             return actions
 
         if isinstance(event, TaskWaitDone):
