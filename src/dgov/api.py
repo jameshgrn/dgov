@@ -149,7 +149,7 @@ class Orchestrator:
             verdict=result.verdict or "unknown",
             commit_count=result.commit_count,
             files_changed=review.files_changed if review else 0,
-            tests_passed=review.tests_passed if review else None,
+            tests_passed=review.tests.passed if review else None,
             error=result.error,
         )
 

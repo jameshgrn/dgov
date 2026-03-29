@@ -1315,12 +1315,12 @@ def _validate_review_manifest(
     manifest_root = wt if wt else project_root
     manifest = build_manifest_on_completion(manifest_root, slug, base_sha, file_claims=file_claims)
     if manifest.claim_violations:
-        review.claim_violations = list(manifest.claim_violations)
+        review.contract.claim_violations = list(manifest.claim_violations)
         logger.info("Claim violations for %s: %s", slug, manifest.claim_violations)
     is_fresh, stale_files = validate_manifest_freshness(project_root, manifest)
     if not is_fresh:
-        review.stale_files = stale_files
-        review.freshness = "warn"
+        review.freshness_info.stale_files = stale_files
+        review.freshness_info.status = "warn"
         logger.warning(
             "Stale dependency for %s: main changed %s since base (will attempt merge)",
             slug,
@@ -1336,7 +1336,7 @@ def _check_review_test_coverage(session_root: str, slug: str, review: ReviewInfo
     if changed:
         missing_tests = check_test_coverage(changed, session_root=session_root)
         if missing_tests:
-            review.missing_test_coverage = missing_tests
+            review.contract.missing_test_coverage = missing_tests
             logger.warning("Test coverage warning for %s: %s", slug, missing_tests)
 
 
@@ -1444,9 +1444,9 @@ def run_review_only(
                 verdict=verdict,
                 commit_count=commit_count,
                 tests_passed=1
-                if review.tests_passed
-                else (0 if review.tests_passed is False else -1),
-                stale_files=json.dumps(review.stale_files),
+                if review.tests.passed
+                else (0 if review.tests.passed is False else -1),
+                stale_files=json.dumps(review.freshness_info.stale_files),
                 error=error or "",
             )
         except Exception:

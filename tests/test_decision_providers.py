@@ -427,7 +427,7 @@ def test_inspection_review_surfaces_evals_in_artifact(tmp_path):
             )
         )
 
-    assert record.artifact.evals == [
+    assert record.artifact.contract.evals == [
         {
             "eval_id": "E1",
             "kind": "regression",
@@ -453,7 +453,7 @@ def test_inspection_review_no_evals_no_key_in_artifact(tmp_path):
             )
         )
 
-    assert record.artifact.evals is None
+    assert record.artifact.contract.evals is None
 
 
 # -- ModelReviewProvider tests --

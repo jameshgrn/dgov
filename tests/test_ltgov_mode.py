@@ -69,7 +69,7 @@ class TestLtGovNoWorktree:
         result = _inspect_worker_pane("/tmp/repo", "ltgov-inspect", session_root=session)
         assert result.verdict == "safe"
         assert result.commit_count == 0
-        assert result.lt_gov is True
+        assert result.automation.lt_gov is True
 
     def test_ltgov_close_skips_worktree_removal(self, tmp_path: Path) -> None:
         """Verify owns_worktree=False prevents worktree cleanup attempts."""

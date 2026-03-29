@@ -264,7 +264,7 @@ class InspectionReviewProvider(DecisionProvider):
 
         # Surface eval contract in artifact (from typed persistence, never blobs)
         if request.evals:
-            review.evals = [
+            review.contract.evals = [
                 {
                     "eval_id": ev["eval_id"],
                     "kind": ev["kind"],

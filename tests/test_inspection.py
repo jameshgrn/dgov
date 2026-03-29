@@ -114,9 +114,9 @@ class TestReviewWorkerPane:
         assert result.files_changed == 1
         assert result.protected_touched == []
         assert result.uncommitted is False
-        assert result.retry_count == 2
-        assert result.auto_responses == 1
-        assert result.freshness == "fresh"
+        assert result.automation.retry_count == 2
+        assert result.automation.auto_responses == 1
+        assert result.freshness_info.status == "fresh"
         assert result.automation.retry_count == 2
         assert result.freshness_info.status == "fresh"
         assert "feature.txt" in result.stat
