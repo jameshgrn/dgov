@@ -136,7 +136,7 @@ class TaskDispatchFailed:
 class TaskWaitDone:
     task_slug: str
     pane_slug: str
-    pane_state: str  # "done", "failed", "timed_out", etc.
+    pane_state: str | PaneState  # "done", "failed", "timed_out", etc.
 
 
 @dataclass(frozen=True)

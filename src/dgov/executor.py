@@ -200,7 +200,7 @@ class ReviewOnlyResult:
 @dataclass(frozen=True)
 class _WaitCompleted:
     wait_result: dict | None = None
-    pane_state: str | None = None
+    pane_state: str | PaneState | None = None
 
 
 @dataclass(frozen=True)
@@ -209,7 +209,7 @@ class _WaitFailed:
     failure_stage: str
     suggest_escalate: bool
     wait_result: dict | None = None
-    pane_state: str | None = None
+    pane_state: str | PaneState | None = None
 
 
 WaitOutcome = _WaitCompleted | _WaitFailed
@@ -222,7 +222,7 @@ class WaitOnlyResult:
 
     @classmethod
     def completed(
-        cls, slug: str, *, wait_result: dict | None = None, pane_state: str | None = None
+        cls, slug: str, *, wait_result: dict | None = None, pane_state: str | PaneState | None = None
     ) -> WaitOnlyResult:
         return cls(
             slug=slug, outcome=_WaitCompleted(wait_result=wait_result, pane_state=pane_state)
@@ -237,7 +237,7 @@ class WaitOnlyResult:
         failure_stage: str,
         suggest_escalate: bool,
         wait_result: dict | None = None,
-        pane_state: str | None = None,
+        pane_state: str | PaneState | None = None,
     ) -> WaitOnlyResult:
         return cls(
             slug=slug,
@@ -259,7 +259,7 @@ class WaitOnlyResult:
         return self.outcome.wait_result
 
     @property
-    def pane_state(self) -> str | None:
+    def pane_state(self) -> str | PaneState | None:
         return self.outcome.pane_state
 
     @property

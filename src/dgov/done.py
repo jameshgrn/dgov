@@ -378,7 +378,7 @@ def _is_done(
     exit_path = Path(session_root, STATE_DIR, "done", slug + ".exit")
 
     def _complete_terminal_state(
-        target_state: str,
+        target_state: str | PaneState,
         reason: str,
         *,
         allow_abandoned: bool = False,
