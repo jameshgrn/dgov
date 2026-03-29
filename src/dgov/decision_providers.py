@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import re
-import tempfile
 import time
 from dataclasses import dataclass
 
@@ -12,15 +9,11 @@ from dgov.decision import (
     DecisionKind,
     DecisionProvider,
     DecisionRecord,
-    GeneratePlanDecision,
-    GeneratePlanRequest,
     MonitorOutputDecision,
     MonitorOutputRequest,
-    OutputClassification,
     ProviderError,
     ReviewOutputDecision,
     ReviewOutputRequest,
-    ReviewVerdict,
     RouteTaskDecision,
     RouteTaskRequest,
 )
@@ -54,7 +47,7 @@ class DeterministicClassificationProvider(DecisionProvider):
         return DecisionRecord(
             kind=DecisionKind.CLASSIFY_OUTPUT,
             provider_id=self.provider_id,
-            decision=MonitorOutputDecision(classification=OutputClassification(classification)),
+            decision=MonitorOutputDecision(classification=classification),
             model_id="deterministic",
             confidence=1.0,
             trace_id=request.trace_id,
@@ -212,11 +205,16 @@ class LocalOutputClassificationProvider(DecisionProvider):
             raise ProviderError("Output classifier returned no choices")
 
         content = choices[0].get("message", {}).get("content") or ""
-        raw = content.strip().lower()
-        try:
-            classification = OutputClassification(raw)
-        except ValueError:
-            classification = OutputClassification.UNKNOWN
+        classification = content.strip().lower()
+        if classification not in {
+            "working",
+            "done",
+            "stuck",
+            "idle",
+            "waiting_input",
+            "committing",
+        }:
+            classification = "unknown"
 
         return DecisionRecord(
             kind=DecisionKind.CLASSIFY_OUTPUT,
@@ -250,21 +248,20 @@ class InspectionReviewProvider(DecisionProvider):
             request.slug,
             session_root=request.session_root,
             full=request.full,
-            emit_events=request.emit_events,
             tests_pass=request.tests_pass,
             lint_clean=request.lint_clean,
-            post_merge_check=request.post_merge_check or "",
+            post_merge_check=request.post_merge_check,
         )
         latency_ms = (time.perf_counter() - started) * 1000
 
-        verdict = str(review.verdict)
-        commit_count = int(review.commit_count or 0)
-        issues = tuple(str(issue) for issue in review.issues or [])
-        reason = str(review.error) if review.error else None
+        verdict = str(review.get("verdict", "unknown"))
+        commit_count = int(review.get("commit_count", 0) or 0)
+        issues = tuple(str(issue) for issue in review.get("issues", []) or [])
+        reason = str(review.get("error")) if review.get("error") else None
 
         # Surface eval contract in artifact (from typed persistence, never blobs)
         if request.evals:
-            review.evals = [
+            review["evals"] = [
                 {
                     "eval_id": ev["eval_id"],
                     "kind": ev["kind"],
@@ -320,9 +317,8 @@ class ModelReviewProvider(DecisionProvider):
                 request.project_root,
                 request.slug,
                 session_root=request.session_root,
-                emit_events=False,
             )
-            diff = review.diff or review.stat
+            diff = review.get("diff", review.get("stat", ""))
 
         if not diff:
             raise ProviderError("No diff available for model review")
@@ -377,7 +373,7 @@ class ModelReviewProvider(DecisionProvider):
                 verdict=verdict,
                 commit_count=-1,  # Not applicable for model review
                 issues=issues,
-                reason=summary if verdict != ReviewVerdict.APPROVED else None,
+                reason=summary if verdict != "approved" else None,
             ),
             model_id=model,
             confidence=0.8,
@@ -397,9 +393,9 @@ def _resolve_review_model(review_agent: str) -> str:
     return _MODEL_MAP.get(review_agent, review_agent)
 
 
-def _parse_review_response(content: str) -> tuple[ReviewVerdict, tuple[str, ...], str]:
+def _parse_review_response(content: str) -> tuple[str, tuple[str, ...], str]:
     """Parse the model's review response into (verdict, issues, summary)."""
-    verdict = ReviewVerdict.APPROVED
+    verdict = "approved"
     issues: list[str] = []
     summary = ""
 
@@ -409,9 +405,9 @@ def _parse_review_response(content: str) -> tuple[ReviewVerdict, tuple[str, ...]
         if upper.startswith("VERDICT:"):
             raw_verdict = line_stripped.split(":", 1)[1].strip().lower()
             if "concern" in raw_verdict or "change" in raw_verdict:
-                verdict = ReviewVerdict.CONCERNS
+                verdict = "concerns"
             else:
-                verdict = ReviewVerdict.SAFE
+                verdict = "safe"
         elif upper.startswith("SUMMARY:"):
             summary = line_stripped.split(":", 1)[1].strip()
         elif upper.startswith("ISSUES:"):
@@ -427,87 +423,36 @@ def _parse_review_response(content: str) -> tuple[ReviewVerdict, tuple[str, ...]
 
 @dataclass
 class PlanGenerationProvider(DecisionProvider):
-    """Generate plan TOML from goal + file context via transport-configured LLM.
+    """Generate plan TOML from goal + file context via LLM.
 
-    Reads transport/model/auth/timeout from get_provider_config("plan_generation").
-    Supports claude-cli, openrouter, and gemini-cli transports.
     The provider is pure: all file contents and examples are pre-loaded
-    in the request. No file I/O happens here — the CLI/API is the I/O boundary.
+    in the request. No file I/O happens here — the CLI is the I/O boundary.
     """
 
     provider_id: str = "plan-generation"
+    model: str = "qwen/qwen3.5-122b"
 
     def capabilities(self) -> frozenset[DecisionKind]:
         return frozenset({DecisionKind.GENERATE_PLAN})
 
-    def generate_plan(self, request: GeneratePlanRequest) -> DecisionRecord[GeneratePlanDecision]:
-        import subprocess
-
-        from dgov.config import get_provider_config
+    def generate_plan(
+        self, request: GeneratePlanRequest
+    ) -> DecisionRecord[GeneratePlanDecision]:
         from dgov.openrouter import _openrouter_request
-
-        cfg = get_provider_config("plan_generation")
-        transport = cfg.get("transport", "claude-cli")
-        model = cfg.get("model", "claude-sonnet-4-6")
-        auth = cfg.get("auth", "oauth")
-        timeout_s = cfg.get("timeout_s", 120)
 
         started = time.perf_counter()
         prompt = self._build_prompt(request)
 
-        if transport == "claude-cli":
-            # Use claude -p subprocess (OAuth or API depending on auth config)
-            try:
-                result = subprocess.run(
-                    ["claude", "-p", "--model", model],
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_s,
-                )
-                if result.returncode != 0:
-                    stderr = result.stderr.strip()
-                    if "credit" in stderr.lower() and auth == "oauth":
-                        err = "claude -p failed"
-                        reauth = "re-auth with `claude auth login` (not --console): "
-                        raise ProviderError(err + " — " + reauth + stderr[:200])
-                    msg = f"claude -p failed (exit {result.returncode})"
-                    raise ProviderError(msg + ": " + stderr[:300])
-                content = result.stdout
-            except FileNotFoundError as exc:
-                raise ProviderError("claude CLI not found — install Claude Code") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise ProviderError(f"claude -p timed out after {timeout_s}s") from exc
-
-        elif transport == "openrouter":
+        try:
             response = _openrouter_request(
                 messages=[{"role": "user", "content": prompt}],
-                model=model,
+                model=self.model,
                 max_tokens=4000,
                 temperature=0.2,
             )
             content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-        elif transport == "gemini-cli":
-            try:
-                result = subprocess.run(
-                    ["gemini", "-p", "--model", model],
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_s,
-                )
-                if result.returncode != 0:
-                    msg = f"gemini failed (exit {result.returncode})"
-                    raise ProviderError(msg + ": " + result.stderr[:300])
-                content = result.stdout
-            except FileNotFoundError as exc:
-                raise ProviderError("gemini CLI not found — install Google Gemini CLI") from exc
-            except subprocess.TimeoutExpired as exc:
-                raise ProviderError(f"gemini -p timed out after {timeout_s}s") from exc
-
-        else:
-            raise ProviderError(f"Unknown transport: {transport}")
+        except Exception as exc:
+            raise ProviderError(f"Plan generation LLM call failed: {exc}") from exc
 
         toml_text = self._extract_toml(content)
         valid, issues = self._validate_toml(toml_text)
@@ -521,7 +466,7 @@ class PlanGenerationProvider(DecisionProvider):
                 valid=valid,
                 validation_issues=tuple(issues),
             ),
-            model_id=model,
+            model_id=response.get("model", self.model),
             latency_ms=latency_ms,
             trace_id=request.trace_id,
         )
@@ -537,7 +482,7 @@ class PlanGenerationProvider(DecisionProvider):
             "## TOML Plan Format\n"
             "\n"
             "[plan]\n"
-            "version = 1\n"
+            'version = 1\n'
             'name = "<slug>"\n'
             'goal = "<goal>"\n'
             'default_agent = "qwen-35b"\n'
@@ -553,9 +498,9 @@ class PlanGenerationProvider(DecisionProvider):
             "\n"
             "[units.<slug>]\n"
             'summary = "<one line>"\n'
-            'prompt = """\n'
+            "prompt = \"\"\\"\n"
             "<worker instructions>\n"
-            '"""\n'
+            "\"\"\\"\n"
             'commit_message = "<imperative, <=72 chars>"\n'
             'satisfies = ["E1"]\n'
             "\n"
@@ -566,37 +511,15 @@ class PlanGenerationProvider(DecisionProvider):
         sections.append(
             "## Rules\n"
             "- EVAL-FIRST: write evals before units. Every unit satisfies >= 1 eval.\n"
-            "- Every eval needs an executable evidence command (shell, exit 0 = pass).\n"
-            "\n"
-            "### Evidence patterns\n"
-            "GOOD evidence (use these):\n"
-            "- Regression: `uv run pytest tests/<test_file>.py -q -m unit`\n"
-            '- Happy path: `uv run python3 -c "from mymod import func; assert func(1) == 2"`\n'
-            "- Invariant: `uv run ruff check src/<file>.py`\n"
-            "- Simple grep: `grep -q 'def my_function' src/<file>.py`\n"
-            "\n"
-            "BAD evidence (NEVER use these):\n"
-            "- NEVER reference specific test function names that don't exist yet\n"
-            "- NEVER use ast.parse or AST walking in evidence commands\n"
-            "- NEVER use complex regex chains or multi-line Python in evidence\n"
-            "- NEVER use backslash escapes in TOML evidence strings\n"
-            "- NEVER use `grep -E` with complex patterns\n"
-            "- NEVER pipe more than 2 commands together\n"
-            "\n"
-            "If you need to verify code structure, write a pytest test in the unit prompt\n"
-            "and use `uv run pytest <test_file> -q -m unit` as evidence.\n"
-            "\n"
-            "### Worker prompts\n"
-            "- Describe the goal and WHY it matters\n"
-            "- List files to read first\n"
-            "- State constraints and principles\n"
-            "- End EVERY prompt with: ruff check, ruff format, pytest, git add, git commit\n"
-            "\n"
-            "### File and dependency rules\n"
-            "- File paths: relative, no globs, no absolute paths\n"
-            "- If units share files, add depends_on to serialize them\n"
-            "- Prefer fewer larger units over many tiny ones\n"
-            "- default_agent = 'qwen-35b' unless task is trivial (then 'qwen-9b')\n"
+            "- Evidence: use \'uv run pytest <test_file> -q -m unit\' for regression evals.\n"
+            "  Use \'uv run python3 -c \\"...\\"\' for happy_path evals.\n"
+            "  NEVER reference specific test function names -- use whole test files.\n"
+            "- Worker prompts: describe goal/why, list files to read, state constraints.\n"
+            "  End EVERY prompt with: ruff check, ruff format, pytest, git add, git commit.\n"
+            "- File paths: relative, no globs, no absolute paths.\n"
+            "- If units share files, add depends_on to serialize them.\n"
+            "- Prefer fewer larger units over many tiny ones.\n"
+            "- default_agent = \'qwen-35b\' unless task is trivial (then \'qwen-9b\').\n"
         )
 
         if request.constraints:
@@ -621,6 +544,7 @@ class PlanGenerationProvider(DecisionProvider):
         if request.file_contents:
             sections.append("## File Context\n")
             for path, content in request.file_contents:
+                # Truncate to first 150 lines for context
                 lines = content.splitlines()[:150]
                 truncated = "\n".join(lines)
                 sections.append(f"### {path}\n```python\n{truncated}\n```\n")
@@ -641,26 +565,35 @@ class PlanGenerationProvider(DecisionProvider):
     @staticmethod
     def _extract_toml(content: str) -> str:
         """Extract TOML from LLM response, handling markdown fences."""
+        import re
+
+        # Try to extract from ```toml ... ``` fences
         match = re.search(r"```toml\s*\n(.*?)```", content, re.DOTALL)
         if match:
             return match.group(1).strip()
 
+        # Try generic ``` fences
         match = re.search(r"```\s*\n(.*?)```", content, re.DOTALL)
         if match:
             return match.group(1).strip()
 
+        # No fences -- assume the whole thing is TOML
         return content.strip()
 
     @staticmethod
     def _validate_toml(toml_text: str) -> tuple[bool, list[str]]:
         """Validate generated TOML by parsing and running validate_plan."""
+        import tempfile
+        import os
         from dgov.plan import parse_plan_file, validate_plan
 
         if not toml_text.strip():
             return False, ["Empty TOML output"]
 
         try:
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".toml", delete=False
+            ) as f:
                 f.write(toml_text)
                 tmp_path = f.name
             try:
