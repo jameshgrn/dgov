@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from rich.text import Text
 
 from dgov.persistence import PaneState
+from dgov.router import PaneRole
 
 # D8 neighbor offsets: (dy, dx)
 _D8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
@@ -138,7 +139,7 @@ _EFFECT_GLYPHS = {
 
 # Agent role/state to glyph/color mapping for terrain display
 _AGENT_STAMPS = {
-    "lt-gov": ("★", "bold yellow"),
+    PaneRole.LT_GOV: ("★", "bold yellow"),
     PaneState.DONE: ("●", "dim white"),
     PaneState.MERGED: ("●", "dim white"),
     PaneState.FAILED: ("✖", "bold red"),
@@ -1041,7 +1042,7 @@ class AgentSim:
             if not slug or slug not in self._pos:
                 continue
             state = ag.get("state", "active")
-            role = ag.get("role", "worker")
+            role = ag.get("role", PaneRole.WORKER)
             r, c = self._pos[slug]
             vr, vc = self._vel[slug]
 
@@ -1076,7 +1077,7 @@ class AgentSim:
                         vc -= dh_c * 0.6
 
                 # LT-GOV: attract toward child centroid
-                if role == "lt-gov" and slug in children_of:
+                if role == PaneRole.LT_GOV and slug in children_of:
                     cps = [self._pos[cs] for cs in children_of[slug] if cs in self._pos]
                     if cps:
                         cr = sum(p[0] for p in cps) / len(cps)
@@ -1120,8 +1121,8 @@ class AgentSim:
             # Render agent as a single character
             ir, ic = int(round(r)), int(round(c))
             if ir >= 0 and ir < rows and ic >= 0 and ic < cols:
-                if role == "lt-gov":
-                    char, color = _AGENT_STAMPS["lt-gov"]
+                if role == PaneRole.LT_GOV:
+                    char, color = _AGENT_STAMPS[PaneRole.LT_GOV]
                 else:
                     char, color = _AGENT_STAMPS.get(state, _DEFAULT_STAMP)
                 stamps[(ir, ic)] = (char, color)

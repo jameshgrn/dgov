@@ -24,6 +24,7 @@ from dgov.persistence import (
     remove_pane,
     update_pane_state,
 )
+from dgov.router import PaneRole
 
 logger = logging.getLogger(__name__)
 
@@ -95,35 +96,35 @@ class RetryPolicy:
 # Role-based escalation: abstract roles the governor sees.
 # The router maps these to physical models via agents.toml [routing.*] tables.
 ROLE_ESCALATION: dict[str, str] = {
-    "worker": "supervisor",
-    "supervisor": "manager",
-    "manager": "manager",  # ceiling — governor alert after manager fails
+    PaneRole.WORKER: PaneRole.SUPERVISOR,
+    PaneRole.SUPERVISOR: PaneRole.MANAGER,
+    PaneRole.MANAGER: PaneRole.MANAGER,  # ceiling — governor alert after manager fails
 }
 
 # Model-to-role mapping for panes that stored model names instead of roles.
 # Used by _resolve_escalation_target to normalize before looking up ROLE_ESCALATION.
 _MODEL_TO_ROLE: dict[str, str] = {
-    "qwen-4b": "worker",
-    "qwen-9b": "worker",
-    "qwen-35b": "supervisor",
-    "qwen-122b": "manager",
-    "qwen-397b": "manager",
+    "qwen-4b": PaneRole.WORKER,
+    "qwen-9b": PaneRole.WORKER,
+    "qwen-35b": PaneRole.SUPERVISOR,
+    "qwen-122b": PaneRole.MANAGER,
+    "qwen-397b": PaneRole.MANAGER,
     # Physical names (legacy panes)
-    "river-4b": "worker",
-    "river-9b": "worker",
-    "river-9b-2": "worker",
-    "river-9b-3": "worker",
-    "river-35b": "supervisor",
-    "river-35b-2": "supervisor",
-    "qwen35-9b": "worker",
-    "qwen35-35b": "supervisor",
-    "qwen35-122b": "manager",
-    "qwen35-397b": "manager",
+    "river-4b": PaneRole.WORKER,
+    "river-9b": PaneRole.WORKER,
+    "river-9b-2": PaneRole.WORKER,
+    "river-9b-3": PaneRole.WORKER,
+    "river-35b": PaneRole.SUPERVISOR,
+    "river-35b-2": PaneRole.SUPERVISOR,
+    "qwen35-9b": PaneRole.WORKER,
+    "qwen35-35b": PaneRole.SUPERVISOR,
+    "qwen35-122b": PaneRole.MANAGER,
+    "qwen35-397b": PaneRole.MANAGER,
     # LT-GOV tier (not in worker escalation chain — governor picks directly)
-    "claude-sonnet": "lt-gov",
-    "gemini-flash": "lt-gov",
-    "gemini-flash-25": "lt-gov",
-    "codex-mini": "lt-gov",
+    "claude-sonnet": PaneRole.LT_GOV,
+    "gemini-flash": PaneRole.LT_GOV,
+    "gemini-flash-25": PaneRole.LT_GOV,
+    "codex-mini": PaneRole.LT_GOV,
 }
 
 # Backward-compat alias: maps each known agent to its escalation target.

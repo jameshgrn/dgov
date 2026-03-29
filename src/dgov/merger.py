@@ -14,6 +14,7 @@ from pathlib import Path
 
 from dgov.inspection import MergeResult, ReviewTests
 from dgov.persistence import PROTECTED_FILES, IllegalTransitionError, PaneState
+from dgov.router import PaneRole
 
 logger = logging.getLogger(__name__)
 
@@ -1639,7 +1640,7 @@ def merge_worker_pane(
 
     if not target:
         return MergeError(error=f"Pane not found: {slug}")
-    if target.get("role") == "lt-gov":
+    if target.get("role") == PaneRole.LT_GOV:
         return MergeError(error=f"LT-GOV pane {slug} does not produce code — nothing to merge")
 
     branch_name = target.get("branch_name")

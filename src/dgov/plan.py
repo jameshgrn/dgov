@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dgov.dag_graph import _paths_overlap
+from dgov.router import PaneRole
 
 if TYPE_CHECKING:
     from dgov.dag_parser import DagDefinition, DagRunSummary
@@ -67,7 +68,7 @@ class PlanUnit:
     timeout_s: int = 0  # 0 = use plan default
     escalation: tuple[str, ...] = ()
     review_agent: str | None = None  # model for reviewing this unit's output
-    role: str = "worker"
+    role: str = PaneRole.WORKER
     template: str | None = None
     template_vars: dict[str, str] = field(default_factory=dict)
 
@@ -113,7 +114,7 @@ _ALLOWED_EVAL_KINDS = {
     "performance",
     "integration_test",
 }
-_VALID_ROLES = {"worker", "lt-gov"}
+_VALID_ROLES = set(PaneRole)
 
 
 def _validate_scratch_name(name: str) -> str:
@@ -398,7 +399,7 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
         timeout_s=int(raw.get("timeout_s", 0)),
         escalation=tuple(raw.get("escalation", ())),
         review_agent=str(raw.get("review_agent")) if raw.get("review_agent") is not None else None,
-        role=str(raw.get("role", "worker")),
+        role=str(raw.get("role", PaneRole.WORKER)),
         template=str(raw.get("template")) if raw.get("template") is not None else None,
         template_vars=dict(raw.get("vars", {})),
     )
@@ -839,7 +840,7 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
                 raise ValueError(f"Unit {slug!r}: Unknown template {unit.template!r}")
             tpl = all_templates[unit.template]
             tpl_vars = dict(unit.template_vars)
-            if unit.role == "lt-gov":
+            if unit.role == PaneRole.LT_GOV:
                 # Inject LT-GOV defaults if missing
                 if "ltgov_slug" not in tpl_vars:
                     tpl_vars["ltgov_slug"] = slug
@@ -990,7 +991,7 @@ def serialize_plan(plan: PlanSpec) -> str:
                 u["escalation"] = list(unit.escalation)
             if unit.review_agent is not None:
                 u["review_agent"] = unit.review_agent
-            if unit.role != "worker":
+            if unit.role != PaneRole.WORKER:
                 u["role"] = unit.role
             if unit.template is not None:
                 u["template"] = unit.template
@@ -1156,7 +1157,7 @@ def build_adhoc_plan(
     touches: tuple[str, ...] = (),
     max_retries: int = 1,
     timeout_s: int = 600,
-    role: str = "worker",
+    role: str = PaneRole.WORKER,
     template: str | None = None,
     template_vars: dict[str, str] | None = None,
 ) -> PlanSpec:

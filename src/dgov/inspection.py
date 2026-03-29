@@ -23,6 +23,7 @@ from dgov.persistence import (
     get_pane,
     read_events,
 )
+from dgov.router import PaneRole
 from dgov.status import _compute_freshness
 
 logger = logging.getLogger(__name__)
@@ -144,7 +145,7 @@ def _inspect_worker_pane(
     if not target:
         return ReviewInfo(slug=slug, error=f"Pane not found: {slug}")
 
-    if target.get("role") == "lt-gov":
+    if target.get("role") == PaneRole.LT_GOV:
         return ReviewInfo(slug=slug, verdict="safe", automation=ReviewAutomation(lt_gov=True))
 
     wt = target.get("worktree_path", "")

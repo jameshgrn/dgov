@@ -27,6 +27,7 @@ from rich.text import Text
 
 from dgov import __version__
 from dgov.persistence import PaneState
+from dgov.router import PaneRole
 
 # MLX overflow test passed
 logger = logging.getLogger(__name__)
@@ -432,9 +433,9 @@ def _sort_pane_rows_hierarchical(
     standalone: list[tuple[int, dict]] = []
 
     for orig_idx, pane in pane_rows:
-        role = pane.get("role", "worker")
+        role = pane.get("role", PaneRole.WORKER)
         parent = pane.get("parent_slug", "")
-        if role == "lt-gov":
+        if role == PaneRole.LT_GOV:
             ltgovs.append((orig_idx, pane))
         elif parent:
             children.setdefault(parent, []).append((orig_idx, pane))
@@ -509,9 +510,9 @@ def _sort_panes_hierarchical(
     standalone: list[tuple[int, dict]] = []
 
     for i, p in enumerate(panes):
-        role = p.get("role", "worker")
+        role = p.get("role", PaneRole.WORKER)
         parent = p.get("parent_slug", "")
-        if role == "lt-gov":
+        if role == PaneRole.LT_GOV:
             ltgovs.append((i, p))
         elif parent:
             children.setdefault(parent, []).append((i, p))
@@ -571,12 +572,12 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
     for p, indent_level, is_last_child, orig_idx in sorted_panes:
         pstate = p.get("state", "active")
         is_selected = orig_idx == effective_selected
-        role = p.get("role", "worker")
+        role = p.get("role", PaneRole.WORKER)
 
         color = state_color(pstate)
         style = f"bold {color}" if is_selected else color
 
-        if role == "lt-gov":
+        if role == PaneRole.LT_GOV:
             prefix = "\u25c6 " if is_selected else "  \u25c7 "
             style = "bold magenta"
         elif indent_level > 0:

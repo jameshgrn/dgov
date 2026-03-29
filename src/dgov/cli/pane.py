@@ -13,6 +13,7 @@ import click
 from dgov.cli import SESSION_ROOT_OPTION, want_json
 from dgov.context_packet import build_context_packet
 from dgov.persistence import PaneState
+from dgov.router import PaneRole
 
 
 def _autocorrect_roots(
@@ -298,7 +299,7 @@ def pane_create(
         env_vars[k] = v
 
     # LT-GOV: direct dispatch (no plan pipeline — they orchestrate, not execute)
-    if role == "lt-gov":
+    if role == PaneRole.LT_GOV:
         try:
             packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
             pane_obj = run_dispatch_only(
@@ -1063,7 +1064,7 @@ def pane_output(slug, project_root, session_root, tail, follow):
 
     session_root = os.path.abspath(session_root or project_root)
     pane_record = get_pane(session_root, slug)
-    is_headless = not pane_record or pane_record.get("role", "worker") == "worker"
+    is_headless = not pane_record or pane_record.get("role", PaneRole.WORKER) == PaneRole.WORKER
 
     if is_headless:
         # Headless workers: log file has clean output, capture may show empty shell
@@ -1176,7 +1177,7 @@ def pane_tail(slug, project_root, session_root, lines):
         return
 
     # Show initial output
-    is_headless = pane_record.get("role", "worker") == "worker"
+    is_headless = pane_record.get("role", PaneRole.WORKER) == PaneRole.WORKER
     if is_headless:
         text = tail_worker_log(session_root, slug, lines=lines)
         if text is None:

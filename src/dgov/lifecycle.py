@@ -35,6 +35,7 @@ from dgov.persistence import (
     remove_pane,
     update_pane_state,
 )
+from dgov.router import PaneRole
 from dgov.spans import _compute_route_from_dispatch
 from dgov.strategy import (
     _generate_slug,
@@ -414,7 +415,7 @@ def _write_worktree_instructions(
         packet = build_context_packet(prompt)
     start_here_section = render_start_here_section(packet) if packet is not None else ""
 
-    if role == "lt-gov":
+    if role == PaneRole.LT_GOV:
         preamble = (
             f"# LT-GOV Instructions — {slug}\n\n"
             "You are a **lieutenant governor**. You orchestrate "
@@ -639,7 +640,7 @@ def _setup_and_launch_agent(
     base_sha: str | None = None,
     skip_auto_structure: bool = False,
     clear_done_signal: bool = False,
-    role: str = "worker",
+    role: str = PaneRole.WORKER,
     context_packet: ContextPacket | None = None,
 ) -> None:
     """Lock pane, inject env, trigger hook, rewrite prompt, launch agent."""
@@ -738,10 +739,10 @@ def _setup_and_launch_agent(
     # Codex "exec" is always one-shot (prompt on CLI), never TUI — force headless.
     is_cursor = agent_id in ("cursor", "cursor-auto") or agent_def.prompt_command == "cursor-agent"
     is_oneshot = agent_def.prompt_command == "codex"
-    use_interactive = agent_def.interactive and role != "worker" and not is_oneshot
+    use_interactive = agent_def.interactive and role != PaneRole.WORKER and not is_oneshot
 
     # When forcing headless on a normally-interactive agent, add agent-specific flags
-    if not use_interactive and agent_def.interactive and role == "worker":
+    if not use_interactive and agent_def.interactive and role == PaneRole.WORKER:
         if agent_id == "claude":
             extra_flags = f"-p {extra_flags or ''}".strip() if extra_flags else "-p"
 
@@ -836,7 +837,7 @@ def create_worker_pane(
     session_root: str | None = None,
     existing_worktree: str | None = None,
     skip_auto_structure: bool = False,
-    role: str = "worker",
+    role: str = PaneRole.WORKER,
     parent_slug: str | None = None,
     context_packet: ContextPacket | None = None,
 ) -> WorkerPane:
@@ -856,17 +857,17 @@ def create_worker_pane(
     base_slug = slug or _generate_slug(prompt)
     _validate_slug(base_slug)
     # Auto-detect role from routing tables when caller uses default "worker".
-    if role == "worker":
+    if role == PaneRole.WORKER:
         from dgov.router import resolve_role
 
         role = resolve_role(agent, project_root)
     # LT-GOVs don't edit code — run them on main, no worktree needed.
-    if role == "lt-gov" and existing_worktree is None:
+    if role == PaneRole.LT_GOV and existing_worktree is None:
         existing_worktree = project_root
     owns_worktree = existing_worktree is None
     slug = base_slug
     worktree_path = os.path.abspath(existing_worktree) if existing_worktree else ""
-    branch_name = "" if role == "lt-gov" else base_slug
+    branch_name = "" if role == PaneRole.LT_GOV else base_slug
 
     # 0. Validate env vars BEFORE any side effects
     all_env: dict[str, str] = {}
@@ -924,7 +925,7 @@ def create_worker_pane(
             if env_vars:
                 all_env.update(env_vars)
 
-            if role == "lt-gov":
+            if role == PaneRole.LT_GOV:
                 all_env["DGOV_SKIP_GOVERNOR_CHECK"] = "1"
                 all_env["DGOV_PROJECT_ROOT"] = project_root
 
@@ -1715,7 +1716,7 @@ def resume_worker_pane(
         owns_worktree=True,
         base_sha=target.get("base_sha"),
         clear_done_signal=True,
-        role=target.get("role", "worker"),
+        role=target.get("role", PaneRole.WORKER),
     )
 
     # Update state: new pane_id, back to active (targeted UPDATE, not full-row replace)

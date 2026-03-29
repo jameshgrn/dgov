@@ -28,7 +28,18 @@ logger = logging.getLogger(__name__)
 # Type aliases for routing contract
 LogicalName = str
 BackendId = str
-Role = str  # "worker" | "supervisor" | "manager" | "lt-gov"
+
+
+class PaneRole(StrEnum):
+    """Pane role in the orchestration hierarchy."""
+
+    WORKER = "worker"
+    SUPERVISOR = "supervisor"
+    MANAGER = "manager"
+    LT_GOV = "lt-gov"
+
+
+Role = str  # deprecated alias — use PaneRole
 
 
 # Degradation reason kinds (typed, frozen)
@@ -94,20 +105,20 @@ def physical_to_logical(physical_name: str) -> LogicalName:
     return physical_name
 
 
-def resolve_role(agent_name: str, project_root: str | None = None) -> Role:
+def resolve_role(agent_name: str, project_root: str | None = None) -> PaneRole:
     """Derive pane role from agent name.
 
-    Returns "lt-gov" if agent_name is "lt-gov" or matches lt-gov routing backends.
+    Returns PaneRole.LT_GOV if agent_name is "lt-gov" or matches lt-gov routing backends.
     Uses project-local routing tables when available.
-    Returns "worker" otherwise.
+    Returns PaneRole.WORKER otherwise.
     """
     tables = _load_routing_tables(project_root)
-    if agent_name == "lt-gov":
-        return "lt-gov"
-    lt_gov_backends = tables.get("lt-gov", [])
+    if agent_name == PaneRole.LT_GOV:
+        return PaneRole.LT_GOV
+    lt_gov_backends = tables.get(PaneRole.LT_GOV, [])
     if agent_name in lt_gov_backends:
-        return "lt-gov"
-    return "worker"
+        return PaneRole.LT_GOV
+    return PaneRole.WORKER
 
 
 def record_backend_failure(session_root: str, backend_id: BackendId) -> None:

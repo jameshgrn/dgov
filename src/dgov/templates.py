@@ -11,6 +11,8 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from dgov.router import PaneRole
+
 
 @dataclass
 class PromptTemplate:
@@ -80,8 +82,8 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
         default_agent="supervisor",
         description="Review code and output structured JSON findings",
     ),
-    "lt-gov": PromptTemplate(
-        name="lt-gov",
+    PaneRole.LT_GOV: PromptTemplate(
+        name=PaneRole.LT_GOV,
         template=(
             "You are a lieutenant governor (LT-GOV) managing a tier of workers.\n\n"
             "## Identity\n"
