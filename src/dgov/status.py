@@ -557,6 +557,8 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
             for entry in worktrees_dir.iterdir():
                 if not entry.is_dir():
                     continue
+                if entry.name.startswith("."):
+                    continue
                 entry_str = str(entry)
                 if entry_str in known_worktrees:
                     continue

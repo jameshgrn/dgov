@@ -16,6 +16,19 @@ def _remove_worktree(project_root: str, worktree_path: str, branch_name: str) ->
         text=True,
     )
     if result.returncode != 0:
+        # Not a registered worktree — remove directory directly
+        import shutil
+        from pathlib import Path
+
+        wt = Path(worktree_path)
+        if wt.is_dir():
+            shutil.rmtree(wt, ignore_errors=True)
+            # Clean up empty parent hash dirs
+            parent = wt.parent
+            if parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        if not wt.exists():
+            return {"success": True}
         return {"success": False, "error": result.stderr.strip()}
 
     subprocess.run(["git", "-C", project_root, "branch", "-D", branch_name], capture_output=True)
