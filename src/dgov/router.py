@@ -64,12 +64,12 @@ def _load_routing_tables(project_root: str | None = None) -> dict[LogicalName, l
     return load_routing_tables(project_root)
 
 
-def is_routable(name: LogicalName) -> bool:
+def is_routable(name: LogicalName, project_root: str | None = None) -> bool:
     """Check if a name is a logical routing key.
 
     Returns True if the name is defined in routing tables (project-local or user-global).
     """
-    tables = _load_routing_tables()
+    tables = _load_routing_tables(project_root)
     return name in tables
 
 

@@ -65,7 +65,9 @@ def _paths_overlap(path: str, touch: str) -> bool:
     return norm_path == norm_touch or norm_path.startswith(norm_touch + "/")
 
 
-def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
+def check_agent_cli(
+    agent: str, *, registry: dict | None = None, project_root: str | None = None
+) -> CheckResult:
     """Check that the agent CLI binary is on PATH.
 
     Handles both physical agent names (in registry) and logical routing
@@ -77,7 +79,7 @@ def check_agent_cli(agent: str, *, registry: dict | None = None) -> CheckResult:
         # Check if it's a logical routing name (e.g. qwen-35b, worker, supervisor)
         from dgov.router import is_routable
 
-        if is_routable(agent):
+        if is_routable(agent, project_root=project_root):
             return CheckResult(
                 name="agent_cli",
                 passed=True,
@@ -596,7 +598,7 @@ def run_preflight(
     registry = load_registry(project_root)
     checks: list[CheckResult] = []
 
-    checks.append(check_agent_cli(agent, registry=registry))
+    checks.append(check_agent_cli(agent, registry=registry, project_root=project_root))
     if agent.startswith("river-") or "river" in agent:
         checks.append(check_river_tunnel())
     checks.append(check_git_clean(project_root, touches=touches))
