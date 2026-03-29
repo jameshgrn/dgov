@@ -14,6 +14,7 @@ from rich.text import Text
 # D8 neighbor offsets: (dy, dx)
 _D8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 _D8_DIST = [math.sqrt(2), 1.0, math.sqrt(2), 1.0, 1.0, math.sqrt(2), 1.0, math.sqrt(2)]
+_Q = 8  # quantization step — snaps RGB to 32 levels, reduces unique styles per frame
 
 # Keyframes: (session_age_hrs, warmth, sat, contrast, perturbation_scale)
 # Dawn: warm golden light (high warmth, low-medium sat)
@@ -761,14 +762,6 @@ class EventTranslator:
             "review_fail": ("deposit", 0.6),
         }
         return mapping.get(str(event.get("event", "")))
-
-
-_Q = 8  # quantization step — snaps RGB to 32 levels, reduces unique styles per frame
-
-
-def _clamp(v: int) -> int:
-    clamped = max(0, min(255, v))
-    return (clamped // _Q) * _Q
 
 
 def _elevation_color(elev: float, shade: float, phase: dict | None = None) -> tuple[int, int, int]:
