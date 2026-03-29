@@ -65,7 +65,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/cli/admin.py (L): Administrative and diagnostic commands. -> test_admin.py
   src/dgov/cli/batch_cmd.py (S): Checkpoint and batch commands.
   src/dgov/cli/briefing_cmd.py (S): CLI command: dgov briefing — on-demand document viewer via glow.
-  src/dgov/cli/dag_cmd.py (M): CLI commands for DAG execution.
+  src/dgov/cli/dag_cmd.py (L): CLI commands for DAG execution.
   src/dgov/cli/journal_cmd.py (S): Decision journal query CLI.
   src/dgov/cli/ledger_cmd.py (S): Operational ledger CLI.
   src/dgov/cli/merge_queue_cmd.py (S): Merge queue commands for governor-side queue processing.
