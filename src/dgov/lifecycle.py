@@ -21,6 +21,7 @@ from dgov.done import _wrap_done_signal, _wrap_exit_signal
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
+    PaneState,
     WorkerPane,
     _get_db,
     _retry_on_lock,
@@ -1288,7 +1289,12 @@ def _full_cleanup(
 
             if branch and not worktree_removal_failed:
                 pane_state = pane_record.get("state", "")
-                _force_delete_states = {"merged", "superseded", "timed_out", "abandoned"}
+                _force_delete_states = {
+                    PaneState.MERGED,
+                    PaneState.SUPERSEDED,
+                    PaneState.TIMED_OUT,
+                    PaneState.ABANDONED,
+                }
                 delete_flag = "-D" if pane_state in _force_delete_states else "-d"
                 br_result = subprocess.run(
                     ["git", "-C", project_root, "branch", delete_flag, branch],
@@ -1435,14 +1441,14 @@ def close_worker_pane(
 
     # Auto-enable force for terminal-state panes
     if target.get("state") in (
-        "merged",
-        "closed",
-        "done",
-        "failed",
-        "merge_conflict",
-        "superseded",
-        "timed_out",
-        "abandoned",
+        PaneState.MERGED,
+        PaneState.CLOSED,
+        PaneState.DONE,
+        PaneState.FAILED,
+        PaneState.MERGE_CONFLICT,
+        PaneState.SUPERSEDED,
+        PaneState.TIMED_OUT,
+        PaneState.ABANDONED,
     ):
         force = True
 
@@ -1511,7 +1517,7 @@ def close_worker_pane(
 
                 shutil.rmtree(wt, ignore_errors=True)
             logger.info("Worktree invalid/gone for %s — cleaning up pane record", slug)
-            update_pane_state(session_root, slug, "closed")
+            update_pane_state(session_root, slug, PaneState.CLOSED)
             emit_event(session_root, "pane_closed", slug)
             remove_pane(session_root, slug, crash_log=crash_log)
         else:
@@ -1529,7 +1535,7 @@ def close_worker_pane(
     else:
         # Normal close - worktree removed, or retry/escalation cleanup must be
         # deterministic even when filesystem cleanup was imperfect.
-        update_pane_state(session_root, slug, "closed")
+        update_pane_state(session_root, slug, PaneState.CLOSED)
         emit_event(session_root, "pane_closed", slug)
         remove_pane(session_root, slug, crash_log=crash_log)
 
@@ -1688,12 +1694,12 @@ def resume_worker_pane(
         if agent:
             conn.execute(
                 "UPDATE panes SET pane_id = ?, state = ?, agent = ? WHERE slug = ?",
-                (pane_id, "active", resume_agent, slug),
+                (pane_id, PaneState.ACTIVE, resume_agent, slug),
             )
         else:
             conn.execute(
                 "UPDATE panes SET pane_id = ?, state = ? WHERE slug = ?",
-                (pane_id, "active", slug),
+                (pane_id, PaneState.ACTIVE, slug),
             )
         conn.commit()
 

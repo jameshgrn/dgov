@@ -15,6 +15,7 @@ from dgov.done import _AGENT_COMMANDS, _is_done, _strip_ansi
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     STATE_DIR,
+    PaneState,
     all_panes,
     emit_event,
     get_pane,
@@ -227,7 +228,7 @@ def _compute_freshness(
 
     age_hours = (time.time() - created_at) / 3600 if created_at else 0
 
-    # Early exit: if worktree is gone, it's stale — skip all git calls
+    # Early exit: if worktree is gone, it's stale - skip all git calls
     if wt and not Path(wt).exists():
         return {
             "freshness": "stale",
@@ -300,13 +301,13 @@ def _compute_freshness(
 def _count_active_agent_workers(session_root: str, agent: str) -> int:
     """Count how many workers for *agent* are currently alive."""
     _TERMINAL_STATES = {
-        "done",
-        "failed",
-        "superseded",
-        "merged",
-        "closed",
-        "escalated",
-        "timed_out",
+        PaneState.DONE,
+        PaneState.FAILED,
+        PaneState.SUPERSEDED,
+        PaneState.MERGED,
+        PaneState.CLOSED,
+        PaneState.ESCALATED,
+        PaneState.TIMED_OUT,
     }
     panes = all_panes(session_root)
     all_tmux = get_backend().bulk_info()
@@ -357,7 +358,7 @@ def list_worker_panes(
         state = p.get("state") or "active"
         alive = pane_id in all_tmux if pane_id else False
         cmd = all_tmux.get(pane_id, {}).get("current_command", "") if alive else ""
-        done = state != "active"
+        done = state != PaneState.ACTIVE
         if state == "active":
             agent_id = p.get("agent", "")
             agent_def = registry.get(agent_id) if agent_id else None
@@ -458,13 +459,13 @@ def list_worker_panes(
 
 _TERMINAL_PRUNE_STATES = frozenset(
     {
-        "abandoned",
-        "closed",
-        "done",
-        "failed",
-        "merged",
-        "superseded",
-        "timed_out",
+        PaneState.ABANDONED,
+        PaneState.CLOSED,
+        PaneState.DONE,
+        PaneState.FAILED,
+        PaneState.MERGED,
+        PaneState.SUPERSEDED,
+        PaneState.TIMED_OUT,
     }
 )
 _TERMINAL_PRUNE_AGE_S = 3600  # 1 hour
@@ -511,10 +512,10 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 if not wt_exists:
                     should_prune = True
 
-            # Superseded/escalated panes were replaced — always force cleanup.
+            # Superseded/escalated panes were replaced - always force cleanup.
             # _close_replaced_pane should have removed them, but if it failed
             # silently the pane lingers with a live tmux process + worktree.
-            if not should_prune and state in {"superseded", "escalated"}:
+            if not should_prune and state in {PaneState.SUPERSEDED, PaneState.ESCALATED}:
                 should_prune = True
                 if alive and pane_id:
                     try:
@@ -532,11 +533,11 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                 done_path.unlink(missing_ok=True)
                 pruned.append(slug)
                 pruned_slugs.add(slug)
-            elif pane_id and not alive and wt_exists and state == "active":
-                # Dead process with orphaned worktree — force to failed
+            elif pane_id and not alive and wt_exists and state == PaneState.ACTIVE:
+                # Dead process with orphaned worktree - force to failed
                 from dgov.persistence import settle_completion_state
 
-                settle_completion_state(session_root, slug, "failed")
+                settle_completion_state(session_root, slug, PaneState.FAILED)
                 emit_event(session_root, "pane_failed", slug, reason="dead_process_pruned")
                 logger.info("Pruned dead active pane %s (worktree preserved)", slug)
                 pruned.append(f"dead:{slug}")
@@ -724,7 +725,7 @@ def _extract_summary_from_log(
         sig = _match_signal(line)
         if sig:
             return sig
-        # No signal match — return truncated non-noise line
+        # No signal match - return truncated non-noise line
         return line[:60]
     return ""
 
@@ -741,18 +742,18 @@ def _compute_phase(
 ) -> str:
     """Derive a human-readable phase from worker state and summary."""
     _TERMINAL_MAP = {
-        "failed": "failed",
-        "merged": "merged",
-        "closed": "closed",
-        "superseded": "closed",
-        "escalated": "failed",
-        "timed_out": "failed",
+        PaneState.FAILED: "failed",
+        PaneState.MERGED: "merged",
+        PaneState.CLOSED: "closed",
+        PaneState.SUPERSEDED: "closed",
+        PaneState.ESCALATED: "failed",
+        PaneState.TIMED_OUT: "failed",
     }
     if state in _TERMINAL_MAP:
         return _TERMINAL_MAP[state]
     if done:
         return "done"
-    if not alive and state == "active":
+    if not alive and state == PaneState.ACTIVE:
         return "abandoned"
     if alive and duration_s < 30 and not summary:
         return "starting"
