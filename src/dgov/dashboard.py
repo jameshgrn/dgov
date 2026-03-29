@@ -612,7 +612,7 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
                 phase = "resume" if preserved_artifacts.get("recoverable") else "inspect"
         elif monitor_phase in nonterminal_monitor_phases:
             phase = monitor_phase
-        elif phase in {"done", "failed", "merged", "closed", "abandoned"}:
+        elif phase in {PaneState.DONE, PaneState.FAILED, PaneState.MERGED, PaneState.CLOSED, PaneState.ABANDONED}:
             phase = ""
 
         phase_text = Text(phase)
