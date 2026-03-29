@@ -740,11 +740,11 @@ class EventTranslator:
     """Translate dgov persistence events into terrain perturbations."""
 
     def __init__(self) -> None:
-        self._last_ts = ""
+        self._last_ts: str | None = None
 
     def translate(self, event: dict) -> tuple[str, float] | None:
         ts = str(event.get("ts", ""))
-        if not ts or ts <= self._last_ts:
+        if not ts or (self._last_ts and ts <= self._last_ts):
             return None
 
         self._last_ts = ts
