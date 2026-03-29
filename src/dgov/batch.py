@@ -372,6 +372,8 @@ def run_batch(
 
     # Re-fetch final state
     run = get_dag_run(session_root, run_id)
+    if run is None:
+        raise RuntimeError(f"DAG run {run_id} disappeared after polling")
     task_states = run["state_json"].get("task_states", {})
     final_summary = DagRunSummary(
         run_id=run_id,

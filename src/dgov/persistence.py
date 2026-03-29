@@ -1881,7 +1881,7 @@ def append_idea(session_root: str, text: str, summary: str) -> None:
 
 
 def _json_default(value: object) -> object:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return asdict(value)
     if isinstance(value, Path):
         return str(value)

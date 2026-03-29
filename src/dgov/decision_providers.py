@@ -253,7 +253,7 @@ class InspectionReviewProvider(DecisionProvider):
             emit_events=request.emit_events,
             tests_pass=request.tests_pass,
             lint_clean=request.lint_clean,
-            post_merge_check=request.post_merge_check,
+            post_merge_check=request.post_merge_check or "",
         )
         latency_ms = (time.perf_counter() - started) * 1000
 
@@ -278,7 +278,7 @@ class InspectionReviewProvider(DecisionProvider):
             kind=DecisionKind.REVIEW_OUTPUT,
             provider_id=self.provider_id,
             decision=ReviewOutputDecision(
-                verdict=verdict,
+                verdict=ReviewVerdict(verdict),
                 commit_count=commit_count,
                 issues=issues,
                 reason=reason,
@@ -374,7 +374,7 @@ class ModelReviewProvider(DecisionProvider):
             kind=DecisionKind.REVIEW_OUTPUT,
             provider_id=self.provider_id,
             decision=ReviewOutputDecision(
-                verdict=verdict,
+                verdict=ReviewVerdict(verdict),
                 commit_count=-1,  # Not applicable for model review
                 issues=issues,
                 reason=summary if verdict != ReviewVerdict.APPROVED else None,
