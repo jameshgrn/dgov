@@ -569,6 +569,29 @@ def _build_pane_title(
     return f"{title} {icon}" if icon else title
 
 
+def _maybe_update_pane_title(session_root: str, slug: str, new_state: str) -> None:
+    """Update the pane title after a persisted state change."""
+    # Skip for terminal states — pane is dead, title update would fork tmux for nothing.
+    if new_state in (PaneState.MERGED, PaneState.CLOSED, PaneState.SUPERSEDED):
+        return
+
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return
+
+    pane_id = pane.get("pane_id", "")
+    agent = pane.get("agent", "")
+    project_root = pane.get("project_root", "")
+    if not pane_id:
+        return
+
+    try:
+        title = _build_pane_title(agent, slug, project_root, state=pane.get("state", new_state))
+        get_backend().set_title(pane_id, title)
+    except (RuntimeError, OSError):
+        pass  # pane may already be dead
+
+
 # -- Worker hook installation --
 
 _PRE_MERGE_COMMIT_HOOK = """\

@@ -1958,6 +1958,7 @@ def run_complete_pane(
     """Executor syscall: mark a pane as done (e.g., monitor auto-complete)."""
     import os
 
+    from dgov.lifecycle import _maybe_update_pane_title
     from dgov.persistence import emit_event, settle_completion_state
 
     session_root = os.path.abspath(session_root or project_root)
@@ -1966,6 +1967,7 @@ def run_complete_pane(
     )
     if transition.changed:
         emit_event(session_root, "pane_done", slug, reason=reason)
+        _maybe_update_pane_title(session_root, slug, PaneState.DONE)
     return StateTransitionResult(
         slug=slug,
         new_state=PaneState.DONE,
@@ -1984,6 +1986,7 @@ def run_fail_pane(
     """Executor syscall: mark a pane as failed (e.g., monitor idle timeout)."""
     import os
 
+    from dgov.lifecycle import _maybe_update_pane_title
     from dgov.persistence import emit_event, settle_completion_state
 
     session_root = os.path.abspath(session_root or project_root)
@@ -1992,6 +1995,7 @@ def run_fail_pane(
     )
     if transition.changed:
         emit_event(session_root, "pane_failed", slug, reason=reason)
+        _maybe_update_pane_title(session_root, slug, PaneState.FAILED)
     return StateTransitionResult(
         slug=slug,
         new_state=PaneState.FAILED,
@@ -2009,11 +2013,13 @@ def run_mark_reviewed(
     """Executor syscall: transition pane to reviewed_pass or reviewed_fail."""
     import os
 
+    from dgov.lifecycle import _maybe_update_pane_title
     from dgov.persistence import emit_event, update_pane_state
 
     session_root = os.path.abspath(session_root or project_root)
     target = PaneState.REVIEWED_PASS if passed else PaneState.REVIEWED_FAIL
     update_pane_state(session_root, slug, target, force=True)
+    _maybe_update_pane_title(session_root, slug, target)
     emit_event(session_root, f"pane_{target}", slug)
     return StateTransitionResult(slug=slug, new_state=target, changed=True)
 

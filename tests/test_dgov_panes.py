@@ -2057,6 +2057,7 @@ class TestUpdatePaneState:
     def test_updates_pane_title_on_state_change(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
+        from dgov.lifecycle import _maybe_update_pane_title
         from dgov.persistence import update_pane_state
 
         replace_all_panes(
@@ -2064,6 +2065,7 @@ class TestUpdatePaneState:
             {"panes": [{"slug": "fix", "state": "active", "pane_id": "%5", "agent": "pi"}]},
         )
         update_pane_state(str(tmp_path), "fix", "done")
+        _maybe_update_pane_title(str(tmp_path), "fix", "done")
         mock_backend.set_title.assert_called_once_with("%5", "[pi] fix ok")
 
 
