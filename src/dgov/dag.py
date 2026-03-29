@@ -9,7 +9,7 @@ from pathlib import Path
 
 from dgov.dag_graph import compute_tiers, render_dry_run, topological_order
 from dgov.dag_parser import DagDefinition, DagRunSummary, parse_dag_file
-from dgov.kernel import DagKernel, DagTaskState
+from dgov.kernel import DagKernel, DagState, DagTaskState
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,7 @@ def merge_dag(dag_file: str) -> DagRunSummary:
             message=dag.tasks[task_slug].commit_message or None,
         )
         if result.error:
-            update_dag_run(session_root, run_id, status="failed")
+            update_dag_run(session_root, run_id, status=DagState.FAILED)
             emit_event(
                 session_root,
                 "dag_failed",
@@ -209,7 +209,7 @@ def merge_dag(dag_file: str) -> DagRunSummary:
         )
         emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
 
-    update_dag_run(session_root, run_id, status="completed")
+    update_dag_run(session_root, run_id, status=DagState.COMPLETED)
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
 
     succeeded = [
