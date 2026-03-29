@@ -1253,7 +1253,7 @@ def _build_review_info(record: DecisionRecord[ReviewOutputDecision], slug: str) 
 
 
 def _apply_review_policy(
-    verdict: ReviewVerdict,
+    verdict: str,
     commit_count: int,
     error: str | None,
     *,

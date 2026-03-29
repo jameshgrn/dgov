@@ -278,7 +278,7 @@ class InspectionReviewProvider(DecisionProvider):
             kind=DecisionKind.REVIEW_OUTPUT,
             provider_id=self.provider_id,
             decision=ReviewOutputDecision(
-                verdict=ReviewVerdict(verdict),
+                verdict=verdict,
                 commit_count=commit_count,
                 issues=issues,
                 reason=reason,
@@ -374,7 +374,7 @@ class ModelReviewProvider(DecisionProvider):
             kind=DecisionKind.REVIEW_OUTPUT,
             provider_id=self.provider_id,
             decision=ReviewOutputDecision(
-                verdict=ReviewVerdict(verdict),
+                verdict=verdict,
                 commit_count=-1,  # Not applicable for model review
                 issues=issues,
                 reason=summary if verdict != ReviewVerdict.APPROVED else None,

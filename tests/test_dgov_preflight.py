@@ -53,7 +53,7 @@ def test_check_agent_cli_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_agent_cli_unknown_agent(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("dgov.router.is_routable", lambda _: False)
+    monkeypatch.setattr("dgov.router.is_routable", lambda _, **kw: False)
     r = check_agent_cli("nonexistent")
     assert r.passed is False
     assert "not in registry" in r.message
@@ -61,7 +61,7 @@ def test_check_agent_cli_unknown_agent(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_check_agent_cli_logical_routable(monkeypatch: pytest.MonkeyPatch) -> None:
     """Logical routing names (qwen-35b, worker, etc.) pass preflight."""
-    monkeypatch.setattr("dgov.router.is_routable", lambda name: name == "qwen-35b")
+    monkeypatch.setattr("dgov.router.is_routable", lambda name, **kw: name == "qwen-35b")
     r = check_agent_cli("qwen-35b")
     assert r.passed is True
     assert "routable" in r.message

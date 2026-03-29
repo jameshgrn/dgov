@@ -156,7 +156,7 @@ class MonitorOutputDecision:
 
 @dataclass(frozen=True)
 class ReviewOutputDecision:
-    verdict: ReviewVerdict
+    verdict: str  # ReviewVerdict members or raw model strings
     commit_count: int = 0
     issues: tuple[str, ...] = ()
     reason: str | None = None
