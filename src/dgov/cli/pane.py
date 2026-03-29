@@ -295,46 +295,73 @@ def pane_create(
         k, v = item.split("=", 1)
         env_vars[k] = v
 
+    # LT-GOV: direct dispatch (no plan pipeline — they orchestrate, not execute)
+    if role == "lt-gov":
+        try:
+            packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
+            pane_obj = run_dispatch_only(
+                project_root=project_root,
+                prompt=prompt,
+                agent=agent,
+                session_root=session_root,
+                permission_mode=permission_mode,
+                slug=slug,
+                env_vars=env_vars if env_vars else None,
+                extra_flags=extra_flags,
+                skip_auto_structure=skip_auto_structure,
+                role=role,
+                parent_slug=parent,
+                context_packet=packet,
+            )
+        except (ValueError, RuntimeError) as exc:
+            click.echo(str(exc), err=True)
+            sys.exit(1)
+
+        result = {
+            "slug": pane_obj.slug,
+            "pane_id": pane_obj.pane_id,
+            "agent": pane_obj.agent,
+            "worktree": pane_obj.worktree_path,
+            "branch": pane_obj.branch_name,
+        }
+        click.echo(json.dumps(result, indent=2))
+        return
+
+    # Worker: dispatch via plan pipeline (canonical path)
+    from dgov.plan import build_adhoc_plan, run_plan, write_adhoc_plan
+    from dgov.strategy import _generate_slug
+
+    effective_slug = slug or _generate_slug(prompt)
+    session_root_abs = os.path.abspath(session_root or project_root)
+
     try:
-        packet = build_context_packet(prompt, file_claims=list(touches) if touches else None)
-        pane_obj = run_dispatch_only(
-            project_root=project_root,
+        plan = build_adhoc_plan(
+            slug=effective_slug,
             prompt=prompt,
             agent=agent,
-            session_root=session_root,
+            project_root=project_root,
+            session_root=session_root_abs,
             permission_mode=permission_mode,
-            slug=slug,
-            env_vars=env_vars if env_vars else None,
-            extra_flags=extra_flags,
-            skip_auto_structure=skip_auto_structure,
+            touches=tuple(touches) if touches else (),
+            max_retries=max_retries or 1,
+            timeout_s=600,
             role=role,
-            parent_slug=parent,
-            context_packet=packet,
+            template=template,
+            template_vars=dict(kv.split("=", 1) for kv in var) if var else None,
         )
+        plan_path = write_adhoc_plan(plan, session_root_abs)
+        dag_result = run_plan(plan_path)
     except (ValueError, RuntimeError) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 
-    # Store per-pane max_retries override in metadata
-    if max_retries is not None:
-        from dgov.persistence import set_pane_metadata
-
-        session_root_abs = os.path.abspath(session_root or project_root)
-        set_pane_metadata(session_root_abs, pane_obj.slug, max_retries=max_retries)
-
     result = {
-        "slug": pane_obj.slug,
-        "pane_id": pane_obj.pane_id,
-        "agent": pane_obj.agent,
-        "worktree": pane_obj.worktree_path,
-        "branch": pane_obj.branch_name,
+        "slug": effective_slug,
+        "plan": plan_path,
+        "dag_run_id": dag_result.run_id,
+        "status": dag_result.status,
     }
-    if max_retries is not None:
-        result["max_retries"] = max_retries
     click.echo(json.dumps(result, indent=2))
-
-    if slug and pane_obj.slug != slug:
-        click.echo(f"Warning: slug {slug} already in use, renamed to {pane_obj.slug}", err=True)
 
 
 @pane.command("batch")

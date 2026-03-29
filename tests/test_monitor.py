@@ -494,6 +494,26 @@ class TestClassifyDeterministic:
         assert _classify_deterministic("Exception in thread main") == "stuck"
         assert _classify_deterministic("Panic! at the disco") == "stuck"
 
+    def test_headless_done_patterns(self):
+        """Headless workers (pi/kimi) produce non-shell completion output."""
+        from dgov.monitor import _classify_deterministic
+
+        assert _classify_deterministic("task completed successfully") == "done"
+        assert _classify_deterministic("All changes applied to the file") == "done"
+        assert _classify_deterministic("All edits committed and verified") == "done"
+        assert _classify_deterministic("Process exited") == "done"
+        assert _classify_deterministic("All 77 tests pass") == "done"
+        assert _classify_deterministic("work finished for this pane") == "done"
+
+    def test_working_patterns(self):
+        """Working phase detected from tool activity output."""
+        from dgov.monitor import _classify_deterministic
+
+        assert _classify_deterministic("Reading src/dgov/plan.py") == "working"
+        assert _classify_deterministic("Searching for function definitions") == "working"
+        assert _classify_deterministic("Running uv run pytest tests/") == "working"
+        assert _classify_deterministic("Tool call: Read file.py") == "working"
+
 
 class TestTakeActionBugFixes:
     """Test _take_action() bug fixes and new features."""

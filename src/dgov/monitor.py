@@ -217,6 +217,11 @@ DETERMINISTIC_PATTERNS = {
         r"[\u279c\u2714]\s+[\w\-\.]+\s+[\$\#]",  # bash/sh prompt
         r"\(base\)\s+➜",  # conda/zsh combo
         r"\b(finished|exited) with code \d+\b",
+        # Headless workers (pi/kimi): no shell prompts, API-based completion
+        r"\b(task|work|request) (completed|finished|done)\b",
+        r"\ball (changes|edits|modifications) (applied|made|committed)\b",
+        r"\bprocess exited\b",
+        r"\ball \d+ tests pass",  # test summary from headless agents
     ],
     "waiting_input": [
         r"\b(waiting[ \t]+for\s+(user|input|confirmation|approval|prompt))\b",
@@ -228,6 +233,10 @@ DETERMINISTIC_PATTERNS = {
     ],
     "committing": [
         r"\b(commit|git\s+add|git\s+commit|pushing|pushed|committed)\b",
+    ],
+    "working": [
+        r"\b(reading|writing|editing|searching|running|analyzing|checking)\b",
+        r"\btool (call|use|result)\b",
     ],
     "idle": [
         r"\b(no[ \t]+work|pause[d]?|idling)\b",

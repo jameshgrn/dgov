@@ -238,22 +238,51 @@ class TestPaneLand:
         }
 
 
-class TestPaneCreateSlugWarning:
-    """Tests for slug deduplication warning."""
+class TestPaneCreatePlanPath:
+    """Tests for worker dispatch via plan pipeline."""
 
-    def test_slug_rename_warning_shown(self, runner: CliRunner) -> None:
-        """When user-provided slug differs from pane_obj.slug, warn on stderr."""
+    def test_worker_dispatches_via_plan(self, runner: CliRunner) -> None:
+        """Worker pane create routes through build_adhoc_plan + run_plan."""
         with patch.dict("os.environ", {"DGOV_SKIP_GOVERNOR_CHECK": "1"}):
             registry = {"qwen-35b": {"prompt_command": "claude"}}
+            mock_result = MagicMock(run_id=42, status="submitted")
+            with patch("dgov.agents.load_registry", return_value=registry):
+                with patch("dgov.plan.build_adhoc_plan") as mock_build:
+                    mock_build.return_value = MagicMock(name="fix-parser")
+                    with patch("dgov.plan.write_adhoc_plan", return_value="/tmp/plan.toml"):
+                        with patch("dgov.plan.run_plan", return_value=mock_result):
+                            result = runner.invoke(
+                                cli,
+                                [
+                                    "pane",
+                                    "create",
+                                    "-a",
+                                    "qwen-35b",
+                                    "-s",
+                                    "fix-parser",
+                                    "-p",
+                                    "Fix the parser",
+                                    "--no-preflight",
+                                ],
+                            )
+
+        assert result.exit_code == 0
+        assert "dag_run_id" in result.output
+        mock_build.assert_called_once()
+
+    def test_ltgov_uses_direct_dispatch(self, runner: CliRunner) -> None:
+        """LT-GOV role bypasses plan pipeline, uses run_dispatch_only."""
+        with patch.dict("os.environ", {"DGOV_SKIP_GOVERNOR_CHECK": "1"}):
+            registry = {"codex-mini": {"prompt_command": "codex"}}
             with patch("dgov.agents.load_registry", return_value=registry):
                 with patch("dgov.context_packet.build_context_packet"):
                     with patch("dgov.executor.run_dispatch_only") as mock_dispatch:
                         mock_dispatch.return_value = MagicMock(
-                            slug="fix-parser-1",  # Auto-deduplicated slug
+                            slug="audit-task",
                             pane_id="001",
-                            agent="qwen-35b",
+                            agent="codex-mini",
                             worktree_path="/tmp/worktree",
-                            branch_name="fix-parser-1",
+                            branch_name="audit-task",
                         )
                         result = runner.invoke(
                             cli,
@@ -261,51 +290,20 @@ class TestPaneCreateSlugWarning:
                                 "pane",
                                 "create",
                                 "-a",
-                                "qwen-35b",
+                                "codex-mini",
                                 "-s",
-                                "fix-parser",  # User requested this slug
+                                "audit-task",
                                 "-p",
-                                "Fix the parser",
+                                "Audit the codebase",
                                 "--no-preflight",
+                                "--role",
+                                "lt-gov",
                             ],
                         )
 
         assert result.exit_code == 0
-        # Check that warning was printed to stderr
-        assert "Warning: slug fix-parser already in use, renamed to fix-parser-1" in result.stderr
-
-    def test_no_warning_when_slug_unchanged(self, runner: CliRunner) -> None:
-        """No warning when user-provided slug matches pane_obj.slug."""
-        with patch.dict("os.environ", {"DGOV_SKIP_GOVERNOR_CHECK": "1"}):
-            registry = {"qwen-35b": {"prompt_command": "claude"}}
-            with patch("dgov.agents.load_registry", return_value=registry):
-                with patch("dgov.context_packet.build_context_packet"):
-                    with patch("dgov.executor.run_dispatch_only") as mock_dispatch:
-                        mock_dispatch.return_value = MagicMock(
-                            slug="fix-parser",  # Same as user provided
-                            pane_id="001",
-                            agent="qwen-35b",
-                            worktree_path="/tmp/worktree",
-                            branch_name="fix-parser",
-                        )
-                        result = runner.invoke(
-                            cli,
-                            [
-                                "pane",
-                                "create",
-                                "-a",
-                                "qwen-35b",
-                                "-s",
-                                "fix-parser",
-                                "-p",
-                                "Fix the parser",
-                                "--no-preflight",
-                            ],
-                        )
-
-        assert result.exit_code == 0
-        # No warning should be shown
-        assert "Warning:" not in result.stderr
+        assert "pane_id" in result.output
+        mock_dispatch.assert_called_once()
 
 
 class TestPaneCreateUnknownAgentFiltering:
