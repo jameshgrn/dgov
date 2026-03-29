@@ -165,7 +165,7 @@ def _parse_spec(spec_path: str) -> tuple[str, dict[str, dict]]:
             tasks[task_id] = {
                 "id": task_id,
                 "prompt": t["prompt"],
-                "agent": t.get("agent", "claude"),
+                "agent": t.get("agent", "worker"),
                 "touches": t.get("touches", []),
                 "depends_on": t.get("depends_on", []),
                 "timeout": t.get("timeout", 600),
@@ -188,7 +188,7 @@ def _task_dict_to_spec(task_id: str, task: dict) -> DagTaskSpec:
         summary=task.get("prompt", "")[:80],
         prompt=task.get("prompt", ""),
         commit_message="",
-        agent=task.get("agent", "claude"),
+        agent=task.get("agent", "worker"),
         escalation=(),
         depends_on=tuple(task.get("depends_on", ())),
         files=DagFileSpec(edit=tuple(sorted(touches))),

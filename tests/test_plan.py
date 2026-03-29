@@ -1388,16 +1388,16 @@ def test_cross_plan_claim_overlap_detected(tmp_path):
         },
     )
 
-    mock_runs = [
+    mock_claims = [
         {
-            "id": 99,
+            "dag_run_id": 99,
             "dag_file": "other-plan.toml",
-            "status": "running",
-            "definition_json": '{"tasks": [{"slug": "t1", "file_claims": ["src/foo.py"]}]}',
+            "task_slug": "t1",
+            "file_claims": ("src/foo.py",),
         }
     ]
 
-    with patch("dgov.persistence.list_active_dag_runs", return_value=mock_runs):
+    with patch("dgov.persistence.list_active_dag_task_claims", return_value=mock_claims):
         issues = check_cross_plan_claims(plan, str(tmp_path))
 
     assert len(issues) >= 1
@@ -1425,16 +1425,16 @@ def test_cross_plan_no_overlap(tmp_path):
         },
     )
 
-    mock_runs = [
+    mock_claims = [
         {
-            "id": 99,
+            "dag_run_id": 99,
             "dag_file": "other-plan.toml",
-            "status": "running",
-            "definition_json": '{"tasks": [{"slug": "t1", "file_claims": ["src/foo.py"]}]}',
+            "task_slug": "t1",
+            "file_claims": ("src/foo.py",),
         }
     ]
 
-    with patch("dgov.persistence.list_active_dag_runs", return_value=mock_runs):
+    with patch("dgov.persistence.list_active_dag_task_claims", return_value=mock_claims):
         issues = check_cross_plan_claims(plan, str(tmp_path))
 
     assert len(issues) == 0

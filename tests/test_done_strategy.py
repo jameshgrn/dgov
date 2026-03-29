@@ -452,16 +452,19 @@ class TestIsDoneWithStrategy:
 
 
 # ---------------------------------------------------------------------------
-# list_worker_panes passes done_strategy to _is_done
+# list_worker_panes is read-only
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.unit
-class TestListWorkerPanesPassesDoneStrategy:
-    """Verify list_worker_panes resolves agent done_strategy and forwards it."""
+class TestListWorkerPanesReadOnly:
+    """Verify list_worker_panes reports derived completion without mutating state."""
 
-    def test_claude_api_strategy_passed(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        """Claude panes get DoneStrategy(type='api') forwarded to _is_done."""
+    def test_done_signal_does_not_mutate_persistent_state(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Derived done state stays in the read model until a lifecycle path settles it."""
+        from dgov.persistence import STATE_DIR, get_pane
         from dgov.status import list_worker_panes
 
         session_root = str(tmp_path)
@@ -470,22 +473,14 @@ class TestListWorkerPanesPassesDoneStrategy:
 
         # Make the pane look alive
         mock_backend.bulk_info.return_value = {"%1": {"current_command": "claude"}}
+        done_dir = tmp_path / STATE_DIR / "done"
+        done_dir.mkdir(parents=True)
+        (done_dir / slug).write_text("")
 
-        with (
-            patch("dgov.status._is_done", wraps=_is_done) as spy_is_done,
-            patch("dgov.done._has_new_commits", return_value=True),
-            patch("dgov.done._agent_still_running", return_value=False),
-        ):
-            list_worker_panes(session_root, session_root, include_freshness=False)
-
-            spy_is_done.assert_called_once()
-            call_kwargs = spy_is_done.call_args
-            strategy = call_kwargs.kwargs.get("done_strategy") or (
-                call_kwargs[1].get("done_strategy") if len(call_kwargs) > 1 else None
-            )
-            assert strategy is not None, "done_strategy was not passed to _is_done"
-            assert strategy.type == "api", f"Expected 'api', got '{strategy.type}'"
-            assert call_kwargs.kwargs.get("alive") is True
+        result = list_worker_panes(session_root, session_root, include_freshness=False)
+        assert result[0]["done"] is True
+        assert result[0]["state"] == "done"
+        assert get_pane(session_root, slug)["state"] == "active"
 
 
 @pytest.mark.unit

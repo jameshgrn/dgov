@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from dgov.backend import get_backend
-from dgov.done import _AGENT_COMMANDS, _is_done, _strip_ansi
+from dgov.done import _AGENT_COMMANDS, _has_new_commits, _strip_ansi
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
     PANE_STATES,
@@ -30,6 +30,44 @@ logger = logging.getLogger(__name__)
 _INTERNAL_BOOTSTRAP_RE = re.compile(
     r"(?:^|\s)source\s+/\S*dgov-cmd-[^\s/]+\.sh\b.*\brm\b.*\bdgov-cmd-[^\s/]+\.sh\b"
 )
+
+
+def _derive_done_state(
+    project_root: str,
+    session_root: str,
+    pane_record: dict,
+    *,
+    alive: bool,
+) -> tuple[bool, str]:
+    """Derive completion from persisted state and runtime signals without mutating state."""
+    state = pane_record.get("state") or PaneState.ACTIVE
+    if state != PaneState.ACTIVE:
+        return True, state
+
+    slug = str(pane_record.get("slug") or "")
+    if not slug:
+        return False, state
+
+    done_path = Path(session_root, STATE_DIR, "done", slug)
+    exit_path = Path(session_root, STATE_DIR, "done", f"{slug}.exit")
+    if done_path.exists():
+        return True, PaneState.DONE
+    if exit_path.exists():
+        try:
+            exit_code = int(exit_path.read_text().strip())
+        except (OSError, ValueError):
+            exit_code = -1
+        return (exit_code == 0, PaneState.DONE if exit_code == 0 else PaneState.FAILED)
+
+    if alive:
+        return False, state
+
+    branch = str(pane_record.get("branch_name") or "")
+    base_sha = str(pane_record.get("base_sha") or "")
+    has_commits = (
+        _has_new_commits(project_root, branch, base_sha) if branch and base_sha else False
+    )
+    return (has_commits, PaneState.DONE if has_commits else PaneState.ACTIVE)
 
 
 def _clean_worker_output_text(text: str) -> str:
@@ -343,7 +381,6 @@ def list_worker_panes(
 
     Always reads worker logs and derives summary from them.
     """
-    from dgov.agents import load_registry
     from dgov.persistence import list_panes_slim
 
     session_root = os.path.abspath(session_root or project_root)
@@ -351,32 +388,20 @@ def list_worker_panes(
     prune_stale_panes(project_root, session_root)
     panes = list_panes_slim(session_root) if not include_prompt else all_panes(session_root)
     all_tmux = get_backend().bulk_info()
-    registry = load_registry(project_root)
     result = []
     for p in panes:
         pane_id = p.get("pane_id", "")
         slug = p["slug"]
-        state = p.get("state") or "active"
+        persisted_state = p.get("state") or PaneState.ACTIVE
         alive = pane_id in all_tmux if pane_id else False
         cmd = all_tmux.get(pane_id, {}).get("current_command", "") if alive else ""
-        done = state != PaneState.ACTIVE
-        if state == PaneState.ACTIVE:
-            agent_id = p.get("agent", "")
-            agent_def = registry.get(agent_id) if agent_id else None
-            agent_done_strategy = agent_def.done_strategy if agent_def else None
-            done = _is_done(
-                session_root,
-                slug,
-                pane_record=p,
-                done_strategy=agent_done_strategy,
-                alive=alive,
-                current_command=cmd,
-            )
-            if done:
-                # _is_done updated persistent state; reconcile local copy
-                updated = get_pane(session_root, slug)
-                if updated:
-                    state = updated.get("state", state)
+        done, derived_state = _derive_done_state(
+            project_root,
+            session_root,
+            p,
+            alive=alive,
+        )
+        state = derived_state if persisted_state == PaneState.ACTIVE and done else persisted_state
         if include_freshness:
             freshness = _compute_freshness(project_root, p)
         else:
@@ -407,7 +432,7 @@ def list_worker_panes(
         last_output = tail_worker_log(session_root, slug, lines=10) or ""
         summary = _extract_summary_from_log(session_root, slug, pre_read=last_output)
 
-        phase = _compute_phase(state, alive, done, duration_s, summary)
+        phase = _compute_phase(str(state), alive, done, duration_s, summary)
         progress = _read_progress_json(session_root, slug)
         preserved_artifacts = get_preserved_artifacts(p)
 

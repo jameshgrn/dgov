@@ -18,6 +18,7 @@ from dgov.persistence import (
     emit_event,
     get_dag_task_contract_for_pane,
     get_pane,
+    mark_preserved_artifacts,
     read_events,
     remove_pane,
     update_pane_state,
@@ -72,6 +73,17 @@ def _close_replaced_pane(project_root: str, session_root: str, slug: str) -> Non
     remove_pane(session_root, slug)
 
 
+def _preserve_replaced_pane(session_root: str, slug: str, *, reason: str, state: str) -> None:
+    """Mark a replaced pane inspectable instead of deleting it."""
+    mark_preserved_artifacts(
+        session_root,
+        slug,
+        reason=reason,
+        recoverable=False,
+        state=state,
+    )
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     max_retries: int = 0
@@ -123,13 +135,14 @@ ESCALATION_CHAIN.update(ROLE_ESCALATION)
 def escalate_worker_pane(
     project_root: str,
     slug: str,
-    target_agent: str = "qwen-35b",
+    target_agent: str = "supervisor",
     session_root: str | None = None,
     permission_mode: str = "bypassPermissions",
+    close: bool = False,
 ) -> dict:
     """Escalate a worker pane to a different agent.
 
-    Closes the existing pane and relaunches with ``target_agent``
+    Preserves the existing pane by default and relaunches with ``target_agent``
     using the same prompt. Returns the new pane info.
     """
     session_root = os.path.abspath(session_root or project_root)
@@ -177,10 +190,18 @@ def escalate_worker_pane(
     except Exception as e:
         return {"error": str(e)}
 
-    # Mark old pane as escalated then close
+    # Mark old pane as escalated, preserving artifacts unless cleanup is explicit.
     update_pane_state(session_root, slug, PaneState.ESCALATED)
     emit_event(session_root, "pane_escalated", slug, new_slug=new_slug, target_agent=target_agent)
-    _close_replaced_pane(project_root, session_root, slug)
+    if close:
+        _close_replaced_pane(project_root, session_root, slug)
+    else:
+        _preserve_replaced_pane(
+            session_root,
+            slug,
+            reason="escalated_replaced",
+            state=PaneState.ESCALATED,
+        )
 
     return {
         "escalated": True,
@@ -200,7 +221,7 @@ def retry_worker_pane(
     agent: str | None = None,
     prompt: str | None = None,
     permission_mode: str = "bypassPermissions",
-    close: bool = True,
+    close: bool = False,
 ) -> dict:
     """Retry a pane by creating a new one linked to the original.
 
@@ -208,8 +229,7 @@ def retry_worker_pane(
     slug ``<original-base>-<attempt+1>``, creates a new worktree + branch +
     pane via the normal create path, then cross-links the old and new records.
 
-    The old pane is closed by default (worktree + tmux removed) to prevent
-    stale superseded entries lingering in the dashboard.
+    The old pane is preserved by default so failed artifacts remain inspectable.
     """
     session_root = os.path.abspath(session_root or project_root)
     target = get_pane(session_root, slug)
@@ -263,9 +283,16 @@ def retry_worker_pane(
     emit_event(session_root, "pane_retry_spawned", new_slug, retried_from=slug, attempt=attempt)
     emit_event(session_root, "pane_superseded", slug, superseded_by=new_slug)
 
-    # Close old pane after superseding (worktree + tmux cleanup)
+    # Preserve old pane by default; only explicit cleanup removes evidence.
     if close:
         _close_replaced_pane(project_root, session_root, slug)
+    else:
+        _preserve_replaced_pane(
+            session_root,
+            slug,
+            reason="retry_replaced",
+            state=PaneState.SUPERSEDED,
+        )
 
     return {
         "retried": True,

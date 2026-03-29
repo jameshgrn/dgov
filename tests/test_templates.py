@@ -221,7 +221,7 @@ class TestPaneCreateWithTemplate:
         call_kwargs = mock_build.call_args.kwargs
         assert "null pointer" in call_kwargs["prompt"]
         assert "src/app.py" in call_kwargs["prompt"]
-        assert call_kwargs["agent"] == "qwen-35b"
+        assert call_kwargs["agent"] == "worker"
 
     def test_template_uses_default_agent(self, runner: CliRunner) -> None:
         m1, m2, m3 = self._mock_plan_pipeline()
@@ -244,7 +244,7 @@ class TestPaneCreateWithTemplate:
             )
 
         assert result.exit_code == 0, result.output
-        assert mock_build.call_args.kwargs["agent"] == "qwen-35b"
+        assert mock_build.call_args.kwargs["agent"] == "worker"
 
     def test_template_agent_override(self, runner: CliRunner) -> None:
         m1, m2, m3 = self._mock_plan_pipeline()

@@ -30,7 +30,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {file} && git commit -m "Fix: {description}"'
         ),
         required_vars=["file", "description", "test_file"],
-        default_agent="qwen-35b",
+        default_agent="worker",
         description="Fix a bug in a single file with targeted tests",
     ),
     "feature": PromptTemplate(
@@ -42,7 +42,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {file} {test_file} && git commit -m "Add: {description}"'
         ),
         required_vars=["file", "description", "test_file"],
-        default_agent="qwen-35b",
+        default_agent="worker",
         description="Add a new feature with tests",
     ),
     "refactor": PromptTemplate(
@@ -53,7 +53,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {file} && git commit -m "Refactor: {description}"'
         ),
         required_vars=["file", "description", "test_file"],
-        default_agent="qwen-35b",
+        default_agent="worker",
         description="Refactor code while preserving behavior",
     ),
     "test": PromptTemplate(
@@ -65,7 +65,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             'git add {test_file} && git commit -m "Add tests for {file}"'
         ),
         required_vars=["file", "test_file"],
-        default_agent="qwen-35b",
+        default_agent="worker",
         description="Write tests for an existing file",
     ),
     "review": PromptTemplate(
@@ -77,7 +77,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "style-only nitpicks."
         ),
         required_vars=["directory"],
-        default_agent="claude",
+        default_agent="supervisor",
         description="Review code and output structured JSON findings",
     ),
     "lt-gov": PromptTemplate(
@@ -126,7 +126,7 @@ BUILT_IN_TEMPLATES: dict[str, PromptTemplate] = {
             "Then exit."
         ),
         required_vars=["ltgov_slug", "task_list", "default_agent"],
-        default_agent="codex-mini",
+        default_agent="manager",
         description="Meta-prompt for a lieutenant governor managing a worker tier",
     ),
 }

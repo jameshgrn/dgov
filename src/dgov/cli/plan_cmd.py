@@ -198,18 +198,11 @@ def _scaffold_auto(goal: str, files: list[str], name: str) -> str:
 
     active_claims: list[str] = []
     try:
-        from dgov.persistence import list_active_dag_runs
+        from dgov.persistence import list_active_dag_task_claims
 
         session_root = os.path.abspath(".")
-        for run in list_active_dag_runs(session_root):
-            try:
-                import json
-
-                defn = json.loads(run.get("definition_json", "{}"))
-                for task in defn.get("tasks", []):
-                    active_claims.extend(task.get("file_claims", []))
-            except (json.JSONDecodeError, TypeError):
-                pass
+        for task in list_active_dag_task_claims(session_root):
+            active_claims.extend(task.get("file_claims", ()))
     except Exception:
         pass
 

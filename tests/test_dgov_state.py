@@ -163,6 +163,25 @@ class TestDagPersistence:
         assert tasks[0]["status"] == "dispatched"
         assert tasks[0]["pane_slug"] == "T0-abc"
 
+    def test_upsert_dag_task_persists_contract(self, tmp_path):
+        from dgov.persistence import create_dag_run, get_dag_task, upsert_dag_task
+
+        session = self._make_session(tmp_path)
+        run_id = create_dag_run(session, "/dag.toml", "2024-01-01T00:00:00Z", "running", 0, {})
+        upsert_dag_task(
+            session,
+            run_id,
+            "T0",
+            "pending",
+            "hunter",
+            file_claims=("src/foo.py", "tests/test_foo.py"),
+            commit_message="Own foo contract",
+        )
+        task = get_dag_task(session, run_id, "T0")
+        assert task is not None
+        assert task["file_claims"] == ("src/foo.py", "tests/test_foo.py")
+        assert task["commit_message"] == "Own foo contract"
+
     def test_list_dag_tasks_ordered_by_slug(self, tmp_path):
         from dgov.persistence import create_dag_run, list_dag_tasks, upsert_dag_task
 

@@ -560,6 +560,8 @@ CREATE TABLE IF NOT EXISTS dag_tasks (
     agent TEXT NOT NULL,
     attempt INTEGER NOT NULL DEFAULT 1,
     pane_slug TEXT,
+    file_claims TEXT NOT NULL DEFAULT '[]',
+    commit_message TEXT DEFAULT NULL,
     error TEXT,
     UNIQUE(dag_run_id, slug),
     FOREIGN KEY (dag_run_id) REFERENCES dag_runs(id)
@@ -758,7 +760,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     # Schema version gate: CREATE TABLE is idempotent and fast; ALTER TABLE
     # migrations and sentinel-to-NULL conversions are expensive and only need
     # to run once. PRAGMA user_version tracks whether they've been applied.
-    _SCHEMA_VERSION = 1
+    _SCHEMA_VERSION = 2
     (current_version,) = conn.execute("PRAGMA user_version").fetchone()
 
     conn.execute(_CREATE_TABLE_SQL)
@@ -896,6 +898,17 @@ def _get_db(session_root: str) -> sqlite3.Connection:
             conn.execute("ALTER TABLE archived_panes ADD COLUMN route TEXT DEFAULT NULL")
         except sqlite3.OperationalError:
             pass  # column already exists
+
+        # Migrate: add typed DAG task contract columns.
+        _dag_task_cols = [
+            ("file_claims", "TEXT NOT NULL DEFAULT '[]'"),
+            ("commit_message", "TEXT DEFAULT NULL"),
+        ]
+        for col, coldef in _dag_task_cols:
+            try:
+                conn.execute(f"ALTER TABLE dag_tasks ADD COLUMN {col} {coldef}")
+            except sqlite3.OperationalError:
+                pass
 
         # Migrate: convert sentinel empty strings to NULL.
         # Old databases have NOT NULL constraints on these columns, so we need
@@ -1035,6 +1048,22 @@ def get_pane(session_root: str, slug: str) -> dict | None:
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
     return _row_to_dict(row) if row else None
+
+
+def get_panes(session_root: str, slugs: set[str] | list[str] | tuple[str, ...]) -> list[dict]:
+    """Return pane rows for the provided slugs."""
+    ordered_slugs = [slug for slug in slugs if slug]
+    if not ordered_slugs:
+        return []
+    conn = _get_db(session_root)
+    conn.row_factory = sqlite3.Row
+    placeholders = ", ".join("?" for _ in ordered_slugs)
+    rows = conn.execute(
+        f"SELECT * FROM panes WHERE slug IN ({placeholders})",
+        ordered_slugs,
+    ).fetchall()
+    by_slug = {str(row["slug"]): _row_to_dict(row) for row in rows}
+    return [by_slug[slug] for slug in ordered_slugs if slug in by_slug]
 
 
 def all_panes(session_root: str) -> list[dict]:
@@ -1666,20 +1695,46 @@ def upsert_dag_task(
     agent: str,
     attempt: int = 1,
     pane_slug: str | None = None,
+    file_claims: list[str] | tuple[str, ...] | None = None,
+    commit_message: str | None = None,
     error: str | None = None,
 ) -> None:
     """Insert or update a DAG task row."""
+    file_claims_json = None if file_claims is None else json.dumps(list(file_claims))
 
     def _do() -> None:
         conn = _get_db(session_root)
         conn.execute(
-            """INSERT INTO dag_tasks (dag_run_id, slug, status, agent, attempt, pane_slug, error)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO dag_tasks (
+                 dag_run_id, slug, status, agent, attempt, pane_slug,
+                 file_claims, commit_message, error
+               )
+               VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, '[]'), ?, ?)
                ON CONFLICT(dag_run_id, slug) DO UPDATE SET
                  status=excluded.status, agent=excluded.agent,
                  attempt=excluded.attempt, pane_slug=excluded.pane_slug,
+                 file_claims=CASE
+                     WHEN ? IS NULL THEN dag_tasks.file_claims
+                     ELSE excluded.file_claims
+                 END,
+                 commit_message=CASE
+                     WHEN ? IS NULL THEN dag_tasks.commit_message
+                     ELSE excluded.commit_message
+                 END,
                  error=excluded.error""",
-            (dag_run_id, slug, status, agent, attempt, pane_slug, error),
+            (
+                dag_run_id,
+                slug,
+                status,
+                agent,
+                attempt,
+                pane_slug,
+                file_claims_json,
+                commit_message,
+                error,
+                file_claims_json,
+                commit_message,
+            ),
         )
         conn.commit()
 
@@ -1690,7 +1745,7 @@ def list_dag_tasks(session_root: str, dag_run_id: int) -> list[dict]:
     """List all task rows for a DAG run."""
     conn = _get_db(session_root)
     rows = conn.execute(
-        "SELECT slug, status, agent, attempt, pane_slug, error"
+        "SELECT slug, status, agent, attempt, pane_slug, file_claims, commit_message, error"
         " FROM dag_tasks WHERE dag_run_id = ? ORDER BY slug",
         (dag_run_id,),
     ).fetchall()
@@ -1701,7 +1756,9 @@ def list_dag_tasks(session_root: str, dag_run_id: int) -> list[dict]:
             "agent": r[2],
             "attempt": r[3],
             "pane_slug": r[4],
-            "error": r[5],
+            "file_claims": tuple(json.loads(r[5] or "[]")),
+            "commit_message": r[6],
+            "error": r[7],
         }
         for r in rows
     ]
@@ -1711,9 +1768,8 @@ def get_dag_task_contract_for_pane(session_root: str, pane_slug: str) -> dict | 
     """Return the persisted DAG contract for a dispatched pane, if any."""
     conn = _get_db(session_root)
     row = conn.execute(
-        "SELECT dt.dag_run_id, dt.slug, dr.definition_json "
+        "SELECT dt.dag_run_id, dt.slug, dt.file_claims, dt.commit_message "
         "FROM dag_tasks dt "
-        "JOIN dag_runs dr ON dr.id = dt.dag_run_id "
         "WHERE dt.pane_slug = ? "
         "ORDER BY dt.dag_run_id DESC LIMIT 1",
         (pane_slug,),
@@ -1721,20 +1777,11 @@ def get_dag_task_contract_for_pane(session_root: str, pane_slug: str) -> dict | 
     if row is None:
         return None
 
-    definition = json.loads(row[2] or "{}")
-    task = definition.get("tasks", {}).get(row[1], {})
-    files = task.get("files", {})
-    claims = [
-        *files.get("create", ()),
-        *files.get("edit", ()),
-        *files.get("delete", ()),
-    ]
-    deduped_claims = list(dict.fromkeys(path for path in claims if path))
     return {
         "dag_run_id": row[0],
         "task_slug": row[1],
-        "file_claims": deduped_claims,
-        "commit_message": task.get("commit_message", ""),
+        "file_claims": list(dict.fromkeys(path for path in json.loads(row[2] or "[]") if path)),
+        "commit_message": row[3] or "",
     }
 
 
@@ -1742,7 +1789,7 @@ def get_dag_task(session_root: str, dag_run_id: int, slug: str) -> dict | None:
     """Return one DAG task row for a DAG run, or None if missing."""
     conn = _get_db(session_root)
     row = conn.execute(
-        "SELECT slug, status, agent, attempt, pane_slug, error"
+        "SELECT slug, status, agent, attempt, pane_slug, file_claims, commit_message, error"
         " FROM dag_tasks WHERE dag_run_id = ? AND slug = ?",
         (dag_run_id, slug),
     ).fetchone()
@@ -1754,8 +1801,32 @@ def get_dag_task(session_root: str, dag_run_id: int, slug: str) -> dict | None:
         "agent": row[2],
         "attempt": row[3],
         "pane_slug": row[4],
-        "error": row[5],
+        "file_claims": tuple(json.loads(row[5] or "[]")),
+        "commit_message": row[6],
+        "error": row[7],
     }
+
+
+def list_active_dag_task_claims(session_root: str) -> list[dict]:
+    """Return typed task claim rows for all active DAG runs."""
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT dr.id, dr.dag_file, dt.slug, dt.file_claims "
+        "FROM dag_runs dr "
+        "JOIN dag_tasks dt ON dt.dag_run_id = dr.id "
+        "WHERE dr.status NOT IN ('completed', 'failed', 'cancelled', 'blocked')"
+    ).fetchall()
+    claims: list[dict] = []
+    for row in rows:
+        claims.append(
+            {
+                "dag_run_id": row[0],
+                "dag_file": row[1],
+                "task_slug": row[2],
+                "file_claims": tuple(json.loads(row[3] or "[]")),
+            }
+        )
+    return claims
 
 
 def get_dag_task_failure_context(session_root: str, run_id: int) -> dict[str, dict]:

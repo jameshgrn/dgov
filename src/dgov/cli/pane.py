@@ -377,7 +377,7 @@ def pane_create(
 def pane_batch(toml_file, project_root, session_root):
     """Dispatch multiple workers from a TOML file.
 
-        TOML format:
+    TOML format:
 
     \b
     [tasks.fix-parser]
@@ -391,87 +391,16 @@ def pane_batch(toml_file, project_root, session_root):
       cat batch.toml | xargs -0 dgov pane batch -r .
     """
     project_root, session_root = _autocorrect_roots(project_root, session_root)
+    from dgov.batch import run_batch
 
-    import tomllib
-
-    from dgov.agents import get_default_agent, load_registry
-    from dgov.context_packet import build_context_packet
-    from dgov.executor import run_dispatch_only, run_dispatch_preflight
-
-    project_root = os.path.abspath(project_root)
-    registry = load_registry(project_root)
-    default_agent = get_default_agent(registry)
-
-    with open(toml_file, "rb") as f:
-        config = tomllib.load(f)
-
-    tasks = config.get("tasks", {})
-    if not tasks:
-        click.echo(json.dumps({"error": "No [tasks.*] sections found in TOML file"}), err=True)
-        sys.exit(1)
-
-    results = []
-    errors = []
-
-    for slug, task in tasks.items():
-        prompt = task.get("prompt")
-        if not prompt:
-            errors.append({"slug": slug, "error": "missing prompt"})
-            continue
-
-        agent = task.get("agent", default_agent)
-        if agent not in registry:
-            errors.append({"slug": slug, "error": f"unknown agent: {agent}"})
-            continue
-
-        mode = task.get("mode", "bypassPermissions")
-        packet = build_context_packet(
-            prompt,
-            file_claims=_declared_touches(task) or None,
-        )
-
-        report = run_dispatch_preflight(
-            project_root,
-            agent,
-            packet=packet,
-            session_root=session_root,
-        )
-        if not report.passed:
-            errors.append({"slug": slug, "error": "preflight failed"})
-            continue
-
-        try:
-            pane_obj = run_dispatch_only(
-                project_root=project_root,
-                prompt=prompt,
-                agent=agent,
-                permission_mode=mode,
-                slug=slug,
-                session_root=session_root,
-                context_packet=packet,
-            )
-            results.append(
-                {
-                    "slug": pane_obj.slug,
-                    "pane_id": pane_obj.pane_id,
-                    "agent": pane_obj.agent,
-                    "worktree": pane_obj.worktree_path,
-                    "branch": pane_obj.branch_name,
-                }
-            )
-        except (ValueError, RuntimeError) as exc:
-            errors.append({"slug": slug, "error": str(exc)})
-
-    summary = {
-        "dispatched": len(results),
-        "failed": len(errors),
-        "panes": results,
-    }
-    if errors:
-        summary["errors"] = errors
-
+    summary = run_batch(
+        toml_file,
+        session_root=session_root,
+        dry_run=False,
+        project_root=project_root,
+    )
     click.echo(json.dumps(summary, indent=2))
-    if errors:
+    if summary.get("failed"):
         sys.exit(1)
 
 

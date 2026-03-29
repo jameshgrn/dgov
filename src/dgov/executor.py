@@ -2148,6 +2148,8 @@ def run_cancel_dag(session_root: str, run_id: int) -> dict:
             "cancelled",
             str(row.get("agent") or "governor-override"),
             pane_slug=row.get("pane_slug"),
+            file_claims=row.get("file_claims"),
+            commit_message=row.get("commit_message"),
             error="cancelled_by_governor",
             attempt=int(row.get("attempt") or 1),
         )
@@ -2579,6 +2581,8 @@ def _dag_dispatch(
             "dispatched",
             task.agent,
             pane_slug=pane_slug,
+            file_claims=touches,
+            commit_message=task.commit_message,
         )
         emit_event(
             session_root,
@@ -2599,6 +2603,8 @@ def _dag_dispatch(
             task_slug,
             "failed",
             task.agent,
+            file_claims=touches,
+            commit_message=task.commit_message,
             error=str(exc),
         )
         return TaskDispatchFailed(task_slug, str(exc))
@@ -2857,7 +2863,15 @@ def _dag_skip(
     from dgov.persistence import upsert_dag_task
 
     task = dag.tasks[task_slug]
-    upsert_dag_task(session_root, run_id, task_slug, "skipped", task.agent)
+    upsert_dag_task(
+        session_root,
+        run_id,
+        task_slug,
+        "skipped",
+        task.agent,
+        file_claims=task.all_touches(),
+        commit_message=task.commit_message,
+    )
     progress(f"  skipped {task_slug}: {reason}")
 
 
@@ -2916,6 +2930,8 @@ def _dag_interrupt(
         "blocked_on_governor",
         pane.get("agent", "unknown"),
         pane_slug=pane_slug,
+        file_claims=pane.get("file_claims"),
+        commit_message=pane.get("commit_message"),
         error=reason,
     )
 

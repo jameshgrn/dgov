@@ -68,7 +68,12 @@ def run_dag_via_kernel(
     from dataclasses import asdict
     from datetime import datetime, timezone
 
-    from dgov.persistence import create_dag_run, emit_event, replace_dag_plan_contract
+    from dgov.persistence import (
+        create_dag_run,
+        emit_event,
+        replace_dag_plan_contract,
+        upsert_dag_task,
+    )
 
     session_root = dag.session_root
 
@@ -111,6 +116,19 @@ def run_dag_via_kernel(
             run_id,
             evals=plan_evals or [],
             unit_eval_links=unit_eval_links or [],
+        )
+    for slug, task in dag.tasks.items():
+        file_claims = tuple(
+            dict.fromkeys((*task.files.create, *task.files.edit, *task.files.delete))
+        )
+        upsert_dag_task(
+            session_root,
+            run_id,
+            slug,
+            kernel.task_states[slug].value,
+            task.agent,
+            file_claims=file_claims,
+            commit_message=task.commit_message,
         )
 
     # Ensure the headless engine is running

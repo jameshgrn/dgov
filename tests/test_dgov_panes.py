@@ -576,10 +576,7 @@ class TestListWorkerPanes:
         )
 
         mock_backend.bulk_info.return_value = {"%2": {"title": "gov", "current_command": "claude"}}
-        with (
-            patch("dgov.status._is_done", return_value=False),
-        ):
-            result = list_worker_panes(str(tmp_path))
+        result = list_worker_panes(str(tmp_path))
         assert len(result) == 1
         assert result[0]["slug"] == "gov"
         assert result[0]["pane_id"] == "%2"
@@ -605,10 +602,7 @@ class TestListWorkerPanes:
         mock_backend.bulk_info.return_value = {
             "%5": {"title": "test", "current_command": "claude"}
         }
-        with (
-            patch("dgov.status._is_done", return_value=False),
-        ):
-            result = list_worker_panes(str(tmp_path))
+        result = list_worker_panes(str(tmp_path))
         assert len(result) == 1
         assert result[0]["alive"] is True
         assert result[0]["current_command"] == "claude"
@@ -654,26 +648,17 @@ class TestListWorkerPanes:
             },
         )
 
-        checked: list[str] = []
-
-        def fake_is_done(session_root, slug, pane_record=None, **_kw):
-            checked.append(slug)
-            return False
-
-        with patch("dgov.status._is_done", side_effect=fake_is_done):
-            result = list_worker_panes(str(tmp_path))
+        result = list_worker_panes(str(tmp_path))
 
         # Superseded pane is pruned — only active pane remains
-        assert checked == ["active-task"]
         slugs = [p["slug"] for p in result]
         assert "old-task" not in slugs
         assert "active-task" in slugs
 
-    def test_reconciles_state_when_is_done_transitions_active(
+    def test_derives_done_without_mutating_persistent_state(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        """state must never be 'active' while done is True in the same entry."""
-        from dgov.persistence import update_pane_state
+        """Read paths surface derived completion but leave DB state untouched."""
 
         replace_all_panes(
             str(tmp_path),
@@ -695,18 +680,16 @@ class TestListWorkerPanes:
         mock_backend.bulk_info.return_value = {
             "%3": {"title": "worker", "current_command": "node"}
         }
+        done_dir = tmp_path / STATE_DIR / "done"
+        done_dir.mkdir(parents=True)
+        (done_dir / "worker").write_text("")
 
-        def fake_is_done(session_root, slug, pane_record=None, **_kw):
-            # Simulate what real _is_done does: update state, return True
-            update_pane_state(session_root, slug, "done")
-            return True
-
-        with patch("dgov.status._is_done", side_effect=fake_is_done):
-            result = list_worker_panes(str(tmp_path))
+        result = list_worker_panes(str(tmp_path))
 
         assert len(result) == 1
         assert result[0]["done"] is True
         assert result[0]["state"] == "done"
+        assert get_pane(str(tmp_path), "worker")["state"] == "active"
 
     def test_reads_last_output_from_log_file(
         self, tmp_path: Path, mock_backend: MagicMock
@@ -738,8 +721,7 @@ class TestListWorkerPanes:
             encoding="utf-8",
         )
 
-        with patch("dgov.status._is_done", return_value=False):
-            result = list_worker_panes(str(tmp_path))
+        result = list_worker_panes(str(tmp_path))
 
         assert result[0]["last_output"] == "line 1\nline 2\nline 3\nline 4"
         mock_backend.capture_output.assert_not_called()
@@ -768,8 +750,7 @@ class TestListWorkerPanes:
             "%3": {"title": "worker", "current_command": "node"}
         }
 
-        with patch("dgov.status._is_done", return_value=False):
-            result = list_worker_panes(str(tmp_path))
+        result = list_worker_panes(str(tmp_path))
 
         assert result[0]["last_output"] == ""
         mock_backend.capture_output.assert_not_called()
@@ -1546,7 +1527,7 @@ class TestEscalateWorkerPane:
         result = escalate_worker_pane(str(tmp_path), "test")
         assert "error" in result
 
-    def test_escalation_calls_close_and_create(self, tmp_path: Path) -> None:
+    def test_escalation_preserves_original_by_default(self, tmp_path: Path) -> None:
         from dgov.persistence import WorkerPane
         from dgov.recovery import escalate_worker_pane
 
@@ -1575,6 +1556,8 @@ class TestEscalateWorkerPane:
         assert result["escalated"] is True
         assert result["original_agent"] == "pi"
         assert result["agent"] == "claude"
+        assert get_pane(str(tmp_path), "old")["state"] == "escalated"
+        assert get_pane(str(tmp_path), "old")["preserve_reason"] == "escalated_replaced"
 
 
 # ---------------------------------------------------------------------------
@@ -2427,10 +2410,10 @@ class TestRetryWorkerPane:
         assert result["attempt"] == 2
         assert result["original_slug"] == "fix-bug"
 
-        # Old pane is closed + cleaned up (no stale superseded entries)
-        panes = all_panes(str(tmp_path))
-        old_slugs = [p["slug"] for p in panes if p["slug"] == "fix-bug"]
-        assert old_slugs == [], "superseded pane should be removed after close"
+        preserved = get_pane(str(tmp_path), "fix-bug")
+        assert preserved is not None
+        assert preserved["state"] == "superseded"
+        assert preserved["preserve_reason"] == "retry_replaced"
 
         # Links derived from events, not stored metadata (derive-dont-store)
         from dgov.persistence import read_events
@@ -2564,6 +2547,8 @@ class TestRetryWorkerPane:
             "dispatched",
             "worker",
             pane_slug="r76-routing-contract-3",
+            file_claims=[".dgov/agents.toml", "src/dgov/router.py", "tests/test_router.py"],
+            commit_message="Own routing tables in repo",
         )
 
         new_pane = WorkerPane(
@@ -2633,7 +2618,9 @@ class TestRetryWorkerPane:
             patch("dgov.recovery.create_worker_pane", side_effect=fake_create),
             patch("dgov.recovery.close_worker_pane", return_value=True),
         ):
-            result = retry_worker_pane(str(tmp_path), "fix-bug", session_root=str(tmp_path))
+            result = retry_worker_pane(
+                str(tmp_path), "fix-bug", session_root=str(tmp_path), close=True
+            )
 
         assert result["retried"] is True
         assert get_pane(str(tmp_path), "fix-bug") is None

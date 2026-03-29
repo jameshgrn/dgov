@@ -41,6 +41,7 @@ from dgov.persistence import (
     all_panes,
     emit_event,
     get_pane,
+    get_panes,
     latest_event_id,
     list_active_dag_runs,
     list_dag_tasks,
@@ -423,9 +424,9 @@ def observe_worker(
         phase = WorkerPhase.DONE
     elif pane_state == PaneState.FAILED:
         phase = WorkerPhase.FAILED
-    elif has_done and has_commits:
+    elif has_done:
         phase = WorkerPhase.DONE
-    elif has_exit and exit_code == 0 and has_commits:
+    elif has_exit and exit_code == 0:
         phase = WorkerPhase.DONE
     elif has_exit:
         phase = WorkerPhase.FAILED
@@ -583,6 +584,8 @@ def _drive_dag(
             agent,
             attempt=attempt,
             pane_slug=pane_slug,
+            file_claims=task_def.all_touches() if task_def else None,
+            commit_message=task_def.commit_message if task_def else None,
         )
     # Persist kernel state after pass
     update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
@@ -846,13 +849,11 @@ def _tracked_worker_records(
     """Fetch current pane records for the active slugs the monitor owns."""
     if not active_slugs:
         return []
-    workers = list_worker_panes(
-        project_root, session_root, include_freshness=False, include_prompt=False
-    )
+    del project_root
     return [
-        worker
-        for worker in workers
-        if worker.get("slug") in active_slugs and worker.get("state") == PaneState.ACTIVE
+        pane
+        for pane in get_panes(session_root, sorted(active_slugs))
+        if pane.get("state") == PaneState.ACTIVE
     ]
 
 

@@ -1102,13 +1102,13 @@ def check_cross_plan_claims(plan: PlanSpec, session_root: str) -> list[PlanIssue
     Returns warnings (not errors) for each overlapping file.
     """
     try:
-        from dgov.persistence import list_active_dag_runs
+        from dgov.persistence import list_active_dag_task_claims
 
-        active_runs = list_active_dag_runs(session_root)
+        active_claims = list_active_dag_task_claims(session_root)
     except Exception:
         return []
 
-    if not active_runs:
+    if not active_claims:
         return []
 
     # Collect all files claimed by this plan
@@ -1122,28 +1122,19 @@ def check_cross_plan_claims(plan: PlanSpec, session_root: str) -> list[PlanIssue
         return []
 
     issues: list[PlanIssue] = []
-    for run in active_runs:
-        run_id = run.get("id", "?")
-        run_name = run.get("dag_file", "unknown")
-        # Extract file claims from active run's definition
-        import json
-
-        try:
-            defn = json.loads(run.get("definition_json", "{}"))
-        except (json.JSONDecodeError, TypeError):
-            continue
-
-        run_files: set[str] = set()
-        for task in defn.get("tasks", []):
-            for fc in task.get("file_claims", []):
-                run_files.add(fc)
-
-        # Check overlaps
+    for claim_row in active_claims:
+        run_id = claim_row.get("dag_run_id", "?")
+        run_name = claim_row.get("dag_file", "unknown")
+        task_slug = claim_row.get("task_slug", "?")
+        run_files = set(claim_row.get("file_claims") or ())
         for pf in plan_files:
             for rf in run_files:
                 if _paths_overlap(pf, rf):
                     stem = Path(run_name).stem
-                    msg = f"File '{pf}' overlaps with '{rf} in active DAG run {run_id} ({stem})"
+                    msg = (
+                        f"File '{pf}' overlaps with '{rf}' in active DAG run {run_id} "
+                        f"({stem}:{task_slug})"
+                    )
                     issues.append(PlanIssue(severity="warning", message=msg))
 
     return issues
