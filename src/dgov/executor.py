@@ -14,6 +14,7 @@ from dgov.context_packet import ContextPacket, build_context_packet
 from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest, ReviewVerdict
 from dgov.inspection import ReviewInfo
 from dgov.merger import MergeError, MergeSuccess
+from dgov.persistence import PaneState
 
 if TYPE_CHECKING:
     from dgov.dag_parser import DagDefinition
@@ -129,11 +130,11 @@ class PostDispatchResult:
             self.outcome,
             (_PostDispatchWaitFailed, _PostDispatchReviewFailed, _PostDispatchMergeFailed),
         ):
-            return "failed"
+            return PaneState.FAILED
         if isinstance(self.outcome, _PostDispatchReviewPending):
             return "review_pending"
         if isinstance(self.outcome, _PostDispatchReviewedPass):
-            return "reviewed_pass"
+            return PaneState.REVIEWED_PASS
         return "completed"
 
     @property
@@ -527,11 +528,15 @@ def run_dispatch_only(
 # Each entry maps to a dict of parameters for close_worker_pane.
 # Special entries can override the default close path with early returns.
 _CLEANUP_POLICY: dict[tuple[str, str | None], dict] = {
-    ("failed", "timeout"): {"force": False},
-    ("failed", "recovery"): {"force": False},
-    ("failed", "review"): {"force": False},
-    ("failed", "worker_failed"): {"force": True},
-    ("closed", None): {"force": True, "action": "closed", "reason": "completed_no_commits"},
+    (PaneState.FAILED, "timeout"): {"force": False},
+    (PaneState.FAILED, "recovery"): {"force": False},
+    (PaneState.FAILED, "review"): {"force": False},
+    (PaneState.FAILED, "worker_failed"): {"force": True},
+    (PaneState.CLOSED, None): {
+        "force": True,
+        "action": "closed",
+        "reason": "completed_no_commits",
+    },
 }
 
 
@@ -684,14 +689,14 @@ def _handle_failed_pane(
 
     if not (auto_retry and retries_left > 0):
         pane = get_pane(session_root, current_slug)
-        return current_slug, None, pane.get("state") if pane else "failed", retries_left
+        return current_slug, None, pane.get("state") if pane else PaneState.FAILED, retries_left
 
     from dgov.recovery import maybe_auto_retry
 
     retry_result = maybe_auto_retry(session_root, current_slug, project_root)
     if not retry_result or not retry_result.get("new_slug"):
         pane = get_pane(session_root, current_slug)
-        return current_slug, None, pane.get("state") if pane else "failed", retries_left
+        return current_slug, None, pane.get("state") if pane else PaneState.FAILED, retries_left
 
     new_slug = retry_result["new_slug"]
     retries_left -= 1
@@ -706,7 +711,7 @@ def _handle_failed_pane(
             auto_retry=False,
         )
     except PaneTimeoutError:
-        return new_slug, None, "timed_out", retries_left
+        return new_slug, None, PaneState.TIMED_OUT, retries_left
 
     pane = get_pane(session_root, new_slug)
     return new_slug, wait_result, pane.get("state") if pane else None, retries_left
@@ -805,7 +810,7 @@ def run_wait_only(
     pane = get_pane(session_root, current_slug)
     pane_state = pane.get("state") if pane else None
 
-    if pane_state == "failed":
+    if pane_state == PaneState.FAILED:
         current_slug, wait_result, pane_state, retries_left = _handle_failed_pane(
             project_root,
             session_root,
@@ -816,7 +821,7 @@ def run_wait_only(
             poll=poll,
             stable=stable,
         )
-        if pane_state == "failed":
+        if pane_state == PaneState.FAILED:
             _phase("failed", current_slug)
             exit_msg = _read_exit_message(session_root, current_slug)
             return WaitOnlyResult.failed(
@@ -830,7 +835,7 @@ def run_wait_only(
                 ),
             )
 
-    if pane_state in ("timed_out", "abandoned"):
+    if pane_state in (PaneState.TIMED_OUT, PaneState.ABANDONED):
         _phase("failed", current_slug)
         return WaitOnlyResult.failed(
             slug=current_slug,
@@ -959,7 +964,7 @@ def run_post_dispatch_lifecycle(
     merge_res = None
     cleanup_res = None
     current_slug = slug
-    state = "failed"
+    state = PaneState.FAILED
     failure_stage = None
     error = None
 
@@ -984,7 +989,7 @@ def run_post_dispatch_lifecycle(
                 logger.debug("failed to set landing flag for %s", current_slug, exc_info=True)
             claimed_slugs.add(current_slug)
         if wait_res.state != "completed":
-            state = "failed"
+            state = PaneState.FAILED
             failure_stage = wait_res.failure_stage
             error = wait_res.error
             _phase("failed", current_slug)
@@ -999,7 +1004,7 @@ def run_post_dispatch_lifecycle(
                 require_commits=True,
             )
             if review_res.error is not None:
-                state = "failed"
+                state = PaneState.FAILED
                 failure_stage = "review"
                 error = f"Review failed: {review_res.error}"
                 _phase("failed", current_slug)
@@ -1009,7 +1014,7 @@ def run_post_dispatch_lifecycle(
                 state = "completed"
                 _phase("completed", current_slug)
             elif not auto_merge:
-                state = "reviewed_pass"
+                state = PaneState.REVIEWED_PASS
             else:
                 # Merge phase
                 _phase("merging", current_slug)
@@ -1022,7 +1027,7 @@ def run_post_dispatch_lifecycle(
                     rebase=rebase,
                 )
                 if merge_res.error is not None:
-                    state = "failed"
+                    state = PaneState.FAILED
                     failure_stage = "merge"
                     error = f"Merge failed: {merge_res.error}"
                     _phase("failed", current_slug)
@@ -1034,10 +1039,10 @@ def run_post_dispatch_lifecycle(
         if state == "completed":
             cleanup_state = "completed"
             if review_res and review_res.commit_count == 0:
-                cleanup_state = "closed"
-        elif state == "failed":
-            cleanup_state = "failed"
-        elif state in ("reviewed_pass", "review_pending"):
+                cleanup_state = PaneState.CLOSED
+        elif state == PaneState.FAILED:
+            cleanup_state = PaneState.FAILED
+        elif state in (PaneState.REVIEWED_PASS, "review_pending"):
             cleanup_state = "review_pending"
         else:
             cleanup_state = state
@@ -1057,7 +1062,7 @@ def run_post_dispatch_lifecycle(
             except Exception:
                 logger.debug("failed to unset landing flag for %s", claimed, exc_info=True)
 
-    if state == "failed":
+    if state == PaneState.FAILED:
         if review_res is None:
             outcome: PostDispatchOutcome = _PostDispatchWaitFailed(
                 cleanup=cleanup_res,
@@ -1090,7 +1095,7 @@ def run_post_dispatch_lifecycle(
                 review_record=review_res.review_record,
             ),
         )
-    if state == "reviewed_pass":
+    if state == PaneState.REVIEWED_PASS:
         assert review_res is not None
         return PostDispatchResult(
             slug=current_slug,
@@ -1278,7 +1283,7 @@ def _apply_review_policy(
                 _pane_state = _p.get("state") if _p else None
             except Exception:
                 logger.debug("failed to get pane state for %s", slug, exc_info=True)
-        if _pane_state not in ("done", "merged"):
+        if _pane_state not in (PaneState.DONE, PaneState.MERGED):
             passed = False
             error = "No commits to merge"
     if passed and require_safe and verdict != ReviewVerdict.SAFE:
@@ -1938,13 +1943,13 @@ def run_complete_pane(
 
     session_root = os.path.abspath(session_root or project_root)
     transition = settle_completion_state(
-        session_root, slug, "done", allow_abandoned=allow_abandoned
+        session_root, slug, PaneState.DONE, allow_abandoned=allow_abandoned
     )
     if transition.changed:
         emit_event(session_root, "pane_done", slug, reason=reason)
     return StateTransitionResult(
         slug=slug,
-        new_state="done",
+        new_state=PaneState.DONE,
         changed=transition.changed,
     )
 
@@ -1964,13 +1969,13 @@ def run_fail_pane(
 
     session_root = os.path.abspath(session_root or project_root)
     transition = settle_completion_state(
-        session_root, slug, "failed", allow_abandoned=allow_abandoned
+        session_root, slug, PaneState.FAILED, allow_abandoned=allow_abandoned
     )
     if transition.changed:
         emit_event(session_root, "pane_failed", slug, reason=reason)
     return StateTransitionResult(
         slug=slug,
-        new_state="failed",
+        new_state=PaneState.FAILED,
         changed=transition.changed,
     )
 
@@ -1988,7 +1993,7 @@ def run_mark_reviewed(
     from dgov.persistence import emit_event, update_pane_state
 
     session_root = os.path.abspath(session_root or project_root)
-    target = "reviewed_pass" if passed else "reviewed_fail"
+    target = PaneState.REVIEWED_PASS if passed else PaneState.REVIEWED_FAIL
     update_pane_state(session_root, slug, target, force=True)
     emit_event(session_root, f"pane_{target}", slug)
     return StateTransitionResult(slug=slug, new_state=target, changed=True)
@@ -2613,7 +2618,7 @@ def _dag_wait_any(
 
             # Terminal phases: immediate completion
             if obs.phase in (WorkerPhase.DONE, WorkerPhase.FAILED, WorkerPhase.UNKNOWN):
-                pane_state = "done" if obs.phase == WorkerPhase.DONE else "failed"
+                pane_state = PaneState.DONE if obs.phase == WorkerPhase.DONE else PaneState.FAILED
                 return TaskWaitDone(task_slug, pane_slug, pane_state)
 
             # Bug #185: Check for readonly phase timeout
@@ -2631,7 +2636,7 @@ def _dag_wait_any(
                         phase=obs.phase.value,
                         elapsed_seconds=now - readonly_start[task_slug],
                     )
-                    return TaskWaitDone(task_slug, pane_slug, "timed_out")
+                    return TaskWaitDone(task_slug, pane_slug, PaneState.TIMED_OUT)
             else:
                 # Working or committing - reset readonly timer
                 readonly_start.pop(task_slug, None)
@@ -2647,7 +2652,7 @@ def _dag_wait_any(
                 reason="max_timeout",
                 elapsed_seconds=elapsed,
             )
-            return TaskWaitDone(task_slugs[0], pane_slug, "timed_out")
+            return TaskWaitDone(task_slugs[0], pane_slug, PaneState.TIMED_OUT)
 
         from dgov.persistence import _wait_for_notify
 
