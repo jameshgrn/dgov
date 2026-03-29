@@ -359,7 +359,7 @@ def list_worker_panes(
         alive = pane_id in all_tmux if pane_id else False
         cmd = all_tmux.get(pane_id, {}).get("current_command", "") if alive else ""
         done = state != PaneState.ACTIVE
-        if state == "active":
+        if state == PaneState.ACTIVE:
             agent_id = p.get("agent", "")
             agent_def = registry.get(agent_id) if agent_id else None
             agent_done_strategy = agent_def.done_strategy if agent_def else None
@@ -598,7 +598,7 @@ def gc_retained_panes(
         for pane in all_panes(session_root):
             slug = str(pane.get("slug", ""))
             state = str(pane.get("state", ""))
-            if not slug or state == "active":
+            if not slug or state == PaneState.ACTIVE:
                 continue
             if state_filter and state not in state_filter:
                 continue
