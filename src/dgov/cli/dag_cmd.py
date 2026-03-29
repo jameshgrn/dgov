@@ -259,6 +259,7 @@ def dag_status(dagfile, run_id, output_json):
         _get_db,
         ensure_dag_tables,
         get_dag_run,
+        get_dag_task_failure_context,
         list_dag_tasks,
     )
 
@@ -299,6 +300,7 @@ def dag_status(dagfile, run_id, output_json):
             "unit_eval_links": links,
             "eval_results": [eval_results.get(e["eval_id"], {}) for e in evals],
             "tasks": tasks,
+            "failure_details": get_dag_task_failure_context(session_root, run_id),
         }
         click.echo(json.dumps(result, indent=2, default=str))
         return
@@ -376,6 +378,18 @@ def dag_status(dagfile, run_id, output_json):
         if satisfies:
             line += f"  satisfies: {', '.join(satisfies)}"
         click.echo(line)
+
+    failure_ctx = get_dag_task_failure_context(session_root, run_id)
+    if failure_ctx:
+        click.echo()
+        click.echo("Failure details:")
+        for slug, info in failure_ctx.items():
+            parts = [f"  {slug}  last_event={info['last_event']}  ts={info['last_event_ts']}"]
+            if info.get("verdict"):
+                parts.append(f"verdict={info['verdict']}")
+            if info.get("error"):
+                parts.append(f"error={info['error'][:60]}")
+            click.echo("  ".join(parts))
 
 
 @dag.command("force-complete")
