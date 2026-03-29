@@ -1252,6 +1252,7 @@ def run_plan(
     *,
     session_root: str | None = None,
     max_concurrent: int = 0,
+    skip: set[str] | None = None,
 ) -> DagRunSummary:
     """Canonical entry point: parse, validate, compile, execute a plan.
 
@@ -1259,6 +1260,7 @@ def run_plan(
         plan_file: Path to the TOML plan file.
         session_root: Session root (defaults to plan's session_root).
         max_concurrent: Override max concurrent workers (0=use plan default).
+        skip: Unit slugs to mark skipped when resuming a partial plan.
 
     Returns:
         A DagRunSummary from the execution.
@@ -1287,6 +1289,7 @@ def run_plan(
         dag,
         dag_key=str(Path(plan_file).resolve()),
         definition_hash=definition_hash,
+        skip=skip,
         auto_merge=True,
         max_concurrent=effective_concurrent,
         plan_evals=[

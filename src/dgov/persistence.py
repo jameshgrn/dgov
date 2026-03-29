@@ -1105,7 +1105,7 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
     """
     _validate_state(new_state)
 
-    def _do() -> None:
+    def _do() -> bool:
         conn = _get_db(session_root)
         conn.row_factory = sqlite3.Row
 
@@ -1125,7 +1125,7 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
                 row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
                 if row is not None and row["state"] != new_state:
                     raise IllegalTransitionError(row["state"], new_state, slug)
-                return
+                return False
 
             placeholders = ", ".join("?" * len(allowed_from))
             cur = conn.execute(
@@ -1139,11 +1139,16 @@ def update_pane_state(session_root: str, slug: str, new_state: str, force: bool 
                 if row is not None and row["state"] != new_state:
                     raise IllegalTransitionError(row["state"], new_state, slug)
                 # slug missing or already at new_state — no-op.
-                return
+                return False
 
         conn.commit()
+        return True
 
-    _retry_on_lock(_do)
+    changed = bool(_retry_on_lock(_do))
+    if changed:
+        from dgov.lifecycle import _maybe_update_pane_title
+
+        _maybe_update_pane_title(session_root, slug, new_state)
 
 
 def settle_completion_state(

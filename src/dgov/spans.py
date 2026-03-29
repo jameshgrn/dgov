@@ -622,7 +622,8 @@ def ingest_transcript(session_root: str, trace_id: str, transcript_path: str) ->
         if entry_type != "message":
             continue
 
-        msg = entry.get("message", entry)
+        raw_msg = entry.get("message", entry)
+        msg = raw_msg if isinstance(raw_msg, dict) else {}
         role = msg.get("role", "")
         content_items = msg.get("content", [])
         if isinstance(content_items, str):
@@ -632,10 +633,12 @@ def ingest_transcript(session_root: str, trace_id: str, transcript_path: str) ->
         usage = {}
         for item in content_items:
             if isinstance(item, dict) and "usage" in item:
-                usage = item["usage"]
+                item_usage = item["usage"]
+                usage = item_usage if isinstance(item_usage, dict) else {}
                 break
         if not usage:
-            usage = msg.get("usage", {}) or {}
+            msg_usage = msg.get("usage", {}) or {}
+            usage = msg_usage if isinstance(msg_usage, dict) else {}
 
         tokens_in = usage.get("input", usage.get("inputTokens", 0)) or 0
         tokens_out = usage.get("output", usage.get("outputTokens", 0)) or 0

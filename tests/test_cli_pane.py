@@ -148,12 +148,7 @@ class TestPaneReview:
         with patch(
             "dgov.executor.run_review_only",
             return_value=MagicMock(
-                review={
-                    "slug": "task",
-                    "verdict": "safe",
-                    "commit_count": 2,
-                    "files_changed": 1,
-                }
+                review=ReviewInfo(slug="task", verdict="safe", commit_count=2, files_changed=1)
             ),
         ) as mock_review:
             result = runner.invoke(cli, ["pane", "merge", "task", "--dry-run"])

@@ -1423,6 +1423,23 @@ def test_cross_plan_claim_overlap_detected(tmp_path):
         }
     ]
 
+    def test_run_plan_passes_skip_to_kernel(self, tmp_path, monkeypatch):
+        from dgov.plan import run_plan
+
+        captured: dict[str, object] = {}
+
+        def fake_run_dag_via_kernel(dag, **kwargs):
+            captured["kwargs"] = kwargs
+            return object()
+
+        monkeypatch.setattr("dgov.dag.run_dag_via_kernel", fake_run_dag_via_kernel)
+
+        plan_path = _write_plan(tmp_path)
+        run_plan(plan_path, skip={"task-a"})
+
+        kwargs = captured["kwargs"]
+        assert kwargs["skip"] == {"task-a"}
+
     with patch("dgov.persistence.list_active_dag_task_claims", return_value=mock_claims):
         issues = check_cross_plan_claims(plan, str(tmp_path))
 

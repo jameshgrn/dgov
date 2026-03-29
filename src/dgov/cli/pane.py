@@ -6,6 +6,7 @@ import json
 import os
 import os as _os
 import sys
+from dataclasses import asdict
 
 import click
 
@@ -525,12 +526,13 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase, strict
     if dry_run:
         from dgov.executor import run_review_only
 
-        result = run_review_only(
+        review = run_review_only(
             project_root,
             slug,
             session_root=session_root,
             emit_events=False,
         ).review
+        result = review.to_dict()
         result["dry_run"] = True
         click.echo(json.dumps(result, indent=2))
         return
@@ -545,9 +547,10 @@ def pane_merge(slug, project_root, session_root, resolve, squash, rebase, strict
         strict_claims=strict_claims,
     ).merge_result
 
-    click.echo(json.dumps(result, indent=2))
+    merge_dict = asdict(result)
+    click.echo(json.dumps(merge_dict, indent=2))
 
-    if result and "error" in result:
+    if merge_dict.get("error"):
         sys.exit(1)
 
 

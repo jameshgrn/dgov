@@ -218,6 +218,29 @@ class TestTranscriptIngest:
         trace = get_tool_trace(session, "t1")
         assert len(trace) == 1  # no duplicates
 
+    def test_message_usage_ignores_non_dict_payloads(self, session, tmp_path):
+        transcript = _make_transcript(
+            [
+                {
+                    "type": "message",
+                    "timestamp": "2026-03-21T12:00:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "usage": "bad-usage-shape",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                },
+            ]
+        )
+        p = tmp_path / "usage.jsonl"
+        p.write_text(transcript)
+
+        count = ingest_transcript(session, "t1", str(p))
+        assert count == 1
+        trace = get_tool_trace(session, "t1")
+        assert trace[0]["tokens_in"] == 0
+        assert trace[0]["tokens_out"] == 0
+
 
 # ---------------------------------------------------------------------------
 # Export
