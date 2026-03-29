@@ -43,6 +43,7 @@ from dgov.persistence import (
     get_pane,
     latest_event_id,
     list_active_dag_runs,
+    list_dag_tasks,
     read_events,
     set_pane_metadata,
     take_dispatch_queue,
@@ -566,6 +567,26 @@ def _drive_dag(
 
     # Persist kernel state after pass
     update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
+
+
+def _reconcile_kernel_from_journal(
+    session_root: str, kernel: DagKernel, task_panes: dict[str, str]
+) -> list:
+    """Replay missed events from journal into kernel state."""
+    all_actions = []
+    for task_slug, pane_slug in task_panes.items():
+        events = read_events(session_root, slug=pane_slug)
+        for ev in events:
+            kind = ev.get("event", "")
+            factory = _DAG_EVENT_FACTORY.get(kind)
+            if factory:
+                dag_ev = factory(task_slug, pane_slug, ev)
+                try:
+                    actions = kernel.handle(dag_ev)
+                    all_actions.extend(actions)
+                except Exception:
+                    pass  # Event already processed, kernel rejects duplicates
+    return all_actions
 
 
 def _load_dag_run(project_root: str, session_root: str, run_dict: dict) -> DagMonitorState | None:
