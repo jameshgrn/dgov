@@ -1,58 +1,37 @@
-# Handover: architectural discipline pass on state, DAG contracts, and recovery
+# Handover: closed the open bug batch and left main clean
 
 ## Session context
-- Date: 2026-03-29T20:17:57Z
-- Branch: main @ f790df0
-- Last commit: Merge r162-decouple-title-update
+- Date: 2026-03-29T20:41:17Z
+- Branch: main @ 2e137b0
+- Last commit: Cover monitor pane tracking regression
 
 ## Open panes
 None.
 
 ## Open bugs/issues
-- #237: kimi-k25 resolves to lt-gov role via routing table; workers dispatched as lt-gov role unexpectedly (high)
-- #235: DAG dependency ordering not enforced at dispatch (medium)
-- #234: DAG run 156 done->merged transition error in `_finalize_merged_pane` (high)
-- #233: DAG run 157 dispatched panes but pane records missing from DB (medium)
+None. `uv run dgov ledger list -r . -c bug -s open` returned no open entries at handover time.
 
 ## Blockers/debt
-- Working tree is intentionally dirty with an uncommitted architectural cleanup pass across status, persistence, recovery, DAG, batch, API, and tests.
-- `review_fix` still manually reimplements orchestration instead of compiling to the canonical plan/DAG pipeline.
-- Routing cleanup is incomplete. Some code paths still hard-code physical agent/model names outside the router, especially in decision/provider and merger-adjacent code.
-- Docs and prompt artifacts still drift from live behavior.
+- No active blockers in repo state.
+- One dogfood artifact was intentionally cancelled after direct fix-forward:
+  run `163` for `.dgov/plans/fix-237-role-inference.toml` is cancelled in DAG status, and pane `r163-fix-237-role-inference` is closed/removed.
+- `HANDOVER.md` is the only expected dirty file after this write until the handover commit is created.
 
 ## Next steps
-1. Review and commit the current architectural pass after one more focused read of [src/dgov/persistence.py](/Users/jakegearon/projects/dgov/src/dgov/persistence.py), [src/dgov/status.py](/Users/jakegearon/projects/dgov/src/dgov/status.py), [src/dgov/recovery.py](/Users/jakegearon/projects/dgov/src/dgov/recovery.py), and [src/dgov/cli/pane.py](/Users/jakegearon/projects/dgov/src/dgov/cli/pane.py).
-2. Finish routing discipline by removing remaining hard-coded physical agent names from orchestration-facing modules and update tests accordingly.
-3. Converge [src/dgov/review_fix.py](/Users/jakegearon/projects/dgov/src/dgov/review_fix.py) onto the canonical plan/DAG execution path or explicitly retire it.
-4. Update stale docs and prompt artifacts after code paths are stable.
+1. If continuing bug-cranking, start from fresh ledger state and pick the next highest-value debt or architecture issue rather than reopening the cleared bug batch.
+2. If preparing to push later, run the required pre-push verification slice from governor instructions on the current `main` commits.
+3. If resuming dogfood on plan execution, prefer checking DAG terminal state directly after interrupts/review failures instead of waiting blindly in `dgov wait`.
 
 ## Notes
-- Completed this session:
-  state/reporting split: `list_worker_panes()` is now read-only and no longer settles pane state.
-  typed DAG contracts: `dag_tasks` now persist `file_claims` and `commit_message`; cross-plan checks and retry contract recovery query typed rows instead of reparsing `definition_json`.
-  recovery policy: retry/escalate preserve replaced panes by default for inspection.
-  legacy convergence: `pane batch` now routes through canonical batch/DAG execution.
-  role defaults: public/template defaults now prefer logical roles (`worker`, `supervisor`, `manager`) instead of advertising physical model names.
-- Targeted verification completed successfully:
-  `uv run ruff check src/dgov/persistence.py src/dgov/status.py src/dgov/monitor.py src/dgov/recovery.py src/dgov/dag.py src/dgov/executor.py src/dgov/plan.py src/dgov/cli/plan_cmd.py src/dgov/cli/pane.py src/dgov/batch.py src/dgov/templates.py src/dgov/api.py tests/test_dgov_panes.py tests/test_dgov_state.py tests/test_done_strategy.py tests/test_plan.py tests/test_batch.py tests/test_api.py tests/test_templates.py`
-  `UV_NO_SYNC=1 uv run pytest tests/test_dgov_state.py tests/test_plan.py tests/test_done_strategy.py tests/test_dgov_panes.py tests/test_recovery_dogfood.py tests/test_batch.py tests/test_api.py tests/test_templates.py -q -m unit -k 'dag_task or cross_plan or ListWorkerPanes or RetryWorkerPane or EscalateWorkerPane or read_only or done_signal or batch or Orchestrator or template'`
-  Result: `84 passed, 307 deselected in 15.36s`
-- Modified files currently in the working tree:
-  `src/dgov/api.py`
-  `src/dgov/batch.py`
-  `src/dgov/cli/pane.py`
-  `src/dgov/cli/plan_cmd.py`
-  `src/dgov/dag.py`
-  `src/dgov/executor.py`
-  `src/dgov/monitor.py`
-  `src/dgov/persistence.py`
-  `src/dgov/plan.py`
-  `src/dgov/recovery.py`
-  `src/dgov/status.py`
-  `src/dgov/templates.py`
-  `tests/test_dgov_panes.py`
-  `tests/test_dgov_state.py`
-  `tests/test_done_strategy.py`
-  `tests/test_plan.py`
-  `tests/test_templates.py`
-- `src/dgov/monitor.py` already had a local behavior change before this handover session. It was preserved during edits.
+- Closed and resolved this session:
+  `#237` project-scoped role inference
+  `#234` DAG review state must be persisted before merge
+  `#235` plan parser now accepts legacy `deps` alias
+  `#233` monitor pane tracking regression covered explicitly
+- Commits created this session after bootstrap:
+  `0cde7dd` Persist DAG contracts and role defaults
+  `ff806d0` Fix project-scoped pane role inference
+  `98ddd3d` Mark DAG review state before merge
+  `dcd53f5` Parse deps alias in plan units
+  `2e137b0` Cover monitor pane tracking regression
+- Working tree was clean before writing this handover.
