@@ -1154,6 +1154,108 @@ def check_cross_plan_claims(plan: PlanSpec, session_root: str) -> list[PlanIssue
     return issues
 
 
+def build_adhoc_plan(
+    *,
+    slug: str,
+    prompt: str,
+    agent: str,
+    project_root: str = ".",
+    session_root: str = ".",
+    permission_mode: str = "bypassPermissions",
+    touches: tuple[str, ...] = (),
+    max_retries: int = 1,
+    timeout_s: int = 600,
+    role: str = "worker",
+    template: str | None = None,
+    template_vars: dict[str, str] | None = None,
+) -> PlanSpec:
+    """Build a minimal single-unit PlanSpec from ad-hoc dispatch arguments.
+
+    Creates a PlanSpec with one unit and one eval, suitable for ad-hoc
+    task dispatch (e.g., pane create).
+
+    Args:
+        slug: Unique identifier for the unit.
+        prompt: The worker prompt (first 100 chars become the plan goal).
+        agent: The agent to dispatch (e.g., "qwen-35b").
+        project_root: Project root directory (default ".").
+        session_root: Session root directory (default ".").
+        permission_mode: Permission mode (default "bypassPermissions").
+        touches: Tuple of file paths the unit will edit (default empty).
+        max_retries: Max retry attempts (default 1).
+        timeout_s: Timeout in seconds (default 600).
+        role: Unit role, "worker" or "lt-gov" (default "worker").
+        template: Optional template name for prompt rendering.
+        template_vars: Optional template variable substitutions.
+
+    Returns:
+        A PlanSpec ready for compilation or serialization.
+    """
+    goal = prompt[:100] if len(prompt) <= 100 else prompt[:97] + "..."
+
+    # Build the eval that this unit satisfies
+    adhoc_eval = PlanEval(
+        eval_id="ADHOC_EVAL",
+        kind="happy_path",
+        statement="Ad-hoc task completed",
+        evidence="true",
+    )
+
+    # Build file specs - only edit files (touches or empty)
+    files = PlanUnitFiles(edit=touches)
+
+    # Build the single unit
+    unit = PlanUnit(
+        slug=slug,
+        summary=f"Ad-hoc: {slug}",
+        prompt=prompt,
+        commit_message=f"Apply {slug}",
+        files=files,
+        satisfies=("ADHOC_EVAL",),
+        agent=agent,
+        timeout_s=timeout_s,
+        role=role,
+        template=template,
+        template_vars=template_vars or {},
+    )
+
+    return PlanSpec(
+        name=slug,
+        goal=goal,
+        units={slug: unit},
+        evals=(adhoc_eval,),
+        project_root=project_root,
+        session_root=session_root,
+        permission_mode=permission_mode,
+        max_retries=max_retries,
+    )
+
+
+def write_adhoc_plan(plan: PlanSpec, session_root: str) -> str:
+    """Serialize and write an ad-hoc plan to .dgov/plans/<slug>.toml.
+
+    Args:
+        plan: The PlanSpec to serialize (typically from build_adhoc_plan).
+        session_root: The session root directory.
+
+    Returns:
+        The absolute path to the written TOML file.
+    """
+    # Get the slug from the plan name (single-unit plan)
+    slug = plan.name
+
+    # Build the path: .dgov/plans/<slug>.toml under session_root
+    plans_dir = scratch_plans_dir(session_root, session_root)
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    plan_path = plans_dir / f"{slug}.toml"
+
+    # Serialize and write
+    toml_content = serialize_plan(plan)
+    plan_path.write_text(toml_content)
+
+    return str(plan_path.resolve())
+
+
 def run_plan(
     plan_file: str,
     *,

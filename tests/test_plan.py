@@ -1440,6 +1440,162 @@ def test_cross_plan_no_overlap(tmp_path):
     assert len(issues) == 0
 
 
+class TestBuildAdhocPlan:
+    """Tests for build_adhoc_plan and write_adhoc_plan helpers."""
+
+    def test_build_adhoc_plan_returns_valid_planspec(self, tmp_path):
+        """build_adhoc_plan returns a PlanSpec with correct structure."""
+        from dgov.plan import build_adhoc_plan
+
+        plan = build_adhoc_plan(
+            slug="fix-parser",
+            prompt="Fix the parser bug in src/dgov/parser.py",
+            agent="qwen-35b",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            touches=("src/dgov/parser.py",),
+            max_retries=2,
+            timeout_s=300,
+        )
+
+        assert isinstance(plan, PlanSpec)
+        assert plan.name == "fix-parser"
+        assert plan.goal == "Fix the parser bug in src/dgov/parser.py"
+        assert plan.project_root == str(tmp_path)
+        assert plan.session_root == str(tmp_path)
+        assert plan.permission_mode == "bypassPermissions"
+        assert plan.max_retries == 2
+
+        # Check unit
+        assert len(plan.units) == 1
+        assert "fix-parser" in plan.units
+        unit = plan.units["fix-parser"]
+        assert unit.slug == "fix-parser"
+        assert unit.summary == "Ad-hoc: fix-parser"
+        assert unit.prompt == "Fix the parser bug in src/dgov/parser.py"
+        assert unit.commit_message == "Apply fix-parser"
+        assert unit.files.edit == ("src/dgov/parser.py",)
+        assert unit.agent == "qwen-35b"
+        assert unit.timeout_s == 300
+        assert unit.role == "worker"
+        assert unit.satisfies == ("ADHOC_EVAL",)
+
+        # Check eval
+        assert len(plan.evals) == 1
+        assert plan.evals[0].eval_id == "ADHOC_EVAL"
+        assert plan.evals[0].kind == "happy_path"
+        assert plan.evals[0].statement == "Ad-hoc task completed"
+        assert plan.evals[0].evidence == "true"
+
+    def test_build_adhoc_plan_truncates_long_prompt(self, tmp_path):
+        """Goal is truncated to 100 chars when prompt is long."""
+        from dgov.plan import build_adhoc_plan
+
+        long_prompt = "x" * 150
+        plan = build_adhoc_plan(
+            slug="long-task",
+            prompt=long_prompt,
+            agent="qwen-35b",
+        )
+
+        assert len(plan.goal) == 100
+        assert plan.goal.endswith("...")
+
+    def test_build_adhoc_plan_no_touches(self, tmp_path):
+        """Ad-hoc plan can have empty touches tuple."""
+        from dgov.plan import build_adhoc_plan
+
+        plan = build_adhoc_plan(
+            slug="query-task",
+            prompt="Query the database and report results",
+            agent="qwen-9b",
+            touches=(),
+        )
+
+        assert plan.units["query-task"].files.edit == ()
+
+    def test_build_adhoc_plan_ltgov_role(self, tmp_path):
+        """Ad-hoc plan supports lt-gov role with template vars."""
+        from dgov.plan import build_adhoc_plan
+
+        plan = build_adhoc_plan(
+            slug="orchestrate",
+            prompt="Orchestrate multi-file refactor",
+            agent="qwen-35b",
+            role="lt-gov",
+            template="lt-gov",
+            template_vars={"task_list": "1. a, 2. b"},
+        )
+
+        unit = plan.units["orchestrate"]
+        assert unit.role == "lt-gov"
+        assert unit.template == "lt-gov"
+        assert unit.template_vars == {"task_list": "1. a, 2. b"}
+
+    def test_build_adhoc_plan_passes_validate_plan(self, tmp_path):
+        """build_adhoc_plan output passes validate_plan with no errors."""
+        from dgov.plan import build_adhoc_plan, validate_plan
+
+        plan = build_adhoc_plan(
+            slug="validated-task",
+            prompt="Implement feature X in src/feature.py",
+            agent="qwen-35b",
+            touches=("src/feature.py",),
+        )
+
+        issues = validate_plan(plan)
+        errors = [i for i in issues if i.severity == "error"]
+        assert len(errors) == 0, f"Unexpected errors: {[i.message for i in errors]}"
+
+    def test_write_adhoc_plan_creates_readable_file(self, tmp_path):
+        """write_adhoc_plan creates a TOML file that parse_plan_file can read."""
+        from dgov.plan import build_adhoc_plan, parse_plan_file, write_adhoc_plan
+
+        plan = build_adhoc_plan(
+            slug="persisted-task",
+            prompt="Make important changes to the codebase",
+            agent="qwen-35b",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            touches=("src/code.py",),
+        )
+
+        plan_path = write_adhoc_plan(plan, str(tmp_path))
+
+        # Verify path is absolute and file exists
+        assert Path(plan_path).exists()
+        assert Path(plan_path).is_absolute()
+        assert plan_path.endswith("persisted-task.toml")
+
+        # Verify round-trip: parse it back
+        loaded = parse_plan_file(plan_path)
+        assert loaded.name == "persisted-task"
+        assert loaded.goal == plan.goal
+        assert len(loaded.units) == 1
+        assert loaded.units["persisted-task"].slug == "persisted-task"
+        assert loaded.evals[0].eval_id == "ADHOC_EVAL"
+
+    def test_write_adhoc_plan_creates_directory(self, tmp_path):
+        """write_adhoc_plan creates .dgov/plans directory if needed."""
+        from dgov.plan import build_adhoc_plan, write_adhoc_plan
+
+        # Ensure the plans directory doesn't exist yet
+        plans_dir = tmp_path / ".dgov" / "plans"
+        assert not plans_dir.exists()
+
+        plan = build_adhoc_plan(
+            slug="new-dir-task",
+            prompt="Test directory creation",
+            agent="qwen-9b",
+        )
+
+        plan_path = write_adhoc_plan(plan, str(tmp_path))
+
+        # Directory should now exist
+        assert plans_dir.exists()
+        assert Path(plan_path).exists()
+
+
 def test_scaffold_auto_run_flag_requires_auto():
     """--run without --auto should fail."""
     from click.testing import CliRunner
