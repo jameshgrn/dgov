@@ -226,6 +226,26 @@ class TestTakeAction:
         assert action is not None
         mock_fail.assert_called_once()
 
+
+def test_tracked_worker_records_reads_persistence_rows_not_status_projection(tmp_path):
+    from dgov.monitor import _tracked_worker_records
+
+    with (
+        patch(
+            "dgov.monitor.list_worker_panes", side_effect=AssertionError("status path not allowed")
+        ),
+        patch(
+            "dgov.monitor.get_panes",
+            return_value=[
+                {"slug": "r157-a", "state": "active"},
+                {"slug": "r157-b", "state": "done"},
+            ],
+        ),
+    ):
+        rows = _tracked_worker_records(str(tmp_path), str(tmp_path), {"r157-a", "r157-b"})
+
+    assert rows == [{"slug": "r157-a", "state": "active"}]
+
     def test_no_action_for_working(self):
         from dgov.monitor import _take_action
 
