@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dgov.inspection import MergeResult
+from dgov.inspection import MergeResult, ReviewTests
 from dgov.persistence import PROTECTED_FILES, IllegalTransitionError, PaneState
 
 logger = logging.getLogger(__name__)
@@ -32,11 +32,7 @@ class MergeSuccess:
     rebase_fallback: bool = False
     stash_warnings: list[str] = field(default_factory=list)
     warning: str | None = None
-    tests_passed: bool | None = None
-    tests_ran: list[str] = field(default_factory=list)
-    test_output: str = ""
-    no_tests_found: bool = False
-    timed_out: bool = False
+    tests: ReviewTests = field(default_factory=ReviewTests)
     fixed: list[str] = field(default_factory=list)
     unfixable: list[str] = field(default_factory=list)
     lint_unfixable: bool = False
@@ -1374,10 +1370,13 @@ def _build_success_result(
         rebase_fallback=rebase_fallback,
         stash_warnings=[*merge.warnings, *apply_result.warnings],
         warning=warning_msg,
-        tests_passed=test_result.get("tests_passed") if test_result else None,
-        tests_ran=test_result.get("tests_ran", []) if test_result else [],
-        test_output=test_result.get("test_output", "") if test_result else "",
-        no_tests_found=test_result.get("no_tests_found", False) if test_result else False,
+        tests=ReviewTests(
+            passed=test_result.get("tests_passed") if test_result else None,
+            ran=test_result.get("tests_ran", []) if test_result else [],
+            output=test_result.get("test_output", "") if test_result else "",
+            no_tests_found=test_result.get("no_tests_found", False) if test_result else False,
+            timed_out=test_result.get("timed_out", False) if test_result else False,
+        ),
         fixed=lint_result.get("lint_fixed", []) if lint_result else [],
         unfixable=lint_result.get("lint_unfixable", []) if lint_result else [],
         lint_unfixable=bool(lint_result.get("lint_unfixable")) if lint_result else False,
@@ -1413,7 +1412,12 @@ def _handle_merge_conflicts(
         )
         if resolved:
             _finalize_merged_pane(pane_project_root, session_root, slug, target, branch_name)
-            return MergeSuccess(merged=slug, branch=branch_name, resolved_by="agent")
+            return MergeSuccess(
+                merged=slug,
+                branch=branch_name,
+                resolved_by="agent",
+                tests=ReviewTests(),
+            )
         return MergeConflict(
             conflicts=conflicts,
             slug=slug,
@@ -1655,6 +1659,7 @@ def merge_worker_pane(
                 no_squash_direct=True,
                 changed_files=changed_file_names,
                 files_changed=len(changed_file_names),
+                tests=ReviewTests(),
             )
         # Fall through to standard path
 
