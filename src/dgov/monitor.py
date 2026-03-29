@@ -1366,13 +1366,31 @@ def ensure_monitor_running(project_root: str, session_root: str | None = None) -
                         running_hash,
                         current_hash,
                     )
+                    pid = int(running_pid)
                     try:
-                        os.kill(int(running_pid), 15)  # SIGTERM
+                        os.kill(pid, 15)  # SIGTERM
                     except (ValueError, OSError):
                         pass
+                    # Wait for the old monitor to actually release the lock
                     import time as _time
 
-                    _time.sleep(1)
+                    for _ in range(10):  # up to 5s
+                        _time.sleep(0.5)
+                        try:
+                            _probe = open(lock_path, "a")  # noqa: SIM115
+                            fcntl.flock(_probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            fcntl.flock(_probe, fcntl.LOCK_UN)
+                            _probe.close()
+                            break  # lock released — old monitor died
+                        except OSError:
+                            continue  # still held, keep waiting
+                    else:
+                        # Force kill if SIGTERM didn't work
+                        try:
+                            os.kill(pid, 9)  # SIGKILL
+                        except OSError:
+                            pass
+                        _time.sleep(0.5)
                     # Fall through to spawn a replacement
                 else:
                     return  # monitor is current

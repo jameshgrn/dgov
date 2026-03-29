@@ -215,11 +215,7 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     succeeded = [
         s for s, st in task_states.items() if st in (DagTaskState.MERGED, DagTaskState.MERGE_READY)
     ]
-    failed = [
-        s
-        for s, st in task_states.items()
-        if st in (DagTaskState.FAILED, DagTaskState.REVIEWED_FAIL)
-    ]
+    failed = [s for s, st in task_states.items() if st == DagTaskState.FAILED]
     return DagRunSummary(
         run_id=run_id,
         dag_file=abs_path,
