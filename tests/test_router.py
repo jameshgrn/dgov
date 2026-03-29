@@ -104,6 +104,7 @@ class TestDegradationError:
 
         assert error.has_full_failure() is True
 
+
 @pytest.mark.unit
 class TestDegradationReason:
     def test_is_str_enum(self):
