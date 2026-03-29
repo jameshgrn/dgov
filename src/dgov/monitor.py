@@ -644,6 +644,18 @@ def _load_dag_run(project_root: str, session_root: str, run_dict: dict) -> DagMo
         )
         ds = DagMonitorState(run_id, kernel, reactor)
 
+        # Reconcile kernel state from event journal to catch missed events
+        task_rows = list_dag_tasks(session_root, run_id)
+        task_panes = {t["slug"]: t["pane_slug"] for t in task_rows if t.get("pane_slug")}
+        reconcile_actions = _reconcile_kernel_from_journal(session_root, kernel, task_panes)
+        if reconcile_actions:
+            logger.info(
+                "Monitor: replayed %d events from journal for DAG %d",
+                len(reconcile_actions),
+                run_id,
+            )
+            _drive_dag(session_root, ds, reconcile_actions)
+
         # Kickstart if new, or reconcile if crashed during wait
         if kernel.state == DagState.IDLE:
             logger.info("Monitor: kickstarting new DAG run %d", run_id)
