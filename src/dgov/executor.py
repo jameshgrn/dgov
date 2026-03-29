@@ -1159,6 +1159,9 @@ def run_dispatch_preflight(
 ):
     from dgov.preflight import run_preflight
 
+    # Track whether touches came from explicit claims vs prompt derivation
+    explicit_claims = touches is not None
+
     if packet is None:
         packet = build_context_packet(prompt or "", file_claims=touches)
 
@@ -1169,6 +1172,7 @@ def run_dispatch_preflight(
         expected_branch=expected_branch,
         session_root=session_root,
         skip_deps=skip_deps,
+        derived_only=not explicit_claims,
     )
 
 

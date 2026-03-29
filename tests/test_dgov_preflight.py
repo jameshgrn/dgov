@@ -314,6 +314,34 @@ def test_check_file_locks_no_touches() -> None:
     assert r.passed is True
 
 
+def test_check_file_locks_derived_only_downgrades_conflict_to_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """When derived_only=True, conflicts become non-critical warnings (bug fix)."""
+    wt_path = tmp_path / "worktrees" / "task-1"
+    wt_path.mkdir(parents=True)
+
+    def fake_panes(*a, **kw):
+        return [{"slug": "task-1", "worktree_path": str(wt_path), "base_sha": "abc123"}]
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            mock.stdout = "src/foo.py\n"
+        else:
+            mock.stdout = ""
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr("dgov.persistence.all_panes", fake_panes)
+    monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+    r = check_file_locks(str(tmp_path), ["src/foo.py"], derived_only=True)
+    # When derived_only=True, conflicts should be warnings (passed=True, critical=False)
+    assert r.passed is True
+    assert r.critical is False
+    assert "derived touches, warning only" in r.message
+
+
 def test_check_git_clean_allows_disjoint_touches(tmp_path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

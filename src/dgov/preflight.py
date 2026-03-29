@@ -319,8 +319,18 @@ def check_stale_worktrees(project_root: str) -> CheckResult:
     )
 
 
-def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
-    """Check if any touched files have conflicts with active panes."""
+def check_file_locks(
+    project_root: str, touches: list[str], derived_only: bool = False
+) -> CheckResult:
+    """Check if any touched files have conflicts with active panes.
+
+    Args:
+        project_root: The project root directory.
+        touches: List of file paths to check for conflicts.
+        derived_only: If True, conflicts are downgraded to warnings (non-critical).
+            This is used when touches were inferred from prompt keywords rather
+            than explicitly declared via file claims.
+    """
     if not touches:
         return CheckResult(
             name="file_locks",
@@ -420,6 +430,16 @@ def check_file_locks(project_root: str, touches: list[str]) -> CheckResult:
             conflicts.append(f"lock file: {lock}")
 
     if conflicts:
+        if derived_only:
+            # Prompt-derived touches: downgrade conflicts to warning (non-critical)
+            summary = "; ".join(conflicts[:5])
+            conflict_msg = f"File conflicts (derived touches, warning only): {summary}"
+            return CheckResult(
+                name="file_locks",
+                passed=True,
+                critical=False,
+                message=conflict_msg,
+            )
         return CheckResult(
             name="file_locks",
             passed=False,
@@ -586,12 +606,16 @@ def run_preflight(
     session_root: str | None = None,
     *,
     skip_deps: bool = True,
+    derived_only: bool = False,
 ) -> PreflightReport:
     """Run all pre-flight checks and return a structured report.
 
     Args:
         skip_deps: Skip the heavyweight ``uv sync --locked`` check (default True).
             Run ``dgov preflight`` explicitly to include it.
+        derived_only: If True, file lock conflicts are downgraded to warnings.
+            Used when touches were derived from prompt keywords, not explicitly
+            declared via file claims.
     """
     from dgov.agents import load_registry
 
@@ -614,7 +638,7 @@ def run_preflight(
     if not skip_deps:
         checks.append(check_deps(project_root))
     checks.append(check_stale_worktrees(project_root))
-    checks.append(check_file_locks(project_root, touches or []))
+    checks.append(check_file_locks(project_root, touches or [], derived_only=derived_only))
 
     return PreflightReport(checks=checks)
 
