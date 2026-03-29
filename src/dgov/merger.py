@@ -1027,7 +1027,7 @@ _MERGE_READY_STATES = frozenset({PaneState.DONE, PaneState.REVIEWED_PASS})
 
 
 def _state_precondition_result(
-    branch_name: str, pane_state: str, slug: str
+    branch_name: str, pane_state: str | PaneState, slug: str
 ) -> PaneMergeResult | None:
     if pane_state == PaneState.MERGED:
         return MergeSuccess(merged=slug, branch=branch_name, already_merged=True)
