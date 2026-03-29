@@ -1,43 +1,37 @@
-# Handover: dgov skills reorganized and accessible to all agents
+# Handover: Intelligence Matrix Canonicalized
 
 ## Session context
 - Date: 2026-03-29
-- Branch: main @ 23b07ef
-- Last commit: Add handover state
+- Branch: main @ f41f84a
+- Last commit: Handover: dgov skills reorganized for multi-agent access
 
-## Open work
-- No active panes
-- No open bugs in ledger
+## Open panes
+| Slug | State | Description |
+|------|-------|-------------|
+| — | — | No active panes |
 
-## Changes made this session
-1. Reorganized dgov skills into function-based structure:
-   - `dgov-bootstrap` — session start, environment checks
-   - `dgov-plan` — primary dispatch (multi-step work)
-   - `dgov-pane` — micro-task dispatch
-   - `dgov-ledger` — knowledge operations
-   - `dgov-handover` — session end
-
-2. Removed deprecated skills:
-   - `dgov` (replaced by `dgov-bootstrap`)
-   - `dgov-governor` (split into `dgov-plan` + `dgov-pane`)
-
-3. Made skills accessible to all agents:
-   - Canonical source: `~/.agents/skills/`
-   - Symlinks: `~/.claude/skills/`, `~/.codex/skills/`, `~/.pi/agent/skills/`
-
-## Git status
-- Deleted: `.claude/skills/dgov/SKILL.md`
-- Deleted: `.pi/skills/dgov-handover/SKILL.md`
-- Deleted: `skills/dgov-governor/SKILL.md`
+## Open bugs/issues
+- None
 
 ## Blockers/debt
 - None
 
 ## Next steps
-1. Commit the deleted skill files (cleanup from reorganization)
-2. Continue with any planned dgov development
+1. Commit the intelligence matrix changes (CLAUDE.md, .dgov/agents.toml)
+2. Test routing with `dgov plan run` on a small plan to verify T3 Kimi saturation
+3. Monitor 429 frequency — tune `retry_policy` if Fireworks throttles
 
-## Notes
-- All agents (Claude, Codex, Pi) now share canonical skill definitions
-- No deprecated skills remain in any location
-- Skills follow dgov principles: data over procedure, domain-first placement
+## Changes made this session
+- **CLAUDE.md**: Replaced role-based routing with (DecisionKind, CapabilityTier) matrix
+- **.dgov/agents.toml**: Full matrix routing with T3 Kimi 5× pool for greedy Fire Pass usage
+- **Ledger #200**: Recorded canonical intelligence hierarchy decision
+
+## Configuration summary
+| Tier | Models | Use |
+|------|--------|-----|
+| T1 | River 9B, MLX 9B | Fast, parsing |
+| T2 | River 35B | Validation |
+| T3 | Kimi K2.5 ×5 (Fire Pass) | Default intelligence, greedy concurrency |
+| T4 | Gemini, Codex, Claude | Frontier: planning, eval writing, audit |
+
+Escalation: 2 attempts per cell → Up → Across → Governor

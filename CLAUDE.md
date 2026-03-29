@@ -103,28 +103,49 @@ dgov pane land <slug>                           # review + merge + close
 dgov pane close <slug>                          # cleanup only
 ```
 
-## Model routing
+## Intelligence Routing Matrix
 
-Four abstract tiers. Governor dispatches by **role**, never by model name.
+Governor dispatches by **(DecisionKind, CapabilityTier)** — never by model name. The router resolves to physical backends via `agents.toml [routing.*]`.
 
-### Roles → models (router resolves via `agents.toml [routing.*]`)
+### Capability Tiers (cost-ordered)
 
-| Role | Purpose | Default model | Escalation |
-|------|---------|---------------|------------|
-| **worker** | All implementation + tests | qwen-9b | → supervisor |
-| **supervisor** | Code review, quality gates | qwen-35b | → manager |
-| **manager** | Reviews supervisor judgment | qwen-122b | → governor alert |
-| **governor** | Exception handling, planning | claude/gemini | — |
-| **lt-gov** | Adversarial audit, large refactors | codex-mini | — |
+| Tier | Cost | Models | Use |
+|------|------|--------|-----|
+| **T1** | Cheapest | River 9B, MLX 9B | Fast generation, deterministic parsing |
+| **T2** | Cheap | River 35B | Validation workhorse |
+| **T3** | Moderate | **Kimi K2.5** (Fire Pass unlimited) | Default intelligence — greedy concurrency |
+| **T4** | Expensive | Gemini, Codex, Claude | Frontier: planning, eval writing, audit |
 
-### Selection rules
+### DecisionKind × Tier Matrix
 
-- **Always dispatch by role** (`worker`, `supervisor`, `manager`) — never model names. The router maps roles to physical backends, handles health checks, load-balancing, and fallback.
-- All tasks start at `worker`. Escalation is automatic (2 attempts per tier, then next tier).
-- Never dispatch governor-tier models as workers. Codex is LT-GOV only.
-- One file per task for workers. Multi-file = use autonomous mode with rich context.
-- Dispatch cheap, retry cheap. Review exists to catch failures.
-- **Maintain your tunnel:** Run `dgov tunnel` if local workers fail preflight.
+| Kind \ Tier | T1 | T2 | T3 | T4 |
+|-------------|----|----|----|----|
+| **GENERATE** | river-9b | — | **kimi-k25×5** | frontier (complex) |
+| **VALIDATE** | — | river-35b | **kimi-k25** | frontier (judgment) |
+| **AUDIT** | — | — | **kimi-k25** | **frontier** |
+| **ORIENT** | — | — | **kimi-k25** | **frontier (planning)** |
+| **EVAL_WRITE** | — | — | — | **frontier (design)** |
+| **PARSE** | deterministic | river-9b | — | — |
+
+### Escalation Policy
+
+1. **2 attempts per (kind, tier)** cell
+2. **Up**: same kind, next tier (T3 → T4)
+3. **Across**: validation kind, same tier (GENERATE-T3 → VALIDATE-T3)
+4. **Human**: governor alert after T4 fails
+
+Special cases:
+- T1 GENERATE → skip T2 (no 35B workers) → T3 (kimi) on failure
+- T2 VALIDATE → T3 (kimi) on failure
+- T3 (kimi) is the greedy default — use high concurrency
+
+### Selection Rules
+
+- **Never dispatch by model name** — always via (kind, tier)
+- Kimi T3 is the workhorse: 5× concurrency for GENERATE, single high-capacity for VALIDATE/AUDIT/ORIENT
+- T4 frontier pool subdivisions (Gemini Flash/Pro, Codex, Claude) deferred — treat as "frontier" for now
+- One file per T1/T2 task; multi-file requires T3+ with autonomous mode
+- **Maintain your tunnel:** Run `dgov tunnel` if local workers fail preflight
 
 ## Prompting Qwen workers
 
