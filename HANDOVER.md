@@ -1,72 +1,85 @@
-# Handover: State audit — PaneState enum, model decomposition, AgentDef in progress
+# Handover: State audit complete, 3 plans landed, 2 safety layers + bug fix
 
 ## Session context
 - Date: 2026-03-29
-- Branch: main @ 1432a2f
-- Last commit: Merge merge-success-tests
+- Branch: main @ 2759134
+- Last commit: Merge fix-219-landing-flag
 
 ## Open panes
-| Slug | State | Description |
-|------|-------|-------------|
-| r136-define-subobjects | active | AgentDef decomposition into PromptTransport/HealthConfig/RetryConfig (P3 plan run 136) |
+None.
 
 ## Open bugs/issues
 - #215: DAG state tracking: tasks show dispatched after merge — kernel state not advancing through monitor (high)
-  - Reproduced on runs 130-134. Monitor merges panes but kernel doesn't receive TaskMergeDone/TaskClosed events
-  - Workaround: manually dispatch dependent units when DAG stalls
-- #219: Worktree removed before pane land — done state triggers cleanup before merge/close can run (high)
-  - Hit 3 times on executor enum fix. Worker completes → worktree deleted → land fails with FileNotFoundError
-  - Root cause: auto-cleanup races with governor landing flow
+  - Reproduced on runs 130-135. Monitor merges panes but kernel doesn't receive completion events
+  - Intermittent — run 136 worked correctly, earlier runs stalled
 
 ## Open debt
-- #216: Monitor phase classification returns "unknown" for pi/kimi workers during startup warmup (low)
-  - Likely the pi init sequence before first tool call (ledger #220)
+- #224: Ad-hoc pane create uses different merge path than plan units — no governor notification, violates one-canonical-pipeline rule (medium)
+  - Fix: ad-hoc dispatch should create single-unit plan under the hood so everything flows through the DAG kernel
+  - This is the next task
 
 ## Blockers/debt
-- None blocking current work
+- None blocking
 
 ## Next steps
-1. **P3 AgentDef decomposition** — run 136 in progress. Foundation unit (define-subobjects) is active. 3 dependent units pending: update-lifecycle, update-health-consumers, update-retry-consumers. May need manual dispatch due to bug #215.
-2. **Fix #215 (DAG state tracking)** — investigate monitor→kernel event flow. `_drive_dag` processes kernel actions but completion events may not feed back to `kernel.handle()`.
-3. **Fix #219 (worktree race)** — done state should NOT trigger worktree removal. Worktree must survive until close.
-4. **Remaining PaneState refs** — 13 raw strings left across 7 files (mostly DAG statuses and signal types, ~6 genuine misses)
-5. **State audit: next targets** — executor review policy if/elif (line ~1259), recovery dispatch table (line ~814)
+1. **Unify ad-hoc dispatch into plan pipeline** (debt #224) — `pane create` should generate a single-unit plan TOML and run it through `plan run`. Eliminates the dual merge path and gives governor notification for all dispatches. This was flagged as a policy violation ("one canonical pipeline, no drift").
+2. **Fix #215 (DAG state tracking)** — investigate monitor→kernel event flow. The kernel's task_states dict freezes because it never receives TaskMergeDone/TaskClosed events from the monitor.
+3. **State audit next pass** — remaining 13 raw PaneState strings (mostly DAG/batch statuses), executor review policy table, recovery dispatch table
 
 ## Changes made this session
 
-### Clanker discipline / state audit (3 plans)
+### State audit — 3 plans executed
 
 **P1: PaneState StrEnum (plan run 134, 12 units)**
-- Defined `PaneState` (12 members) and `PaneTier` (3 members) StrEnums in persistence.py
+- Defined PaneState (12 members) and PaneTier (3 members) StrEnums in persistence.py
 - Propagated across 29 source files: 347 → 13 raw string refs remaining
-- 10 plan units + 2 fix-forward dispatches for executor.py and status.py+lifecycle.py
+- 10 plan units + 2 fix-forward dispatches
 
 **P2: Model decomposition (plan run 135, 4 units)**
-- Removed ReviewInfo InitVar shims + 16 property aliases — callers use sub-objects (tests/freshness_info/automation/contract)
-- Added DoneStrategyType StrEnum (5 members) replacing raw string type field
+- Removed ReviewInfo InitVar shims + 16 property aliases — callers use sub-objects
+- Added DoneStrategyType StrEnum (5 members)
 - Extracted MergeSuccess test fields into shared ReviewTests sub-object
 
-**P3: AgentDef decomposition (plan run 136, in progress)**
-- Extracting PromptTransport, HealthConfig, RetryConfig from 25-field AgentDef grab-bag
-- Foundation unit dispatched, 3 consumer units pending
+**P3: AgentDef decomposition (plan run 136, 5 units)**
+- Extracted PromptTransport, HealthConfig, RetryConfig from 25-field AgentDef
+- Foundation worker updated agents.py + lifecycle.py + preflight.py in one commit
+- Governor micro-fixed router.py + cli/admin.py, dispatched test fix worker for 9 test files
 
-### Governor micro-edits (2)
-- Fixed 2 missed PaneState refs in status.py
-- Updated test_review_fix.py for MergeSuccess.tests sub-object
+### Safety layers (adversarial-reviewed by codex-mini agent)
 
-### Operational
-- 5 ledger entries: patterns #217 (TYPE_CHECKING import), #218 (over-generalized replacement), #220 (unknown phase = startup); bug #219 (worktree race); fix #221 (governor polling)
-- 3 memory entries: no-shims feedback, state audit frequency feedback, worker sub-delegation project note
+**Alt C: ty check in post-merge validation** (merger.py)
+- Runs `ty check` on changed Python files after every merge
+- Non-blocking (warning only) — catches AttributeError from restructured dataclasses
+
+**Alt B: Plan validator write/read overlap warning** (plan.py)
+- Warns when unit A edits files that unit B reads without a dependency edge
+- Catches the exact pattern that broke dgov during AgentDef decomposition
+
+### Bug fix
+
+**#219: Worktree removed before pane land** (monitor.py) — FIXED
+- Root cause: `_try_auto_merge` didn't set `landing=True` flag before calling `run_land_only`
+- Fix: set landing flag before merge, clear after — prevents prune_stale_panes from deleting worktree mid-merge
+
+### Operational ledger entries
+- #217: Kimi workers put runtime imports inside TYPE_CHECKING block
+- #218: Kimi workers over-generalize string replacement
+- #219: Worktree race (FIXED)
+- #220: Monitor "unknown" phase is startup warmup
+- #221: Governor polling violation (self-corrected)
+- #222: AgentDef decomposition broke dispatch path — must update all consumers atomically
+- #223: Ad-hoc panes have no governor notification
+- #224: Dual merge path violates canonical pipeline rule
 
 ## Notes
 
-### Worker failure patterns this session
-- **TYPE_CHECKING import** (ledger #217): Kimi workers put runtime imports inside TYPE_CHECKING block. Always specify "OUTSIDE TYPE_CHECKING" in prompts.
-- **Over-generalized replacement** (ledger #218): Workers converted "completed" and "review_pending" to PaneState members — those aren't pane states. Must explicitly list exclusions.
-- **Worktree race** (bug #219): Workers that complete in <15s get their worktree cleaned before governor can land. The monitor's auto-close is too aggressive.
+### Adversarial review process
+Codex-mini agent reviewed the import safety design and rejected all 3 proposed layers in favor of simpler alternatives (ty check + plan validator overlap warning). Key insight: "Layer 1 is wrong because you can't un-merge — detection after the fact doesn't help. Prevention at plan time or a type checker that catches the bug class is strictly better." The review process worked well — should use it for all non-trivial designs.
 
-### DAG kernel stalls (bug #215)
-Plans 134 and 135 both hit this. All tasks show "dispatched" in DAG status even after merge. Dependent units don't auto-dispatch — governor must manually dispatch them. The kernel's task_states dict freezes because it never receives completion events from the monitor.
+### Monitor reliability
+The monitor crashed mid-session (no status.json heartbeat) after code changes. Workers completed but stayed in "active/working" state because the monitor wasn't polling. Fixed by restarting monitor. The stale-code-hash detection works for plan runs but not for ad-hoc dispatches that happen between restarts.
 
-### Renamed skill reference
-User wants the "clanker discipline" skill renamed to "state audit" or similar. The principles are the same: derive-don't-store, make-wrong-states-impossible, enforce-function-contracts, data-over-procedure.
+### Worker performance this session
+- Kimi K2.5 via Fire Pass: ~15 workers dispatched, most completing in 30s-2min
+- Failure modes: TYPE_CHECKING imports (2x), over-generalized replacements (2x), silent exit with 0 commits (1x)
+- Success rate: ~80% first attempt, 100% with retry + refined prompts
