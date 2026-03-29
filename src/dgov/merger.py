@@ -1684,7 +1684,12 @@ def merge_worker_pane(
                 capture_output=True,
             )
             _persist.emit_event(session_root, "pane_merge_failed", slug, error=err)
-            return MergeError(error=err, slug=slug, branch=branch_name, validation_failed=True)
+            return MergeError(
+                error=err or "validation failed",
+                slug=slug,
+                branch=branch_name,
+                validation_failed=True,
+            )
 
         _finalize_merged_pane(
             pane_project_root, session_root, slug, target, branch_name, merge_sha
