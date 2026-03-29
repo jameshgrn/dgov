@@ -238,6 +238,7 @@ def resolve_agent(
     backend_failures: dict[BackendId, list[DegradationReason]] = {}
     tried: list[tuple[BackendId, DegradationReason]] = []
     degraded_candidates: list[BackendId] = []
+    viable: list[tuple[BackendId, int, int]] = []  # (backend_id, active_count, original_index)
     for backend_id in backends:
         agent_def = registry.get(backend_id)
         if agent_def is None:
@@ -308,9 +309,17 @@ def resolve_agent(
                 ]
                 continue
 
-        # Success - return this backend
-        logger.info("Routed %s -> %s", name, backend_id)
-        return backend_id, name
+        # Success - collect this backend for least-loaded selection
+        active = _count_active_agent_workers(session_root, backend_id)
+        viable.append((backend_id, active, len(viable)))
+        logger.info("Routed %s -> %s (active=%d)", name, backend_id, active)
+        continue
+
+    # After checking all backends, pick least-loaded viable backend
+    if viable:
+        best = min(viable, key=lambda t: (t[1], t[2]))
+        logger.info("Selected least-loaded backend %s for %s", best[0], name)
+        return best[0], name
 
     if degraded_candidates:
         backend_id = degraded_candidates[0]
