@@ -169,10 +169,12 @@ _DAG_EVENT_FACTORY: dict[str, _DagEventFactory] = {
         ts, passed=False, verdict="unsafe", commit_count=0
     ),
     "merge_completed": lambda ts, sl, ev: TaskMergeDone(ts),
+    "pane_merge_failed": lambda ts, sl, ev: TaskMergeDone(ts, sl, ev.get("error")),
     "pane_closed": lambda ts, sl, ev: TaskClosed(ts),
     "dag_resumed": lambda ts, sl, ev: TaskGovernorResumed(
         ts, action=GovernorAction(str(ev.get("action", GovernorAction.RETRY)))
     ),
+    "claim_violation": lambda ts, sl, ev: TaskMergeDone(ts, sl, ev.get("error")),
 }
 
 
