@@ -158,8 +158,10 @@ class TestResolveAgent:
             lambda *_a: {"qwen-test": ["backend-a", "backend-b"]},
         )
 
+        from dgov.agents import HealthConfig
+
         class FakeAgent:
-            health_check = None
+            health = HealthConfig()
             max_concurrent = None
 
         monkeypatch.setattr(
@@ -181,12 +183,14 @@ class TestResolveAgent:
             lambda *_a: {"qwen-test": ["sick-backend", "healthy-backend"]},
         )
 
+        from dgov.agents import HealthConfig
+
         class SickAgent:
-            health_check = "false"
+            health = HealthConfig(check="false")
             max_concurrent = None
 
         class HealthyAgent:
-            health_check = None
+            health = HealthConfig()
             max_concurrent = None
 
         monkeypatch.setattr(
@@ -211,12 +215,14 @@ class TestResolveAgent:
             lambda *_a: {"qwen-test": ["busy-one", "free-one"]},
         )
 
+        from dgov.agents import HealthConfig
+
         class BusyAgent:
-            health_check = None
+            health = HealthConfig()
             max_concurrent = 2
 
         class FreeAgent:
-            health_check = None
+            health = HealthConfig()
             max_concurrent = 5
 
         monkeypatch.setattr(
@@ -263,8 +269,10 @@ class TestResolveAgent:
             lambda *_a: {"qwen-test": ["sick-one", "sick-two"]},
         )
 
+        from dgov.agents import HealthConfig
+
         class SickAgent:
-            health_check = "false"
+            health = HealthConfig(check="false")
             max_concurrent = None
             groups = ()
 
@@ -295,8 +303,10 @@ class TestResolveAgent:
             "dgov.router._load_routing_tables", lambda *a, **kw: {"pool": ["b0", "b1", "b2"]}
         )
 
+        from dgov.agents import HealthConfig
+
         class FakeAgent:
-            health_check = None
+            health = HealthConfig()
             max_concurrent = None
             groups = ()
 
@@ -388,8 +398,10 @@ class TestCircuitBreaker:
             lambda *_a: {"qwen-test": ["tripped-one", "healthy-one"]},
         )
 
+        from dgov.agents import HealthConfig
+
         class FakeAgent:
-            health_check = None
+            health = HealthConfig()
             max_concurrent = None
             groups = ()
 

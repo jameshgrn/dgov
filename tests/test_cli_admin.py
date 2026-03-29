@@ -161,11 +161,16 @@ class TestStatusCmd:
         """Test status shows unhealthy agent count."""
         from types import SimpleNamespace
 
+        from dgov.agents import HealthConfig
+
+        transport = SimpleNamespace(type="positional")
+        # Simulate unhealthy agent with failing health check
+        health = HealthConfig(check="exit 1")
         agent_def = SimpleNamespace(
             name="TestAgent",
-            prompt_transport="positional",
+            transport=transport,
             source="builtin",
-            health_check="exit 1",  # Simulate unhealthy agent
+            health=health,
         )
         registry = {"test-agent": agent_def}
 

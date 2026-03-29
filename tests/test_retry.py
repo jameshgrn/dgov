@@ -171,10 +171,11 @@ class TestGetRetryPolicy:
 
     @patch("dgov.recovery.load_registry")
     def test_returns_policy_from_agent(self, mock_registry, tmp_path: Path) -> None:
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, agent="test-agent")
         agent_def = MagicMock()
-        agent_def.max_retries = 3
-        agent_def.retry_escalate_to = "claude"
+        agent_def.retry = RetryConfig(max_retries=3, escalate_to="claude")
         mock_registry.return_value = {"test-agent": agent_def}
 
         policy = get_retry_policy(session_root, "test-worker")
@@ -184,14 +185,15 @@ class TestGetRetryPolicy:
 
     @patch("dgov.recovery.load_registry")
     def test_pane_override_takes_priority(self, mock_registry, tmp_path: Path) -> None:
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, agent="test-agent")
 
         # Set per-pane override via SQLite metadata
         set_pane_metadata(session_root, "test-worker", max_retries=5)
 
         agent_def = MagicMock()
-        agent_def.max_retries = 2
-        agent_def.retry_escalate_to = None
+        agent_def.retry = RetryConfig(max_retries=2)
         mock_registry.return_value = {"test-agent": agent_def}
 
         policy = get_retry_policy(session_root, "test-worker")
@@ -207,8 +209,12 @@ class TestGetRetryPolicy:
 class TestMaybeAutoRetry:
     @patch("dgov.recovery.load_registry")
     def test_returns_none_when_no_policy(self, mock_registry, tmp_path: Path) -> None:
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, state="failed")
-        mock_registry.return_value = {"claude": MagicMock(max_retries=0)}
+        agent_def = MagicMock()
+        agent_def.retry = RetryConfig(max_retries=0)
+        mock_registry.return_value = {"claude": agent_def}
 
         result = maybe_auto_retry(session_root, "test-worker", "/fake/project")
         assert result is None
@@ -225,11 +231,12 @@ class TestMaybeAutoRetry:
     @patch("dgov.recovery.retry_worker_pane")
     @patch("dgov.recovery.load_registry")
     def test_retries_under_max(self, mock_registry, mock_retry, tmp_path: Path) -> None:
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
         agent_def = MagicMock()
-        agent_def.max_retries = 2
-        agent_def.retry_escalate_to = None
+        agent_def.retry = RetryConfig(max_retries=2)
         mock_registry.return_value = {"test-agent": agent_def}
 
         mock_retry.return_value = {"retried": True, "new_slug": "test-worker-2", "attempt": 2}
@@ -243,14 +250,15 @@ class TestMaybeAutoRetry:
     @patch("dgov.recovery.escalate_worker_pane")
     @patch("dgov.recovery.load_registry")
     def test_escalates_when_exhausted(self, mock_registry, mock_escalate, tmp_path: Path) -> None:
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
         # Pre-fill retry events to exhaust retries
         emit_event(session_root, "pane_auto_retried", "test-worker", attempt=1)
 
         agent_def = MagicMock()
-        agent_def.max_retries = 1
-        agent_def.retry_escalate_to = "claude"
+        agent_def.retry = RetryConfig(max_retries=1, escalate_to="claude")
         mock_registry.return_value = {"test-agent": agent_def}
 
         mock_escalate.return_value = {
@@ -267,13 +275,14 @@ class TestMaybeAutoRetry:
     def test_returns_none_when_exhausted_no_escalation(
         self, mock_registry, tmp_path: Path
     ) -> None:
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
 
         emit_event(session_root, "pane_auto_retried", "test-worker", attempt=1)
 
         agent_def = MagicMock()
-        agent_def.max_retries = 1
-        agent_def.retry_escalate_to = None
+        agent_def.retry = RetryConfig(max_retries=1)
         mock_registry.return_value = {"test-agent": agent_def}
 
         result = maybe_auto_retry(session_root, "test-worker", "/fake/project")
@@ -545,12 +554,13 @@ class TestMaybeAutoRetryProviderFailure:
         self, mock_context, mock_registry, tmp_path: Path
     ) -> None:
         """When policy exists, normal retry path is taken (with advisory text)."""
+        from dgov.agents import RetryConfig
+
         session_root = _setup_pane(tmp_path, state="failed", agent="test-agent")
         slug = "test-worker"
 
         agent_def = MagicMock()
-        agent_def.max_retries = 2
-        agent_def.retry_escalate_to = None
+        agent_def.retry = RetryConfig(max_retries=2)
         mock_registry.return_value = {"test-agent": agent_def}
 
         mock_context.return_value = "Upstream error from openrouter: connection timeout"

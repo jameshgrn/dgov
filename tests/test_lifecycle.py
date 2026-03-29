@@ -1172,10 +1172,12 @@ class TestResumeWorkerPane:
 
             agent_def = MagicMock()
             agent_def.env = {}
-            agent_def.health_check = None
+            agent_def.health = MagicMock()
+            agent_def.health.check = None
             agent_def.max_concurrent = None
             agent_def.interactive = False
-            agent_def.prompt_transport = "command"
+            agent_def.transport = MagicMock()
+            agent_def.transport.type = "command"
             agent_def.prompt_command = "pi"
             mock_registry.return_value = {"pi": agent_def}
 
@@ -1224,10 +1226,12 @@ class TestResumeWorkerPane:
 
             agent_def = MagicMock()
             agent_def.env = {}
-            agent_def.health_check = None
+            agent_def.health = MagicMock()
+            agent_def.health.check = None
             agent_def.max_concurrent = None
             agent_def.interactive = False
-            agent_def.prompt_transport = "command"
+            agent_def.transport = MagicMock()
+            agent_def.transport.type = "command"
             agent_def.prompt_command = "claude"
             mock_registry.return_value = {"claude": agent_def}
 

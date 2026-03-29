@@ -17,7 +17,8 @@ def test_least_loaded_picks_emptiest():
         # Mock registry entries for each backend
         def mock_agent_def():
             m = MagicMock()
-            m.health_check = None
+            m.health = MagicMock()
+            m.health.check = None
             m.max_concurrent = None
             m.groups = ()
             return m
@@ -60,7 +61,8 @@ def test_tiebreaker_preserves_config_order():
 
         def mock_agent_def():
             m = MagicMock()
-            m.health_check = None
+            m.health = MagicMock()
+            m.health.check = None
             m.max_concurrent = None
             m.groups = ()
             return m
@@ -98,7 +100,8 @@ def test_single_viable_backend():
 
         def mock_agent_def(health_check=None):
             m = MagicMock()
-            m.health_check = health_check
+            m.health = MagicMock()
+            m.health.check = health_check
             m.max_concurrent = None
             m.groups = ()
             return m

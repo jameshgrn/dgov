@@ -210,20 +210,21 @@ class TestEscalationChain:
     def test_agent_config_takes_priority(self, tmp_path, monkeypatch):
         """Agent's retry_escalate_to overrides ESCALATION_CHAIN."""
         from dataclasses import dataclass, field
+        from typing import Dict
 
-        from dgov.agents import DoneStrategy
+        from dgov.agents import DoneStrategy, HealthConfig, RetryConfig
 
         @dataclass
         class FakeAgent:
             name: str = "pi"
-            command: str = "pi"
-            max_retries: int = 2
-            retry_escalate_to: str = "gemini"
-            health_check: str | None = None
-            health_fix: str | None = None
+            prompt_command: str = "pi"
+            retry: RetryConfig = field(
+                default_factory=lambda: RetryConfig(max_retries=2, escalate_to="gemini")
+            )
+            health: HealthConfig = field(default_factory=HealthConfig)
             max_concurrent: int | None = None
             color: int | None = None
-            env: dict = field(default_factory=dict)
+            env: Dict[str, str] = field(default_factory=dict)
             done_strategy: DoneStrategy | None = None
 
         monkeypatch.setattr(
