@@ -892,7 +892,7 @@ class TestFullCleanup:
 
         cleanup_calls: list[str] = []
 
-        def fake_cleanup(project_root, session_root, slug, target, skip_worktree_if_dirty=True):
+        def fake_cleanup(project_root, session_root, slug, target, **kwargs):
             cleanup_calls.append(slug)
             return {
                 "cleaned": True,
