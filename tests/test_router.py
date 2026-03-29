@@ -4,6 +4,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -284,6 +285,40 @@ class TestResolveAgent:
         resolved, routed_from = resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
         assert resolved == "sick-one"
         assert routed_from == "qwen-test"
+
+    def test_resolve_agent_least_loaded(self, monkeypatch):
+        """Verify router picks least-loaded backend, not first-available."""
+        from dgov.router import resolve_agent
+
+        # 3 backends: b0 has 2 workers, b1 has 0, b2 has 1
+        monkeypatch.setattr(
+            "dgov.router._load_routing_tables", lambda *a, **kw: {"pool": ["b0", "b1", "b2"]}
+        )
+
+        class FakeAgent:
+            health_check = None
+            max_concurrent = None
+            groups = ()
+
+        monkeypatch.setattr(
+            "dgov.agents.load_registry",
+            lambda *a, **kw: {"b0": FakeAgent(), "b1": FakeAgent(), "b2": FakeAgent()},
+        )
+        monkeypatch.setattr("dgov.agents.load_groups", lambda *a, **kw: {})
+
+        counts = {"b0": 2, "b1": 0, "b2": 1}
+        monkeypatch.setattr(
+            "dgov.status._count_active_agent_workers", lambda sr, bid: counts.get(bid, 0)
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.bulk_info.return_value = {}
+        monkeypatch.setattr("dgov.backend.get_backend", lambda: mock_backend)
+        monkeypatch.setattr("dgov.persistence.all_panes", lambda sr: [])
+
+        backend, logical = resolve_agent("pool", "/tmp", "/tmp")
+        assert backend == "b1", f"Expected least-loaded b1, got {backend}"
+        assert logical == "pool"
 
 
 @pytest.mark.unit
