@@ -803,10 +803,12 @@ def _try_rebase_onto_main(worktree_path: str, project_root: str) -> bool:
     On failure, aborts the rebase so the worktree is left unchanged.
     """
     # Fetch main's HEAD into the worktree
+    # stdin=DEVNULL prevents fd inheritance issues when called from monitor daemon
     fetch = subprocess.run(
         ["git", "-C", worktree_path, "fetch", project_root, "HEAD"],
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
     if fetch.returncode != 0:
         return False
@@ -816,6 +818,7 @@ def _try_rebase_onto_main(worktree_path: str, project_root: str) -> bool:
         ["git", "-C", worktree_path, "rebase", "FETCH_HEAD"],
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
     if rebase.returncode != 0:
         # Abort on conflict
@@ -823,6 +826,7 @@ def _try_rebase_onto_main(worktree_path: str, project_root: str) -> bool:
             ["git", "-C", worktree_path, "rebase", "--abort"],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
         logger.info("Review rebase failed for %s, testing on unrebased branch", worktree_path)
         return False
@@ -860,6 +864,7 @@ def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
     cmd = ["uv", "run", "pytest", "-q", "-m", "unit", *test_files]
     proc = subprocess.Popen(
         cmd,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
