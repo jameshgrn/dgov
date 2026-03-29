@@ -16,6 +16,7 @@ from dgov.dag_graph import (
     transitive_dependents as _dag_transitive_dependents,
 )
 from dgov.dag_parser import DagFileSpec, DagTaskSpec
+from dgov.kernel import DagTaskState
 from dgov.persistence import (
     STATE_DIR,
     all_panes,
@@ -386,7 +387,9 @@ def run_batch(
         merged=[s for s, st in task_states.items() if st == DagTaskState.MERGED.value],
         failed=[s for s, st in task_states.items() if st == DagTaskState.FAILED.value],
         skipped=[s for s, st in task_states.items() if st == DagTaskState.SKIPPED.value],
-        blocked=[s for s, st in task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR.value],
+        blocked=[
+            s for s, st in task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR.value
+        ],
     )
 
     task_rows = list_dag_tasks(session_root, run_id)
