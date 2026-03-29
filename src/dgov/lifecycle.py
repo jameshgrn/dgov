@@ -539,14 +539,14 @@ def _git_exclude_files(worktree_path: str, filenames: list[str]) -> None:
 # -- Pane title --
 
 
-def _state_icon(state: str | None) -> str:
+def _state_icon(state: PaneState | str | None) -> str:
     """Return the pane-title icon for a worker state."""
     return {
-        "active": "~",
-        "done": "ok",
-        "merged": "+",
-        "timed_out": "!",
-        "failed": "X",
+        PaneState.ACTIVE: "~",
+        PaneState.DONE: "ok",
+        PaneState.MERGED: "+",
+        PaneState.TIMED_OUT: "!",
+        PaneState.FAILED: "X",
     }.get(state or "", "")
 
 
@@ -555,7 +555,7 @@ def _build_pane_title(
     slug: str,
     project_root: str,
     *,
-    state: str | None = None,
+    state: PaneState | str | None = None,
 ) -> str:
     """Build pane title for tmux pane border display.
 

@@ -200,7 +200,7 @@ class ReviewOnlyResult:
 @dataclass(frozen=True)
 class _WaitCompleted:
     wait_result: dict | None = None
-    pane_state: str | PaneState | None = None
+    pane_state: PaneState | str | None = None
 
 
 @dataclass(frozen=True)
@@ -209,7 +209,7 @@ class _WaitFailed:
     failure_stage: str
     suggest_escalate: bool
     wait_result: dict | None = None
-    pane_state: str | PaneState | None = None
+    pane_state: PaneState | str | None = None
 
 
 WaitOutcome = _WaitCompleted | _WaitFailed
@@ -226,7 +226,7 @@ class WaitOnlyResult:
         slug: str,
         *,
         wait_result: dict | None = None,
-        pane_state: str | PaneState | None = None,
+        pane_state: PaneState | str | None = None,
     ) -> WaitOnlyResult:
         return cls(
             slug=slug, outcome=_WaitCompleted(wait_result=wait_result, pane_state=pane_state)
@@ -241,7 +241,7 @@ class WaitOnlyResult:
         failure_stage: str,
         suggest_escalate: bool,
         wait_result: dict | None = None,
-        pane_state: str | PaneState | None = None,
+        pane_state: PaneState | str | None = None,
     ) -> WaitOnlyResult:
         return cls(
             slug=slug,
@@ -551,7 +551,7 @@ def run_cleanup_only(
     slug: str,
     *,
     session_root: str | None = None,
-    state: str,
+    state: PaneState | str,
     failure_stage: str | None = None,
 ) -> CleanupOnlyResult:
     """Run the canonical cleanup policy for a terminal lifecycle outcome."""
