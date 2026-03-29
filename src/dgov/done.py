@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dgov.backend import get_backend
-from dgov.persistence import STATE_DIR
+from dgov.persistence import STATE_DIR, PaneState
 
 if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
@@ -416,13 +416,13 @@ def _is_done(
     if done_path.exists():
         # Trust the done signal if the DB already says done (0-commit tasks)
         db_state = pane_record.get("state", "") if pane_record else ""
-        if db_state == "done":
+        if db_state == PaneState.DONE:
             _set_done_reason(_stable_state, "done_signal_db_confirmed")
             return True
         if pane_record is None or not _has_completion_commit(pane_record):
             return False
 
-        return _complete_terminal_state("done", "done_signal", allow_abandoned=True)
+        return _complete_terminal_state(PaneState.DONE, "done_signal", allow_abandoned=True)
 
     # Signal 1b: exit-code file — always checked.
     # Clean exit (code 0) with commits: auto-promote to done so the governor
@@ -441,12 +441,12 @@ def _is_done(
                 and _has_new_commits(project_root, branch_name, base_sha)
             ):
                 return _complete_terminal_state(
-                    "done",
+                    PaneState.DONE,
                     "exit_signal_with_commits",
                     allow_abandoned=True,
                     touch_done_file=True,
                 )
-        return _complete_terminal_state("failed", "exit_signal", allow_abandoned=True)
+        return _complete_terminal_state(PaneState.FAILED, "exit_signal", allow_abandoned=True)
 
     if pane_record is None:
         return False
@@ -468,7 +468,7 @@ def _is_done(
             if not _agent_still_running(pane_id, current_command):
                 logger.debug("shell_return_no_commits slug=%s agent exited - failed", slug)
                 return _complete_terminal_state(
-                    "failed",
+                    PaneState.FAILED,
                     "shell_return_no_commits",
                     allow_abandoned=True,
                 )
@@ -482,7 +482,7 @@ def _is_done(
                 if pane_id and not _agent_still_running(pane_id, current_command):
                     logger.debug("new_commits slug=%s agent exited - done", slug)
                     return _complete_terminal_state(
-                        "done",
+                        PaneState.DONE,
                         "commit",
                         allow_abandoned=True,
                         touch_done_file=True,
@@ -527,7 +527,7 @@ def _is_done(
                         )
                         # Fall through - blocking forever is worse
                 return _complete_terminal_state(
-                    "done",
+                    PaneState.DONE,
                     "commit",
                     allow_abandoned=True,
                     touch_done_file=True,
@@ -549,7 +549,7 @@ def _is_done(
                     transition = _persist.settle_completion_state(
                         session_root,
                         slug,
-                        "abandoned",
+                        PaneState.ABANDONED,
                     )
                     if transition.changed:
                         _persist.emit_event(session_root, "pane_done", slug)
@@ -559,7 +559,7 @@ def _is_done(
                 transition = _persist.settle_completion_state(
                     session_root,
                     slug,
-                    "abandoned",
+                    PaneState.ABANDONED,
                 )
                 if transition.changed:
                     _persist.emit_event(session_root, "pane_done", slug)
@@ -599,7 +599,7 @@ def _is_done(
                     "api fallback: %s has commits and stable output for 60s, marking done", slug
                 )
                 return _complete_terminal_state(
-                    "done",
+                    PaneState.DONE,
                     "api_fallback_stable",
                     allow_abandoned=True,
                     touch_done_file=True,
@@ -631,7 +631,7 @@ def _is_done(
                         if not _has_completion_commit(pane_record):
                             return False
                         return _complete_terminal_state(
-                            "done",
+                            PaneState.DONE,
                             "stable",
                             touch_done_file=True,
                         )
@@ -658,7 +658,7 @@ def _is_done(
                     transition = _persist.settle_completion_state(
                         session_root,
                         slug,
-                        "failed",
+                        PaneState.FAILED,
                     )
                     if transition.changed:
                         # Derived from event — no stored field.

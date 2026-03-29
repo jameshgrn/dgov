@@ -14,7 +14,7 @@ from dgov.done import (
     _agent_still_running,
     _is_done,
 )
-from dgov.persistence import STATE_DIR
+from dgov.persistence import STATE_DIR, PaneState
 
 if TYPE_CHECKING:
     from dgov.agents import DoneStrategy
@@ -244,7 +244,15 @@ def wait_worker_pane(
     _TERMINAL_EVENTS = ("pane_done", "pane_failed", "pane_timed_out")
 
     # Also check for events that already fired before we started waiting
-    _TERMINAL_STATES = frozenset({"done", "failed", "abandoned", "timed_out", "superseded"})
+    _TERMINAL_STATES = frozenset(
+        {
+            PaneState.DONE,
+            PaneState.FAILED,
+            PaneState.ABANDONED,
+            PaneState.TIMED_OUT,
+            PaneState.SUPERSEDED,
+        }
+    )
     pane_record = _persist.get_pane(session_root, slug)
     if pane_record and pane_record.get("state") in _TERMINAL_STATES:
         method = f"already:{pane_record['state']}"
@@ -269,7 +277,7 @@ def wait_worker_pane(
             pane_record = _persist.get_pane(session_root, slug)
             current_state = pane_record.get("state", "") if pane_record else ""
 
-            if auto_retry and current_state in ("failed", "abandoned"):
+            if auto_retry and current_state in (PaneState.FAILED, PaneState.ABANDONED):
                 from dgov.recovery import maybe_auto_retry
 
                 retry_result = maybe_auto_retry(session_root, slug, project_root)
