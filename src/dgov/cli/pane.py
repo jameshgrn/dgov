@@ -1234,7 +1234,7 @@ def pane_tail(slug, project_root, session_root, lines):
             )
         if text:
             click.echo(text)
-        click.secho(f"--- {slug} {state} ---", fg="green" if state == "merged" else "yellow")
+        click.secho(f"--- {slug} {state} ---", fg="green" if state == PaneState.MERGED else "yellow")
         return
 
     # Show initial output
