@@ -434,7 +434,7 @@ class IllegalTransitionError(ValueError):
 
 @dataclass(frozen=True)
 class CompletionTransitionResult:
-    state: str
+    state: PaneState = PaneState.ACTIVE
     changed: bool
 
 
@@ -460,7 +460,7 @@ class WorkerPane:
     parent_slug: str | None = None
     tier_id: str | None = None
     role: str = "worker"
-    state: str = "active"
+    state: PaneState = PaneState.ACTIVE
     file_claims: tuple[str, ...] = ()
     commit_message: str | None = None
 
