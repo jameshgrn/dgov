@@ -16,6 +16,7 @@ import shutil
 import string
 import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -574,7 +575,7 @@ def _resolve_retry(
     return retry
 
 
-_FIELD_RESOLVERS: dict[str, callable] = {
+_FIELD_RESOLVERS: dict[str, Callable] = {
     "source": _resolve_source,
     "permission_flags": _resolve_permission_flags,
     "resume_template": _resolve_resume_template,

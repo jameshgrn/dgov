@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from dgov.agents import load_registry
@@ -789,17 +790,27 @@ def maybe_auto_retry(
 # Crash recovery — reconstruct state from event log
 # ---------------------------------------------------------------------------
 
-_EVENT_TO_ACTION: dict[str, str] = {
-    "pane_created": "resume_wait",
-    "pane_dispatched": "resume_wait",
-    "pane_done": "resume_review",
-    "pane_reviewed": "resume_merge",
-    "pane_review_passed": "resume_merge",
-    "pane_merged": "close",
-    "pane_merge_failed": "retry",
-    "pane_closed": "skip",
-    "pane_failed": "skip",
-    "monitor_auto_merge": "skip",
+
+class RecoveryAction(StrEnum):
+    SKIP = "skip"
+    RESUME_WAIT = "resume_wait"
+    RESUME_REVIEW = "resume_review"
+    RESUME_MERGE = "resume_merge"
+    RETRY = "retry"
+    CLOSE = "close"
+
+
+_EVENT_TO_ACTION: dict[str, RecoveryAction] = {
+    "pane_created": RecoveryAction.RESUME_WAIT,
+    "pane_dispatched": RecoveryAction.RESUME_WAIT,
+    "pane_done": RecoveryAction.RESUME_REVIEW,
+    "pane_reviewed": RecoveryAction.RESUME_MERGE,
+    "pane_review_passed": RecoveryAction.RESUME_MERGE,
+    "pane_merged": RecoveryAction.CLOSE,
+    "pane_merge_failed": RecoveryAction.RETRY,
+    "pane_closed": RecoveryAction.SKIP,
+    "pane_failed": RecoveryAction.SKIP,
+    "monitor_auto_merge": RecoveryAction.SKIP,
 }
 
 
@@ -827,8 +838,8 @@ def recover_from_events(session_root: str) -> dict[str, dict[str, str]]:
 
     recommendations: dict[str, dict[str, str]] = {}
     for slug, ev_info in last_event.items():
-        action = _EVENT_TO_ACTION.get(ev_info["kind"], "skip")
-        if action == "skip":
+        action = _EVENT_TO_ACTION.get(ev_info["kind"], RecoveryAction.SKIP)
+        if action == RecoveryAction.SKIP:
             continue
 
         pane = panes_snapshot.get(slug)
@@ -839,23 +850,29 @@ def recover_from_events(session_root: str) -> dict[str, dict[str, str]]:
         needs_recovery = False
         reason = ""
 
-        if action == "resume_wait" and db_state == PaneState.ACTIVE:
+        if action == RecoveryAction.RESUME_WAIT and db_state == PaneState.ACTIVE:
             from dgov.backend import get_backend
 
             pane_id = pane.get("pane_id", "")
             if pane_id and not get_backend().is_alive(pane_id):
                 needs_recovery = True
                 reason = f"dispatched but process dead (last: {ev_info['kind']})"
-        elif action == "resume_review" and db_state == PaneState.DONE:
+        elif action == RecoveryAction.RESUME_REVIEW and db_state == PaneState.DONE:
             needs_recovery = True
             reason = "done but review never completed"
-        elif action == "resume_merge" and db_state in (PaneState.DONE, PaneState.REVIEWED_PASS):
+        elif action == RecoveryAction.RESUME_MERGE and db_state in (
+            PaneState.DONE,
+            PaneState.REVIEWED_PASS,
+        ):
             needs_recovery = True
             reason = "reviewed but merge never completed"
-        elif action == "retry" and db_state in (PaneState.DONE, PaneState.ACTIVE):
+        elif action == RecoveryAction.RETRY and db_state in (PaneState.DONE, PaneState.ACTIVE):
             needs_recovery = True
             reason = "merge failed but pane not cleaned up"
-        elif action == "close" and db_state not in (PaneState.CLOSED, PaneState.MERGED):
+        elif action == RecoveryAction.CLOSE and db_state not in (
+            PaneState.CLOSED,
+            PaneState.MERGED,
+        ):
             needs_recovery = True
             reason = f"merged but state is {db_state}"
 
