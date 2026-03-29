@@ -2206,7 +2206,7 @@ def run_force_complete_dag(session_root: str, run_id: int) -> dict:
         total=0,
     )
 
-    return {"run_id": run_id, "forced": forced, "status": "completed"}
+    return {"run_id": run_id, "forced": forced, "status": DagState.COMPLETED}
 
 
 def run_skip_dag_task(session_root: str, run_id: int, task_slug: str) -> dict:
