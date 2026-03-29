@@ -199,8 +199,14 @@ def merge_dag(dag_file: str) -> DagRunSummary:
                 failed=[task_slug],
             )
         merged.append(task_slug)
-        task_states[task_slug] = "merged"
-        upsert_dag_task(session_root, run_id, task_slug, "merged", dag.tasks[task_slug].agent)
+        task_states[task_slug] = DagTaskState.MERGED
+        upsert_dag_task(
+            session_root,
+            run_id,
+            task_slug,
+            DagTaskState.MERGED,
+            dag.tasks[task_slug].agent,
+        )
         emit_event(session_root, "dag_task_completed", task_slug, dag_run_id=run_id)
 
     update_dag_run(session_root, run_id, status="completed")
