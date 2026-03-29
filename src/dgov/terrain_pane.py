@@ -164,7 +164,7 @@ def _compute_hud(model: ErosionModel) -> Text:
     # 5. state label: derived from maturity thresholds with color coding
     # Use hysteresis to prevent flickering when maturity oscillates near thresholds
     raw_label = _get_label_for_maturity(maturity)
-    last_label = _hud_state["last_label"]
+    last_label = str(_hud_state.get("last_label", ""))
 
     if not last_label:
         # First call - use raw label and initialize state
