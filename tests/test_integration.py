@@ -241,9 +241,9 @@ class TestConflictDetection:
         )
         assert result.error is not None or len(result.conflicts) > 0
 
-        # 6. Verify pane state is merge_conflict
+        # 6. Pane stays at done — merger no longer sets merge_conflict state
         record = get_pane(session_root, "conflict-test")
-        assert record["state"] == "merge_conflict"
+        assert record["state"] == "done"
 
         # 7. Clean up: abort the merge left by resolve="manual", reset main
         subprocess.run(

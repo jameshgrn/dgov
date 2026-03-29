@@ -132,6 +132,7 @@ class TestTerminalStatePruning:
         _add_pane(tmp_path, "old-merged", created_at=old_time)
         (tmp_path / "old-merged").mkdir()
         update_pane_state(sr, "old-merged", "done")
+        update_pane_state(sr, "old-merged", "reviewed_pass")
         update_pane_state(sr, "old-merged", "merged")
 
         _add_pane(tmp_path, "old-closed", created_at=old_time)
@@ -154,6 +155,7 @@ class TestTerminalStatePruning:
         _add_pane(tmp_path, "old-merged", created_at=old_time)
         (tmp_path / "old-merged").mkdir()
         update_pane_state(sr, "old-merged", "done")
+        update_pane_state(sr, "old-merged", "reviewed_pass")
         update_pane_state(sr, "old-merged", "merged")
 
         _add_pane(tmp_path, "old-closed", created_at=old_time)
@@ -174,6 +176,7 @@ class TestTerminalStatePruning:
         # Create worktree dir so pass 1 doesn't prune it as orphan
         (tmp_path / "recent-merged").mkdir()
         update_pane_state(sr, "recent-merged", "done")
+        update_pane_state(sr, "recent-merged", "reviewed_pass")
         update_pane_state(sr, "recent-merged", "merged")
 
         from dgov.status import prune_stale_panes

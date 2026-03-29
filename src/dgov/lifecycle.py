@@ -1451,7 +1451,6 @@ def close_worker_pane(
         PaneState.CLOSED,
         PaneState.DONE,
         PaneState.FAILED,
-        PaneState.MERGE_CONFLICT,
         PaneState.SUPERSEDED,
         PaneState.TIMED_OUT,
         PaneState.ABANDONED,

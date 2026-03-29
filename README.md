@@ -22,16 +22,14 @@ stateDiagram-v2
 
     done --> reviewed_pass: review (pass)
     done --> reviewed_fail: review (fail)
-    done --> merged: dgov pane land
 
-    reviewed_pass --> merged: dgov pane land
-    reviewed_pass --> merge_conflict: git merge failed
+    reviewed_pass --> merged: merge succeeded
+    reviewed_pass --> failed: merge failed
     reviewed_fail --> escalated: re-dispatch
 
     failed --> escalated: dgov pane escalate
     timed_out --> done: late finish
     timed_out --> escalated: re-dispatch
-    merge_conflict --> merged: conflict resolved
 
     merged --> closed: cleanup
     escalated --> closed: cleanup
@@ -40,7 +38,7 @@ stateDiagram-v2
     closed --> [*]
 ```
 
-The full transition table (12 states, all legal edges including superseded, retry, and direct-close paths) is enforced in [`src/dgov/persistence.py`](src/dgov/persistence.py).
+Review is mandatory — no direct `done → merged`. Merge failures are failures, not a separate state. The full transition table (11 states, all legal edges including superseded, retry, and direct-close paths) is enforced in [`src/dgov/persistence.py`](src/dgov/persistence.py).
 
 ## Signal Flow
 

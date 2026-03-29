@@ -128,6 +128,8 @@ VALID_EVENTS = frozenset(
         "pane_auto_responded",
         "pane_review_pending",
         "checkpoint_created",
+        "pane_reviewed_pass",
+        "pane_reviewed_fail",
         "review_pass",
         "review_fail",
         "review_fix_started",
@@ -156,7 +158,6 @@ VALID_EVENTS = frozenset(
         "merge_completed",
         "yap_received",
         "pane_circuit_breaker",
-        "pane_merge_conflict",
         "monitor_nudge",
         "monitor_auto_complete",
         "monitor_idle_timeout",
@@ -356,7 +357,6 @@ class PaneState(StrEnum):
     REVIEWED_PASS = "reviewed_pass"
     REVIEWED_FAIL = "reviewed_fail"
     MERGED = "merged"
-    MERGE_CONFLICT = "merge_conflict"
     TIMED_OUT = "timed_out"
     ESCALATED = "escalated"
     SUPERSEDED = "superseded"
@@ -375,7 +375,8 @@ class PaneTier(StrEnum):
     WORKER = "worker"
 
 
-# Transition table: 12 states, enforced in update_pane_state
+# Transition table: 11 states, enforced in update_pane_state
+# Review is mandatory before merge — no direct done→merged or active→merged.
 VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
     PaneState.ACTIVE: frozenset(
         {
@@ -386,32 +387,25 @@ VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
             PaneState.CLOSED,
             PaneState.ESCALATED,
             PaneState.SUPERSEDED,
-            PaneState.MERGED,
         }
     ),
     PaneState.DONE: frozenset(
         {
             PaneState.REVIEWED_PASS,
             PaneState.REVIEWED_FAIL,
-            PaneState.MERGED,
-            PaneState.MERGE_CONFLICT,
             PaneState.CLOSED,
             PaneState.SUPERSEDED,
         }
     ),
     PaneState.FAILED: frozenset({PaneState.CLOSED, PaneState.SUPERSEDED, PaneState.ESCALATED}),
-    PaneState.REVIEWED_PASS: frozenset(
-        {PaneState.MERGED, PaneState.MERGE_CONFLICT, PaneState.CLOSED}
-    ),
+    PaneState.REVIEWED_PASS: frozenset({PaneState.MERGED, PaneState.FAILED, PaneState.CLOSED}),
     PaneState.REVIEWED_FAIL: frozenset(
         {PaneState.CLOSED, PaneState.SUPERSEDED, PaneState.ESCALATED}
     ),
     PaneState.MERGED: frozenset({PaneState.CLOSED}),
-    PaneState.MERGE_CONFLICT: frozenset({PaneState.MERGED, PaneState.CLOSED, PaneState.ESCALATED}),
     PaneState.TIMED_OUT: frozenset(
         {
             PaneState.DONE,
-            PaneState.MERGED,
             PaneState.CLOSED,
             PaneState.SUPERSEDED,
             PaneState.ESCALATED,

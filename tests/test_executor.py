@@ -306,6 +306,7 @@ class TestPostDispatchLifecycle:
                 "dgov.merger.merge_worker_pane",
                 return_value=MergeSuccess(merged="task", branch="task"),
             ),
+            patch("dgov.executor.run_mark_reviewed"),
         ):
             result = run_post_dispatch_lifecycle(
                 "/repo",
@@ -342,6 +343,7 @@ class TestPostDispatchLifecycle:
                 return_value=ReviewInfo(slug="task", verdict="safe", commit_count=1),
             ),
             patch("dgov.merger.merge_worker_pane") as mock_merge,
+            patch("dgov.executor.run_mark_reviewed"),
         ):
             result = run_post_dispatch_lifecycle(
                 "/repo",
@@ -392,6 +394,7 @@ class TestPostDispatchLifecycle:
                 "dgov.merger.merge_worker_pane",
                 return_value=MergeSuccess(merged="task-2", branch="task-2"),
             ),
+            patch("dgov.executor.run_mark_reviewed"),
         ):
             result = run_post_dispatch_lifecycle(
                 "/repo",
@@ -432,6 +435,7 @@ class TestPostDispatchLifecycle:
                 return_value=ReviewInfo(slug="task", verdict="review", commit_count=1),
             ),
             patch("dgov.merger.merge_worker_pane") as mock_merge,
+            patch("dgov.executor.run_mark_reviewed"),
         ):
             result = run_post_dispatch_lifecycle(
                 "/repo",
@@ -571,9 +575,12 @@ class TestReviewMerge:
         assert event.attempt == 2  # unchanged
 
     def test_run_review_merge_blocks_non_safe_review(self, tmp_path):
-        with patch(
-            "dgov.inspection.review_worker_pane",
-            return_value=ReviewInfo(slug="task", verdict="review", commit_count=1),
+        with (
+            patch(
+                "dgov.inspection.review_worker_pane",
+                return_value=ReviewInfo(slug="task", verdict="review", commit_count=1),
+            ),
+            patch("dgov.executor.run_mark_reviewed"),
         ):
             result = run_review_merge("/repo", "task", session_root=str(tmp_path))
 
@@ -594,6 +601,7 @@ class TestReviewMerge:
                     merge_result=MergeSuccess(merged="task", branch="task"),
                 ),
             ) as mock_merge,
+            patch("dgov.executor.run_mark_reviewed"),
         ):
             result = run_review_merge(
                 "/repo",

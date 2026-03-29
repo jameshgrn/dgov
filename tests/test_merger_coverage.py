@@ -424,10 +424,11 @@ def test_merge_worker_pane_skip_returns_conflicts_without_touching_worktree(
     assert worktree.exists()
     assert _git(repo, "rev-parse", "--verify", "dgov-conflict").returncode == 0
     assert not (repo / ".git" / "MERGE_HEAD").exists()
-    mock_update_state.assert_called_once_with(str(repo), "conflict-pane", "merge_conflict")
-    mock_emit_event.assert_called_once_with(
-        str(repo), "pane_merge_conflict", "conflict-pane", branch="dgov-conflict"
-    )
+    mock_update_state.assert_not_called()
+    call_args = mock_emit_event.call_args
+    assert call_args[0] == (str(repo), "pane_merge_failed", "conflict-pane")
+    assert call_args[1]["branch"] == "dgov-conflict"
+    assert "conflicts" in call_args[1]
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 
@@ -659,10 +660,11 @@ def test_merge_worker_pane_manual_conflict_leaves_markers_for_resolution(
     assert result.branch == "dgov-manual"
     assert result.resolve == "manual"
     assert len(result.conflicts) > 0
-    mock_update_state.assert_called_once_with(str(repo), "manual-pane", "merge_conflict")
-    mock_emit_event.assert_called_once_with(
-        str(repo), "pane_merge_conflict", "manual-pane", branch="dgov-manual"
-    )
+    mock_update_state.assert_not_called()
+    call_args = mock_emit_event.call_args
+    assert call_args[0] == (str(repo), "pane_merge_failed", "manual-pane")
+    assert call_args[1]["branch"] == "dgov-manual"
+    assert "conflicts" in call_args[1]
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 
@@ -704,10 +706,11 @@ def test_merge_worker_pane_returns_unknown_resolve_error_for_conflict(
     # Rebase fails, falls back to plumbing merge, then unknown resolve is rejected
     assert result.error == "Unknown resolve strategy: bogus"
     assert not (repo / ".git" / "MERGE_HEAD").exists()
-    mock_update_state.assert_called_once_with(str(repo), "unknown-pane", "merge_conflict")
-    mock_emit_event.assert_called_once_with(
-        str(repo), "pane_merge_conflict", "unknown-pane", branch="dgov-unknown"
-    )
+    mock_update_state.assert_not_called()
+    call_args = mock_emit_event.call_args
+    assert call_args[0] == (str(repo), "pane_merge_failed", "unknown-pane")
+    assert call_args[1]["branch"] == "dgov-unknown"
+    assert "conflicts" in call_args[1]
     mock_set_metadata.assert_not_called()
     mock_close_worker_pane.assert_not_called()
 
@@ -1090,7 +1093,7 @@ def test_merge_worker_pane_falls_back_when_rebase_fails(
         project_root=str(repo),
         worktree_path=str(worktree),
         branch_name="dgov-rebase-fb",
-        state="done",
+        state="reviewed_pass",
     )
     add_pane(session_root, pane)
 

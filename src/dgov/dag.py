@@ -190,7 +190,7 @@ def merge_dag(dag_file: str) -> DagRunSummary:
                 "dag_failed",
                 f"dag/{run_id}",
                 dag_run_id=run_id,
-                error="merge_conflict",
+                error="merge_failed",
             )
             return DagRunSummary(
                 run_id=run_id,

@@ -49,12 +49,12 @@ class TestValidTransition:
         rec = get_pane(state_dir, "test")
         assert rec["state"] == "done"
 
-    def test_done_to_merged(self, state_dir, monkeypatch):
+    def test_done_to_merged_requires_review(self, state_dir, monkeypatch):
+        """done → merged is illegal — must go through reviewed_pass first."""
         monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
         _seed_pane(state_dir, state="done")
-        update_pane_state(state_dir, "test", "merged")
-        rec = get_pane(state_dir, "test")
-        assert rec["state"] == "merged"
+        with pytest.raises(IllegalTransitionError):
+            update_pane_state(state_dir, "test", "merged")
 
 
 class TestSameStateNoop:
@@ -82,12 +82,11 @@ class TestTimedOutTransitions:
         rec = get_pane(state_dir, "test")
         assert rec["state"] == "done"
 
-    def test_timed_out_to_merged(self, state_dir, monkeypatch):
-        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
+    def test_timed_out_to_merged_requires_review(self, state_dir):
+        """timed_out → merged is illegal — must go through done + reviewed_pass."""
         _seed_pane(state_dir, state="timed_out")
-        update_pane_state(state_dir, "test", "merged")
-        rec = get_pane(state_dir, "test")
-        assert rec["state"] == "merged"
+        with pytest.raises(IllegalTransitionError):
+            update_pane_state(state_dir, "test", "merged")
 
 
 class TestCompletionTransitions:
@@ -131,12 +130,11 @@ class TestIllegalTransition:
         with pytest.raises(IllegalTransitionError):
             update_pane_state(state_dir, "test", "active")
 
-    def test_active_to_merged_succeeds(self, state_dir, monkeypatch):
-        monkeypatch.setattr("dgov.tmux.set_title", lambda *a: None)
+    def test_active_to_merged_requires_review(self, state_dir):
+        """active → merged is illegal — must go through done + reviewed_pass first."""
         _seed_pane(state_dir)
-        update_pane_state(state_dir, "test", "merged")
-        rec = get_pane(state_dir, "test")
-        assert rec["state"] == "merged"
+        with pytest.raises(IllegalTransitionError):
+            update_pane_state(state_dir, "test", "merged")
 
     def test_state_unchanged_after_illegal(self, state_dir):
         _seed_pane(state_dir)

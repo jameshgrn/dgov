@@ -1471,8 +1471,9 @@ def _handle_merge_conflicts(
         _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
         return MergeError(error=error_msg)
 
-    _persist.update_pane_state(session_root, slug, PaneState.MERGE_CONFLICT)
-    _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
+    _persist.emit_event(
+        session_root, "pane_merge_failed", slug, branch=branch_name, conflicts=conflicts
+    )
 
     if resolve == "agent":
         resolved = _resolve_conflicts_with_agent(

@@ -76,7 +76,7 @@ def _create_worktree(repo: Path, slug: str, session_root: str) -> tuple[Path, st
         worktree_path=str(wt),
         branch_name=slug,
         base_sha=base_sha,
-        state="done",
+        state="reviewed_pass",
     )
     add_pane(session_root, pane)
     return wt, base_sha

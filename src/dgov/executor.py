@@ -1015,14 +1015,23 @@ def run_post_dispatch_lifecycle(
                 error = f"Review failed: {review_res.error}"
                 _phase("failed", current_slug)
             elif review_res.verdict != ReviewVerdict.SAFE:
+                run_mark_reviewed(
+                    project_root, current_slug, session_root=session_root, passed=False
+                )
                 state = "review_pending"
             elif review_res.commit_count == 0:
                 state = "completed"
                 _phase("completed", current_slug)
             elif not auto_merge:
+                run_mark_reviewed(
+                    project_root, current_slug, session_root=session_root, passed=True
+                )
                 state = PaneState.REVIEWED_PASS
             else:
-                # Merge phase
+                # Review pass then merge
+                run_mark_reviewed(
+                    project_root, current_slug, session_root=session_root, passed=True
+                )
                 _phase("merging", current_slug)
                 merge_res = run_merge_only(
                     project_root,
@@ -1493,6 +1502,7 @@ def run_review_merge(
         )
 
     if review_res.verdict != ReviewVerdict.SAFE:
+        run_mark_reviewed(project_root, slug, session_root=session_root, passed=False)
         return ReviewMergeResult(
             slug=slug,
             outcome=_ReviewMergeReviewFailed(
@@ -1510,6 +1520,9 @@ def run_review_merge(
                 review_record=review_res.review_record,
             ),
         )
+
+    # Transition to reviewed_pass before merge — review is mandatory
+    run_mark_reviewed(project_root, slug, session_root=session_root, passed=True)
 
     merge_res = run_merge_only(
         project_root,
