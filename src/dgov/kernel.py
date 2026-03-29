@@ -431,6 +431,11 @@ class DagKernel:
             return actions
 
         if isinstance(event, TaskClosed):
+            task = event.task_slug
+            state = self.task_states.get(task)
+            if state in (DagTaskState.WAITING, DagTaskState.REVIEWING):
+                self.task_states[task] = DagTaskState.FAILED
+                actions.extend(self._skip_dependents(task))
             actions.extend(self._check_done())
             return actions
 
