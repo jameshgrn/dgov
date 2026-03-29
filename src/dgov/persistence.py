@@ -1731,6 +1731,55 @@ def get_dag_task(session_root: str, dag_run_id: int, slug: str) -> dict | None:
     }
 
 
+def get_dag_task_failure_context(session_root: str, run_id: int) -> dict[str, dict]:
+    """Query failed DAG tasks and their most recent event for post-mortem diagnostics.
+
+    Returns a dict mapping task_slug -> {
+        "last_event": event_type,
+        "last_event_ts": timestamp,
+        "pane_slug": pane_slug,
+        "verdict": verdict_if_any,
+        "error": error_text_if_any,
+    }
+    """
+    conn = _get_db(session_root)
+    rows = conn.execute(
+        "SELECT slug, pane_slug, error FROM dag_tasks"
+        " WHERE dag_run_id = ? AND status IN (?, ?, ?)",
+        (run_id, "failed", "skipped", "blocked_on_governor"),
+    ).fetchall()
+
+    result: dict[str, dict] = {}
+    for slug, pane_slug, error in rows:
+        event_row = conn.execute(
+            "SELECT event, ts, data, error FROM events WHERE pane = ? ORDER BY id DESC LIMIT 1",
+            (pane_slug,),
+        ).fetchone()
+
+        verdict: str | None = None
+        event_error: str | None = None
+        if event_row:
+            event_type, timestamp, data_str, evt_error = event_row
+            event_error = evt_error
+            if data_str:
+                try:
+                    payload = json.loads(data_str)
+                    verdict = payload.get("verdict")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        else:
+            event_type, timestamp = None, None
+
+        result[slug] = {
+            "last_event": event_type,
+            "last_event_ts": timestamp,
+            "pane_slug": pane_slug,
+            "verdict": verdict,
+            "error": error or event_error,
+        }
+    return result
+
+
 # -- Merge queue --
 
 
