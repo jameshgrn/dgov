@@ -545,7 +545,7 @@ def _state_icon(state: str | None) -> str:
         "merged": "+",
         "timed_out": "!",
         "failed": "X",
-    }.get(state, "")
+    }.get(state or "", "")
 
 
 def _build_pane_title(
@@ -637,14 +637,19 @@ def _setup_and_launch_agent(
             env_lines.append(f"unset {var}")
     for key, val in all_env.items():
         env_lines.append(f"export {key}={shlex.quote(val)}")
-    dgov_env = {
-        "DGOV_SESSION_ROOT": session_root,
-        "DGOV_SLUG": slug,
-        "DGOV_AGENT": agent_id,
-        "DGOV_BRANCH": branch_name,
-        "DGOV_BASE_SHA": base_sha,
-        "DGOV_WORKTREE_PATH": worktree_path,
-    }
+    dgov_env: dict[str, str] = {}
+    if session_root:
+        dgov_env["DGOV_SESSION_ROOT"] = session_root
+    if slug:
+        dgov_env["DGOV_SLUG"] = slug
+    if agent_id:
+        dgov_env["DGOV_AGENT"] = agent_id
+    if branch_name:
+        dgov_env["DGOV_BRANCH"] = branch_name
+    if base_sha:
+        dgov_env["DGOV_BASE_SHA"] = base_sha
+    if worktree_path:
+        dgov_env["DGOV_WORKTREE_PATH"] = worktree_path
     for key, val in dgov_env.items():
         env_lines.append(f"export {key}={shlex.quote(val)}")
 
@@ -705,7 +710,7 @@ def _setup_and_launch_agent(
     # When forcing headless on a normally-interactive agent, add agent-specific flags
     if not use_interactive and agent_def.interactive and role == "worker":
         if agent_id == "claude":
-            extra_flags = f"-p {extra_flags}".strip() if extra_flags else "-p"
+            extra_flags = f"-p {extra_flags or ''}".strip() if extra_flags else "-p"
 
     if use_interactive:
         # Interactive TUI mode: launch without prompt, send prompt via tmux after ready.
@@ -715,7 +720,7 @@ def _setup_and_launch_agent(
             permission_mode,
             project_root=worktree_path,
             slug=slug,
-            extra_flags=extra_flags,
+            extra_flags=extra_flags or "",
             registry=registry,
         )
         wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal, worktree_path=worktree_path)
@@ -736,7 +741,7 @@ def _setup_and_launch_agent(
             permission_mode,
             project_root=worktree_path,
             slug=slug,
-            extra_flags=extra_flags,
+            extra_flags=extra_flags or "",
             registry=registry,
         )
         wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal, worktree_path=worktree_path)
@@ -756,7 +761,7 @@ def _setup_and_launch_agent(
             permission_mode,
             project_root=worktree_path,
             slug=slug,
-            extra_flags=extra_flags,
+            extra_flags=extra_flags or "",
             registry=registry,
             force_headless=force_headless,
         )
@@ -1029,7 +1034,7 @@ def create_worker_pane(
                     from_agent=agent,
                     route=_compute_route_from_dispatch(logical_agent, agent),
                     prompt_hash=phash,
-                    base_sha=base_sha,
+                    base_sha=base_sha or "",
                 )
                 close_span(session_root, sid, SpanOutcome.SUCCESS)
             except Exception:
