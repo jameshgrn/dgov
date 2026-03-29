@@ -157,24 +157,33 @@ _RETRY_CLEAR_EVENTS = frozenset(
 
 
 # Factory dict for mapping pane events to DAG events.
-# Each value is a lambda that takes (timestamp, slug, event_dict) and returns a DagEvent.
+# Each value is a lambda that takes (task_slug, pane_slug, event_dict) and returns a DagEvent.
 _DAG_EVENT_FACTORY: dict[str, _DagEventFactory] = {
-    "pane_done": lambda ts, sl, ev: TaskWaitDone(ts, sl, "done"),
-    "pane_failed": lambda ts, sl, ev: TaskWaitDone(ts, sl, "failed"),
-    "pane_timed_out": lambda ts, sl, ev: TaskWaitDone(ts, sl, "timed_out"),
-    "review_pass": lambda ts, sl, ev: TaskReviewDone(
-        ts, passed=True, verdict="safe", commit_count=int(ev.get("commit_count", 0) or 0)
+    "pane_done": lambda task_slug, pane_slug, ev: TaskWaitDone(task_slug, pane_slug, "done"),
+    "pane_failed": lambda task_slug, pane_slug, ev: TaskWaitDone(task_slug, pane_slug, "failed"),
+    "pane_timed_out": lambda task_slug, pane_slug, ev: TaskWaitDone(
+        task_slug, pane_slug, "timed_out"
     ),
-    "review_fail": lambda ts, sl, ev: TaskReviewDone(
-        ts, passed=False, verdict="unsafe", commit_count=0
+    "review_pass": lambda task_slug, pane_slug, ev: TaskReviewDone(
+        task_slug,
+        passed=True,
+        verdict="safe",
+        commit_count=int(str(ev.get("commit_count", 0) or 0)),
     ),
-    "merge_completed": lambda ts, sl, ev: TaskMergeDone(ts),
-    "pane_merge_failed": lambda ts, sl, ev: TaskMergeDone(ts, sl, ev.get("error")),
-    "pane_closed": lambda ts, sl, ev: TaskClosed(ts),
-    "dag_resumed": lambda ts, sl, ev: TaskGovernorResumed(
-        ts, action=GovernorAction(str(ev.get("action", GovernorAction.RETRY)))
+    "review_fail": lambda task_slug, pane_slug, ev: TaskReviewDone(
+        task_slug, passed=False, verdict="unsafe", commit_count=0
     ),
-    "claim_violation": lambda ts, sl, ev: TaskMergeDone(ts, sl, ev.get("error")),
+    "merge_completed": lambda task_slug, pane_slug, ev: TaskMergeDone(task_slug),
+    "pane_merge_failed": lambda task_slug, pane_slug, ev: TaskMergeDone(
+        task_slug, error=str(ev.get("error")) if ev.get("error") else None
+    ),
+    "pane_closed": lambda task_slug, pane_slug, ev: TaskClosed(task_slug),
+    "dag_resumed": lambda task_slug, pane_slug, ev: TaskGovernorResumed(
+        task_slug, action=GovernorAction(str(ev.get("action", GovernorAction.RETRY)))
+    ),
+    "claim_violation": lambda task_slug, pane_slug, ev: TaskMergeDone(
+        task_slug, error=str(ev.get("error")) if ev.get("error") else None
+    ),
 }
 
 
@@ -1066,6 +1075,12 @@ def _mark_idle_failed(
     logger.info("Monitor: timed out idle worker %s (reason=%s)", slug, reason)
 
 
+def _mark_idle_and_record_failure(project_root: str, session_root: str, slug: str) -> None:
+    """Mark idle worker as failed and record fast failure."""
+    _mark_idle_failed(project_root, session_root, slug)
+    _record_fast_failure(session_root, slug)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch tables for _take_action (placed after handler definitions)
 # ---------------------------------------------------------------------------
@@ -1108,7 +1123,7 @@ _TERMINAL_RULES: list[tuple[Callable, Callable, str]] = [
     ),
     (
         lambda cls, w, n: cls == "idle" and n >= 4,
-        lambda pr, sr, sl: (_mark_idle_failed(pr, sr, sl), _record_fast_failure(sr, sl)),
+        lambda pr, sr, sl: _mark_idle_and_record_failure(pr, sr, sl),
         "idle_timeout",
     ),
 ]
