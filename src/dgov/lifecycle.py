@@ -27,6 +27,7 @@ from dgov.persistence import (
     add_pane,
     clear_preserved_artifacts,
     emit_event,
+    ensure_dag_tables,
     get_child_panes,
     get_pane,
     mark_preserved_artifacts,
@@ -1127,6 +1128,32 @@ def _overlay_dirty_files(
                 worktree_file.write_bytes(project_file.read_bytes())
 
 
+def _pane_in_active_dag(session_root: str, pane_slug: str) -> bool:
+    """Check if pane is part of an active DAG run pending review.
+
+    Returns True if the pane slug appears in dag_tasks associated with
+    a running DAG run where the task is not yet merged/failed/skipped.
+    """
+    try:
+        ensure_dag_tables(session_root)
+        conn = _get_db(session_root)
+        cursor = conn.execute(
+            """
+            SELECT dt.status, dr.status as run_status
+            FROM dag_tasks dt
+            JOIN dag_runs dr ON dt.run_id = dr.id
+            WHERE dt.pane_slug = ?
+            AND dr.status = 'running'
+            AND dt.status NOT IN ('merged', 'failed', 'skipped')
+            """,
+            (pane_slug,),
+        )
+        return cursor.fetchone() is not None
+    except Exception:
+        # Tables may not exist or other DB errors — treat as not in active DAG
+        return False
+
+
 def _full_cleanup(
     project_root: str,
     session_root: str,
@@ -1419,11 +1446,17 @@ def close_worker_pane(
     ):
         force = True
 
+    # Check if pane is part of an active DAG run — preserve worktree for retry review
+    in_active_dag = _pane_in_active_dag(session_root, slug)
+    if in_active_dag:
+        logger.warning("Preserving worktree for pane %s — active DAG task pending review", slug)
+
     result = _full_cleanup(
         clean_project_root,
         session_root,
         slug,
         target,
+        remove_worktree=not in_active_dag,
         skip_worktree_if_dirty=not force,
     )
 
