@@ -246,12 +246,12 @@ def pane_create(
     if agent not in registry:
         from dgov.router import is_routable
 
-        if not is_routable(agent):
+        if not is_routable(agent, project_root):
             from dgov.router import _load_routing_tables, available_names
 
             # Show logical routing names + non-routable registry agents (not physical backends)
             routable = set(available_names())
-            routing_tables = _load_routing_tables()
+            routing_tables = _load_routing_tables(project_root)
             non_routable: set[str] = set()
             for k in registry:
                 if k not in routable and not any(k in b for b in routing_tables.values()):
@@ -266,7 +266,7 @@ def pane_create(
         from dgov.router import is_routable
         from dgov.router import resolve_agent as _resolve
 
-        if is_routable(agent):
+        if is_routable(agent, project_root):
             try:
                 preflight_agent, _ = _resolve(agent, session_root or project_root, project_root)
             except RuntimeError:
