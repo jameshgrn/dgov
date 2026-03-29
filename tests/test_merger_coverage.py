@@ -135,6 +135,13 @@ def test_merge_worker_pane_restores_protected_files_before_merge(
         base_sha=base_sha,
     )
 
+    def _fake_tmux_run(args, **kwargs):
+        if "pane_title" in str(args):
+            return "[kimi-k25-0] protected ~"
+        if "pane_pid" in str(args):
+            return "99999"
+        return ""
+
     with (
         patch("dgov.persistence.get_pane", return_value=pane) as mock_get_pane,
         patch("dgov.persistence.update_pane_state") as mock_update_state,
@@ -143,6 +150,7 @@ def test_merge_worker_pane_restores_protected_files_before_merge(
         patch("dgov.backend.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.tmux._run", side_effect=_fake_tmux_run),
     ):
         result = merge_worker_pane(str(repo), "protected", session_root=str(repo))
 

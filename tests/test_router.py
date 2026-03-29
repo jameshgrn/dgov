@@ -154,7 +154,7 @@ class TestResolveAgent:
     def test_resolve_returns_physical_backend(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
-            lambda: {"qwen-test": ["backend-a", "backend-b"]},
+            lambda *_a: {"qwen-test": ["backend-a", "backend-b"]},
         )
 
         class FakeAgent:
@@ -177,7 +177,7 @@ class TestResolveAgent:
     def test_skips_unhealthy_backend(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
-            lambda: {"qwen-test": ["sick-backend", "healthy-backend"]},
+            lambda *_a: {"qwen-test": ["sick-backend", "healthy-backend"]},
         )
 
         class SickAgent:
@@ -207,7 +207,7 @@ class TestResolveAgent:
     def test_skips_busy_backend(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
-            lambda: {"qwen-test": ["busy-one", "free-one"]},
+            lambda *_a: {"qwen-test": ["busy-one", "free-one"]},
         )
 
         class BusyAgent:
@@ -241,7 +241,7 @@ class TestResolveAgent:
         """When all backends fail, raises DegradationError with typed reasons."""
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
-            lambda: {"qwen-test": ["missing-agent"]},
+            lambda *_a: {"qwen-test": ["missing-agent"]},
         )
         monkeypatch.setattr(
             "dgov.agents.load_registry",
@@ -259,7 +259,7 @@ class TestResolveAgent:
     def test_degrades_to_first_backend_when_all_are_health_blocked(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
-            lambda: {"qwen-test": ["sick-one", "sick-two"]},
+            lambda *_a: {"qwen-test": ["sick-one", "sick-two"]},
         )
 
         class SickAgent:
@@ -350,7 +350,7 @@ class TestCircuitBreaker:
     def test_resolve_skips_tripped_backend(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
-            lambda: {"qwen-test": ["tripped-one", "healthy-one"]},
+            lambda *_a: {"qwen-test": ["tripped-one", "healthy-one"]},
         )
 
         class FakeAgent:
