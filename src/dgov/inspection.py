@@ -387,6 +387,10 @@ def _inspect_worker_pane(
     if commit_count == 0:
         issues.append("no commits — nothing to merge")
 
+    # Rebase onto main before testing so tests see governor micro-edits
+    if tests_pass and commit_count > 0:
+        _try_rebase_onto_main(wt, project_root)
+
     # Deterministic quality gates
     test_res = {}
     if tests_pass and commit_count > 0:
@@ -790,6 +794,41 @@ def _find_event_ts(events: list[dict], event_name: str) -> datetime | None:
             except (ValueError, KeyError):
                 return None
     return None
+
+
+def _try_rebase_onto_main(worktree_path: str, project_root: str) -> bool:
+    """Try to rebase the worktree branch onto main's HEAD before testing.
+
+    Returns True if rebase succeeded, False if it failed (conflicts) or errored.
+    On failure, aborts the rebase so the worktree is left unchanged.
+    """
+    # Fetch main's HEAD into the worktree
+    fetch = subprocess.run(
+        ["git", "-C", worktree_path, "fetch", project_root, "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if fetch.returncode != 0:
+        return False
+
+    # Try rebase
+    rebase = subprocess.run(
+        ["git", "-C", worktree_path, "rebase", "FETCH_HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    if rebase.returncode != 0:
+        # Abort on conflict
+        subprocess.run(
+            ["git", "-C", worktree_path, "rebase", "--abort"],
+            capture_output=True,
+            text=True,
+        )
+        logger.info("Review rebase failed for %s, testing on unrebased branch", worktree_path)
+        return False
+
+    logger.info("Rebased worktree %s onto main for testing", worktree_path)
+    return True
 
 
 def _run_related_tests(project_root: str, changed_files: list[str]) -> dict:
