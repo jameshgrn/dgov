@@ -23,6 +23,8 @@ if TYPE_CHECKING:
     from dgov.kernel import (
         DagAction,
         DagEvent,
+        DagState,
+        DagTaskState,
         TaskDispatched,
         TaskDispatchFailed,
         TaskMergeDone,
@@ -2182,14 +2184,16 @@ def run_force_complete_dag(session_root: str, run_id: int) -> dict:
     task_states = state_json.get("task_states", {})
     forced = []
     for task_slug, ts in task_states.items():
-        if ts not in ("merged", "failed", "skipped"):
-            task_states[task_slug] = "merged"
-            upsert_dag_task(session_root, run_id, task_slug, "merged", "governor-override")
+        if ts not in (DagTaskState.MERGED, DagTaskState.FAILED, DagTaskState.SKIPPED):
+            task_states[task_slug] = DagTaskState.MERGED
+            upsert_dag_task(
+                session_root, run_id, task_slug, DagTaskState.MERGED, "governor-override"
+            )
             forced.append(task_slug)
 
-    state_json["state"] = "completed"
+    state_json["state"] = DagState.COMPLETED
     state_json["task_states"] = task_states
-    update_dag_run(session_root, run_id, status="completed", state_json=state_json)
+    update_dag_run(session_root, run_id, status=DagState.COMPLETED, state_json=state_json)
     emit_event(
         session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id, status="completed"
     )
@@ -2218,12 +2222,12 @@ def run_skip_dag_task(session_root: str, run_id: int, task_slug: str) -> dict:
     task_states = state_json.get("task_states", {})
     if task_slug not in task_states:
         return {"error": f"Task {task_slug!r} not found in DAG run {run_id}"}
-    if task_states[task_slug] in ("merged", "skipped"):
+    if task_states[task_slug] in (DagTaskState.MERGED, DagTaskState.SKIPPED):
         return {"error": f"Task {task_slug!r} already in terminal state: {task_states[task_slug]}"}
 
-    task_states[task_slug] = "skipped"
+    task_states[task_slug] = DagTaskState.SKIPPED
     state_json["task_states"] = task_states
-    upsert_dag_task(session_root, run_id, task_slug, "skipped", "governor-override")
+    upsert_dag_task(session_root, run_id, task_slug, DagTaskState.SKIPPED, "governor-override")
     update_dag_run(session_root, run_id, state_json=state_json)
     emit_event(
         session_root, "dag_task_completed", f"dag/{run_id}", task=task_slug, dag_run_id=run_id
