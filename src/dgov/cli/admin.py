@@ -493,11 +493,11 @@ def status(project_root, session_root, output_json):
 
         def _check_health(agent_id: str) -> str | None:
             agent_def = registry.get(agent_id)
-            if not agent_def or not agent_def.health_check:
+            if not agent_def or not agent_def.health.check:
                 return None
             try:
                 result = subprocess.run(
-                    agent_def.health_check, shell=True, capture_output=True, text=True, timeout=5
+                    agent_def.health.check, shell=True, capture_output=True, text=True, timeout=5
                 )
                 return agent_id if result.returncode != 0 else None
             except (subprocess.TimeoutExpired, OSError):

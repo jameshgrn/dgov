@@ -274,10 +274,10 @@ def resolve_agent(
                 continue
 
         # Health check
-        if agent_def.health_check:
+        if agent_def.health.check:
             try:
                 hc = subprocess.run(
-                    agent_def.health_check,
+                    agent_def.health.check,
                     shell=True,
                     capture_output=True,
                     text=True,
