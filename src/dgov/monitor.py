@@ -192,6 +192,7 @@ class DagMonitorState:
     run_id: int
     kernel: DagKernel
     reactor: DagReactor
+    _deferred_finalization_count: int = field(default=0, repr=False)
 
 
 @dataclass
@@ -453,6 +454,30 @@ def _drive_dag(
     while pending:
         action = pending.pop(0)
         if isinstance(action, DagDone):
+            # Guard: defer finalization if retry panes still await review
+            from dgov.kernel import DagTaskState
+
+            unreviewed = [
+                slug
+                for slug, state in dag_state.kernel.task_states.items()
+                if state in (DagTaskState.WAITING, DagTaskState.REVIEWING)
+            ]
+            if unreviewed and dag_state._deferred_finalization_count < 3:
+                logger.warning(
+                    "DAG finalization deferred: %d tasks pending review: %s",
+                    len(unreviewed),
+                    unreviewed,
+                )
+                dag_state._deferred_finalization_count += 1
+                continue
+            if unreviewed and dag_state._deferred_finalization_count >= 3:
+                logger.error(
+                    "DAG finalization proceeding despite %d unreviewed tasks "
+                    "after %d deferrals: %s",
+                    len(unreviewed),
+                    dag_state._deferred_finalization_count,
+                    unreviewed,
+                )
             # Finalize run in DB
             update_dag_run(session_root, dag_state.run_id, status=action.status)
             emit_event(
