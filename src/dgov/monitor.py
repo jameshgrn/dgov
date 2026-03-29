@@ -1182,22 +1182,22 @@ _HOOK_ACTIONS: dict[str, tuple[Callable, str]] = {
 # All handlers use lambdas for late binding (allows monkeypatch in tests).
 _TERMINAL_RULES: list[tuple[Callable, Callable, str]] = [
     (
-        lambda cls, w, n: cls == "done" and (w["has_commits"] or n >= 2),
+        lambda cls, w, n: cls == WorkerPhase.DONE and (w["has_commits"] or n >= 2),
         lambda pr, sr, sl: _auto_complete(pr, sr, sl),
         "auto_complete",
     ),
     (
-        lambda cls, w, n: cls == "idle" and w["has_commits"],
+        lambda cls, w, n: cls == WorkerPhase.IDLE and w["has_commits"],
         lambda pr, sr, sl: _auto_complete(pr, sr, sl),
         "proactive_auto_complete",
     ),
     (
-        lambda cls, w, n: cls == "stuck" and n >= 3,
+        lambda cls, w, n: cls == WorkerPhase.STUCK and n >= 3,
         lambda pr, sr, sl: _nudge_stuck(pr, sr, sl),
         "nudge",
     ),
     (
-        lambda cls, w, n: cls == "idle" and n >= 4,
+        lambda cls, w, n: cls == WorkerPhase.IDLE and n >= 4,
         lambda pr, sr, sl: _mark_idle_and_record_failure(pr, sr, sl),
         "idle_timeout",
     ),
