@@ -257,10 +257,11 @@ def _check_evidence_syntax(evidence: str) -> list[str]:
     except (subprocess.TimeoutExpired, OSError):
         pass  # Can't check, skip
 
-    # 2. Common anti-pattern: escaped pipe in grep -qE (vim syntax, not ERE)
-    # grep -qE 'foo\|bar' should be grep -qE 'foo|bar'
-    if "\\|" in evidence and "grep" in evidence:
-        warnings.append("Evidence uses '\\|' with grep — did you mean '|' for ERE alternation?")
+    # 2. Common anti-pattern: escaped pipe in grep -E (vim syntax, not ERE)
+    # grep -E 'foo\|bar' should be grep -E 'foo|bar'
+    # But plain grep (BRE) correctly uses \| for alternation — don't warn.
+    if "\\|" in evidence and re.search(r"grep\s+-[^\s]*E", evidence):
+        warnings.append("Evidence uses '\\|' with grep -E — did you mean '|' for ERE alternation?")
 
     return warnings
 
