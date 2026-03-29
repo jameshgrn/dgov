@@ -671,6 +671,11 @@ def _setup_and_launch_agent(
 
     # 4. Write role-appropriate CLAUDE.md into the worktree
     packet = context_packet or build_context_packet(prompt)
+    if packet.commit_message:
+        backend.send_shell_command(
+            pane_id,
+            f"export DGOV_COMMIT_MSG={shlex.quote(packet.commit_message)}",
+        )
     _write_worktree_instructions(
         worktree_path,
         slug,

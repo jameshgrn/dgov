@@ -183,7 +183,7 @@ def _wrap_cmd(
         auto_commit = (
             f"git -C {wt} add -A"
             f" && {{ git -C {wt} diff --cached --quiet"
-            f" || git -C {wt} commit -m 'Auto-commit on agent exit'; }}"
+            f' || git -C {wt} commit -m "${{DGOV_COMMIT_MSG:-Auto-commit on agent exit}}"; }}'
         )
 
     if headless:
