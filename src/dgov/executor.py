@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Callable
 
 from dgov.context_packet import ContextPacket, build_context_packet
 from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequest, ReviewVerdict
-from dgov.inspection import ReviewInfo
+from dgov.inspection import (
+    ReviewInfo,
+)
 from dgov.merger import MergeError, MergeSuccess
 from dgov.persistence import PaneState
 
