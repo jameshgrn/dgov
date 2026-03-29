@@ -834,6 +834,31 @@ def load_groups(project_root: str | None = None) -> dict[str, dict]:
     return groups
 
 
+def _resolve_aliases(
+    routing_dict: dict[str, list[str]],
+    raw_routing: dict[str, dict],
+) -> dict[str, list[str]]:
+    """Resolve alias_for entries to their target's backends.
+
+    For each entry with alias_for but not backends, looks up the target
+    in routing_dict and copies its backend list. Only resolves one level
+    deep (no recursion). Logs a warning if the target doesn't exist.
+    """
+    log = logging.getLogger(__name__)
+    for name, table in raw_routing.items():
+        if isinstance(table, dict) and "alias_for" in table and "backends" not in table:
+            target = table["alias_for"]
+            if target in routing_dict:
+                routing_dict[name] = list(routing_dict[target])
+            else:
+                log.warning(
+                    "Routing alias '%s' -> '%s' unresolved (target not found)",
+                    name,
+                    target,
+                )
+    return routing_dict
+
+
 def load_routing_tables(
     project_root: str | None = None,
 ) -> dict[str, list[str]]:
@@ -851,6 +876,7 @@ def load_routing_tables(
     from pathlib import Path
 
     result: dict[str, list[str]] = {}
+    raw_routing: dict[str, dict] = {}
 
     # Load user-global first (base configuration)
     # Project-local will override for routes defined locally
@@ -863,6 +889,8 @@ def load_routing_tables(
             for name, table in routing.items():
                 if isinstance(table, dict) and "backends" in table:
                     result[name] = list(table["backends"])
+                elif isinstance(table, dict):
+                    raw_routing[name] = table
         except (tomllib.TOMLDecodeError, OSError):
             pass
 
@@ -877,7 +905,12 @@ def load_routing_tables(
                 for name, table in routing.items():
                     if isinstance(table, dict) and "backends" in table:
                         result[name] = list(table["backends"])
+                    elif isinstance(table, dict):
+                        raw_routing[name] = table
             except (tomllib.TOMLDecodeError, OSError):
                 pass
+
+    # Resolve alias_for entries (one level deep, no recursion)
+    _resolve_aliases(result, raw_routing)
 
     return result
