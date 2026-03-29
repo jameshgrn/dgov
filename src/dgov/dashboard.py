@@ -26,6 +26,7 @@ from rich.table import Table
 from rich.text import Text
 
 from dgov import __version__
+from dgov.persistence import PaneState
 
 # MLX overflow test passed
 logger = logging.getLogger(__name__)
@@ -37,16 +38,18 @@ _VISIBLE_ROWS = 15
 
 
 def state_color(state: str) -> str:
+    from dgov.persistence import PaneState
+
     return {
-        "active": "bright_cyan",
-        "done": "green",
-        "merged": "green",
-        "failed": "red",
-        "abandoned": "red",
-        "timed_out": "red",
-        "escalated": "magenta",
-        "superseded": "magenta",
-        "closed": "dim",
+        PaneState.ACTIVE: "bright_cyan",
+        PaneState.DONE: "green",
+        PaneState.MERGED: "green",
+        PaneState.FAILED: "red",
+        PaneState.ABANDONED: "red",
+        PaneState.TIMED_OUT: "red",
+        PaneState.ESCALATED: "magenta",
+        PaneState.SUPERSEDED: "magenta",
+        PaneState.CLOSED: "dim",
         "stuck": "bold red",
         "waiting_input": "bold yellow",
         "committing": "bold green",
@@ -227,7 +230,7 @@ def _format_trace_data(session_root: str, slug: str) -> list[str]:
 
 
 def fetch_panes(state: DashboardState) -> None:
-    from dgov.persistence import STATE_DIR, read_events
+    from dgov.persistence import STATE_DIR, PaneState, read_events
     from dgov.status import capture_worker_output, list_worker_panes, tail_worker_log
 
     try:
@@ -251,6 +254,8 @@ def fetch_panes(state: DashboardState) -> None:
 
         # Merge monitor classifications into panes
         monitor_workers = {w["slug"]: w for w in monitor_status.get("workers", [])}
+        from dgov.persistence import PaneState
+
         for p in panes:
             slug = p.get("slug", "")
             if slug in monitor_workers:
@@ -299,7 +304,11 @@ def fetch_panes(state: DashboardState) -> None:
             sel_idx = state.selected
             want_preview = state.preview_visible
         selected_pane = _selected_visible_pane(panes, sel_idx)
-        if want_preview and selected_pane is not None and selected_pane.get("state") == "active":
+        if (
+            want_preview
+            and selected_pane is not None
+            and selected_pane.get("state") == PaneState.ACTIVE
+        ):
             slug = selected_pane.get("slug", "")
             preview_lines: list[str] = []
             raw = capture_worker_output(
@@ -405,7 +414,7 @@ def _refresh_preview_for_selection_change(state: DashboardState) -> None:
 
 def _visible_pane_rows(panes: list[dict]) -> tuple[list[tuple[int, dict]], str]:
     pane_rows = list(enumerate(panes))
-    active_rows = [row for row in pane_rows if row[1].get("state") == "active"]
+    active_rows = [row for row in pane_rows if row[1].get("state") == PaneState.ACTIVE]
     if active_rows:
         return active_rows, "active"
     return pane_rows, "all"
@@ -759,7 +768,7 @@ def _build_layout(
     show_preview = (
         preview_visible
         and selected_pane is not None
-        and selected_pane.get("state") == "active"
+        and selected_pane.get("state") == PaneState.ACTIVE
         and preview is not None
         and preview.slug == selected_slug
         and bool(preview.lines)

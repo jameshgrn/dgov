@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from rich.text import Text
 
+from dgov.persistence import PaneState
+
 # D8 neighbor offsets: (dy, dx)
 _D8 = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
 _D8_DIST = [math.sqrt(2), 1.0, math.sqrt(2), 1.0, 1.0, math.sqrt(2), 1.0, math.sqrt(2)]
@@ -137,9 +139,9 @@ _EFFECT_GLYPHS = {
 # Agent role/state to glyph/color mapping for terrain display
 _AGENT_STAMPS = {
     "lt-gov": ("★", "bold yellow"),
-    "done": ("●", "dim white"),
-    "merged": ("●", "dim white"),
-    "failed": ("✖", "bold red"),
+    PaneState.DONE: ("●", "dim white"),
+    PaneState.MERGED: ("●", "dim white"),
+    PaneState.FAILED: ("✖", "bold red"),
     "mlx": ("⚡", "bold bright_cyan"),
 }
 _DEFAULT_STAMP = ("@", "bold green")
@@ -1043,11 +1045,11 @@ class AgentSim:
             r, c = self._pos[slug]
             vr, vc = self._vel[slug]
 
-            if state in ("done", "merged"):
+            if state in (PaneState.DONE, PaneState.MERGED):
                 # Settle: decelerate to a stop
                 vr *= 0.4
                 vc *= 0.4
-            elif state == "failed":
+            elif state == PaneState.FAILED:
                 # Jitter in place
                 vr = random.uniform(-0.3, 0.3)
                 vc = random.uniform(-0.3, 0.3)

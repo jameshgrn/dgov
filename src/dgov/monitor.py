@@ -37,6 +37,7 @@ from dgov.merger import MergeSuccess
 from dgov.monitor_hooks import load_monitor_hooks, match_monitor_hook
 from dgov.persistence import (
     STATE_DIR,
+    PaneState,
     all_panes,
     emit_event,
     get_pane,
@@ -318,7 +319,7 @@ def poll_workers(
         )
     )
 
-    active = [w for w in workers if w.get("state") == "active" and not w.get("landing")]
+    active = [w for w in workers if w.get("state") == PaneState.ACTIVE and not w.get("landing")]
     results = []
 
     for w in active:
@@ -406,9 +407,9 @@ def observe_worker(
             exit_code = -1
 
     # Structural phase (from signals)
-    if pane_state in ("done", "merged"):
+    if pane_state in (PaneState.DONE, PaneState.MERGED):
         phase = WorkerPhase.DONE
-    elif pane_state == "failed":
+    elif pane_state == PaneState.FAILED:
         phase = WorkerPhase.FAILED
     elif has_done and has_commits:
         phase = WorkerPhase.DONE
@@ -625,7 +626,13 @@ def _load_dag_run(project_root: str, session_root: str, run_dict: dict) -> DagMo
                         p_rec = get_pane(session_root, p_slug)
                         if p_rec:
                             p_state = p_rec.get("state")
-                            if p_state in ("done", "failed", "timed_out", "merged", "closed"):
+                            if p_state in (
+                                PaneState.DONE,
+                                PaneState.FAILED,
+                                PaneState.TIMED_OUT,
+                                PaneState.MERGED,
+                                PaneState.CLOSED,
+                            ):
                                 pending_events.append(TaskWaitDone(t_slug, p_slug, p_state))
 
             if pending_events:
@@ -661,14 +668,14 @@ def _bootstrap_monitor_state(
 
     state = MonitorLoopState(
         event_cursor=latest_event_id(session_root),
-        active_slugs={pane["slug"] for pane in panes if pane.get("state") == "active"},
+        active_slugs={pane["slug"] for pane in panes if pane.get("state") == PaneState.ACTIVE},
         merge_candidates={
-            pane["slug"] for pane in panes if auto_merge and pane.get("state") == "done"
+            pane["slug"] for pane in panes if auto_merge and pane.get("state") == PaneState.DONE
         },
         retry_candidates={
             pane["slug"]
             for pane in panes
-            if auto_retry and pane.get("state") in {"failed", "abandoned"}
+            if auto_retry and pane.get("state") in {PaneState.FAILED, PaneState.ABANDONED}
         },
         active_dags=active_dags,
         queue_dirty=(Path(session_root) / ".dgov" / "dispatch_queue.jsonl").is_file(),
@@ -827,7 +834,7 @@ def _process_auto_merge_candidates(
         session_root,
         candidates=state.merge_candidates,
         attempted=merge_attempted,
-        valid_states={"done"},
+        valid_states={PaneState.DONE},
         action_fn=_try_auto_merge,
         on_success=lambda slug: state.active_slugs.discard(slug),
     )
@@ -864,7 +871,7 @@ def _process_auto_retry_candidates(
         session_root,
         candidates=state.retry_candidates,
         attempted=retry_attempted,
-        valid_states={"failed", "abandoned"},
+        valid_states={PaneState.FAILED, PaneState.ABANDONED},
         action_fn=_try_auto_retry,
         on_success=lambda slug: _track_retry_successor(state, session_root, slug),
     )
@@ -953,7 +960,7 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
 
     # Re-check state from DB to avoid TOCTOU race
     raw = get_pane(session_root, slug)
-    if not raw or raw.get("state") != "active" or raw.get("landing"):
+    if not raw or raw.get("state") != PaneState.ACTIVE or raw.get("landing"):
         return None
 
     # Handle stale workers (active but not alive) - special case with dual logic
