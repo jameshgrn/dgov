@@ -48,6 +48,7 @@ from dgov.persistence import (
     set_pane_metadata,
     take_dispatch_queue,
     update_dag_run,
+    upsert_dag_task,
     wait_for_events,
 )
 from dgov.status import list_worker_panes, prune_stale_panes, tail_worker_log
@@ -565,6 +566,23 @@ def _drive_dag(
             new_actions = dag_state.kernel.handle(event)
             pending.extend(new_actions)
 
+    # Sync kernel task_states -> dag_tasks table (projection from source of truth)
+    for task_slug, task_state in dag_state.kernel.task_states.items():
+        pane_slug = dag_state.kernel.pane_slugs.get(task_slug)
+        attempt = dag_state.kernel.attempts.get(task_slug, 1)
+        agent = ""
+        task_def = dag_state.reactor.dag.tasks.get(task_slug)
+        if task_def:
+            agent = task_def.agent
+        upsert_dag_task(
+            session_root,
+            dag_state.run_id,
+            task_slug,
+            task_state.value,
+            agent,
+            attempt=attempt,
+            pane_slug=pane_slug,
+        )
     # Persist kernel state after pass
     update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
 
