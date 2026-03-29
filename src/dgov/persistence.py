@@ -434,8 +434,8 @@ class IllegalTransitionError(ValueError):
 
 @dataclass(frozen=True)
 class CompletionTransitionResult:
-    state: PaneState = PaneState.ACTIVE
     changed: bool
+    state: PaneState = PaneState.ACTIVE
 
 
 def _validate_state(state: str) -> str:
