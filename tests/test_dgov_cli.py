@@ -503,6 +503,7 @@ class TestPaneCreate:
             expected_branch=None,
             session_root=None,
             skip_deps=True,
+            derived_only=True,
         )
 
     def test_pane_create_explicit_touches_override_prompt_inference(
@@ -549,6 +550,7 @@ class TestPaneCreate:
             expected_branch=None,
             session_root=None,
             skip_deps=True,
+            derived_only=False,
         )
         packet = mock_create.call_args.kwargs["context_packet"]
         assert packet.file_claims == ("src/dgov/cli/pane.py", "tests/test_dgov_cli.py")

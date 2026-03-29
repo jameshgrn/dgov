@@ -1159,11 +1159,11 @@ def run_dispatch_preflight(
 ):
     from dgov.preflight import run_preflight
 
-    # Track whether touches came from explicit claims vs prompt derivation
-    explicit_claims = touches is not None
-
     if packet is None:
         packet = build_context_packet(prompt or "", file_claims=touches)
+
+    # Explicit claims: either touches param was provided or packet has file_claims
+    explicit_claims = touches is not None or bool(packet.file_claims)
 
     return run_preflight(
         project_root=project_root,

@@ -63,6 +63,7 @@ def test_run_dispatch_preflight_prefers_explicit_touches(tmp_path):
         expected_branch=None,
         session_root=str(tmp_path),
         skip_deps=True,
+        derived_only=False,
     )
 
 
