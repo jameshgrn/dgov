@@ -256,6 +256,8 @@ def _build_batch_tier_results(
     task_rows: list[dict],
 ) -> list[dict]:
     """Reconstruct batch tier output from canonical DAG task records."""
+    from dgov.kernel import DagTaskState
+
     rows_by_slug = {row["slug"]: row for row in task_rows}
     tier_results: list[dict] = []
     for tier_idx, tier in enumerate(tiers):
@@ -265,7 +267,9 @@ def _build_batch_tier_results(
             if row is None:
                 tasks_out.append({"id": task["id"], "status": "skipped"})
                 continue
-            status = "review_pending" if row["status"] == "reviewed_fail" else row["status"]
+            status = row["status"]
+            if status == DagTaskState.REVIEWED_PASS.value:
+                status = "review_pending"
             record = {
                 "id": task["id"],
                 "status": status,
@@ -379,10 +383,10 @@ def run_batch(
         run_id=run_id,
         dag_file=submission.dag_file,
         status=run["status"],
-        merged=[s for s, st in task_states.items() if st == "merged"],
-        failed=[s for s, st in task_states.items() if st == "failed"],
-        skipped=[s for s, st in task_states.items() if st == "skipped"],
-        blocked=[s for s, st in task_states.items() if st == "blocked_on_governor"],
+        merged=[s for s, st in task_states.items() if st == DagTaskState.MERGED.value],
+        failed=[s for s, st in task_states.items() if st == DagTaskState.FAILED.value],
+        skipped=[s for s, st in task_states.items() if st == DagTaskState.SKIPPED.value],
+        blocked=[s for s, st in task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR.value],
     )
 
     task_rows = list_dag_tasks(session_root, run_id)

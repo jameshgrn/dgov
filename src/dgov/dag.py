@@ -160,6 +160,7 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     pane_slugs = {r["slug"]: r["pane_slug"] for r in task_rows if r["pane_slug"]}
 
     ready = [s for s, st in task_states.items() if st == "reviewed_pass"]
+    # TODO: ^ st is from DB row (str), compare to DagTaskState.REVIEWED_PASS.value
     if not ready:
         raise ValueError("No reviewed_pass tasks to merge")
 
