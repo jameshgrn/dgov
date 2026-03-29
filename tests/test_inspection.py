@@ -11,6 +11,7 @@ import pytest
 
 from dgov.inspection import (
     _run_related_tests,
+    _try_rebase_onto_main,
     check_test_coverage,
     compute_stats,
     diff_worker_pane,
@@ -617,6 +618,38 @@ class TestRebaseGovernor:
         assert not (repo / ".git" / "rebase-merge").exists()
         assert _git(repo, "status", "--porcelain").stdout.strip() == "M dirty.txt"
         assert _git(repo, "stash", "list").stdout.strip() == ""
+
+
+class TestTryRebaseOntoMain:
+    def test_try_rebase_onto_main_succeeds(self, tmp_path: Path) -> None:
+        """_try_rebase_onto_main fetches and rebases without conflicts."""
+        # Create a main repo with a commit
+        main = tmp_path / "main"
+        main.mkdir()
+        _git(main, "init", "-b", "main")
+        _git(main, "config", "user.email", "test@test.com")
+        _git(main, "config", "user.name", "Test")
+        (main / "a.py").write_text("original")
+        _git(main, "add", ".")
+        _git(main, "commit", "-m", "init")
+
+        # Create worktree on a branch
+        wt = tmp_path / "wt"
+        _git(main, "worktree", "add", str(wt), "-b", "worker")
+        (wt / "b.py").write_text("worker change")
+        _git(wt, "add", ".")
+        _git(wt, "commit", "-m", "worker")
+
+        # Add a commit on main (simulating governor micro-edit)
+        (main / "test_fix.py").write_text("governor fix")
+        _git(main, "add", ".")
+        _git(main, "commit", "-m", "governor fix")
+
+        # Rebase should succeed
+        result = _try_rebase_onto_main(str(wt), str(main))
+        assert result is True
+        # Worktree should now have the governor fix
+        assert (wt / "test_fix.py").exists()
 
 
 @pytest.fixture()
