@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dgov.agents import AGENT_REGISTRY
+from dgov.persistence import PaneState
 
 logger = logging.getLogger(__name__)
 
@@ -352,14 +353,14 @@ def check_file_locks(
 
         # Skip terminal-state panes — they're no longer working
         if pane_state in (
-            "done",
-            "failed",
-            "merged",
-            "closed",
-            "abandoned",
-            "superseded",
-            "timed_out",
-            "escalated",
+            PaneState.DONE,
+            PaneState.FAILED,
+            PaneState.MERGED,
+            PaneState.CLOSED,
+            PaneState.ABANDONED,
+            PaneState.SUPERSEDED,
+            PaneState.TIMED_OUT,
+            PaneState.ESCALATED,
         ):
             continue
 

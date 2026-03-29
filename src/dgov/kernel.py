@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from dgov.persistence import PaneState
+
 # ---------------------------------------------------------------------------
 # DAG Kernel — multi-pane orchestration with dependency tracking
 # ---------------------------------------------------------------------------
@@ -324,7 +326,11 @@ class DagKernel:
             task = event.task_slug
             if self.task_states.get(task) != DagTaskState.WAITING:
                 return []
-            if event.pane_state in ("done", "reviewed_pass", "merged"):
+            if event.pane_state in (
+                PaneState.DONE,
+                PaneState.REVIEWED_PASS,
+                PaneState.MERGED,
+            ):
                 self.task_states[task] = DagTaskState.REVIEWING
                 review_agent = self.review_agents.get(task)
                 actions.append(ReviewTask(task, event.pane_slug, review_agent=review_agent))
