@@ -72,7 +72,7 @@ CLI: cli/admin.py cli/pane.py + cli/__init__.py
   src/dgov/cli/monitor_cmd.py (S): Monitor daemon CLI command.
   src/dgov/cli/openrouter_cmd.py (S): OpenRouter integration commands.
   src/dgov/cli/pane.py (L): Pane management commands.
-  src/dgov/cli/plan_cmd.py (L): CLI commands for dgov plan execution.
+  src/dgov/cli/plan_cmd.py (M): CLI commands for dgov plan execution.
   src/dgov/cli/review_fix_cmd.py (S): Review-fix pipeline command.
   src/dgov/cli/trace_cmd.py (M): Span and tool-trace CLI commands.
   src/dgov/cli/wait_cmd.py (S): CLI command for event-driven waiting and governor interrupts.
