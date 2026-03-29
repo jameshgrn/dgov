@@ -94,13 +94,14 @@ def physical_to_logical(physical_name: str) -> LogicalName:
     return physical_name
 
 
-def resolve_role(agent_name: str) -> Role:
+def resolve_role(agent_name: str, project_root: str | None = None) -> Role:
     """Derive pane role from agent name.
 
     Returns "lt-gov" if agent_name is "lt-gov" or matches lt-gov routing backends.
+    Uses project-local routing tables when available.
     Returns "worker" otherwise.
     """
-    tables = _load_routing_tables()
+    tables = _load_routing_tables(project_root)
     if agent_name == "lt-gov":
         return "lt-gov"
     lt_gov_backends = tables.get("lt-gov", [])

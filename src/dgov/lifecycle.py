@@ -859,7 +859,7 @@ def create_worker_pane(
     if role == "worker":
         from dgov.router import resolve_role
 
-        role = resolve_role(agent)
+        role = resolve_role(agent, project_root)
     # LT-GOVs don't edit code — run them on main, no worktree needed.
     if role == "lt-gov" and existing_worktree is None:
         existing_worktree = project_root

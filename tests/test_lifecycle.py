@@ -1589,3 +1589,27 @@ class TestSlugAllocationHistory:
         # New allocation should increment since slug is in use
         unique_slug, _worktree_path = _find_unique_slug(project_root, session_root, "active-task")
         assert unique_slug == "active-task-1"
+
+
+@pytest.mark.unit
+def test_create_worker_pane_passes_project_root_to_resolve_role(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from dgov.lifecycle import create_worker_pane
+
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_resolve_role(agent_name: str, project_root: str | None = None) -> str:
+        calls.append((agent_name, project_root))
+        return "worker"
+
+    def stop_after_role(*_args, **_kwargs) -> None:
+        raise RuntimeError("stop-after-role")
+
+    monkeypatch.setattr("dgov.router.resolve_role", fake_resolve_role)
+    monkeypatch.setattr("dgov.lifecycle._refresh_codebase_md", stop_after_role)
+
+    with pytest.raises(RuntimeError, match="stop-after-role"):
+        create_worker_pane(str(tmp_path), "prompt", agent="kimi-k25", slug="role-scope-test")
+
+    assert calls == [("kimi-k25", str(tmp_path))]

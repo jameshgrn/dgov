@@ -19,6 +19,7 @@ from dgov.router import (
     is_routable,
     record_backend_failure,
     resolve_agent,
+    resolve_role,
 )
 
 
@@ -426,3 +427,27 @@ class TestCircuitBreaker:
         resolved, routed_from = resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
         assert resolved == "healthy-one"
         assert routed_from == "qwen-test"
+
+
+@pytest.mark.unit
+class TestResolveRole:
+    def test_direct_lt_gov_name_returns_lt_gov(self):
+        assert resolve_role("lt-gov") == "lt-gov"
+
+    def test_project_local_tables_override_user_global_for_role_inference(
+        self, tmp_path, monkeypatch
+    ):
+        def fake_load_routing_tables(project_root=None):
+            if project_root:
+                return {
+                    "worker": ["river-9b", "kimi-k25"],
+                    "lt-gov": ["claude-sonnet"],
+                }
+            return {
+                "lt-gov": ["claude-sonnet", "kimi-k25"],
+            }
+
+        monkeypatch.setattr("dgov.router._load_routing_tables", fake_load_routing_tables)
+
+        assert resolve_role("kimi-k25", str(tmp_path)) == "worker"
+        assert resolve_role("kimi-k25") == "lt-gov"
