@@ -47,9 +47,16 @@ class DoneStrategy:
     stable_seconds: int = 15  # only used when type="stable"
 
 
+class TransportType(StrEnum):
+    POSITIONAL = "positional"
+    OPTION = "option"
+    SEND_KEYS = "send-keys"
+    STDIN = "stdin"
+
+
 @dataclass(frozen=True)
 class PromptTransport:
-    type: str  # "positional" | "option" | "send-keys" | "stdin"
+    type: TransportType  # positional | option | send-keys | stdin
     option: str | None = None
     no_prompt_command: str | None = None
     pre_prompt: tuple[str, ...] = ()
@@ -76,7 +83,9 @@ class AgentDef:
     name: str
     short_label: str
     prompt_command: str
-    transport: PromptTransport = field(default_factory=lambda: PromptTransport(type="positional"))
+    transport: PromptTransport = field(
+        default_factory=lambda: PromptTransport(type=TransportType.POSITIONAL)
+    )
     health: HealthConfig = field(default_factory=HealthConfig)
     retry: RetryConfig = field(default_factory=RetryConfig)
     permission_flags: dict[str, str] = field(default_factory=dict)
@@ -98,7 +107,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Claude Code",
         short_label="cc",
         prompt_command="claude",
-        transport=PromptTransport(type="positional", ready_delay_ms=3000),
+        transport=PromptTransport(type=TransportType.POSITIONAL, ready_delay_ms=3000),
         default_flags="",
         permission_flags={
             "plan": "--permission-mode plan",
@@ -115,7 +124,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Codex",
         short_label="cx",
         prompt_command="codex",
-        transport=PromptTransport(type="positional"),
+        transport=PromptTransport(type=TransportType.POSITIONAL),
         permission_flags={
             "acceptEdits": "--full-auto",
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
@@ -129,7 +138,9 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Gemini CLI",
         short_label="gm",
         prompt_command="gemini",
-        transport=PromptTransport(type="option", option="--prompt", ready_delay_ms=8000),
+        transport=PromptTransport(
+            type=TransportType.OPTION, option="--prompt", ready_delay_ms=8000
+        ),
         permission_flags={
             "plan": "--approval-mode plan",
             "acceptEdits": "--approval-mode auto_edit",
@@ -145,7 +156,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="OpenCode",
         short_label="oc",
         prompt_command="opencode",
-        transport=PromptTransport(type="option", option="--prompt"),
+        transport=PromptTransport(type=TransportType.OPTION, option="--prompt"),
         color=82,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
@@ -154,7 +165,9 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Cline CLI",
         short_label="cl",
         prompt_command="cline",
-        transport=PromptTransport(type="send-keys", post_paste_delay_ms=120, ready_delay_ms=2500),
+        transport=PromptTransport(
+            type=TransportType.SEND_KEYS, post_paste_delay_ms=120, ready_delay_ms=2500
+        ),
         permission_flags={
             "plan": "--plan",
             "acceptEdits": "--act",
@@ -168,7 +181,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Qwen CLI",
         short_label="qn",
         prompt_command="qwen",
-        transport=PromptTransport(type="option", option="-i"),
+        transport=PromptTransport(type=TransportType.OPTION, option="-i"),
         permission_flags={
             "plan": "--approval-mode plan",
             "acceptEdits": "--approval-mode auto-edit",
@@ -183,7 +196,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Amp CLI",
         short_label="ap",
         prompt_command="amp",
-        transport=PromptTransport(type="stdin"),
+        transport=PromptTransport(type=TransportType.STDIN),
         permission_flags={
             "bypassPermissions": "--dangerously-allow-all",
         },
@@ -195,7 +208,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Qwen 35B (River)",
         short_label="qw",
         prompt_command="pi",
-        transport=PromptTransport(type="stdin"),
+        transport=PromptTransport(type=TransportType.STDIN),
         default_flags="-p",  # non-interactive: process prompt and exit
         permission_flags={
             "plan": "--tools read,grep,find,ls",
@@ -211,7 +224,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Cursor CLI",
         short_label="cr",
         prompt_command="cursor-agent",
-        transport=PromptTransport(type="positional", ready_delay_ms=5000),
+        transport=PromptTransport(type=TransportType.POSITIONAL, ready_delay_ms=5000),
         permission_flags={
             "bypassPermissions": "--yolo",
         },
@@ -224,7 +237,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Copilot CLI",
         short_label="co",
         prompt_command="copilot",
-        transport=PromptTransport(type="option", option="-i"),
+        transport=PromptTransport(type=TransportType.OPTION, option="-i"),
         permission_flags={
             "acceptEdits": "--allow-tool write",
             "bypassPermissions": "--allow-all",
@@ -239,7 +252,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         short_label="cs",
         prompt_command="crush run",
         transport=PromptTransport(
-            type="send-keys",
+            type=TransportType.SEND_KEYS,
             no_prompt_command="crush",
             pre_prompt=("Escape", "Tab"),
             submit=("Enter",),
@@ -257,7 +270,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → Claude",
         short_label="pc",
         prompt_command="pi",
-        transport=PromptTransport(type="positional"),
+        transport=PromptTransport(type=TransportType.POSITIONAL),
         default_flags="-p --provider anthropic --model claude-sonnet-4-20250514",
         color=39,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -267,7 +280,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → OpenAI",
         short_label="po",
         prompt_command="pi",
-        transport=PromptTransport(type="positional"),
+        transport=PromptTransport(type=TransportType.POSITIONAL),
         default_flags="-p --provider openai --model o3",
         color=214,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -277,7 +290,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → Gemini",
         short_label="pg",
         prompt_command="pi",
-        transport=PromptTransport(type="positional"),
+        transport=PromptTransport(type=TransportType.POSITIONAL),
         default_flags="-p --provider google --model gemini-2.5-pro",
         color=135,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -287,7 +300,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → OpenRouter",
         short_label="pr",
         prompt_command="pi",
-        transport=PromptTransport(type="positional"),
+        transport=PromptTransport(type=TransportType.POSITIONAL),
         default_flags="-p --provider openrouter",
         color=208,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -337,7 +350,7 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     if isinstance(transport_section, str):
         # Old format: transport = "positional"
         transport = PromptTransport(
-            type=transport_section,
+            type=TransportType(transport_section),
             option=table.get("prompt_option"),
             no_prompt_command=table.get("no_prompt_command"),
             pre_prompt=tuple(table.get("send_keys_pre_prompt", ())),
@@ -348,7 +361,9 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     else:
         # New format: [transport] table
         transport = PromptTransport(
-            type=transport_section.get("type", table.get("transport", "positional")),
+            type=TransportType(
+                transport_section.get("type", table.get("transport", "positional"))
+            ),
             option=transport_section.get("option", table.get("prompt_option")),
             no_prompt_command=transport_section.get(
                 "no_prompt_command", table.get("no_prompt_command")
@@ -424,6 +439,157 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     )
 
 
+# -- Field resolver helpers for _merge_agent_def dispatch table -----------
+#
+# Each resolver takes the same positional args (base, overrides, source,
+# permissions, resume_section, env_section, done_strategy, transport,
+# health, retry) so the dispatch loop can call them uniformly.
+
+
+def _resolve_source(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> str:
+    return source
+
+
+def _resolve_permission_flags(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> dict[str, str]:
+    return dict(permissions) if permissions is not None else base.permission_flags
+
+
+def _resolve_resume_template(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> str | None:
+    if resume_section and "template" in resume_section:
+        return resume_section["template"]
+    if "resume_template" in overrides:
+        return overrides["resume_template"]
+    return base.resume_template
+
+
+def _resolve_env(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> dict[str, str]:
+    if env_section is not None:
+        merged_env = dict(base.env)
+        merged_env.update(env_section)
+        return merged_env
+    return base.env
+
+
+def _resolve_done_strategy(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> DoneStrategy | None:
+    return done_strategy if done_strategy is not None else base.done_strategy
+
+
+def _resolve_transport(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> PromptTransport:
+    return transport
+
+
+def _resolve_health(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> HealthConfig:
+    return health
+
+
+def _resolve_retry(
+    base: AgentDef,
+    overrides: dict,
+    source: str,
+    permissions: dict | None,
+    resume_section: dict | None,
+    env_section: dict | None,
+    done_strategy: DoneStrategy | None,
+    transport: PromptTransport,
+    health: HealthConfig,
+    retry: RetryConfig,
+) -> RetryConfig:
+    return retry
+
+
+_FIELD_RESOLVERS: dict[str, callable] = {
+    "source": _resolve_source,
+    "permission_flags": _resolve_permission_flags,
+    "resume_template": _resolve_resume_template,
+    "env": _resolve_env,
+    "done_strategy": _resolve_done_strategy,
+    "transport": _resolve_transport,
+    "health": _resolve_health,
+    "retry": _resolve_retry,
+}
+
+_TOML_KEY_MAP: dict[str, str] = {
+    "prompt_command": "command",
+}
+
+
 def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
     """Merge TOML overrides onto an existing AgentDef, producing a new one."""
     permissions = overrides.pop("permissions", None)
@@ -441,7 +607,7 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
         if isinstance(transport_section, str):
             # Old format: transport = "positional" (string, not dict)
             transport = PromptTransport(
-                type=transport_section,
+                type=TransportType(transport_section),
                 option=overrides.get("prompt_option", base.transport.option),
                 no_prompt_command=overrides.get(
                     "no_prompt_command", base.transport.no_prompt_command
@@ -458,7 +624,7 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
         else:
             # New format: [transport] table
             transport = PromptTransport(
-                type=transport_section.get("type", base.transport.type),
+                type=TransportType(transport_section.get("type", base.transport.type)),
                 option=transport_section.get("option", base.transport.option),
                 no_prompt_command=transport_section.get(
                     "no_prompt_command", base.transport.no_prompt_command
@@ -486,7 +652,7 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
     ):
         # Backward compat: flat field overrides
         transport = PromptTransport(
-            type=overrides.get("transport", base.transport.type),
+            type=TransportType(overrides.get("transport", base.transport.type)),
             option=overrides.get("prompt_option", base.transport.option),
             no_prompt_command=overrides.get("no_prompt_command", base.transport.no_prompt_command),
             pre_prompt=tuple(overrides.get("send_keys_pre_prompt", base.transport.pre_prompt)),
@@ -533,50 +699,29 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
 
     kwargs: dict = {}
     for f in AgentDef.__dataclass_fields__:
-        if f == "source":
-            kwargs["source"] = source
-            continue
-        if f == "permission_flags":
-            kwargs[f] = dict(permissions) if permissions is not None else base.permission_flags
-            continue
-        if f == "resume_template":
-            if resume_section and "template" in resume_section:
-                kwargs[f] = resume_section["template"]
-            elif "resume_template" in overrides:
-                kwargs[f] = overrides["resume_template"]
-            else:
-                kwargs[f] = base.resume_template
-            continue
-        if f == "env":
-            if env_section is not None:
-                merged_env = dict(base.env)
-                merged_env.update(env_section)
-                kwargs[f] = merged_env
-            else:
-                kwargs[f] = base.env
-            continue
-        if f == "done_strategy":
-            kwargs[f] = done_strategy if done_strategy is not None else base.done_strategy
-            continue
-        if f == "transport":
-            kwargs[f] = transport
-            continue
-        if f == "health":
-            kwargs[f] = health
-            continue
-        if f == "retry":
-            kwargs[f] = retry
-            continue
-        # Map TOML key names to dataclass field names
-        toml_key = {
-            "prompt_command": "command",
-        }.get(f, f)
-        if toml_key in overrides:
-            kwargs[f] = overrides[toml_key]
-        elif f in overrides:
-            kwargs[f] = overrides[f]
+        resolver = _FIELD_RESOLVERS.get(f)
+        if resolver:
+            kwargs[f] = resolver(
+                base,
+                overrides,
+                source,
+                permissions,
+                resume_section,
+                env_section,
+                done_strategy,
+                transport,
+                health,
+                retry,
+            )
         else:
-            kwargs[f] = getattr(base, f)
+            # Map TOML key names to dataclass field names
+            toml_key = _TOML_KEY_MAP.get(f, f)
+            if toml_key in overrides:
+                kwargs[f] = overrides[toml_key]
+            elif f in overrides:
+                kwargs[f] = overrides[f]
+            else:
+                kwargs[f] = getattr(base, f)
 
     # Handle tuple fields
     for tf in ("groups",):
@@ -890,7 +1035,7 @@ def build_launch_command(
     if agent.interactive and prompt and not force_headless:
         return agent.transport.no_prompt_command or base
 
-    if agent.transport.type == "send-keys":
+    if agent.transport.type == TransportType.SEND_KEYS:
         return agent.transport.no_prompt_command or base
 
     prompt_file = _write_prompt_file(project_root, slug, prompt)
@@ -904,10 +1049,10 @@ def build_launch_command(
         instr = shlex.quote(str(instructions_path))
         base = f"{base} --append-system-prompt {instr}"
 
-    if agent.transport.type == "stdin":
+    if agent.transport.type == TransportType.STDIN:
         return f"{snippet}; printf '%s\\n' \"$DGOV_PROMPT_CONTENT\" | {base}"
 
-    if agent.transport.type == "option" and agent.transport.option:
+    if agent.transport.type == TransportType.OPTION and agent.transport.option:
         return f'{snippet}; {base} {agent.transport.option} "$DGOV_PROMPT_CONTENT"'
 
     # positional
@@ -918,7 +1063,6 @@ def build_launch_command(
 # Agent protocol — formal contract for dgov workers
 # ---------------------------------------------------------------------------
 
-_VALID_TRANSPORTS = frozenset({"positional", "option", "stdin", "send-keys"})
 _VALID_COMPLETIONS = frozenset({"api", "exit", "signal", "commit", "stable"})
 
 
@@ -964,10 +1108,12 @@ def validate_agent_protocol(agent_id: str, registry: dict[str, AgentDef]) -> lis
     if defn is None:
         return [f"Agent '{agent_id}' not found in registry"]
 
-    if defn.transport.type not in _VALID_TRANSPORTS:
+    try:
+        TransportType(defn.transport.type)
+    except ValueError:
         violations.append(
             f"Invalid transport '{defn.transport.type}' "
-            f"(must be one of {sorted(_VALID_TRANSPORTS)})"
+            f"(must be one of {sorted(TransportType.__members__.values())})"
         )
 
     if not defn.prompt_command:
@@ -980,10 +1126,10 @@ def validate_agent_protocol(agent_id: str, registry: dict[str, AgentDef]) -> lis
             f"(must be one of {sorted(_VALID_COMPLETIONS)})"
         )
 
-    if defn.transport.type == "send-keys" and not defn.transport.submit:
+    if defn.transport.type == TransportType.SEND_KEYS and not defn.transport.submit:
         violations.append("send-keys transport requires submit sequence")
 
-    if defn.transport.type == "option" and not defn.transport.option:
+    if defn.transport.type == TransportType.OPTION and not defn.transport.option:
         violations.append("option transport requires option flag")
 
     return violations
