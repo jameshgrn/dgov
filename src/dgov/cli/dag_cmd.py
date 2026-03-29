@@ -8,6 +8,7 @@ from dataclasses import asdict
 import click
 
 from dgov.cli import want_json
+from dgov.persistence import PaneState
 
 
 @click.group("dag")
@@ -120,6 +121,7 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
 
     from dgov.cli.pane import _autocorrect_roots
     from dgov.persistence import (
+        PaneState,
         ensure_dag_tables,
         get_dag_run,
     )
@@ -135,7 +137,7 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
             existing = get_dag_run(session_root, run_id)
             if not existing:
                 raise click.ClickException(f"DAG run {run_id} not found")
-            if existing["status"] not in ("failed", "partial"):
+            if existing["status"] not in (PaneState.FAILED.value, "partial"):
                 raise click.ClickException(
                     f"Run {run_id} has status '{existing['status']}' "
                     "-- only failed/partial runs can be resumed"
@@ -164,7 +166,9 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
         from dgov.persistence import list_dag_tasks
 
         task_rows = list_dag_tasks(session_root, run_id)
-        already_done = {r["slug"] for r in task_rows if r.get("status") in ("merged",)}
+        already_done = {
+            r["slug"] for r in task_rows if r.get("status") in (PaneState.MERGED.value,)
+        }
         click.echo(f"Skipping {len(already_done)} already-merged tasks: {sorted(already_done)}")
 
         from dgov.executor import run_resume_dag
@@ -336,9 +340,12 @@ def dag_status(dagfile, run_id, output_json):
                 marker = "PASS" if er["passed"] else "FAIL"
             elif not satisfying:
                 marker = "?"
-            elif all(task_status.get(u) == "merged" for u in satisfying):
+            elif all(task_status.get(u) == PaneState.MERGED.value for u in satisfying):
                 marker = "PASS"
-            elif any(task_status.get(u) in ("failed", "abandoned") for u in satisfying):
+            elif any(
+                task_status.get(u) in (PaneState.FAILED.value, PaneState.ABANDONED.value)
+                for u in satisfying
+            ):
                 marker = "FAIL"
             else:
                 marker = "..."
@@ -415,7 +422,7 @@ def dag_force_complete(run_id, project_root, dry_run):
         if not run:
             raise click.ClickException(f"DAG run {run_id} not found")
         tasks = list_dag_tasks(session_root, run_id)
-        pending = [t for t in tasks if t.get("status") not in ("merged", "skipped")]
+        pending = [t for t in tasks if t.get("status") not in (PaneState.MERGED.value, "skipped")]
         click.echo(
             json.dumps(
                 {

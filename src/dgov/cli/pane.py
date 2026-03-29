@@ -11,6 +11,7 @@ import click
 
 from dgov.cli import SESSION_ROOT_OPTION, want_json
 from dgov.context_packet import build_context_packet
+from dgov.persistence import PaneState
 
 
 def _autocorrect_roots(
@@ -1146,7 +1147,19 @@ def pane_output(slug, project_root, session_root, tail, follow):
 
 
 _TAIL_TERMINAL_STATES = frozenset(
-    {"done", "failed", "merged", "closed", "abandoned", "timed_out", "escalated", "superseded"}
+    {
+        s.value
+        for s in (
+            PaneState.DONE,
+            PaneState.FAILED,
+            PaneState.MERGED,
+            PaneState.CLOSED,
+            PaneState.ABANDONED,
+            PaneState.TIMED_OUT,
+            PaneState.ESCALATED,
+            PaneState.SUPERSEDED,
+        )
+    }
 )
 
 
@@ -1241,7 +1254,7 @@ def pane_tail(slug, project_root, session_root, lines):
                                     click.echo(cleaned)
                             click.secho(
                                 f"--- {slug} {st} ---",
-                                fg="green" if st == "merged" else "yellow",
+                                fg="green" if st == PaneState.MERGED.value else "yellow",
                             )
                             return
         else:
@@ -1254,7 +1267,7 @@ def pane_tail(slug, project_root, session_root, lines):
                 if st in _TAIL_TERMINAL_STATES:
                     click.secho(
                         f"--- {slug} {st} ---",
-                        fg="green" if st == "merged" else "yellow",
+                        fg="green" if st == PaneState.MERGED.value else "yellow",
                     )
                     return
                 new_text = capture_worker_output(

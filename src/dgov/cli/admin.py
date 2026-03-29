@@ -15,6 +15,7 @@ import click
 from dgov.agents import detect_installed_agents
 from dgov.cli import SESSION_ROOT_OPTION, want_json
 from dgov.cli.pane import _autocorrect_roots
+from dgov.persistence import PaneState
 
 
 def _scan_py_files(src_dirs: list[Path], project_root: Path) -> dict[str, dict[str, Any]]:
@@ -451,7 +452,7 @@ def status(project_root, session_root, output_json):
     project_root, session_root = _autocorrect_roots(project_root, session_root)
 
     from dgov.agents import detect_installed_agents, load_registry
-    from dgov.persistence import read_events
+    from dgov.persistence import PaneState, read_events
     from dgov.spans import ledger_query
     from dgov.status import list_worker_panes
 
@@ -472,9 +473,9 @@ def status(project_root, session_root, output_json):
                     "total": len(live_panes),
                     "preserved_total": len(preserved_panes),
                     "alive": sum(1 for p in live_panes if p["alive"]),
-                    "done": sum(1 for p in live_panes if p.get("state") == "done"),
-                    "merged": sum(1 for p in live_panes if p.get("state") == "merged"),
-                    "failed": sum(1 for p in live_panes if p.get("state") == "failed"),
+                    "done": sum(1 for p in live_panes if p.get("state") == PaneState.DONE),
+                    "merged": sum(1 for p in live_panes if p.get("state") == PaneState.MERGED),
+                    "failed": sum(1 for p in live_panes if p.get("state") == PaneState.FAILED),
                 },
                 indent=2,
             )
@@ -514,10 +515,10 @@ def status(project_root, session_root, output_json):
         lines = []
 
         # Pane summary with breakdown
-        active_count = by_state.get("active", 0)
-        done_count = by_state.get("done", 0)
-        merged_count = by_state.get("merged", 0)
-        failed_count = by_state.get("failed", 0)
+        active_count = by_state.get(PaneState.ACTIVE, 0)
+        done_count = by_state.get(PaneState.DONE, 0)
+        merged_count = by_state.get(PaneState.MERGED, 0)
+        failed_count = by_state.get(PaneState.FAILED, 0)
 
         parts = [f"{total} panes"]
         if active_count > 0:
@@ -570,14 +571,14 @@ def status(project_root, session_root, output_json):
 
 
 _TERMINAL_EVIDENCE_STATES = {
-    "done",
-    "merged",
-    "failed",
-    "superseded",
-    "closed",
-    "escalated",
-    "timed_out",
-    "abandoned",
+    PaneState.DONE,
+    PaneState.MERGED,
+    PaneState.FAILED,
+    PaneState.SUPERSEDED,
+    PaneState.CLOSED,
+    PaneState.ESCALATED,
+    PaneState.TIMED_OUT,
+    PaneState.ABANDONED,
 }
 
 
@@ -1097,7 +1098,7 @@ def doctor_cmd(project_root, output_json):
 
         backend = get_backend()
         panes = all_panes(str(root))
-        active_panes = [p for p in panes if p.get("state") == "active"]
+        active_panes = [p for p in panes if p.get("state") == PaneState.ACTIVE]
         stale = [
             p["slug"]
             for p in active_panes
@@ -1426,7 +1427,13 @@ def gc_cmd(project_root, session_root, dry_run):
         slug = p["slug"]
         alive = backend.is_alive(pane_id) if pane_id else False
         state = p.get("state", "")
-        if not alive and state in ("done", "failed", "abandoned", "closed", "merged"):
+        if not alive and state in (
+            PaneState.DONE.value,
+            PaneState.FAILED.value,
+            PaneState.ABANDONED.value,
+            PaneState.CLOSED.value,
+            PaneState.MERGED.value,
+        ):
             if dry_run:
                 click.echo(f"[dry-run] remove pane entry: {slug} ({state})")
             else:

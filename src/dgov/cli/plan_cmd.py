@@ -384,6 +384,7 @@ def plan_resume(plan_file, run_id, max_concurrent):
     from pathlib import Path
 
     from dgov.persistence import (
+        PaneState,
         _get_db,
         ensure_dag_tables,
         get_dag_run,
@@ -420,7 +421,7 @@ def plan_resume(plan_file, run_id, max_concurrent):
         click.echo(f"Resuming run {run_id} (status: {row[1]})")
 
     task_rows = list_dag_tasks(session_root, run_id)
-    already_done = {r["slug"] for r in task_rows if r.get("status") in ("merged",)}
+    already_done = {r["slug"] for r in task_rows if r.get("status") in (PaneState.MERGED.value,)}
     if already_done:
         click.echo(f"Skipping {len(already_done)} merged: {', '.join(sorted(already_done))}")
 
