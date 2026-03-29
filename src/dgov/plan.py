@@ -914,119 +914,113 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
 
 
 def serialize_plan(plan: PlanSpec) -> str:
-    """Serialize a PlanSpec to TOML string.
+    """Serialize a PlanSpec to TOML string via tomli_w.
 
-    This allows the governor to build plans programmatically and persist them.
+    Handles all escaping automatically — no manual backslash wrangling.
     """
-    lines = [
-        "[plan]",
-        "version = 1",
-        f'name = "{plan.name}"',
-        f'goal = "{plan.goal}"',
-    ]
+    import tomli_w
+
+    doc: dict = {
+        "plan": {
+            "version": 1,
+            "name": plan.name,
+            "goal": plan.goal,
+        },
+    }
+    p = doc["plan"]
     if plan.project_root != ".":
-        lines.append(f'project_root = "{plan.project_root}"')
+        p["project_root"] = plan.project_root
     if plan.session_root != ".":
-        lines.append(f'session_root = "{plan.session_root}"')
+        p["session_root"] = plan.session_root
     if plan.max_concurrent != 0:
-        lines.append(f"max_concurrent = {plan.max_concurrent}")
+        p["max_concurrent"] = plan.max_concurrent
     if plan.merge_strategy != "squash":
-        lines.append(f'merge_strategy = "{plan.merge_strategy}"')
+        p["merge_strategy"] = plan.merge_strategy
     if plan.default_agent != "qwen-9b":
-        lines.append(f'default_agent = "{plan.default_agent}"')
+        p["default_agent"] = plan.default_agent
     if plan.default_timeout_s != 600:
-        lines.append(f"default_timeout_s = {plan.default_timeout_s}")
+        p["default_timeout_s"] = plan.default_timeout_s
     if plan.permission_mode != "bypassPermissions":
-        lines.append(f'permission_mode = "{plan.permission_mode}"')
+        p["permission_mode"] = plan.permission_mode
     if plan.max_retries != 1:
-        lines.append(f"max_retries = {plan.max_retries}")
+        p["max_retries"] = plan.max_retries
     if plan.merge_resolve != "skip":
-        lines.append(f'merge_resolve = "{plan.merge_resolve}"')
+        p["merge_resolve"] = plan.merge_resolve
     if plan.default_review_agent is not None:
-        lines.append(f'default_review_agent = "{plan.default_review_agent}"')
-    lines.append("")
+        p["default_review_agent"] = plan.default_review_agent
 
-    for plan_eval in plan.evals:
-        lines.append("[[evals]]")
-        lines.append(f'id = "{plan_eval.eval_id}"')
-        lines.append(f'kind = "{plan_eval.kind}"')
-        lines.append(f'statement = "{plan_eval.statement}"')
-        lines.append(f'evidence = "{plan_eval.evidence}"')
-        if plan_eval.scope:
-            items = ", ".join(f'"{path}"' for path in plan_eval.scope)
-            lines.append(f"scope = [{items}]")
-        lines.append("")
+    if plan.evals:
+        doc["evals"] = [
+            {
+                k: v
+                for k, v in {
+                    "id": e.eval_id,
+                    "kind": e.kind,
+                    "statement": e.statement,
+                    "evidence": e.evidence,
+                    "scope": list(e.scope) if e.scope else None,
+                }.items()
+                if v is not None
+            }
+            for e in plan.evals
+        ]
 
-    for slug, unit in plan.units.items():
-        lines.append(f"[units.{slug}]")
-        lines.append(f'summary = "{unit.summary}"')
-        # Use triple-quoted strings for multi-line prompts
-        if "\n" in unit.prompt:
-            lines.append(f'prompt = """\n{unit.prompt}"""')
-        else:
-            lines.append(f'prompt = "{unit.prompt}"')
-        lines.append(f'commit_message = "{unit.commit_message}"')
-        if unit.agent is not None:
-            lines.append(f'agent = "{unit.agent}"')
-        if unit.timeout_s:
-            lines.append(f"timeout_s = {unit.timeout_s}")
-        if unit.satisfies:
-            items = ", ".join(f'"{eval_id}"' for eval_id in unit.satisfies)
-            lines.append(f"satisfies = [{items}]")
-        if unit.depends_on:
-            deps = ", ".join(f'"{d}"' for d in unit.depends_on)
-            lines.append(f"depends_on = [{deps}]")
-        if unit.escalation:
-            escs = ", ".join(f'"{e}"' for e in unit.escalation)
-            lines.append(f"escalation = [{escs}]")
-        if unit.review_agent is not None:
-            lines.append(f'review_agent = "{unit.review_agent}"')
-        if unit.role != "worker":
-            lines.append(f'role = "{unit.role}"')
-        if unit.template is not None:
-            lines.append(f'template = "{unit.template}"')
-        if unit.template_vars:
-            lines.append("[units." + slug + ".vars]")
-            for k, v in unit.template_vars.items():
-                if "\n" in v:
-                    lines.append(f'{k} = """\n{v}"""')
-                else:
-                    lines.append(f'{k} = "{v}"')
+    if plan.units:
+        units: dict = {}
+        for slug, unit in plan.units.items():
+            u: dict = {
+                "summary": unit.summary,
+                "prompt": unit.prompt,
+                "commit_message": unit.commit_message,
+            }
+            if unit.agent is not None:
+                u["agent"] = unit.agent
+            if unit.timeout_s:
+                u["timeout_s"] = unit.timeout_s
+            if unit.satisfies:
+                u["satisfies"] = list(unit.satisfies)
+            if unit.depends_on:
+                u["depends_on"] = list(unit.depends_on)
+            if unit.escalation:
+                u["escalation"] = list(unit.escalation)
+            if unit.review_agent is not None:
+                u["review_agent"] = unit.review_agent
+            if unit.role != "worker":
+                u["role"] = unit.role
+            if unit.template is not None:
+                u["template"] = unit.template
+            if unit.template_vars:
+                u["vars"] = dict(unit.template_vars)
 
-        lines.append("")
-
-        # Files subtable
-        has_files = unit.files.create or unit.files.edit or unit.files.delete or unit.files.read
-        if has_files:
-            lines.append(f"[units.{slug}.files]")
+            files: dict = {}
             if unit.files.create:
-                items = ", ".join(f'"{f}"' for f in unit.files.create)
-                lines.append(f"create = [{items}]")
+                files["create"] = list(unit.files.create)
             if unit.files.edit:
-                items = ", ".join(f'"{f}"' for f in unit.files.edit)
-                lines.append(f"edit = [{items}]")
+                files["edit"] = list(unit.files.edit)
             if unit.files.delete:
-                items = ", ".join(f'"{f}"' for f in unit.files.delete)
-                lines.append(f"delete = [{items}]")
+                files["delete"] = list(unit.files.delete)
             if unit.files.read:
-                items = ", ".join(f'"{f}"' for f in unit.files.read)
-                lines.append(f"read = [{items}]")
-            lines.append("")
+                files["read"] = list(unit.files.read)
+            if files:
+                u["files"] = files
 
-        # Acceptance subtable (only if non-default)
-        acc = unit.acceptance
-        default_acc = AcceptanceCriteria()
-        if acc != default_acc:
-            lines.append(f"[units.{slug}.acceptance]")
-            if acc.tests_pass != default_acc.tests_pass:
-                lines.append(f"tests_pass = {'true' if acc.tests_pass else 'false'}")
-            if acc.lint_clean != default_acc.lint_clean:
-                lines.append(f"lint_clean = {'true' if acc.lint_clean else 'false'}")
-            if acc.custom_check is not None:
-                lines.append(f'custom_check = "{acc.custom_check}"')
-            lines.append("")
+            acc = unit.acceptance
+            default_acc = AcceptanceCriteria()
+            if acc != default_acc:
+                acceptance: dict = {}
+                if acc.tests_pass != default_acc.tests_pass:
+                    acceptance["tests_pass"] = acc.tests_pass
+                if acc.lint_clean != default_acc.lint_clean:
+                    acceptance["lint_clean"] = acc.lint_clean
+                if acc.custom_check is not None:
+                    acceptance["custom_check"] = acc.custom_check
+                if acceptance:
+                    u["acceptance"] = acceptance
 
-    return "\n".join(lines) + "\n"
+            units[slug] = u
+        doc["units"] = units
+
+    return tomli_w.dumps(doc)
 
 
 def scaffold_plan(goal: str, files: list[str], name: str = "") -> str:

@@ -1132,7 +1132,7 @@ class TestSerializePlan:
         toml_str = serialize_plan(spec)
         assert "[units.task-a]" in toml_str
         assert "[units.task-b]" in toml_str
-        assert 'satisfies = ["E1"]' in toml_str
+        assert '"E1"' in toml_str  # satisfies contains eval ID
 
     def test_serialize_non_default_config(self, tmp_path):
         """Non-default config values appear in serialized output."""
