@@ -348,11 +348,18 @@ class TestUtilityPanes:
 
 
 class TestPaneCreate:
-    def test_create_success_passes_env_vars(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.lifecycle.create_worker_pane",
-            return_value=_pane("lint-fix", "claude"),
-        ) as mock_create:
+    def _mock_plan_pipeline(self):
+        """Mock the plan pipeline for worker dispatch tests."""
+        mock_result = MagicMock(run_id=1, status="submitted")
+        return (
+            patch("dgov.plan.build_adhoc_plan", return_value=MagicMock(name="test")),
+            patch("dgov.plan.write_adhoc_plan", return_value="/tmp/plan.toml"),
+            patch("dgov.plan.run_plan", return_value=mock_result),
+        )
+
+    def test_create_success_via_plan(self, runner: CliRunner) -> None:
+        m1, m2, m3 = self._mock_plan_pipeline()
+        with m1 as mock_build, m2, m3:
             result = runner.invoke(
                 cli,
                 [
@@ -366,42 +373,25 @@ class TestPaneCreate:
                     "/repo",
                     "--session-root",
                     "/session",
-                    "--extra-flags",
-                    "--verbose",
-                    "--env",
-                    "FOO=bar",
-                    "--env",
-                    "BAZ=qux",
                     "--no-preflight",
                 ],
             )
 
         assert result.exit_code == 0
-        assert json.loads(result.output) == {
-            "slug": "lint-fix",
-            "pane_id": "%7",
-            "agent": "claude",
-            "worktree": "/tmp/lint-fix",
-            "branch": "lint-fix",
-        }
-        kwargs = mock_create.call_args.kwargs
-        assert kwargs["project_root"] == "/repo"
+        output = json.loads(result.output)
+        assert "dag_run_id" in output
+        assert output["status"] == "submitted"
+        kwargs = mock_build.call_args.kwargs
         assert kwargs["prompt"] == "Fix tests"
         assert kwargs["agent"] == "claude"
-        assert kwargs["permission_mode"] == "bypassPermissions"
-        assert kwargs["slug"] is None
-        assert kwargs["env_vars"] == {"FOO": "bar", "BAZ": "qux"}
-        assert kwargs["extra_flags"] == "--verbose"
-        assert kwargs["session_root"] == "/session"
-        assert kwargs["skip_auto_structure"] is False
-        assert kwargs["role"] == "worker"
-        assert kwargs["parent_slug"] is None
-        assert kwargs["context_packet"].prompt == "Fix tests"
 
     def test_auto_classifies_prompt(self, runner: CliRunner) -> None:
+        m1, m2, m3 = self._mock_plan_pipeline()
         with (
             patch("dgov.strategy.classify_task", return_value="claude") as mock_classify,
-            patch("dgov.lifecycle.create_worker_pane", return_value=_pane("auto-task", "claude")),
+            m1,
+            m2,
+            m3,
         ):
             result = runner.invoke(
                 cli,
@@ -460,10 +450,13 @@ class TestPaneCreate:
         fixed.passed = True
         fixed.to_dict.return_value = {"passed": True}
 
+        m1, m2, m3 = self._mock_plan_pipeline()
         with (
             patch("dgov.preflight.run_preflight", return_value=failing),
             patch("dgov.preflight.fix_preflight", return_value=fixed) as mock_fix,
-            patch("dgov.lifecycle.create_worker_pane", return_value=_pane("fixed-task")),
+            m1,
+            m2,
+            m3,
         ):
             result = runner.invoke(
                 cli,
@@ -477,10 +470,13 @@ class TestPaneCreate:
         report = MagicMock()
         report.passed = True
 
+        m1, m2, m3 = self._mock_plan_pipeline()
         with (
             patch("dgov.strategy.extract_task_context") as mock_context,
             patch("dgov.preflight.run_preflight", return_value=report) as mock_preflight,
-            patch("dgov.lifecycle.create_worker_pane", return_value=_pane("merge-fix")),
+            m1,
+            m2,
+            m3,
         ):
             mock_context.return_value = {
                 "primary_files": ["src/dgov/merger.py"],
@@ -512,13 +508,13 @@ class TestPaneCreate:
         report = MagicMock()
         report.passed = True
 
+        m1, m2, m3 = self._mock_plan_pipeline()
         with (
             patch("dgov.strategy.extract_task_context") as mock_context,
             patch("dgov.preflight.run_preflight", return_value=report) as mock_preflight,
-            patch(
-                "dgov.lifecycle.create_worker_pane",
-                return_value=_pane("touch-fix"),
-            ) as mock_create,
+            m1 as mock_build,
+            m2,
+            m3,
         ):
             mock_context.return_value = {
                 "primary_files": ["src/dgov/merger.py"],
@@ -552,9 +548,9 @@ class TestPaneCreate:
             skip_deps=True,
             derived_only=False,
         )
-        packet = mock_create.call_args.kwargs["context_packet"]
-        assert packet.file_claims == ("src/dgov/cli/pane.py", "tests/test_dgov_cli.py")
-        assert packet.edit_files == ("src/dgov/cli/pane.py", "tests/test_dgov_cli.py")
+        kwargs = mock_build.call_args.kwargs
+        assert "src/dgov/cli/pane.py" in kwargs["touches"]
+        assert "tests/test_dgov_cli.py" in kwargs["touches"]
 
 
 class TestPaneCommands:

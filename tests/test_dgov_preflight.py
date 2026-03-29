@@ -396,10 +396,10 @@ def test_check_git_clean_allows_disjoint_touches(tmp_path) -> None:
     report = check_git_clean(str(repo), touches=["src/clean.py"])
 
     assert report.passed is True
-    assert "outside declared touches" in report.message
 
 
-def test_check_git_clean_blocks_overlapping_touches(tmp_path) -> None:
+def test_check_git_clean_autocommits_overlapping_touches(tmp_path) -> None:
+    """Auto-commit governor changes before dispatch — overlapping touches pass."""
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
@@ -423,8 +423,8 @@ def test_check_git_clean_blocks_overlapping_touches(tmp_path) -> None:
 
     report = check_git_clean(str(repo), touches=["src"])
 
-    assert report.passed is False
-    assert "src/dirty.py" in report.message
+    # Auto-commit cleans governor changes, so dispatch proceeds
+    assert report.passed is True
 
 
 # ---------------------------------------------------------------------------

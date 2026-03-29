@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -189,11 +189,17 @@ class TestTemplateCliList:
 
 
 class TestPaneCreateWithTemplate:
+    def _mock_plan_pipeline(self):
+        mock_result = MagicMock(run_id=1, status="submitted")
+        return (
+            patch("dgov.plan.build_adhoc_plan", return_value=MagicMock(name="test")),
+            patch("dgov.plan.write_adhoc_plan", return_value="/tmp/plan.toml"),
+            patch("dgov.plan.run_plan", return_value=mock_result),
+        )
+
     def test_template_renders_and_creates_pane(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.lifecycle.create_worker_pane",
-            return_value=_pane("fix-null", "qwen-35b"),
-        ) as mock_create:
+        m1, m2, m3 = self._mock_plan_pipeline()
+        with m1 as mock_build, m2, m3:
             result = runner.invoke(
                 cli,
                 [
@@ -212,17 +218,14 @@ class TestPaneCreateWithTemplate:
             )
 
         assert result.exit_code == 0, result.output
-        call_kwargs = mock_create.call_args.kwargs
+        call_kwargs = mock_build.call_args.kwargs
         assert "null pointer" in call_kwargs["prompt"]
         assert "src/app.py" in call_kwargs["prompt"]
         assert call_kwargs["agent"] == "qwen-35b"
-        assert call_kwargs["skip_auto_structure"] is True
 
     def test_template_uses_default_agent(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.lifecycle.create_worker_pane",
-            return_value=_pane("add-feat", "qwen-35b"),
-        ) as mock_create:
+        m1, m2, m3 = self._mock_plan_pipeline()
+        with m1 as mock_build, m2, m3:
             result = runner.invoke(
                 cli,
                 [
@@ -241,13 +244,11 @@ class TestPaneCreateWithTemplate:
             )
 
         assert result.exit_code == 0, result.output
-        assert mock_create.call_args.kwargs["agent"] == "qwen-35b"
+        assert mock_build.call_args.kwargs["agent"] == "qwen-35b"
 
     def test_template_agent_override(self, runner: CliRunner) -> None:
-        with patch(
-            "dgov.lifecycle.create_worker_pane",
-            return_value=_pane("fix-bug", "claude"),
-        ) as mock_create:
+        m1, m2, m3 = self._mock_plan_pipeline()
+        with m1 as mock_build, m2, m3:
             result = runner.invoke(
                 cli,
                 [
@@ -268,7 +269,7 @@ class TestPaneCreateWithTemplate:
             )
 
         assert result.exit_code == 0, result.output
-        assert mock_create.call_args.kwargs["agent"] == "claude"
+        assert mock_build.call_args.kwargs["agent"] == "claude"
 
     def test_unknown_template_exits(self, runner: CliRunner) -> None:
         result = runner.invoke(
