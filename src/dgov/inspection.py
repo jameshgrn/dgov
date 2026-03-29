@@ -18,6 +18,7 @@ from pathlib import Path
 
 from dgov.persistence import (
     PROTECTED_FILES,
+    PaneState,
     emit_event,
     get_pane,
     read_events,
@@ -694,8 +695,8 @@ def check_test_coverage(changed_files: list[str], session_root: str = "") -> lis
 # ---------------------------------------------------------------------------
 # Aggregate statistics
 # ---------------------------------------------------------------------------
-_FAILURE_STATES = frozenset({"failed", "abandoned", "escalated"})
-_SUCCESS_STATES = frozenset({"merged"})
+_FAILURE_STATES = frozenset({PaneState.FAILED, PaneState.ABANDONED, PaneState.ESCALATED})
+_SUCCESS_STATES = frozenset({PaneState.MERGED})
 
 
 def compute_stats(session_root: str) -> dict:

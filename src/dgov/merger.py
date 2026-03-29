@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dgov.inspection import MergeResult
-from dgov.persistence import PROTECTED_FILES, IllegalTransitionError
+from dgov.persistence import PROTECTED_FILES, IllegalTransitionError, PaneState
 
 logger = logging.getLogger(__name__)
 
@@ -1027,13 +1027,13 @@ def _restore_protected_files(project_root: str, pane_record: dict) -> None:
 
 # -- Sub-functions for merge_worker_pane --
 
-_MERGE_READY_STATES = frozenset({"done", "reviewed_pass"})
+_MERGE_READY_STATES = frozenset({PaneState.DONE, PaneState.REVIEWED_PASS})
 
 
 def _state_precondition_result(
     branch_name: str, pane_state: str, slug: str
 ) -> PaneMergeResult | None:
-    if pane_state == "merged":
+    if pane_state == PaneState.MERGED:
         return MergeSuccess(merged=slug, branch=branch_name, already_merged=True)
     if pane_state in _MERGE_READY_STATES:
         return None
@@ -1314,13 +1314,13 @@ def _finalize_merged_pane(
     from dgov.lifecycle import _full_cleanup
 
     try:
-        _persist.update_pane_state(session_root, slug, "merged")
+        _persist.update_pane_state(session_root, slug, PaneState.MERGED)
     except IllegalTransitionError as e:
-        if e.current == "abandoned":
+        if e.current == PaneState.ABANDONED:
             logger.warning("Merge succeeded for stale abandoned pane: %s", slug)
         else:
             raise
-    target["state"] = "merged"
+    target["state"] = PaneState.MERGED
     cleanup_result = _full_cleanup(pane_project_root, session_root, slug, target)
     _persist.remove_pane(session_root, slug, crash_log=cleanup_result.get("crash_log", ""))
     _persist.emit_event(session_root, "pane_merged", slug, merge_sha=merge_sha, branch=branch_name)
@@ -1404,7 +1404,7 @@ def _handle_merge_conflicts(
         _persist.emit_event(session_root, "pane_merge_failed", slug, error=error_msg)
         return MergeError(error=error_msg)
 
-    _persist.update_pane_state(session_root, slug, "merge_conflict")
+    _persist.update_pane_state(session_root, slug, PaneState.MERGE_CONFLICT)
     _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
 
     if resolve == "agent":
@@ -1647,7 +1647,7 @@ def merge_worker_pane(
                     branch=branch_name,
                     validation_failed=True,
                 )
-            _persist.update_pane_state(session_root, slug, "merged")
+            _persist.update_pane_state(session_root, slug, PaneState.MERGED)
             _persist.emit_event(session_root, "pane_merged", slug, branch=branch_name)
             return MergeSuccess(
                 merged=slug,
