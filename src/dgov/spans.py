@@ -283,6 +283,7 @@ _LEDGER_CATEGORIES = frozenset(
         "debt",
         "capability",
         "decision",
+        "missive",
     }
 )
 _LEDGER_SEVERITIES = frozenset({"info", "low", "medium", "high"})

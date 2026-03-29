@@ -39,7 +39,9 @@ def ledger_cmd():
 def ledger_add_cmd(
     project_root, session_root, category, summary, detail, severity, status, tag, slug
 ):
-    """Add a ledger entry. Categories: bug, fix, rule, pattern, debt, capability, decision.
+    """Add a ledger entry.
+
+    Categories: bug, fix, rule, pattern, debt, capability, decision, missive.
 
     Examples:
       dgov ledger add bug "Parser fails on empty input" -r . -s medium -t parser
