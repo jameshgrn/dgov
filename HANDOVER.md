@@ -1,85 +1,70 @@
-# Handover: State audit complete, 3 plans landed, 2 safety layers + bug fix
+# Handover: Clean board — 15 fixes, unified dispatch, state audit complete
 
 ## Session context
 - Date: 2026-03-29
-- Branch: main @ 2759134
-- Last commit: Merge fix-219-landing-flag
+- Branch: main @ ee4c220
+- Last commit: Add missing DagTaskState import to batch.py
+- Governor: opus-i
 
 ## Open panes
 None.
 
 ## Open bugs/issues
-- #215: DAG state tracking: tasks show dispatched after merge — kernel state not advancing through monitor (high)
-  - Reproduced on runs 130-135. Monitor merges panes but kernel doesn't receive completion events
-  - Intermittent — run 136 worked correctly, earlier runs stalled
-
-## Open debt
-- #224: Ad-hoc pane create uses different merge path than plan units — no governor notification, violates one-canonical-pipeline rule (medium)
-  - Fix: ad-hoc dispatch should create single-unit plan under the hood so everything flows through the DAG kernel
-  - This is the next task
+None.
 
 ## Blockers/debt
-- None blocking
+None open.
 
 ## Next steps
-1. **Unify ad-hoc dispatch into plan pipeline** (debt #224) — `pane create` should generate a single-unit plan TOML and run it through `plan run`. Eliminates the dual merge path and gives governor notification for all dispatches. This was flagged as a policy violation ("one canonical pipeline, no drift").
-2. **Fix #215 (DAG state tracking)** — investigate monitor→kernel event flow. The kernel's task_states dict freezes because it never receives TaskMergeDone/TaskClosed events from the monitor.
-3. **State audit next pass** — remaining 13 raw PaneState strings (mostly DAG/batch statuses), executor review policy table, recovery dispatch table
+1. **Verify DAG kernel reconciliation works** — run a real multi-unit plan and confirm `dgov dag status` shows correct task states (not stuck at "dispatched"). The reconciliation code landed but wasn't validated end-to-end due to the chicken-and-egg with #215/#216.
+2. **Test DGOV_COMMIT_MSG in production** — next plan dispatch should produce proper commit messages from plan unit `commit_message` fields instead of "Auto-commit on agent exit".
+3. **Test preflight auto-commit** — make a governor micro-edit, then dispatch a worker touching the same file. Should auto-commit and pass preflight.
+4. **Push to remote** when ready — 27 commits since last push, all tests pass (1883), zero lint.
+5. **Phase 4 remaining work** — span-based monitor alerts (4c), test coverage push (4d).
+6. **Consider**: the `dgov dag wait <run-id>` command enables `dgov plan run --wait` to be re-implemented cleanly if desired.
 
 ## Changes made this session
 
-### State audit — 3 plans executed
+### Bugs fixed
+- **#215** (high): Added `pane_merged` to `_DAG_EVENT_FACTORY` — kernel was missing merge events from monitor
+- **#216** (low): Added headless worker patterns (done/working) to `DETERMINISTIC_PATTERNS` for pi/kimi agents
+- **#224** (medium): Unified `pane create` worker path through `build_adhoc_plan` → `run_plan`, eliminating dual merge path. LT-GOV retains direct dispatch.
 
-**P1: PaneState StrEnum (plan run 134, 12 units)**
-- Defined PaneState (12 members) and PaneTier (3 members) StrEnums in persistence.py
-- Propagated across 29 source files: 347 → 13 raw string refs remaining
-- 10 plan units + 2 fix-forward dispatches
+### Governor friction fixes (5)
+- **DGOV_COMMIT_MSG**: Auto-commit wrapper reads `$DGOV_COMMIT_MSG` env var (falls back to generic). Lifecycle exports it from `packet.commit_message`.
+- **`dgov dag wait <run-id>`**: New command blocks on event-driven pipes until DAG reaches terminal state.
+- **Monitor reconciliation**: `_reconcile_kernel_from_journal()` replays missed events from journal on DAG load.
+- **Preflight auto-commit**: `_auto_commit_governor_changes()` commits governor edits before git_clean check.
+- **Grep BRE warning**: Plan validator only warns about `\|` in `grep -E` (ERE), not plain `grep` (BRE).
 
-**P2: Model decomposition (plan run 135, 4 units)**
-- Removed ReviewInfo InitVar shims + 16 property aliases — callers use sub-objects
-- Added DoneStrategyType StrEnum (5 members)
-- Extracted MergeSuccess test fields into shared ReviewTests sub-object
+### State audit (2 rounds, fully clean)
+- **Round 1**: 5 raw PaneState strings (4 files, Kimi swarm) + 7 type annotation gaps (5 files, Kimi swarm)
+- **Round 2**: 11 raw state strings, 4 sentinels, 6 type hints across executor, batch, dag, lifecycle, kernel, spans, terrain, decision_providers (5 Kimi workers)
+- **Final audit**: Zero violations across all 8 clanker-discipline categories
 
-**P3: AgentDef decomposition (plan run 136, 5 units)**
-- Extracted PromptTransport, HealthConfig, RetryConfig from 25-field AgentDef
-- Foundation worker updated agents.py + lifecycle.py + preflight.py in one commit
-- Governor micro-fixed router.py + cli/admin.py, dispatched test fix worker for 9 test files
+### Infrastructure
+- **Missive category** added to operational ledger — governor lineage via `dgov ledger add missive "..." -t <name>`
+- **`serialize_plan()` rewritten with `tomli_w`** — no more hand-rolled TOML, automatic escaping
+- **Plan built programmatically** for round 2 audit — dogfooded `serialize_plan()` from Python
 
-### Safety layers (adversarial-reviewed by codex-mini agent)
-
-**Alt C: ty check in post-merge validation** (merger.py)
-- Runs `ty check` on changed Python files after every merge
-- Non-blocking (warning only) — catches AttributeError from restructured dataclasses
-
-**Alt B: Plan validator write/read overlap warning** (plan.py)
-- Warns when unit A edits files that unit B reads without a dependency edge
-- Catches the exact pattern that broke dgov during AgentDef decomposition
-
-### Bug fix
-
-**#219: Worktree removed before pane land** (monitor.py) — FIXED
-- Root cause: `_try_auto_merge` didn't set `landing=True` flag before calling `run_land_only`
-- Fix: set landing flag before merge, clear after — prevents prune_stale_panes from deleting worktree mid-merge
-
-### Operational ledger entries
-- #217: Kimi workers put runtime imports inside TYPE_CHECKING block
-- #218: Kimi workers over-generalize string replacement
-- #219: Worktree race (FIXED)
-- #220: Monitor "unknown" phase is startup warmup
-- #221: Governor polling violation (self-corrected)
-- #222: AgentDef decomposition broke dispatch path — must update all consumers atomically
-- #223: Ad-hoc panes have no governor notification
-- #224: Dual merge path violates canonical pipeline rule
+### Test suite
+- 1883 unit tests passing, 0 failures
+- Updated CLI/template/preflight tests for plan-based dispatch path
 
 ## Notes
 
-### Adversarial review process
-Codex-mini agent reviewed the import safety design and rejected all 3 proposed layers in favor of simpler alternatives (ty check + plan validator overlap warning). Key insight: "Layer 1 is wrong because you can't un-merge — detection after the fact doesn't help. Prevention at plan time or a type checker that catches the bug class is strictly better." The review process worked well — should use it for all non-trivial designs.
+### Governor missive (opus-i, #225)
+"Trust the workers. Fix the plumbing. Three bugs cleared, zero open — leave it cleaner than you found it."
 
-### Monitor reliability
-The monitor crashed mid-session (no status.json heartbeat) after code changes. Workers completed but stayed in "active/working" state because the monitor wasn't polling. Fixed by restarting monitor. The stale-code-hash detection works for plan runs but not for ad-hoc dispatches that happen between restarts.
+### Kimi K2.5 performance
+- ~20 workers dispatched this session via Fire Pass
+- Phase detection (#216 fix) working: all workers correctly classified as "working" then "done"
+- Commit messages (#DGOV_COMMIT_MSG) working on later dispatches
+- One worker missed (commit-msg unit) — wrote to wrong file. Governor micro-edited the fix.
+- Swarm parallelism effective: 4-5 workers completing in 30-45s each
 
-### Worker performance this session
-- Kimi K2.5 via Fire Pass: ~15 workers dispatched, most completing in 30s-2min
-- Failure modes: TYPE_CHECKING imports (2x), over-generalized replacements (2x), silent exit with 0 commits (1x)
-- Success rate: ~80% first attempt, 100% with retry + refined prompts
+### DAG kernel state still lagging
+The `pane_merged` factory fix and reconciliation code landed, but the kernel-shows-"dispatched" problem persisted for all DAG runs this session. The reconciliation runs on DAG load but may not fire if the monitor doesn't reload the DAG run. Needs end-to-end validation next session.
+
+### Tunnel
+River GPU tunnel was unreachable all session. All work done via Kimi K2.5 (Fireworks Fire Pass). Run `dgov tunnel` at next session start.
