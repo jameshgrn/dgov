@@ -1,10 +1,10 @@
-# Handover: Clean board — 15 fixes, unified dispatch, state audit complete
+# Handover: State machine hardening, README overhaul, mypy zero
 
 ## Session context
 - Date: 2026-03-29
-- Branch: main @ ee4c220
-- Last commit: Add missing DagTaskState import to batch.py
-- Governor: opus-i
+- Branch: main @ 84868ee
+- Last commit: Enforce mandatory review before merge, remove merge_conflict state
+- Governor: opus-4.6
 
 ## Open panes
 None.
@@ -16,55 +16,44 @@ None.
 None open.
 
 ## Next steps
-1. **Verify DAG kernel reconciliation works** — run a real multi-unit plan and confirm `dgov dag status` shows correct task states (not stuck at "dispatched"). The reconciliation code landed but wasn't validated end-to-end due to the chicken-and-egg with #215/#216.
-2. **Test DGOV_COMMIT_MSG in production** — next plan dispatch should produce proper commit messages from plan unit `commit_message` fields instead of "Auto-commit on agent exit".
-3. **Test preflight auto-commit** — make a governor micro-edit, then dispatch a worker touching the same file. Should auto-commit and pass preflight.
-4. **Push to remote** when ready — 27 commits since last push, all tests pass (1883), zero lint.
-5. **Phase 4 remaining work** — span-based monitor alerts (4c), test coverage push (4d).
-6. **Consider**: the `dgov dag wait <run-id>` command enables `dgov plan run --wait` to be re-implemented cleanly if desired.
+1. **Verify forced review in production** — next `dgov pane create --land` dispatch should show `pane_reviewed_pass` event before merge. Confirm the new state path (done → reviewed_pass → merged) works end-to-end with real workers.
+2. **DAG kernel reconciliation** — still unvalidated from prior session. Run a real multi-unit plan and confirm `dgov dag status` shows correct task states.
+3. **Test DGOV_COMMIT_MSG in production** — still unvalidated from prior session.
+4. **Phase 4 remaining** — span-based monitor alerts (4c), test coverage push (4d).
+5. **Push to remote** — 4 commits pushed this session. Board is clean.
 
 ## Changes made this session
 
-### Bugs fixed
-- **#215** (high): Added `pane_merged` to `_DAG_EVENT_FACTORY` — kernel was missing merge events from monitor
-- **#216** (low): Added headless worker patterns (done/working) to `DETERMINISTIC_PATTERNS` for pi/kimi agents
-- **#224** (medium): Unified `pane create` worker path through `build_adhoc_plan` → `run_plan`, eliminating dual merge path. LT-GOV retains direct dispatch.
+### State machine hardening (84868ee)
+- **Removed `merge_conflict` state** — 12 states → 11. Merge conflicts are transient git conditions, not durable lifecycle states. Merger emits `pane_merge_failed` events with conflict details but no longer mutates pane state.
+- **Forced review before merge** — removed `done→merged`, `active→merged`, `timed_out→merged` from VALID_TRANSITIONS. `run_review_merge` and `run_post_dispatch_lifecycle` now call `run_mark_reviewed(passed=True/False)` before merge. Added `pane_reviewed_pass` and `pane_reviewed_fail` event types.
+- **`reviewed_pass→failed` replaces `reviewed_pass→merge_conflict`** — merge failures from reviewed_pass go to failed, not a separate conflict state.
+- Updated README diagram, 13 files changed, 1883 tests passing.
 
-### Governor friction fixes (5)
-- **DGOV_COMMIT_MSG**: Auto-commit wrapper reads `$DGOV_COMMIT_MSG` env var (falls back to generic). Lifecycle exports it from `packet.commit_message`.
-- **`dgov dag wait <run-id>`**: New command blocks on event-driven pipes until DAG reaches terminal state.
-- **Monitor reconciliation**: `_reconcile_kernel_from_journal()` replays missed events from journal on DAG load.
-- **Preflight auto-commit**: `_auto_commit_governor_changes()` commits governor edits before git_clean check.
-- **Grep BRE warning**: Plan validator only warns about `\|` in `grep -E` (ERE), not plain `grep` (BRE).
+### Mypy zero errors (8e2e63c)
+- Fixed all 9 mypy errors across 6 files (executor, persistence, preflight, status, lifecycle, batch).
+- Key bug found: `DagTaskState.REVIEWED_PASS` doesn't exist — was referencing a nonexistent enum member. Fixed to `MERGE_READY`.
+- `state` variable in executor typed as `PaneState | str` to accommodate flow-control sentinels.
 
-### State audit (2 rounds, fully clean)
-- **Round 1**: 5 raw PaneState strings (4 files, Kimi swarm) + 7 type annotation gaps (5 files, Kimi swarm)
-- **Round 2**: 11 raw state strings, 4 sentinels, 6 type hints across executor, batch, dag, lifecycle, kernel, spans, terrain, decision_providers (5 Kimi workers)
-- **Final audit**: Zero violations across all 8 clanker-discipline categories
-
-### Infrastructure
-- **Missive category** added to operational ledger — governor lineage via `dgov ledger add missive "..." -t <name>`
-- **`serialize_plan()` rewritten with `tomli_w`** — no more hand-rolled TOML, automatic escaping
-- **Plan built programmatically** for round 2 audit — dogfooded `serialize_plan()` from Python
-
-### Test suite
-- 1883 unit tests passing, 0 failures
-- Updated CLI/template/preflight tests for plan-based dispatch path
+### README overhaul (5fe2c8c, e88bb5d)
+- Added 40+ missing CLI commands across all subgroups (pane, plan, dag, agent, trace, config, etc.)
+- Updated built-in agents table: added pi-* variants, switched from "Done detection" to "Transport" column
+- Updated quick start with `dgov init` + plan workflow
+- Fixed dependency claim: "one dependency (click)" → "four dependencies (click, rich, Pillow, tomli_w)"
+- Simplified mermaid state diagram to show primary flows only, with note pointing to persistence.py for full table
 
 ## Notes
 
-### Governor missive (opus-i, #225)
-"Trust the workers. Fix the plumbing. Three bugs cleared, zero open — leave it cleaner than you found it."
-
-### Kimi K2.5 performance
-- ~20 workers dispatched this session via Fire Pass
-- Phase detection (#216 fix) working: all workers correctly classified as "working" then "done"
-- Commit messages (#DGOV_COMMIT_MSG) working on later dispatches
-- One worker missed (commit-msg unit) — wrote to wrong file. Governor micro-edited the fix.
-- Swarm parallelism effective: 4-5 workers completing in 30-45s each
-
-### DAG kernel state still lagging
-The `pane_merged` factory fix and reconciliation code landed, but the kernel-shows-"dispatched" problem persisted for all DAG runs this session. The reconciliation runs on DAG load but may not fire if the monitor doesn't reload the DAG run. Needs end-to-end validation next session.
+### State machine is now cleaner
+The diagram tells the real story:
+```
+active → done → reviewed_pass → merged → closed
+              → reviewed_fail → escalated → closed
+       → failed → escalated → closed
+       → timed_out → done (late) / escalated
+       → abandoned → closed
+```
+No merge_conflict. No review bypass. 11 states, all edges enforced.
 
 ### Tunnel
-River GPU tunnel was unreachable all session. All work done via Kimi K2.5 (Fireworks Fire Pass). Run `dgov tunnel` at next session start.
+River GPU tunnel still unreachable. All work done as governor micro-edits this session. Run `dgov tunnel` at next session start if workers needed.
