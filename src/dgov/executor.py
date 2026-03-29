@@ -2079,9 +2079,22 @@ def run_cancel_dag(session_root: str, run_id: int) -> dict:
 
     closed: list[str] = []
     cancelled: list[str] = []
-    pane_slugs = sorted({str(row["pane_slug"]) for row in task_rows if row.get("pane_slug")})
+    pane_slugs = {str(row["pane_slug"]) for row in task_rows if row.get("pane_slug")}
 
-    for pane_slug in pane_slugs:
+    # Bug #184: Also close retry descendant panes
+    from dgov.persistence import get_child_panes
+
+    all_pane_slugs = set(pane_slugs)
+    to_check = list(pane_slugs)
+    while to_check:
+        parent = to_check.pop()
+        for child in get_child_panes(session_root, parent):
+            child_slug = str(child.get("slug", ""))
+            if child_slug and child_slug not in all_pane_slugs:
+                all_pane_slugs.add(child_slug)
+                to_check.append(child_slug)
+
+    for pane_slug in sorted(all_pane_slugs):
         pane = get_pane(session_root, pane_slug)
         if pane is None:
             continue
@@ -2575,6 +2588,7 @@ def _dag_wait_any(
 
     from dgov.kernel import TaskWaitDone, WorkerPhase
     from dgov.monitor import observe_worker
+    from dgov.persistence import emit_event
 
     start = time.monotonic()
     max_timeout = max(task_timeouts.get(s, 600) for s in task_slugs)
@@ -2604,6 +2618,15 @@ def _dag_wait_any(
                     readonly_start[task_slug] = now
                 elif (now - readonly_start[task_slug]) > readonly_timeout:
                     # Worker stuck in readonly phase too long - timeout
+                    emit_event(
+                        session_root,
+                        "pane_timed_out",
+                        pane_slug,
+                        task_slug=task_slug,
+                        reason="readonly_phase_timeout",
+                        phase=obs.phase.value,
+                        elapsed_seconds=now - readonly_start[task_slug],
+                    )
                     return TaskWaitDone(task_slug, pane_slug, "timed_out")
             else:
                 # Working or committing - reset readonly timer
@@ -2611,7 +2634,16 @@ def _dag_wait_any(
 
         elapsed = now - start
         if elapsed > max_timeout:
-            return TaskWaitDone(task_slugs[0], pane_map.get(task_slugs[0], ""), "timed_out")
+            pane_slug = pane_map.get(task_slugs[0], "")
+            emit_event(
+                session_root,
+                "pane_timed_out",
+                pane_slug,
+                task_slug=task_slugs[0],
+                reason="max_timeout",
+                elapsed_seconds=elapsed,
+            )
+            return TaskWaitDone(task_slugs[0], pane_slug, "timed_out")
 
         from dgov.persistence import _wait_for_notify
 
