@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from dgov.inspection import ReviewTests
 from dgov.merger import MergeSuccess
 from dgov.review_fix import (
     ReviewFinding,
@@ -408,7 +409,9 @@ class TestPipelineFull:
         )
         mock_merge.return_value = MagicMock(
             error=None,
-            merge_result=MergeSuccess(merged="fix-foo", branch="fix-foo", tests_passed=True),
+            merge_result=MergeSuccess(
+                merged="fix-foo", branch="fix-foo", tests=ReviewTests(passed=True)
+            ),
         )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
@@ -627,7 +630,9 @@ class TestPipelineFull:
         )
         mock_merge.return_value = MagicMock(
             error=None,
-            merge_result=MergeSuccess(merged="fix-foo", branch="fix-foo", tests_passed=False),
+            merge_result=MergeSuccess(
+                merged="fix-foo", branch="fix-foo", tests=ReviewTests(passed=False)
+            ),
         )
 
         (tmp_path / "src").mkdir(parents=True, exist_ok=True)
