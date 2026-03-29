@@ -339,7 +339,19 @@ def test_kernel_cross_tier_escalation_resets_attempts() -> None:
     assert kernel.task_states["a"] == DagTaskState.DISPATCHED
 
 
-def test_kernel_escalation_eventually_blocks_governor() -> None:
+def test_task_closed_during_reviewing_fails() -> None:
+    """TaskClosed while task is REVIEWING should transition to FAILED."""
+    kernel = DagKernel(deps={"a": ()})
+    kernel.start()
+    # Manually set state to REVIEWING (simulating: dispatched -> waiting -> reviewing)
+    kernel.task_states["a"] = DagTaskState.REVIEWING
+    kernel.pane_slugs["a"] = "pane-a"
+
+    # Close the pane prematurely
+    actions = kernel.handle(TaskClosed("a"))
+
+    assert kernel.task_states["a"] == DagTaskState.FAILED
+
     """After all tiers exhaust retries, kernel blocks on governor."""
     deps = {"a": ()}
     kernel = DagKernel(deps=deps, max_retries=1)
