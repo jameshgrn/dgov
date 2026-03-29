@@ -446,6 +446,7 @@ def _write_worktree_instructions(
             "- Do not modify `.gitignore` or `pyproject.toml` unless asked.\n"
             "- Do not push to remote.\n"
             "- You are in a git worktree, not the main repo.\n"
+            "- NEVER use `dgov` commands. NEVER dispatch sub-workers. Edit files DIRECTLY.\n"
         )
         if start_here_section:
             preamble += start_here_section + "\n"
@@ -489,6 +490,7 @@ def _write_worktree_instructions(
             "- Run `uv run ruff check` and targeted `uv run pytest -q -m unit`.\n"
             "- Never run the full test suite.\n"
             "- Commit your changes before `dgov worker complete`.\n"
+            "- NEVER use `dgov` commands except `dgov worker complete`. Edit files directly.\n"
         )
         if start_here_section:
             system_prompt_content += "\n" + start_here_section
