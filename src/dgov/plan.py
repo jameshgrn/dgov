@@ -379,6 +379,11 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
 
     acceptance_raw = raw.get("acceptance", {})
     acceptance = _parse_acceptance(acceptance_raw)
+    depends_on = raw.get("depends_on")
+    deps = raw.get("deps")
+    if depends_on is not None and deps is not None and tuple(depends_on) != tuple(deps):
+        raise ValueError(f"Unit {slug!r}: depends_on and deps disagree")
+    unit_deps = depends_on if depends_on is not None else deps if deps is not None else ()
 
     return PlanUnit(
         slug=slug,
@@ -387,7 +392,7 @@ def _parse_unit(slug: str, raw: dict) -> PlanUnit:
         commit_message=raw["commit_message"],
         files=files,
         satisfies=tuple(raw.get("satisfies", ())),
-        depends_on=tuple(raw.get("depends_on", ())),
+        depends_on=tuple(unit_deps),
         agent=str(raw.get("agent")) if raw.get("agent") is not None else None,
         acceptance=acceptance,
         timeout_s=int(raw.get("timeout_s", 0)),

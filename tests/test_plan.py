@@ -134,6 +134,32 @@ class TestParsePlanFile:
         assert spec.units["task-b"].depends_on == ("task-a",)
         assert spec.units["task-a"].depends_on == ()
 
+    def test_deps_alias(self, tmp_path):
+        """Legacy deps alias should parse into depends_on."""
+        toml_content = """
+[plan]
+version = 1
+name = "alias-plan"
+goal = "test deps alias"
+
+[units.task-a]
+summary = "A"
+prompt = "do a"
+commit_message = "A"
+[units.task-a.files]
+edit = ["a.py"]
+
+[units.task-b]
+summary = "B"
+prompt = "do b"
+commit_message = "B"
+deps = ["task-a"]
+[units.task-b.files]
+edit = ["b.py"]
+"""
+        spec = parse_plan_file(_write_plan(tmp_path, toml_content))
+        assert spec.units["task-b"].depends_on == ("task-a",)
+
     def test_defaults(self, tmp_path):
         """Check plan-level defaults are set correctly."""
         spec = parse_plan_file(_write_plan(tmp_path))
