@@ -197,6 +197,13 @@ def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
         base_sha=base_sha,
     )
 
+    def _fake_tmux_run(args, **kwargs):
+        if "pane_title" in str(args):
+            return "[kimi-k25-0] success ~"
+        if "pane_pid" in str(args):
+            return "99999"
+        return ""
+
     with (
         patch("dgov.persistence.get_pane", return_value=pane) as mock_get_pane,
         patch("dgov.persistence.update_pane_state") as mock_update_state,
@@ -205,6 +212,7 @@ def test_merge_worker_pane_merges_branch_and_auto_closes_worker(
         patch("dgov.backend.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.get_backend", return_value=_mock_backend),
         patch("dgov.lifecycle.close_worker_pane") as mock_close_worker_pane,
+        patch("dgov.tmux._run", side_effect=_fake_tmux_run),
     ):
         result = merge_worker_pane(str(repo), "success", session_root=str(repo))
 
@@ -776,7 +784,7 @@ def test_merge_worker_pane_reports_protected_damage_and_lint_results(
 
     merge_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert result.merged == "post-merge"
-    assert result.warning == "protected files changed: ['CLAUDE.md']"
+    assert result.warning is None  # check_protected=False in merger; restoration handles it
     assert result.fixed == ["worker.py"]
     mock_update_state.assert_called_once_with(str(repo), "post-merge", "merged")
     mock_emit_event.assert_called_once_with(
