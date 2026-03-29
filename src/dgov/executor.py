@@ -250,7 +250,7 @@ class WaitOnlyResult:
 
     @property
     def state(self) -> str:
-        return "failed" if isinstance(self.outcome, _WaitFailed) else "completed"
+        return PaneState.FAILED if isinstance(self.outcome, _WaitFailed) else "completed"
 
     @property
     def wait_result(self) -> dict | None:
