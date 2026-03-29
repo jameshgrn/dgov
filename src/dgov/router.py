@@ -194,7 +194,7 @@ def resolve_agent(
     """
     from dgov.agents import load_groups, load_registry
     from dgov.backend import get_backend
-    from dgov.persistence import all_panes
+    from dgov.persistence import PaneState, all_panes
     from dgov.status import _count_active_agent_workers
 
     # Load routing tables (project-local takes precedence)
@@ -211,13 +211,13 @@ def resolve_agent(
 
     # Optimization: fetch all active panes and tmux info once for group checks
     _TERMINAL_STATES = {
-        "done",
-        "failed",
-        "superseded",
-        "merged",
-        "closed",
-        "escalated",
-        "timed_out",
+        PaneState.DONE,
+        PaneState.FAILED,
+        PaneState.SUPERSEDED,
+        PaneState.MERGED,
+        PaneState.CLOSED,
+        PaneState.ESCALATED,
+        PaneState.TIMED_OUT,
     }
     panes = all_panes(session_root)
     all_tmux = get_backend().bulk_info()
