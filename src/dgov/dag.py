@@ -14,6 +14,21 @@ from dgov.kernel import DagKernel, DagState, DagTaskState
 logger = logging.getLogger(__name__)
 
 
+def _with_overridden_roots(
+    dag: DagDefinition,
+    project_root: str,
+    session_root: str | None = None,
+) -> DagDefinition:
+    from dataclasses import replace
+
+    effective_session = session_root if session_root is not None else project_root
+    return replace(
+        dag,
+        project_root=project_root,
+        session_root=effective_session,
+    )
+
+
 def _dag_file_hash(path: str) -> str:
     """SHA-256 of the raw DAG file bytes (before parsing)."""
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -27,9 +42,13 @@ def run_dag(
     skip: set[str] | None = None,
     auto_merge: bool = True,
     max_concurrent: int = 0,
+    project_root: str | None = None,
+    session_root: str | None = None,
 ) -> DagRunSummary:
     """Execute a DAG file through the DagKernel state machine."""
     dag = parse_dag_file(dag_file)
+    if project_root is not None:
+        dag = _with_overridden_roots(dag, project_root, session_root)
     if dry_run:
         tiers = compute_tiers(dag.tasks)
         print(render_dry_run(tiers, dag.tasks))
@@ -118,16 +137,13 @@ def run_dag_via_kernel(
             unit_eval_links=unit_eval_links or [],
         )
     for slug, task in dag.tasks.items():
-        file_claims = tuple(
-            dict.fromkeys((*task.files.create, *task.files.edit, *task.files.delete))
-        )
         upsert_dag_task(
             session_root,
             run_id,
             slug,
             kernel.task_states[slug].value,
             task.agent,
-            file_claims=file_claims,
+            file_claims=task.all_touches(),
             commit_message=task.commit_message,
         )
 
@@ -152,7 +168,11 @@ def run_dag_via_kernel(
     )
 
 
-def merge_dag(dag_file: str) -> DagRunSummary:
+def merge_dag(
+    dag_file: str,
+    project_root: str | None = None,
+    session_root: str | None = None,
+) -> DagRunSummary:
     """Merge an awaiting_merge DAG run in canonical topological order."""
     from dgov.persistence import (
         emit_event,
@@ -164,6 +184,8 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     )
 
     dag = parse_dag_file(dag_file)
+    if project_root is not None:
+        dag = _with_overridden_roots(dag, project_root, session_root)
     abs_path = str(Path(dag_file).resolve())
     session_root = os.path.abspath(dag.session_root)
     ensure_dag_tables(session_root)

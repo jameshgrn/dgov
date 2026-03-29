@@ -34,6 +34,9 @@ class DagTaskSpec:
     template: str | None = None
     template_vars: dict[str, str] = field(default_factory=dict)
 
+    def all_touches(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys((*self.files.create, *self.files.edit, *self.files.delete)))
+
 
 @dataclass(frozen=True)
 class DagDefinition:

@@ -465,130 +465,135 @@ def _drive_dag(
     from dgov.kernel import DagDone, TaskDispatched, TaskRetryStarted
 
     pending = list(initial_actions)
-    while pending:
-        action = pending.pop(0)
-        if isinstance(action, DagDone):
-            # Guard: defer finalization if retry panes still await review
-            from dgov.kernel import DagTaskState
+    try:
+        while pending:
+            action = pending.pop(0)
+            if isinstance(action, DagDone):
+                # Guard: defer finalization if retry panes still await review
+                from dgov.kernel import DagTaskState
 
-            unreviewed = [
-                slug
-                for slug, state in dag_state.kernel.task_states.items()
-                if state in (DagTaskState.WAITING, DagTaskState.REVIEWING)
-            ]
-            if unreviewed and dag_state._deferred_finalization_count < 3:
-                logger.warning(
-                    "DAG finalization deferred: %d tasks pending review: %s",
-                    len(unreviewed),
-                    unreviewed,
+                unreviewed = [
+                    slug
+                    for slug, state in dag_state.kernel.task_states.items()
+                    if state in (DagTaskState.WAITING, DagTaskState.REVIEWING)
+                ]
+                if unreviewed and dag_state._deferred_finalization_count < 3:
+                    logger.warning(
+                        "DAG finalization deferred: %d tasks pending review: %s",
+                        len(unreviewed),
+                        unreviewed,
+                    )
+                    dag_state._deferred_finalization_count += 1
+                    continue
+                if unreviewed and dag_state._deferred_finalization_count >= 3:
+                    logger.error(
+                        "DAG finalization proceeding despite %d unreviewed tasks "
+                        "after %d deferrals: %s",
+                        len(unreviewed),
+                        dag_state._deferred_finalization_count,
+                        unreviewed,
+                    )
+                # Finalize run in DB
+                update_dag_run(session_root, dag_state.run_id, status=action.status)
+                emit_event(
+                    session_root,
+                    "dag_completed" if action.status == "completed" else "dag_failed",
+                    f"dag/{dag_state.run_id}",
+                    dag_run_id=dag_state.run_id,
+                    status=action.status,
                 )
-                dag_state._deferred_finalization_count += 1
-                continue
-            if unreviewed and dag_state._deferred_finalization_count >= 3:
-                logger.error(
-                    "DAG finalization proceeding despite %d unreviewed tasks "
-                    "after %d deferrals: %s",
-                    len(unreviewed),
-                    dag_state._deferred_finalization_count,
-                    unreviewed,
+                # Run eval evidence on completion, then always emit evals_verified
+                # so listeners only need to watch for one terminal event type.
+                eval_passed = 0
+                eval_failed = 0
+                eval_total = 0
+                if action.status == "completed":
+                    try:
+                        from dgov.plan import verify_eval_evidence
+
+                        results = verify_eval_evidence(
+                            session_root,
+                            dag_state.run_id,
+                            project_root=dag_state.reactor.project_root,
+                        )
+                        eval_passed = sum(1 for r in results if r["passed"])
+                        eval_failed = sum(1 for r in results if not r["passed"])
+                        eval_total = len(results)
+                    except Exception:
+                        logger.debug(
+                            "eval evidence check failed for dag/%s",
+                            dag_state.run_id,
+                            exc_info=True,
+                        )
+                emit_event(
+                    session_root,
+                    "evals_verified",
+                    f"dag/{dag_state.run_id}",
+                    dag_run_id=dag_state.run_id,
+                    passed=eval_passed,
+                    failed=eval_failed,
+                    total=eval_total,
                 )
-            # Finalize run in DB
-            update_dag_run(session_root, dag_state.run_id, status=action.status)
-            emit_event(
-                session_root,
-                "dag_completed" if action.status == "completed" else "dag_failed",
-                f"dag/{dag_state.run_id}",
-                dag_run_id=dag_state.run_id,
-                status=action.status,
-            )
-            # Run eval evidence on completion, then always emit evals_verified
-            # so listeners only need to watch for one terminal event type.
-            eval_passed = 0
-            eval_failed = 0
-            eval_total = 0
-            if action.status == "completed":
+                # Clean up all panes inline — don't defer to event loop
                 try:
-                    from dgov.plan import verify_eval_evidence
+                    from dgov.persistence import list_dag_tasks
 
-                    results = verify_eval_evidence(
-                        session_root,
-                        dag_state.run_id,
-                        project_root=dag_state.reactor.project_root,
-                    )
-                    eval_passed = sum(1 for r in results if r["passed"])
-                    eval_failed = sum(1 for r in results if not r["passed"])
-                    eval_total = len(results)
+                    tasks = list_dag_tasks(session_root, dag_state.run_id)
+                    for task in tasks:
+                        pane_slug = task.get("pane_slug")
+                        if pane_slug:
+                            try:
+                                from dgov.executor import run_close_only
+
+                                run_close_only(
+                                    dag_state.reactor.project_root,
+                                    pane_slug,
+                                    session_root=session_root,
+                                    force=True,
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "pane cleanup failed for %s",
+                                    pane_slug,
+                                    exc_info=True,
+                                )
                 except Exception:
-                    logger.debug(
-                        "eval evidence check failed for dag/%s",
-                        dag_state.run_id,
-                        exc_info=True,
-                    )
-            emit_event(
+                    logger.debug("dag cleanup failed for run %s", dag_state.run_id, exc_info=True)
+                continue
+
+            event = dag_state.reactor.execute(action)
+            if event is not None:
+                # Sync kernel state
+                if isinstance(event, TaskDispatched):
+                    dag_state.kernel.pane_slugs[event.task_slug] = event.pane_slug
+                elif isinstance(event, TaskRetryStarted):
+                    dag_state.kernel.pane_slugs[event.task_slug] = event.new_pane_slug
+
+                # Feed event back to kernel
+                new_actions = dag_state.kernel.handle(event)
+                pending.extend(new_actions)
+    finally:
+        # Persist the kernel snapshot even if action execution aborts mid-pass.
+        # Otherwise dag_tasks side effects can diverge from the authoritative run row.
+        for task_slug, task_state in dag_state.kernel.task_states.items():
+            pane_slug = dag_state.kernel.pane_slugs.get(task_slug)
+            attempt = dag_state.kernel.attempts.get(task_slug, 1)
+            agent = ""
+            task_def = dag_state.reactor.dag.tasks.get(task_slug)
+            if task_def:
+                agent = task_def.agent
+            upsert_dag_task(
                 session_root,
-                "evals_verified",
-                f"dag/{dag_state.run_id}",
-                dag_run_id=dag_state.run_id,
-                passed=eval_passed,
-                failed=eval_failed,
-                total=eval_total,
+                dag_state.run_id,
+                task_slug,
+                task_state.value,
+                agent,
+                attempt=attempt,
+                pane_slug=pane_slug,
+                file_claims=task_def.all_touches() if task_def else None,
+                commit_message=task_def.commit_message if task_def else None,
             )
-            # Clean up all panes inline — don't defer to event loop
-            try:
-                from dgov.persistence import list_dag_tasks
-
-                tasks = list_dag_tasks(session_root, dag_state.run_id)
-                for task in tasks:
-                    pane_slug = task.get("pane_slug")
-                    if pane_slug:
-                        try:
-                            from dgov.executor import run_close_only
-
-                            run_close_only(
-                                dag_state.reactor.project_root,
-                                pane_slug,
-                                session_root=session_root,
-                                force=True,
-                            )
-                        except Exception:
-                            logger.debug("pane cleanup failed for %s", pane_slug, exc_info=True)
-            except Exception:
-                logger.debug("dag cleanup failed for run %s", dag_state.run_id, exc_info=True)
-            continue
-
-        event = dag_state.reactor.execute(action)
-        if event is not None:
-            # Sync kernel state
-            if isinstance(event, TaskDispatched):
-                dag_state.kernel.pane_slugs[event.task_slug] = event.pane_slug
-            elif isinstance(event, TaskRetryStarted):
-                dag_state.kernel.pane_slugs[event.task_slug] = event.new_pane_slug
-
-            # Feed event back to kernel
-            new_actions = dag_state.kernel.handle(event)
-            pending.extend(new_actions)
-
-    # Sync kernel task_states -> dag_tasks table (projection from source of truth)
-    for task_slug, task_state in dag_state.kernel.task_states.items():
-        pane_slug = dag_state.kernel.pane_slugs.get(task_slug)
-        attempt = dag_state.kernel.attempts.get(task_slug, 1)
-        agent = ""
-        task_def = dag_state.reactor.dag.tasks.get(task_slug)
-        if task_def:
-            agent = task_def.agent
-        upsert_dag_task(
-            session_root,
-            dag_state.run_id,
-            task_slug,
-            task_state.value,
-            agent,
-            attempt=attempt,
-            pane_slug=pane_slug,
-            file_claims=task_def.all_touches() if task_def else None,
-            commit_message=task_def.commit_message if task_def else None,
-        )
-    # Persist kernel state after pass
-    update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
+        update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
 
 
 def _reconcile_kernel_from_journal(

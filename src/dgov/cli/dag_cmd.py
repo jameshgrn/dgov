@@ -45,9 +45,11 @@ def dag_run(dagfile, project_root, dry_run, tier, skip, auto_merge, max_concurre
       dgov dag run dag.toml --dry-run
       dgov dag run dag.toml --skip task-a --max-concurrent 2
     """
+    from dgov.cli.pane import _autocorrect_roots
     from dgov.dag import compute_tiers, parse_dag_file, render_dry_run, run_dag
 
     try:
+        project_root, session_root = _autocorrect_roots(project_root, None)
         if dry_run:
             dag_def = parse_dag_file(dagfile)
             tiers = compute_tiers(dag_def.tasks)
@@ -61,6 +63,8 @@ def dag_run(dagfile, project_root, dry_run, tier, skip, auto_merge, max_concurre
             skip=set(skip) if skip else None,
             auto_merge=auto_merge,
             max_concurrent=max_concurrent,
+            project_root=project_root,
+            session_root=session_root,
         )
         click.echo(json.dumps(asdict(summary), indent=2, default=str))
         if summary.failed:
@@ -84,10 +88,12 @@ def dag_merge(dagfile, project_root):
     Examples:
       dgov dag merge dag.toml -r .
     """
+    from dgov.cli.pane import _autocorrect_roots
     from dgov.dag import merge_dag
 
     try:
-        summary = merge_dag(dagfile)
+        project_root, session_root = _autocorrect_roots(project_root, None)
+        summary = merge_dag(dagfile, project_root=project_root, session_root=session_root)
         click.echo(json.dumps(asdict(summary), indent=2, default=str))
         if summary.failed:
             raise SystemExit(1)
@@ -185,6 +191,8 @@ def dag_resume(dagfile, project_root, run_id, max_concurrent):
             skip=already_done or None,
             auto_merge=True,
             max_concurrent=max_concurrent,
+            project_root=project_root,
+            session_root=session_root,
         )
         click.echo(json.dumps(asdict(summary), indent=2, default=str))
         if summary.failed:

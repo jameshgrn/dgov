@@ -617,7 +617,12 @@ class TestPaneCommands:
             "suggest_escalate": True,
         }
 
-    def test_pane_batch_blocks_preflight_failure(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_pane_batch_blocks_preflight_failure(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         spec_path = tmp_path / "pane-batch.toml"
         spec_path.write_text(
             """
@@ -626,25 +631,34 @@ agent = "claude"
 prompt = "Fix parser bug in src/parser.py"
 """
         )
-        report = MagicMock()
-        report.passed = False
+        monkeypatch.chdir(tmp_path)
+        summary = {
+            "status": "failed",
+            "tiers": [{"tier": 0, "tasks": [{"id": "fix-parser", "status": "failed"}]}],
+            "merged": [],
+            "failed": ["fix-parser"],
+            "skipped": [],
+            "blocked": [],
+        }
 
-        with (
-            patch("dgov.preflight.run_preflight", return_value=report),
-            patch("dgov.lifecycle.create_worker_pane") as mock_create,
-        ):
+        with patch("dgov.batch.run_batch", return_value=summary) as mock_run:
             result = runner.invoke(cli, ["pane", "batch", str(spec_path)])
 
         assert result.exit_code == 1
-        assert json.loads(result.output) == {
-            "dispatched": 0,
-            "failed": 1,
-            "panes": [],
-            "errors": [{"slug": "fix-parser", "error": "preflight failed"}],
-        }
-        mock_create.assert_not_called()
+        assert json.loads(result.output) == summary
+        mock_run.assert_called_once_with(
+            str(spec_path),
+            session_root=None,
+            dry_run=False,
+            project_root=".",
+        )
 
-    def test_pane_batch_uses_declared_touches(self, runner: CliRunner, tmp_path: Path) -> None:
+    def test_pane_batch_uses_declared_touches(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         spec_path = tmp_path / "pane-batch.toml"
         spec_path.write_text(
             """
@@ -654,23 +668,38 @@ prompt = "Fix parser bug in src/parser.py"
 touches = ["src/parser.py", "tests/test_parser.py"]
 """
         )
-        report = MagicMock()
-        report.passed = True
-        created: dict[str, object] = {}
+        monkeypatch.chdir(tmp_path)
+        summary = {
+            "status": "completed",
+            "tiers": [
+                {
+                    "tier": 0,
+                    "tasks": [
+                        {
+                            "id": "fix-parser",
+                            "status": "merged",
+                            "slug": "r1-fix-parser",
+                        }
+                    ],
+                }
+            ],
+            "merged": ["fix-parser"],
+            "failed": [],
+            "skipped": [],
+            "blocked": [],
+        }
 
-        def fake_create_worker_pane(**kwargs):  # noqa: ANN003, ANN201
-            created.update(kwargs)
-            return _pane("fix-parser")
-
-        with (
-            patch("dgov.preflight.run_preflight", return_value=report),
-            patch("dgov.lifecycle.create_worker_pane", side_effect=fake_create_worker_pane),
-        ):
+        with patch("dgov.batch.run_batch", return_value=summary) as mock_run:
             result = runner.invoke(cli, ["pane", "batch", str(spec_path)])
 
         assert result.exit_code == 0
-        packet = created["context_packet"]
-        assert packet.file_claims == ("src/parser.py", "tests/test_parser.py")
+        assert json.loads(result.output) == summary
+        mock_run.assert_called_once_with(
+            str(spec_path),
+            session_root=None,
+            dry_run=False,
+            project_root=".",
+        )
 
     def test_list_and_gc(self, runner: CliRunner) -> None:
         with patch("dgov.status.list_worker_panes", return_value=[{"slug": "task"}]):
@@ -941,3 +970,171 @@ class TestDagCliCommand:
         runner = CliRunner()
         result = runner.invoke(cli, ["dag", "merge", str(p)])
         assert result.exit_code != 0  # no awaiting_merge run exists
+
+    def test_dag_run_uses_project_root_option(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+        captured = {}
+
+        def mock_run_dag(*args, **kwargs):
+            captured["project_root"] = kwargs.get("project_root")
+            captured["session_root"] = kwargs.get("session_root")
+            from dgov.dag import DagRunSummary
+
+            return DagRunSummary(run_id=1, dag_file=str(p), status="submitted")
+
+        monkeypatch.setattr("dgov.dag.run_dag", mock_run_dag)
+        monkeypatch.setattr("dgov.monitor.ensure_monitor_running", lambda *a, **k: None)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["dag", "run", str(p), "--project-root", "/custom/root"])
+        assert result.exit_code == 0
+        assert captured.get("project_root") == "/custom/root"
+        assert captured.get("session_root") is None
+
+    def test_dag_run_uses_dgov_project_root_env(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+        monkeypatch.setenv("DGOV_PROJECT_ROOT", "/env/root")
+
+        worktree_path = tmp_path / ".dgov" / "worktrees" / "test-123"
+        worktree_path.mkdir(parents=True)
+        dag_path = worktree_path / "dag.toml"
+        dag_path.write_text(toml_content)
+
+        captured = {}
+
+        def mock_run_dag(*args, **kwargs):
+            captured["project_root"] = kwargs.get("project_root")
+            captured["session_root"] = kwargs.get("session_root")
+            from dgov.dag import DagRunSummary
+
+            return DagRunSummary(run_id=1, dag_file=str(dag_path), status="submitted")
+
+        monkeypatch.setattr("dgov.dag.run_dag", mock_run_dag)
+        monkeypatch.setattr("dgov.monitor.ensure_monitor_running", lambda *a, **k: None)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["dag", "run", str(dag_path), "--project-root", str(worktree_path)]
+        )
+        assert result.exit_code == 0
+        assert captured.get("project_root") == "/env/root"
+        assert captured.get("session_root") is None
+
+    def test_dag_merge_uses_project_root_option(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+
+        captured = {}
+
+        def mock_merge_dag(*args, **kwargs):
+            captured["project_root"] = kwargs.get("project_root")
+            captured["session_root"] = kwargs.get("session_root")
+            from dgov.dag import DagRunSummary
+
+            return DagRunSummary(run_id=1, dag_file=str(p), status="completed", merged=["T0"])
+
+        monkeypatch.setattr("dgov.dag.merge_dag", mock_merge_dag)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["dag", "merge", str(p), "--project-root", "/custom/merge"])
+        assert result.exit_code == 0
+        assert captured.get("project_root") == "/custom/merge"
+        assert captured.get("session_root") is None
+
+    def test_dag_resume_passes_autocorrected_roots_to_run_dag(self, monkeypatch, tmp_path):
+        import textwrap
+
+        toml_content = textwrap.dedent(
+            """\
+            [dag]
+            version = 1
+            name = "test"
+            [tasks.T0]
+            summary = "Test"
+            agent = "hunter"
+            prompt = "do it"
+            commit_message = "c"
+            [tasks.T0.files]
+            create = ["a.py"]
+        """
+        )
+        p = tmp_path / "test.toml"
+        p.write_text(toml_content)
+        monkeypatch.setenv("DGOV_SKIP_GOVERNOR_CHECK", "1")
+        monkeypatch.setattr("dgov.persistence.ensure_dag_tables", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            "dgov.persistence.get_dag_run",
+            lambda *args, **kwargs: {"id": 4, "status": "failed", "dag_file": str(p)},
+        )
+        monkeypatch.setattr("dgov.persistence.list_dag_tasks", lambda *args, **kwargs: [])
+        monkeypatch.setattr("dgov.executor.run_resume_dag", lambda *args, **kwargs: None)
+
+        captured = {}
+
+        def mock_run_dag(*args, **kwargs):
+            captured["project_root"] = kwargs.get("project_root")
+            captured["session_root"] = kwargs.get("session_root")
+            from dgov.dag import DagRunSummary
+
+            return DagRunSummary(run_id=5, dag_file=str(p), status="submitted")
+
+        monkeypatch.setattr("dgov.dag.run_dag", mock_run_dag)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["dag", "resume", str(p), "--run-id", "4", "-r", "/repo"])
+        assert result.exit_code == 0
+        assert captured == {"project_root": "/repo", "session_root": "/repo"}

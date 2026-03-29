@@ -529,3 +529,33 @@ class TestMaxConcurrent:
     def test_max_concurrent_defaults_to_zero(self):
         dag = parse_dag_file(_write_toml(MINIMAL_TOML))
         assert dag.max_concurrent == 0
+
+
+class TestRootPropagation:
+    def test_with_overridden_roots_changes_project_and_session(self):
+        from dgov.dag import _with_overridden_roots
+
+        dag = parse_dag_file(_write_toml(MINIMAL_TOML))
+        assert dag.project_root == "."
+        assert dag.session_root == "."
+
+        overridden = _with_overridden_roots(dag, "/override/project", "/override/session")
+        assert overridden.project_root == "/override/project"
+        assert overridden.session_root == "/override/session"
+
+    def test_with_overridden_roots_defaults_session_to_project(self):
+        from dgov.dag import _with_overridden_roots
+
+        dag = parse_dag_file(_write_toml(MINIMAL_TOML))
+        overridden = _with_overridden_roots(dag, "/override/project", None)
+        assert overridden.project_root == "/override/project"
+        assert overridden.session_root == "/override/project"
+
+    def test_with_overridden_roots_preserves_other_fields(self):
+        from dgov.dag import _with_overridden_roots
+
+        dag = parse_dag_file(_write_toml(MINIMAL_TOML))
+        overridden = _with_overridden_roots(dag, "/override/project")
+        assert overridden.name == dag.name
+        assert overridden.tasks == dag.tasks
+        assert overridden.default_max_retries == dag.default_max_retries

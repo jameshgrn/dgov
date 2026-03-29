@@ -815,6 +815,99 @@ class TestApplyDagEvents:
         assert 99 not in state.active_dags, "dag_completed must remove the run from active_dags"
 
 
+class TestDriveDagPersistence:
+    def test_drive_dag_persists_state_after_mid_pass_exception(self, tmp_path):
+        from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+        from dgov.kernel import DagKernel, WaitForAny
+        from dgov.monitor import DagMonitorState, _drive_dag
+        from dgov.persistence import create_dag_run, ensure_dag_tables, get_dag_run, list_dag_tasks
+
+        session_root = str(tmp_path)
+        ensure_dag_tables(session_root)
+
+        dag = DagDefinition(
+            name="persist-snapshot",
+            dag_file=str(tmp_path / "dag.toml"),
+            project_root=str(tmp_path),
+            session_root=session_root,
+            default_max_retries=1,
+            merge_resolve="skip",
+            merge_squash=True,
+            max_concurrent=0,
+            tasks={
+                "task-1": DagTaskSpec(
+                    slug="task-1",
+                    summary="task",
+                    prompt="do it",
+                    commit_message="Commit task",
+                    agent="generate-t3",
+                    escalation=(),
+                    depends_on=(),
+                    files=DagFileSpec(edit=("src/task.py",)),
+                    permission_mode="bypassPermissions",
+                    timeout_s=60,
+                )
+            },
+        )
+        kernel = DagKernel(deps={"task-1": ()})
+        run_id = create_dag_run(
+            session_root,
+            dag.dag_file,
+            "2026-03-29T00:00:00+00:00",
+            "running",
+            0,
+            kernel.to_dict(),
+            definition_json={
+                "name": dag.name,
+                "default_max_retries": dag.default_max_retries,
+                "merge_resolve": dag.merge_resolve,
+                "merge_squash": dag.merge_squash,
+                "max_concurrent": dag.max_concurrent,
+                "tasks": {},
+            },
+        )
+
+        class FakeReactor:
+            def __init__(self, dag_def):
+                self.dag = dag_def
+                self.project_root = dag_def.project_root
+                self._calls = 0
+
+            def execute(self, action):
+                from dgov.kernel import TaskDispatched
+
+                self._calls += 1
+                if self._calls == 1:
+                    return TaskDispatched("task-1", "pane-1")
+                assert isinstance(action, WaitForAny)
+                raise RuntimeError("reactor exploded after dispatch")
+
+        state = DagMonitorState(run_id, kernel, FakeReactor(dag))
+
+        with pytest.raises(RuntimeError, match="reactor exploded after dispatch"):
+            _drive_dag(session_root, state, kernel.start())
+
+        run = get_dag_run(session_root, run_id)
+        assert run is not None
+        assert run["state_json"]["state"] == "running"
+        assert run["state_json"]["task_states"]["task-1"] == "waiting"
+        assert run["state_json"]["pane_slugs"]["task-1"] == "pane-1"
+
+        task_rows = list_dag_tasks(session_root, run_id)
+        assert task_rows == [
+            {
+                "slug": "task-1",
+                "status": "waiting",
+                "agent": "generate-t3",
+                "attempt": 1,
+                "pane_slug": "pane-1",
+                "file_claims": ("src/task.py",),
+                "commit_message": "Commit task",
+                "error": None,
+            }
+        ]
+
+
 class TestTryAutoRetry:
     """Test _try_auto_retry auto-retry logic."""
 
