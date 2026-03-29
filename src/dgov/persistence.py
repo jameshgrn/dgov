@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import asdict, dataclass, field, is_dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from dgov.backend import get_backend
@@ -348,54 +349,83 @@ def wait_for_events(
 
 
 # Canonical pane states — no others allowed
-PANE_STATES = frozenset(
-    {
-        "active",
-        "done",
-        "failed",
-        "reviewed_pass",
-        "reviewed_fail",
-        "merged",
-        "merge_conflict",
-        "timed_out",
-        "escalated",
-        "superseded",
-        "closed",
-        "abandoned",
-    }
-)
+class PaneState(StrEnum):
+    ACTIVE = "active"
+    DONE = "done"
+    FAILED = "failed"
+    REVIEWED_PASS = "reviewed_pass"
+    REVIEWED_FAIL = "reviewed_fail"
+    MERGED = "merged"
+    MERGE_CONFLICT = "merge_conflict"
+    TIMED_OUT = "timed_out"
+    ESCALATED = "escalated"
+    SUPERSEDED = "superseded"
+    CLOSED = "closed"
+    ABANDONED = "abandoned"
+
+
+# Backward-compat set for membership checks and SQLite validation
+PANE_STATES = frozenset(PaneState)
 
 
 # Pane hierarchy fields
-class PANE_TIER:
+class PaneTier(StrEnum):
     GOVERNOR = "governor"
     MANAGER = "manager"
     WORKER = "worker"
 
 
 # Transition table: 12 states, enforced in update_pane_state
-VALID_TRANSITIONS: dict[str, frozenset[str]] = {
-    "active": frozenset(
-        {"done", "failed", "abandoned", "timed_out", "closed", "escalated", "superseded", "merged"}
+VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
+    PaneState.ACTIVE: frozenset(
+        {
+            PaneState.DONE,
+            PaneState.FAILED,
+            PaneState.ABANDONED,
+            PaneState.TIMED_OUT,
+            PaneState.CLOSED,
+            PaneState.ESCALATED,
+            PaneState.SUPERSEDED,
+            PaneState.MERGED,
+        }
     ),
-    "done": frozenset(
-        {"reviewed_pass", "reviewed_fail", "merged", "merge_conflict", "closed", "superseded"}
+    PaneState.DONE: frozenset(
+        {
+            PaneState.REVIEWED_PASS,
+            PaneState.REVIEWED_FAIL,
+            PaneState.MERGED,
+            PaneState.MERGE_CONFLICT,
+            PaneState.CLOSED,
+            PaneState.SUPERSEDED,
+        }
     ),
-    "failed": frozenset({"closed", "superseded", "escalated"}),
-    "reviewed_pass": frozenset({"merged", "merge_conflict", "closed"}),
-    "reviewed_fail": frozenset({"closed", "superseded", "escalated"}),
-    "merged": frozenset({"closed"}),
-    "merge_conflict": frozenset({"merged", "closed", "escalated"}),
-    "timed_out": frozenset({"done", "merged", "closed", "superseded", "escalated"}),
-    "escalated": frozenset({"closed"}),
-    "superseded": frozenset({"closed"}),
-    "closed": frozenset(),
-    "abandoned": frozenset({"closed", "superseded", "escalated"}),
+    PaneState.FAILED: frozenset({PaneState.CLOSED, PaneState.SUPERSEDED, PaneState.ESCALATED}),
+    PaneState.REVIEWED_PASS: frozenset(
+        {PaneState.MERGED, PaneState.MERGE_CONFLICT, PaneState.CLOSED}
+    ),
+    PaneState.REVIEWED_FAIL: frozenset(
+        {PaneState.CLOSED, PaneState.SUPERSEDED, PaneState.ESCALATED}
+    ),
+    PaneState.MERGED: frozenset({PaneState.CLOSED}),
+    PaneState.MERGE_CONFLICT: frozenset({PaneState.MERGED, PaneState.CLOSED, PaneState.ESCALATED}),
+    PaneState.TIMED_OUT: frozenset(
+        {
+            PaneState.DONE,
+            PaneState.MERGED,
+            PaneState.CLOSED,
+            PaneState.SUPERSEDED,
+            PaneState.ESCALATED,
+        }
+    ),
+    PaneState.ESCALATED: frozenset({PaneState.CLOSED}),
+    PaneState.SUPERSEDED: frozenset({PaneState.CLOSED}),
+    PaneState.CLOSED: frozenset(),
+    PaneState.ABANDONED: frozenset({PaneState.CLOSED, PaneState.SUPERSEDED, PaneState.ESCALATED}),
 }
 
 
 class IllegalTransitionError(ValueError):
-    def __init__(self, current: str, target: str, slug: str):
+    def __init__(self, current: str | PaneState, target: str | PaneState, slug: str):
         self.current = current
         self.target = target
         self.slug = slug
@@ -463,14 +493,16 @@ _PANE_COLUMNS = frozenset(
     }
 )
 
-_COMPLETION_TARGET_STATES = frozenset({"done", "failed", "abandoned", "timed_out"})
-_SETTLED_PANE_STATES = PANE_STATES - {"active"}
+_COMPLETION_TARGET_STATES = frozenset(
+    {PaneState.DONE, PaneState.FAILED, PaneState.ABANDONED, PaneState.TIMED_OUT}
+)
+_SETTLED_PANE_STATES = PANE_STATES - {PaneState.ACTIVE}
 
 
 def _maybe_update_pane_title(session_root: str, slug: str, new_state: str) -> None:
     """Update the pane title after a persisted state change."""
     # Skip for terminal states — pane is dead, title update would fork tmux for nothing.
-    if new_state in ("merged", "closed", "superseded"):
+    if new_state in (PaneState.MERGED, PaneState.CLOSED, PaneState.SUPERSEDED):
         return
 
     pane = get_pane(session_root, slug)
@@ -1149,7 +1181,7 @@ def settle_completion_state(
             state for state, targets in VALID_TRANSITIONS.items() if new_state in targets
         }
         if allow_abandoned:
-            allowed_from.add("abandoned")
+            allowed_from.add(PaneState.ABANDONED)
 
         placeholders = ", ".join("?" * len(allowed_from))
         cur = conn.execute(
@@ -1352,6 +1384,37 @@ def replace_all_panes(session_root: str, panes: list[dict] | dict) -> None:
 
     _retry_on_lock(_do)
 
+
+__all__ = [
+    "PaneState",
+    "PaneTier",
+    "PANE_STATES",
+    "VALID_TRANSITIONS",
+    "IllegalTransitionError",
+    "CompletionTransitionResult",
+    "WorkerPane",
+    "add_pane",
+    "remove_pane",
+    "get_pane",
+    "all_panes",
+    "list_panes_slim",
+    "get_pane_prompt",
+    "update_pane_state",
+    "settle_completion_state",
+    "set_pane_metadata",
+    "get_preserved_artifacts",
+    "mark_preserved_artifacts",
+    "clear_preserved_artifacts",
+    "record_failure",
+    "get_child_panes",
+    "replace_all_panes",
+    "emit_event",
+    "read_events",
+    "latest_event_id",
+    "wait_for_events",
+    "state_path",
+    "get_slug_history",
+]
 
 # -- DAG run persistence --
 
