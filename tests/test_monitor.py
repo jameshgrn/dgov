@@ -1032,3 +1032,26 @@ class TestBlockedDagRunMonitoring:
         )
 
         assert 100 not in state.active_dags
+
+
+class TestMonitorHeartbeat:
+    """Test monitor heartbeat implementation."""
+
+    @pytest.mark.unit
+    def test_monitor_heartbeat_does_not_emit_event(self, monkeypatch):
+        """Monitor heartbeat should update status file, not emit events."""
+        import ast
+        from pathlib import Path
+
+        source = Path("src/dgov/monitor.py").read_text()
+        tree = ast.parse(source)
+
+        # Find all emit_event calls and check none use 'monitor_alive'
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "emit_event":
+                    # Check if any arg is 'monitor_alive'
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant) and arg.value == "monitor_alive":
+                            pytest.fail("monitor.py still emits monitor_alive events")
