@@ -547,6 +547,60 @@ class TestTakeActionBugFixes:
 class TestTryAutoMerge:
     """Test _try_auto_merge auto-merge logic."""
 
+    @patch("dgov.monitor.set_pane_metadata")
+    @patch("dgov.executor.run_land_only")
+    def test_auto_merge_sets_landing_flag(self, mock_run_land_only, mock_set_metadata):
+        """Test that _try_auto_merge sets landing flag before merge and clears it after."""
+        from dgov.monitor import _try_auto_merge
+
+        mock_run_land_only.return_value = type(
+            "R",
+            (),
+            {
+                "review": ReviewInfo(slug="test-1", verdict="safe", commit_count=1),
+                "merge_result": MergeSuccess(merged="test-1", branch="dgov-test-1"),
+                "error": None,
+            },
+        )()
+
+        result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
+
+        assert result == "auto_merge"
+        # Verify landing=True is set before run_land_only
+        mock_set_metadata.assert_any_call("/tmp/proj", "test-1", landing=True)
+        # Verify landing=False is cleared after run_land_only
+        mock_set_metadata.assert_any_call("/tmp/proj", "test-1", landing=False)
+        # Verify the order: set before run, clear after
+        call_order = [c.kwargs.get("landing") for c in mock_set_metadata.call_args_list]
+        assert call_order == [True, False]
+
+    @patch("dgov.monitor.set_pane_metadata")
+    @patch("dgov.executor.run_land_only")
+    def test_auto_merge_clears_landing_flag_on_failure(
+        self, mock_run_land_only, mock_set_metadata
+    ):
+        """Test that landing flag is cleared even when merge fails."""
+        from dgov.monitor import _try_auto_merge
+
+        mock_run_land_only.return_value = type(
+            "R",
+            (),
+            {
+                "review": {"error": "Pane not found"},
+                "merge_result": None,
+                "failure_stage": "review_error",
+                "error": "Pane not found",
+            },
+        )()
+
+        result = _try_auto_merge("/tmp/proj", "/tmp/proj", "test-1")
+
+        assert result is None
+        # Verify landing=True is set before run_land_only
+        mock_set_metadata.assert_any_call("/tmp/proj", "test-1", landing=True)
+        # Verify landing=False is cleared even on failure
+        mock_set_metadata.assert_any_call("/tmp/proj", "test-1", landing=False)
+
     @patch("dgov.executor.run_land_only")
     def test_auto_merge_safe_verdict(self, mock_run_land_only):
         from dgov.monitor import _try_auto_merge

@@ -1165,17 +1165,28 @@ def _try_auto_merge(project_root: str, session_root: str, slug: str) -> str | No
     """Attempt to auto-merge a done pane if review verdict is safe."""
     from dgov.executor import run_land_only
 
-    result = run_land_only(project_root, slug, session_root=session_root)
-    if result.error:
-        log = logger.warning if result.failure_stage == "review_error" else logger.info
-        log("Skip auto-merge %s: %s", slug, result.error)
+    try:
+        set_pane_metadata(session_root, slug, landing=True)
+    except Exception:
+        logger.debug("failed to set landing flag for %s", slug, exc_info=True)
+
+    try:
+        result = run_land_only(project_root, slug, session_root=session_root)
+        if result.error:
+            log = logger.warning if result.failure_stage == "review_error" else logger.info
+            log("Skip auto-merge %s: %s", slug, result.error)
+            return None
+        if isinstance(result.merge_result, MergeSuccess):
+            emit_event(session_root, "monitor_auto_merge", slug)
+            logger.info("Monitor: auto-merged %s", slug)
+            return "auto_merge"
+        logger.warning("Auto-merge failed for %s: %s", slug, result.error)
         return None
-    if isinstance(result.merge_result, MergeSuccess):
-        emit_event(session_root, "monitor_auto_merge", slug)
-        logger.info("Monitor: auto-merged %s", slug)
-        return "auto_merge"
-    logger.warning("Auto-merge failed for %s: %s", slug, result.error)
-    return None
+    finally:
+        try:
+            set_pane_metadata(session_root, slug, landing=False)
+        except Exception:
+            logger.debug("failed to unset landing flag for %s", slug, exc_info=True)
 
 
 def _pane_work_already_on_main(project_root: str, session_root: str, slug: str) -> bool:
