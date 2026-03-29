@@ -2447,14 +2447,14 @@ def run_dag_kernel(
             continue
 
         # Execute non-waiting actions through the reactor
-        event = reactor.execute(action)
-        if event:
-            if isinstance(event, TaskDispatched):
-                pane_map[action.task_slug] = event.pane_slug
-            elif isinstance(event, TaskRetryStarted):
-                pane_map[action.task_slug] = event.new_pane_slug
+        new_event = reactor.execute(action)
+        if new_event:
+            if isinstance(new_event, TaskDispatched):
+                pane_map[action.task_slug] = new_event.pane_slug
+            elif isinstance(new_event, TaskRetryStarted):
+                pane_map[action.task_slug] = new_event.new_pane_slug
 
-            _extend_queue(kernel.handle(event))
+            _extend_queue(kernel.handle(new_event))
 
     # Queue exhausted without DagDone — shouldn't happen
     from dgov.kernel import DagTaskState

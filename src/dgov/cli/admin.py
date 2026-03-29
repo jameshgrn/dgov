@@ -73,7 +73,7 @@ def _map_test_files(modules: dict[str, dict], tests_dir: Path) -> dict[str, list
 
     Returns a dict mapping module paths to lists of test file names.
     """
-    mappings = {}
+    mappings: dict[str, list[str]] = {}
     if not tests_dir.exists():
         return mappings
 

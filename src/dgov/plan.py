@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 from dgov.dag_graph import _paths_overlap
 
 if TYPE_CHECKING:
-    from dgov.dag_parser import DagDefinition
+    from dgov.dag_parser import DagDefinition, DagRunSummary
 
 
 @dataclass(frozen=True)
@@ -1078,7 +1078,7 @@ def run_plan(
     *,
     session_root: str | None = None,
     max_concurrent: int = 0,
-) -> object:
+) -> DagRunSummary:
     """Canonical entry point: parse, validate, compile, execute a plan.
 
     Args:
