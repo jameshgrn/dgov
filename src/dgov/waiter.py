@@ -493,7 +493,7 @@ def nudge_pane(session_root: str, slug: str, wait_seconds: int = 10) -> dict:
     return {"response": response, "output": captured or ""}
 
 
-def signal_pane(session_root: str, slug: str, signal: str) -> bool:
+def signal_pane(session_root: str, slug: str, signal: PaneState) -> bool:
     """Manually signal a pane as done or failed.
 
     Touches the appropriate signal file and updates state.
@@ -509,14 +509,14 @@ def signal_pane(session_root: str, slug: str, signal: str) -> bool:
     done_dir = Path(session_root) / STATE_DIR / "done"
     done_dir.mkdir(parents=True, exist_ok=True)
 
-    if signal == "done":
+    if signal == PaneState.DONE:
         if not _has_completion_commit(target):
             return False
         (done_dir / slug).touch()
         _persist.settle_completion_state(session_root, slug, "done", allow_abandoned=True)
         _persist.emit_event(session_root, "pane_done", slug, reason="manual_signal")
 
-    elif signal == "failed":
+    elif signal == PaneState.FAILED:
         (done_dir / f"{slug}.exit").write_text("manual")
         _persist.settle_completion_state(session_root, slug, "failed", allow_abandoned=True)
         _persist.emit_event(session_root, "pane_failed", slug, reason="manual_signal")

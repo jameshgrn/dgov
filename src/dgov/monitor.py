@@ -800,7 +800,7 @@ def _tracked_worker_records(
     return [
         worker
         for worker in workers
-        if worker.get("slug") in active_slugs and worker.get("state") == "active"
+        if worker.get("slug") in active_slugs and worker.get("state") == PaneState.ACTIVE
     ]
 
 
@@ -1220,7 +1220,7 @@ def _pane_work_already_on_main(project_root: str, session_root: str, slug: str) 
         return True
     # Also check: did a sibling pane (same prompt) already merge?
     state = pane.get("state", "")
-    if state in ("merged", "done", "closed"):
+    if state in (PaneState.MERGED, PaneState.DONE, PaneState.CLOSED):
         logger.info("Skipping retry for %s: pane state is %s", slug, state)
         return True
     return False
