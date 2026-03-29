@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -45,10 +46,16 @@ class ReviewGate:
     error: str | None = None
 
 
+class CleanupAction(StrEnum):
+    PRESERVE = "preserve"
+    CLOSE = "close"
+    CLOSED = "closed"
+
+
 @dataclass(frozen=True)
 class CleanupOnlyResult:
     slug: str
-    action: str
+    action: CleanupAction
     reason: str
     closed: bool = False
     force: bool = False
@@ -540,7 +547,7 @@ _CLEANUP_POLICY: dict[tuple[str, str | None], dict] = {
     (PaneState.FAILED, "worker_failed"): {"force": True},
     (PaneState.CLOSED, None): {
         "force": True,
-        "action": "closed",
+        "action": CleanupAction.CLOSED,
         "reason": "completed_no_commits",
     },
 }
@@ -560,13 +567,13 @@ def run_cleanup_only(
 
     preserve = CleanupOnlyResult(
         slug=slug,
-        action="preserve",
+        action=CleanupAction.PRESERVE,
         reason=failure_stage or state,
     )
 
     policy = _CLEANUP_POLICY.get((state, failure_stage))
     if policy is not None:
-        if policy.get("action") == "closed":
+        if policy.get("action") == CleanupAction.CLOSED:
             # 0-commit completed panes: close cleanly (captures transcripts)
             session_root = session_root or project_root
             close_worker_pane(project_root, slug, session_root, force=policy["force"])
@@ -603,7 +610,7 @@ def run_cleanup_only(
     )
     return CleanupOnlyResult(
         slug=slug,
-        action="close",
+        action=CleanupAction.CLOSE,
         reason=failure_stage or state,
         closed=closed,
         force=force,
@@ -1601,11 +1608,11 @@ def run_land_only(
     from dgov.lifecycle import close_worker_pane
 
     cleanup = run_cleanup_only(project_root, slug, session_root=session_root, state="completed")
-    if cleanup.action == "preserve":
+    if cleanup.action == CleanupAction.PRESERVE:
         closed = close_worker_pane(project_root, slug, session_root=session_root)
         cleanup = CleanupOnlyResult(
             slug=slug,
-            action="close",
+            action=CleanupAction.CLOSE,
             reason="landed",
             closed=closed,
             force=False,
@@ -1820,7 +1827,7 @@ def run_close_only(
     closed = close_worker_pane(project_root, slug, session_root=session_root, force=force)
     return CleanupOnlyResult(
         slug=slug,
-        action="close",
+        action=CleanupAction.CLOSE,
         reason="explicit_close",
         closed=closed,
         force=force,
