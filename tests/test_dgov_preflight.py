@@ -512,7 +512,7 @@ def test_check_agent_health_passes(monkeypatch: pytest.MonkeyPatch) -> None:
             short_label="pi",
             prompt_command="pi",
             transport=PromptTransport(type="positional"),
-            health=HealthConfig(check="curl -sf http://localhost:8080/health"),
+            health=HealthConfig(check="curl -sf http://localhost:8081/health"),
         )
     }
 
@@ -535,7 +535,7 @@ def test_check_agent_health_fails(monkeypatch: pytest.MonkeyPatch) -> None:
             prompt_command="pi",
             transport=PromptTransport(type="positional"),
             health=HealthConfig(
-                check="curl -sf http://localhost:8080/health",
+                check="curl -sf http://localhost:8081/health",
                 fix="ssh -fN river-tunnel",
             ),
         )
@@ -647,7 +647,7 @@ def test_run_preflight_includes_health_check_when_configured(
                 short_label="pi",
                 prompt_command="pi",
                 transport=PromptTransport(type="positional"),
-                health=HealthConfig(check="curl -sf http://localhost:8080/health"),
+                health=HealthConfig(check="curl -sf http://localhost:8081/health"),
             )
         },
     )
