@@ -9,6 +9,7 @@ from pathlib import Path
 
 from dgov.dag_graph import compute_tiers, render_dry_run, topological_order
 from dgov.dag_parser import DagDefinition, DagRunSummary, parse_dag_file
+from dgov.kernel import DagKernel, DagTaskState
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,6 @@ def run_dag_via_kernel(
     from dataclasses import asdict
     from datetime import datetime, timezone
 
-    from dgov.kernel import DagKernel
     from dgov.persistence import create_dag_run, emit_event, replace_dag_plan_contract
 
     session_root = dag.session_root
@@ -159,10 +159,9 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     task_states = {r["slug"]: r["status"] for r in task_rows}
     pane_slugs = {r["slug"]: r["pane_slug"] for r in task_rows if r["pane_slug"]}
 
-    ready = [s for s, st in task_states.items() if st == "reviewed_pass"]
-    # TODO: ^ st is from DB row (str), compare to DagTaskState.REVIEWED_PASS.value
+    ready = [s for s, st in task_states.items() if st == DagTaskState.MERGE_READY]
     if not ready:
-        raise ValueError("No reviewed_pass tasks to merge")
+        raise ValueError("No merge_ready tasks to merge")
 
     # Merge in topological order using executor
     from dgov.executor import run_merge_only
@@ -207,8 +206,14 @@ def merge_dag(dag_file: str) -> DagRunSummary:
     update_dag_run(session_root, run_id, status="completed")
     emit_event(session_root, "dag_completed", f"dag/{run_id}", dag_run_id=run_id)
 
-    succeeded = [s for s, st in task_states.items() if st in ("merged", "reviewed_pass")]
-    failed = [s for s, st in task_states.items() if st in ("failed", "reviewed_fail")]
+    succeeded = [
+        s for s, st in task_states.items() if st in (DagTaskState.MERGED, DagTaskState.MERGE_READY)
+    ]
+    failed = [
+        s
+        for s, st in task_states.items()
+        if st in (DagTaskState.FAILED, DagTaskState.REVIEWED_FAIL)
+    ]
     return DagRunSummary(
         run_id=run_id,
         dag_file=abs_path,
