@@ -1294,6 +1294,23 @@ def _validate_post_merge(
             validation_error = _format_post_merge_test_failure(test_result)
             logger.error("%s", validation_error)
 
+    # Type check (non-blocking — warn only, as ty may flag pre-existing issues)
+    python_files = [f for f in changed_file_names if f.endswith(".py")]
+    if python_files:
+        ty_result = subprocess.run(
+            ["uv", "run", "ty", "check", *python_files],
+            capture_output=True,
+            text=True,
+            cwd=merge_root,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+        if ty_result.returncode != 0:
+            logger.warning(
+                "ty check found issues after merge: %s",
+                ty_result.stdout[:500] if ty_result.stdout else ty_result.stderr[:500],
+            )
+
     return validation_failed, validation_error, lint_result, test_result, warning_msg
 
 
