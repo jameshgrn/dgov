@@ -19,6 +19,7 @@ stateDiagram-v2
     active --> failed: crashed / exit-code
     active --> timed_out: wait timeout
     active --> abandoned: pane dead
+    active --> escalated: governor escalate
 
     done --> reviewed_pass: review (pass)
     done --> reviewed_fail: review (fail)
@@ -27,18 +28,22 @@ stateDiagram-v2
     reviewed_pass --> failed: merge failed
     reviewed_fail --> escalated: re-dispatch
 
-    failed --> escalated: dgov pane escalate
+    failed --> escalated: retry escalate
     timed_out --> done: late finish
     timed_out --> escalated: re-dispatch
+    abandoned --> escalated: recovery escalate
 
     merged --> closed: cleanup
     escalated --> closed: cleanup
     abandoned --> closed: cleanup
+    superseded --> closed: cleanup
 
     closed --> [*]
+
+    note right of superseded: pane replaced by retry/escalation
 ```
 
-Review is mandatory — no direct `done → merged`. Merge failures are failures, not a separate state. The full transition table (11 states, all legal edges including superseded, retry, and direct-close paths) is enforced in [`src/dgov/persistence.py`](src/dgov/persistence.py).
+Review is mandatory — no direct `done → merged`. Merge failures go to `failed`, not a separate state. Any non-terminal state can reach `closed` directly (governor force-close) or `superseded` (replaced by retry/escalation). The full transition table (11 states, all legal edges) is enforced in [`src/dgov/persistence.py`](src/dgov/persistence.py).
 
 ## Signal Flow
 
