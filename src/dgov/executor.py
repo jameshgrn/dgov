@@ -23,8 +23,6 @@ if TYPE_CHECKING:
     from dgov.kernel import (
         DagAction,
         DagEvent,
-        DagState,
-        DagTaskState,
         TaskDispatched,
         TaskDispatchFailed,
         TaskMergeDone,
@@ -2173,6 +2171,7 @@ def run_worker_checkpoint(session_root: str, slug: str, message: str) -> None:
 
 def run_force_complete_dag(session_root: str, run_id: int) -> dict:
     """Executor syscall: force-complete a DAG run, marking all non-terminal tasks as done."""
+    from dgov.kernel import DagState, DagTaskState
     from dgov.persistence import emit_event, get_dag_run, update_dag_run, upsert_dag_task
 
     run = get_dag_run(session_root, run_id)
@@ -2212,6 +2211,7 @@ def run_force_complete_dag(session_root: str, run_id: int) -> dict:
 
 def run_skip_dag_task(session_root: str, run_id: int, task_slug: str) -> dict:
     """Executor syscall: skip a single DAG task and let the kernel advance."""
+    from dgov.kernel import DagTaskState
     from dgov.persistence import emit_event, get_dag_run, update_dag_run, upsert_dag_task
 
     run = get_dag_run(session_root, run_id)
