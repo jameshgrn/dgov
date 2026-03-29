@@ -1,5 +1,9 @@
 ---
 name: dgov-handover
+description: |
+  Prepare session handover by gathering state from ledger, panes, and git,
+  then writing structured HANDOVER.md and committing it.
+  Use when user invokes /dgov-handover or asks to "hand over" or "prepare handover".
 author: Jake Gearon
 version: 1.0.0
 date: 2026-03-28
