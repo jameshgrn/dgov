@@ -2738,6 +2738,10 @@ def _dag_review(
         post_merge_check=task.post_merge_check,
         evals=evals,
     )
+    if result.verdict != ReviewVerdict.SAFE:
+        run_mark_reviewed(project_root, pane_slug, session_root=session_root, passed=False)
+    elif result.commit_count > 0:
+        run_mark_reviewed(project_root, pane_slug, session_root=session_root, passed=True)
     progress(f"  reviewed {task_slug}: {result.verdict}")
     return TaskReviewDone(
         task_slug,

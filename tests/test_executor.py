@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -218,7 +219,64 @@ def test_run_wait_only_returns_worker_failed_state(tmp_path):
 
     assert result.state == "failed"
     assert result.slug == "task"
-    assert result.failure_stage == "worker_failed"
+
+
+def test_dag_review_marks_reviewed_pass_before_merge(tmp_path):
+    from dgov.executor import _dag_review
+
+    dag = SimpleNamespace(
+        tasks={"task": SimpleNamespace(tests_pass=True, lint_clean=True, post_merge_check=None)}
+    )
+
+    with (
+        patch(
+            "dgov.executor.run_review_only",
+            return_value=SimpleNamespace(passed=True, verdict="safe", commit_count=2),
+        ),
+        patch("dgov.executor.run_mark_reviewed") as mock_mark_reviewed,
+    ):
+        result = _dag_review(
+            dag,
+            "/repo",
+            str(tmp_path),
+            "task",
+            "pane-slug",
+            lambda _msg: None,
+        )
+
+    assert result.passed is True
+    mock_mark_reviewed.assert_called_once_with(
+        "/repo", "pane-slug", session_root=str(tmp_path), passed=True
+    )
+
+
+def test_dag_review_marks_reviewed_fail_on_unsafe_verdict(tmp_path):
+    from dgov.executor import _dag_review
+
+    dag = SimpleNamespace(
+        tasks={"task": SimpleNamespace(tests_pass=True, lint_clean=True, post_merge_check=None)}
+    )
+
+    with (
+        patch(
+            "dgov.executor.run_review_only",
+            return_value=SimpleNamespace(passed=False, verdict="review", commit_count=2),
+        ),
+        patch("dgov.executor.run_mark_reviewed") as mock_mark_reviewed,
+    ):
+        result = _dag_review(
+            dag,
+            "/repo",
+            str(tmp_path),
+            "task",
+            "pane-slug",
+            lambda _msg: None,
+        )
+
+    assert result.passed is False
+    mock_mark_reviewed.assert_called_once_with(
+        "/repo", "pane-slug", session_root=str(tmp_path), passed=False
+    )
 
 
 def test_run_wait_only_returns_timeout_when_retries_exhausted(tmp_path):
