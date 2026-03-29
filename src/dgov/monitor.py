@@ -175,6 +175,7 @@ _DAG_EVENT_FACTORY: dict[str, _DagEventFactory] = {
         task_slug, passed=False, verdict="unsafe", commit_count=0
     ),
     "merge_completed": lambda task_slug, pane_slug, ev: TaskMergeDone(task_slug),
+    "pane_merged": lambda task_slug, pane_slug, ev: TaskMergeDone(task_slug),
     "pane_merge_failed": lambda task_slug, pane_slug, ev: TaskMergeDone(
         task_slug, error=str(ev.get("error")) if ev.get("error") else None
     ),
