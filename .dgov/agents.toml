@@ -169,7 +169,7 @@ alerts = ["slack", "pagerduty"]
 # Maps old role names to new matrix coordinates
 # ============================================================================
 [routing.worker]
-alias_for = "generate-t1"
+alias_for = "generate-t3"
 
 [routing.supervisor]
 alias_for = "validate-t2"
