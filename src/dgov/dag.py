@@ -10,6 +10,7 @@ from pathlib import Path
 from dgov.dag_graph import compute_tiers, render_dry_run, topological_order
 from dgov.dag_parser import DagDefinition, DagRunSummary, parse_dag_file
 from dgov.kernel import DagKernel, DagState, DagTaskState
+from dgov.merger import ConflictResolveStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +219,7 @@ def merge_dag(
             dag.project_root,
             pane_slug,
             session_root=session_root,
-            resolve=dag.merge_resolve,
+            resolve=ConflictResolveStrategy(dag.merge_resolve),
             squash=dag.merge_squash,
             message=dag.tasks[task_slug].commit_message or None,
         )

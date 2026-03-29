@@ -16,7 +16,7 @@ from dgov.decision import DecisionRecord, ReviewOutputDecision, ReviewOutputRequ
 from dgov.inspection import (
     ReviewInfo,
 )
-from dgov.merger import MergeError, MergeSuccess
+from dgov.merger import ConflictResolveStrategy, MergeError, MergeSuccess
 from dgov.persistence import PaneState
 
 if TYPE_CHECKING:
@@ -944,7 +944,7 @@ def run_post_dispatch_lifecycle(
     timeout: int = 600,
     max_retries: int = 1,
     auto_merge: bool = True,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     rebase: bool = False,
     permission_mode: str = "bypassPermissions",
@@ -1481,7 +1481,7 @@ def run_review_merge(
     slug: str,
     *,
     session_root: str | None = None,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     rebase: bool = False,
 ) -> ReviewMergeResult:
@@ -1566,7 +1566,7 @@ def run_land_only(
     slug: str,
     *,
     session_root: str | None = None,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     rebase: bool = False,
 ) -> LandResult:
@@ -1640,7 +1640,7 @@ def run_finalize_panes(
     slugs: list[str],
     *,
     session_root: str | None = None,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     rebase: bool = False,
     timeout: int = 600,
@@ -1726,7 +1726,7 @@ def run_merge_only(
     slug: str,
     *,
     session_root: str | None = None,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     rebase: bool = False,
     message: str | None = None,
@@ -1746,7 +1746,13 @@ def run_merge_only(
 
     from dgov.merger import merge_worker_pane
 
-    if resolve == "skip" and squash is True and not rebase and message is None:
+    is_default = (
+        resolve == ConflictResolveStrategy.SKIP
+        and squash is True
+        and not rebase
+        and message is None
+    )
+    if is_default:
         merge_result = merge_worker_pane(
             project_root,
             slug,
@@ -2048,7 +2054,7 @@ def run_process_merge(
     project_root: str,
     session_root: str,
     *,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     rebase: bool = False,
 ) -> dict:
@@ -2795,7 +2801,7 @@ def _dag_merge(
         project_root,
         pane_slug,
         session_root=session_root,
-        resolve=dag.merge_resolve,
+        resolve=ConflictResolveStrategy(dag.merge_resolve),
         squash=dag.merge_squash,
         message=task.commit_message or None,
     )

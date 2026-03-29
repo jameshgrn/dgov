@@ -57,12 +57,13 @@ def _finalize_slugs(
 ) -> list:
     """Run the canonical post-dispatch pipeline for a set of slugs."""
     from dgov.executor import run_finalize_panes
+    from dgov.merger import ConflictResolveStrategy
 
     return run_finalize_panes(
         project_root,
         slugs,
         session_root=session_root,
-        resolve=resolve,
+        resolve=ConflictResolveStrategy(resolve),
         squash=squash,
         rebase=rebase,
         close=land,

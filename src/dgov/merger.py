@@ -9,12 +9,19 @@ import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from dgov.inspection import MergeResult, ReviewTests
 from dgov.persistence import PROTECTED_FILES, IllegalTransitionError, PaneState
 
 logger = logging.getLogger(__name__)
+
+
+class ConflictResolveStrategy(StrEnum):
+    SKIP = "skip"
+    AGENT = "agent"
+    MANUAL = "manual"
 
 
 @dataclass(frozen=True)
@@ -62,7 +69,7 @@ class MergeConflict:
     slug: str | None = None
     branch: str = ""
     hint: str | None = None
-    resolve: str | None = None
+    resolve: ConflictResolveStrategy | None = None
 
 
 PaneMergeResult = MergeSuccess | MergeError | MergeConflict
@@ -1459,7 +1466,7 @@ def _handle_merge_conflicts(
     target: dict,
     branch_name: str,
     merge: MergeResult,
-    resolve: str,
+    resolve: ConflictResolveStrategy,
 ) -> PaneMergeResult:
     """Handle merge failure: detect conflicts, dispatch resolution strategy."""
     import dgov.persistence as _persist
@@ -1475,7 +1482,7 @@ def _handle_merge_conflicts(
         session_root, "pane_merge_failed", slug, branch=branch_name, conflicts=conflicts
     )
 
-    if resolve == "agent":
+    if resolve == ConflictResolveStrategy.AGENT:
         resolved = _resolve_conflicts_with_agent(
             pane_project_root, branch_name, target, session_root
         )
@@ -1493,7 +1500,7 @@ def _handle_merge_conflicts(
             branch=branch_name,
             hint="Agent resolution failed. Resolve conflicts manually.",
         )
-    if resolve == "manual":
+    if resolve == ConflictResolveStrategy.MANUAL:
         subprocess.run(
             ["git", "-C", pane_project_root, "merge", "--no-commit", branch_name],
             capture_output=True,
@@ -1503,10 +1510,10 @@ def _handle_merge_conflicts(
             conflicts=conflicts,
             slug=slug,
             branch=branch_name,
-            resolve="manual",
+            resolve=ConflictResolveStrategy.MANUAL,
             hint="Conflict markers left in working tree. Resolve manually.",
         )
-    if resolve == "skip":
+    if resolve == ConflictResolveStrategy.SKIP:
         return MergeConflict(
             conflicts=conflicts,
             slug=slug,
@@ -1613,7 +1620,7 @@ def merge_worker_pane(
     project_root: str,
     slug: str,
     session_root: str | None = None,
-    resolve: str = "skip",
+    resolve: ConflictResolveStrategy = ConflictResolveStrategy.SKIP,
     squash: bool = True,
     message: str | None = None,
     rebase: bool = False,
