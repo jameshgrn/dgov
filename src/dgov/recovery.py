@@ -825,7 +825,7 @@ def recover_from_events(session_root: str) -> dict[str, dict[str, str]]:
         elif action == "resume_merge" and db_state in (PaneState.DONE, PaneState.REVIEWED_PASS):
             needs_recovery = True
             reason = "reviewed but merge never completed"
-        elif action == "retry" and db_state in ("done", "active"):
+        elif action == "retry" and db_state in (PaneState.DONE, PaneState.ACTIVE):
             needs_recovery = True
             reason = "merge failed but pane not cleaned up"
         elif action == "close" and db_state not in (PaneState.CLOSED, PaneState.MERGED):
