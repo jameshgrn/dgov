@@ -145,3 +145,25 @@ alias_for = "generate-t1"
         assert "worker" in result
         assert result["worker"] == ["backend-a", "backend-b"]
         assert "generate-t1" in result
+
+
+@pytest.mark.unit
+def test_alias_for_visible_to_is_routable(tmp_path, monkeypatch):
+    """Alias routes should be visible to is_routable."""
+    from dgov.router import is_routable
+
+    # Create config with alias
+    config_dir = tmp_path / ".dgov"
+    config_dir.mkdir()
+    config = config_dir / "agents.toml"
+    config.write_text("""
+[routing.real-route]
+backends = ["backend-a"]
+
+[routing.alias-route]
+alias_for = "real-route"
+""")
+
+    assert is_routable("alias-route", str(tmp_path))
+    assert is_routable("real-route", str(tmp_path))
+    assert not is_routable("nonexistent", str(tmp_path))
