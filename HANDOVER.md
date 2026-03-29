@@ -1,9 +1,9 @@
-# Handover: pushed DAG stabilization and cleared the queue
+# Handover: recovered Claude carry-over and cleaned preserved worktrees
 
 ## Session context
-- Date: 2026-03-29T22:29:36Z
-- Branch: main @ 4a91b43
-- Last commit: Update pane title test ownership
+- Date: 2026-03-29T23:38:41Z
+- Branch: main @ c0915cd
+- Last commit: Replace role magic strings with PaneRole StrEnum
 
 ## Open panes
 | Slug | State | Description |
@@ -14,17 +14,22 @@
 - None.
 
 ## Blockers/debt
-- `uv run dgov tunnel` reported success earlier in the session, but `http://localhost:8080/health` still returned `unreachable` at handover time.
+- Tunnel health confusion remains. `uv run dgov tunnel` succeeds and the SSH master on `/tmp/river.sock` is healthy, but `http://localhost:8080/health` fails because the remote River host refuses `localhost:8080`. Actual configured River agent health checks in `/Users/jakegearon/.dgov/agents.toml` use `8081` and `8083`, and both pass locally.
 
 ## Next steps
-1. Debug the local tunnel health path if local worker dispatch is needed next session.
-2. Start the next control-plane task from a clean `main`; there is no carry-over pane or ledger backlog.
+1. If local River dispatch is needed, treat `8081` and `8083` as the meaningful health probes and stop using `8080` as the tunnel-health signal unless the config is intentionally changed.
+2. Push `main` to `origin/main` when ready. The branch is 8 commits ahead after the recovered Claude work and cleanup commits.
+3. Start the next control-plane task from clean `main`; there is no pane backlog or preserved Claude worktree left to recover.
 
 ## Notes
-- `main` was pushed to `origin/main` after the full pre-push gate passed.
-- Full gate passed on `main`: `ruff check`, `ruff format --check`, `mypy`, `ty`, and `DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/ -q -m unit` (`1895 passed, 1 skipped, 17 deselected`).
-- Commits landed this session:
-  `3a0a5e5` Stabilize DAG routing and persistence
-  `00afaf9` Fix push gate regressions
-  `4a91b43` Update pane title test ownership
-- Ledger bug `#240` was resolved, DAG run `164` was cancelled, and the stale pane/branch artifacts were cleaned up.
+- Recovered and landed Claude carry-over commits:
+  `c192e23` Replace merge resolve magic strings with ConflictResolveStrategy StrEnum
+  `e340416` Replace CLI polling sleeps with event-driven waits
+  `c0915cd` Replace role magic strings with PaneRole StrEnum
+- Verification on the recovered state passed:
+  `uv run ruff check` on touched files
+  `uv run ruff format --check` on touched files
+  `uv run ty check src/dgov`
+  targeted unit bundle: `808 passed, 10 deselected`
+- Removed preserved Claude worktrees under `/Users/jakegearon/projects/dgov/.claude/worktrees` and deleted their `worktree-agent-*` branches.
+- Repo state at handoff is clean: `git status --short` shows no changes.
