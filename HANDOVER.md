@@ -1,44 +1,54 @@
-# Handover: Remove --wait and --land anti-pattern flags
+# Handover: dgov routing + executor bugs fixed
 
 ## Session context
-- Date: 2026-03-28
+- Date: 2026-03-29
 - Branch: main
-- Last commit: b85b28b - Add dgov handover skill for pi agent
-
-## Completed This Session
-- **Removed --wait from plan commands** (`17d4d68`): Removed blocking `--wait` flag from `plan run`, `plan resume`, and `plan scaffold`. Also removed `_wait_for_dag()` helper function (~162 lines of blocking I/O code). Event-driven architecture restored.
-- **Removed --land from pane create** (`7aeb8fd`): Removed `--land/--no-land` option and `--timeout` from `pane create`. The 50+ line inline lifecycle block that called `run_post_dispatch_lifecycle()` is gone.
-- **Updated all references** (`e73eebb`, `47de741`, `69107f8`): Removed all `--wait` and `--land` references from:
-  - Governor prompt template (`_GOVERNOR_PROMPT`)
-  - LT-GOV plan instructions template
-  - Worker prompt template
-  - CLAUDE.md documentation
-  - README.md documentation
-  - `.claude/skills/dgov/SKILL.md`
-  - `.claude/commands/dgov-dispatch.md`
-  - Test assertions (`test_templates.py`)
-  - Comments in `monitor.py`, `status.py`, `persistence.py`
-- **Added dgov-handover skill for pi** (`b85b28b`): Created `.pi/skills/dgov-handover/SKILL.md` for parity with Claude's handover command.
+- Last commit: f8fa722 - fix(routing): correct role hierarchy and precedence
 
 ## Open work
-- No active panes
-- Clean working tree
+- **None** - all panes completed and merged.
 
 ## Open bugs/issues (from ledger)
-- #194: DAG status tracking: claim_violation events not mapped to kernel DagEvents (high)
-- #185: Worker plan tasks can stall indefinitely in read-only phase (medium)
-- #184: Cancelled DAG runs can leave retry descendants alive (medium)
+- **None** - all bugs resolved and closed:
+  - #184: Cancel retry descendants on DAG cancel (FIXED)
+  - #185: Emit pane_timed_out event on timeout (FIXED)
+  - #199: Project-local agents.toml routing errors (FIXED)
+
+## Completed work
+
+### Bug fixes
+1. **src/dgov/executor.py**: Two bug fixes
+   - `run_cancel_dag()`: Now recursively closes retry descendant panes via `get_child_panes()`
+   - `_dag_wait_any()`: Now emits `pane_timed_out` events before returning on timeout
+   - Regression tests: `tests/test_executor_bugs_184_185.py`
+
+2. **src/dgov/agents.py**: Fixed routing table precedence
+   - `load_routing_tables()` now correctly loads user-global first, then project-local overrides
+   - Previously was inverted (project-local loaded then overwritten by global)
+
+3. **src/dgov/router.py**: Fixed `resolve_agent()` to pass `project_root`
+   - Was ignoring project-local `agents.toml` due to missing parameter
+
+4. **.dgov/agents.toml**: Rewrote with correct routing
+   - Fixed `[routing.qwen-9b]` → `river-9b` (was `river-qwen9`)
+   - Fixed `[routing.lt-gov]` → actual agents (was pointing to `supervisor` group)
+   - Added abstract role routes: `worker`, `supervisor`, `manager`, `lt-gov`
+
+### Test coverage
+- `tests/test_executor_bugs_184_185.py`: 2 regression tests (both pass)
+- `tests/test_routing.py`: Routing precedence and role resolution tests
+- All executor tests: 47 pass
+- All cascade_close tests: 9 pass
 
 ## Blockers/debt
-- Bug #194 (claim_violation) needs a plan written and executed. This is the priority bug.
+- **None** - clean state.
 
 ## Next steps
-1. Fix bug #194: Write plan for claim_violation DAG event mapping, run it
-2. Review any stale bugs (#185, #184) and resolve or escalate
-3. Ensure all tests pass after the flag removals
+1. Resume normal dgov operations if needed
+2. System is ready for new plan submissions
 
 ## Notes
-- The anti-pattern flags are completely excised from the codebase. Zero occurrences in source (excluding HANDOVER.md historical context).
-- All 27 template tests pass with updated negative assertions.
-- `dgov pane land <slug>` command still exists for manual lifecycle trigger.
-- `dgov plan run` is now strictly fire-and-forget; monitor drives completion.
+- Routing now properly implements policy: project-local > user-global
+- Abstract roles (`worker`, `supervisor`, `manager`) resolve correctly
+- Escalation chain (worker→supervisor→manager) works via `retry_or_escalate()`
+- LT-GOV role (`lt-gov`) available for adversarial audit tasks
