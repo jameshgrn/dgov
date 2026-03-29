@@ -541,12 +541,13 @@ def _drive_dag(
                     pane_slug = task.get("pane_slug")
                     if pane_slug:
                         try:
-                            from dgov.lifecycle import close_worker_pane
+                            from dgov.executor import run_close_only
 
-                            close_worker_pane(
+                            run_close_only(
                                 dag_state.reactor.project_root,
                                 pane_slug,
-                                session_root,
+                                session_root=session_root,
+                                force=True,
                             )
                         except Exception:
                             logger.debug("pane cleanup failed for %s", pane_slug, exc_info=True)
