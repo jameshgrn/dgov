@@ -727,7 +727,7 @@ def _setup_and_launch_agent(
         )
         wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal, worktree_path=worktree_path)
         backend.send_shell_command(pane_id, wrapped_cmd)
-        ready_delay = agent_def.send_keys_ready_delay_ms or 2000
+        ready_delay = agent_def.transport.ready_delay_ms or 2000
         time.sleep(ready_delay / 1000)
 
         # 9a. Cursor: accept workspace trust BEFORE sending prompt
@@ -736,7 +736,7 @@ def _setup_and_launch_agent(
             time.sleep(2)
 
         backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
-    elif agent_def.prompt_transport == "send-keys":
+    elif agent_def.transport.type == "send-keys":
         base_cmd = build_launch_command(
             agent_id,
             None,
@@ -748,9 +748,9 @@ def _setup_and_launch_agent(
         )
         wrapped_cmd = _wrap_exit_signal(base_cmd, done_signal, worktree_path=worktree_path)
         backend.send_shell_command(pane_id, wrapped_cmd)
-        if agent_def.send_keys_ready_delay_ms > 0:
-            time.sleep(agent_def.send_keys_ready_delay_ms / 1000)
-        for key in agent_def.send_keys_pre_prompt:
+        if agent_def.transport.ready_delay_ms > 0:
+            time.sleep(agent_def.transport.ready_delay_ms / 1000)
+        for key in agent_def.transport.pre_prompt:
             backend.send_keys(pane_id, [key])
         backend.send_prompt_via_buffer(pane_id, rewritten_prompt)
     else:
@@ -902,20 +902,20 @@ def create_worker_pane(
                     raise ValueError(f"Invalid environment variable name: {key!r}")
 
             # Health check (config-driven) with 10s timeout
-            if agent_def.health_check:
+            if agent_def.health.check:
                 hc = subprocess.run(
-                    agent_def.health_check, shell=True, capture_output=True, text=True, timeout=10
+                    agent_def.health.check, shell=True, capture_output=True, text=True, timeout=10
                 )
-                if hc.returncode != 0 and agent_def.health_fix:
+                if hc.returncode != 0 and agent_def.health.fix:
                     subprocess.run(
-                        agent_def.health_fix,
+                        agent_def.health.fix,
                         shell=True,
                         capture_output=True,
                         text=True,
                         timeout=10,
                     )
                     hc = subprocess.run(
-                        agent_def.health_check,
+                        agent_def.health.check,
                         shell=True,
                         capture_output=True,
                         text=True,
@@ -923,7 +923,7 @@ def create_worker_pane(
                     )
                 if hc.returncode != 0:
                     raise RuntimeError(
-                        f"Health check failed for {agent}: {agent_def.health_check}"
+                        f"Health check failed for {agent}: {agent_def.health.check}"
                     )
 
             # Concurrency guard (config-driven)
@@ -1618,13 +1618,13 @@ def resume_worker_pane(
         return {"error": f"Unknown agent {resume_agent!r}. Available: {sorted(registry)}"}
 
     # Health check (config-driven)
-    if agent_def.health_check:
-        hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
-        if hc.returncode != 0 and agent_def.health_fix:
-            subprocess.run(agent_def.health_fix, shell=True, capture_output=True, text=True)
-            hc = subprocess.run(agent_def.health_check, shell=True, capture_output=True, text=True)
+    if agent_def.health.check:
+        hc = subprocess.run(agent_def.health.check, shell=True, capture_output=True, text=True)
+        if hc.returncode != 0 and agent_def.health.fix:
+            subprocess.run(agent_def.health.fix, shell=True, capture_output=True, text=True)
+            hc = subprocess.run(agent_def.health.check, shell=True, capture_output=True, text=True)
         if hc.returncode != 0:
-            return {"error": f"Health check failed for {resume_agent}: {agent_def.health_check}"}
+            return {"error": f"Health check failed for {resume_agent}: {agent_def.health.check}"}
 
     # Concurrency guard (config-driven)
     if agent_def.max_concurrent is not None:

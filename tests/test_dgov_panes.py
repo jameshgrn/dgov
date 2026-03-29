@@ -3235,7 +3235,7 @@ class TestStructurePiPrompt:
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
         """Verify pi agent gets structured numbered-step prompt."""
-        from dgov.agents import AgentDef
+        from dgov.agents import AgentDef, PromptTransport
         from dgov.lifecycle import create_worker_pane
 
         pi_registry = {
@@ -3244,7 +3244,7 @@ class TestStructurePiPrompt:
                 name="pi",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
                 default_flags="--provider river-gpu0",
             )
         }
@@ -3329,7 +3329,7 @@ def test_create_worker_pane_waits_for_shell_before_startup_commands(
 
 class TestResumeWorkerPane:
     def test_basic_resume(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        from dgov.agents import AgentDef
+        from dgov.agents import AgentDef, PromptTransport
         from dgov.lifecycle import resume_worker_pane
 
         wt_dir = tmp_path / ".dgov" / "worktrees" / "fix-it"
@@ -3359,7 +3359,7 @@ class TestResumeWorkerPane:
                 name="claude",
                 short_label="cc",
                 prompt_command="claude",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         }
 
@@ -3388,7 +3388,7 @@ class TestResumeWorkerPane:
     def test_resume_waits_for_shell_before_startup_commands(
         self, tmp_path: Path, mock_backend: MagicMock
     ) -> None:
-        from dgov.agents import AgentDef
+        from dgov.agents import AgentDef, PromptTransport
         from dgov.lifecycle import resume_worker_pane
 
         wt_dir = tmp_path / ".dgov" / "worktrees" / "fix-delay"
@@ -3418,7 +3418,7 @@ class TestResumeWorkerPane:
                 name="claude",
                 short_label="cc",
                 prompt_command="claude",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         }
 
@@ -3450,7 +3450,7 @@ class TestResumeWorkerPane:
         assert len(shell_cmds) > 0, "Expected at least one send_shell_command"
 
     def test_resume_with_agent_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        from dgov.agents import AgentDef
+        from dgov.agents import AgentDef, PromptTransport
         from dgov.lifecycle import resume_worker_pane
 
         wt_dir = tmp_path / ".dgov" / "worktrees" / "task-x"
@@ -3480,7 +3480,7 @@ class TestResumeWorkerPane:
                 name="claude",
                 short_label="cc",
                 prompt_command="claude",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         }
 
@@ -3503,7 +3503,7 @@ class TestResumeWorkerPane:
         assert pane["agent"] == "claude"
 
     def test_resume_with_prompt_override(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        from dgov.agents import AgentDef
+        from dgov.agents import AgentDef, PromptTransport
         from dgov.lifecycle import resume_worker_pane
 
         wt_dir = tmp_path / ".dgov" / "worktrees" / "task-y"
@@ -3533,7 +3533,7 @@ class TestResumeWorkerPane:
                 name="claude",
                 short_label="cc",
                 prompt_command="claude",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         }
 
@@ -3624,7 +3624,7 @@ class TestResumeWorkerPane:
         assert "branch" in result["error"].lower()
 
     def test_resume_kills_old_pane(self, tmp_path: Path, mock_backend: MagicMock) -> None:
-        from dgov.agents import AgentDef
+        from dgov.agents import AgentDef, PromptTransport
         from dgov.lifecycle import resume_worker_pane
 
         wt_dir = tmp_path / ".dgov" / "worktrees" / "stale-pane"
@@ -3654,7 +3654,7 @@ class TestResumeWorkerPane:
                 name="claude",
                 short_label="cc",
                 prompt_command="claude",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         }
 

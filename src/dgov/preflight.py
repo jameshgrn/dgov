@@ -500,12 +500,12 @@ def check_agent_health(
     registry: dict | None = None,
     project_root: str | None = None,
 ) -> CheckResult:
-    """Run the agent's health_check command if configured."""
+    """Run the agent's health.check command if configured."""
     from dgov.agents import load_registry
 
     reg = registry or load_registry(project_root)
     agent_def = reg.get(agent)
-    if not agent_def or not agent_def.health_check:
+    if not agent_def or not agent_def.health.check:
         return CheckResult(
             name="agent_health",
             passed=True,
@@ -514,7 +514,7 @@ def check_agent_health(
         )
     try:
         result = subprocess.run(
-            agent_def.health_check,
+            agent_def.health.check,
             shell=True,
             capture_output=True,
             text=True,
@@ -526,14 +526,14 @@ def check_agent_health(
                 passed=True,
                 critical=True,
                 message=f"Health check passed for {agent}",
-                fixable=bool(agent_def.health_fix),
+                fixable=bool(agent_def.health.fix),
             )
         return CheckResult(
             name="agent_health",
             passed=False,
             critical=True,
-            message=f"Health check failed for {agent}: {agent_def.health_check}",
-            fixable=bool(agent_def.health_fix),
+            message=f"Health check failed for {agent}: {agent_def.health.check}",
+            fixable=bool(agent_def.health.fix),
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         return CheckResult(
@@ -541,7 +541,7 @@ def check_agent_health(
             passed=False,
             critical=True,
             message=f"Health check error for {agent}: {exc}",
-            fixable=bool(agent_def.health_fix),
+            fixable=bool(agent_def.health.fix),
         )
 
 
@@ -629,9 +629,9 @@ def run_preflight(
     checks.append(check_git_clean(project_root, touches=touches))
     checks.append(check_git_branch(project_root, expected=expected_branch))
 
-    # Config-driven health check for agents with custom health_check
+    # Config-driven health check for agents with custom health.check
     agent_def = registry.get(agent)
-    if agent_def and agent_def.health_check:
+    if agent_def and agent_def.health.check:
         checks.append(check_agent_health(agent, registry=registry, project_root=project_root))
 
     checks.append(check_agent_concurrency(project_root, agent, session_root, registry=registry))
@@ -698,11 +698,11 @@ def _fix_river_tunnel(project_root: str) -> bool:
 
 
 def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
-    """Run the failing agent's health_fix command.
+    """Run the failing agent's health.fix command.
 
     Args:
-        agent_id: The specific agent whose health_fix to run.  When *None*,
-            falls back to trying every agent with a health_fix (legacy).
+        agent_id: The specific agent whose health.fix to run.  When *None*,
+            falls back to trying every agent with a health.fix (legacy).
     """
     from dgov.agents import load_registry
 
@@ -710,11 +710,11 @@ def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
 
     if agent_id is not None:
         agent_def = registry.get(agent_id)
-        if not agent_def or not agent_def.health_fix:
+        if not agent_def or not agent_def.health.fix:
             return False
         try:
             result = subprocess.run(
-                agent_def.health_fix,
+                agent_def.health.fix,
                 shell=True,
                 capture_output=True,
                 text=True,
@@ -726,10 +726,10 @@ def _fix_agent_health(project_root: str, agent_id: str | None = None) -> bool:
 
     # Fallback: no agent_id provided — try all (legacy path)
     for defn in registry.values():
-        if defn.health_fix:
+        if defn.health.fix:
             try:
                 result = subprocess.run(
-                    defn.health_fix,
+                    defn.health.fix,
                     shell=True,
                     capture_output=True,
                     text=True,
@@ -788,7 +788,7 @@ def fix_preflight(report: PreflightReport, project_root: str) -> PreflightReport
 
                 registry = load_registry(project_root)
                 for agent_id, defn in registry.items():
-                    if defn.health_check:
+                    if defn.health.check:
                         new_checks.append(
                             check_agent_health(
                                 agent_id, registry=registry, project_root=project_root

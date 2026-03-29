@@ -294,11 +294,13 @@ class TestBlameCmd:
 
 class TestListAgentsCmd:
     def test_agents_lists_installed(self, runner: CliRunner, tmp_path: Path) -> None:
+        transport = SimpleNamespace(type="positional")
+        health = SimpleNamespace(check=None)
         agent_def = SimpleNamespace(
             name="Claude",
-            prompt_transport="positional",
+            transport=transport,
             source="builtin",
-            health_check=None,
+            health=health,
         )
         registry = {"claude": agent_def}
 

@@ -48,27 +48,42 @@ class DoneStrategy:
 
 
 @dataclass(frozen=True)
+class PromptTransport:
+    type: str  # "positional" | "option" | "send-keys" | "stdin"
+    option: str | None = None
+    no_prompt_command: str | None = None
+    pre_prompt: tuple[str, ...] = ()
+    submit: tuple[str, ...] = ("Enter",)
+    post_paste_delay_ms: int = 0
+    ready_delay_ms: int = 0
+
+
+@dataclass(frozen=True)
+class HealthConfig:
+    check: str | None = None
+    fix: str | None = None
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    max_retries: int = 0
+    escalate_to: str | None = None
+
+
+@dataclass(frozen=True)
 class AgentDef:
     id: str
     name: str
     short_label: str
     prompt_command: str
-    prompt_transport: str  # "positional" | "option" | "send-keys" | "stdin"
-    prompt_option: str | None = None
-    no_prompt_command: str | None = None
+    transport: PromptTransport = field(default_factory=lambda: PromptTransport(type="positional"))
+    health: HealthConfig = field(default_factory=HealthConfig)
+    retry: RetryConfig = field(default_factory=RetryConfig)
     permission_flags: dict[str, str] = field(default_factory=dict)
-    send_keys_pre_prompt: tuple[str, ...] = ()
-    send_keys_submit: tuple[str, ...] = ("Enter",)
-    send_keys_post_paste_delay_ms: int = 0
-    send_keys_ready_delay_ms: int = 0
     interactive: bool = False
     default_flags: str = ""
     resume_template: str | None = None
-    health_check: str | None = None
-    health_fix: str | None = None
     max_concurrent: int | None = None
-    max_retries: int = 0
-    retry_escalate_to: str | None = None
     color: int | None = None
     env: dict[str, str] = field(default_factory=dict)
     groups: tuple[str, ...] = ()
@@ -83,7 +98,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Claude Code",
         short_label="cc",
         prompt_command="claude",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional", ready_delay_ms=3000),
         default_flags="",
         permission_flags={
             "plan": "--permission-mode plan",
@@ -92,7 +107,6 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="claude --continue{permissions}",
         color=39,
-        send_keys_ready_delay_ms=3000,
         interactive=True,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
@@ -101,7 +115,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Codex",
         short_label="cx",
         prompt_command="codex",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional"),
         permission_flags={
             "acceptEdits": "--full-auto",
             "bypassPermissions": "--dangerously-bypass-approvals-and-sandbox",
@@ -115,8 +129,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Gemini CLI",
         short_label="gm",
         prompt_command="gemini",
-        prompt_transport="option",
-        prompt_option="--prompt",
+        transport=PromptTransport(type="option", option="--prompt", ready_delay_ms=8000),
         permission_flags={
             "plan": "--approval-mode plan",
             "acceptEdits": "--approval-mode auto_edit",
@@ -124,7 +137,6 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="gemini --resume latest{permissions}",
         color=135,
-        send_keys_ready_delay_ms=8000,
         interactive=True,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
@@ -133,8 +145,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="OpenCode",
         short_label="oc",
         prompt_command="opencode",
-        prompt_transport="option",
-        prompt_option="--prompt",
+        transport=PromptTransport(type="option", option="--prompt"),
         color=82,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
@@ -143,9 +154,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Cline CLI",
         short_label="cl",
         prompt_command="cline",
-        prompt_transport="send-keys",
-        send_keys_post_paste_delay_ms=120,
-        send_keys_ready_delay_ms=2500,
+        transport=PromptTransport(type="send-keys", post_paste_delay_ms=120, ready_delay_ms=2500),
         permission_flags={
             "plan": "--plan",
             "acceptEdits": "--act",
@@ -159,8 +168,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Qwen CLI",
         short_label="qn",
         prompt_command="qwen",
-        prompt_transport="option",
-        prompt_option="-i",
+        transport=PromptTransport(type="option", option="-i"),
         permission_flags={
             "plan": "--approval-mode plan",
             "acceptEdits": "--approval-mode auto-edit",
@@ -175,7 +183,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Amp CLI",
         short_label="ap",
         prompt_command="amp",
-        prompt_transport="stdin",
+        transport=PromptTransport(type="stdin"),
         permission_flags={
             "bypassPermissions": "--dangerously-allow-all",
         },
@@ -187,7 +195,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Qwen 35B (River)",
         short_label="qw",
         prompt_command="pi",
-        prompt_transport="stdin",
+        transport=PromptTransport(type="stdin"),
         default_flags="-p",  # non-interactive: process prompt and exit
         permission_flags={
             "plan": "--tools read,grep,find,ls",
@@ -203,12 +211,11 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Cursor CLI",
         short_label="cr",
         prompt_command="cursor-agent",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional", ready_delay_ms=5000),
         permission_flags={
             "bypassPermissions": "--yolo",
         },
         color=45,
-        send_keys_ready_delay_ms=5000,
         interactive=True,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
@@ -217,8 +224,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Copilot CLI",
         short_label="co",
         prompt_command="copilot",
-        prompt_transport="option",
-        prompt_option="-i",
+        transport=PromptTransport(type="option", option="-i"),
         permission_flags={
             "acceptEdits": "--allow-tool write",
             "bypassPermissions": "--allow-all",
@@ -232,12 +238,14 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="Crush CLI",
         short_label="cs",
         prompt_command="crush run",
-        no_prompt_command="crush",
-        prompt_transport="send-keys",
-        send_keys_pre_prompt=("Escape", "Tab"),
-        send_keys_submit=("Enter",),
-        send_keys_post_paste_delay_ms=200,
-        send_keys_ready_delay_ms=1200,
+        transport=PromptTransport(
+            type="send-keys",
+            no_prompt_command="crush",
+            pre_prompt=("Escape", "Tab"),
+            submit=("Enter",),
+            post_paste_delay_ms=200,
+            ready_delay_ms=1200,
+        ),
         permission_flags={
             "bypassPermissions": "--yolo",
         },
@@ -249,7 +257,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → Claude",
         short_label="pc",
         prompt_command="pi",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional"),
         default_flags="-p --provider anthropic --model claude-sonnet-4-20250514",
         color=39,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -259,7 +267,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → OpenAI",
         short_label="po",
         prompt_command="pi",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional"),
         default_flags="-p --provider openai --model o3",
         color=214,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -269,7 +277,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → Gemini",
         short_label="pg",
         prompt_command="pi",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional"),
         default_flags="-p --provider google --model gemini-2.5-pro",
         color=135,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -279,7 +287,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         name="pi → OpenRouter",
         short_label="pr",
         prompt_command="pi",
-        prompt_transport="positional",
+        transport=PromptTransport(type="positional"),
         default_flags="-p --provider openrouter",
         color=208,
         done_strategy=DoneStrategy(type=DoneStrategyType.API),
@@ -322,32 +330,97 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     # Default to "api" when no [done] section — agent reports completion via dgov.
     if done_strategy is None:
         done_strategy = DoneStrategy(type=DoneStrategyType.API)
+
+    # Parse transport section (new nested style) or flat fields (backward compat)
+    transport_section = table.pop("transport", {})
+    # Handle both: [transport] table (dict) and transport = "string" (str)
+    if isinstance(transport_section, str):
+        # Old format: transport = "positional"
+        transport = PromptTransport(
+            type=transport_section,
+            option=table.get("prompt_option"),
+            no_prompt_command=table.get("no_prompt_command"),
+            pre_prompt=tuple(table.get("send_keys_pre_prompt", ())),
+            submit=tuple(table.get("send_keys_submit", ("Enter",))),
+            post_paste_delay_ms=table.get("send_keys_post_paste_delay_ms", 0),
+            ready_delay_ms=table.get("send_keys_ready_delay_ms", 0),
+        )
+    else:
+        # New format: [transport] table
+        transport = PromptTransport(
+            type=transport_section.get("type", table.get("transport", "positional")),
+            option=transport_section.get("option", table.get("prompt_option")),
+            no_prompt_command=transport_section.get(
+                "no_prompt_command", table.get("no_prompt_command")
+            ),
+            pre_prompt=tuple(
+                transport_section.get("pre_prompt", table.get("send_keys_pre_prompt", ()))
+            ),
+            submit=tuple(
+                transport_section.get("submit", table.get("send_keys_submit", ("Enter",)))
+            ),
+            post_paste_delay_ms=transport_section.get(
+                "post_paste_delay_ms", table.get("send_keys_post_paste_delay_ms", 0)
+            ),
+            ready_delay_ms=transport_section.get(
+                "ready_delay_ms", table.get("send_keys_ready_delay_ms", 0)
+            ),
+        )
+
+    # Parse health section (new nested style) or flat fields (backward compat)
+    health_section = table.pop("health", {})
+    if isinstance(health_section, dict):
+        health = (
+            HealthConfig(
+                check=health_section.get("check", table.get("health_check")),
+                fix=health_section.get("fix", table.get("health_fix")),
+            )
+            if (health_section or table.get("health_check") or table.get("health_fix"))
+            else HealthConfig()
+        )
+    else:
+        # Invalid format, fall back to flat fields or default
+        health = HealthConfig(
+            check=table.get("health_check"),
+            fix=table.get("health_fix"),
+        )
+
+    # Parse retry section (new nested style) or flat fields (backward compat)
+    retry_section = table.pop("retry", {})
+    if isinstance(retry_section, dict):
+        retry = (
+            RetryConfig(
+                max_retries=retry_section.get("max_retries", table.get("max_retries", 0)),
+                escalate_to=retry_section.get("escalate_to", table.get("retry_escalate_to")),
+            )
+            if (retry_section or table.get("max_retries") or table.get("retry_escalate_to"))
+            else RetryConfig()
+        )
+    else:
+        # Invalid format, fall back to flat fields or default
+        retry = RetryConfig(
+            max_retries=table.get("max_retries", 0),
+            escalate_to=table.get("retry_escalate_to"),
+        )
+
     return AgentDef(
         id=agent_id,
         name=table.get("name", agent_id),
         short_label=table.get("short_label", agent_id[:2]),
         prompt_command=table["command"],
-        prompt_transport=table["transport"],
-        prompt_option=table.get("prompt_option"),
-        no_prompt_command=table.get("no_prompt_command"),
+        transport=transport,
+        health=health,
+        retry=retry,
         permission_flags=dict(permissions),
-        send_keys_pre_prompt=tuple(table.get("send_keys_pre_prompt", ())),
-        send_keys_submit=tuple(table.get("send_keys_submit", ("Enter",))),
-        send_keys_post_paste_delay_ms=table.get("send_keys_post_paste_delay_ms", 0),
-        send_keys_ready_delay_ms=table.get("send_keys_ready_delay_ms", 0),
+        interactive=table.get("interactive", False),
         default_flags=table.get("default_flags", ""),
         resume_template=resume_section.get("template") or table.get("resume_template"),
-        health_check=table.get("health_check"),
-        health_fix=table.get("health_fix"),
         max_concurrent=table.get("max_concurrent"),
-        max_retries=table.get("max_retries", 0),
-        retry_escalate_to=table.get("retry_escalate_to"),
         color=table.get("color"),
         env=dict(env_section),
         groups=tuple(table.get("groups", ())),
         done_strategy=done_strategy,
         source=source,
-        interactive=table.get("interactive", False),
     )
 
 
@@ -357,6 +430,106 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
     resume_section = overrides.pop("resume", None)
     env_section = overrides.pop("env", None)
     done_strategy = _done_strategy_from_toml(overrides)
+
+    # Parse nested sections for sub-objects
+    transport_section = overrides.pop("transport", None)
+    health_section = overrides.pop("health", None)
+    retry_section = overrides.pop("retry", None)
+
+    # Build transport: start with base, apply overrides
+    if transport_section is not None:
+        if isinstance(transport_section, str):
+            # Old format: transport = "positional" (string, not dict)
+            transport = PromptTransport(
+                type=transport_section,
+                option=overrides.get("prompt_option", base.transport.option),
+                no_prompt_command=overrides.get(
+                    "no_prompt_command", base.transport.no_prompt_command
+                ),
+                pre_prompt=tuple(overrides.get("send_keys_pre_prompt", base.transport.pre_prompt)),
+                submit=tuple(overrides.get("send_keys_submit", base.transport.submit)),
+                post_paste_delay_ms=overrides.get(
+                    "send_keys_post_paste_delay_ms", base.transport.post_paste_delay_ms
+                ),
+                ready_delay_ms=overrides.get(
+                    "send_keys_ready_delay_ms", base.transport.ready_delay_ms
+                ),
+            )
+        else:
+            # New format: [transport] table
+            transport = PromptTransport(
+                type=transport_section.get("type", base.transport.type),
+                option=transport_section.get("option", base.transport.option),
+                no_prompt_command=transport_section.get(
+                    "no_prompt_command", base.transport.no_prompt_command
+                ),
+                pre_prompt=tuple(transport_section.get("pre_prompt", base.transport.pre_prompt)),
+                submit=tuple(transport_section.get("submit", base.transport.submit)),
+                post_paste_delay_ms=transport_section.get(
+                    "post_paste_delay_ms", base.transport.post_paste_delay_ms
+                ),
+                ready_delay_ms=transport_section.get(
+                    "ready_delay_ms", base.transport.ready_delay_ms
+                ),
+            )
+    elif any(
+        k in overrides
+        for k in (
+            "transport",
+            "prompt_option",
+            "no_prompt_command",
+            "send_keys_pre_prompt",
+            "send_keys_submit",
+            "send_keys_post_paste_delay_ms",
+            "send_keys_ready_delay_ms",
+        )
+    ):
+        # Backward compat: flat field overrides
+        transport = PromptTransport(
+            type=overrides.get("transport", base.transport.type),
+            option=overrides.get("prompt_option", base.transport.option),
+            no_prompt_command=overrides.get("no_prompt_command", base.transport.no_prompt_command),
+            pre_prompt=tuple(overrides.get("send_keys_pre_prompt", base.transport.pre_prompt)),
+            submit=tuple(overrides.get("send_keys_submit", base.transport.submit)),
+            post_paste_delay_ms=overrides.get(
+                "send_keys_post_paste_delay_ms", base.transport.post_paste_delay_ms
+            ),
+            ready_delay_ms=overrides.get(
+                "send_keys_ready_delay_ms", base.transport.ready_delay_ms
+            ),
+        )
+    else:
+        transport = base.transport
+
+    # Build health: start with base, apply overrides
+    if health_section is not None:
+        health = HealthConfig(
+            check=health_section.get("check", base.health.check),
+            fix=health_section.get("fix", base.health.fix),
+        )
+    elif any(k in overrides for k in ("health_check", "health_fix")):
+        # Backward compat: flat field overrides
+        health = HealthConfig(
+            check=overrides.get("health_check", base.health.check),
+            fix=overrides.get("health_fix", base.health.fix),
+        )
+    else:
+        health = base.health
+
+    # Build retry: start with base, apply overrides
+    if retry_section is not None:
+        retry = RetryConfig(
+            max_retries=retry_section.get("max_retries", base.retry.max_retries),
+            escalate_to=retry_section.get("escalate_to", base.retry.escalate_to),
+        )
+    elif any(k in overrides for k in ("max_retries", "retry_escalate_to")):
+        # Backward compat: flat field overrides
+        retry = RetryConfig(
+            max_retries=overrides.get("max_retries", base.retry.max_retries),
+            escalate_to=overrides.get("retry_escalate_to", base.retry.escalate_to),
+        )
+    else:
+        retry = base.retry
 
     kwargs: dict = {}
     for f in AgentDef.__dataclass_fields__:
@@ -385,10 +558,18 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
         if f == "done_strategy":
             kwargs[f] = done_strategy if done_strategy is not None else base.done_strategy
             continue
+        if f == "transport":
+            kwargs[f] = transport
+            continue
+        if f == "health":
+            kwargs[f] = health
+            continue
+        if f == "retry":
+            kwargs[f] = retry
+            continue
         # Map TOML key names to dataclass field names
         toml_key = {
             "prompt_command": "command",
-            "prompt_transport": "transport",
         }.get(f, f)
         if toml_key in overrides:
             kwargs[f] = overrides[toml_key]
@@ -398,7 +579,7 @@ def _merge_agent_def(base: AgentDef, overrides: dict, source: str) -> AgentDef:
             kwargs[f] = getattr(base, f)
 
     # Handle tuple fields
-    for tf in ("send_keys_pre_prompt", "send_keys_submit", "groups"):
+    for tf in ("groups",):
         if tf in kwargs and isinstance(kwargs[tf], list):
             kwargs[tf] = tuple(kwargs[tf])
 
@@ -466,6 +647,12 @@ def load_registry(project_root: str | None = None) -> dict[str, AgentDef]:
                 "default_flags",
             ):
                 table.pop(unsafe_key, None)
+            # Also filter nested unsafe keys from [transport] and [health] sections
+            if "transport" in table:
+                table["transport"].pop("no_prompt_command", None)
+            if "health" in table:
+                table["health"].pop("check", None)
+                table["health"].pop("fix", None)
             if "env" in table:
                 table.pop("env")
             if agent_id in registry:
@@ -698,13 +885,13 @@ def build_launch_command(
         base = f"{base} {extra_flags}"
 
     if not prompt:
-        return agent.no_prompt_command or base
+        return agent.transport.no_prompt_command or base
 
     if agent.interactive and prompt and not force_headless:
-        return agent.no_prompt_command or base
+        return agent.transport.no_prompt_command or base
 
-    if agent.prompt_transport == "send-keys":
-        return agent.no_prompt_command or base
+    if agent.transport.type == "send-keys":
+        return agent.transport.no_prompt_command or base
 
     prompt_file = _write_prompt_file(project_root, slug, prompt)
     snippet = _prompt_read_and_delete_snippet(prompt_file)
@@ -717,11 +904,11 @@ def build_launch_command(
         instr = shlex.quote(str(instructions_path))
         base = f"{base} --append-system-prompt {instr}"
 
-    if agent.prompt_transport == "stdin":
+    if agent.transport.type == "stdin":
         return f"{snippet}; printf '%s\\n' \"$DGOV_PROMPT_CONTENT\" | {base}"
 
-    if agent.prompt_transport == "option" and agent.prompt_option:
-        return f'{snippet}; {base} {agent.prompt_option} "$DGOV_PROMPT_CONTENT"'
+    if agent.transport.type == "option" and agent.transport.option:
+        return f'{snippet}; {base} {agent.transport.option} "$DGOV_PROMPT_CONTENT"'
 
     # positional
     return f'{snippet}; {base} "$DGOV_PROMPT_CONTENT"'
@@ -777,9 +964,9 @@ def validate_agent_protocol(agent_id: str, registry: dict[str, AgentDef]) -> lis
     if defn is None:
         return [f"Agent '{agent_id}' not found in registry"]
 
-    if defn.prompt_transport not in _VALID_TRANSPORTS:
+    if defn.transport.type not in _VALID_TRANSPORTS:
         violations.append(
-            f"Invalid transport '{defn.prompt_transport}' "
+            f"Invalid transport '{defn.transport.type}' "
             f"(must be one of {sorted(_VALID_TRANSPORTS)})"
         )
 
@@ -793,11 +980,11 @@ def validate_agent_protocol(agent_id: str, registry: dict[str, AgentDef]) -> lis
             f"(must be one of {sorted(_VALID_COMPLETIONS)})"
         )
 
-    if defn.prompt_transport == "send-keys" and not defn.send_keys_submit:
-        violations.append("send-keys transport requires send_keys_submit sequence")
+    if defn.transport.type == "send-keys" and not defn.transport.submit:
+        violations.append("send-keys transport requires submit sequence")
 
-    if defn.prompt_transport == "option" and not defn.prompt_option:
-        violations.append("option transport requires prompt_option flag")
+    if defn.transport.type == "option" and not defn.transport.option:
+        violations.append("option transport requires option flag")
 
     return violations
 

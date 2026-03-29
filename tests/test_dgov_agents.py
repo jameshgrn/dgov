@@ -9,6 +9,7 @@ import pytest
 from dgov.agents import (
     AGENT_REGISTRY,
     AgentDef,
+    PromptTransport,
     _perm_flags,
     _prompt_read_and_delete_snippet,
     _write_prompt_file,
@@ -32,10 +33,10 @@ class TestAgentDef:
             name="Test Agent",
             short_label="ta",
             prompt_command="test-cli",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
         )
         assert agent.id == "test"
-        assert agent.prompt_option is None
+        assert agent.transport.option is None
         assert agent.permission_flags == {}
         assert agent.default_flags == ""
 
@@ -45,10 +46,10 @@ class TestAgentDef:
             name="Test",
             short_label="t",
             prompt_command="test",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
         )
-        assert agent.health_check is None
-        assert agent.health_fix is None
+        assert agent.health.check is None
+        assert agent.health.fix is None
         assert agent.max_concurrent is None
         assert agent.color is None
         assert agent.env == {}
@@ -83,11 +84,11 @@ class TestAgentRegistry:
         assert set(AGENT_REGISTRY.keys()) == _ALL_BUILTIN_IDS
 
     def test_claude_transport(self) -> None:
-        assert AGENT_REGISTRY["claude"].prompt_transport == "positional"
+        assert AGENT_REGISTRY["claude"].transport.type == "positional"
 
     def test_gemini_transport(self) -> None:
-        assert AGENT_REGISTRY["gemini"].prompt_transport == "option"
-        assert AGENT_REGISTRY["gemini"].prompt_option == "--prompt"
+        assert AGENT_REGISTRY["gemini"].transport.type == "option"
+        assert AGENT_REGISTRY["gemini"].transport.option == "--prompt"
 
     def test_builtin_colors(self) -> None:
         assert AGENT_REGISTRY["claude"].color == 39
@@ -105,26 +106,26 @@ class TestAgentRegistry:
         assert AGENT_REGISTRY["crush"].color == 219
 
     def test_new_agent_transports(self) -> None:
-        assert AGENT_REGISTRY["opencode"].prompt_transport == "option"
-        assert AGENT_REGISTRY["cline"].prompt_transport == "send-keys"
-        assert AGENT_REGISTRY["qwen"].prompt_transport == "option"
-        assert AGENT_REGISTRY["amp"].prompt_transport == "stdin"
-        assert AGENT_REGISTRY["pi"].prompt_transport == "stdin"
-        assert AGENT_REGISTRY["cursor"].prompt_transport == "positional"
-        assert AGENT_REGISTRY["copilot"].prompt_transport == "option"
-        assert AGENT_REGISTRY["crush"].prompt_transport == "send-keys"
+        assert AGENT_REGISTRY["opencode"].transport.type == "option"
+        assert AGENT_REGISTRY["cline"].transport.type == "send-keys"
+        assert AGENT_REGISTRY["qwen"].transport.type == "option"
+        assert AGENT_REGISTRY["amp"].transport.type == "stdin"
+        assert AGENT_REGISTRY["pi"].transport.type == "stdin"
+        assert AGENT_REGISTRY["cursor"].transport.type == "positional"
+        assert AGENT_REGISTRY["copilot"].transport.type == "option"
+        assert AGENT_REGISTRY["crush"].transport.type == "send-keys"
 
     def test_crush_send_keys_config(self) -> None:
         crush = AGENT_REGISTRY["crush"]
-        assert crush.send_keys_pre_prompt == ("Escape", "Tab")
-        assert crush.send_keys_post_paste_delay_ms == 200
-        assert crush.send_keys_ready_delay_ms == 1200
-        assert crush.no_prompt_command == "crush"
+        assert crush.transport.pre_prompt == ("Escape", "Tab")
+        assert crush.transport.post_paste_delay_ms == 200
+        assert crush.transport.ready_delay_ms == 1200
+        assert crush.transport.no_prompt_command == "crush"
 
     def test_cline_send_keys_config(self) -> None:
         cline = AGENT_REGISTRY["cline"]
-        assert cline.send_keys_post_paste_delay_ms == 120
-        assert cline.send_keys_ready_delay_ms == 2500
+        assert cline.transport.post_paste_delay_ms == 120
+        assert cline.transport.ready_delay_ms == 2500
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +173,7 @@ class TestLoadRegistry:
         assert registry["claude"].source == "project"
         # Other fields preserved from built-in
         assert registry["claude"].prompt_command == "claude"
-        assert registry["claude"].prompt_transport == "positional"
+        assert registry["claude"].transport.type == "positional"
 
     def test_user_config_adds_agent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("dgov.agents.Path.home", lambda: tmp_path)
@@ -187,7 +188,7 @@ class TestLoadRegistry:
         registry = load_registry(None)
         assert "aider" in registry
         assert registry["aider"].source == "user"
-        assert registry["aider"].health_check == "aider --version"
+        assert registry["aider"].health.check == "aider --version"
 
     def test_env_and_permissions_from_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -326,7 +327,7 @@ class TestBuildLaunchCommand:
                 name="pi",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
                 default_flags="--provider river-gpu0",
             )
         }
@@ -380,7 +381,7 @@ class TestDetectInstalledAgents:
                 name="pi",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         }
         installed = detect_installed_agents(custom_reg)
@@ -391,8 +392,8 @@ class TestAllAgentsHaveCorrectTransport:
     def test_all_agents_have_valid_transport(self) -> None:
         valid_transports = {"positional", "option", "send-keys", "stdin"}
         for agent_id, agent_def in AGENT_REGISTRY.items():
-            assert agent_def.prompt_transport in valid_transports, (
-                f"Invalid transport for {agent_id}: {agent_def.prompt_transport}"
+            assert agent_def.transport.type in valid_transports, (
+                f"Invalid transport for {agent_id}: {agent_def.transport.type}"
             )
 
     def test_all_agents_have_permission_flags(self) -> None:
@@ -417,8 +418,8 @@ class TestAllRegistryEntriesHaveRequiredFields:
 class TestBuildLaunchCommandOption:
     def test_build_launch_command_option(self, tmp_path: Path) -> None:
         agent = AGENT_REGISTRY["opencode"]
-        assert agent.prompt_transport == "option"
-        assert agent.prompt_option == "--prompt"
+        assert agent.transport.type == "option"
+        assert agent.transport.option == "--prompt"
 
         cmd = build_launch_command(
             agent_id="opencode",
@@ -436,7 +437,7 @@ class TestBuildLaunchCommandOption:
 class TestBuildLaunchCommandStdin:
     def test_build_launch_command_stdin(self, tmp_path: Path) -> None:
         agent = AGENT_REGISTRY["pi"]
-        assert agent.prompt_transport == "stdin"
+        assert agent.transport.type == "stdin"
 
         cmd = build_launch_command(
             agent_id="pi",

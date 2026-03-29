@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from dgov.agents import AgentDef
+from dgov.agents import AgentDef, HealthConfig, PromptTransport
 from dgov.preflight import (
     CheckResult,
     PreflightReport,
@@ -75,7 +75,7 @@ def test_check_agent_cli_with_custom_registry(monkeypatch: pytest.MonkeyPatch) -
             name="pi",
             short_label="pi",
             prompt_command="pi",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
         )
     }
     r = check_agent_cli("pi", registry=custom_reg)
@@ -439,7 +439,7 @@ def test_check_agent_concurrency_skips_no_limit() -> None:
             name="Claude",
             short_label="cc",
             prompt_command="claude",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
         )
     }
     r = check_agent_concurrency("/tmp/repo", "claude", registry=registry)
@@ -456,7 +456,7 @@ def test_check_agent_concurrency_blocks_when_limit_reached(
             name="pi",
             short_label="pi",
             prompt_command="pi",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
             max_concurrent=2,
         )
     }
@@ -475,7 +475,7 @@ def test_check_agent_concurrency_passes_under_limit(
             name="pi",
             short_label="pi",
             prompt_command="pi",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
             max_concurrent=2,
         )
     }
@@ -496,7 +496,7 @@ def test_check_agent_health_no_healthcheck() -> None:
             name="Claude",
             short_label="cc",
             prompt_command="claude",
-            prompt_transport="positional",
+            transport=PromptTransport(type="positional"),
         )
     }
     r = check_agent_health("claude", registry=registry)
@@ -511,8 +511,8 @@ def test_check_agent_health_passes(monkeypatch: pytest.MonkeyPatch) -> None:
             name="pi",
             short_label="pi",
             prompt_command="pi",
-            prompt_transport="positional",
-            health_check="curl -sf http://localhost:8080/health",
+            transport=PromptTransport(type="positional"),
+            health=HealthConfig(check="curl -sf http://localhost:8080/health"),
         )
     }
 
@@ -533,9 +533,11 @@ def test_check_agent_health_fails(monkeypatch: pytest.MonkeyPatch) -> None:
             name="pi",
             short_label="pi",
             prompt_command="pi",
-            prompt_transport="positional",
-            health_check="curl -sf http://localhost:8080/health",
-            health_fix="ssh -fN river-tunnel",
+            transport=PromptTransport(type="positional"),
+            health=HealthConfig(
+                check="curl -sf http://localhost:8080/health",
+                fix="ssh -fN river-tunnel",
+            ),
         )
     }
 
@@ -573,7 +575,7 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
             "check_file_locks": CheckResult("file_locks", True, True, "ok"),
         },
     )
-    # Mock load_registry to return no health_check agents
+    # Mock load_registry to return no health.check agents
     monkeypatch.setattr(
         "dgov.agents.load_registry",
         lambda pr: {
@@ -582,7 +584,7 @@ def test_run_preflight_all_pass(monkeypatch: pytest.MonkeyPatch) -> None:
                 name="pi CLI",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         },
     )
@@ -611,7 +613,7 @@ def test_run_preflight_critical_fail(monkeypatch: pytest.MonkeyPatch) -> None:
                 name="pi CLI",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         },
     )
@@ -644,8 +646,8 @@ def test_run_preflight_includes_health_check_when_configured(
                 name="pi",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
-                health_check="curl -sf http://localhost:8080/health",
+                transport=PromptTransport(type="positional"),
+                health=HealthConfig(check="curl -sf http://localhost:8080/health"),
             )
         },
     )
@@ -677,7 +679,7 @@ def test_run_preflight_skips_health_check_for_no_healthcheck(
                 name="pi CLI",
                 short_label="pi",
                 prompt_command="pi",
-                prompt_transport="positional",
+                transport=PromptTransport(type="positional"),
             )
         },
     )
@@ -1167,7 +1169,7 @@ class TestRunPreflightEdgeCases:
                     name="Claude",
                     short_label="cc",
                     prompt_command="claude",
-                    prompt_transport="positional",
+                    transport=PromptTransport(type="positional"),
                 )
             },
         )

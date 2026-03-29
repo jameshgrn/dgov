@@ -722,11 +722,11 @@ def list_agents(project_root):
             "id": agent_id,
             "name": defn.name,
             "installed": agent_id in installed,
-            "transport": defn.prompt_transport,
+            "transport": defn.transport.type,
             "source": defn.source,
         }
-        if defn.health_check:
-            hc = subprocess.run(defn.health_check, shell=True, capture_output=True, text=True)
+        if defn.health.check:
+            hc = subprocess.run(defn.health.check, shell=True, capture_output=True, text=True)
             entry["healthy"] = hc.returncode == 0
         agents.append(entry)
     click.echo(json.dumps(agents, indent=2))
