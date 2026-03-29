@@ -349,7 +349,10 @@ def fetch_panes(state: DashboardState) -> None:
                         units = eval_units.get(ev["eval_id"], [])
                         if units and all(task_status.get(u) == PaneState.MERGED for u in units):
                             passed += 1
-                        elif any(task_status.get(u) in (PaneState.FAILED, PaneState.ABANDONED) for u in units):
+                        elif any(
+                            task_status.get(u) in (PaneState.FAILED, PaneState.ABANDONED)
+                            for u in units
+                        ):
                             failed += 1
                     total = len(run_evals)
                     if failed:
@@ -612,7 +615,13 @@ def _build_worker_table(panes: list[dict], selected: int, scroll_offset: int = 0
                 phase = "resume" if preserved_artifacts.get("recoverable") else "inspect"
         elif monitor_phase in nonterminal_monitor_phases:
             phase = monitor_phase
-        elif phase in {PaneState.DONE, PaneState.FAILED, PaneState.MERGED, PaneState.CLOSED, PaneState.ABANDONED}:
+        elif phase in {
+            PaneState.DONE,
+            PaneState.FAILED,
+            PaneState.MERGED,
+            PaneState.CLOSED,
+            PaneState.ABANDONED,
+        }:
             phase = ""
 
         phase_text = Text(phase)

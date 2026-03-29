@@ -137,11 +137,11 @@ def _auto_commit_governor_changes(project_root: str) -> bool:
 def check_git_clean(project_root: str, touches: list[str] | None = None) -> CheckResult:
     """Check for uncommitted changes to tracked files."""
     root = Path(project_root).resolve()
-    
+
     # Auto-commit governor changes before checking if touches are declared
     if touches:
         _auto_commit_governor_changes(project_root)
-    
+
     try:
         dirty = subprocess.run(
             ["git", "status", "--porcelain"],

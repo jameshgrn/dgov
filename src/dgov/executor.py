@@ -222,7 +222,11 @@ class WaitOnlyResult:
 
     @classmethod
     def completed(
-        cls, slug: str, *, wait_result: dict | None = None, pane_state: str | PaneState | None = None
+        cls,
+        slug: str,
+        *,
+        wait_result: dict | None = None,
+        pane_state: str | PaneState | None = None,
     ) -> WaitOnlyResult:
         return cls(
             slug=slug, outcome=_WaitCompleted(wait_result=wait_result, pane_state=pane_state)
