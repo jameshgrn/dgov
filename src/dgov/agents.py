@@ -852,7 +852,21 @@ def load_routing_tables(
 
     result: dict[str, list[str]] = {}
 
-    # Project-local: <project_root>/.dgov/agents.toml
+    # Load user-global first (base configuration)
+    # Project-local will override for routes defined locally
+    user_config = Path.home() / ".dgov" / "agents.toml"
+    if user_config.is_file():
+        try:
+            with open(user_config, "rb") as f:
+                data = tomllib.load(f)
+            routing = data.get("routing", {})
+            for name, table in routing.items():
+                if isinstance(table, dict) and "backends" in table:
+                    result[name] = list(table["backends"])
+        except (tomllib.TOMLDecodeError, OSError):
+            pass
+
+    # Project-local overrides user-global for same logical names
     if project_root:
         project_config = Path(project_root) / ".dgov" / "agents.toml"
         if project_config.is_file():
@@ -865,18 +879,5 @@ def load_routing_tables(
                         result[name] = list(table["backends"])
             except (tomllib.TOMLDecodeError, OSError):
                 pass
-
-    # User global: ~/.dgov/agents.toml
-    user_config = Path.home() / ".dgov" / "agents.toml"
-    if user_config.is_file():
-        try:
-            with open(user_config, "rb") as f:
-                data = tomllib.load(f)
-            routing = data.get("routing", {})
-            for name, table in routing.items():
-                if isinstance(table, dict) and "backends" in table:
-                    result[name] = list(table["backends"])
-        except (tomllib.TOMLDecodeError, OSError):
-            pass
 
     return result

@@ -50,7 +50,7 @@ class DegradationState(StrEnum):
     FULL_FAILURE = "full_failure"
 
 
-def _load_routing_tables() -> dict[LogicalName, list[BackendId]]:
+def _load_routing_tables(project_root: str | None = None) -> dict[LogicalName, list[BackendId]]:
     """Load routing tables from config files.
 
     Priority order (project-local takes precedence over user-global):
@@ -61,7 +61,7 @@ def _load_routing_tables() -> dict[LogicalName, list[BackendId]]:
     """
     from dgov.agents import load_routing_tables
 
-    return load_routing_tables()
+    return load_routing_tables(project_root)
 
 
 def is_routable(name: LogicalName) -> bool:
@@ -198,7 +198,7 @@ def resolve_agent(
     from dgov.status import _count_active_agent_workers
 
     # Load routing tables (project-local takes precedence)
-    tables = _load_routing_tables()
+    tables = _load_routing_tables(project_root)
 
     # Check if name is a logical routing key
     if name not in tables:

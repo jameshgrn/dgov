@@ -2,21 +2,33 @@
 # Contains only routing configuration and agent groups
 # No shell commands, env vars, or secrets allowed here
 
-[groups]
 # Agent groups define concurrency limits and shared resources
-# Each group can have: max_concurrent, timeout, resources, etc.
+[groups]
 worker = { max_concurrent = 2, timeout = 300 }
 supervisor = { max_concurrent = 1, timeout = 600 }
 manager = { max_concurrent = 1, timeout = 900 }
 
+# Model routing (physical backend names from global registry)
 [routing.qwen-9b]
-backends = ["river-qwen9"]
+backends = ["river-9b", "metal-9b", "mlx-9b-0", "mlx-9b-1", "mlx-9b-2", "mlx-9b-3", "qwen35-9b"]
 
 [routing.qwen-35b]
-backends = ["river-qwen35"]
+backends = ["river-35b", "qwen35-35b"]
 
 [routing.qwen-122b]
-backends = ["river-qwen122"]
+backends = ["qwen35-122b"]
 
+# Abstract role aliases — governor dispatches by role, not model
+# Falls back to global ~/.dgov/agents.toml if not defined here
+[routing.worker]
+backends = ["river-9b", "metal-9b", "mlx-9b-0", "mlx-9b-1", "mlx-9b-2", "mlx-9b-3", "qwen35-9b"]
+
+[routing.supervisor]
+backends = ["river-35b", "qwen35-35b"]
+
+[routing.manager]
+backends = ["qwen35-122b"]
+
+# LT-GOV tier — adversarial audit, large refactors
 [routing.lt-gov]
-backends = ["supervisor"]
+backends = ["claude-sonnet", "gemini-flash", "codex-mini", "kimi-k25"]
