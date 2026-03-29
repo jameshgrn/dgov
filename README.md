@@ -68,24 +68,29 @@ stabilization heuristics.
 ## Design
 
 - **Lightweight** — pure Python, one dependency (click), no daemon, no server
+- **Eval-first planning** — falsifiable statements and invariants before task derivation
+- **Decision providers** — typed requests for routing, monitor, and review across heterogeneous backends
+- **Typed event journal** — SQLite-backed stream of all lifecycle transitions and decisions
 - **Extensible** — add agents via TOML config, backends via protocol, hooks via shell scripts
 - **Developer-friendly** — git worktrees, tmux panes, CLI commands; no new paradigm to learn
-- **Composable** — DAGs, missions, and batch specs compose from the same primitives
+- **Composable** — DAGs, missions, and plans compose from the same primitives
 - **Opinionated where it matters** — governor stays on `main`, workers get worktrees, protected files are restored before merge
 
 ## Architecture
 
-Three internal layers carry most of the current policy:
+Five internal layers carry the current policy:
 
-- **Executor pipeline** — `src/dgov/executor.py` owns dispatch preflight, wait/review/merge gates, and cleanup. `pane`, `mission`, `batch`, `dag`, `merge-queue`, and monitor-driven landing call the same lifecycle entrypoints.
-- **Context packets** — `src/dgov/context_packet.py` compiles prompt-derived file touches, tests, hints, and commit messages into one packet used by preflight, worker instructions, and worktree setup.
-- **Decision providers** — `src/dgov/decision.py` and `src/dgov/decision_providers.py` wrap task routing, monitor classification, and pane review as typed decisions so callers do not need to know which backend transport produced the answer.
+- **Deterministic Kernel** — `src/dgov/kernel.py` owns the state machine logic for panes and DAGs. It is I/O-free and purely functional.
+- **Plan System** — `src/dgov/plan.py` handles eval-first plan schema, validation, and compilation into executable DAGs.
+- **Executor Pipeline** — `src/dgov/executor.py` owns the side-effecting lifecycle: dispatch preflight, wait/review/merge gates, and cleanup.
+- **Agent Router** — `src/dgov/router.py` resolves logical model names to physical backends with circuit-breaker and fallback support.
+- **Observability (Spans)** — `src/dgov/spans.py` provides structured tool-trace and span logging for performance analysis and training export.
 
 Related behavior:
 
-- **Worker completion API** — API-oriented agents finish by calling `dgov worker complete` or `dgov worker fail`, which records pane state and writes the done or exit signal file.
-- **Validated merges** — worker branches are merged and checked in a temporary candidate worktree before `main` is advanced.
-- **Monitor** — `dgov monitor` persists status under `.dgov/monitor/`, watches the event journal, and can auto-complete, auto-land, or retry panes based on output and commit state.
+- **Context packets** — `src/dgov/context_packet.py` compiles prompt-derived file touches, tests, and hints into one packet used by preflight and worker instructions.
+- **Worker completion API** — API-oriented agents finish by calling `dgov worker complete` or `dgov worker fail`.
+- **Monitor** — `dgov monitor` watches the event journal to auto-complete, auto-land, or retry panes based on output and commit state.
 
 ## Install
 
@@ -122,125 +127,72 @@ State and events live in `.dgov/state.db` (SQLite, WAL mode).
 | Command | Description |
 |---------|-------------|
 | `dgov status` | Show session state and pane health |
-| `dgov agents` | List all registered agents and install status |
+| `dgov agent list` | List all registered agents and install status |
+| `dgov agent stats` | Aggregate agent performance metrics |
 | `dgov dashboard` | Live TUI showing pane status, events, and metrics |
 | `dgov dashboard --pane` | Launch dashboard in a tmux split pane |
+| `dgov codebase` | Generate or show the codebase module map |
 
 ### Pane lifecycle
 
 | Command | Description |
 |---------|-------------|
 | `dgov pane create` | Create a worker pane (worktree + tmux + agent) |
-| `dgov pane util` | Run a command in a utility pane (no worktree) |
 | `dgov pane list` | List all panes with state, agent, duration |
 | `dgov pane wait` | Block until one or more panes finish |
-| `dgov pane wait-all` | Block until all active panes finish |
+| `dgov pane wait-any` | Block until at least one active pane finishes |
 | `dgov pane review` | Inspect a pane's diff, commit count, and verdict |
 | `dgov pane land` | Review + merge + close in one step |
-| `dgov pane merge-all` | Merge all done panes sequentially |
-| `dgov pane land-all` | Review + merge + close all done panes sequentially |
 | `dgov pane close` | Close a pane and clean up worktree (idempotent) |
 | `dgov pane resume` | Re-launch agent in existing worktree |
 | `dgov pane retry` | Fresh attempt with new worktree |
-| `dgov pane retry-or-escalate` | Retry with auto-escalation policy |
 | `dgov pane escalate` | Re-dispatch to a stronger agent |
-| `dgov pane classify` | Recommend an agent for a task |
 | `dgov pane output` | Clean ANSI-stripped log text |
-| `dgov pane capture` | Live tmux pane capture |
-| `dgov pane logs` | Raw persistent log (survives pane death) |
 | `dgov pane diff` | Raw diff for inspection |
 | `dgov pane message` | Send text to a running worker |
-| `dgov pane respond` | Reply to an agent's prompt |
-| `dgov pane nudge` | Prod a stalled agent |
 | `dgov pane signal` | Manually signal a pane as done or failed |
-| `dgov pane prune` | Clean up stale pane records |
-| `dgov pane merge-request` | Enqueue a merge (used by LT-GOVs) |
+| `dgov pane blame` | Show which agent/pane last touched a file |
 
-### DAG runner
+### Plan & DAG
 
-Run multi-task workflows defined in TOML. Tasks declare dependencies and file
-touches; dgov persists run state in SQLite and schedules work from dependency
-readiness plus file claims.
-
-```bash
-dgov dag run TASKS.toml                    # execute all tiers
-dgov dag run TASKS.toml --dry-run          # show tier plan without executing
-dgov dag run TASKS.toml --tier 0           # execute only tier 0
-dgov dag run TASKS.toml --skip slow-task   # skip a task and its dependents
-dgov dag run TASKS.toml --no-auto-merge    # hold merges for manual review
-dgov dag resume TASKS.toml                 # resume the most recent failed/partial run
-dgov dag status TASKS.toml                 # inspect persisted DAG task state
-dgov dag merge TASKS.toml                  # merge held tasks from a prior run
-```
-
-Features: retry with augmented prompts on failure, agent escalation chains,
-per-agent concurrency limits, crash-safe resume via `dag_runs` and `dag_tasks`,
-and `commit_message` from TOML used as the merge commit message.
-
-### Orchestration
+Plans are the primary dispatch surface for multi-step work. They are eval-first and compile into DAGs.
 
 | Command | Description |
 |---------|-------------|
-| `dgov mission` | Single-prompt orchestration: dispatch, wait, review, merge |
-| `dgov batch` | Execute a batch spec with DAG-ordered parallelism |
 | `dgov plan scratch` | Create a scratch plan under `.dgov/plans/` |
-| `dgov monitor` | Run the worker monitor daemon or launch it in a utility pane |
-| `dgov review-fix` | Review-then-fix pipeline with severity filtering |
+| `dgov plan validate` | Validate plan TOML schema and invariants |
+| `dgov plan compile` | Show the tier view of a compiled plan |
+| `dgov plan run` | Execute a plan through the DAG kernel |
+| `dgov plan scaffold` | Generate a plan from goal and file list |
+| `dgov plan verify` | Run falsifiable eval evidence commands |
+| `dgov plan resume` | Resume a failed or partial plan run |
+| `dgov plan cancel` | Cancel an open plan run and close panes |
+| `dgov dag run` | Execute a raw DAG task file |
+| `dgov dag status` | Inspect persisted DAG task state |
 
-Scratch plans are the right place for ad hoc DAG work. Create them under the
-managed scratch namespace, edit them, then validate or run them:
-
-```bash
-uv run dgov plan scratch review-refactor
-uv run dgov plan validate .dgov/plans/review-refactor.toml
-uv run dgov plan compile .dgov/plans/review-refactor.toml
-```
-
-Plans are eval-first: write falsifiable `[[evals]]` entries first, then derive
-units with exact file claims and `satisfies` links. See
-[`docs/eval-first-planning.md`](docs/eval-first-planning.md).
-
-### LT-GOV (delegation)
-
-A lieutenant governor is a sub-governor worker that follows the canonical governor pipeline (preflight → dispatch → wait → review → merge → cleanup). The governor delegates a broad task to an LT-GOV, which orchestrates workers via plans (`uv run dgov plan run`), tracks progress in `.dgov/progress/{ltgov_slug}.json`, and escalates structural issues back to the governor instead of editing code directly.
-
-```bash
-# 1. Create a plan TOML with exact file claims and evals
-cat > .dgov/plans/{ltgov_slug}.toml << EOF
-[[evals]]
-statement = "..."  # falsifiable
-files = ["src/...", "tests/..."]
-
-[[units]]
-satisfies = ["eval-id"]
-files = ["..."]
-prompt = "..."  # numbered steps, read first, explicit commit
-EOF
-
-# 2. Execute the plan through the DAG kernel (monitor drives lifecycle)
-uv run dgov plan run .dgov/plans/{ltgov_slug}.toml
-dgov dashboard                                            # monitor worker progress
-```
+### Orchestration & Observability
 
 | Command | Description |
 |---------|-------------|
-| `dgov pane merge-request` | Enqueue a merge for governor processing |
-| `dgov merge-queue list` | Show pending merge requests |
-| `dgov merge-queue process` | Claim and execute next merge |
+| `dgov monitor` | Run the worker monitor daemon (auto-remediation) |
+| `dgov ledger list` | Query the operational ledger (bugs, rules, debt) |
+| `dgov ledger add` | Add a new entry to the operational ledger |
+| `dgov ledger resolve` | Resolve a ledger entry (mark fixed/accepted) |
+| `dgov trace show` | Show spans and tool trace summary for a pane |
+| `dgov trace stats` | Aggregate span and tool-use metrics |
+| `dgov trace training` | Export trajectory JSONL for model fine-tuning |
+| `dgov review-fix` | Run the review-then-fix pipeline |
+| `dgov wait` | Block on governor interrupts or DAG completion |
 
-### Tools
+### Worker API (internal)
+
+Called by agents inside worker panes.
 
 | Command | Description |
 |---------|-------------|
-| `dgov blame <file>` | Show which agent/pane last touched a file |
-| `dgov openrouter models` | List available models on OpenRouter |
-| `dgov openrouter status` | Show API key status, default model, connectivity |
-| `dgov openrouter test` | Send a test prompt via OpenRouter |
-| `dgov template list` | List all prompt templates |
-| `dgov template create` | Create a new template |
-| `dgov template show` | Show template details and required variables |
-| `dgov checkpoint create` | Create a named checkpoint |
-| `dgov checkpoint list` | List all checkpoints |
+| `dgov worker complete` | Auto-commit and signal success |
+| `dgov worker fail` | Signal failure with reason |
+| `dgov worker checkpoint` | Record a progress checkpoint |
 
 ## Built-in agents
 
