@@ -1,37 +1,47 @@
-# Handover: closed the open bug batch and left main clean
+# Handover: stabilized batch-test isolation and monitor DAG snapshot persistence
 
 ## Session context
-- Date: 2026-03-29T20:41:17Z
-- Branch: main @ 2e137b0
-- Last commit: Cover monitor pane tracking regression
+- Date: 2026-03-29T21:29:55Z
+- Branch: main @ cbd445c
+- Last commit: Add handover state for 2026-03-29
 
 ## Open panes
-None.
+| Slug | State | Description |
+|------|-------|-------------|
+| r164-fix-dag-cli-root | reviewed_fail | Preserved evidence pane from run 164. Worker work completed, but review failed on a 120s test timeout and the historical DAG row remained stale. |
 
 ## Open bugs/issues
-None. `uv run dgov ledger list -r . -c bug -s open` returned no open entries at handover time.
+- #240: Pane batch/pytest temp plans can dispatch real DAG runs into the live governor session state and tmux session. High severity. The regression appears fixed in the current uncommitted working tree, but the ledger entry is still open because nothing has been committed or resolved yet.
 
 ## Blockers/debt
-- No active blockers in repo state.
-- One dogfood artifact was intentionally cancelled after direct fix-forward:
-  run `163` for `.dgov/plans/fix-237-role-inference.toml` is cancelled in DAG status, and pane `r163-fix-237-role-inference` is closed/removed.
-- `HANDOVER.md` is the only expected dirty file after this write until the handover commit is created.
+- Working tree is dirty with uncommitted stabilization fixes in:
+  `src/dgov/dag_parser.py`
+  `src/dgov/monitor.py`
+  `tests/test_dgov_cli.py`
+  `tests/test_monitor.py`
+- Historical DAG run `164` is still stale in `.dgov/state.db`: `dag_runs.status` is `running` with `state_json` stuck at `idle/pending`, while `dag_tasks` and pane state advanced. This is preserved as evidence from before the monitor fix, not proof that the patched code still fails.
+- Pane `r164-fix-dag-cli-root` remains in `reviewed_fail` and tmux pane `%160` is still present intentionally.
 
 ## Next steps
-1. If continuing bug-cranking, start from fresh ledger state and pick the next highest-value debt or architecture issue rather than reopening the cleared bug batch.
-2. If preparing to push later, run the required pre-push verification slice from governor instructions on the current `main` commits.
-3. If resuming dogfood on plan execution, prefer checking DAG terminal state directly after interrupts/review failures instead of waiting blindly in `dgov wait`.
+1. Review and commit the current stabilization fixes if they should be kept. Targeted verification already passed for CLI, batch, monitor, DAG override, lint, format, and `ty`.
+2. Resolve ledger bug `#240` after commit, or reopen it with a narrower summary if more leakage cases remain.
+3. Decide whether to repair or cancel historical DAG run `164`, or leave it as preserved postmortem evidence and open a separate bug for stale-run cleanup.
+4. If resuming stabilization, continue with the next control-plane issue after these fixes: historical DAG reconciliation/cleanup around reviewed-fail runs and stale active run rows.
 
 ## Notes
-- Closed and resolved this session:
-  `#237` project-scoped role inference
-  `#234` DAG review state must be persisted before merge
-  `#235` plan parser now accepts legacy `deps` alias
-  `#233` monitor pane tracking regression covered explicitly
-- Commits created this session after bootstrap:
-  `0cde7dd` Persist DAG contracts and role defaults
-  `ff806d0` Fix project-scoped pane role inference
-  `98ddd3d` Mark DAG review state before merge
-  `dcd53f5` Parse deps alias in plan units
-  `2e137b0` Cover monitor pane tracking regression
-- Working tree was clean before writing this handover.
+- Direct fixes applied this session under the governor exception:
+  `tests/test_dgov_cli.py`: pane-batch CLI tests now mock `dgov.batch.run_batch` instead of stale preflight/create-worker paths, preventing pytest temp plans from dispatching into the live session.
+  `src/dgov/monitor.py`: `_drive_dag` now persists the kernel snapshot in a `finally` block so mid-pass failures cannot leave `dag_tasks` and `dag_runs.state_json` split.
+  `src/dgov/dag_parser.py`: added `DagTaskSpec.all_touches()` as the canonical touched-file projection used by DAG persistence paths.
+  `tests/test_monitor.py`: added a regression test that reproduces the split-brain shape by forcing a post-dispatch exception and asserting persisted `running/waiting/pane_slug` state.
+- Targeted verification completed and passed:
+  `uv run pytest /Users/jakegearon/projects/dgov/tests/test_dgov_cli.py -q -m unit`
+  `uv run pytest /Users/jakegearon/projects/dgov/tests/test_batch.py -q -m unit`
+  `uv run pytest /Users/jakegearon/projects/dgov/tests/test_monitor.py -q -m unit`
+  `uv run pytest /Users/jakegearon/projects/dgov/tests/test_dag_overrides.py -q -m unit`
+  `uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/monitor.py /Users/jakegearon/projects/dgov/src/dgov/dag_parser.py /Users/jakegearon/projects/dgov/tests/test_dgov_cli.py /Users/jakegearon/projects/dgov/tests/test_monitor.py`
+  `uv run ruff format --check /Users/jakegearon/projects/dgov/src/dgov/monitor.py /Users/jakegearon/projects/dgov/src/dgov/dag_parser.py /Users/jakegearon/projects/dgov/tests/test_dgov_cli.py /Users/jakegearon/projects/dgov/tests/test_monitor.py`
+  `uv run ty check /Users/jakegearon/projects/dgov/src/dgov/monitor.py /Users/jakegearon/projects/dgov/src/dgov/dag_parser.py`
+- Session cleanup completed:
+  orphan tmux panes `%165` and `%166` were killed
+  only tracked pane left is `r164-fix-dag-cli-root`
