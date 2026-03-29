@@ -1191,13 +1191,13 @@ def settle_completion_state(
 
         if cur.rowcount:
             conn.commit()
-            return CompletionTransitionResult(state=new_state, changed=True)
+            return CompletionTransitionResult(state=PaneState(new_state), changed=True)
 
         row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
         conn.commit()
 
         if row is None:
-            return CompletionTransitionResult(state=new_state, changed=False)
+            return CompletionTransitionResult(state=PaneState(new_state), changed=False)
 
         current_state = row["state"]
         if current_state == new_state:

@@ -119,6 +119,7 @@ def _auto_commit_governor_changes(project_root: str) -> bool:
         result = subprocess.run(
             ["git", "-C", project_root, "diff", "--cached", "--quiet"],
             capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return False  # Nothing staged

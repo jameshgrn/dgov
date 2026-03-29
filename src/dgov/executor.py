@@ -970,7 +970,7 @@ def run_post_dispatch_lifecycle(
     merge_res = None
     cleanup_res = None
     current_slug = slug
-    state = PaneState.FAILED
+    state: PaneState | str = PaneState.FAILED
     failure_stage = None
     error = None
 

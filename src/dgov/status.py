@@ -14,6 +14,7 @@ from dgov.backend import get_backend
 from dgov.done import _AGENT_COMMANDS, _is_done, _strip_ansi
 from dgov.gitops import _remove_worktree
 from dgov.persistence import (
+    PANE_STATES,
     STATE_DIR,
     PaneState,
     all_panes,
@@ -749,8 +750,9 @@ def _compute_phase(
         PaneState.ESCALATED: "failed",
         PaneState.TIMED_OUT: "failed",
     }
-    if state in _TERMINAL_MAP:
-        return _TERMINAL_MAP[state]
+    pane_state = PaneState(state) if state in PANE_STATES else None
+    if pane_state in _TERMINAL_MAP:
+        return _TERMINAL_MAP[pane_state]
     if done:
         return "done"
     if not alive and state == PaneState.ACTIVE:

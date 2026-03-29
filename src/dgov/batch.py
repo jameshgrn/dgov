@@ -269,7 +269,7 @@ def _build_batch_tier_results(
                 tasks_out.append({"id": task["id"], "status": "skipped"})
                 continue
             status = row["status"]
-            if status == DagTaskState.REVIEWED_PASS.value:
+            if status == DagTaskState.MERGE_READY.value:
                 status = "review_pending"
             record = {
                 "id": task["id"],

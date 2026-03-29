@@ -541,13 +541,14 @@ def _git_exclude_files(worktree_path: str, filenames: list[str]) -> None:
 
 def _state_icon(state: PaneState | str | None) -> str:
     """Return the pane-title icon for a worker state."""
-    return {
+    _ICON_MAP: dict[PaneState | str, str] = {
         PaneState.ACTIVE: "~",
         PaneState.DONE: "ok",
         PaneState.MERGED: "+",
         PaneState.TIMED_OUT: "!",
         PaneState.FAILED: "X",
-    }.get(state or "", "")
+    }
+    return _ICON_MAP.get(state or "", "")
 
 
 def _build_pane_title(
