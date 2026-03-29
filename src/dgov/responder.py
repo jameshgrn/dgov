@@ -11,32 +11,39 @@ import re
 import time
 import tomllib
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+
+
+class ResponseAction(StrEnum):
+    SEND = "send"
+    SIGNAL_DONE = "signal_done"
+    SIGNAL_FAILED = "signal_failed"
+    ESCALATE = "escalate"
 
 
 @dataclass(frozen=True)
 class ResponseRule:
     pattern: str  # regex
     response: str  # text to send (ignored for escalate/signal actions)
-    action: str  # 'send' | 'signal_done' | 'signal_failed' | 'escalate'
+    action: ResponseAction
 
     def __post_init__(self) -> None:
-        valid = ("send", "signal_done", "signal_failed", "escalate")
-        if self.action not in valid:
-            raise ValueError(f"Invalid action {self.action!r}. Must be one of {valid}")
+        # Coerce str → ResponseAction; raises ValueError for invalid values.
+        object.__setattr__(self, "action", ResponseAction(self.action))
 
 
 BUILT_IN_RULES: list[ResponseRule] = [
     # Auth / permission — escalate, never auto-respond
-    ResponseRule(r"(?i)enter password", "", "escalate"),
-    ResponseRule(r"(?i)enter passphrase", "", "escalate"),
-    ResponseRule(r"(?i)permission denied", "", "escalate"),
+    ResponseRule(r"(?i)enter password", "", ResponseAction.ESCALATE),
+    ResponseRule(r"(?i)enter passphrase", "", ResponseAction.ESCALATE),
+    ResponseRule(r"(?i)permission denied", "", ResponseAction.ESCALATE),
     # Common yes/no prompts — auto-respond
-    ResponseRule(r"(?i)do you want to proceed", "yes", "send"),
-    ResponseRule(r"(?i)proceed\?", "yes", "send"),
-    ResponseRule(r"\[yes/no\]", "yes", "send"),
-    ResponseRule(r"(?i)are you sure", "yes", "send"),
-    ResponseRule(r"\b[yY]/[nN]\b", "y", "send"),
+    ResponseRule(r"(?i)do you want to proceed", "yes", ResponseAction.SEND),
+    ResponseRule(r"(?i)proceed\?", "yes", ResponseAction.SEND),
+    ResponseRule(r"\[yes/no\]", "yes", ResponseAction.SEND),
+    ResponseRule(r"(?i)are you sure", "yes", ResponseAction.SEND),
+    ResponseRule(r"\b[yY]/[nN]\b", "y", ResponseAction.SEND),
 ]
 
 # Cooldown tracking: {(session_root, slug, pattern): last_response_time}
@@ -147,12 +154,12 @@ def auto_respond(
         return None
     pane_id = target.get("pane_id", "")
 
-    if rule.action == "escalate":
+    if rule.action == ResponseAction.ESCALATE:
         emit_event(session_root, "pane_blocked", slug, question=rule.pattern)
         record_cooldown(session_root, slug, rule.pattern)
         return rule
 
-    if rule.action == "send":
+    if rule.action == ResponseAction.SEND:
         # Only send if pane exists, is alive, and agent is still running
         if pane_id and get_backend().is_alive(pane_id) and _agent_still_running(pane_id):
             get_backend().send_input(pane_id, rule.response)
@@ -166,10 +173,10 @@ def auto_respond(
             record_cooldown(session_root, slug, rule.pattern)
             return rule
 
-    if rule.action in ("signal_done", "signal_failed"):
+    if rule.action in (ResponseAction.SIGNAL_DONE, ResponseAction.SIGNAL_FAILED):
         done_dir = Path(session_root) / STATE_DIR / "done"
         done_dir.mkdir(parents=True, exist_ok=True)
-        if rule.action == "signal_done":
+        if rule.action == ResponseAction.SIGNAL_DONE:
             (done_dir / slug).touch()
         else:
             (done_dir / f"{slug}.exit").write_text("auto_respond")

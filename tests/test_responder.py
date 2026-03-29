@@ -91,7 +91,7 @@ class TestResponseRule:
             assert rule.action == action
 
     def test_invalid_action_raises(self) -> None:
-        with pytest.raises(ValueError, match="Invalid action"):
+        with pytest.raises(ValueError, match="is not a valid ResponseAction"):
             ResponseRule(pattern="test", response="ok", action="explode")
 
 
