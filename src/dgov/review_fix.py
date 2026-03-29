@@ -342,7 +342,7 @@ def run_review_fix_pipeline(
         merge_result = review_merge.merge_result
         if not review_merge.error and isinstance(merge_result, MergeSuccess):
             merged_count += 1
-            if merge_result.tests_passed is False:
+            if merge_result.tests.passed is False:
                 test_failures.append(slug)
         else:
             failed_count += 1
