@@ -103,9 +103,45 @@ def check_agent_cli(
     )
 
 
+def _auto_commit_governor_changes(project_root: str) -> bool:
+    """Auto-commit any staged/unstaged governor changes before dispatch."""
+    try:
+        # Stage all tracked changes
+        result = subprocess.run(
+            ["git", "-C", project_root, "add", "-u"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return False
+
+        # Check if there's anything to commit
+        result = subprocess.run(
+            ["git", "-C", project_root, "diff", "--cached", "--quiet"],
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return False  # Nothing staged
+
+        # Commit with governor attribution
+        result = subprocess.run(
+            ["git", "-C", project_root, "commit", "-m", "Governor auto-commit before dispatch"],
+            capture_output=True,
+            text=True,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def check_git_clean(project_root: str, touches: list[str] | None = None) -> CheckResult:
     """Check for uncommitted changes to tracked files."""
     root = Path(project_root).resolve()
+    
+    # Auto-commit governor changes before checking if touches are declared
+    if touches:
+        _auto_commit_governor_changes(project_root)
+    
     try:
         dirty = subprocess.run(
             ["git", "status", "--porcelain"],
