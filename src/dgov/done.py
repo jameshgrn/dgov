@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dgov.agents import DoneStrategyType
 from dgov.backend import get_backend
 from dgov.persistence import STATE_DIR, PaneState
 
@@ -297,15 +298,15 @@ def _resolve_strategy(
     """
     if done_strategy is not None:
         stype = done_strategy.type
-        if stype == "stable":
+        if stype == DoneStrategyType.STABLE:
             ss = done_strategy.stable_seconds
-        elif stype == "signal":
+        elif stype == DoneStrategyType.SIGNAL:
             ss = stable_seconds or 15
         else:
             ss = 0
         return stype, ss
     # No strategy provided - default to "api" (agent reports completion via dgov).
-    return "api", 0
+    return DoneStrategyType.API, 0
 
 
 def _set_done_reason(stable_state: dict | None, reason: str) -> None:

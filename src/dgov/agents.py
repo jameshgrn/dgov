@@ -17,9 +17,18 @@ import string
 import time
 import tomllib
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+class DoneStrategyType(StrEnum):
+    SIGNAL = "signal"
+    EXIT = "exit"
+    COMMIT = "commit"
+    STABLE = "stable"
+    API = "api"
 
 
 @dataclass(frozen=True)
@@ -34,7 +43,7 @@ class DoneStrategy:
     - "api": Agent calls dgov worker complete/fail. Only checks signal files + liveness.
     """
 
-    type: str  # "signal" | "exit" | "commit" | "stable" | "api"
+    type: DoneStrategyType  # "signal" | "exit" | "commit" | "stable" | "api"
     stable_seconds: int = 15  # only used when type="stable"
 
 
@@ -85,7 +94,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         color=39,
         send_keys_ready_delay_ms=3000,
         interactive=True,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "codex": AgentDef(
         id="codex",
@@ -99,7 +108,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         interactive=True,
         color=214,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "gemini": AgentDef(
         id="gemini",
@@ -117,7 +126,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         color=135,
         send_keys_ready_delay_ms=8000,
         interactive=True,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "opencode": AgentDef(
         id="opencode",
@@ -127,7 +136,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="option",
         prompt_option="--prompt",
         color=82,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "cline": AgentDef(
         id="cline",
@@ -143,7 +152,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--act --yolo",
         },
         color=196,
-        done_strategy=DoneStrategy(type="stable", stable_seconds=30),
+        done_strategy=DoneStrategy(type=DoneStrategyType.STABLE, stable_seconds=30),
     ),
     "qwen": AgentDef(
         id="qwen",
@@ -159,7 +168,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="qwen --continue{permissions}",
         color=99,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "amp": AgentDef(
         id="amp",
@@ -171,7 +180,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--dangerously-allow-all",
         },
         color=208,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "pi": AgentDef(
         id="pi",
@@ -187,7 +196,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="pi --continue{permissions}",
         color=34,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "cursor": AgentDef(
         id="cursor",
@@ -201,7 +210,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         color=45,
         send_keys_ready_delay_ms=5000,
         interactive=True,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "copilot": AgentDef(
         id="copilot",
@@ -216,7 +225,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         },
         resume_template="copilot --continue{permissions}",
         color=231,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "crush": AgentDef(
         id="crush",
@@ -233,7 +242,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
             "bypassPermissions": "--yolo",
         },
         color=219,
-        done_strategy=DoneStrategy(type="stable", stable_seconds=30),
+        done_strategy=DoneStrategy(type=DoneStrategyType.STABLE, stable_seconds=30),
     ),
     "pi-claude": AgentDef(
         id="pi-claude",
@@ -243,7 +252,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider anthropic --model claude-sonnet-4-20250514",
         color=39,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "pi-codex": AgentDef(
         id="pi-codex",
@@ -253,7 +262,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider openai --model o3",
         color=214,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "pi-gemini": AgentDef(
         id="pi-gemini",
@@ -263,7 +272,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider google --model gemini-2.5-pro",
         color=135,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
     "pi-openrouter": AgentDef(
         id="pi-openrouter",
@@ -273,7 +282,7 @@ _BUILTIN_AGENTS: dict[str, AgentDef] = {
         prompt_transport="positional",
         default_flags="-p --provider openrouter",
         color=208,
-        done_strategy=DoneStrategy(type="api"),
+        done_strategy=DoneStrategy(type=DoneStrategyType.API),
     ),
 }
 
@@ -299,7 +308,7 @@ def _done_strategy_from_toml(table: dict) -> DoneStrategy | None:
     if not done_section:
         return None
     return DoneStrategy(
-        type=done_section["type"],
+        type=DoneStrategyType(done_section.get("type", "signal")),
         stable_seconds=done_section.get("stable_seconds", 15),
     )
 
@@ -312,7 +321,7 @@ def _agent_def_from_toml(agent_id: str, table: dict, source: str) -> AgentDef:
     done_strategy = _done_strategy_from_toml(table)
     # Default to "api" when no [done] section — agent reports completion via dgov.
     if done_strategy is None:
-        done_strategy = DoneStrategy(type="api")
+        done_strategy = DoneStrategy(type=DoneStrategyType.API)
     return AgentDef(
         id=agent_id,
         name=table.get("name", agent_id),
