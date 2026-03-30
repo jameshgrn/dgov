@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -518,9 +519,39 @@ def status(project_root, session_root, output_json):
         optional_unavailable: list[str] = []
 
         # Load routing tables to identify project-routed backends
+        # Prefer project-local routing when available
         from dgov.router import _load_routing_tables
 
-        routing_tables = _load_routing_tables(project_root)
+        # Check if project-local routing exists
+        project_config = Path(project_root) / ".dgov" / "agents.toml"
+        has_project_routing = project_config.is_file()
+
+        if has_project_routing:
+            # Load only project-local routing tables
+            try:
+                with open(project_config, "rb") as f:
+                    data = tomllib.load(f)
+                project_routing = data.get("routing", {})
+                routing_tables: dict[str, list[str]] = {}
+                for name, table in project_routing.items():
+                    if isinstance(table, dict) and "backends" in table:
+                        routing_tables[name] = list(table["backends"])
+                # Also resolve alias_for entries
+                raw_routing = {
+                    name: table
+                    for name, table in project_routing.items()
+                    if isinstance(table, dict) and "alias_for" in table
+                }
+                # Simple alias resolution
+                for name, table in raw_routing.items():
+                    target = table.get("alias_for")
+                    if target and target in routing_tables:
+                        routing_tables[name] = list(routing_tables[target])
+            except (tomllib.TOMLDecodeError, OSError):
+                routing_tables = _load_routing_tables(project_root)
+        else:
+            # Fall back to merged user-global routing
+            routing_tables = _load_routing_tables(project_root)
         routed_backends: set[str] = set()
         for backends in routing_tables.values():
             routed_backends.update(backends)
@@ -576,10 +607,13 @@ def status(project_root, session_root, output_json):
 
         # Agent health summary — only count routed backends as healthy/unhealthy
         # Unprobed agents are not counted as healthy (they have unknown status)
-        if routed_unhealthy or optional_unavailable:
+        # but are reported explicitly when present for clarity
+        if routed_unhealthy or optional_unavailable or routed_unprobed:
             unhealthy_parts = []
             if routed_unhealthy:
                 unhealthy_parts.append(f"{len(routed_unhealthy)} routed unhealthy")
+            if routed_unprobed:
+                unhealthy_parts.append(f"{len(routed_unprobed)} unprobed")
             if optional_unavailable:
                 unhealthy_parts.append(f"{len(optional_unavailable)} optional unavailable")
             unhealthy_str = ", ".join(unhealthy_parts)

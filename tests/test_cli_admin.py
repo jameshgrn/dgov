@@ -279,6 +279,116 @@ class TestStatusCmd:
         # Should not conflate them
         assert "2 unhealthy" not in output
 
+    def test_status_prefers_project_local_routing_over_global(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test status prefers project-local routing tables over user-global.
+
+        When a project defines its own .dgov/agents.toml with routing tables,
+        the health summary should only consider agents in the project-local
+        routing, not merged global routing.
+        """
+        from types import SimpleNamespace
+
+        from dgov.agents import HealthConfig
+
+        # Create project-local agents.toml with custom routing
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir(parents=True)
+        agents_toml = dgov_dir / "agents.toml"
+        agents_toml.write_text(
+            '[routing.worker]\nbackends = ["project-local-agent"]\n',
+            encoding="utf-8",
+        )
+
+        transport = SimpleNamespace(type="positional")
+        # Project-local agent (healthy)
+        local_health = HealthConfig(check="exit 0")
+        local_agent = SimpleNamespace(
+            name="ProjectLocalAgent",
+            transport=transport,
+            source="builtin",
+            health=local_health,
+        )
+        # Global-only agent (also installed but not in project routing)
+        global_health = HealthConfig(check="exit 0")
+        global_agent = SimpleNamespace(
+            name="GlobalAgent",
+            transport=transport,
+            source="builtin",
+            health=global_health,
+        )
+        registry = {
+            "project-local-agent": local_agent,
+            "global-agent": global_agent,
+        }
+
+        # Both agents installed, but only project-local-agent is in project routing
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch(
+                "dgov.agents.detect_installed_agents",
+                return_value=["project-local-agent", "global-agent"],
+            ),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        # Should only count project-local routing (1 routed), not global routing
+        assert "1 routed" in output
+        assert "1 healthy" in output
+        # Should NOT count the global-only agent
+        assert "2 routed" not in output
+
+    def test_status_reports_unprobed_routed_agents_explicitly(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test status reports unprobed routed agents explicitly in summary.
+
+        Routed agents without health checks should be reported as 'unprobed'
+        in the human-readable summary so users know they exist but have
+        unknown health status.
+        """
+        from types import SimpleNamespace
+
+        from dgov.agents import HealthConfig
+
+        transport = SimpleNamespace(type="positional")
+        # Routed agent with no health check (unprobed)
+        health = HealthConfig(check=None)
+        agent_def = SimpleNamespace(
+            name="UnprobedRoutedAgent",
+            transport=transport,
+            source="builtin",
+            health=health,
+        )
+        registry = {"unprobed-routed-agent": agent_def}
+
+        # Mock routing tables to mark agent as routed
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch(
+                "dgov.agents.detect_installed_agents",
+                return_value=["unprobed-routed-agent"],
+            ),
+            patch(
+                "dgov.router._load_routing_tables",
+                return_value={"worker": ["unprobed-routed-agent"]},
+            ),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        # Should show 1 routed, 0 healthy (unprobed doesn't count as healthy)
+        assert "1 routed" in output
+        assert "0 healthy" in output
+        # Should explicitly report unprobed count
+        assert "1 unprobed" in output
+
     def test_status_human_readable_separates_preserved_terminal_evidence(
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
