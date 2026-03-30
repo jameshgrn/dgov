@@ -19,23 +19,36 @@ stateDiagram-v2
     active --> failed: crashed / exit-code
     active --> timed_out: wait timeout
     active --> abandoned: pane dead
-    active --> escalated: governor escalate
+    active --> closed: force-close
+    active --> superseded: replaced
 
     done --> reviewed_pass: review (pass)
     done --> reviewed_fail: review (fail)
+    done --> closed: force-close
+    done --> superseded: replaced
 
     reviewed_pass --> merged: merge succeeded
     reviewed_pass --> failed: merge failed
+    reviewed_pass --> closed: cleanup
+    reviewed_fail --> closed: cleanup
+    reviewed_fail --> superseded: replaced
     reviewed_fail --> escalated: re-dispatch
 
+    failed --> closed: cleanup
+    failed --> superseded: replaced
     failed --> escalated: retry escalate
+
     timed_out --> done: late finish
+    timed_out --> closed: cleanup
+    timed_out --> superseded: replaced
     timed_out --> escalated: re-dispatch
+
+    abandoned --> closed: cleanup
+    abandoned --> superseded: replaced
     abandoned --> escalated: recovery escalate
 
     merged --> closed: cleanup
     escalated --> closed: cleanup
-    abandoned --> closed: cleanup
     superseded --> closed: cleanup
 
     closed --> [*]
@@ -82,14 +95,14 @@ Five internal layers carry the current policy:
 - **Deterministic Kernel** — `src/dgov/kernel.py` owns the state machine logic for panes and DAGs. It is I/O-free and purely functional.
 - **Plan System** — `src/dgov/plan.py` handles eval-first plan schema, validation, and compilation into executable DAGs.
 - **Executor Pipeline** — `src/dgov/executor.py` owns the side-effecting lifecycle: dispatch preflight, wait/review/merge gates, and cleanup.
-- **Agent Router** — `src/dgov/router.py` resolves logical model names to physical backends with circuit-breaker and fallback support.
+- **Agent Router** — `src/dgov/router.py` resolves roles to physical backends with circuit-breaker and fallback support.
 - **Observability (Spans)** — `src/dgov/spans.py` provides structured tool-trace and span logging for performance analysis and training export.
 
 Related behavior:
 
 - **Context packets** — `src/dgov/context_packet.py` compiles prompt-derived file touches, tests, and hints into one packet used by preflight and worker instructions.
 - **Worker completion API** — API-oriented agents finish by calling `dgov worker complete` or `dgov worker fail`.
-- **Monitor** — `dgov monitor` watches the event journal to auto-complete, auto-land, or retry panes based on output and commit state.
+- **Monitor** — `dgov monitor` watches the event journal to auto-complete, auto-merge, or retry panes based on output and commit state.
 
 ## Install
 
