@@ -1,9 +1,9 @@
-# Handover: control-plane hardening landed and doctor is green
+# Handover: planning and wait-surface bug fixes landed
 
 ## Session context
-- Date: 2026-03-29T20:57:45-0400
-- Branch: main @ f936b4c
-- Last commit: Prefer project routing in health summary
+- Date: 2026-03-29T21:25:03-04:00
+- Branch: main @ 6afa75f
+- Last commit: Fix wait event payload handling
 
 ## Open panes
 | Slug | State | Description |
@@ -14,26 +14,27 @@
 - None.
 
 ## Blockers/debt
-- No tracked blockers.
-- Operational note: `recent failures: 6` in `dgov status` is historical event noise, not an open ledger bug.
+- No tracked blockers or open ledger debt.
 
 ## Next steps
 1. Push `main` to `origin/main` when ready.
-2. If you want another hardening pass, the remaining surfaced risk is real capacity, not stale state: the 4 routed unhealthy backends are the down MLX pool, 3 routed backends are unprobed frontier tools, and 5 optional unavailable backends are outside the repo's local routing policy.
+2. If another bug-fix pass is needed, start from fresh repros rather than the ledger; there are currently no open bugs tracked.
 
 ## Notes
-- Landed stale-worktree cleanup on main:
-  `0037e3b` Harden stale worktree cleanup
-  `a6cdb49` Merge r175-harden-stale-worktree-cleanup
-- Landed routing/health reporting hardening on main:
-  `7775b18` Harden agent health reporting
-  `f936b4c` Prefer project routing in health summary
-- `uv run dgov doctor -r .` now passes fully, including `no orphaned worktrees -- 0 tracked`.
+- Landed planning-layer path validation hardening on main:
+  `119f244` Reject plan path traversal
+- Landed governor wait-surface fix on main:
+  `6afa75f` Fix wait event payload handling
+- `dgov wait` now reads flattened event payloads returned by `wait_for_events()` and keeps a narrow fallback for legacy `data` blobs.
+- `parse_plan_file()` now rejects parent-directory traversal in unit file specs and eval scopes.
 - Final status at handoff:
   `dgov status: 0 panes`
   `agents: 15 routed, 8 healthy, 4 routed unhealthy, 3 unprobed, 5 optional unavailable`
-  `recent failures: 6`
-- Verification run on main for the final hardening passes:
-  `uv run ruff check` / `uv run ruff format --check`
-  `uv run ty check`
-  targeted unit slices for stale worktree cleanup, router/admin health reporting, and status summary fix-forward all passed.
+  `recent failures: 3`
+- Verification run on main for this session:
+  `uv run ruff check src/dgov/plan.py tests/test_plan.py`
+  `uv run ruff format --check src/dgov/plan.py tests/test_plan.py`
+  `uv run pytest tests/test_plan.py -q -m unit -k 'parent_traversal or traversal'`
+  `uv run ruff check src/dgov/cli/wait_cmd.py tests/test_dgov_cli.py`
+  `uv run ruff format --check src/dgov/cli/wait_cmd.py tests/test_dgov_cli.py`
+  `DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_dgov_cli.py -q -m unit -k 'wait_top_level_event_payload or wait_interrupts_top_level_event_payload'`
