@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from unittest.mock import Mock, patch
 
 import pytest
@@ -582,6 +583,18 @@ class TestTakeActionBugFixes:
         action = _take_action("/tmp", "/tmp", worker, history)
         assert action == "stale_fail"
         mock_fail.assert_called_once()
+
+    @patch("dgov.monitor.get_pane")
+    @patch("dgov.monitor._mark_idle_failed")
+    def test_stale_worker_no_commits_skips_newborn_pane(self, mock_fail, mock_get_pane):
+        from dgov.monitor import _take_action
+
+        mock_get_pane.return_value = {"state": "active", "created_at": time.time()}
+        worker = {"slug": "w1", "classification": "idle", "has_commits": False, "is_alive": False}
+        history = {"w1": {"classifications": ["idle"], "last_action_at": 0}}
+        action = _take_action("/tmp", "/tmp", worker, history)
+        assert action is None
+        mock_fail.assert_not_called()
 
 
 class TestTryAutoMerge:

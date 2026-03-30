@@ -60,6 +60,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DagEventFactory = Callable[[str, str, dict[str, object]], DagEvent]
+_FRESH_PANE_GRACE_S = 5.0
 
 
 def _source_hash() -> str:
@@ -1033,6 +1034,12 @@ def _take_action(project_root: str, session_root: str, worker: dict, history: di
 
     # Handle stale workers (active but not alive) - special case with dual logic
     if not worker.get("is_alive", True):
+        created_at = raw.get("created_at")
+        try:
+            if created_at and time.time() - float(created_at) < _FRESH_PANE_GRACE_S:
+                return None
+        except (TypeError, ValueError):
+            pass
         if worker.get("has_commits"):
             _auto_complete(project_root, session_root, slug)
             hist["last_action_at"] = time.time()
