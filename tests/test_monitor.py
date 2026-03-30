@@ -921,6 +921,194 @@ class TestDriveDagPersistence:
         ]
 
 
+class TestDriveDagLegacyTaskShape:
+    """Regression test: Monitor bootstrap tolerates persisted DAG task shapes
+    without all_touches() method (legacy/dict-shaped tasks).
+    """
+
+    def test_drive_dag_handles_legacy_dict_task_shape(self, tmp_path):
+        """Simulate a persisted DAG run where tasks are dicts, not DagTaskSpec objects.
+
+        This regression test ensures the monitor doesn't crash during bootstrap
+        when file_claims persistence encounters a task without the all_touches() method.
+        """
+        from dgov.dag_parser import DagDefinition
+        from dgov.kernel import DagKernel, TaskDispatched
+        from dgov.monitor import DagMonitorState, _drive_dag
+        from dgov.persistence import (
+            create_dag_run,
+            ensure_dag_tables,
+            get_dag_run,
+            list_dag_tasks,
+        )
+
+        session_root = str(tmp_path)
+        ensure_dag_tables(session_root)
+
+        # Create a DagDefinition with legacy dict-shaped tasks (simulating
+        # reconstructed state from persisted definition_json)
+        legacy_task_dict = {
+            "slug": "task-1",
+            "summary": "legacy task",
+            "prompt": "do it",
+            "commit_message": "Commit legacy",
+            "agent": "generate-t3",
+            "escalation": (),
+            "depends_on": (),
+            "files": {"create": (), "edit": ("src/legacy.py",), "delete": ()},
+            "permission_mode": "bypassPermissions",
+            "timeout_s": 60,
+            "tests_pass": True,
+            "lint_clean": True,
+        }
+
+        # Create a mock DagDefinition where tasks is a dict with legacy shapes
+        dag = DagDefinition(
+            name="legacy-test",
+            dag_file=str(tmp_path / "dag.toml"),
+            project_root=str(tmp_path),
+            session_root=session_root,
+            default_max_retries=1,
+            merge_resolve="skip",
+            merge_squash=True,
+            max_concurrent=0,
+            tasks={"task-1": legacy_task_dict},  # type: ignore[dict-item]
+        )
+
+        kernel = DagKernel(deps={"task-1": ()})
+        run_id = create_dag_run(
+            session_root,
+            dag.dag_file,
+            "2026-03-29T00:00:00+00:00",
+            "running",
+            0,
+            kernel.to_dict(),
+            definition_json={
+                "name": dag.name,
+                "default_max_retries": dag.default_max_retries,
+                "merge_resolve": dag.merge_resolve,
+                "merge_squash": dag.merge_squash,
+                "max_concurrent": dag.max_concurrent,
+                "tasks": {},
+            },
+        )
+
+        class FakeReactor:
+            def __init__(self, dag_def):
+                self.dag = dag_def
+                self.project_root = dag_def.project_root
+                self._calls = 0
+
+            def execute(self, action):
+                self._calls += 1
+                if self._calls == 1:
+                    return TaskDispatched("task-1", "pane-legacy-1")
+                return None
+
+        state = DagMonitorState(run_id, kernel, FakeReactor(dag))
+
+        # Should NOT crash even though task_def is a dict without all_touches()
+        _drive_dag(session_root, state, kernel.start())
+
+        # Verify state was persisted correctly
+        run = get_dag_run(session_root, run_id)
+        assert run is not None
+        assert run["state_json"]["state"] == "running"
+
+        # Verify task was persisted with correct file_claims derived from dict
+        task_rows = list_dag_tasks(session_root, run_id)
+        assert len(task_rows) == 1
+        assert task_rows[0]["slug"] == "task-1"
+        assert task_rows[0]["file_claims"] == ("src/legacy.py",)
+        assert task_rows[0]["commit_message"] == "Commit legacy"
+
+    def test_drive_dag_handles_task_with_files_attribute_but_no_all_touches(self, tmp_path):
+        """Simulate a task object that has .files attribute but no .all_touches() method.
+
+        This covers edge cases where tasks are reconstructed as simple objects
+        rather than full DagTaskSpec instances.
+        """
+        from dataclasses import dataclass
+
+        from dgov.dag_parser import DagDefinition
+        from dgov.kernel import DagKernel, TaskDispatched
+        from dgov.monitor import DagMonitorState, _drive_dag
+        from dgov.persistence import (
+            create_dag_run,
+            ensure_dag_tables,
+            list_dag_tasks,
+        )
+
+        @dataclass
+        class SimpleFileSpec:
+            create: tuple[str, ...] = ()
+            edit: tuple[str, ...] = ()
+            delete: tuple[str, ...] = ()
+
+        @dataclass
+        class SimpleTask:
+            slug: str
+            agent: str
+            commit_message: str
+            files: SimpleFileSpec
+
+        session_root = str(tmp_path)
+        ensure_dag_tables(session_root)
+
+        # Create a simple task that has files but no all_touches method
+        simple_task = SimpleTask(
+            slug="task-1",
+            agent="generate-t3",
+            commit_message="Simple commit",
+            files=SimpleFileSpec(edit=("src/simple.py", "src/other.py")),
+        )
+
+        dag = DagDefinition(
+            name="simple-test",
+            dag_file=str(tmp_path / "dag.toml"),
+            project_root=str(tmp_path),
+            session_root=session_root,
+            default_max_retries=1,
+            merge_resolve="skip",
+            merge_squash=True,
+            max_concurrent=0,
+            tasks={"task-1": simple_task},  # type: ignore[dict-item]
+        )
+
+        kernel = DagKernel(deps={"task-1": ()})
+        run_id = create_dag_run(
+            session_root,
+            dag.dag_file,
+            "2026-03-29T00:00:00+00:00",
+            "running",
+            0,
+            kernel.to_dict(),
+            definition_json={
+                "name": dag.name,
+                "default_max_retries": dag.default_max_retries,
+                "tasks": {},
+            },
+        )
+
+        class FakeReactor:
+            def __init__(self, dag_def):
+                self.dag = dag_def
+                self.project_root = dag_def.project_root
+
+            def execute(self, action):
+                return TaskDispatched("task-1", "pane-simple-1")
+
+        state = DagMonitorState(run_id, kernel, FakeReactor(dag))
+
+        # Should NOT crash - should derive file_claims from .files attribute
+        _drive_dag(session_root, state, kernel.start())
+
+        task_rows = list_dag_tasks(session_root, run_id)
+        assert len(task_rows) == 1
+        # file_claims should be derived from files.{create,edit,delete}
+        assert task_rows[0]["file_claims"] == ("src/simple.py", "src/other.py")
+
+
 class TestTryAutoRetry:
     """Test _try_auto_retry auto-retry logic."""
 

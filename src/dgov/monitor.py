@@ -580,9 +580,42 @@ def _drive_dag(
             pane_slug = dag_state.kernel.pane_slugs.get(task_slug)
             attempt = dag_state.kernel.attempts.get(task_slug, 1)
             agent = ""
+            commit_message = ""
             task_def = dag_state.reactor.dag.tasks.get(task_slug)
-            if task_def:
-                agent = task_def.agent
+
+            # Derive file claims from task_def, handling both DagTaskSpec objects
+            # (which have all_touches()) and reconstructed/legacy shapes (dicts)
+            file_claims: tuple[str, ...] | None = None
+            if task_def is not None:
+                # Extract agent
+                if hasattr(task_def, "agent"):
+                    agent = task_def.agent
+                elif isinstance(task_def, dict):
+                    agent = task_def.get("agent", "")
+
+                # Extract commit_message
+                if hasattr(task_def, "commit_message"):
+                    commit_message = task_def.commit_message
+                elif isinstance(task_def, dict):
+                    commit_message = task_def.get("commit_message", "")
+
+                # Extract file_claims
+                if hasattr(task_def, "all_touches"):
+                    file_claims = task_def.all_touches()
+                elif hasattr(task_def, "files"):
+                    files = task_def.files
+                    create = getattr(files, "create", ())
+                    edit = getattr(files, "edit", ())
+                    delete = getattr(files, "delete", ())
+                    file_claims = tuple(dict.fromkeys([*create, *edit, *delete]))
+                elif isinstance(task_def, dict) and "files" in task_def:
+                    files = task_def["files"]
+                    if isinstance(files, dict):
+                        create = files.get("create", ())
+                        edit = files.get("edit", ())
+                        delete = files.get("delete", ())
+                        file_claims = tuple(dict.fromkeys([*create, *edit, *delete]))
+
             upsert_dag_task(
                 session_root,
                 dag_state.run_id,
@@ -591,8 +624,8 @@ def _drive_dag(
                 agent,
                 attempt=attempt,
                 pane_slug=pane_slug,
-                file_claims=task_def.all_touches() if task_def else None,
-                commit_message=task_def.commit_message if task_def else None,
+                file_claims=file_claims,
+                commit_message=commit_message,
             )
         update_dag_run(session_root, dag_state.run_id, state_json=dag_state.kernel.to_dict())
 
