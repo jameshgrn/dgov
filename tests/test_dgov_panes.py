@@ -931,6 +931,29 @@ class TestPruneStale:
         assert "orphan:orphan-slug" in pruned
         mock_rm.assert_called_once_with(str(tmp_path), str(orphan_dir), "orphan-slug")
 
+    def test_prunes_nested_hashed_orphan_worktree_dir(
+        self, tmp_path: Path, mock_backend: MagicMock
+    ) -> None:
+        """Regression: Hashed nested orphan worktrees at ~/.dgov/worktrees/<hash>/<slug>/"""
+        import os
+
+        # Create the hashed layout: ~/.dgov/worktrees/<hash>/<slug>/
+        hash_dir = tmp_path / ".dgov" / "worktrees" / "1bac54f15c74"
+        orphan_dir = hash_dir / "orphan-hashed-task"
+        orphan_dir.mkdir(parents=True)
+        # Age past the 60s grace period so the pruner doesn't skip it
+        old_time = time.time() - 120
+        os.utime(orphan_dir, (old_time, old_time))
+        # Empty state — no pane entries at all
+        replace_all_panes(str(tmp_path), {"panes": []})
+        mock_backend.is_alive.return_value = False
+        with (
+            patch("dgov.status._remove_worktree") as mock_rm,
+        ):
+            pruned = prune_stale_panes(str(tmp_path))
+        assert "orphan:orphan-hashed-task" in pruned
+        mock_rm.assert_called_once_with(str(tmp_path), str(orphan_dir), "orphan-hashed-task")
+
 
 # ---------------------------------------------------------------------------
 # capture_worker_output

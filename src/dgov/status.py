@@ -571,6 +571,7 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
         # Pass 2: remove orphaned worktree dirs (with grace period)
         # Scan both the new location (~/.dgov/worktrees/<hash>/) and the
         # legacy location (.dgov/worktrees/) for orphans.
+        # The hashed layout has worktrees at ~/.dgov/worktrees/<hash>/<slug>/
         from dgov.lifecycle import _worktree_base
 
         _wt_dirs = [_worktree_base(project_root), Path(project_root) / STATE_DIR / "worktrees"]
@@ -584,18 +585,44 @@ def prune_stale_panes(project_root: str, session_root: str | None = None) -> lis
                     continue
                 if entry.name.startswith("."):
                     continue
-                entry_str = str(entry)
-                if entry_str in known_worktrees:
+                # Check if this is a hash directory (hashed layout) or a direct slug directory
+                if entry.name.startswith("~"):
                     continue
-                try:
-                    age_s = now - entry.stat().st_mtime
-                except OSError:
-                    continue
-                if age_s < 60:
-                    continue
-                branch_name = entry.name
-                _remove_worktree(project_root, entry_str, branch_name)
-                pruned.append(f"orphan:{branch_name}")
+                # If entry is a hash directory (12-char hex), scan its contents for slugs
+                if len(entry.name) == 12 and all(c in "0123456789abcdef" for c in entry.name):
+                    # This is a hash directory - scan inside for actual worktree dirs
+                    hash_dir = entry
+                    for slug_entry in hash_dir.iterdir():
+                        if not slug_entry.is_dir():
+                            continue
+                        if slug_entry.name.startswith("."):
+                            continue
+                        slug_entry_str = str(slug_entry)
+                        if slug_entry_str in known_worktrees:
+                            continue
+                        try:
+                            age_s = now - slug_entry.stat().st_mtime
+                        except OSError:
+                            continue
+                        if age_s < 60:
+                            continue
+                        branch_name = slug_entry.name
+                        _remove_worktree(project_root, slug_entry_str, branch_name)
+                        pruned.append(f"orphan:{branch_name}")
+                else:
+                    # Direct slug directory (legacy layout)
+                    entry_str = str(entry)
+                    if entry_str in known_worktrees:
+                        continue
+                    try:
+                        age_s = now - entry.stat().st_mtime
+                    except OSError:
+                        continue
+                    if age_s < 60:
+                        continue
+                    branch_name = entry.name
+                    _remove_worktree(project_root, entry_str, branch_name)
+                    pruned.append(f"orphan:{branch_name}")
 
         return pruned
 

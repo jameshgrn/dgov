@@ -702,16 +702,68 @@ def _fix_deps(project_root: str) -> bool:
 
 
 def _fix_stale_worktrees(project_root: str) -> bool:
-    """Prune git worktrees that are no longer on disk."""
+    """Remove stale git worktrees that have no matching pane in state.
+
+    This goes beyond 'git worktree prune' (which only cleans metadata for
+    directories that are already gone) — it actually removes tracked
+    worktrees that still exist on disk but have no corresponding pane.
+    """
+    from dgov.gitops import _remove_worktree
+    from dgov.status import list_worker_panes
+
+    root = Path(project_root).resolve()
     try:
-        result = subprocess.run(
+        # First run prune to clean up any already-gone worktrees
+        prune_result = subprocess.run(
             ["git", "worktree", "prune"],
-            cwd=project_root,
+            cwd=root,
             capture_output=True,
             text=True,
             timeout=10,
         )
-        return result.returncode == 0
+        if prune_result.returncode != 0:
+            return False
+
+        # List all worktrees and identify stale ones (no matching pane)
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return False
+
+        worktrees: list[str] = []
+        is_first = True
+        for line in result.stdout.splitlines():
+            if line.startswith("worktree "):
+                wt_path = line.split(" ", 1)[1]
+                # First entry is always the main worktree
+                if is_first:
+                    is_first = False
+                    continue
+                worktrees.append(wt_path)
+
+        if not worktrees:
+            return True
+
+        # Get known worktrees from pane state
+        panes = list_worker_panes(project_root, include_freshness=False)
+        pane_worktrees = {p.get("worktree_path") for p in panes}
+
+        # Remove any worktree not tracked by a pane
+        success = True
+        for wt in worktrees:
+            if wt not in pane_worktrees:
+                # Derive branch name from path (last component)
+                branch_name = Path(wt).name
+                remove_result = _remove_worktree(project_root, wt, branch_name)
+                if not remove_result.get("success"):
+                    success = False
+
+        return success
     except (subprocess.TimeoutExpired, OSError):
         return False
 

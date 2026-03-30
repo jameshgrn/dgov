@@ -1044,23 +1044,76 @@ class TestFixHelpers:
         )
         assert _fix_deps("/tmp/repo") is False
 
-    def test_fix_stale_worktrees_success(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fix_stale_worktrees_success_no_stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When no stale worktrees exist, fixer returns True."""
+
         def fake_run(cmd, **kwargs):
             mock = MagicMock()
             mock.returncode = 0
+            mock.stdout = "worktree /tmp/repo\n"
             return mock
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+        monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
         assert _fix_stale_worktrees("/tmp/repo") is True
 
-    def test_fix_stale_worktrees_fail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fix_stale_worktrees_removes_tracked_stale(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression: Stale tracked git worktrees with no matching pane are removed by fixer."""
+
         def fake_run(cmd, **kwargs):
             mock = MagicMock()
-            mock.returncode = 1
+            mock.returncode = 0
+            # Simulate one stale worktree at /tmp/repo/.dgov/worktrees/stale-task
+            mock.stdout = "worktree /tmp/repo\n\nworktree /tmp/repo/.dgov/worktrees/stale-task\n\n"
             return mock
 
         monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
-        assert _fix_stale_worktrees("/tmp/repo") is False
+        # No panes tracking this worktree — should be considered stale
+        monkeypatch.setattr("dgov.status.list_worker_panes", lambda *a, **kw: [])
+
+        removed_worktrees: list[tuple[str, str]] = []
+
+        def fake_remove_worktree(project_root: str, wt_path: str, branch: str) -> dict:
+            removed_worktrees.append((wt_path, branch))
+            return {"success": True}
+
+        monkeypatch.setattr("dgov.gitops._remove_worktree", fake_remove_worktree)
+        result = _fix_stale_worktrees("/tmp/repo")
+        assert result is True
+        assert any("stale-task" in wt for wt, _ in removed_worktrees)
+
+    def test_fix_stale_worktrees_keeps_tracked_panes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tracked worktrees with matching pane state are NOT removed."""
+
+        def fake_run(cmd, **kwargs):
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stdout = (
+                "worktree /tmp/repo\n\nworktree /tmp/repo/.dgov/worktrees/active-task\n\n"
+            )
+            return mock
+
+        monkeypatch.setattr("dgov.preflight.subprocess.run", fake_run)
+        # Pane IS tracking this worktree — should NOT be removed
+        monkeypatch.setattr(
+            "dgov.status.list_worker_panes",
+            lambda *a, **kw: [{"worktree_path": "/tmp/repo/.dgov/worktrees/active-task"}],
+        )
+
+        removed_worktrees: list[tuple[str, str]] = []
+
+        def fake_remove_worktree(project_root: str, wt_path: str, branch: str) -> dict:
+            removed_worktrees.append((wt_path, branch))
+            return {"success": True}
+
+        monkeypatch.setattr("dgov.gitops._remove_worktree", fake_remove_worktree)
+        result = _fix_stale_worktrees("/tmp/repo")
+        assert result is True
+        assert not any("active-task" in wt for wt, _ in removed_worktrees)
 
 
 # ---------------------------------------------------------------------------
