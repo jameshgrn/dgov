@@ -510,7 +510,11 @@ def signal_pane(session_root: str, slug: str, signal: PaneState) -> bool:
     done_dir.mkdir(parents=True, exist_ok=True)
 
     if signal == PaneState.DONE:
-        if not _has_completion_commit(target):
+        # Allow zero-commit done signals when DB state is already DONE
+        # This aligns with _is_done contract: done file + DB done = success
+        has_commits = _has_completion_commit(target)
+        db_state = target.get("state", "")
+        if not has_commits and db_state != PaneState.DONE:
             return False
         (done_dir / slug).touch()
         _persist.settle_completion_state(session_root, slug, "done", allow_abandoned=True)

@@ -272,6 +272,78 @@ class TestSignal:
             signal_pane(session_root, "test-worker", "paused")
 
 
+@pytest.mark.unit
+class TestZeroCommitSignal:
+    """Regression tests for zero-commit completion signal contract."""
+
+    def test_signal_done_zero_commit_with_db_done_succeeds(self, tmp_path: Path) -> None:
+        """Explicit zero-commit completion signal succeeds when DB state is DONE."""
+        from dgov.persistence import PaneState
+
+        session_root = _setup_pane(tmp_path, state=PaneState.DONE)
+
+        # Zero commits (pane state is already DONE, no commits needed)
+        with patch("dgov.done._has_completion_commit", return_value=False):
+            result = signal_pane(session_root, "test-worker", PaneState.DONE)
+
+        assert result is True
+        done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
+        assert done_path.exists()
+        assert get_pane(session_root, "test-worker")["state"] == PaneState.DONE
+
+    def test_signal_done_zero_commit_without_db_done_fails(self, tmp_path: Path) -> None:
+        """Zero-commit done signal fails when DB state is not DONE."""
+        from dgov.persistence import PaneState
+
+        session_root = _setup_pane(tmp_path, state=PaneState.ACTIVE)
+
+        # Zero commits and DB state is not DONE
+        with patch("dgov.done._has_completion_commit", return_value=False):
+            result = signal_pane(session_root, "test-worker", PaneState.DONE)
+
+        assert result is False
+        done_path = Path(session_root) / STATE_DIR / "done" / "test-worker"
+        assert not done_path.exists()
+
+    def test_shell_return_no_signal_no_commits_fails(self, tmp_path: Path) -> None:
+        """Shell return without done signal and without commits still fails."""
+        from dgov.agents import DoneStrategy
+        from dgov.persistence import PaneState
+
+        session_root = str(tmp_path)
+        slug = "test-shell-return"
+        _setup_pane(tmp_path, slug=slug, state=PaneState.ACTIVE)
+
+        pane_record = {
+            "pane_id": "%99",
+            "project_root": str(tmp_path),
+            "branch_name": slug,
+            "base_sha": "abc123",
+        }
+
+        # No done file, no commits, agent not running (shell returned)
+        with (
+            patch("dgov.done._has_new_commits", return_value=False),
+            patch("dgov.done._agent_still_running", return_value=False),
+            patch("dgov.done.get_backend") as mock_be,
+        ):
+            mock_be.return_value.is_alive.return_value = True
+            result = _is_done(
+                session_root,
+                slug,
+                pane_record=pane_record,
+                done_strategy=DoneStrategy(type="api"),
+                alive=True,
+                current_command="bash",
+                _stable_state={},
+            )
+
+        # Shell return without done signal and without commits -> FAILED
+        assert result is True
+        updated = get_pane(session_root, slug)
+        assert updated["state"] == PaneState.FAILED
+
+
 # ---------------------------------------------------------------------------
 # pane_blocked event
 # ---------------------------------------------------------------------------
