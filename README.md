@@ -64,7 +64,7 @@ The Governor and Workers communicate through three primary channels:
 
 1.  **State DB (SQLite):** Authoritative state (active, done, merged) and event journal.
 2.  **Filesystem (done signals):** Workers touch `.dgov/done/<slug>` on success or `.dgov/done/<slug>.exit` on failure. These are authoritative signals that override background detection.
-3.  **Tmux/Pseudo-terminal:** The governor captures worker output for stabilization detection and can send keystrokes/responses back to the agent via `dgov pane respond`.
+3.  **Tmux/Pseudo-terminal:** The governor captures worker output for stabilization detection and can send text back to a running worker via `dgov pane message`.
 
 Done detection uses a prioritized fallback strategy:
 - **Authoritative:** Presence of a `.done` or `.done.exit` file.
