@@ -11,6 +11,21 @@ import click
 from dgov.cli import SESSION_ROOT_OPTION
 
 
+def _get_ev_field(ev: dict, field: str) -> object:
+    """Read field from flattened event, with legacy fallback to JSON data blob."""
+    # Try top-level flattened field first
+    if field in ev:
+        return ev[field]
+    # Legacy fallback: parse JSON from 'data' string
+    data = ev.get("data")
+    if isinstance(data, str):
+        try:
+            return json.loads(data).get(field)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
 @click.command("wait")
 @click.option("--interrupts", is_flag=True, help="Block on governor interrupts and show payload.")
 @click.option(
@@ -47,12 +62,12 @@ def wait_cmd(interrupts, project_root, session_root):
             kind = ev["event"]
 
             if kind == "dag_blocked":
-                data = json.loads(ev["data"])
-                report_path = data.get("report_path")
-                click.secho(
-                    f"\n[INTERRUPT] Task {data.get('task')} is blocked!", fg="red", bold=True
-                )
-                click.echo(f"Reason: {data.get('reason')}")
+                # Read from flattened event contract (top-level fields)
+                task = _get_ev_field(ev, "task")
+                reason = _get_ev_field(ev, "reason")
+                report_path = _get_ev_field(ev, "report_path")
+                click.secho(f"\n[INTERRUPT] Task {task} is blocked!", fg="red", bold=True)
+                click.echo(f"Reason: {reason}")
 
                 if report_path and Path(report_path).is_file():
                     report = json.loads(Path(report_path).read_text())
@@ -72,17 +87,13 @@ def wait_cmd(interrupts, project_root, session_root):
                     return
 
             if kind == "dag_cancelled":
-                data = json.loads(ev["data"])
-                click.secho(
-                    f"\nDAG CANCELLED: Run {data.get('dag_run_id')}", fg="yellow", bold=True
-                )
+                dag_run_id = _get_ev_field(ev, "dag_run_id")
+                click.secho(f"\nDAG CANCELLED: Run {dag_run_id}", fg="yellow", bold=True)
                 return
 
             if kind in ("dag_completed", "dag_failed"):
-                data = json.loads(ev["data"])
-                status = data.get("status", kind.split("_")[1])
+                dag_run_id = _get_ev_field(ev, "dag_run_id")
+                status = _get_ev_field(ev, "status") or kind.split("_")[1]
                 color = "green" if status == "completed" else "red"
-                click.secho(
-                    f"\nDAG {status.upper()}: Run {data.get('dag_run_id')}", fg=color, bold=True
-                )
+                click.secho(f"\nDAG {status.upper()}: Run {dag_run_id}", fg=color, bold=True)
                 return

@@ -886,7 +886,70 @@ class TestTopLevelCommands:
         mock_emit.assert_not_called()
 
 
-class TestDagCliCommand:
+class TestDagWaitCommand:
+    """Regression tests for dgov wait event payload handling."""
+
+    def test_wait_top_level_event_payload(self, runner: CliRunner) -> None:
+        """dgov wait succeeds on dag_completed with top-level dag_run_id/status and no data key."""
+        # Simulate a flattened event (no 'data' key) - the new contract from wait_for_events()
+        top_level_event = {
+            "id": 42,
+            "ts": "2026-03-30T12:00:00Z",
+            "event": "dag_completed",
+            "pane": "test-run",
+            "dag_run_id": "run-123",
+            "status": "completed",
+            # Note: no 'data' key - this is the flattened contract
+        }
+
+        with (
+            patch("dgov.persistence.latest_event_id", return_value=0),
+            patch("dgov.persistence.wait_for_events", return_value=[top_level_event]),
+        ):
+            result = runner.invoke(cli, ["wait"])
+
+        assert result.exit_code == 0
+        assert "DAG COMPLETED" in result.output
+        assert "run-123" in result.output
+
+    def test_wait_interrupts_top_level_event_payload(self, runner: CliRunner) -> None:
+        """dgov wait --interrupts prints blocked-task context from top-level event fields."""
+        # Simulate a flattened dag_blocked event with top-level fields
+        blocked_event = {
+            "id": 43,
+            "ts": "2026-03-30T12:01:00Z",
+            "event": "dag_blocked",
+            "pane": "test-run",
+            "task": "fix-parser",
+            "reason": "Preflight failed: merge conflicts detected",
+            "report_path": "/tmp/report.json",
+            # Note: no 'data' key - this is the flattened contract
+        }
+
+        # Create a mock report file
+        report_content = json.dumps(
+            {
+                "role": "worker",
+                "log_tail": "Error: cannot merge",
+                "diff": "diff --git a/file.py",
+            }
+        )
+
+        with (
+            patch("dgov.persistence.latest_event_id", return_value=0),
+            patch("dgov.persistence.wait_for_events", return_value=[blocked_event]),
+            patch("pathlib.Path.is_file", return_value=True),
+            patch("pathlib.Path.read_text", return_value=report_content),
+        ):
+            result = runner.invoke(cli, ["wait", "--interrupts"])
+
+        assert result.exit_code == 0
+        assert "[INTERRUPT]" in result.output
+        assert "fix-parser" in result.output
+        assert "Preflight failed" in result.output
+        assert "worker" in result.output  # from report
+        assert "cannot merge" in result.output  # from log_tail
+
     """Tests for dgov dag CLI."""
 
     def test_dag_run_dry_run(self, monkeypatch, tmp_path):
