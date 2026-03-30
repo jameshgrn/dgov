@@ -103,6 +103,7 @@ class TestStatusCmd:
             patch("dgov.status.list_worker_panes", return_value=[]),
             patch("dgov.agents.load_registry", return_value={}),
             patch("dgov.agents.detect_installed_agents", return_value=[]),
+            patch("dgov.router._load_routing_tables", return_value={}),
         ):
             result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
 
@@ -110,7 +111,7 @@ class TestStatusCmd:
         # Should have human-readable output starting with "dgov status:"
         assert result.output.strip().startswith("dgov status:")
         assert "0 panes" in result.output
-        assert "agents: 0 installed, all healthy" in result.output
+        assert "agents: 0 routed, 0 healthy" in result.output
 
     def test_status_with_panes_human_readable(self, runner: CliRunner, tmp_path: Path) -> None:
         """Test status without --json outputs human-readable summary."""
@@ -174,18 +175,109 @@ class TestStatusCmd:
         )
         registry = {"test-agent": agent_def}
 
+        # Mock routing tables to mark agent as routed
         with (
             patch("dgov.status.list_worker_panes", return_value=[]),
             patch("dgov.agents.load_registry", return_value=registry),
             patch("dgov.agents.detect_installed_agents", return_value=["test-agent"]),
+            patch("dgov.router._load_routing_tables", return_value={"worker": ["test-agent"]}),
         ):
             result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
 
         assert result.exit_code == 0
         output = result.output
-        assert "1 installed" in output
+        assert "1 routed" in output
         assert "0 healthy" in output
-        assert "1 unhealthy" in output
+        assert "1 routed unhealthy" in output
+
+    def test_status_does_not_count_unprobed_as_healthy(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test status does not count agents without health checks as healthy."""
+        from types import SimpleNamespace
+
+        from dgov.agents import HealthConfig
+
+        transport = SimpleNamespace(type="positional")
+        # Agent without health check (unprobed)
+        health = HealthConfig(check=None)
+        agent_def = SimpleNamespace(
+            name="UnprobedAgent",
+            transport=transport,
+            source="builtin",
+            health=health,
+        )
+        registry = {"unprobed-agent": agent_def}
+
+        # Mock routing tables to mark agent as routed
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch("dgov.agents.detect_installed_agents", return_value=["unprobed-agent"]),
+            patch("dgov.router._load_routing_tables", return_value={"worker": ["unprobed-agent"]}),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        # Should show 1 routed, 0 healthy (unprobed doesn't count as healthy)
+        assert "1 routed" in output
+        assert "0 healthy" in output
+        # Should NOT say "all healthy" or count unprobed as healthy
+        assert "all healthy" not in output
+
+    def test_status_shows_optional_unavailable_separately(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """Test status distinguishes routed unhealthy from optional unavailable."""
+        from types import SimpleNamespace
+
+        from dgov.agents import HealthConfig
+
+        transport = SimpleNamespace(type="positional")
+        # Routed agent with failing health check
+        routed_health = HealthConfig(check="exit 1")
+        routed_agent = SimpleNamespace(
+            name="RoutedAgent",
+            transport=transport,
+            source="builtin",
+            health=routed_health,
+        )
+        # Optional (non-routed) agent with failing health check
+        optional_health = HealthConfig(check="exit 1")
+        optional_agent = SimpleNamespace(
+            name="OptionalAgent",
+            transport=transport,
+            source="builtin",
+            health=optional_health,
+        )
+        registry = {
+            "routed-agent": routed_agent,
+            "optional-agent": optional_agent,
+        }
+
+        # Mock routing tables - only routed-agent is in routing table
+        with (
+            patch("dgov.status.list_worker_panes", return_value=[]),
+            patch("dgov.agents.load_registry", return_value=registry),
+            patch(
+                "dgov.agents.detect_installed_agents",
+                return_value=["routed-agent", "optional-agent"],
+            ),
+            patch(
+                "dgov.router._load_routing_tables",
+                return_value={"worker": ["routed-agent"]},
+            ),
+        ):
+            result = runner.invoke(cli, ["status", "-r", str(tmp_path)])
+
+        assert result.exit_code == 0
+        output = result.output
+        # Should show routed unhealthy separately from optional unavailable
+        assert "1 routed unhealthy" in output
+        assert "1 optional unavailable" in output
+        # Should not conflate them
+        assert "2 unhealthy" not in output
 
     def test_status_human_readable_separates_preserved_terminal_evidence(
         self, runner: CliRunner, tmp_path: Path

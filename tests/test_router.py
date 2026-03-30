@@ -264,7 +264,8 @@ class TestResolveAgent:
         assert exc_info.value.failures == {"missing-agent": [DegradationReason.NOT_REGISTERED]}
         assert exc_info.value.get_state() == DegradationState.FULL_FAILURE
 
-    def test_degrades_to_first_backend_when_all_are_health_blocked(self, tmp_path, monkeypatch):
+    def test_raises_when_all_candidates_health_blocked(self, tmp_path, monkeypatch):
+        """When all backends fail health, raises DegradationError."""
         monkeypatch.setattr(
             "dgov.router._load_routing_tables",
             lambda *_a: {"qwen-test": ["sick-one", "sick-two"]},
@@ -291,9 +292,14 @@ class TestResolveAgent:
         monkeypatch.setattr("dgov.backend.get_backend", lambda: FakeBackend())
         monkeypatch.setattr("dgov.persistence.all_panes", lambda *a: [])
 
-        resolved, routed_from = resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
-        assert resolved == "sick-one"
-        assert routed_from == "qwen-test"
+        with pytest.raises(DegradationError) as exc_info:
+            resolve_agent("qwen-test", str(tmp_path), str(tmp_path))
+
+        # Verify the error contains health failure reasons
+        assert DegradationReason.HEALTH_FAILURE in exc_info.value.get_reasons()
+        assert exc_info.value.get_state() == DegradationState.FULL_FAILURE
+        # Should list both backends as failing
+        assert len(exc_info.value.tried) == 2
 
     def test_resolve_agent_least_loaded(self, monkeypatch):
         """Verify router picks least-loaded backend, not first-available."""

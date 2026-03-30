@@ -333,15 +333,8 @@ def resolve_agent(
         logger.info("Selected least-loaded backend %s for %s", best[0], name)
         return best[0], name
 
-    if degraded_candidates:
-        backend_id = degraded_candidates[0]
-        logger.warning(
-            "Routing %s degraded to %s because all healthy backends were unavailable",
-            name,
-            backend_id,
-        )
-        return backend_id, name
-
+    # All candidates failed health checks — raise DegradationError
+    # Health failure/timeout is hard unavailability, not a degraded fallback
     raise DegradationError(tried, backend_failures)
 
 

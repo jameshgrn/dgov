@@ -491,25 +491,60 @@ def status(project_root, session_root, output_json):
         # Count healthy agents (parallel health checks — serial was 3-4s)
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        def _check_health(agent_id: str) -> str | None:
+        def _check_health(agent_id: str) -> tuple[str, str | None]:
+            """Check health and return (agent_id, status).
+
+            Returns:
+                (agent_id, None) if healthy or no health check
+                (agent_id, "unhealthy") if health check fails
+                (agent_id, "timeout") if health check times out
+            """
             agent_def = registry.get(agent_id)
             if not agent_def or not agent_def.health.check:
-                return None
+                return (agent_id, "unprobed")
             try:
                 result = subprocess.run(
                     agent_def.health.check, shell=True, capture_output=True, text=True, timeout=5
                 )
-                return agent_id if result.returncode != 0 else None
+                if result.returncode != 0:
+                    return (agent_id, "unhealthy")
+                return (agent_id, None)
             except (subprocess.TimeoutExpired, OSError):
-                return agent_id
+                return (agent_id, "timeout")
 
-        unhealthy: list[str] = []
+        # Track health results by category
+        routed_unhealthy: list[str] = []
+        routed_unprobed: list[str] = []
+        optional_unavailable: list[str] = []
+
+        # Load routing tables to identify project-routed backends
+        from dgov.router import _load_routing_tables
+
+        routing_tables = _load_routing_tables(project_root)
+        routed_backends: set[str] = set()
+        for backends in routing_tables.values():
+            routed_backends.update(backends)
+
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = {pool.submit(_check_health, aid): aid for aid in installed}
             for fut in as_completed(futures):
-                bad = fut.result()
-                if bad:
-                    unhealthy.append(bad)
+                agent_id, status = fut.result()
+                is_routed = agent_id in routed_backends
+                if status == "unhealthy" or status == "timeout":
+                    if is_routed:
+                        routed_unhealthy.append(agent_id)
+                    else:
+                        optional_unavailable.append(agent_id)
+                elif status == "unprobed":
+                    if is_routed:
+                        routed_unprobed.append(agent_id)
+
+        # Calculate healthy counts for routed agents only
+        routed_with_health = [
+            aid for aid in installed if aid in routed_backends and aid not in routed_unprobed
+        ]
+        routed_healthy_count = len(routed_with_health) - len(routed_unhealthy)
+        total_routed = len([aid for aid in installed if aid in routed_backends])
 
         # Format human-readable output
         lines = []
@@ -539,15 +574,20 @@ def status(project_root, session_root, output_json):
         if failed_count > 0:
             lines[-1] += f", {failed_count} failed"
 
-        # Agent health summary
-        healthy_count = len(installed) - len(unhealthy)
-        if unhealthy:
-            unhealthy_str = f"{len(unhealthy)} unhealthy"
+        # Agent health summary — only count routed backends as healthy/unhealthy
+        # Unprobed agents are not counted as healthy (they have unknown status)
+        if routed_unhealthy or optional_unavailable:
+            unhealthy_parts = []
+            if routed_unhealthy:
+                unhealthy_parts.append(f"{len(routed_unhealthy)} routed unhealthy")
+            if optional_unavailable:
+                unhealthy_parts.append(f"{len(optional_unavailable)} optional unavailable")
+            unhealthy_str = ", ".join(unhealthy_parts)
             lines.append(
-                f"agents: {len(installed)} installed, {healthy_count} healthy, {unhealthy_str}"
+                f"agents: {total_routed} routed, {routed_healthy_count} healthy, {unhealthy_str}"
             )
         else:
-            lines.append(f"agents: {len(installed)} installed, all healthy")
+            lines.append(f"agents: {total_routed} routed, {routed_healthy_count} healthy")
 
         # Recent failures from events table (kind LIKE fail)
         try:
