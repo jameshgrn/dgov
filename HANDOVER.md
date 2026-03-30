@@ -1,9 +1,9 @@
-# Handover: recovered Claude carry-over and cleaned preserved worktrees
+# Handover: control-plane hardening landed and doctor is green
 
 ## Session context
-- Date: 2026-03-29T23:47:34Z
-- Branch: main @ 006697f
-- Last commit: Clean stale preflight health probe fixtures
+- Date: 2026-03-29T20:57:45-0400
+- Branch: main @ f936b4c
+- Last commit: Prefer project routing in health summary
 
 ## Open panes
 | Slug | State | Description |
@@ -14,24 +14,26 @@
 - None.
 
 ## Blockers/debt
-- None.
+- No tracked blockers.
+- Operational note: `recent failures: 6` in `dgov status` is historical event noise, not an open ledger bug.
 
 ## Next steps
-1. Push `main` to `origin/main` when ready. The branch is 10 commits ahead after the recovered Claude work and follow-up cleanup.
-2. Start the next control-plane task from clean `main`; there is no pane backlog or preserved Claude worktree left to recover.
+1. Push `main` to `origin/main` when ready.
+2. If you want another hardening pass, the remaining surfaced risk is real capacity, not stale state: the 4 routed unhealthy backends are the down MLX pool, 3 routed backends are unprobed frontier tools, and 5 optional unavailable backends are outside the repo's local routing policy.
 
 ## Notes
-- Recovered and landed Claude carry-over commits:
-  `c192e23` Replace merge resolve magic strings with ConflictResolveStrategy StrEnum
-  `e340416` Replace CLI polling sleeps with event-driven waits
-  `c0915cd` Replace role magic strings with PaneRole StrEnum
-- Verification on the recovered state passed:
-  `uv run ruff check` on touched files
-  `uv run ruff format --check` on touched files
-  `uv run ty check src/dgov`
-  targeted unit bundle: `808 passed, 10 deselected`
-- Removed preserved Claude worktrees under `/Users/jakegearon/projects/dgov/.claude/worktrees` and deleted their `worktree-agent-*` branches.
-- Follow-up cleanup on `main`:
-  `006697f` Clean stale preflight health probe fixtures
-- Local bootstrap skill now checks River tunnel health via the SSH control socket and no longer points governors at `localhost:8080` or `pane create --land`.
-- Repo state at handoff is clean: `git status --short` shows no changes.
+- Landed stale-worktree cleanup on main:
+  `0037e3b` Harden stale worktree cleanup
+  `a6cdb49` Merge r175-harden-stale-worktree-cleanup
+- Landed routing/health reporting hardening on main:
+  `7775b18` Harden agent health reporting
+  `f936b4c` Prefer project routing in health summary
+- `uv run dgov doctor -r .` now passes fully, including `no orphaned worktrees -- 0 tracked`.
+- Final status at handoff:
+  `dgov status: 0 panes`
+  `agents: 15 routed, 8 healthy, 4 routed unhealthy, 3 unprobed, 5 optional unavailable`
+  `recent failures: 6`
+- Verification run on main for the final hardening passes:
+  `uv run ruff check` / `uv run ruff format --check`
+  `uv run ty check`
+  targeted unit slices for stale worktree cleanup, router/admin health reporting, and status summary fix-forward all passed.
