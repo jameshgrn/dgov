@@ -231,6 +231,8 @@ def _normalize_relative_paths(paths: list[str], *, label: str) -> tuple[str, ...
             raise ValueError(f"Globs not allowed in {label}: {path!r}")
         if Path(path).is_absolute():
             raise ValueError(f"Paths in {label} must be relative: {path!r}")
+        if ".." in Path(path).parts:
+            raise ValueError(f"Paths in {label} must not traverse parent directories: {path!r}")
     return tuple(sorted(paths))
 
 

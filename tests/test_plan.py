@@ -301,6 +301,64 @@ edit = ["/etc/passwd"]
         with pytest.raises(ValueError, match="must be relative"):
             parse_plan_file(_write_plan(tmp_path, toml_content))
 
+    def test_parent_traversal_in_file_spec_rejected(self, tmp_path):
+        """File specs with '..' path traversal raise ValueError."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+[units.bad]
+summary = "bad unit"
+prompt = "do it"
+commit_message = "commit"
+[units.bad.files]
+edit = ["../outside.py"]
+"""
+        with pytest.raises(ValueError, match="must not traverse parent directories"):
+            parse_plan_file(_write_plan(tmp_path, toml_content))
+
+    def test_parent_traversal_in_middle_of_path_rejected(self, tmp_path):
+        """File specs with '..' in middle of path raise ValueError."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+[units.bad]
+summary = "bad unit"
+prompt = "do it"
+commit_message = "commit"
+[units.bad.files]
+edit = ["src/../outside.py"]
+"""
+        with pytest.raises(ValueError, match="must not traverse parent directories"):
+            parse_plan_file(_write_plan(tmp_path, toml_content))
+
+    def test_parent_traversal_in_eval_scope_rejected(self, tmp_path):
+        """Eval scope with '..' path traversal raises ValueError."""
+        toml_content = """
+[plan]
+version = 1
+name = "test-plan"
+goal = "test goal"
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "Test"
+evidence = "true"
+scope = ["../outside.py"]
+[units.a]
+summary = "a"
+prompt = "do a"
+commit_message = "commit a"
+satisfies = ["E1"]
+[units.a.files]
+edit = ["a.py"]
+"""
+        with pytest.raises(ValueError, match="must not traverse parent directories"):
+            parse_plan_file(_write_plan(tmp_path, toml_content))
+
 
 class TestScratchPlans:
     def test_scratch_plans_dir_uses_session_root(self, tmp_path: Path) -> None:
