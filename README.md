@@ -20,6 +20,7 @@ stateDiagram-v2
     active --> timed_out: wait timeout
     active --> abandoned: pane dead
     active --> closed: force-close
+    active --> escalated: governor escalate
     active --> superseded: replaced
 
     done --> reviewed_pass: review (pass)
