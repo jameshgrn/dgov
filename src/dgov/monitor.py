@@ -60,7 +60,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DagEventFactory = Callable[[str, str, dict[str, object]], DagEvent]
-_FRESH_PANE_GRACE_S = 5.0
+_FRESH_PANE_GRACE_S = 30.0
 
 
 def _source_hash() -> str:
