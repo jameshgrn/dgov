@@ -65,7 +65,8 @@ def wait_cmd(interrupts, project_root, session_root):
                 # Read from flattened event contract (top-level fields)
                 task = _get_ev_field(ev, "task")
                 reason = _get_ev_field(ev, "reason")
-                report_path = _get_ev_field(ev, "report_path")
+                report_path_val = _get_ev_field(ev, "report_path")
+                report_path = report_path_val if isinstance(report_path_val, str) else None
                 click.secho(f"\n[INTERRUPT] Task {task} is blocked!", fg="red", bold=True)
                 click.echo(f"Reason: {reason}")
 
@@ -93,7 +94,9 @@ def wait_cmd(interrupts, project_root, session_root):
 
             if kind in ("dag_completed", "dag_failed"):
                 dag_run_id = _get_ev_field(ev, "dag_run_id")
-                status = _get_ev_field(ev, "status") or kind.split("_")[1]
+                status_val = _get_ev_field(ev, "status")
+                # Narrow to str: use event kind as fallback when status is missing or non-string
+                status = status_val if isinstance(status_val, str) else kind.split("_")[1]
                 color = "green" if status == "completed" else "red"
                 click.secho(f"\nDAG {status.upper()}: Run {dag_run_id}", fg=color, bold=True)
                 return

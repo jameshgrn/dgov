@@ -912,6 +912,28 @@ class TestDagWaitCommand:
         assert "DAG COMPLETED" in result.output
         assert "run-123" in result.output
 
+    def test_wait_failed_event_without_status(self, runner: CliRunner) -> None:
+        """dgov wait handles dag_failed event without status field, falling back to event kind."""
+        # Simulate a dag_failed event with no 'status' field - should fall back to "failed"
+        failed_event_no_status = {
+            "id": 44,
+            "ts": "2026-03-30T12:02:00Z",
+            "event": "dag_failed",
+            "pane": "test-run",
+            "dag_run_id": "run-456",
+            # Note: no 'status' key - should fall back to event kind "failed"
+        }
+
+        with (
+            patch("dgov.persistence.latest_event_id", return_value=0),
+            patch("dgov.persistence.wait_for_events", return_value=[failed_event_no_status]),
+        ):
+            result = runner.invoke(cli, ["wait"])
+
+        assert result.exit_code == 0
+        assert "DAG FAILED" in result.output
+        assert "run-456" in result.output
+
     def test_wait_interrupts_top_level_event_payload(self, runner: CliRunner) -> None:
         """dgov wait --interrupts prints blocked-task context from top-level event fields."""
         # Simulate a flattened dag_blocked event with top-level fields
