@@ -30,7 +30,7 @@ from dgov.actions import (
 from dgov.dag_parser import DagDefinition
 from dgov.kernel import DagKernel
 from dgov.persistence import emit_event
-from dgov.settlement import validate_sandbox
+from dgov.settlement import review_sandbox, validate_sandbox
 from dgov.types import TaskState
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
@@ -123,21 +123,41 @@ class EventDagRunner:
                     task_slug=exit_event.task_slug,
                 )
 
-                # Auto-approve successful reviews for happy path
+                # Execute fast review gate (microseconds) — fail before spending on settlement
                 review_actions = [a for a in actions if isinstance(a, ReviewTask)]
                 for ra in review_actions:
+                    wt = self._worktrees.get(ra.task_slug)
+                    if not wt:
+                        # Fallback: worktree already cleaned up, fail
+                        new_actions = self.kernel.handle(
+                            TaskReviewDone(
+                                ra.task_slug,
+                                passed=False,
+                                verdict="worktree_missing",
+                                error="Worktree not found for review",
+                            )
+                        )
+                        actions.extend(new_actions)
+                        continue
+
+                    review_result = review_sandbox(wt.path)
+
                     new_actions = self.kernel.handle(
                         TaskReviewDone(
-                            ra.task_slug, passed=True, verdict="auto-pass", commit_count=1
+                            ra.task_slug,
+                            passed=review_result.passed,
+                            verdict=review_result.verdict,
+                            commit_count=len(review_result.actual_files),
                         )
                     )
                     actions.extend(new_actions)
                     emit_event(
                         self.session_root,
-                        "review_pass",
+                        "review_pass" if review_result.passed else "review_fail",
                         ra.pane_slug,
                         task_slug=ra.task_slug,
-                        verdict="auto-pass",
+                        verdict=review_result.verdict,
+                        error=review_result.error,
                     )
 
                 continue

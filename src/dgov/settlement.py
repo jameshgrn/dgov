@@ -3,9 +3,10 @@
 Pillar #8: Falsifiable Validation - All work is machine-verified before merge.
 Pillar #10: Fail-Closed - Rejected work is never merged.
 
-Two phases:
-1. autofix_sandbox() — mechanical fixes (format, lint --fix) BEFORE commit
-2. validate_sandbox() — read-only gate AFTER commit
+Three phases:
+1. review_sandbox() — FAST git sanity checks BEFORE settlement (microseconds)
+2. autofix_sandbox() — mechanical fixes (format, lint --fix) BEFORE commit
+3. validate_sandbox() — read-only gate AFTER commit (milliseconds)
 """
 
 from __future__ import annotations
@@ -27,6 +28,115 @@ class GateResult:
 
     passed: bool
     error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class ReviewResult:
+    """The outcome of a fast review gate."""
+
+    passed: bool
+    verdict: str
+    actual_files: frozenset[str] = frozenset()
+    error: Optional[str] = None
+
+
+def review_sandbox(
+    worktree_path: Path, claimed_files: Optional[list[str]] = None, max_diff_lines: int = 100
+) -> ReviewResult:
+    """FAST review gate — git sanity checks in microseconds.
+
+    Checks:
+    1. Empty diff (worker produced nothing)
+    2. Scope enforcement (touched unclaimed files)
+    3. Diff size (runaway worker)
+    4. Dirty worktree (left mess)
+
+    Returns ReviewResult with actual_files for downstream settlement.
+    """
+    try:
+        # 1. Check for any changes
+        diff_stat = subprocess.run(
+            ["git", "diff", "--stat"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if diff_stat.returncode != 0:
+            return ReviewResult(passed=False, verdict="git_error", error="git diff --stat failed")
+
+        diff_lines = diff_stat.stdout.strip()
+        if not diff_lines:
+            return ReviewResult(passed=False, verdict="empty_diff", error="No changes produced")
+
+        # 2. Check diff size (number of files changed + insertions/deletions)
+        stat_lines = diff_lines.split("\n")
+        if len(stat_lines) > max_diff_lines:
+            return ReviewResult(
+                passed=False,
+                verdict="diff_too_large",
+                error=f"Diff has {len(stat_lines)} files/lines, max is {max_diff_lines}",
+            )
+
+        # 3. Get actual changed files
+        diff_names = subprocess.run(
+            ["git", "diff", "--name-only"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if diff_names.returncode != 0:
+            return ReviewResult(
+                passed=False, verdict="git_error", error="git diff --name-only failed"
+            )
+
+        actual_files = frozenset(f for f in diff_names.stdout.strip().split("\n") if f)
+        if not actual_files:
+            return ReviewResult(passed=False, verdict="empty_diff", error="No files changed")
+
+        # 4. Check for dirty worktree (untracked or unstaged files)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if status.returncode != 0:
+            return ReviewResult(
+                passed=False, verdict="git_error", error="git status --porcelain failed"
+            )
+
+        # Parse porcelain output: XY PATH or XY ORIG_PATH -> PATH (for renames)
+        # X = index status, Y = working tree status
+        # ?? = untracked, anything else in Y = unstaged changes
+        for line in status.stdout.strip().split("\n"):
+            if not line:
+                continue
+            xy = line[:2]
+            # Untracked files or unstaged modifications
+            if xy == "??" or (xy[1] != " " and xy[1] != "?"):
+                return ReviewResult(
+                    passed=False,
+                    verdict="dirty_worktree",
+                    actual_files=actual_files,
+                    error="Worker left untracked or unstaged files",
+                )
+
+        # 5. Scope enforcement (if claimed files provided)
+        if claimed_files:
+            claimed = frozenset(claimed_files)
+            unclaimed = actual_files - claimed
+            if unclaimed:
+                return ReviewResult(
+                    passed=False,
+                    verdict="scope_violation",
+                    actual_files=actual_files,
+                    error=f"Touched unclaimed files: {sorted(unclaimed)}",
+                )
+
+        return ReviewResult(passed=True, verdict="clean", actual_files=actual_files)
+
+    except Exception as exc:
+        return ReviewResult(passed=False, verdict="exception", error=f"Review failed: {exc}")
 
 
 def autofix_sandbox(worktree_path: Path) -> None:
