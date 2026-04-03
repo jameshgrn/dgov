@@ -3,7 +3,9 @@
 Pillar #8: Falsifiable Validation - All work is machine-verified before merge.
 Pillar #10: Fail-Closed - Rejected work is never merged.
 
-Pure validation only — no auto-fix. Workers must produce clean code.
+Two phases:
+1. autofix_sandbox() — mechanical fixes (format, lint --fix) BEFORE commit
+2. validate_sandbox() — read-only gate AFTER commit
 """
 
 from __future__ import annotations
@@ -27,18 +29,22 @@ class GateResult:
     error: Optional[str] = None
 
 
-def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -> GateResult:
-    """Run Ruff and Sentrux checks on changed files in the sandbox.
+def autofix_sandbox(worktree_path: Path) -> None:
+    """Mechanical auto-fix: format + lint fix. Called BEFORE commit.
 
-    No auto-fix — if the code isn't clean, it's rejected.
+    Modifies files in-place. Safe because nothing is committed yet.
     """
-    try:
-        # 0. Inject policy context
-        sx_src = Path(project_root) / ".sentrux"
-        sx_dst = worktree_path / ".sentrux"
-        if sx_src.exists():
-            shutil.copytree(sx_src, sx_dst, dirs_exist_ok=True)
+    py_files = list(worktree_path.rglob("*.py"))
+    if not py_files:
+        return
+    rel = [str(f.relative_to(worktree_path)) for f in py_files]
+    subprocess.run(["ruff", "format", *rel], cwd=worktree_path, capture_output=True)
+    subprocess.run(["ruff", "check", "--fix", *rel], cwd=worktree_path, capture_output=True)
 
+
+def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -> GateResult:
+    """Read-only validation gate. Called AFTER commit. No mutations."""
+    try:
         # 1. Identify changed python files
         diff_res = subprocess.run(
             ["git", "diff", "--name-only", base_commit, "HEAD"],
@@ -72,19 +78,24 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
-        # 4. Sentrux gate (policy)
-        with tempfile.TemporaryFile(mode="w+") as tmp:
-            res_sx = subprocess.run(
-                ["sentrux", "gate", "."],
-                cwd=worktree_path,
-                stdout=tmp,
-                stderr=subprocess.STDOUT,
-            )
-            tmp.seek(0)
-            sx_output = tmp.read()
+        # 4. Sentrux gate (policy) — skipped if no baseline exists
+        baseline = Path(project_root) / ".sentrux" / "baseline.json"
+        if baseline.exists():
+            sx_dst = worktree_path / ".sentrux"
+            if not sx_dst.exists():
+                shutil.copytree(baseline.parent, sx_dst, dirs_exist_ok=True)
+            with tempfile.TemporaryFile(mode="w+") as tmp:
+                res_sx = subprocess.run(
+                    ["sentrux", "gate", "."],
+                    cwd=worktree_path,
+                    stdout=tmp,
+                    stderr=subprocess.STDOUT,
+                )
+                tmp.seek(0)
+                sx_output = tmp.read()
 
-        if res_sx.returncode != 0:
-            return GateResult(passed=False, error=f"Policy violation (Sentrux):\n{sx_output}")
+            if res_sx.returncode != 0:
+                return GateResult(passed=False, error=f"Policy violation (Sentrux):\n{sx_output}")
 
         return GateResult(passed=True)
 

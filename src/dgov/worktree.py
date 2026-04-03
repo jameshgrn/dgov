@@ -42,9 +42,14 @@ class Worktree(NamedTuple):
 
 
 def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
-    """Create an isolated worktree for an Atomic Attempt."""
+    """Create an isolated worktree for an Atomic Attempt.
+
+    Worktrees are created as siblings of the project root (not inside it)
+    to avoid git nesting issues where the worktree resolves to the parent
+    repo's tree root instead of its own.
+    """
     root = Path(project_root)
-    worktrees_dir = root / ".dgov" / "worktrees"
+    worktrees_dir = root.parent / f".dgov-worktrees-{root.name}"
     worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     wt_path = worktrees_dir / slug

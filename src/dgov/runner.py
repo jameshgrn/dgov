@@ -227,12 +227,17 @@ class EventDagRunner:
         loop = asyncio.get_running_loop()
         error = None
         try:
-            # 1. Commit
+            # 1. Auto-fix (format + lint fix) BEFORE commit
+            from dgov.settlement import autofix_sandbox
+
+            await loop.run_in_executor(self._executor, autofix_sandbox, wt.path)
+
+            # 2. Commit (includes auto-fixes)
             task = self.dag.tasks[action.task_slug]
             msg = task.commit_message or f"feat: completed {action.task_slug}"
             await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg)
 
-            # 2. Validate (pure gate — no auto-fix)
+            # 3. Validate (read-only gate)
             gate_result = await loop.run_in_executor(
                 self._executor, validate_sandbox, wt.path, wt.commit, self.session_root
             )
