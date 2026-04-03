@@ -1,0 +1,123 @@
+name = "monitor-sensor-refactor"
+description = "Refactor monitor to pure sensor (Option A) — strip DAG driving, simplify to structural observation only"
+
+[dag]
+name = "monitor-sensor-refactor"
+project_root = "."
+session_root = "."
+
+[tasks]
+
+[tasks.phase1-kernel]
+agent = "worker"
+files = { edit = ["src/dgov/monitor.py"] }
+summary = "Strip DAG kernel driving from monitor.py"
+prompt = """
+Read src/dgov/monitor.py. Strip all DAG kernel driving code to convert monitor to pure sensor:
+
+1. REMOVE these functions entirely:
+   - _drive_dag()
+   - _load_dag_run()
+   - _bootstrap_monitor_state()
+   - _reconcile_kernel_from_journal()
+   - _apply_monitor_events()
+   - _drain_dispatch_queue()
+   - _tracked_worker_records()
+
+2. REMOVE these dataclasses:
+   - DagMonitorState
+   - MonitorLoopState (or simplify to just event_cursor, active_slugs)
+
+3. REMOVE these globals:
+   - _DAG_EVENT_FACTORY dict
+   - _MONITOR_WAKE_EVENTS (simplify to just needed events)
+   - DagReactor import and stub class
+
+4. KEEP these essential functions:
+   - run_monitor() — simplify to minimal loop
+   - ensure_monitor_running() — keep flock singleton
+   - _wait_for_monitor_wakeup() — keep select() on pipe
+   - observe_worker() — keep as thin wrapper
+   - _source_hash(), _record_fast_failure() — keep staleness detection
+
+5. NEW minimal run_monitor() loop structure:
+   - Wake on pipe via _wait_for_monitor_wakeup()
+   - Get active panes from persistence
+   - For each pane: observe_worker() → if terminal phase → emit_event()
+   - Sleep/wait for next event
+
+The goal is ~120 lines of focused sensor code that only observes and emits events.
+"""
+commit_message = "Strip DAG driving from monitor — convert to pure sensor"
+timeout_s = 900
+
+[tasks.phase2-classification]
+agent = "worker"
+files = { edit = ["src/dgov/monitor.py"] }
+dependency = "phase1-kernel"
+summary = "Simplify classification to structural signals only"
+prompt = """
+Read the current src/dgov/monitor.py (after phase1). Further simplify classification:
+
+1. REMOVE poll_workers() — replace with minimal inline polling
+2. REMOVE classify_output() — use ObservationProvider directly via observe_worker()
+3. REMOVE _take_action() history/cooldown/consecutive logic:
+   - Remove history dict tracking
+   - Remove consecutive classification counting
+   - Remove 60s cooldown logic
+   - Remove "stuck detection" with 3+ consecutive
+
+4. SIMPLIFY to direct event emission:
+   - WorkerPhase.DONE → emit "pane_done"
+   - WorkerPhase.FAILED → emit "pane_failed"
+   - WorkerPhase.IDLE (with commits) → emit "monitor_auto_complete"
+   - Keep hook match handling if simple
+
+5. Keep observe_worker() as the single observation entry point.
+
+The monitor should do: poll → observe_worker() → if terminal → emit_event(). No state tracking between ticks.
+"""
+commit_message = "Simplify monitor classification — structural signals only"
+timeout_s = 900
+
+[tasks.phase3-cleanup]
+agent = "worker"
+files = { edit = ["src/dgov/monitor.py"] }
+dependency = "phase2-classification"
+summary = "Final cleanup — dead code removal"
+prompt = """
+Read src/dgov/monitor.py and do final cleanup:
+
+1. Remove unused imports (check what's actually used now)
+2. Remove _FRESH_PANE_GRACE_S if not needed (or keep if useful)
+3. Remove auto_merge, auto_retry parameters (already unused)
+4. Ensure all remaining code is reachable
+5. Target: clean, minimal sensor ~100-120 lines
+
+Verify: uv run ruff check src/dgov/monitor.py passes with no errors.
+"""
+commit_message = "Final monitor cleanup — minimal sensor complete"
+timeout_s = 600
+
+[tasks.regression-verify]
+agent = "worker"
+files = { create = [] }
+dependency = "phase3-cleanup"
+summary = "Verify minimal monitor still imports and functions"
+prompt = """
+Verify the refactored monitor:
+
+1. Run: uv run python -c "from dgov.monitor import run_monitor, ensure_monitor_running; print('OK')"
+2. Run: uv run python -c "from dgov.observation import observe_worker, WorkerPhase; print('OK')"
+3. Run: uv run ruff check src/dgov/monitor.py
+4. Check line count: wc -l src/dgov/monitor.py (should be ~120 lines)
+
+If any fail, report what needs fixing. Do not fix directly — report findings.
+"""
+commit_message = "Verify monitor refactor regression tests"
+timeout_s = 300
+
+[evals]
+import-check = "uv run python -c 'from dgov.monitor import run_monitor, ensure_monitor_running; print(\"OK\")'"
+ruff-clean = "uv run ruff check src/dgov/monitor.py"
+line-count = "wc -l src/dgov/monitor.py | awk '{print $1}'"

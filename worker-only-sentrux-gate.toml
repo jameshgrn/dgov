@@ -1,0 +1,134 @@
+[dag]
+name = "worker-only-sentrux-gate"
+project_root = "."
+session_root = "."
+max_concurrent = 2
+
+[tasks.worker_only_routing_config]
+summary = "Collapse live routing config to a single worker-only Kimi pool"
+agent = "worker"
+prompt = """1. Read /Users/jakegearon/projects/dgov/.dgov/agents.toml.
+2. Read /Users/jakegearon/projects/dgov/src/dgov/router.py.
+3. Edit /Users/jakegearon/projects/dgov/.dgov/agents.toml.
+4. Requirements:
+   - This repo is intentionally narrowing scope. Avoid architectural drift.
+   - Keep exactly one truthful logical dispatch role in the live repo config: `worker`.
+   - `worker` must route to the existing `kimi-k25-[0-4]` pool.
+   - Remove live `supervisor`, `manager`, `lt-gov`, and the fake T1/T2/T4 routing matrix from the real config.
+   - Keep the config explicit and small. No compatibility shims, no dead routes, no imaginary backends.
+   - `pi agent coder` remains the canonical launcher surface through the existing agent registry.
+5. Do not edit router.py in this task.
+6. git add /Users/jakegearon/projects/dgov/.dgov/agents.toml
+7. git commit -m "Collapse routing to worker-only pool"
+"""
+commit_message = "Collapse routing to worker-only pool"
+files = { edit = [".dgov/agents.toml"] }
+timeout_s = 900
+
+[tasks.worker_only_router_tests]
+summary = "Align router tests with the worker-only live contract"
+agent = "worker"
+depends_on = ["worker_only_routing_config"]
+prompt = """1. Read /Users/jakegearon/projects/dgov/tests/test_router.py.
+2. Read /Users/jakegearon/projects/dgov/.dgov/agents.toml.
+3. Edit /Users/jakegearon/projects/dgov/tests/test_router.py.
+4. Requirements:
+   - Preserve generic unit coverage for the router as a reusable parser/resolver.
+   - Update the integration assertions for the real repo config so they match the narrowed contract: only `worker` is routable in the live config.
+   - Remove or rewrite assertions that expect `supervisor`, `manager`, `validate-t3`, `audit-t3`, or `orient-t3` to be routable in the real config.
+   - Keep deterministic routing coverage.
+5. Run: uv run pytest /Users/jakegearon/projects/dgov/tests/test_router.py -q
+6. Run: uv run ruff check /Users/jakegearon/projects/dgov/tests/test_router.py
+7. Run: uv run ruff format /Users/jakegearon/projects/dgov/tests/test_router.py
+8. git add /Users/jakegearon/projects/dgov/tests/test_router.py
+9. git commit -m "Align router tests with worker-only routing"
+"""
+commit_message = "Align router tests with worker-only routing"
+files = { edit = ["tests/test_router.py"] }
+timeout_s = 900
+
+[tasks.worker_only_dogfood_tests]
+summary = "Align dogfood routed-event tests with the worker-only contract"
+agent = "worker"
+depends_on = ["worker_only_routing_config"]
+prompt = """1. Read /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py.
+2. Read /Users/jakegearon/projects/dgov/.dgov/agents.toml.
+3. Edit /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py.
+4. Requirements:
+   - The live contract is now worker-only.
+   - Remove or rewrite repo-level assumptions that rely on `generate-t3`, `supervisor`, or other extra logical roles in the live config.
+   - Keep the event-driven proof focused on the canonical path: `worker` resolves to a concrete Kimi backend and completes by emitted event truth.
+   - Preserve the existing regression coverage around event-driven completion.
+5. Run: uv run pytest /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py -q
+6. Run: uv run ruff check /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py
+7. Run: uv run ruff format /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py
+8. git add /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py
+9. git commit -m "Align dogfood tests with worker-only routing"
+"""
+commit_message = "Align dogfood tests with worker-only routing"
+files = { edit = ["tests/test_dogfood_routed_events.py"] }
+timeout_s = 900
+
+[tasks.sentrux_rules]
+summary = "Add a minimal Sentrux rules file for anti-drift gating"
+agent = "worker"
+prompt = """1. Read /Users/jakegearon/projects/dgov/.sentrux/current.json.
+2. Create /Users/jakegearon/projects/dgov/.sentrux/rules.toml.
+3. Requirements:
+   - Keep this file minimal and non-speculative.
+   - Add only rules that are true for the repo today and useful for drift detection.
+   - Start with a conservative anti-regression rule set, not an aspirational cleanup manifesto.
+   - Comment the file briefly so future workers know why it is intentionally small.
+4. Run: sentrux check /Users/jakegearon/projects/dgov
+5. git add /Users/jakegearon/projects/dgov/.sentrux/rules.toml
+6. git commit -m "Add minimal sentrux rules"
+"""
+commit_message = "Add minimal sentrux rules"
+files = { create = [".sentrux/rules.toml"] }
+timeout_s = 900
+
+[tasks.plan_gate_cli]
+summary = "Gate plan run with Sentrux baseline and post-run regression check"
+agent = "worker"
+depends_on = ["sentrux_rules"]
+prompt = """1. Read /Users/jakegearon/projects/dgov/src/dgov/cli/plan.py.
+2. Edit /Users/jakegearon/projects/dgov/src/dgov/cli/plan.py.
+3. Requirements:
+   - Keep `plan run` as the only plan surface.
+   - Before dispatching the plan, run `sentrux gate --save .` to write a fresh baseline.
+   - After the plan run completes, run `sentrux gate .` to detect structural regression.
+   - Fail fast with clear actionable errors if either Sentrux command fails.
+   - Preserve the existing plan output/reporting flow as much as possible.
+   - Do not add per-task or per-merge Sentrux scans. Plan-boundary only.
+   - If the plan itself fails, do not swallow that failure.
+4. Run: uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/cli/plan.py
+5. Run: uv run ruff format /Users/jakegearon/projects/dgov/src/dgov/cli/plan.py
+6. git add /Users/jakegearon/projects/dgov/src/dgov/cli/plan.py
+7. git commit -m "Gate plan run with sentrux"
+"""
+commit_message = "Gate plan run with sentrux"
+files = { edit = ["src/dgov/cli/plan.py"] }
+timeout_s = 900
+
+[tasks.plan_gate_tests]
+summary = "Add regression tests for plan-boundary Sentrux gating"
+agent = "worker"
+depends_on = ["plan_gate_cli"]
+prompt = """1. Read /Users/jakegearon/projects/dgov/src/dgov/cli/plan.py.
+2. Read /Users/jakegearon/projects/dgov/tests/test_status.py for CliRunner style.
+3. Create /Users/jakegearon/projects/dgov/tests/test_plan_cli.py.
+4. Cover these behaviors:
+   - `plan run` invokes `sentrux gate --save .` before dispatch.
+   - `plan run` invokes `sentrux gate .` after the runner completes.
+   - A pre-run Sentrux failure aborts the plan before dispatch.
+   - A post-run Sentrux failure surfaces as a plan failure without hiding the normal output path.
+5. Keep tests fast and isolated. Mock subprocess and the runner boundary; do not spawn tmux.
+6. Run: uv run pytest /Users/jakegearon/projects/dgov/tests/test_plan_cli.py -q
+7. Run: uv run ruff check /Users/jakegearon/projects/dgov/tests/test_plan_cli.py
+8. Run: uv run ruff format /Users/jakegearon/projects/dgov/tests/test_plan_cli.py
+9. git add /Users/jakegearon/projects/dgov/tests/test_plan_cli.py
+10. git commit -m "Add sentrux plan gate tests"
+"""
+commit_message = "Add sentrux plan gate tests"
+files = { create = ["tests/test_plan_cli.py"] }
+timeout_s = 900

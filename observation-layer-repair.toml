@@ -1,0 +1,95 @@
+[dag]
+name = "observation-layer-repair"
+project_root = "."
+session_root = "."
+max_concurrent = 2
+
+[tasks.active_pane_persistence]
+summary = "Persist active pane records at spawn so status surfaces can see live workers"
+agent = "worker"
+prompt = """1. Read /Users/jakegearon/projects/dgov/src/dgov/runner.py.
+2. Read /Users/jakegearon/projects/dgov/src/dgov/persistence/__init__.py.
+3. Read /Users/jakegearon/projects/dgov/src/dgov/persistence/schema.py.
+4. Read /Users/jakegearon/projects/dgov/src/dgov/status.py.
+5. Fix bug #26 at the first wrong layer.
+6. Requirements:
+   - Events and persisted state are truth. Do not add tmux polling, sleeps, or filesystem heuristics.
+   - When a real worker pane is spawned, persist a canonical active pane row immediately.
+   - Persist enough data for status/pane surfaces to identify the live worker: slug, prompt, pane_id, agent, project_root, worktree_path, branch_name, role, state, and file claims if available.
+   - Keep ownership clear: the spawn path should establish the pane record; status.py should remain a reader.
+   - Do not add compatibility shims or duplicate state owners.
+7. Run: uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/runner.py
+8. Run: uv run ruff format /Users/jakegearon/projects/dgov/src/dgov/runner.py
+9. git add /Users/jakegearon/projects/dgov/src/dgov/runner.py
+10. git commit -m "Persist active panes at spawn"
+"""
+commit_message = "Persist active panes at spawn"
+files = { edit = ["src/dgov/runner.py"] }
+timeout_s = 900
+
+[tasks.active_pane_regression_tests]
+summary = "Add regression coverage for live pane visibility during dispatch"
+agent = "worker"
+depends_on = ["active_pane_persistence"]
+prompt = """1. Read /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py.
+2. Read /Users/jakegearon/projects/dgov/tests/test_status.py.
+3. Read /Users/jakegearon/projects/dgov/src/dgov/runner.py.
+4. Add targeted regression coverage for bug #26.
+5. Requirements:
+   - Prove that an active pane record exists in canonical persistence while a worker is live or immediately after spawn on the real dispatch path.
+   - Test behavior, not implementation details.
+   - Keep tests fast and deterministic; mock tmux/process boundaries as needed.
+   - Do not use polling loops or filesystem-existence truth as the assertion mechanism.
+6. Run: uv run pytest /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py /Users/jakegearon/projects/dgov/tests/test_status.py -q
+7. Run: uv run ruff check /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py /Users/jakegearon/projects/dgov/tests/test_status.py
+8. Run: uv run ruff format /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py /Users/jakegearon/projects/dgov/tests/test_status.py
+9. git add /Users/jakegearon/projects/dgov/tests/test_dogfood_routed_events.py /Users/jakegearon/projects/dgov/tests/test_status.py
+10. git commit -m "Add active pane visibility regressions"
+"""
+commit_message = "Add active pane visibility regressions"
+files = { edit = ["tests/test_dogfood_routed_events.py", "tests/test_status.py"] }
+timeout_s = 900
+
+[tasks.pane_diff_owner]
+summary = "Hard-cut pane diff to a real local owner instead of missing inspection module"
+agent = "worker"
+prompt = """1. Read /Users/jakegearon/projects/dgov/src/dgov/cli/pane.py.
+2. Read /Users/jakegearon/projects/dgov/src/dgov/persistence/__init__.py.
+3. Read /Users/jakegearon/projects/dgov/src/dgov/worktree.py.
+4. Read /Users/jakegearon/projects/dgov/src/dgov/unit.py if helpful for git conventions.
+5. Fix bug #25.
+6. Requirements:
+   - `dgov pane diff` must work without importing a missing module.
+   - Hard-cut to one real owner. Do not add a fake `dgov.inspection` shim.
+   - Use canonical persisted pane data to find the branch/worktree context and produce the requested diff shape.
+   - Support the existing `--stat` and `--name-only` flags.
+   - Keep the implementation explicit and local; no speculative extra commands.
+7. Run: uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/cli/pane.py
+8. Run: uv run ruff format /Users/jakegearon/projects/dgov/src/dgov/cli/pane.py
+9. git add /Users/jakegearon/projects/dgov/src/dgov/cli/pane.py
+10. git commit -m "Hard-cut pane diff to local owner"
+"""
+commit_message = "Hard-cut pane diff to local owner"
+files = { edit = ["src/dgov/cli/pane.py"] }
+timeout_s = 900
+
+[tasks.pane_diff_tests]
+summary = "Add regression tests for pane diff without stale inspection imports"
+agent = "worker"
+depends_on = ["pane_diff_owner"]
+prompt = """1. Read /Users/jakegearon/projects/dgov/src/dgov/cli/pane.py.
+2. Read /Users/jakegearon/projects/dgov/tests/test_plan_cli.py for CliRunner style.
+3. Add a new test file at /Users/jakegearon/projects/dgov/tests/test_pane_cli.py.
+4. Requirements:
+   - Cover `dgov pane diff` happy path and error path.
+   - Prove it no longer depends on a missing `dgov.inspection` module.
+   - Keep tests fast and isolated; mock subprocess/git boundaries rather than using tmux.
+5. Run: uv run pytest /Users/jakegearon/projects/dgov/tests/test_pane_cli.py -q
+6. Run: uv run ruff check /Users/jakegearon/projects/dgov/tests/test_pane_cli.py
+7. Run: uv run ruff format /Users/jakegearon/projects/dgov/tests/test_pane_cli.py
+8. git add /Users/jakegearon/projects/dgov/tests/test_pane_cli.py
+9. git commit -m "Add pane diff regression tests"
+"""
+commit_message = "Add pane diff regression tests"
+files = { create = ["tests/test_pane_cli.py"] }
+timeout_s = 900

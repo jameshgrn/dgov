@@ -1,0 +1,152 @@
+[plan]
+version = 1
+name = "hard-cut-lifecycle"
+goal = "Decompose lifecycle.py using hard-cut pattern (no shims)"
+session_root = "/Users/jakegearon/projects/dgov"
+
+# Hard-cut decomposition:
+# 1. Rename lifecycle.py → _lifecycle.py (private implementation)
+# 2. Create lifecycle/ package with submodules
+# 3. Have __init__.py import from _lifecycle.py initially
+# 4. Gradually move code from _lifecycle.py to submodules
+# 5. Delete _lifecycle.py when empty
+
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "All lifecycle imports still work"
+evidence = "uv run python3 -c 'from dgov.lifecycle import create_worker_pane, close_worker_pane, resume_worker_pane; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "regression"
+statement = "All tests pass"
+evidence = "uv run pytest tests/test_lifecycle*.py tests/test_inspection.py -q 2>&1 | tail -1 | grep -q 'passed'"
+
+[[evals]]
+id = "E3"
+kind = "happy_path"
+statement = "lifecycle.py does not exist (hard cut complete)"
+evidence = "test ! -f src/dgov/lifecycle.py"
+
+[[evals]]
+id = "E4"
+kind = "happy_path"
+statement = "lifecycle/_lifecycle.py under 1000 lines"
+evidence = "[ $(wc -l < src/dgov/lifecycle/_lifecycle.py) -lt 1000 ]"
+
+# Phase 1: Hard cut - rename and create structure
+[units.hard-cut]
+summary = "Rename lifecycle.py to _lifecycle.py, create package"
+agent = "kimi-k25"
+timeout_s = 600
+satisfies = ["E1", "E2", "E3"]
+commit_message = "refactor(lifecycle): hard-cut rename to _lifecycle.py, create package structure"
+prompt = """
+HARD-CUT DECOMPOSITION PATTERN — no shims, no dual ownership.
+
+Current state:
+- lifecycle.py exists (1711 lines)
+- lifecycle/ directory exists with __init__.py and metadata.py
+
+Steps:
+1. Move src/dgov/lifecycle.py → src/dgov/lifecycle/_lifecycle.py
+2. Update src/dgov/lifecycle/__init__.py to import from ._lifecycle
+3. Remove the old importlib.util hack — use direct imports
+4. Ensure all public exports still work
+5. Run tests: uv run pytest tests/test_lifecycle*.py tests/test_inspection.py -v
+6. If tests pass: git add -A && git commit
+
+Critical:
+- NO lifecycle.py file should remain in src/dgov/
+- All imports go through lifecycle/__init__.py
+- _lifecycle.py is temporary — it will be deleted after full decomposition
+"""
+
+[units.hard-cut.files]
+create = ["src/dgov/lifecycle/_lifecycle.py"]
+delete = ["src/dgov/lifecycle.py"]
+edit = ["src/dgov/lifecycle/__init__.py"]
+
+# Phase 2: Extract cleanup module
+[units.extract-cleanup]
+summary = "Extract cleanup functions to cleanup.py"
+agent = "kimi-k25"
+deps = ["hard-cut"]
+timeout_s = 600
+satisfies = []
+commit_message = "refactor(lifecycle): extract cleanup functions to cleanup.py"
+prompt = """
+Read src/dgov/lifecycle/_lifecycle.py. Extract ALL cleanup-related functions:
+- close_worker_pane(), close_pane()
+- destroy_pane()
+- cleanup_stale_panes()
+- _full_cleanup()
+- _terminate_pane_process_tree()
+- Any cleanup helpers
+
+Steps:
+1. Create src/dgov/lifecycle/cleanup.py with these functions
+2. Update __init__.py to import from .cleanup instead of ._lifecycle
+3. Remove extracted functions from _lifecycle.py
+4. Run tests
+5. Commit
+"""
+
+[units.extract-cleanup.files]
+create = ["src/dgov/lifecycle/cleanup.py"]
+edit = ["src/dgov/lifecycle/__init__.py", "src/dgov/lifecycle/_lifecycle.py"]
+
+# Phase 3: Extract create module
+[units.extract-create]
+summary = "Extract create functions to create.py"
+agent = "kimi-k25"
+deps = ["extract-cleanup"]
+timeout_s = 600
+satisfies = []
+commit_message = "refactor(lifecycle): extract create functions to create.py"
+prompt = """
+Read src/dgov/lifecycle/_lifecycle.py. Extract ALL creation-related functions:
+- create_worker_pane()
+- resume_worker_pane()
+- _find_unique_slug()
+- _create_worktree()
+- _install_worker_hooks()
+- _write_worktree_instructions()
+- ensure_dgov_gitignored()
+- Any creation helpers
+
+Steps:
+1. Create src/dgov/lifecycle/create.py with these functions
+2. Update __init__.py to import from .create instead of ._lifecycle
+3. Remove extracted functions from _lifecycle.py
+4. Run tests
+5. Commit
+"""
+
+[units.extract-create.files]
+create = ["src/dgov/lifecycle/create.py"]
+edit = ["src/dgov/lifecycle/__init__.py", "src/dgov/lifecycle/_lifecycle.py"]
+
+# Phase 4: Delete _lifecycle.py when empty
+[units.delete-legacy]
+summary = "Delete _lifecycle.py after full extraction"
+agent = "kimi-k25"
+deps = ["extract-create"]
+timeout_s = 300
+satisfies = ["E4"]
+commit_message = "refactor(lifecycle): delete _lifecycle.py, decomposition complete"
+prompt = """
+Check src/dgov/lifecycle/_lifecycle.py. If it only contains imports or is empty:
+1. Move any remaining utility functions to appropriate submodules
+2. Delete _lifecycle.py
+3. Update __init__.py to remove _lifecycle imports
+4. Run tests
+5. Commit
+
+If _lifecycle.py still has substantial code, report what remains.
+"""
+
+[units.delete-legacy.files]
+delete = ["src/dgov/lifecycle/_lifecycle.py"]
+edit = ["src/dgov/lifecycle/__init__.py"]

@@ -1,0 +1,16 @@
+[plan]
+name = "test-bootstrap"
+version = 1
+goal = "Test that dgov run works end-to-end"
+project_root = "."
+session_root = "."
+max_concurrent = 2
+
+[units.test-echo]
+summary = "Simple echo test"
+prompt = "Write 'Hello from worker' to a file at .dgov/out/test-echo/result.txt"
+commit_message = "Test worker completed"
+agent = "claude"
+
+[units.test-echo.files]
+create = [".dgov/out/test-echo/result.txt"]

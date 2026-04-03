@@ -1,0 +1,37 @@
+name = "refactor-preflight"
+description = "Split preflight.py into cohesive modules to reduce complexity"
+file_claims = ["src/dgov/preflight.py"]
+agent = "worker"
+
+[[tasks]]
+id = "extract-checkers"
+description = """
+Extract individual checkers from preflight.py into a new checks submodule.
+
+Current state:
+- preflight.py: 1295 lines, 151 branches
+- Contains: CheckResult, PreflightReport dataclasses + 15+ checker functions + runner
+
+Target state:
+- preflight.py: ~400 lines (just runner and public API)
+- preflight/checks.py: ~600 lines (all checker functions)
+- preflight/types.py: ~100 lines (CheckResult, PreflightReport)
+
+Steps:
+1. Read src/dgov/preflight.py completely
+2. Create src/dgov/preflight/__init__.py with public exports
+3. Create src/dgov/preflight/types.py with dataclasses
+4. Create src/dgov/preflight/checks.py with all checker functions
+5. Update src/dgov/preflight.py to import from new locations
+6. Ensure all imports still work
+7. Run sentrux to verify score improvement
+"""
+commit_message = "refactor: extract preflight checkers into submodules"
+
+[[tasks]]
+id = "verify"
+description = "Run sentrux check to verify quality score improved"
+dependencies = ["extract-checkers"]
+evals = [
+  { command = "sentrux check .", expect = "Quality: " }
+]

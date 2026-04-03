@@ -1,0 +1,87 @@
+# Fix: pane.py policy violations - use PaneState enum instead of raw strings
+
+[dag]
+name = "fix-pane-state-enum"
+max_concurrent = 1
+
+[tasks.fix-pane-state-type]
+summary = "Fix pane.py to use PaneState enum"
+commit_message = "Fix pane.py to use PaneState StrEnum instead of raw strings"
+files = { edit = ["src/dgov/pane.py"] }
+prompt = """
+Fix src/dgov/pane.py policy violations related to state handling.
+
+CURRENT VIOLATIONS:
+1. WorkerPane.state is typed as `str` but should use `PaneState` StrEnum
+2. Default value is "pending" but PaneState doesn't have a PENDING value
+3. create_pane returns state="active" but should use PaneState.ACTIVE
+4. close_pane sets state="closed" but should use PaneState.CLOSED
+5. Missing import of PaneState from dgov.persistence.schema
+
+REQUIRED CHANGES:
+
+1. Add import:
+   from dgov.persistence.schema import PaneState
+
+2. Change WorkerPane dataclass:
+   FROM: state: str = "pending"
+   TO: state: PaneState = PaneState.ACTIVE
+
+3. Update all state assignments:
+   - create_pane return: state=PaneState.ACTIVE (not "active")
+   - close_pane: state=PaneState.CLOSED (not "closed")
+   - Any other state references use PaneState enum members
+
+4. Fix list_panes() state inference:
+   - "active" → PaneState.ACTIVE
+   - "unknown" → PaneState.ACTIVE (best available match, or use PaneState.DONE if settled)
+
+The PaneState enum has these members:
+- ACTIVE
+- DONE
+- FAILED
+- REVIEWED_PASS
+- REVIEWED_FAIL
+- MERGED
+- TIMED_OUT
+- SUPERSEDED
+- CLOSED
+- ABANDONED
+
+Use ACTIVE for active/working panes, CLOSED for killed panes.
+
+FINAL STEPS:
+1. uv run ruff check src/dgov/pane.py
+2. git add src/dgov/pane.py
+3. git commit -m "Fix pane.py to use PaneState StrEnum instead of raw strings"
+"""
+agent = "worker"
+
+[tasks.update-unit-tests]
+summary = "Update unit tests for PaneState enum"
+depends_on = ["fix-pane-state-type"]
+commit_message = "Update pane unit tests for PaneState enum"
+files = { edit = ["tests/test_pane_unit.py"] }
+prompt = """
+Update tests/test_pane_unit.py to use PaneState enum instead of raw strings.
+
+CHANGES NEEDED:
+1. Add import: from dgov.persistence.schema import PaneState
+2. Update all test assertions that check state values:
+   - "pending" → PaneState.ACTIVE (or appropriate enum value)
+   - "active" → PaneState.ACTIVE
+   - "closed" → PaneState.CLOSED
+3. Update WorkerPane instantiation in tests to use enum
+
+FINAL STEPS:
+1. uv run pytest tests/test_pane_unit.py -v
+2. git add tests/test_pane_unit.py
+3. git commit -m "Update pane unit tests for PaneState enum"
+"""
+agent = "worker"
+
+[evals]
+pane_imports = "uv run python -c 'from dgov.pane import create_pane, WorkerPane, PaneState; print(\"Imports OK\")'"
+state_type_correct = "uv run python -c 'from dgov.pane import WorkerPane, PaneState; p = WorkerPane(\"test\", \"task\"); print(p.state); assert p.state == PaneState.ACTIVE'"
+unit_tests_pass = "uv run pytest tests/test_pane_unit.py -v --tb=short 2>&1 | tail -5"
+lint_clean = "uv run ruff check src/dgov/pane.py tests/test_pane_unit.py && echo 'Lint OK'"

@@ -1,0 +1,79 @@
+# Plan: Fix claim_violation DAG event mapping
+
+[meta]
+name = "fix-claim-violation-dag"
+summary = "Map claim_violation events to kernel DagEvents so DAGs complete correctly"
+default_agent = "worker"
+autonomous = false
+
+[expectations]
+evidence = """
+python3 -c "
+import sys
+from src.dgov.kernel import TaskClaimViolation
+sys.exit(0)
+"
+"""
+
+[[tasks]]
+id = "add-task-claim-violation-event"
+file_claims = ["src/dgov/kernel.py"]
+prompt = """
+1. Read src/dgov/kernel.py to find existing DagEvent classes like TaskMergeDone, TaskClosed
+2. Add a new TaskClaimViolation DagEvent class following the same pattern as TaskClosed:
+   - task: str (the task identifier)
+   - reason: str (description of the violation)
+   - detected_claims: list[str] (the files that were actually modified)
+3. git add src/dgov/kernel.py
+4. git commit -m "Add TaskClaimViolation DagEvent type"
+"""
+
+[[tasks]]
+id = "add-factory-entry"
+depends_on = ["add-task-claim-violation-event"]
+file_claims = ["src/dgov/monitor.py"]
+prompt = """
+1. Read src/dgov/monitor.py to find _DAG_EVENT_FACTORY dictionary
+2. Find where claim_violation events should be handled (look for event type mappings)
+3. Add entry to translate claim_violation events to TaskClaimViolation DagEvent:
+   - Map the string 'claim_violation' to TaskClaimViolation class
+   - Ensure it passes task, reason, and detected_claims fields
+4. git add src/dgov/monitor.py
+5. git commit -m "Add claim_violation to DagEvent factory mapping"
+"""
+
+[[tasks]]
+id = "handle-in-kernel"
+depends_on = ["add-task-claim-violation-event"]
+file_claims = ["src/dgov/kernel.py"]
+prompt = """
+1. Read src/dgov/kernel.py handle method to see how other events are processed
+   (look for TaskClosed handler as reference)
+2. Add handler for TaskClaimViolation event that:
+   - Marks the task as FAILED state
+   - Records the failure reason in task_outcomes
+   - Allows DAG to complete (unlike BLOCKED_ON_GOVERNOR, this is terminal)
+3. git add src/dgov/kernel.py
+4. git commit -m "Handle TaskClaimViolation in kernel - mark task FAILED"
+"""
+
+[[tasks]]
+id = "add-tests"
+depends_on = ["add-factory-entry", "handle-in-kernel"]
+file_claims = ["tests/unit/test_kernel.py", "tests/unit/test_monitor.py"]
+prompt = """
+1. Read existing kernel tests to understand test patterns for event handling
+2. Add test for TaskClaimViolation:
+   - Test that claim_violation event marks task as FAILED
+   - Test that DAG completes with PARTIAL status when one task has claim violation
+3. Add test for _DAG_EVENT_FACTORY mapping if tests exist for monitor
+4. git add tests/
+5. git commit -m "Add tests for TaskClaimViolation event handling"
+"""
+
+[eval]
+commands = [
+    "python3 -c 'from src.dgov.kernel import TaskClaimViolation; print(\"OK\")'",
+    "python3 -c 'from src.dgov.monitor import _DAG_EVENT_FACTORY; print(\"claim_violation\" in [k for k in _DAG_EVENT_FACTORY.keys() if isinstance(k, str)])'",
+    "uv run pytest tests/unit/test_kernel.py -v -k claim -q || true",
+]

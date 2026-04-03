@@ -1,0 +1,181 @@
+# dgov routing contract — Intelligence Matrix Configuration
+# Governor dispatches by (DecisionKind, CapabilityTier)
+# Router resolves to physical backends; escalation is policy-driven
+
+# ============================================================================
+# Capability Tiers (cost-ordered)
+# ============================================================================
+# T1: Cheapest — River 9B, MLX 9B (fast, deterministic)
+# T2: Cheap — River 35B (validation workhorse)
+# T3: Moderate — Kimi K2.5 (Fire Pass unlimited, greedy concurrency)
+# T4: Expensive — Frontier pool (Gemini, Codex, Claude)
+
+[groups]
+# T1 groups — high concurrency for fast tasks
+t1-generate = { max_concurrent = 8, timeout = 120 }
+t1-parse = { max_concurrent = 10, timeout = 60 }
+
+# T2 groups — validation workhorse
+t2-validate = { max_concurrent = 3, timeout = 300 }
+
+# T3 groups — Kimi greedy pool (Fire Pass unlimited)
+t3-generate = { max_concurrent = 5, timeout = 600, retry_policy = { max_attempts = 2, backoff = "exponential", jitter = true } }
+t3-validate = { max_concurrent = 3, timeout = 600, retry_policy = { max_attempts = 2, backoff = "exponential", jitter = true } }
+t3-audit = { max_concurrent = 2, timeout = 900, retry_policy = { max_attempts = 2, backoff = "exponential", jitter = true } }
+t3-orient = { max_concurrent = 2, timeout = 600, retry_policy = { max_attempts = 2, backoff = "exponential", jitter = true } }
+
+# T4 groups — frontier (expensive, use sparingly)
+t4-generate = { max_concurrent = 2, timeout = 1200 }
+t4-validate = { max_concurrent = 1, timeout = 900 }
+t4-audit = { max_concurrent = 1, timeout = 1200 }
+t4-orient = { max_concurrent = 2, timeout = 1200 }
+t4-eval-write = { max_concurrent = 2, timeout = 1200 }
+
+# ============================================================================
+# Routing Matrix: (DecisionKind, CapabilityTier) → Backends
+# ============================================================================
+
+# --- GENERATE ---
+[routing.generate-t1]
+backends = ["river-9b", "mlx-9b-0", "mlx-9b-1", "mlx-9b-2", "mlx-9b-3"]
+group = "t1-generate"
+escalates_to = "generate-t3"
+
+[routing.generate-t2]
+backends = []  # No T2 workers — skip to T3
+group = "t2-validate"  # Fallback group only
+escalates_to = "generate-t3"
+
+[routing.generate-t3]
+# 5× Kimi pool for greedy Fire Pass usage
+backends = ["kimi-k25-0", "kimi-k25-1", "kimi-k25-2", "kimi-k25-3", "kimi-k25-4"]
+group = "t3-generate"
+escalates_to = "validate-t3"  # Across: get judgment before going to T4
+
+[routing.generate-t4]
+backends = ["gemini-flash", "gemini-pro", "codex-mini", "claude-sonnet"]
+group = "t4-generate"
+escalates_to = "governor"
+
+# --- VALIDATE ---
+[routing.validate-t1]
+backends = []  # No T1 validation
+group = "t1-parse"
+escalates_to = "validate-t2"
+
+[routing.validate-t2]
+backends = ["river-35b"]
+group = "t2-validate"
+escalates_to = "validate-t3"
+
+[routing.validate-t3]
+backends = ["kimi-k25"]  # Single high-capacity Kimi
+escalates_to = "audit-t3"  # Across: escalate to audit
+
+[routing.validate-t4]
+backends = ["gemini-flash", "claude-sonnet"]
+group = "t4-validate"
+escalates_to = "governor"
+
+# --- AUDIT ---
+[routing.audit-t1]
+backends = []  # No T1 audit
+group = "t1-generate"
+escalates_to = "audit-t3"
+
+[routing.audit-t2]
+backends = []  # No T2 audit
+group = "t2-validate"
+escalates_to = "audit-t3"
+
+[routing.audit-t3]
+backends = ["kimi-k25"]
+group = "t3-audit"
+escalates_to = "audit-t4"
+
+[routing.audit-t4]
+backends = ["gemini-flash", "codex-mini", "claude-sonnet"]
+group = "t4-audit"
+escalates_to = "governor"
+
+# --- ORIENT ---
+[routing.orient-t1]
+backends = []  # No T1 orient
+group = "t1-generate"
+escalates_to = "orient-t3"
+
+[routing.orient-t2]
+backends = []  # No T2 orient
+group = "t2-validate"
+escalates_to = "orient-t3"
+
+[routing.orient-t3]
+backends = ["kimi-k25"]
+group = "t3-orient"
+escalates_to = "orient-t4"
+
+[routing.orient-t4]
+backends = ["gemini-flash", "gemini-pro", "codex-mini", "claude-sonnet"]
+group = "t4-orient"
+escalates_to = "governor"
+
+# --- EVAL_WRITE ---
+[routing.eval-write-t1]
+backends = []  # No T1 eval writing
+group = "t1-generate"
+escalates_to = "eval-write-t4"
+
+[routing.eval-write-t2]
+backends = []  # No T2 eval writing
+group = "t2-validate"
+escalates_to = "eval-write-t4"
+
+[routing.eval-write-t3]
+backends = []  # No T3 eval writing — frontier only
+group = "t3-generate"
+escalates_to = "eval-write-t4"
+
+[routing.eval-write-t4]
+backends = ["gemini-flash", "gemini-pro", "codex-mini", "claude-sonnet"]
+group = "t4-eval-write"
+escalates_to = "governor"
+
+# --- PARSE ---
+[routing.parse-t1]
+backends = ["deterministic"]  # Deterministic parsing (no LLM)
+group = "t1-parse"
+escalates_to = "parse-t2"
+
+[routing.parse-t2]
+backends = ["river-9b"]
+group = "t1-parse"
+escalates_to = "governor"  # No T3 parsing — if T2 fails, human review
+
+[routing.parse-t3]
+backends = []  # No T3 parsing — Kimi not needed for parsing
+group = "t3-generate"
+escalates_to = "governor"
+
+# ============================================================================
+# GOVERNOR tier — human exception handler
+# ============================================================================
+[routing.governor]
+backends = []
+type = "human"
+alerts = ["slack", "pagerduty"]
+
+# ============================================================================
+# Legacy aliases (for backward compatibility with old panes)
+# Maps old role names to new matrix coordinates
+# ============================================================================
+[routing.worker]
+alias_for = "generate-t3"
+
+[routing.supervisor]
+alias_for = "validate-t2"
+
+[routing.manager]
+alias_for = "audit-t3"
+
+[routing.lt-gov]
+alias_for = "audit-t4"

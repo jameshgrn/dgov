@@ -1,0 +1,19 @@
+id = "kimi-test"
+name = "Kimi Agent Test"
+description = "Test Kimi K2.5 via Fireworks AI with worktree isolation"
+
+[[tasks]]
+slug = "kimi-hello"
+agent = "kimi-k25"
+prompt = """Create a file named kimi-was-here.txt with a short poem (3-4 lines) about software agents collaborating. Then stage and commit it.
+
+Steps:
+1. Create kimi-was-here.txt with a poem about agents working together
+2. Run: git add kimi-was-here.txt
+3. Run: git commit -m "Kimi says hello from Fireworks"
+4. You're done — the harness will detect your commit
+
+The current directory is a git worktree. Create and commit the file here."""
+
+[tasks.files]
+create = ["kimi-was-here.txt"]

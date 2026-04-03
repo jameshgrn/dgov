@@ -1,0 +1,698 @@
+# Benchmark: 5 Kimi Workers on Event Sourcing Core
+# Tests: interface discipline, integration, clanker compliance
+
+[plan]
+version = 1
+name = "kimi-benchmark-event-sourcing"
+goal = "Dogfood dgov by implementing formal event sourcing primitives with 5 parallel Kimi K2.5 workers"
+default_agent = "kimi-worker"
+max_concurrent = 5
+default_timeout_s = 600
+
+# Evals verify: integration works, contracts honored, clanker discipline applied
+
+[[evals]]
+id = "E1"
+kind = "happy_path"
+statement = "All 5 modules integrate and integration tests pass"
+evidence = "cd test_project && uv run pytest tests/integration_test.py -v --tb=short 2>&1 | tail -20"
+scope = ["test_project/"]
+
+[[evals]]
+id = "E2"
+kind = "invariant"
+statement = "Event journal is strictly append-only (no updates/deletes)"
+evidence = "cd test_project && uv run python3 -c \"from src.event_journal import EventJournal; import tempfile, os; tmp = tempfile.mktemp(); j = EventJournal(tmp); j.append('test', {}); seq = j.append('test2', {}); events = j.get_events(); assert len(events) == 2 and events[0].sequence == 1 and events[1].sequence == 2; print('append-only verified')\""
+scope = ["test_project/src/event_journal.py"]
+
+[[evals]]
+id = "E3"
+kind = "invariant"
+statement = "State machine rejects invalid transitions (no silent failures)"
+evidence = "cd test_project && uv run python3 -c \"from src.state_machine import StateMachine, STATES; sm = StateMachine(); result = sm.transition('pane-1', 'pending', 'done', 'invalid'); assert not result.valid; print('invalid transition rejected')\""
+scope = ["test_project/src/state_machine.py"]
+
+[[evals]]
+id = "E4"
+kind = "regression"
+statement = "No grab-bag models with optional fields (clanker discipline)"
+evidence = "cd test_project && grep -r 'Optional\|Union\|from typing import' src/*.py | grep -v 'from typing import Callable' | head -20"
+scope = ["test_project/src/"]
+
+[[evals]]
+id = "E5"
+kind = "edge"
+statement = "Idempotency prevents duplicate events with same key"
+evidence = "cd test_project && uv run python3 -c \"from src.event_journal import EventJournal; import tempfile; tmp = tempfile.mktemp(); j = EventJournal(tmp); s1 = j.append('test', {}, 'key-1'); s2 = j.append('test', {}, 'key-1'); assert s1 == s2; events = j.get_events(); assert len(events) == 1; print('idempotency verified')\""
+scope = ["test_project/src/event_journal.py"]
+
+[[evals]]
+id = "E6"
+kind = "integration_test"
+statement = "Full pane lifecycle: create -> dispatch -> run -> done, projection tracks state"
+evidence = "cd test_project && uv run pytest tests/integration_test.py::test_full_pane_lifecycle -v 2>&1 | tail -10"
+scope = ["test_project/tests/integration_test.py"]
+
+# Unit 1: Event Journal — append-only write model
+[units.event-journal]
+summary = "Implement append-only Event Journal with SQLite backend"
+role = "kimi-worker"
+satisfies = ["E1", "E2", "E5"]
+
+[units.event-journal.files]
+edit = ["test_project/src/event_journal.py"]
+create = ["test_project/src/event_journal_test.py", "test_project/docs/interfaces.md"]
+
+[units.event-journal.acceptance]
+tests_pass = true
+lint_clean = true
+
+[units.event-journal.spec]
+prompt = """
+You are implementing the Event Journal module — the write-model of the event sourcing system.
+
+## CLANKER DISCIPLINE (enforce strictly):
+1. **Discriminated unions over optional bags**: Event type must encode its structure, not a grab-bag of optional fields
+2. **Derive, don't store**: sequence numbers derive from append order; timestamps derive from wall clock at append time
+3. **Make wrong states impossible**: DuplicateEventError is raised, never silent ignore
+4. **Function contracts**: append() either succeeds (returns int) or raises (never returns None on error)
+
+## Interface Contract:
+```python
+from dataclasses import dataclass
+from datetime import datetime
+
+@dataclass(frozen=True)  # immutable events
+class Event:
+    sequence: int           # monotonic, starts at 1
+    event_type: str
+    payload: dict
+    idempotency_key: str | None
+    timestamp: datetime
+
+class DuplicateEventError(Exception):
+    """Raised when idempotency_key already exists"""
+    pass
+
+class EventJournal:
+    def __init__(self, db_path: str) -> None:
+        """Initialize journal with SQLite at db_path. Creates tables if needed."""
+        ...
+    
+    def append(
+        self,
+        event_type: str,
+        payload: dict,
+        idempotency_key: str | None = None,
+    ) -> int:
+        """
+        Append event to journal.
+        
+        Returns: sequence number (int >= 1)
+        Raises: DuplicateEventError if idempotency_key exists
+        """
+        ...
+    
+    def get_events(
+        self,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> list[Event]:
+        """Read events after given sequence (exclusive)."""
+        ...
+    
+    def get_by_idempotency(self, key: str) -> Event | None:
+        """Lookup event by idempotency key. Returns None if not found."""
+        ...
+```
+
+## Implementation Requirements:
+- SQLite with WAL mode enabled (PRAGMA journal_mode=WAL)
+- Schema: events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT, payload JSON TEXT, idempotency_key TEXT UNIQUE, timestamp TEXT ISO8601)
+- Thread-safe: use connection-per-thread or proper locking
+- Frozen dataclass for Event (immutable)
+- JSON serialization for payload (json.dumps/json.loads)
+
+## Files to Create:
+1. `test_project/src/event_journal.py` — implementation
+2. `test_project/src/event_journal_test.py` — comprehensive tests:
+   - `test_append_returns_sequence()` — basic append
+   - `test_sequence_monotonic()` — sequences 1, 2, 3...
+   - `test_duplicate_idempotency_key_raises()` — DuplicateEventError
+   - `test_get_events_pagination()` — after_sequence + limit
+   - `test_get_by_idempotency()` — lookup by key
+   - `test_thread_safety()` — concurrent appends, all succeed, no duplicates
+3. `test_project/docs/interfaces.md` — interface documentation for other workers
+
+## Steps:
+1. Create directory structure: mkdir -p test_project/src test_project/docs test_project/tests
+2. Implement EventJournal with strict contract
+3. Write comprehensive tests
+4. Document interface
+5. Run tests: `cd test_project && uv run pytest src/event_journal_test.py -v`
+6. git add test_project/
+7. git commit -m "Implement Event Journal: append-only event log with idempotency"
+"""
+
+# Unit 2: Projection Engine — read model from events
+[units.projection-engine]
+summary = "Implement Projection Engine for incremental read models"
+role = "kimi-worker"
+satisfies = ["E1", "E6"]
+depends_on = ["event-journal"]
+
+[units.projection-engine.files]
+edit = ["test_project/src/projections.py"]
+create = ["test_project/src/projections_test.py", "test_project/docs/projections.md"]
+read = ["test_project/src/event_journal.py", "test_project/docs/interfaces.md"]
+
+[units.projection-engine.acceptance]
+tests_pass = true
+lint_clean = true
+
+[units.projection-engine.spec]
+prompt = """
+You are implementing the Projection Engine — read models derived from the Event Journal.
+
+## CLANKER DISCIPLINE (enforce strictly):
+1. **Derive, don't store**: Projection state is always derived from events. The "stored" projection is a cache that can be rebuilt.
+2. **Function contracts**: Handlers are pure functions: (Event, State) -> State. No side effects in handlers.
+3. **Make wrong states impossible**: Projection tracks last_sequence_processed; cannot query state if not caught up.
+
+## Interface Contract:
+```python
+from dataclasses import dataclass
+from typing import Callable
+from src.event_journal import EventJournal, Event
+
+@dataclass
+class ProjectionState:
+    """Internal state of a projection"""
+    name: str
+    last_sequence: int      # last event processed
+    data: dict              # projection-specific derived state
+
+# Handler type: pure function, no side effects
+ProjectionHandler = Callable[[Event, dict], dict]
+
+class ProjectionEngine:
+    def __init__(self, journal: EventJournal, state_dir: str | None = None) -> None:
+        """
+        Initialize projection engine.
+        
+        Args:
+            journal: EventJournal to read events from
+            state_dir: Optional directory to persist projection states (JSON files)
+        """
+        ...
+    
+    def register(
+        self,
+        name: str,
+        handler: ProjectionHandler,
+    ) -> None:
+        """Register a projection with its event handler."""
+        ...
+    
+    def catch_up(self, name: str | None = None) -> dict[str, int]:
+        """
+        Process new events for all projections (or named projection).
+        
+        Returns: {projection_name: events_processed_count}
+        """
+        ...
+    
+    def get_state(self, name: str) -> dict:
+        """
+        Get current derived state of a projection.
+        
+        Raises: KeyError if projection not registered
+        """
+        ...
+```
+
+## Implementation Requirements:
+- Handlers are pure functions: receive Event and current state dict, return new state dict
+- Incremental catch-up: remember last_sequence, only process new events
+- State persistence: JSON files in state_dir (optional, in-memory if None)
+- No SQLite for projections — state is always reconstructible from events
+- Thread-safe during catch_up (journal is source of truth)
+
+## Example Handler (Pane State Projection):
+```python
+def pane_state_handler(event: Event, state: dict) -> dict:
+    """Track pane states from events"""
+    panes = state.get("panes", {})
+    
+    if event.event_type == "pane_created":
+        panes[event.payload["pane_id"]] = "pending"
+    elif event.event_type == "pane_dispatched":
+        panes[event.payload["pane_id"]] = "dispatched"
+    elif event.event_type == "pane_completed":
+        panes[event.payload["pane_id"]] = "done"
+    
+    return {"panes": panes, "total": len(panes)}
+```
+
+## Files to Create:
+1. `test_project/src/projections.py` — implementation
+2. `test_project/src/projections_test.py` — tests:
+   - `test_register_and_catch_up()` — basic registration and event processing
+   - `test_incremental_catch_up()` — only processes new events
+   - `test_multiple_projections_isolation()` — projections don't interfere
+   - `test_state_reconstruction()` — delete state file, rebuild from events
+   - `test_handler_pure_function()` — handler doesn't mutate external state
+3. `test_project/docs/projections.md` — interface docs
+
+## Steps:
+1. Read test_project/src/event_journal.py (already exists)
+2. Implement ProjectionEngine
+3. Write comprehensive tests
+4. Document interface
+5. Run tests: `cd test_project && uv run pytest src/projections_test.py -v`
+6. git add test_project/src/projections.py test_project/src/projections_test.py test_project/docs/projections.md
+7. git commit -m "Implement Projection Engine: incremental read models from events"
+"""
+
+# Unit 3: Command Handler — validation and event emission
+[units.command-handler]
+summary = "Implement Command Handler for validation and event emission"
+role = "kimi-worker"
+satisfies = ["E1", "E6"]
+depends_on = ["event-journal"]
+
+[units.command-handler.files]
+edit = ["test_project/src/commands.py"]
+create = ["test_project/src/commands_test.py", "test_project/docs/commands.md"]
+read = ["test_project/src/event_journal.py", "test_project/docs/interfaces.md"]
+
+[units.command-handler.acceptance]
+tests_pass = true
+lint_clean = true
+
+[units.command-handler.spec]
+prompt = """
+You are implementing the Command Handler — validates commands and emits events.
+
+## CLANKER DISCIPLINE (enforce strictly):
+1. **Discriminated unions over optional bags**: CommandResult has mutually exclusive success/error, not optional fields
+2. **Function contracts**: Validators are pure (input -> bool, no side effects). Commands execute or fail atomically.
+3. **Make wrong states impossible**: Failed command never emits event. Successful command emits exactly one event.
+
+## Interface Contract:
+```python
+from dataclasses import dataclass
+from typing import Callable
+from src.event_journal import EventJournal, Event
+
+# Result type: discriminated union via success flag
+@dataclass(frozen=True)
+class CommandResult:
+    success: bool
+    # Exactly one of these is set based on success:
+    event: Event | None        # set if success=True
+    error: str | None          # set if success=False
+    sequence: int | None     # set if success=True
+
+# Validator type: pure function
+Validator = Callable[[dict], tuple[bool, str | None]]  # (is_valid, error_or_none)
+
+class CommandHandler:
+    def __init__(self, journal: EventJournal) -> None:
+        """Initialize with EventJournal for event emission."""
+        ...
+    
+    def register(
+        self,
+        command_type: str,
+        event_type: str,
+        validator: Validator,
+    ) -> None:
+        """
+        Register a command type with its validator and resulting event type.
+        
+        Validator returns (True, None) for valid, (False, error_message) for invalid.
+        """
+        ...
+    
+    def execute(
+        self,
+        command_type: str,
+        payload: dict,
+        idempotency_key: str | None = None,
+    ) -> CommandResult:
+        """
+        Execute a command: validate, then emit event if valid.
+        
+        Flow:
+        1. Look up validator for command_type
+        2. Run validator(payload) -> (is_valid, error)
+        3. If invalid: return CommandResult(success=False, error=error, event=None, sequence=None)
+        4. If valid: emit event to journal, return CommandResult(success=True, event=event, sequence=seq, error=None)
+        """
+        ...
+```
+
+## Implementation Requirements:
+- Validators run BEFORE any side effects (journal.append)
+- Failed validation: no event emitted, error in result
+- Success: exactly one event emitted, event + sequence in result
+- Idempotency key passed through to journal (for automatic deduplication)
+- Pure validators: no I/O, no mutation of external state
+
+## Built-in Commands (pre-registered):
+```python
+# "create_pane" -> emits "pane_created"
+def validate_create_pane(payload: dict) -> tuple[bool, str | None]:
+    required = ["pane_id", "agent", "task_spec"]
+    missing = [f for f in required if f not in payload]
+    if missing:
+        return False, f"Missing fields: {missing}"
+    return True, None
+
+# "dispatch_pane" -> emits "pane_dispatched"  
+def validate_dispatch_pane(payload: dict) -> tuple[bool, str | None]:
+    if "pane_id" not in payload:
+        return False, "Missing pane_id"
+    return True, None
+
+# "close_pane" -> emits "pane_closed"
+def validate_close_pane(payload: dict) -> tuple[bool, str | None]:
+    if "pane_id" not in payload:
+        return False, "Missing pane_id"
+    if payload.get("reason") not in ["completed", "failed", "cancelled"]:
+        return False, "Invalid reason: must be completed, failed, or cancelled"
+    return True, None
+```
+
+## Files to Create:
+1. `test_project/src/commands.py` — implementation with built-in validators
+2. `test_project/src/commands_test.py` — tests:
+   - `test_valid_command_emits_event()` — success path
+   - `test_invalid_command_no_event()` — validation failure, no event
+   - `test_custom_validator_registration()` — register new command type
+   - `test_idempotency_passthrough()` — key passed to journal
+   - `test_builtin_validators()` — create_pane, dispatch_pane, close_pane
+   - `test_command_result_discriminated()` — success/error are mutually exclusive
+3. `test_project/docs/commands.md` — interface docs
+
+## Steps:
+1. Read test_project/src/event_journal.py
+2. Implement CommandHandler with built-in validators
+3. Write comprehensive tests
+4. Document interface
+5. Run tests: `cd test_project && uv run pytest src/commands_test.py -v`
+6. git add test_project/src/commands.py test_project/src/commands_test.py test_project/docs/commands.md
+7. git commit -m "Implement Command Handler: validation and atomic event emission"
+"""
+
+# Unit 4: State Machine — formal pane lifecycle
+[units.state-machine]
+summary = "Implement formal State Machine for pane lifecycle"
+role = "kimi-worker"
+satisfies = ["E1", "E3", "E6"]
+
+[units.state-machine.files]
+edit = ["test_project/src/state_machine.py"]
+create = ["test_project/src/state_machine_test.py", "test_project/docs/state_machine.md"]
+
+[units.state-machine.acceptance]
+tests_pass = true
+lint_clean = true
+
+[units.state-machine.spec]
+prompt = """
+You are implementing the State Machine — formal pane lifecycle with valid transitions.
+
+## CLANKER DISCIPLINE (enforce strictly):
+1. **Discriminated unions over optional bags**: TransitionResult has mutually exclusive valid/invalid states
+2. **Derive, don't store**: Valid transitions are derived from a transition table, not stored flags
+3. **Make wrong states impossible**: Invalid transitions return error, never silently succeed
+4. **Data over procedure**: Transitions defined as data table, not if-chains
+
+## Interface Contract:
+```python
+from dataclasses import dataclass
+from typing import Final
+
+# Pane lifecycle states
+STATES: Final[list[str]] = [
+    "pending",      # created, not yet dispatched
+    "dispatched",   # assigned to agent, waiting to start
+    "running",      # agent actively working
+    "paused",       # temporarily suspended
+    "done",         # completed successfully
+    "failed",       # error or failure
+    "closed",       # terminal, archival
+]
+
+@dataclass(frozen=True)
+class TransitionResult:
+    valid: bool
+    # Exactly one of these is set based on valid:
+    new_state: str | None      # set if valid=True
+    previous_state: str | None # set if valid=True
+    error: str | None          # set if valid=False
+    trigger: str | None        # optional metadata
+
+class StateMachine:
+    def __init__(self, custom_rules: dict[tuple[str, str], str] | None = None) -> None:
+        """
+        Initialize with default rules + optional custom transitions.
+        
+        Args:
+            custom_rules: Optional dict mapping (from_state, trigger) -> to_state
+                         These augment (not replace) default rules.
+        """
+        ...
+    
+    def get_valid_targets(self, from_state: str) -> list[str]:
+        """Return all states reachable from from_state in one transition."""
+        ...
+    
+    def can_transition(self, from_state: str, to_state: str) -> bool:
+        """Check if transition is valid (ignores trigger)."""
+        ...
+    
+    def transition(
+        self,
+        entity_id: str,      # for error messages/context
+        from_state: str,
+        to_state: str,
+        trigger: str | None = None,
+    ) -> TransitionResult:
+        """
+        Attempt state transition.
+        
+        Returns TransitionResult:
+        - valid=True: new_state and previous_state set, error=None
+        - valid=False: error set, new_state=None, previous_state=None
+        """
+        ...
+    
+    def get_state_path(self, from_state: str, to_state: str) -> list[str] | None:
+        """
+        Return shortest path from from_state to to_state as list of states.
+        Returns None if no path exists.
+        Example: pending -> done might return ["pending", "dispatched", "running", "done"]
+        """
+        ...
+```
+
+## Default Transition Rules (data table, not if-chains):
+```python
+DEFAULT_TRANSITIONS: dict[tuple[str, str], str] = {
+    # (from_state, trigger) -> to_state
+    ("pending", "dispatch"): "dispatched",
+    ("dispatched", "start"): "running",
+    ("running", "pause"): "paused",
+    ("running", "complete"): "done",
+    ("running", "fail"): "failed",
+    ("paused", "resume"): "running",
+    ("paused", "timeout"): "failed",
+    # closed is terminal: any state -> closed via "close" trigger
+    ("pending", "close"): "closed",
+    ("dispatched", "close"): "closed",
+    ("running", "close"): "closed",
+    ("paused", "close"): "done",
+    ("done", "close"): "closed",
+    ("failed", "close"): "closed",
+}
+```
+
+## Implementation Requirements:
+- Transition table as dict: (from_state, trigger) -> to_state
+- can_transition() checks if any trigger leads to to_state from from_state
+- get_valid_targets() returns unique destinations from a state
+- get_state_path() uses BFS to find shortest path through state graph
+- All methods are pure (no mutation of internal state, StateMachine is stateless logic)
+
+## Files to Create:
+1. `test_project/src/state_machine.py` — implementation
+2. `test_project/src/state_machine_test.py` — tests:
+   - `test_valid_transitions_succeed()` — all default transitions work
+   - `test_invalid_transition_fails()` — invalid returns error, no state change
+   - `test_closed_terminal_state()` — closed has no outgoing transitions
+   - `test_custom_rules_augment_defaults()` — custom rules work alongside defaults
+   - `test_get_valid_targets()` — correct reachable states from each state
+   - `test_get_state_path()` — shortest path finding works
+   - `test_all_states_reachable_from_pending()` — can reach done/failed/closed from start
+3. `test_project/docs/state_machine.md` — interface docs
+
+## Steps:
+1. Implement StateMachine with data-driven transitions
+2. Write comprehensive tests
+3. Document interface
+4. Run tests: `cd test_project && uv run pytest src/state_machine_test.py -v`
+5. git add test_project/src/state_machine.py test_project/src/state_machine_test.py test_project/docs/state_machine.md
+6. git commit -m "Implement State Machine: formal pane lifecycle with data-driven transitions"
+"""
+
+# Unit 5: Integration Tests — verify all modules work together
+[units.integration-tests]
+summary = "Write comprehensive integration tests for all 4 modules"
+role = "kimi-worker"
+satisfies = ["E1", "E6"]
+depends_on = ["event-journal", "projection-engine", "command-handler", "state-machine"]
+
+[units.integration-tests.files]
+create = [
+    "test_project/tests/integration_test.py",
+    "test_project/tests/conftest.py",
+    "test_project/pyproject.toml"
+]
+read = [
+    "test_project/src/event_journal.py",
+    "test_project/src/projections.py",
+    "test_project/src/commands.py",
+    "test_project/src/state_machine.py"
+]
+
+[units.integration-tests.acceptance]
+tests_pass = true
+lint_clean = true
+
+[units.integration-tests.spec]
+prompt = """
+You are writing integration tests that verify all 4 modules work together correctly.
+
+## CLANKER DISCIPLINE (enforce in tests):
+1. **Test behavior, not implementation**: Assert observable outcomes, not internal method calls
+2. **Derive expectations from events**: Expected state derives from events that were emitted
+3. **Make wrong states test-failing**: Invalid transitions, missing events, etc. must fail tests
+
+## Prerequisites (read these first):
+1. test_project/src/event_journal.py — EventJournal interface
+2. test_project/src/projections.py — ProjectionEngine interface
+3. test_project/src/commands.py — CommandHandler interface
+4. test_project/src/state_machine.py — StateMachine interface
+
+## Integration Test Scenarios:
+
+### test_full_pane_lifecycle()
+Create pane -> dispatch -> run -> done, verify projection tracks correctly.
+```python
+def test_full_pane_lifecycle(tmp_path):
+    # Setup
+    journal = EventJournal(str(tmp_path / "events.db"))
+    projections = ProjectionEngine(journal, str(tmp_path / "projections"))
+    commands = CommandHandler(journal)
+    state_machine = StateMachine()
+    
+    # Register projection
+    projections.register("pane_states", pane_state_handler)
+    
+    # Step 1: Create pane
+    result = commands.execute("create_pane", {"pane_id": "p1", "agent": "qwen", "task_spec": "test"})
+    assert result.success
+    assert result.event.event_type == "pane_created"
+    
+    # Catch up and verify
+    projections.catch_up("pane_states")
+    state = projections.get_state("pane_states")
+    assert state["panes"]["p1"] == "pending"
+    
+    # Step 2: Dispatch (would need custom command or direct state machine usage)
+    # ... continue through lifecycle
+```
+
+### test_concurrent_pane_creation()
+Create 10 panes rapidly, verify all events have unique sequences, projection catches up.
+
+### test_invalid_command_no_event()
+Attempt invalid command (missing required field), verify:
+- CommandResult.success == False
+- No event in journal (check by sequence count)
+- Projection unchanged
+
+### test_state_machine_rejects_invalid_transition()
+Try to transition pending -> done directly, verify StateMachine rejects it.
+
+### test_idempotency_prevents_duplicates()
+Execute same command with same idempotency_key twice:
+- First succeeds, returns event
+- Second returns same event, no duplicate in journal
+- Verify by checking journal.get_events() count
+
+### test_event_journal_durability()
+Create events, close journal, reopen new instance with same db path:
+- All events still readable
+- Projection can catch up from beginning
+- State reconstructs correctly
+
+### test_projection_incremental_catch_up()
+Create events, catch up projection, create more events:
+- Second catch_up only processes new events
+- Verify by checking last_sequence in projection state
+
+## Files to Create:
+1. `test_project/tests/conftest.py` — pytest fixtures:
+   ```python
+   @pytest.fixture
+def tmp_journal(tmp_path):
+       return EventJournal(str(tmp_path / "events.db"))
+   
+   @pytest.fixture
+def tmp_projections(tmp_path, tmp_journal):
+       return ProjectionEngine(tmp_journal, str(tmp_path / "projections"))
+   
+   @pytest.fixture
+def tmp_commands(tmp_journal):
+       return CommandHandler(tmp_journal)
+   
+   @pytest.fixture
+def state_machine():
+       return StateMachine()
+   ```
+
+2. `test_project/tests/integration_test.py` — all test scenarios
+
+3. `test_project/pyproject.toml` — minimal project config:
+   ```toml
+   [project]
+   name = "test-project"
+   version = "0.1.0"
+   requires-python = ">=3.11"
+   
+   [tool.pytest.ini_options]
+   testpaths = ["tests"]
+   pythonpath = ["src"]
+   ```
+
+## Steps:
+1. Read all 4 module implementations
+2. Create directory structure: mkdir -p test_project/tests
+3. Create pyproject.toml
+4. Create conftest.py with fixtures
+5. Write all integration test scenarios
+6. Run tests: `cd test_project && uv run pytest tests/integration_test.py -v`
+7. Fix any integration issues (modules may need minor adjustments)
+8. git add test_project/tests/ test_project/pyproject.toml
+9. git commit -m "Add integration tests: verify event sourcing modules work together"
+
+## Success Criteria:
+- All 7 integration test scenarios pass
+- Tests verify cross-module contracts (e.g., command -> event -> projection update)
+- No mocks of internal module behavior (test real integration)
+- 90%+ integration path coverage
+"""

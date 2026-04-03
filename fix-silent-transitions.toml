@@ -1,0 +1,151 @@
+# Fix silent state transitions — every state change must emit an event.
+# Policy Core: "Every state transition emits an event. No silent state changes anywhere."
+
+[plan]
+version = 1
+name = "fix-silent-transitions"
+goal = "Add missing emit_event calls at 5 locations where state transitions happen without events"
+default_agent = "qwen-9b"
+default_timeout_s = 300
+
+# -- Evals --
+
+[[evals]]
+id = "E-merger-event"
+kind = "regression"
+statement = "merger.py emits pane_merge_conflict after merge_conflict state transition"
+evidence = "grep -q 'emit_event.*pane_merge_conflict' src/dgov/merger.py"
+
+[[evals]]
+id = "E-executor-event"
+kind = "regression"
+statement = "executor.py emits event after reviewed_pass/reviewed_fail transition"
+evidence = "grep -q 'emit_event.*pane_.*target' src/dgov/executor.py || grep -q 'emit_event.*reviewed' src/dgov/executor.py"
+
+[[evals]]
+id = "E-status-event"
+kind = "regression"
+statement = "status.py emits pane_failed after dead process pruning"
+evidence = "grep -q 'emit_event.*pane_failed.*dead_process' src/dgov/status.py"
+
+[[evals]]
+id = "E-waiter-events"
+kind = "regression"
+statement = "waiter.py emits events in respond and signal_pane paths"
+evidence = "grep -c 'emit_event' src/dgov/waiter.py | grep -q '[3-9]'"
+
+[[evals]]
+id = "E-tests-pass"
+kind = "happy_path"
+statement = "All affected tests pass"
+evidence = "DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_merger_coverage.py tests/test_executor.py tests/test_status.py tests/test_waiter.py -q -m unit 2>&1 | tail -1 | grep -q 'passed'"
+
+[[evals]]
+id = "E-lint"
+kind = "invariant"
+statement = "Changed files pass lint"
+evidence = "uv run ruff check src/dgov/merger.py src/dgov/executor.py src/dgov/status.py src/dgov/waiter.py"
+
+# -- Units --
+
+[units.merger-event]
+summary = "Add emit_event after merge_conflict transition in merger.py"
+prompt = """
+1. Read src/dgov/merger.py around line 1366.
+2. Find the line:
+        _persist.update_pane_state(session_root, slug, "merge_conflict")
+3. Add this line immediately after it:
+        _persist.emit_event(session_root, "pane_merge_conflict", slug, branch=branch_name)
+4. Read tests/test_merger_coverage.py. Search for 'mock_emit_event.assert_not_called' in tests that also assert 'merge_conflict'. Update those assertions to assert_called_once_with the new event.
+5. uv run ruff check src/dgov/merger.py
+6. uv run ruff format src/dgov/merger.py
+7. uv run pytest tests/test_merger_coverage.py -q -m unit
+8. git add src/dgov/merger.py tests/test_merger_coverage.py
+9. git commit -m "Add emit_event for merge_conflict state transition"
+10. dgov worker complete
+Do NOT call dgov worker complete until you have committed.
+"""
+commit_message = "Add emit_event for merge_conflict state transition"
+satisfies = ["E-merger-event", "E-tests-pass", "E-lint"]
+
+[units.merger-event.files]
+edit = ["src/dgov/merger.py", "tests/test_merger_coverage.py"]
+
+[units.executor-event]
+summary = "Add emit_event after reviewed_pass/fail transition in executor.py"
+prompt = """
+1. Read src/dgov/executor.py around line 1419-1435. Find the function run_mark_reviewed.
+2. It calls update_pane_state but never emits an event. Fix it.
+3. After the line:
+    update_pane_state(session_root, slug, target, force=True)
+   Add:
+    from dgov.persistence import emit_event
+    emit_event(session_root, f"pane_{target}", slug)
+   Make sure emit_event is imported — it may already be imported elsewhere in the function or you may need to add it to the existing import.
+4. uv run ruff check src/dgov/executor.py
+5. uv run ruff format src/dgov/executor.py
+6. git add src/dgov/executor.py
+7. git commit -m "Add emit_event for reviewed_pass/fail transitions"
+8. dgov worker complete
+Do NOT call dgov worker complete until you have committed.
+"""
+commit_message = "Add emit_event for reviewed_pass/fail transitions"
+satisfies = ["E-executor-event", "E-tests-pass", "E-lint"]
+
+[units.executor-event.files]
+edit = ["src/dgov/executor.py"]
+
+[units.status-event]
+summary = "Add emit_event after dead process pruning in status.py"
+prompt = """
+1. Read src/dgov/status.py around line 376-383.
+2. Find the block:
+                from dgov.persistence import settle_completion_state
+
+                settle_completion_state(session_root, slug, "failed")
+3. After the settle_completion_state call, add:
+                from dgov.persistence import emit_event
+                emit_event(session_root, "pane_failed", slug, reason="dead_process_pruned")
+4. uv run ruff check src/dgov/status.py
+5. uv run ruff format src/dgov/status.py
+6. git add src/dgov/status.py
+7. git commit -m "Add emit_event for dead process pruning"
+8. dgov worker complete
+Do NOT call dgov worker complete until you have committed.
+"""
+commit_message = "Add emit_event for dead process pruning"
+satisfies = ["E-status-event", "E-tests-pass", "E-lint"]
+
+[units.status-event.files]
+edit = ["src/dgov/status.py"]
+
+[units.waiter-events]
+summary = "Add emit_event in respond and signal_pane paths in waiter.py"
+prompt = """
+1. Read src/dgov/waiter.py around lines 499-537.
+2. Find three locations that call settle_completion_state without emitting events:
+
+   Location A (~line 504, respond path):
+   After:  _persist.settle_completion_state(session_root, slug, "done")
+   Add:    _persist.emit_event(session_root, "pane_done", slug, reason="respond_confirmed")
+
+   Location B (~line 529, signal_pane done path):
+   After:  _persist.settle_completion_state(session_root, slug, "done", allow_abandoned=True)
+   Add:    _persist.emit_event(session_root, "pane_done", slug, reason="manual_signal")
+
+   Location C (~line 533, signal_pane failed path):
+   After:  _persist.settle_completion_state(session_root, slug, "failed", allow_abandoned=True)
+   Add:    _persist.emit_event(session_root, "pane_failed", slug, reason="manual_signal")
+
+3. uv run ruff check src/dgov/waiter.py
+4. uv run ruff format src/dgov/waiter.py
+5. git add src/dgov/waiter.py
+6. git commit -m "Add emit_event for respond and signal_pane paths"
+7. dgov worker complete
+Do NOT call dgov worker complete until you have committed.
+"""
+commit_message = "Add emit_event for respond and signal_pane paths"
+satisfies = ["E-waiter-events", "E-tests-pass", "E-lint"]
+
+[units.waiter-events.files]
+edit = ["src/dgov/waiter.py"]

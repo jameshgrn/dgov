@@ -1,0 +1,20 @@
+[plan]
+name = "test-mock"
+version = 1
+goal = "Verify the restored dgov system can execute a simple plan."
+default_agent = "mock"
+
+[[evals]]
+id = "E1"
+kind = "happy_path"
+statement = "The mock task should complete and write a proof file."
+evidence = "ls mock-test-task.txt"
+
+[units.impl]
+summary = "Create a proof file using the mock agent."
+prompt = "Create a file named mock-test-task.txt with content 'Restoration Verified'."
+commit_message = "test: restoration proof"
+satisfies = ["E1"]
+
+[units.impl.files]
+create = ["mock-test-task.txt"]

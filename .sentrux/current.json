@@ -1,0 +1,102 @@
+{
+  "cycle_count": 0,
+  "cycles": [],
+  "max_depth": 7,
+  "deepest_module": "dgov.review_executor",
+  "god_file_count": 23,
+  "god_files": [
+    {
+      "file": "persistence.py",
+      "lines": 2206
+    },
+    {
+      "file": "lifecycle.py",
+      "lines": 1754
+    },
+    {
+      "file": "merger.py",
+      "lines": 1619
+    },
+    {
+      "file": "plan.py",
+      "lines": 1376
+    },
+    {
+      "file": "agents.py",
+      "lines": 1259
+    },
+    {
+      "file": "terrain.py",
+      "lines": 1252
+    },
+    {
+      "file": "spans.py",
+      "lines": 1147
+    },
+    {
+      "file": "dashboard.py",
+      "lines": 1053
+    },
+    {
+      "file": "dag_executor.py",
+      "lines": 931
+    },
+    {
+      "file": "preflight.py",
+      "lines": 891
+    },
+    {
+      "file": "recovery.py",
+      "lines": 870
+    },
+    {
+      "file": "done.py",
+      "lines": 849
+    },
+    {
+      "file": "kernel.py",
+      "lines": 764
+    },
+    {
+      "file": "monitor.py",
+      "lines": 746
+    },
+    {
+      "file": "status.py",
+      "lines": 741
+    },
+    {
+      "file": "inspection.py",
+      "lines": 738
+    },
+    {
+      "file": "decision_providers.py",
+      "lines": 716
+    },
+    {
+      "file": "decision.py",
+      "lines": 678
+    },
+    {
+      "file": "gitops.py",
+      "lines": 612
+    },
+    {
+      "file": "router.py",
+      "lines": 576
+    },
+    {
+      "file": "kernel_service.py",
+      "lines": 564
+    },
+    {
+      "file": "tmux.py",
+      "lines": 514
+    },
+    {
+      "file": "waiter.py",
+      "lines": 512
+    }
+  ],
+  "high_fan_out": []
+}

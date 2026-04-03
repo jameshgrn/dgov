@@ -1,0 +1,162 @@
+[plan]
+version = 1
+name = "reduce-governor-worker-friction"
+goal = "Fix top friction points between governor and workers"
+session_root = "/Users/jakegearon/projects/dgov"
+
+# Fix 1: Auto-cancel stale DAG runs that hold claims
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "Stale DAG runs auto-cancel after timeout"
+evidence = "grep -q 'auto_cancel_after_s' src/dgov/dag_kernel.py"
+
+# Fix 2: Worker heartbeat events for progress visibility  
+id = "E2"
+kind = "regression"
+statement = "Workers emit heartbeat events every 30s"
+evidence = "grep -q 'heartbeat' src/dgov/cli/worker_cmd.py"
+
+# Fix 3: Dry-run claim check before dispatch
+[[evals]]
+id = "E3"
+kind = "regression"
+statement = "dgov plan run --check shows claim conflicts without dispatching"
+evidence = "uv run dgov plan run .dgov/plans/test.toml --check 2>&1 | grep -q 'dry-run'"
+
+[units.auto-cancel-stale-runs]
+summary = "Auto-cancel stale DAG runs blocking new plans"
+agent = "kimi-k25"
+timeout_s = 600
+satisfies = ["E1"]
+commit_message = "feat(kernel): auto-cancel stale DAG runs blocking new plans"
+prompt = """
+Fix friction #1: Stale DAG runs block new plans indefinitely.
+
+Current behavior:
+- DAG run fails, panes close, but run stays "running" in DB
+- File claims held indefinitely
+- New plans get "overlaps with active DAG run" warnings
+- Governor must manually `pane close` each stale pane
+
+Fix in src/dgov/dag_kernel.py or dag_service.py:
+
+1. When dispatching a new plan, check for overlapping claims
+2. For each overlapping run, check if it's stale (>30m since last activity)
+3. If stale, auto-cancel it (set status='failed', release claims)
+4. Log the auto-cancel event
+5. Then proceed with new dispatch
+
+Look for:
+- Claim checking logic (find_overlapping_claims or similar)
+- DAG run status management
+- Dispatch entry point
+
+Add logic like:
+    stale_runs = find_stale_overlapping_runs(new_plan_claims, threshold=1800)
+    for run in stale_runs:
+        cancel_run(run.id, reason="stale_auto_cancel")
+        log.info(f"Auto-cancelled stale run {run.id}")
+
+Run tests: uv run pytest tests/test_dag*.py -v
+Commit when done.
+"""
+
+[units.auto-cancel-stale-runs.files]
+edit = ["src/dgov/dag_kernel.py"]
+
+[units.worker-heartbeat]
+summary = "Add worker heartbeat events for progress visibility"
+agent = "kimi-k25"
+timeout_s = 600
+deps = ["auto-cancel-stale-runs"]
+satisfies = ["E2"]
+commit_message = "feat(worker): emit heartbeat events every 30s for progress visibility"
+prompt = """
+Fix friction #2: Governor can't see worker progress without polling `pane tail`.
+
+Current behavior:
+- Workers run silently
+- Governor must `pane tail` or `pane output` constantly
+- No structured progress events
+
+Fix: Add heartbeat events in src/dgov/cli/worker_cmd.py
+
+In the worker loop (where it waits for work or during long operations):
+1. Every 30 seconds, emit a heartbeat event
+2. Include: timestamp, pane_id, current_action, duration_s
+3. Use existing emit_event or direct DB write
+
+Look for:
+- Worker main loop
+- Where work is done (run_cmd or similar)
+- Event emission (emit_event, log_event)
+
+Add logic like:
+    last_heartbeat = time.time()
+    while working:
+        # ... do work ...
+        if time.time() - last_heartbeat > 30:
+            emit_event("worker_heartbeat", {
+                "pane_id": pane_id,
+                "action": current_action,
+                "duration_s": time.time() - start_time
+            })
+            last_heartbeat = time.time()
+
+Run tests: uv run pytest tests/test_worker*.py -v
+Commit when done.
+"""
+
+[units.worker-heartbeat.files]
+edit = ["src/dgov/cli/worker_cmd.py"]
+
+[units.dry-run-claims]
+summary = "Add --check flag to plan run for dry-run claim validation"
+agent = "kimi-k25"
+timeout_s = 600
+deps = ["worker-heartbeat"]
+satisfies = ["E3"]
+commit_message = "feat(cli): add --check flag to plan run for dry-run validation"
+prompt = """
+Fix friction #3: Claim conflicts discovered only after dispatch.
+
+Current behavior:
+- Run `dgov plan run foo.toml`
+- Get WARN: File overlaps with active DAG run
+- Plan partially submits, some units blocked
+- Have to close stale panes, retry
+
+Fix: Add `--check` flag to validate without dispatching.
+
+In src/dgov/cli/plan_cmd.py:
+1. Add `--check` boolean flag to `plan run` command
+2. When `--check` is set:
+   - Compile the plan
+   - Check all file claims against existing runs
+   - Report conflicts
+   - Exit 0 if clean, exit 1 if conflicts
+   - DO NOT actually dispatch
+
+Output format:
+    $ dgov plan run foo.toml --check
+    Checking plan 'foo'...
+    Claims: 5 files
+    Conflicts: 2
+      - unit 'decompose-x' wants src/dgov/x.py
+        blocked by DAG run 12 (stale, 45m old)
+      - unit 'decompose-y' wants src/dgov/y.py  
+        blocked by DAG run 13 (active, 2m old)
+    Use --force to cancel stale runs, or wait for active runs.
+
+Look for:
+- plan run command handler
+- Plan compilation (DagCompiler)
+- Claim checking logic
+
+Run tests: uv run pytest tests/test_cli*.py -v
+Commit when done.
+"""
+
+[units.dry-run-claims.files]
+edit = ["src/dgov/cli/plan_cmd.py"]

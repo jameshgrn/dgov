@@ -1,0 +1,219 @@
+[plan]
+version = 1
+name = "god-file-surgery"
+goal = "Decompose god files (>500 lines) to improve maintainability and efficiency of dogfood loop"
+session_root = "/Users/jakegearon/projects/dgov"
+default_agent = "kimi-k25"
+
+# Convergence target: God files 23 → 0 (all files ≤500 lines)
+# Priority: dogfood path files first (persistence, lifecycle, merger, plan, dag_executor, kernel)
+
+# Phase 1: persistence.py (2,206 lines) → persistence/ package
+# - Core: state.db management, PaneState
+# - Events: event log operations
+# - Queries: state queries (get_pane, list_panes)
+# - Notify: pipe-based notification
+
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "All persistence imports still work"
+evidence = "uv run python3 -c 'from dgov.persistence import PaneState, get_pane, append_event; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "regression"
+statement = "All tests still pass"
+evidence = "uv run pytest tests/ -q -x --tb=no 2>&1 | tail -1 | grep -q 'passed'"
+
+[[evals]]
+id = "E3"
+kind = "happy_path"
+statement = "persistence.py under 500 lines or split into package"
+evidence = "test $(wc -l < src/dgov/persistence.py 2>/dev/null || echo 9999) -le 500 || test -d src/dgov/persistence"
+
+# Phase 2: lifecycle.py (1,754 lines) → lifecycle/ package  
+# - Core: pane creation, cleanup
+# - Monitor: monitor pane lifecycle
+# - Recovery: recovery operations
+
+[[evals]]
+id = "E4"
+kind = "happy_path"
+statement = "lifecycle.py under 500 lines or split into package"
+evidence = "test $(wc -l < src/dgov/lifecycle.py 2>/dev/null || echo 9999) -le 500 || test -d src/dgov/lifecycle"
+
+[[evals]]
+id = "E5"
+kind = "regression"
+statement = "Lifecycle functions still work"
+evidence = "uv run python3 -c 'from dgov.lifecycle import create_worker_pane, close_worker_pane; print(\"OK\")'"
+
+# Phase 3: merger.py (1,607 lines) → merger/ package
+# - Core: merge logic
+# - Review: review coordination
+# - Land: land operations
+
+[[evals]]
+id = "E6"
+kind = "happy_path"
+statement = "merger.py under 500 lines or split into package"
+evidence = "test $(wc -l < src/dgov/merger.py 2>/dev/null || echo 9999) -le 500 || test -d src/dgov/merger"
+
+# === PHASE 1: DECOMPOSE persistence.py ===
+
+[units.decompose-persistence]
+summary = "Split persistence.py (2,206 lines) into persistence/ package with focused modules"
+agent = "kimi-k25"
+timeout_s = 900
+satisfies = ["E1", "E2", "E3"]
+commit_message = "Decompose persistence.py into focused modules"
+prompt = """
+Goal: Decompose src/dgov/persistence.py (2,206 lines) into a package.
+
+Current structure analysis:
+1. Read src/dgov/persistence.py completely
+2. Identify logical groupings:
+   - State management (PaneState, state.db schema, migrations)
+   - Event operations (append_event, get_events, event log)
+   - Queries (get_pane, list_panes, pane_exists, etc.)
+   - Notification (_notify_dir, _notify_waiters, pipe operations)
+   - Span integration (span lifecycle methods)
+   - Migration logic (schema versions, upgrades)
+
+Plan:
+1. Create src/dgov/persistence/ directory
+
+2. Create modules:
+   - __init__.py - exports for backward compatibility
+   - schema.py - PaneState dataclass, CREATE TABLE SQL, schema version
+   - connection.py - get_conn(), _init_db(), connection management
+   - state_ops.py - get_pane(), list_panes(), update_pane(), pane state operations
+   - events.py - append_event(), get_events(), event log operations
+   - notify.py - _notify_dir(), _notify_waiters(), pipe notification
+   - migrate.py - schema migrations, version tracking
+
+3. In __init__.py, re-export all public names for backward compatibility:
+   - PaneState
+   - get_pane, list_panes, update_pane, pane_exists
+   - append_event, get_events
+   - get_conn
+   - Any other public functions
+
+4. Cut and paste code from persistence.py to appropriate modules
+
+5. Update imports in each new module to point to sibling modules
+
+6. Leave src/dgov/persistence.py as a thin wrapper (or delete after verification)
+
+7. Run: uv run python3 -c "from dgov.persistence import PaneState, get_pane; print('OK')"
+8. Run: uv run ruff check src/dgov/persistence/
+9. Run: uv run ruff format src/dgov/persistence/
+10. Run: uv run pytest tests/test_persistence.py -q --tb=short 2>&1 | head -20
+
+git add src/dgov/persistence/
+git rm src/dgov/persistence.py 2>/dev/null || git add src/dgov/persistence.py
+git commit -m "Decompose persistence.py into focused modules"
+"""
+
+[units.decompose-persistence.files]
+create = ["src/dgov/persistence/__init__.py", "src/dgov/persistence/schema.py", "src/dgov/persistence/connection.py", "src/dgov/persistence/state_ops.py", "src/dgov/persistence/events.py", "src/dgov/persistence/notify.py", "src/dgov/persistence/migrate.py"]
+delete = ["src/dgov/persistence.py"]
+
+# === PHASE 2: DECOMPOSE lifecycle.py ===
+
+[units.decompose-lifecycle]
+summary = "Split lifecycle.py (1,754 lines) into lifecycle/ package"
+agent = "kimi-k25"
+timeout_s = 900
+depends_on = ["decompose-persistence"]
+satisfies = ["E4", "E5"]
+commit_message = "Decompose lifecycle.py into focused modules"
+prompt = """
+Goal: Decompose src/dgov/lifecycle.py (1,754 lines) into a package.
+
+Current structure analysis:
+1. Read src/dgov/lifecycle.py completely
+2. Identify logical groupings:
+   - Core lifecycle (create_worker_pane, close_worker_pane)
+   - Monitor integration (monitor pane creation)
+   - Recovery operations
+   - State transitions
+
+Plan:
+1. Create src/dgov/lifecycle/ directory
+
+2. Create modules:
+   - __init__.py - exports for backward compatibility
+   - core.py - create_worker_pane(), close_worker_pane(), _wrap_cmd()
+   - monitor.py - monitor pane lifecycle functions
+   - recovery.py - recovery operations (if not already in recovery.py)
+   - utils.py - shared utilities
+
+3. In __init__.py, re-export:
+   - create_worker_pane, close_worker_pane
+   - WorkerResult
+   - Any other public names
+
+4. Cut and paste code to appropriate modules
+
+5. Run: uv run python3 -c "from dgov.lifecycle import create_worker_pane; print('OK')"
+6. Run: uv run ruff check src/dgov/lifecycle/
+7. Run: uv run ruff format src/dgov/lifecycle/
+
+git add src/dgov/lifecycle/
+git rm src/dgov/lifecycle.py 2>/dev/null || git add src/dgov/lifecycle.py
+git commit -m "Decompose lifecycle.py into focused modules"
+"""
+
+[units.decompose-lifecycle.files]
+create = ["src/dgov/lifecycle/__init__.py", "src/dgov/lifecycle/core.py", "src/dgov/lifecycle/monitor.py", "src/dgov/lifecycle/utils.py"]
+delete = ["src/dgov/lifecycle.py"]
+
+# === PHASE 3: DECOMPOSE merger.py ===
+
+[units.decompose-merger]
+summary = "Split merger.py (1,607 lines) into merger/ package"
+agent = "kimi-k25"
+timeout_s = 900
+depends_on = ["decompose-lifecycle"]
+satisfies = ["E6"]
+commit_message = "Decompose merger.py into focused modules"
+prompt = """
+Goal: Decompose src/dgov/merger.py (1,607 lines) into a package.
+
+Current structure analysis:
+1. Read src/dgov/merger.py completely
+2. Identify logical groupings:
+   - Core merge logic (merge_to_main, squash_merge)
+   - Review coordination
+   - Conflict detection
+   - Branch operations
+
+Plan:
+1. Create src/dgov/merger/ directory
+
+2. Create modules:
+   - __init__.py - exports for backward compatibility
+   - core.py - merge_to_main(), _merge_commit(), MergeSuccess/MergeFailure
+   - review.py - review coordination functions
+   - conflicts.py - conflict detection and resolution
+   - branches.py - branch operations
+
+3. In __init__.py, re-export:
+   - merge_to_main, squash_merge
+   - MergeSuccess, MergeFailure
+   - Any other public names
+
+4. Run: uv run python3 -c "from dgov.merger import merge_to_main; print('OK')"
+5. Run: uv run ruff check src/dgov/merger/
+6. Run: uv run ruff format src/dgov/merger/
+
+git add src/dgov/merger/
+git rm src/dgov/merger.py 2>/dev/null || git add src/dgov/merger.py
+git commit -m "Decompose merger.py into focused modules"
+"""
+
+[units.decompose-merger.files]
+create = ["src/dgov/merger/__init__.py", "src/dgov/merger/core.py", "src/dgov/merger/review.py", "src/dgov/merger/conflicts.py", "src/dgov/merger/branches.py"]
+delete = ["src/dgov/merger.py"]

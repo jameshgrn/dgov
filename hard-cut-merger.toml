@@ -1,0 +1,165 @@
+[plan]
+version = 1
+name = "hard-cut-merger"
+goal = "Decompose merger.py using hard-cut pattern (no shims)"
+session_root = "/Users/jakegearon/projects/dgov"
+
+# Same hard-cut pattern as lifecycle:
+# 1. Rename merger.py → _merger.py
+# 2. Create merger/ package
+# 3. Gradually extract to submodules
+# 4. Delete _merger.py when empty
+
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "All merger imports still work"
+evidence = "uv run python3 -c 'from dgov.merger import merge_branch; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "regression"
+statement = "All tests pass"
+evidence = "uv run pytest tests/test_merger*.py -q 2>&1 | tail -1 | grep -q 'passed'"
+
+[[evals]]
+id = "E3"
+kind = "happy_path"
+statement = "merger.py does not exist (hard cut complete)"
+evidence = "test ! -f src/dgov/merger.py"
+
+[[evals]]
+id = "E4"
+kind = "happy_path"
+statement = "merger/_merger.py under 1000 lines"
+evidence = "[ $(wc -l < src/dgov/merger/_merger.py) -lt 1000 ]"
+
+# Phase 1: Hard cut - rename and create structure
+[units.hard-cut-merger]
+summary = "Rename merger.py to _merger.py, create package"
+agent = "kimi-k25"
+timeout_s = 600
+satisfies = ["E1", "E2", "E3"]
+commit_message = "refactor(merger): hard-cut rename to _merger.py, create package structure"
+prompt = """
+HARD-CUT DECOMPOSITION PATTERN — no shims.
+
+Current state:
+- merger.py exists (1619 lines)
+
+Steps:
+1. Create src/dgov/merger/ directory
+2. Move src/dgov/merger.py → src/dgov/merger/_merger.py
+3. Create src/dgov/merger/__init__.py that imports from ._merger
+4. Ensure all public exports work: merge_branch, check_conflicts, etc.
+5. Run tests: uv run pytest tests/test_merger*.py -v
+6. If tests pass: git add -A && git commit
+
+Critical: NO merger.py file should remain in src/dgov/
+"""
+
+[units.hard-cut-merger.files]
+create = [
+    "src/dgov/merger/__init__.py",
+    "src/dgov/merger/_merger.py"
+]
+delete = ["src/dgov/merger.py"]
+
+# Phase 2: Extract conflicts module
+[units.extract-conflicts]
+summary = "Extract conflict functions to conflicts.py"
+agent = "kimi-k25"
+deps = ["hard-cut-merger"]
+timeout_s = 600
+satisfies = []
+commit_message = "refactor(merger): extract conflicts functions to conflicts.py"
+prompt = """
+Read src/dgov/merger/_merger.py. Extract ALL conflict-related functions:
+- find_conflicts(), resolve_conflict(), list_conflicts()
+- Conflict detection helpers
+- Any merge conflict logic
+
+Steps:
+1. Create src/dgov/merger/conflicts.py
+2. Update __init__.py to import from .conflicts
+3. Remove from _merger.py
+4. Run tests
+5. Commit
+"""
+
+[units.extract-conflicts.files]
+create = ["src/dgov/merger/conflicts.py"]
+edit = ["src/dgov/merger/__init__.py", "src/dgov/merger/_merger.py"]
+
+# Phase 3: Extract apply module
+[units.extract-apply]
+summary = "Extract merge application to apply.py"
+agent = "kimi-k25"
+deps = ["extract-conflicts"]
+timeout_s = 600
+satisfies = []
+commit_message = "refactor(merger): extract merge application to apply.py"
+prompt = """
+Read src/dgov/merger/_merger.py. Extract ALL merge application functions:
+- fast_forward_merge()
+- three_way_merge()
+- apply_merge()
+- Merge execution helpers
+
+Steps:
+1. Create src/dgov/merger/apply.py
+2. Update __init__.py to import from .apply
+3. Remove from _merger.py
+4. Run tests
+5. Commit
+"""
+
+[units.extract-apply.files]
+create = ["src/dgov/merger/apply.py"]
+edit = ["src/dgov/merger/__init__.py", "src/dgov/merger/_merger.py"]
+
+# Phase 4: Extract validate module
+[units.extract-validate]
+summary = "Extract validation to validate.py"
+agent = "kimi-k25"
+deps = ["extract-apply"]
+timeout_s = 600
+satisfies = []
+commit_message = "refactor(merger): extract validation to validate.py"
+prompt = """
+Read src/dgov/merger/_merger.py. Extract ALL validation functions:
+- check_claims(), check_conflicts()
+- preflight_validate()
+- Validation helpers
+
+Steps:
+1. Create src/dgov/merger/validate.py
+2. Update __init__.py to import from .validate
+3. Remove from _merger.py
+4. Run tests
+5. Commit
+"""
+
+[units.extract-validate.files]
+create = ["src/dgov/merger/validate.py"]
+edit = ["src/dgov/merger/__init__.py", "src/dgov/merger/_merger.py"]
+
+# Phase 5: Delete legacy
+[units.delete-merger-legacy]
+summary = "Delete _merger.py after full extraction"
+agent = "kimi-k25"
+deps = ["extract-validate"]
+timeout_s = 300
+satisfies = ["E4"]
+commit_message = "refactor(merger): delete _merger.py, decomposition complete"
+prompt = """
+Check src/dgov/merger/_merger.py. If empty or only imports:
+1. Delete _merger.py
+2. Clean up __init__.py
+3. Run tests
+4. Commit
+"""
+
+[units.delete-merger-legacy.files]
+delete = ["src/dgov/merger/_merger.py"]
+edit = ["src/dgov/merger/__init__.py"]

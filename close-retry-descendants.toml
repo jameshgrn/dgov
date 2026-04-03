@@ -1,0 +1,55 @@
+[plan]
+version = 1
+name = "close-retry-descendants"
+goal = "Make pane close clean up retry descendants deterministically so superseded panes and orphan tmux windows do not linger"
+default_agent = "worker"
+default_review_agent = "supervisor"
+default_timeout_s = 600
+max_concurrent = 1
+max_retries = 2
+
+[[evals]]
+id = "E-close-lineage"
+kind = "happy_path"
+statement = "Closing a pane cleans up retry descendants and removes superseded rows from live pane state"
+evidence = "DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_dgov_panes.py tests/test_lifecycle.py -q -m unit"
+scope = ["src/dgov/lifecycle.py", "src/dgov/recovery.py", "tests/test_dgov_panes.py", "tests/test_lifecycle.py"]
+
+[[evals]]
+id = "E-close-lint"
+kind = "invariant"
+statement = "Close-lineage files pass lint and format"
+evidence = "uv run ruff check src/dgov/lifecycle.py src/dgov/recovery.py tests/test_dgov_panes.py tests/test_lifecycle.py && uv run ruff format --check src/dgov/lifecycle.py src/dgov/recovery.py tests/test_dgov_panes.py tests/test_lifecycle.py"
+scope = ["src/dgov/lifecycle.py", "src/dgov/recovery.py", "tests/test_dgov_panes.py", "tests/test_lifecycle.py"]
+
+[units.close-retry-descendants]
+summary = "Close retry descendants when the original pane is closed"
+prompt = """
+1. Read CODEBASE.md.
+2. Read src/dgov/lifecycle.py, src/dgov/recovery.py, tests/test_dgov_panes.py, and tests/test_lifecycle.py.
+3. Goal: bring pane close behavior into policy. Closing a pane by the original slug must clean up its retry lineage too, so superseded retry descendants do not linger in tmux or in the live panes table.
+4. Implement the fix with these constraints:
+   - Fix the first wrong layer. Do not paper over this only in `pane list` or `status`.
+   - Keep one canonical cleanup path. Do not add a second ad-hoc descendant cleanup surface.
+   - Prefer lineage derived from events over mutable metadata where the source-of-truth layer is available.
+   - The result of closing the original pane should be that retry descendants are also closed/removed when they are part of the same retry chain.
+   - Do not add new flags or policy branches.
+5. Add focused regression coverage for the real failure mode:
+   - a retried pane chain exists
+   - closing the original slug cleans up superseded retry descendants
+   - no superseded descendant remains in `all_panes()` after close
+   - any cleanup hooks needed for orphan tmux/worktree state are exercised at the unit level
+6. Run:
+   - `uv run ruff check src/dgov/lifecycle.py src/dgov/recovery.py tests/test_dgov_panes.py tests/test_lifecycle.py`
+   - `uv run ruff format src/dgov/lifecycle.py src/dgov/recovery.py tests/test_dgov_panes.py tests/test_lifecycle.py`
+   - `uv run pytest tests/test_dgov_panes.py tests/test_lifecycle.py -q -m unit`
+7. git add src/dgov/lifecycle.py src/dgov/recovery.py tests/test_dgov_panes.py tests/test_lifecycle.py
+8. git commit -m "Close retry descendants with their parent pane"
+9. dgov worker complete
+Do not call `dgov worker complete` until the commit exists.
+"""
+commit_message = "Close retry descendants with their parent pane"
+satisfies = ["E-close-lineage", "E-close-lint"]
+
+[units.close-retry-descendants.files]
+edit = ["src/dgov/lifecycle.py", "src/dgov/recovery.py", "tests/test_dgov_panes.py", "tests/test_lifecycle.py"]

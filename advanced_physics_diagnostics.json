@@ -1,0 +1,18 @@
+{
+  "upwind": {
+    "model": "Upwind",
+    "true_avg_crest_speed": 0.19,
+    "pred_avg_crest_speed": -0.017777777777777778,
+    "speed_fidelity": -0.0935672514619883,
+    "avg_tv_retention": 0.7654061900883629,
+    "avg_wasserstein_dist": 0.13102543408852263
+  },
+  "symmetric": {
+    "model": "Symmetric",
+    "true_avg_crest_speed": 0.31666666666666665,
+    "pred_avg_crest_speed": 0.034444444444444444,
+    "speed_fidelity": 0.10877192982456141,
+    "avg_tv_retention": 3.893478099925918,
+    "avg_wasserstein_dist": 1.7907992021222214
+  }
+}

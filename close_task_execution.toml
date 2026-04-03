@@ -1,0 +1,35 @@
+[dag]
+name = "close_task_execution"
+project_root = "."
+session_root = "."
+
+[tasks.close_task_execution]
+summary = "Execute CloseTask actions in runner to fix pane settlement leak"
+agent = "kimi-k2.5"
+prompt = """
+1. Read /Users/jakegearon/projects/dgov/src/dgov/runner.py.
+2. Read /Users/jakegearon/projects/dgov/src/dgov/kernel.py.
+3. Read /Users/jakegearon/projects/dgov/src/dgov/cli/pane.py.
+4. Read /Users/jakegearon/projects/dgov/src/dgov/persistence/state_ops.py.
+5. Fix the cleanup/state-settlement leak at the first wrong layer.
+6. Requirements:
+   - The kernel already emits `CloseTask` after successful merge and some failure paths.
+   - The runner must execute `CloseTask` actions on the canonical path. Right now it does not.
+   - Successful plan completion must not leave pane rows stuck in ACTIVE.
+   - Use real tmux/worktree/persistence primitives. Do not add polling, background cleanup heuristics, or monitor-only band-aids.
+   - Keep ownership clear and explicit. No compatibility shims.
+   - If useful, emit the corresponding kernel event after cleanup so state progression remains event-driven.
+7. Run: uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/runner.py
+8. Run: uv run ruff format /Users/jakegearon/projects/dgov/src/dgov/runner.py
+9. git add /Users/jakegearon/projects/dgov/src/dgov/runner.py
+10. git commit -m "Execute close-task settlement in runner"
+"""
+commit_message = "Execute close-task settlement in runner"
+
+[tasks.close_task_execution.files]
+edit = [
+    "src/dgov/runner.py",
+    "src/dgov/kernel.py",
+    "src/dgov/cli/pane.py",
+    "src/dgov/persistence/state_ops.py"
+]

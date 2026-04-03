@@ -1,0 +1,60 @@
+[plan]
+version = 1
+name = "remove-auto-retry-phase2"
+goal = "Remove RetryTask handling from dag_executor and recovery cleanup - kernel already done"
+session_root = "/Users/jakegearon/projects/dgov"
+default_agent = "kimi-k25"
+
+# Phase 1 (kernel) completed - max_retries=0, RetryTask removed from kernel
+# This plan finishes: dag_executor cleanup, recovery cleanup
+
+[[evals]]
+id = "E1"
+kind = "happy_path"
+statement = "No RetryTask in dag_executor"
+evidence = "grep -c 'RetryTask' src/dgov/dag_executor.py | xargs test 0 -eq"
+
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "No _dag_retry function in dag_executor"
+evidence = "grep -c '_dag_retry' src/dgov/dag_executor.py | xargs test 0 -eq"
+
+[[evals]]
+id = "E3"
+kind = "happy_path"
+statement = "Recovery.py cleaned of auto-retry imports"
+evidence = "grep -c '_schedule_retry' src/dgov/recovery.py | xargs test 0 -eq"
+
+[units.executor-remove-retry]
+summary = "Remove _dag_retry function from dag_executor.py and RetryTask handling"
+agent = "kimi-k25"
+timeout_s = 300
+satisfies = ["E1", "E2"]
+commit_message = "Remove RetryTask handling from dag executor"
+files = { edit = ["src/dgov/dag_executor.py"] }
+prompt = """
+1. Read src/dgov/dag_executor.py
+2. Remove RetryTask from imports at top of file (around line 57)
+3. Remove the isinstance(action, RetryTask) handling in action dispatcher (around line 124-125)
+4. Remove the _dag_retry function (around lines 772-800)
+5. git add src/dgov/dag_executor.py
+6. git commit -m "Remove RetryTask handling from dag executor"
+"""
+
+[units.cleanup-recovery]
+summary = "Clean up unused retry functions from recovery.py"
+agent = "kimi-k25"
+timeout_s = 300
+depends_on = ["executor-remove-retry"]
+satisfies = ["E3"]
+commit_message = "Clean up unused auto-retry imports from recovery.py"
+files = { edit = ["src/dgov/recovery.py"] }
+prompt = """
+1. Read src/dgov/recovery.py
+2. Keep retry_or_escalate for manual governor-initiated retry
+3. Remove any imports or helper functions only used for auto-retry
+4. Check if _schedule_retry or similar can be removed
+5. git add src/dgov/recovery.py
+6. git commit -m "Clean up unused auto-retry imports from recovery.py"
+"""

@@ -1,0 +1,16 @@
+[plan]
+name = "test-mock"
+version = 1
+goal = "Test dgov run with mock agent"
+project_root = "."
+session_root = "."
+max_concurrent = 1
+
+[units.mock-test]
+summary = "Mock agent test"
+prompt = "Write 'Hello' to .dgov/out/mock-test/result.txt"
+commit_message = "Mock test completed"
+agent = "mock"
+
+[units.mock-test.files]
+create = [".dgov/out/mock-test/result.txt"]

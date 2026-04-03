@@ -1,0 +1,34 @@
+# Fix test failures in test_executor.py
+# The extract_task_context function was moved from dag_executor to strategy
+
+[plan]
+version = 1
+name = "fix-test-executor-extract"
+goal = "Fix test failures in test_executor.py due to incorrect monkeypatch path"
+default_agent = "qwen-35b"
+default_timeout_s = 120
+
+[[units]]
+slug = "fix-test-monkeypatch"
+summary = "Update monkeypatch paths in test_executor.py"
+prompt = """
+1. Read tests/test_executor.py. Find the monkeypatch calls that reference "dgov.dag_executor.extract_task_context".
+2. There are two locations:
+   - Line ~28 in test_derive_prompt_touches_dedupes_paths
+   - Line ~402 in TestResolveTouches::test_from_prompt
+3. Change both from "dgov.dag_executor.extract_task_context" to "dgov.strategy.extract_task_context"
+   This is because extract_task_context was moved to strategy.py and is now imported from there.
+4. Run the specific tests to verify they pass:
+   DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_executor.py::test_derive_prompt_touches_dedupes_paths tests/test_executor.py::TestResolveTouches::test_from_prompt -v
+5. git add tests/test_executor.py
+6. git commit -m "test: fix monkeypatch paths for extract_task_context"
+7. dgov worker complete
+"""
+commit_message = "test: fix monkeypatch paths for extract_task_context"
+
+[units.fix-test-monkeypatch.files]
+edit = ["tests/test_executor.py"]
+
+[evals]
+lint_clean = true
+tests_pass = true

@@ -1,0 +1,59 @@
+# Fix bugs #184 and #185: Cancel retry descendants + emit timeout events
+
+[plan]
+version = 1
+name = "fix-184-185-combined"
+goal = "Fix two executor bugs: cancel retry descendants on DAG cancel, and emit pane_timed_out event on DAG wait timeout"
+default_agent = "supervisor"
+default_timeout_s = 600
+max_retries = 2
+
+[[evals]]
+id = "E-combined"
+kind = "happy_path"
+statement = "Both bugs fixed: retry descendants cancelled on DAG cancel, and timeout events emitted on DAG wait"
+evidence = "DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_executor_bugs_184_185.py -q -m unit -v"
+scope = ["src/dgov/executor.py", "tests/test_executor_bugs_184_185.py"]
+
+[[evals]]
+id = "E-lint"
+kind = "invariant"
+statement = "Files pass lint and format"
+evidence = "uv run ruff check src/dgov/executor.py tests/test_executor_bugs_184_185.py && uv run ruff format --check src/dgov/executor.py tests/test_executor_bugs_184_185.py"
+scope = ["src/dgov/executor.py", "tests/test_executor_bugs_184_185.py"]
+
+[units.fix-executor-bugs]
+summary = "Fix bug #184 (cancel retry descendants) and bug #185 (emit timeout event)"
+prompt = """
+Read CODEBASE.md, then fix both bugs in src/dgov/executor.py:
+
+BUG #184: Cancelled DAG runs leave retry descendants alive
+- Location: run_cancel_dag function (around line 2060)
+- Problem: When cancelling a DAG run, only original task panes are cancelled. Retry panes (with parent_slug links) are not found.
+- Fix: After collecting pane_slugs from task_rows, use get_child_panes() recursively to find all retry descendants and add them to the cancel set.
+
+BUG #185: Worker plan tasks stall in read-only phase without emitting timeout events
+- Location: _dag_wait_any function (around line 950)
+- Problem: When wait times out, it returns TaskWaitDone but NO event is emitted. External observers cannot see the timeout.
+- Fix: Before returning TaskWaitDone on timeout, emit a pane_timed_out event via emit_event() similar to how pane_failed is emitted elsewhere.
+
+Steps:
+1. Read src/dgov/executor.py around lines 950 and 2060
+2. Implement fix for bug #184: collect retry descendants using get_child_panes
+3. Implement fix for bug #185: emit pane_timed_out event before returning on timeout
+4. Add regression test in tests/test_executor_bugs_184_185.py covering:
+   - DAG cancel closes retry descendant panes
+   - DAG wait timeout emits pane_timed_out event
+5. Run: uv run ruff check src/dgov/executor.py tests/test_executor_bugs_184_185.py
+6. Run: uv run ruff format src/dgov/executor.py tests/test_executor_bugs_184_185.py
+7. Run: DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_executor_bugs_184_185.py -q -m unit -v
+8. git add src/dgov/executor.py tests/test_executor_bugs_184_185.py
+9. git commit -m "fix(executor): cancel retry descendants on DAG cancel, emit timeout events"
+10. dgov worker complete
+Do not call dgov worker complete until the commit exists.
+"""
+commit_message = "fix(executor): cancel retry descendants on DAG cancel, emit timeout events"
+satisfies = ["E-combined", "E-lint"]
+
+[units.fix-executor-bugs.files]
+edit = ["src/dgov/executor.py", "tests/test_executor_bugs_184_185.py"]

@@ -1,0 +1,12 @@
+{
+  "_comment": "Source file → test files. Only maps that exist today.",
+  "src/dgov/router.py": ["tests/test_router.py"],
+  "src/dgov/kernel.py": ["tests/test_kernel_conflict.py"],
+  "src/dgov/pane.py": ["tests/test_kernel_conflict.py", "tests/test_integration_conflict.py"],
+  "src/dgov/cost_tracker.py": ["tests/test_cost_tracker.py"],
+  "src/dgov/runner.py": ["tests/test_latency.py", "tests/benchmark_dispatch.py"],
+  "src/dgov/dag_parser.py": ["tests/test_architecture.py"],
+  "src/dgov/cli/plan.py": ["tests/test_architecture.py"],
+  "src/dgov/status.py": ["tests/test_latency.py"],
+  "src/dgov/observation.py": ["tests/test_integration_conflict.py"]
+}

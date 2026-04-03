@@ -1,0 +1,34 @@
+[dag]
+name = "Add missing is_routable function to router"
+max_concurrent = 1
+
+[tasks.add-is-routable]
+summary = "Add is_routable stub to router module"
+agent = "generate-t1"
+prompt = """
+Add the missing is_routable function to src/dgov/router.py.
+
+The function is imported by src/dgov/preflight.py. Add this function to src/dgov/router.py:
+
+def is_routable(agent: str, project_root: str | None = None) -> bool:
+    \"\"\"Check if an agent name is routable via routing tables.
+    
+    Args:
+        agent: The agent or routing name to check
+        project_root: Optional project root for loading routing config
+        
+    Returns:
+        True if the agent can be routed to a backend
+    \"\"\"
+    routable_prefixes = (
+        "generate-", "validate-", "audit-", "orient-", 
+        "eval-write-", "parse-", "governor",
+        "worker", "supervisor", "manager", "lt-gov"
+    )
+    return any(agent.startswith(p) or agent == p for p in routable_prefixes)
+
+Commit when complete.
+"""
+commit_message = "Add is_routable stub to router module"
+files.create = []
+files.edit = ["src/dgov/router.py"]

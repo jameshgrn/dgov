@@ -1,0 +1,99 @@
+[dag]
+name = "Cost Caps and Circuit Breaker"
+max_concurrent = 2
+
+[tasks.cost-tracker]
+summary = "Implement session-level cost tracking"
+agent = "kimi-k25-0"
+prompt = """
+Implement a CostTracker class in src/dgov/cost_tracker.py for session-level cost tracking.
+
+The cost tracker should:
+1. Track per-call costs with timestamps
+2. Maintain running totals per agent and globally
+3. Support budget limits (soft warning, hard cap)
+4. Integrate with spans for observability
+
+Read src/dgov/spans.py first to understand the span/annotation pattern.
+
+Key API:
+- CostTracker.record(agent_id, cost_cents, metadata)
+- CostTracker.get_total() -> total cents
+- CostTracker.get_remaining_budget() -> cents or None
+- CostTracker.is_budget_exceeded() -> bool
+
+Use dataclasses, store history in memory (no persistence needed for v1).
+Add unit tests in tests/test_cost_tracker.py.
+
+Commit when complete.
+"""
+commit_message = "Add CostTracker for session-level cost tracking"
+files.create = ["src/dgov/cost_tracker.py", "tests/test_cost_tracker.py"]
+
+[tasks.circuit-breaker]
+summary = "Add circuit breaker preflight check"
+agent = "kimi-k25-1"
+prompt = """
+Add a circuit breaker preflight check that fails when budget is exceeded.
+
+Read src/dgov/preflight.py to understand the CheckResult pattern.
+Read src/dgov/cost_tracker.py (created in previous task) for the CostTracker API.
+
+Implement:
+1. check_budget(project_root, registry, cost_tracker) -> CheckResult
+2. Integrate into run_preflight_async() when cost_tracker is provided
+3. The check should fail (critical=True) when budget exceeded
+4. Add budget configuration to agents.toml format (budget_cents field on agents)
+
+Update src/dgov/agents.py to parse budget config if needed.
+Add tests in tests/test_preflight_budget.py.
+
+Commit when complete.
+"""
+commit_message = "Add circuit breaker preflight check for budget limits"
+files.edit = ["src/dgov/preflight.py", "src/dgov/agents.py"]
+files.create = ["tests/test_preflight_budget.py"]
+depends_on = ["cost-tracker"]
+
+[tasks.runner-integration]
+summary = "Wire cost tracker into EventDagRunner"
+agent = "kimi-k25-2"
+prompt = """
+Integrate CostTracker into the event-driven runner.
+
+Read src/dgov/runner.py to understand the EventDagRunner.
+Read src/dgov/cost_tracker.py for the CostTracker API.
+
+Changes:
+1. EventDagRunner.__init__ accepts optional cost_tracker parameter
+2. Before dispatching a task, check if budget exceeded
+3. If exceeded, emit appropriate kernel event (TaskDispatchFailed or InterruptGovernor)
+4. Track costs on task completion (via WorkerExit events)
+5. Log warning at 80% budget, fail at 100%
+
+Add budget config example to example agents.toml.
+Commit when complete.
+"""
+commit_message = "Wire CostTracker into EventDagRunner"
+files.edit = ["src/dgov/runner.py"]
+depends_on = ["circuit-breaker"]
+
+[tasks.cli-config]
+summary = "Add cost budget CLI options"
+agent = "kimi-k25-3"
+prompt = """
+Add cost budget options to dgov CLI.
+
+Find where CLI commands are defined (likely src/dgov/cli.py or similar).
+
+Add:
+1. --budget-cents global option or per-plan budget config
+2. --cost-warning-threshold (default 80%)
+3. Display budget status in dgov status output
+4. Persist budget config in .dgov/config.toml if it exists
+
+Commit when complete.
+"""
+commit_message = "Add cost budget CLI options"
+files.edit = ["src/dgov/cli.py"]
+depends_on = ["runner-integration"]

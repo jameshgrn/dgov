@@ -1,0 +1,105 @@
+[plan]
+name = "hft-dispatch-optimization"
+version = 1
+goal = "Make governor/worker dispatch fast, bulletproof, deterministic - HFT style"
+project_root = "."
+session_root = "."
+max_concurrent = 2
+default_agent = "kimi-k25"
+
+[units.cache-registry]
+summary = "Cache agent registry at CLI startup"
+prompt = """
+1. Read src/dgov/agents.py to understand the current registry loading.
+
+The problem: load_registry() is called on every dispatch, parsing TOML files and doing stat checks. This is slow (20-100ms per dispatch).
+
+The solution: Load registry once at CLI startup and cache it in a global.
+
+2. Modify src/dgov/agents.py:
+   - Add a global _CACHED_REGISTRY: dict[str, AgentDef] | None = None
+   - Add a get_registry(project_root: str | None = None) function that:
+     * Returns _CACHED_REGISTRY if it's not None
+     * Otherwise calls load_registry(), stores in _CACHED_REGISTRY, returns it
+   - Keep load_registry() for force-reload scenarios
+
+3. Modify src/dgov/cli/__init__.py:
+   - Add registry cache warming at CLI startup time
+   - Call agents.get_registry() in the CLI entry point to pre-load
+
+4. Update src/dgov/preflight.py:
+   - Change any calls to load_registry() to use get_registry() instead
+
+5. git add src/dgov/agents.py src/dgov/cli/__init__.py src/dgov/preflight.py
+6. git commit -m "Cache agent registry at CLI startup for fast dispatch"
+"""
+agent = "kimi-k25"
+
+[units.cache-registry.files]
+touch = ["src/dgov/agents.py", "src/dgov/cli/__init__.py", "src/dgov/preflight.py"]
+
+[units.simplify-preflight]
+summary = "Single-check preflight with in-memory claims"
+depends = ["cache-registry"]
+prompt = """
+1. Read src/dgov/preflight.py to understand current preflight checks.
+
+The problem: run_preflight() runs 7 checks sequentially, many with subprocess calls. This is 50-500ms of latency per dispatch.
+
+The solution: Create a fast can_dispatch() function with minimal checks.
+
+2. Modify src/dgov/preflight.py:
+   - Add _ACTIVE_CLAIMS: dict[str, set[str]] = {} mapping pane_slug -> claimed paths
+   - Add can_dispatch(agent: str, touches: list[str], session_root: str) -> tuple[bool, str]
+   - In can_dispatch, check ONLY:
+     * Agent exists in registry (from cached get_registry())
+     * File paths don't overlap with _ACTIVE_CLAIMS (no subprocess - just dict lookup)
+   - Add register_claims(pane_slug: str, touches: list[str]) to add to _ACTIVE_CLAIMS
+   - Add clear_claims(pane_slug: str) to remove from _ACTIVE_CLAIMS
+
+3. Modify src/dgov/runner.py:
+   - In run_unit(), use can_dispatch() instead of run_preflight()
+   - Call register_claims() after successful dispatch
+   - Call clear_claims() when pane completes (success/fail/cancel)
+
+4. Keep the full run_preflight() for explicit `dgov preflight` command, but remove from hot path.
+
+5. git add src/dgov/preflight.py src/dgov/runner.py
+6. git commit -m "Simplify preflight to single fast check with in-memory claims"
+"""
+agent = "kimi-k25"
+
+[units.simplify-preflight.files]
+touch = ["src/dgov/preflight.py", "src/dgov/runner.py"]
+
+[units.direct-exec]
+summary = "Remove async overhead and temp files from dispatch"
+depends = ["simplify-preflight"]
+prompt = """
+1. Read src/dgov/runner.py and src/dgov/tmux.py.
+
+The problem: _spawn_worker() uses asyncio executor, temp files for prompts, multiple tmux roundtrips. Slow and complex.
+
+The solution: Direct synchronous dispatch with in-memory prompt delivery.
+
+2. Modify src/dgov/tmux.py:
+   - Add dispatch_direct(pane_name: str, cwd: str, command: str, prompt: str | None) -> str
+   - Create tmux pane with command directly (no temp files)
+   - For stdin transport: use tmux send-keys to pipe the prompt
+   - Return pane_id immediately
+
+3. Modify src/dgov/runner.py:
+   - Replace _spawn_worker() async code with direct synchronous calls
+   - Remove ThreadPoolExecutor usage for single dispatch
+   - Remove _write_prompt_file logic
+   - Use dispatch_direct from tmux.py
+
+4. Keep the event pipe for notifications, but don't block on it during dispatch.
+
+5. git add src/dgov/runner.py src/dgov/tmux.py
+6. git commit -m "Direct exec dispatch - remove async overhead and temp files"
+"""
+agent = "kimi-k25"
+
+[units.direct-exec.files]
+touch = ["src/dgov/runner.py", "src/dgov/tmux.py"]

@@ -1,0 +1,394 @@
+# HFT Governor-Worker Loop Optimization
+# Goal: <50ms dispatch latency, canonical path, structured observability
+
+name = "hft-dispatch-loop"
+description = "Optimize governor-worker dispatch for canonical, fast, traceable execution"
+
+[[phases]]
+name = "spans-infrastructure"
+description = "Add structured span logging for traceability"
+dependencies = []
+
+[[phases.tasks]]
+slug = "spans-core"
+agent = "worker"
+touches = ["src/dgov/spans.py"]
+
+prompt = """
+Create src/dgov/spans.py — structured span logging for the dispatch loop.
+
+Design requirements:
+1. Minimal overhead (use contextvars, not thread-local)
+2. Zero-allocation in hot path (pre-allocate span pool)
+3. JSONL output to .dgov/spans/<timestamp>.jsonl
+4. Key span types: dispatch_start, preflight_check, registry_load, pane_spawn, worker_start, worker_done, merge_start, merge_done
+
+API:
+- @span(name) decorator for async/sync functions
+- span.enter(name): ctx manager for manual spans
+- span.annotate(key, value): add k-v to current span
+- span.flush(): write to disk
+
+Each span has: trace_id, span_id, parent_id, name, start_ns, end_ns, annotations(dict)
+
+Implementation:
+1. Use contextvars.ContextVar for current span stack
+2. Use monotonic_ns for timing (no timezone issues)
+3. Batch writes (deque + flush every 100 spans or 1s)
+4. JSONL format: one JSON object per line
+
+No dependencies beyond stdlib. Write the full implementation with type hints.
+
+When complete:
+1. Verify spans.py imports successfully
+2. Write a test span to .dgov/spans/test.jsonl
+3. git add src/dgov/spans.py
+4. git commit -m "Add structured span logging infrastructure"
+"""
+
+[[phases]]
+name = "fast-registry"
+description = "Cache registry at CLI startup, not per-dispatch"
+dependencies = ["spans-infrastructure"]
+
+[[phases.tasks]]
+slug = "cache-registry"
+agent = "worker"
+touches = ["src/dgov/agents.py", "src/dgov/cli.py"]
+
+prompt = """
+Optimize agent registry loading for zero-latency access.
+
+Current problem: load_registry() is called per-dispatch, parses TOML every time.
+
+Changes needed:
+
+1. In src/dgov/agents.py:
+   - Add module-level _REGISTRY_CACHE: dict[str, dict[str, AgentDef]] keyed by project_root
+   - Add get_registry(project_root) -> dict[str, AgentDef] that returns cached or loads
+   - Keep load_registry() as the loading function, but get_registry() is the fast path
+   - Add invalidate_registry_cache(project_root) for when agents.toml changes
+
+2. In src/dgov/cli.py:
+   - At CLI startup (before any command runs), warm the registry cache:
+     - Detect project_root from cwd or --project-root flag
+     - Call get_registry(project_root) to populate cache
+   - This ensures first dispatch is fast too
+
+3. Add file watcher (optional enhancement):
+   - Store mtime in cache entry
+   - On get_registry(), if mtime changed, reload
+
+Key constraint: cache must be keyed by project_root since different projects have different agent configs.
+
+When complete:
+1. Verify uv run dgov agent list still works
+2. Run a quick timing test: time the registry load
+3. git add src/dgov/agents.py src/dgov/cli.py
+4. git commit -m "Cache agent registry at CLI startup for sub-millisecond access"
+"""
+
+[[phases]]
+name = "parallel-preflight"
+description = "Run preflight checks concurrently, not sequentially"
+dependencies = ["spans-infrastructure"]
+
+[[phases.tasks]]
+slug = "parallel-checks"
+agent = "worker"
+touches = ["src/dgov/preflight.py"]
+
+prompt = """
+Make preflight checks run concurrently instead of sequentially.
+
+Current problem: run_preflight() runs 7 checks one-by-one, taking 50-500ms.
+
+Optimization: Run independent checks in parallel using asyncio.gather().
+
+Check dependencies:
+- check_agent_cli (independent)
+- check_git_clean (independent)  
+- check_git_branch (independent)
+- check_agent_health (depends on check_agent_cli passing)
+- check_agent_concurrency (independent)
+- check_deps (can be slow, skip by default)
+- check_stale_worktrees (independent)
+- check_file_locks (depends on other panes state)
+
+Implementation:
+1. Group checks into parallel batches:
+   - Batch 1 (all concurrent): agent_cli, git_clean, git_branch, agent_concurrency, stale_worktrees
+   - Batch 2 (conditional): agent_health (only if agent_cli passed and agent has health.check)
+   - Batch 3: file_locks (always run last, needs accurate pane state)
+
+2. Each check returns a CheckResult. Gather all results, then assemble PreflightReport.
+
+3. Add spans integration:
+   - Create a span for each check
+   - Annotate with check name and duration
+
+4. Target: <100ms total for cached/registry path
+
+When complete:
+1. Verify uv run dgov pane create --dry-run still works (test preflight path)
+2. Check timing with spans output
+3. git add src/dgov/preflight.py
+4. git commit -m "Run preflight checks concurrently for 5-10x speedup"
+"""
+
+[[phases]]
+name = "fast-pane-spawn"
+description = "Remove hardcoded sleeps from pane creation"
+dependencies = ["spans-infrastructure"]
+
+[[phases.tasks]]
+slug = "zero-sleep-spawn"
+agent = "worker"
+touches = ["src/dgov/runner.py", "src/dgov/tmux.py"]
+
+prompt = """
+Eliminate hardcoded sleeps from pane creation and prompt delivery.
+
+Current problem:
+- runner.py: _setup_event_pipe has asyncio.sleep(0.2) — 200ms wasted
+- tmux.py: send_prompt_via_buffer has time.sleep(0.5) — 500ms wasted
+- tmux.py: various send_command delays (0.1s, 0.2s)
+
+These sleeps are defensive — they wait for "ready" states that can be detected.
+
+Changes needed:
+
+1. In src/dgov/runner.py:
+   - Remove asyncio.sleep(0.2) in _setup_event_pipe
+   - Instead: start pipe reader, then immediately proceed
+   - The pipe reader will block on open() until writer connects — that's the sync point
+
+2. In src/dgov/tmux.py:
+   - Replace send_prompt_via_buffer sleeps with readiness detection
+   - Add wait_for_shell_ready() check before paste (already exists, use it)
+   - Minimize post-paste delay to 50ms (was 500ms)
+
+3. For send_command:
+   - Reduce settle time from 200ms to 50ms
+   - Add optional wait_for_prompt=True parameter
+
+Key principle: Detect readiness, don't assume it. Use blocking operations as sync points.
+
+When complete:
+1. Verify tmux pane creation still works: uv run dgov pane create mock --dry-run
+2. Check spans for spawn latency
+3. git add src/dgov/runner.py src/dgov/tmux.py
+4. git commit -m "Remove hardcoded sleeps from pane spawn path"
+"""
+
+[[phases]]
+name = "canonical-dispatch-path"
+description = "Unify all dispatch through single canonical pipeline"
+dependencies = ["fast-registry", "parallel-preflight", "fast-pane-spawn"]
+
+[[phases.tasks]]
+slug = "unify-dispatch"
+agent = "supervisor"
+touches = ["src/dgov/plan.py", "src/dgov/pane.py", "src/dgov/runner.py"]
+
+prompt = """
+Unify all dispatch paths (pane create, plan run, dag execute) through a single canonical pipeline.
+
+Current problem: Multiple entry points with divergent preflight and spawn logic.
+
+Canonical pipeline design:
+
+1. Entry points (all call the same internal function):
+   - dgov pane create → _dispatch_single()
+   - dgov plan run → _dispatch_dag()
+   - kernel dispatch → _dispatch_single()
+
+2. Canonical dispatch function:
+   ```python
+   async def dispatch_worker(
+       task_spec: TaskSpec,
+       ctx: DispatchContext,
+   ) -> DispatchResult:
+       """Canonical worker dispatch — the only path to spawn a worker."""
+       with span("dispatch"):
+           # 1. Fast preflight (cached registry, parallel checks)
+           preflight = await run_preflight_async(ctx)
+           if not preflight.passed:
+               return DispatchResult.failed(preflight)
+           
+           # 2. Build launch command (cached, no subprocess)
+           cmd = build_launch_command_cached(task_spec.agent, task_spec.prompt)
+           
+           # 3. Spawn pane with spans
+           with span("pane_spawn"):
+               pane_id = spawn_pane(cmd, ctx)
+           
+           # 4. Return immediately, kernel tracks via events
+           return DispatchResult.ok(pane_id)
+   ```
+
+3. Refactor src/dgov/plan.py:
+   - plan run should use the same dispatch path as pane create
+   - Remove duplicate preflight logic
+   - Integrate with spans
+
+4. Refactor src/dgov/pane.py:
+   - Use canonical dispatch_worker()
+   - Remove standalone preflight calls
+
+5. Refactor src/dgov/runner.py:
+   - _dispatch() method should use canonical path
+   - _spawn_worker() becomes spawn_pane() in tmux.py
+
+Key invariant: Every worker goes through exactly the same 4 steps.
+
+When complete:
+1. All tests pass: uv run pytest tests/ -q -m unit
+2. Manual test: uv run dgov pane create mock --prompt "test" --dry-run
+3. Manual test: Create and run a simple plan
+4. git add src/dgov/plan.py src/dgov/pane.py src/dgov/runner.py
+5. git commit -m "Unify all dispatch through canonical pipeline"
+"""
+
+[[phases]]
+name = "observability-integration"
+description = "Wire spans through entire dispatch-merge lifecycle"
+dependencies = ["canonical-dispatch-path"]
+
+[[phases.tasks]]
+slug = "full-tracing"
+agent = "worker"
+touches = ["src/dgov/kernel.py", "src/dgov/runner.py", "src/dgov/plan.py"]
+
+prompt = """
+Wire span tracing through the entire dispatch-merge lifecycle.
+
+Add spans to track a task from plan to merge:
+
+1. In src/dgov/kernel.py (DagKernel):
+   - Span per state transition: handle(event) → new_state
+   - Annotate with from_state, to_state, event_type
+   - Track merge order progression
+
+2. In src/dgov/runner.py (EventDagRunner):
+   - Span for _dispatch(): from call to pane spawn complete
+   - Span for _merge(): from trigger to git apply complete
+   - Span for event handling loop iteration
+
+3. In src/dgov/plan.py:
+   - Span for plan compilation (dag_parser)
+   - Span for full plan execution (plan run)
+
+4. Export span query helper:
+   - get_trace(trace_id) → list of spans in order
+   - get_slow_spans(threshold_ms=100) → bottlenecks
+   - print_trace(trace_id) → human-readable tree
+
+Each span should have:
+- trace_id: plan-level identifier
+- span_id: unique
+- parent_id: hierarchy
+- annotations: task_slug, state, event_type, etc.
+
+When complete:
+1. Run a test plan and verify spans are written to .dgov/spans/
+2. Verify span query helpers work
+3. git add src/dgov/kernel.py src/dgov/runner.py src/dgov/plan.py
+4. git commit -m "Add full lifecycle span tracing to dispatch-merge loop"
+"""
+
+[[phases]]
+name = "performance-validation"
+description = "Benchmark and validate <50ms dispatch target"
+dependencies = ["observability-integration"]
+
+[[phases.tasks]]
+slug = "benchmark"
+agent = "worker"
+touches = ["tests/benchmark_dispatch.py"]
+
+prompt = """
+Create benchmark to validate <50ms dispatch latency target.
+
+Create tests/benchmark_dispatch.py:
+
+1. Mock path benchmark (no tmux, no actual spawn):
+   - Time registry load (should be <1ms cached)
+   - Time preflight (should be <20ms parallel)
+   - Time command build (should be <1ms)
+   - Total mock dispatch: <25ms
+
+2. Real path benchmark (with tmux):
+   - Spawn mock agent that exits immediately
+   - Time full round-trip: dispatch → signal → kernel acknowledgment
+   - Target: <100ms (tmux has inherent overhead)
+
+3. Latency breakdown visualization:
+   - Read spans from .dgov/spans/
+   - Print waterfall: each span as timeline
+   - Highlight spans >50ms in red
+
+4. Regression test:
+   - Run 10 dispatches, assert p95 < 100ms
+   - Assert no span > 200ms (except git ops)
+
+When complete:
+1. Run benchmark: uv run python tests/benchmark_dispatch.py
+2. Verify results meet targets
+3. git add tests/benchmark_dispatch.py
+4. git commit -m "Add dispatch latency benchmark suite"
+"""
+
+[[phases.tasks]]
+slug = "docs"
+agent = "worker"
+touches = ["docs/dispatch-loop.md"]
+
+prompt = """
+Document the canonical dispatch loop architecture.
+
+Create docs/dispatch-loop.md:
+
+1. Architecture overview:
+   - Single canonical pipeline
+   - 4 stages: preflight → command build → spawn → track
+   - Event-driven kernel, zero polling
+
+2. Performance characteristics:
+   - Cached registry: <1ms
+   - Parallel preflight: <20ms
+   - Pane spawn: <30ms (tmux overhead)
+   - Total happy path: <50ms target
+
+3. Observability:
+   - Span types and their meanings
+   - How to query traces
+   - Interpreting latency waterfalls
+
+4. Extension points:
+   - Adding new preflight checks
+   - Custom span annotations
+   - Alternative transports
+
+When complete:
+1. Read for clarity and accuracy
+2. git add docs/dispatch-loop.md
+3. git commit -m "Document canonical dispatch loop architecture"
+"""
+
+[[final]]
+name = "dispatch-loop-optimized"
+manifest = [
+    "src/dgov/spans.py",
+    "src/dgov/agents.py",
+    "src/dgov/preflight.py", 
+    "src/dgov/runner.py",
+    "src/dgov/tmux.py",
+    "src/dgov/plan.py",
+    "src/dgov/pane.py",
+    "src/dgov/kernel.py",
+    "tests/benchmark_dispatch.py",
+    "docs/dispatch-loop.md"
+]
+
+eval = "uv run python tests/benchmark_dispatch.py --assert-targets"

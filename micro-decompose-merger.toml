@@ -1,0 +1,155 @@
+[plan]
+version = 1
+name = "micro-decompose-merger"
+goal = "Decompose merger.py in small steps"
+session_root = "/Users/jakegearon/projects/dgov"
+
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "merger imports still work"
+evidence = "uv run python3 -c 'from dgov.merger import merge_branch; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "merger.py is a shim or <500 lines"
+evidence = "[ $(wc -l < src/dgov/merger.py) -lt 500 ]"
+
+[[evals]]
+id = "EX1"
+kind = "happy_path"
+statement = "merger/__init__.py exists"
+evidence = "test -f src/dgov/merger/__init__.py"
+
+[[evals]]
+id = "EX2"
+kind = "happy_path"
+statement = "merger/conflicts.py exists"
+evidence = "test -f src/dgov/merger/conflicts.py"
+
+[[evals]]
+id = "EX3"
+kind = "happy_path"
+statement = "merger/apply.py exists"
+evidence = "test -f src/dgov/merger/apply.py"
+
+[[evals]]
+id = "EX4"
+kind = "happy_path"
+statement = "merger/validate.py exists"
+evidence = "test -f src/dgov/merger/validate.py"
+
+# Phase 1: Create subpackage structure
+[units.create-merger-dir]
+summary = "Create merger/ directory with __init__.py"
+agent = "kimi-k25"
+timeout_s = 300
+satisfies = ["EX1"]
+commit_message = "chore(merger): create subpackage structure"
+prompt = """
+Create src/dgov/merger/__init__.py with re-exports:
+- merge_branch, check_conflicts from .validate
+- fast_forward_merge, three_way_merge from .apply
+- find_conflicts, resolve_conflict from .conflicts
+
+Add __all__ list with all public exports.
+No implementation yet - just structure.
+Commit when done.
+"""
+
+[units.create-merger-dir.files]
+create = ["src/dgov/merger/__init__.py"]
+
+# Phase 2: Extract conflicts module
+[units.extract-conflicts]
+summary = "Extract conflicts.py from merger.py"
+agent = "kimi-k25"
+deps = ["create-merger-dir"]
+timeout_s = 300
+satisfies = ["EX2"]
+commit_message = "refactor(merger): extract conflicts.py"
+prompt = """
+Read src/dgov/merger.py. Find ALL functions related to:
+- find_conflicts()
+- resolve_conflict()
+- list_conflicts()
+- Conflict detection helpers
+
+Extract them into src/dgov/merger/conflicts.py with proper imports.
+Update src/dgov/merger/__init__.py to export these.
+Commit when done.
+"""
+
+[units.extract-conflicts.files]
+create = ["src/dgov/merger/conflicts.py"]
+edit = ["src/dgov/merger/__init__.py"]
+
+# Phase 3: Extract apply module
+[units.extract-apply]
+summary = "Extract apply.py from merger.py"
+agent = "kimi-k25"
+deps = ["extract-conflicts"]
+timeout_s = 300
+satisfies = ["EX3"]
+commit_message = "refactor(merger): extract apply.py"
+prompt = """
+Read src/dgov/merger.py. Find ALL functions related to:
+- fast_forward_merge()
+- three_way_merge()
+- apply_merge()
+- Merge application helpers
+
+Extract them into src/dgov/merger/apply.py with proper imports.
+Update src/dgov/merger/__init__.py to export these.
+Commit when done.
+"""
+
+[units.extract-apply.files]
+create = ["src/dgov/merger/apply.py"]
+edit = ["src/dgov/merger/__init__.py"]
+
+# Phase 4: Extract validate module
+[units.extract-validate]
+summary = "Extract validate.py from merger.py"
+agent = "kimi-k25"
+deps = ["extract-apply"]
+timeout_s = 300
+satisfies = ["EX4"]
+commit_message = "refactor(merger): extract validate.py"
+prompt = """
+Read src/dgov/merger.py. Find ALL functions related to:
+- check_claims()
+- check_conflicts()
+- preflight_validate()
+- Validation helpers
+
+Extract them into src/dgov/merger/validate.py with proper imports.
+Update src/dgov/merger/__init__.py to export these.
+Commit when done.
+"""
+
+[units.extract-validate.files]
+create = ["src/dgov/merger/validate.py"]
+edit = ["src/dgov/merger/__init__.py"]
+
+# Phase 5: Convert to shim
+[units.convert-merger-shim]
+summary = "Convert merger.py to shim"
+agent = "kimi-k25"
+deps = ["extract-validate"]
+timeout_s = 300
+satisfies = ["E1", "E2"]
+commit_message = "refactor(merger): convert to shim importing from subpackage"
+prompt = """
+Replace src/dgov/merger.py with a thin shim:
+- Import all public functions from the subpackage
+- Re-export them for backward compatibility
+- Keep under 50 lines
+
+After replacement, run: uv run pytest tests/test_merger*.py -v
+If tests pass, commit.
+"""
+
+[units.convert-merger-shim.files]
+edit = ["src/dgov/merger.py"]

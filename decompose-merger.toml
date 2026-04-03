@@ -1,0 +1,287 @@
+[plan]
+version = 1
+name = "decompose-merger-god-file"
+goal = "Extract conflicts.py, apply.py, validate.py, finalize.py from merger/_merger.py"
+session_root = "/Users/jakegearon/projects/dgov"
+
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "merger public API still works"
+evidence = "uv run python3 -c 'from dgov.merger import merge_worker_pane, MergeSuccess, MergeError, MergeConflict, ConflictResolveStrategy; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "conflicts.py exists and exports conflict functions"
+evidence = "test -f src/dgov/merger/conflicts.py"
+
+[[evals]]
+id = "E3"
+kind = "happy_path"
+statement = "apply.py exists and exports merge execution functions"
+evidence = "test -f src/dgov/merger/apply.py"
+
+[[evals]]
+id = "E4"
+kind = "happy_path"
+statement = "validate.py exists and exports validation functions"
+evidence = "test -f src/dgov/merger/validate.py"
+
+[[evals]]
+id = "E5"
+kind = "happy_path"
+statement = "finalize.py exists and exports finalization functions"
+evidence = "test -f src/dgov/merger/finalize.py"
+
+[[evals]]
+id = "E6"
+kind = "happy_path"
+statement = "_merger.py deleted after decomposition"
+evidence = "! test -f src/dgov/merger/_merger.py"
+
+[[evals]]
+id = "E7"
+kind = "regression"
+statement = "merger tests pass"
+evidence = "uv run pytest tests/test_dgov_merger.py -v -m unit"
+
+[units.merger-extract-conflicts]
+summary = "Extract conflicts.py from merger/_merger.py"
+agent = "qwen-35b"
+timeout_s = 600
+satisfies = ["E1", "E2"]
+commit_message = "refactor(merger): extract conflicts.py submodule from _merger.py"
+prompt = """
+Decompose merger/_merger.py by extracting conflicts.py submodule.
+
+1. Read src/dgov/merger/_merger.py completely
+2. Identify all conflict-related functions:
+   - ConflictResolveStrategy (StrEnum)
+   - MergeConflict (dataclass)
+   - _check_conflict_markers
+   - _pick_resolver_agent
+   - _resolve_conflicts_with_agent
+   - (note: _detect_conflicts is imported from gitops, don't copy)
+
+3. Create src/dgov/merger/conflicts.py with:
+   - Copy imports from _merger.py (adjust for new location)
+   - ConflictResolveStrategy enum
+   - MergeConflict dataclass
+   - The conflict resolution functions above
+   - Keep internal functions prefixed with _
+
+4. Update src/dgov/merger/__init__.py:
+   - Import from conflicts.py
+   - Keep existing imports
+   - Keep __all__ updated
+
+5. DO NOT delete _merger.py yet - leave remaining functions
+
+6. Run quick import test: uv run python3 -c "from dgov.merger.conflicts import ConflictResolveStrategy, MergeConflict; print('OK')"
+
+7. git add all modified files
+8. git commit -m "refactor(merger): extract conflicts.py submodule from _merger.py"
+"""
+
+[units.merger-extract-conflicts.files]
+create = ["src/dgov/merger/conflicts.py"]
+edit = ["src/dgov/merger/__init__.py"]
+
+[units.merger-extract-apply]
+summary = "Extract apply.py from merger/_merger.py"
+agent = "qwen-35b"
+timeout_s = 600
+deps = ["merger-extract-conflicts"]
+satisfies = ["E1", "E3"]
+commit_message = "refactor(merger): extract apply.py submodule from _merger.py"
+prompt = """
+Decompose merger/_merger.py by extracting apply.py submodule.
+
+1. Read current src/dgov/merger/_merger.py (after conflicts.py extraction)
+2. Identify all merge execution functions:
+   - _stash_guard (contextmanager)
+   - _MergeLock (class)
+   - _candidate_worktree
+   - _dirty_merge_overlap
+   - _advance_current_branch_to_commit
+   - _plumbing_merge
+   - _no_squash_merge
+   - _rebase_onto_head
+   - _rebase_merge
+   - _execute_candidate_merge
+
+3. Create src/dgov/merger/apply.py with:
+   - Copy imports from _merger.py (adjust for new location)
+   - All the execution functions above
+   - Keep internal functions/classes prefixed with _
+
+4. Update src/dgov/merger/__init__.py:
+   - Import from apply.py
+   - Keep existing imports from conflicts.py
+   - Update __all__ if needed
+
+5. DO NOT delete _merger.py yet - leave remaining functions
+
+6. Run import test: uv run python3 -c "from dgov.merger.apply import _plumbing_merge; print('OK')"
+
+7. git add all modified files
+8. git commit -m "refactor(merger): extract apply.py submodule from _merger.py"
+"""
+
+[units.merger-extract-apply.files]
+create = ["src/dgov/merger/apply.py"]
+edit = ["src/dgov/merger/__init__.py", "src/dgov/merger/_merger.py"]
+
+[units.merger-extract-validate]
+summary = "Extract validate.py from merger/_merger.py"
+agent = "qwen-35b"
+timeout_s = 600
+deps = ["merger-extract-apply"]
+satisfies = ["E1", "E4"]
+commit_message = "refactor(merger): extract validate.py submodule from _merger.py"
+prompt = """
+Decompose merger/_merger.py by extracting validate.py submodule.
+
+1. Read current src/dgov/merger/_merger.py (after conflicts.py, apply.py extraction)
+2. Identify all validation/precondition functions:
+   - _check_dirty_worktree
+   - _restore_protected_files
+   - _state_precondition_result
+   - _warn_squash_overlap
+   - _claim_violation_result
+   - _check_merge_preconditions
+   - _validate_post_merge
+
+3. Create src/dgov/merger/validate.py with:
+   - Copy imports from _merger.py (adjust for new location)
+   - All the validation functions above
+   - Keep internal functions prefixed with _
+
+4. Update src/dgov/merger/__init__.py:
+   - Import from validate.py
+   - Keep existing imports
+   - Update __all__ if needed
+
+5. DO NOT delete _merger.py yet - leave remaining functions
+
+6. Run import test: uv run python3 -c "from dgov.merger.validate import _check_merge_preconditions; print('OK')"
+
+7. git add all modified files
+8. git commit -m "refactor(merger): extract validate.py submodule from _merger.py"
+"""
+
+[units.merger-extract-validate.files]
+create = ["src/dgov/merger/validate.py"]
+edit = ["src/dgov/merger/__init__.py", "src/dgov/merger/_merger.py"]
+
+[units.merger-extract-finalize]
+summary = "Extract finalize.py and complete decomposition"
+agent = "qwen-35b"
+timeout_s = 600
+deps = ["merger-extract-validate"]
+satisfies = ["E1", "E5", "E6", "E7"]
+commit_message = "refactor(merger): extract finalize.py, move merge_worker_pane, delete _merger.py"
+prompt = """
+Decompose merger/_merger.py by extracting finalize.py and completing decomposition.
+
+1. Read current src/dgov/merger/_merger.py (after previous extractions)
+2. Identify remaining finalization functions and main entry point:
+   - MergeSuccess (dataclass) - if not already moved
+   - MergeError (dataclass) - if not already moved
+   - _lint_fix_merged_files
+   - _capture_pre_merge_stats
+   - _finalize_merged_pane
+   - _build_success_result
+   - _handle_merge_conflicts - may need to stay with conflicts
+   - merge_worker_pane (main public function)
+
+3. Create src/dgov/merger/finalize.py with:
+   - Copy imports from _merger.py
+   - Finalization functions: _lint_fix_merged_files, _capture_pre_merge_stats, _finalize_merged_pane, _build_success_result
+   - Keep internal functions prefixed with _
+
+4. Move merge_worker_pane to src/dgov/merger/__init__.py or keep in core.py:
+   - Option A: Move to __init__.py as the main entry point
+   - Option B: Create core.py with merge_worker_pane
+   - Choose based on size - if merge_worker_pane is large, use core.py
+
+5. Update src/dgov/merger/__init__.py:
+   - Import from finalize.py
+   - Import merge_worker_pane (from core.py or define in __init__.py)
+   - Import all types: MergeSuccess, MergeError, MergeConflict, ConflictResolveStrategy, PaneMergeResult
+   - Update __all__ list
+
+6. Delete src/dgov/merger/_merger.py (should now be empty)
+
+7. Run full tests: uv run pytest tests/test_dgov_merger.py -v -m unit
+
+8. Fix any import errors in dependent files:
+   - tests/test_dgov_merger.py (update mocks)
+   - src/dgov/cli/merge.py
+   - Any other files importing from _merger
+
+9. git add all modified files
+10. git commit -m "refactor(merger): extract finalize.py, move merge_worker_pane, delete _merger.py"
+"""
+
+[units.merger-extract-finalize.files]
+create = ["src/dgov/merger/finalize.py"]
+edit = ["src/dgov/merger/__init__.py"]
+delete = ["src/dgov/merger/_merger.py"]
+
+[units.merger-update-tests]
+summary = "Update merger test mocks for decomposed modules"
+agent = "qwen-35b"
+timeout_s = 400
+deps = ["merger-extract-finalize"]
+satisfies = ["E7"]
+commit_message = "test(merger): update test mocks for decomposed merger submodules"
+prompt = """
+Update test mocks in tests/test_dgov_merger.py for decomposed merger modules.
+
+1. Read tests/test_dgov_merger.py
+2. Find all mock patches referencing "dgov.merger._merger"
+3. Update mocks to point to correct submodules:
+   - dgov.merger._merger._plumbing_merge -> dgov.merger.apply._plumbing_merge
+   - dgov.merger._merger._check_conflict_markers -> dgov.merger.conflicts._check_conflict_markers
+   - dgov.merger._merger._resolve_conflicts_with_agent -> dgov.merger.conflicts._resolve_conflicts_with_agent
+   - dgov.merger._merger._validate_post_merge -> dgov.merger.validate._validate_post_merge
+   - dgov.merger._merger._check_merge_preconditions -> dgov.merger.validate._check_merge_preconditions
+   - dgov.merger._merger._finalize_merged_pane -> dgov.merger.finalize._finalize_merged_pane
+   - dgov.merger._merger.merge_worker_pane -> dgov.merger.merge_worker_pane (or dgov.merger.core.merge_worker_pane)
+   - etc.
+
+4. Run tests to verify: uv run pytest tests/test_dgov_merger.py -v -m unit
+
+5. Fix any remaining import issues
+
+6. git add tests/test_dgov_merger.py
+7. git commit -m "test(merger): update test mocks for decomposed merger submodules"
+"""
+
+[units.merger-update-tests.files]
+edit = ["tests/test_dgov_merger.py"]
+
+[units.merger-final-validation]
+summary = "Final validation after merger decomposition"
+agent = "qwen-35b"
+timeout_s = 300
+deps = ["merger-update-tests"]
+satisfies = ["E1", "E6", "E7"]
+commit_message = "chore(merger): final validation and CODEBASE.md update"
+prompt = """
+Final validation and cleanup after merger decomposition.
+
+1. Run full merger test suite: uv run pytest tests/test_dgov_merger.py -v
+2. Run import check: uv run python3 -c "from dgov.merger import merge_worker_pane, MergeSuccess, MergeError, MergeConflict, ConflictResolveStrategy; print('OK')"
+3. Verify no lingering _merger.py imports: grep -rn "from dgov.merger._merger" src/ tests/ || echo "No lingering imports"
+4. Update CODEBASE.md:
+   - Change "src/dgov/merger/_merger.py" to list the new submodules
+   - Add conflicts.py, apply.py, validate.py, finalize.py to the module map
+5. git add CODEBASE.md
+6. git commit -m "chore(merger): final validation and CODEBASE.md update"
+"""
+
+[units.merger-final-validation.files]
+edit = ["CODEBASE.md"]

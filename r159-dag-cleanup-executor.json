@@ -1,0 +1,18 @@
+{
+  "requirement_id": "r159-dag-cleanup-executor",
+  "commit_message": "Route _drive_dag cleanup through executor run_close_only",
+  "files_touched": [],
+  "evals": {
+    "E-dag-cleanup-through-executor": {
+      "passed": true,
+      "invariant": "_drive_dag must not call close_worker_pane directly — use run_close_only",
+      "note": "Code already uses run_close_only from dgov.executor in the cleanup block around line 536"
+    },
+    "E-ruff-clean": {
+      "passed": true,
+      "invariant": "No lint errors in changed files",
+      "files_checked": ["src/dgov/monitor.py", "src/dgov/executor.py", "src/dgov/persistence.py", "src/dgov/lifecycle.py"]
+    }
+  },
+  "notes": "The _drive_dag function already uses run_close_only from executor instead of calling close_worker_pane directly. The cleanup block (around line 536-554) correctly imports and calls: from dgov.executor import run_close_only; run_close_only(dag_state.reactor.project_root, pane_slug, session_root=session_root, force=True). No changes required — code already follows the principle that all lifecycle operations route through executor syscalls."
+}

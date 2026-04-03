@@ -1,0 +1,129 @@
+# Finish consolidating WorkerPane: one type, hardened, in schema.py only
+
+[dag]
+name = "finish-workerpane-consolidation"
+max_concurrent = 1
+
+[tasks.delete-pane-workerpane]
+summary = "Remove duplicate WorkerPane from pane.py"
+commit_message = "Remove duplicate WorkerPane from pane.py"
+files = { edit = ["src/dgov/pane.py"] }
+prompt = """
+Delete the duplicate WorkerPane class from src/dgov/pane.py.
+
+The REAL WorkerPane is now in persistence/schema.py (frozen, slots, hardened).
+
+WHAT TO DO:
+1. Delete the entire WorkerPane dataclass from pane.py
+2. Keep these imports at top:
+   from dgov.persistence.schema import PaneState
+   from dgov import tmux
+   from dgov.agents import get_agent
+   from dgov.persistence.events import emit_event
+3. Add this import:
+   from dgov.persistence.schema import WorkerPane
+4. Keep all utility functions (create_pane, close_pane, list_panes, pane_exists)
+5. Update create_pane() to return the actual tmux pane_id (str), NOT a WorkerPane instance
+   - The caller constructs WorkerPane from schema.py with full context
+6. Update list_panes() to return list of tuples or just pane_ids, not WorkerPane objects
+   - Or remove list_panes() if unused
+7. Update close_pane() and pane_exists() similarly
+
+The pane.py module becomes: tmux utility functions only, no data classes.
+
+SIMPLER: Just delete WorkerPane class and any function that returns WorkerPane.
+Keep only: create_pane(), close_pane(), pane_exists() that work with raw pane_ids.
+
+FINAL STEPS:
+1. uv run ruff check src/dgov/pane.py
+2. git add src/dgov/pane.py
+3. git commit -m "Remove duplicate WorkerPane from pane.py"
+"""
+agent = "worker"
+
+[tasks.update-tests-consolidated]
+summary = "Update all tests for single WorkerPane in schema.py"
+depends_on = ["delete-pane-workerpane"]
+commit_message = "Update tests for consolidated WorkerPane in schema.py"
+files = { edit = ["tests/test_pane_unit.py"] }
+prompt = """
+Update tests/test_pane_unit.py for the consolidated WorkerPane.
+
+Changes:
+1. Import from schema only:
+   from dgov.persistence.schema import WorkerPane, PaneState
+2. Update all WorkerPane() calls to include ALL required fields:
+   WorkerPane(
+       slug="test",
+       prompt="test prompt",
+       pane_id="%1",
+       agent="mock",
+       project_root="/tmp",
+       worktree_path="/tmp/wt",
+       branch_name="test-branch",
+       state=PaneState.ACTIVE,
+   )
+3. Tests for frozen behavior:
+   - Test that mutation raises FrozenInstanceError
+   - Test that dataclasses.replace() works
+4. Tests for __post_init__ validation:
+   - Empty slug raises ValueError
+   - Empty prompt raises ValueError  
+   - Empty pane_id raises ValueError
+   - Raw string state raises TypeError
+5. Remove any tests that imported WorkerPane from pane.py
+
+Delete any test file that becomes empty or irrelevant.
+
+FINAL STEPS:
+1. uv run pytest tests/test_pane_unit.py -v
+2. git add tests/test_pane_unit.py
+3. git commit -m "Update tests for consolidated WorkerPane in schema.py"
+"""
+agent = "worker"
+
+[tasks.verify-single-workerpane]
+summary = "Verify only one WorkerPane type exists in codebase"
+depends_on = ["update-tests-consolidated"]
+commit_message = "Verify single WorkerPane pathway"
+files = { create = [".dgov/verify/single-workerpane.txt"] }
+prompt = """
+Verify there is only ONE WorkerPane class in the codebase.
+
+Run these checks and save results to .dgov/verify/single-workerpane.txt:
+
+1. Count WorkerPane definitions:
+   grep -r "class WorkerPane" src/ tests/ | wc -l
+   
+   Should be exactly 1 (in persistence/schema.py)
+
+2. Check pane.py has NO WorkerPane class:
+   grep "class WorkerPane" src/dgov/pane.py
+   
+   Should return nothing (empty)
+
+3. Check all imports point to schema:
+   grep -r "from.*WorkerPane" src/ tests/ | grep -v "persistence.schema"
+   
+   Should return nothing (all imports from schema)
+
+4. Run full test suite:
+   uv run pytest tests/test_pane_unit.py tests/test_dogfood_routed_events.py -q
+
+Save all check outputs to .dgov/verify/single-workerpane.txt
+
+If all checks pass, write "CONSOLIDATION VERIFIED: Single WorkerPane in schema.py only"
+
+FINAL STEPS:
+1. Create .dgov/verify/single-workerpane.txt with verification results
+2. git add .dgov/verify/single-workerpane.txt
+3. git commit -m "Verify single WorkerPane pathway"
+"""
+agent = "worker"
+
+[evals]
+schema_only = "grep -r 'class WorkerPane' src/ tests/ | grep -v 'persistence/schema.py' | wc -l | xargs -I {} test {} -eq 0 && echo 'Only in schema' || echo 'Multiple definitions!'"
+pane_no_class = "grep 'class WorkerPane' src/dgov/pane.py; test $? -ne 0 && echo 'pane.py clean' || echo 'pane.py has class!'"
+imports_correct = "grep -r 'from.*WorkerPane' src/ tests/ | grep -v 'persistence.schema' | grep -v 'verify' | wc -l | xargs -I {} test {} -eq 0 && echo 'Imports correct' || echo 'Bad imports!'"
+unit_tests_pass = "uv run pytest tests/test_pane_unit.py -q 2>&1 | tail -3"
+lint_clean = "uv run ruff check src/dgov/pane.py src/dgov/persistence/schema.py && echo 'Lint OK'"

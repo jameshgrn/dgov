@@ -1,0 +1,2 @@
+name = "kimi-hello"
+goal = "Create a file named kimi-was-here.txt with a short poem (3-4 lines) about software agents collaborating. Then stage and commit it with the message 'Kimi says hello from Fireworks'."

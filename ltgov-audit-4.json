@@ -1,0 +1,37 @@
+[
+  {
+    "file": "src/dgov/lifecycle.py",
+    "line": 397,
+    "description": "Role-specific instruction preamble generation: lt-gov receives instructions to orchestrate workers (dgov pane create/wait/review/close) rather than edit code directly, plus environment variable DGOV_SKIP_GOVERNOR_CHECK"
+  },
+  {
+    "file": "src/dgov/lifecycle.py",
+    "line": 803,
+    "description": "Worktree assignment override: lt-gov panes without existing_worktree default to running on main project_root directly (no worktree) because they orchestrate rather than edit"
+  },
+  {
+    "file": "src/dgov/lifecycle.py",
+    "line": 808,
+    "description": "Branch name logic: lt-gov panes use empty branch_name since they run on main, avoiding worktree-attached branch conflicts"
+  },
+  {
+    "file": "src/dgov/lifecycle.py",
+    "line": 866,
+    "description": "Environment setup for lt-gov: adds DGOV_SKIP_GOVERNOR_CHECK=1 and DGOV_PROJECT_ROOT to env vars"
+  },
+  {
+    "file": "src/dgov/merger.py",
+    "line": 962,
+    "description": "Merge guard: rejects merging lt-gov panes because they don't produce code - only orchestrate workers - and return error saying nothing to merge"
+  },
+  {
+    "file": "src/dgov/dashboard.py",
+    "line": 308,
+    "description": "Dashboard pane grouping: lt-gov panes are grouped separately from worker panes so their children appear indented beneath them in the UI hierarchy"
+  },
+  {
+    "file": "src/dgov/dashboard.py",
+    "line": 371,
+    "description": "Dashboard LT-GOV visual styling: renders lt-gov panes with diamond bullet (◊) and bold magenta color to distinguish from worker panes"
+  }
+]

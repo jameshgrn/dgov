@@ -1,0 +1,12 @@
+name = "real-test-a"
+description = "Test A: Add function to tests/test_real.py"
+
+[goal]
+prompt = """Add a simple function to tests/test_real.py.
+
+1. Read tests/test_real.py if it exists, otherwise create it
+2. Add a function called `test_function_a()` that returns "A"
+3. Save the file
+4. git add tests/test_real.py
+5. git commit -m "Add test_function_a"
+"""

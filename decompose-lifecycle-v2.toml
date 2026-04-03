@@ -1,0 +1,58 @@
+[plan]
+version = 1
+name = "decompose-lifecycle-v2"
+goal = "Decompose lifecycle.py (1754 lines) into subpackage"
+session_root = "/Users/jakegearon/projects/dgov"
+
+[[evals]]
+id = "E1"
+kind = "regression"
+statement = "lifecycle imports still work"
+evidence = "uv run python3 -c 'from dgov.lifecycle import create_pane, destroy_pane; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "lifecycle.py under 500 lines or is a shim"
+evidence = "[ $(wc -l < src/dgov/lifecycle.py) -lt 500 ] || grep -q 'from dgov.lifecycle' src/dgov/lifecycle.py"
+
+[[evals]]
+id = "E3"
+kind = "regression"
+statement = "Tests pass"
+evidence = "uv run pytest tests/test_lifecycle*.py -q 2>&1 | tail -1 | grep -q 'passed'"
+
+[units.main]
+summary = "Decompose lifecycle.py into subpackage"
+agent = "kimi-k25"
+timeout_s = 900
+satisfies = ["E1", "E2", "E3"]
+commit_message = "refactor(lifecycle): decompose 1754-line god file into subpackage"
+prompt = """
+Goal: Decompose src/dgov/lifecycle.py (1754 lines) into a subpackage.
+
+Extraction targets:
+1. lifecycle/create.py: create_worker_pane(), create_utility_pane(), _ensure_dependency()
+2. lifecycle/cleanup.py: destroy_pane(), cleanup_stale_panes(), close_pane()
+3. lifecycle/metadata.py: Title generation, status tracking helpers
+
+Steps:
+1. Read src/dgov/lifecycle.py FULLY. Identify exact line ranges for each extraction target.
+2. Create src/dgov/lifecycle/ directory with __init__.py
+3. Extract create.py, cleanup.py, metadata.py with proper imports
+4. __init__.py MUST re-export: create_worker_pane, destroy_pane, cleanup_stale_panes, close_pane, create_utility_pane
+5. Convert lifecycle.py to a thin shim (<500 lines) that imports from the subpackage
+6. Run: uv run pytest tests/test_lifecycle*.py -v
+7. If tests pass: git add -A src/dgov/lifecycle* && git commit -m "refactor(lifecycle): decompose 1754-line god file into subpackage"
+
+Critical: Preserve ALL public API. Add __all__ to __init__.py.
+"""
+
+[units.main.files]
+create = [
+    "src/dgov/lifecycle/__init__.py",
+    "src/dgov/lifecycle/create.py",
+    "src/dgov/lifecycle/cleanup.py",
+    "src/dgov/lifecycle/metadata.py"
+]
+edit = ["src/dgov/lifecycle.py"]

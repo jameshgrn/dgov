@@ -1,0 +1,40 @@
+[dag]
+name = "worker-loop-soak-rerun"
+project_root = "."
+session_root = "."
+max_concurrent = 1
+
+[evals]
+soak_file_shape = "test \"$(grep -c '^run-' docs/worker-loop-soak.md)\" -eq 3 && grep '^run-' docs/worker-loop-soak.md | tail -n 1 | grep -qx 'run-03'"
+worker_loop_regressions = "uv run pytest tests/test_runner_merge_truth.py tests/test_dogfood_routed_events.py -q -W error::RuntimeWarning"
+
+[tasks.soak_rerun_run_02]
+summary = "Append second deterministic marker after commit-proof hardening"
+agent = "worker"
+prompt = """1. Read docs/worker-loop-soak.md.
+2. Append a new line at the end of the file with exactly this content:
+   run-02
+3. Preserve the existing heading and run-01 line.
+4. Do not change any other file.
+5. git add docs/worker-loop-soak.md
+6. git commit -m "Append second soak marker"
+"""
+commit_message = "Append second soak marker"
+files = { edit = ["docs/worker-loop-soak.md"] }
+timeout_s = 900
+
+[tasks.soak_rerun_run_03]
+summary = "Append third deterministic marker after commit-proof hardening"
+agent = "worker"
+depends_on = ["soak_rerun_run_02"]
+prompt = """1. Read docs/worker-loop-soak.md.
+2. Append a new line at the end of the file with exactly this content:
+   run-03
+3. Preserve the existing heading and prior run markers.
+4. Do not change any other file.
+5. git add docs/worker-loop-soak.md
+6. git commit -m "Append third soak marker"
+"""
+commit_message = "Append third soak marker"
+files = { edit = ["docs/worker-loop-soak.md"] }
+timeout_s = 900

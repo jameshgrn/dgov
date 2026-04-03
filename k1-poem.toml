@@ -1,0 +1,22 @@
+name = "k1-poem"
+goal = """Create a file with a haiku about software agents using Kimi K2.5 Worker 1.
+
+1. Create a file named k1-poem.txt in the current directory
+2. Write a haiku (3 lines: 5-7-5 syllables) about software agents collaborating
+3. Include a timestamp at the top showing when you started
+4. Save the file
+5. git add k1-poem.txt
+6. git commit -m "Kimi Worker 1: Haiku poem"
+
+Example format:
+---
+Started: 2026-04-01 12:34:56
+
+Silicon agents
+Working in parallel streams
+Fast, lean, and precise
+---
+"""
+
+[agent]
+agent = "kimi-k25-1"

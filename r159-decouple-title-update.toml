@@ -1,0 +1,138 @@
+[plan]
+name = "r159-decouple-title-update"
+goal = "Remove side-effect coupling between persistence.py and backend/lifecycle by moving _maybe_update_pane_title"
+version = 1
+default_agent = "qwen-35b"
+
+[[evals]]
+id = "E-no-backend-import"
+kind = "invariant"
+statement = "persistence.py must not import dgov.backend"
+evidence = "! grep -q 'from dgov.backend' src/dgov/persistence.py && ! grep -q 'import dgov.backend' src/dgov/persistence.py"
+
+[[evals]]
+id = "E-no-title-fn-in-persistence"
+kind = "invariant"
+statement = "_maybe_update_pane_title must not be defined in persistence.py"
+evidence = "! grep -q 'def _maybe_update_pane_title' src/dgov/persistence.py"
+
+[[evals]]
+id = "E-title-update-preserved"
+kind = "regression"
+statement = "Pane titles still update on state change (function moved, not deleted)"
+evidence = "grep -q '_maybe_update_pane_title' src/dgov/lifecycle.py"
+
+[[evals]]
+id = "E-ruff-clean"
+kind = "invariant"
+statement = "No lint errors in changed files"
+evidence = "uv run ruff check src/dgov/persistence.py src/dgov/lifecycle.py src/dgov/executor.py"
+
+[[evals]]
+id = "E-tests-pass"
+kind = "regression"
+statement = "Unit tests for affected modules still pass"
+evidence = "cd /Users/jakegearon/projects/dgov && uv run pytest tests/test_lifecycle.py tests/test_persistence_pane.py -q -m unit --tb=short 2>&1 | tail -1 | grep -q 'passed'"
+
+[units.r159-lifecycle]
+summary = "Add _maybe_update_pane_title function to lifecycle.py"
+agent = "qwen-35b"
+files.edit = ["src/dgov/lifecycle.py"]
+prompt = '''
+1. Read src/dgov/lifecycle.py and find _build_pane_title (around line 554).
+
+2. Add the following function RIGHT AFTER _build_pane_title:
+
+def _maybe_update_pane_title(session_root: str, slug: str, new_state: str) -> None:
+    """Update the pane title after a persisted state change."""
+    from dgov.backend import get_backend
+    from dgov.persistence import PaneState, get_pane
+
+    # Skip for terminal states — pane is dead, title update would fork tmux for nothing.
+    if new_state in (PaneState.MERGED, PaneState.CLOSED, PaneState.SUPERSEDED):
+        return
+
+    pane = get_pane(session_root, slug)
+    if not pane:
+        return
+
+    pane_id = pane.get("pane_id", "")
+    agent = pane.get("agent", "")
+    project_root = pane.get("project_root", "")
+    if not pane_id:
+        return
+
+    try:
+        title = _build_pane_title(agent, slug, project_root, state=pane.get("state", new_state))
+        get_backend().set_title(pane_id, title)
+    except (RuntimeError, OSError):
+        pass  # pane may already be dead
+
+3. git add src/dgov/lifecycle.py
+'''
+commit_message = "Move _maybe_update_pane_title from persistence to lifecycle"
+satisfies = ["E-no-title-fn-in-persistence", "E-title-update-preserved", "E-ruff-clean"]
+depends_on = []
+
+[units.r159-persistence]
+summary = "Remove _maybe_update_pane_title and backend import from persistence.py"
+agent = "qwen-35b"
+files.edit = ["src/dgov/persistence.py"]
+prompt = '''
+1. Read src/dgov/persistence.py around lines 1-25 (imports) and lines 490-530 (_maybe_update_pane_title).
+
+2. Find the _maybe_update_pane_title function (around line 496) and REMOVE IT completely.
+
+3. Find the call to _maybe_update_pane_title in update_pane_state (around line 1145). Remove the line:
+   _maybe_update_pane_title(session_root, slug, new_state)
+   This is at the end of the update_pane_state function.
+
+4. Find the call to _maybe_update_pane_title in settle_completion_state (around line 1207). Remove the block:
+   if result.changed:
+       _maybe_update_pane_title(session_root, slug, new_state)
+   This is after the result = _retry_on_lock(_do) line.
+
+5. Find and REMOVE the import at line 19: from dgov.backend import get_backend
+
+6. Run: uv run ruff check src/dgov/persistence.py
+7. Run: uv run ruff format src/dgov/persistence.py
+
+8. git add src/dgov/persistence.py
+'''
+commit_message = "Remove _maybe_update_pane_title and backend import from persistence"
+satisfies = ["E-no-backend-import", "E-no-title-fn-in-persistence", "E-ruff-clean"]
+depends_on = ["r159-lifecycle"]
+
+[units.r159-executor]
+summary = "Add title update calls in executor.py after state changes"
+agent = "qwen-35b"
+files.edit = ["src/dgov/executor.py"]
+prompt = '''
+1. Read src/dgov/executor.py to understand its structure.
+
+2. Find run_complete_pane function (around line 1950). After the call to settle_completion_state and the if transition.changed block, add:
+   # Update pane title to reflect new state
+   from dgov.lifecycle import _maybe_update_pane_title
+   _maybe_update_pane_title(session_root, slug, PaneState.DONE)
+   Add this right before the "return StateTransitionResult" line.
+
+3. Find run_fail_pane function (around line 1976). After the call to settle_completion_state and the if transition.changed block, add:
+   # Update pane title to reflect new state
+   from dgov.lifecycle import _maybe_update_pane_title
+   _maybe_update_pane_title(session_root, slug, PaneState.FAILED)
+   Add this right before the "return StateTransitionResult" line.
+
+4. Find run_mark_reviewed function (around line 2002). After the call to update_pane_state, add:
+   # Update pane title to reflect new state
+   from dgov.lifecycle import _maybe_update_pane_title
+   _maybe_update_pane_title(session_root, slug, target)
+   Add this right after the update_pane_state call and before the emit_event call.
+
+5. Run: uv run ruff check src/dgov/executor.py
+6. Run: uv run ruff format src/dgov/executor.py
+
+7. git add src/dgov/executor.py
+'''
+commit_message = "Add title updates after state changes in executor functions"
+satisfies = ["E-ruff-clean", "E-tests-pass"]
+depends_on = ["r159-persistence"]

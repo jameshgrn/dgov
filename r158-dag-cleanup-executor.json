@@ -1,0 +1,16 @@
+{
+  "task": "r158-dag-cleanup-executor",
+  "status": "complete",
+  "commit_message": "Route _drive_dag cleanup through executor run_close_only",
+  "result": "No changes required - code already correct",
+  "details": {
+    "verification": "_drive_dag already uses run_close_only from executor",
+    "no_close_worker_pane": true,
+    "lint_passed": true,
+    "format_clean": true
+  },
+  "evals": {
+    "E-dag-cleanup-through-executor": "PASS - _drive_dag calls run_close_only, not close_worker_pane",
+    "E-ruff-clean": "PASS - All checks passed"
+  }
+}

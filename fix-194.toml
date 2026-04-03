@@ -1,0 +1,64 @@
+# Fix bug #194: claim_violation not mapped to DagEvents
+
+[plan]
+version = 1
+name = "fix-194-claim-violation-mapping"
+goal = "Add claim_violation and pane_merge_failed events to DAG event factory mapping"
+default_agent = "qwen-9b"
+default_timeout_s = 300
+max_retries = 2
+
+# -- Evals --
+
+[[evals]]
+id = "E-claim-violation-mapped"
+kind = "happy_path"
+statement = "claim_violation is mapped in _DAG_EVENT_FACTORY"
+evidence = "grep -q 'claim_violation.*TaskMergeDone' src/dgov/monitor.py"
+
+[[evals]]
+id = "E-pane-merge-failed-mapped"
+kind = "happy_path"
+statement = "pane_merge_failed is mapped in _DAG_EVENT_FACTORY"
+evidence = "grep -q 'pane_merge_failed.*TaskMergeDone' src/dgov/monitor.py"
+
+[[evals]]
+id = "E-no-regressions"
+kind = "regression"
+statement = "monitor.py passes unit tests"
+evidence = "DGOV_SKIP_GOVERNOR_CHECK=1 uv run pytest tests/test_monitor.py -q -m unit 2>&1 | tail -1 | grep -q 'passed'"
+
+# -- Units --
+
+[units.fix-194]
+summary = "Add claim_violation and pane_merge_failed to DAG event factory"
+prompt = """
+BUG #194: DAG status tracking — claim_violation events not mapped to kernel DagEvents
+
+The merger emits 'claim_violation' events when a pane touches undeclared files,
+but monitor.py's _DAG_EVENT_FACTORY doesn't map these to DagEvents. This causes
+DAG tasks to get stuck waiting for merge events that never arrive at the kernel.
+
+Also fix 'pane_merge_failed' which has the same issue.
+
+Files:
+- src/dgov/monitor.py (the _DAG_EVENT_FACTORY dict around line 161)
+- src/dgov/kernel.py (TaskMergeDone class for reference)
+
+Required changes:
+1. Read src/dgov/monitor.py around line 161 to see the _DAG_EVENT_FACTORY dict
+2. Read src/dgov/kernel.py around line 149 to confirm TaskMergeDone structure
+3. Add 'claim_violation' mapping: returns TaskMergeDone(slug, error=ev.get("error"))
+4. Add 'pane_merge_failed' mapping: returns TaskMergeDone(slug, error=ev.get("error"))
+
+The DagEvent classes are imported at the top of monitor.py. TaskMergeDone takes
+(task_slug: str, error: str | None = None).
+
+5. Format and lint the file
+6. Commit with message: "fix(monitor): map claim_violation and pane_merge_failed to TaskMergeDone"
+"""
+commit_message = "fix(monitor): map claim_violation and pane_merge_failed to TaskMergeDone"
+satisfies = ["E-claim-violation-mapped", "E-pane-merge-failed-mapped", "E-no-regressions"]
+
+[units.fix-194.files]
+edit = ["src/dgov/monitor.py"]

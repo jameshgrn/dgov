@@ -1,0 +1,2 @@
+name = "parallel-simple"
+goal = "Run one mock agent that waits 2 seconds to verify timing"

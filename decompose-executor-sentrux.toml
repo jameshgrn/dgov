@@ -1,0 +1,190 @@
+[plan]
+version = 1
+name = "decompose-executor-sentrux"
+goal = "Split executor.py (1655 lines, 18 fan-out) into 5 focused modules"
+session_root = "/Users/jakegearon/projects/dgov"
+default_agent = "kimi-k25"
+
+[[evals]]
+id = "E1"
+kind = "happy_path"
+statement = "pane_executor.py exists and exports 6 pane lifecycle functions"
+evidence = "uv run python3 -c 'from dgov.pane_executor import run_complete_pane, run_fail_pane, run_mark_reviewed, run_cleanup_only, run_close_only, run_worker_checkpoint; print(\"OK\")'"
+
+[[evals]]
+id = "E2"
+kind = "happy_path"
+statement = "review_executor.py exists and exports review+merge functions"
+evidence = "uv run python3 -c 'from dgov.review_executor import run_review_only, run_merge_only, review_merge_gate; print(\"OK\")'"
+
+[[evals]]
+id = "E3"
+kind = "happy_path"
+statement = "dispatch_executor.py exists and exports dispatch functions"
+evidence = "uv run python3 -c 'from dgov.dispatch_executor import run_dispatch_only, run_dispatch_preflight; print(\"OK\")'"
+
+[[evals]]
+id = "E4"
+kind = "happy_path"
+statement = "dag_executor.py exists and exports DAG functions"
+evidence = "uv run python3 -c 'from dgov.dag_executor import run_dag_kernel, run_cancel_dag, run_force_complete_dag, run_skip_dag_task, run_resume_dag; print(\"OK\")'"
+
+[[evals]]
+id = "E5"
+kind = "happy_path"
+statement = "executor.py is under 200 lines"
+evidence = "uv run python3 -c \"lines=len(open('src/dgov/executor.py').readlines()); print(f'{lines} lines'); assert lines<200\""
+
+[[evals]]
+id = "E6"
+kind = "regression"
+statement = "All existing executor imports still work via re-exports"
+evidence = "uv run python3 -c 'from dgov.executor import run_dag_kernel, run_review_only, run_merge_only, run_dispatch_only, run_complete_pane, run_fail_pane, run_close_only; print(\"OK\")'"
+
+[[evals]]
+id = "E7"
+kind = "regression"
+statement = "Lint passes on all files"
+evidence = "uv run ruff check src/dgov/executor.py src/dgov/pane_executor.py src/dgov/review_executor.py src/dgov/dispatch_executor.py src/dgov/dag_executor.py"
+
+[units.extract-pane-executor]
+summary = "Extract 6 pane lifecycle functions to pane_executor.py"
+agent = "kimi-k25"
+timeout_s = 900
+satisfies = ["E1", "E7"]
+commit_message = "Extract pane lifecycle functions to pane_executor.py"
+prompt = """
+Goal: Extract 6 single-pane state management functions from executor.py into a new pane_executor.py.
+
+Steps:
+1. Read src/dgov/executor.py thoroughly. Identify these 6 functions:
+   - run_complete_pane()
+   - run_fail_pane()
+   - run_mark_reviewed()
+   - run_cleanup_only() (+ CleanupOnlyResult dataclass + CleanupAction enum)
+   - run_close_only()
+   - run_worker_checkpoint()
+
+2. Create src/dgov/pane_executor.py with:
+   - The 6 functions above
+   - CleanupOnlyResult dataclass and CleanupAction enum
+   - Only the imports these functions need (lifecycle, persistence mainly)
+
+3. In executor.py, remove moved functions and add re-exports:
+   from dgov.pane_executor import (
+       CleanupAction, CleanupOnlyResult,
+       run_cleanup_only, run_close_only, run_complete_pane,
+       run_fail_pane, run_mark_reviewed, run_worker_checkpoint,
+   )
+
+4. Run: uv run ruff check src/dgov/executor.py src/dgov/pane_executor.py
+5. Run: uv run ruff format src/dgov/executor.py src/dgov/pane_executor.py
+
+git add src/dgov/executor.py src/dgov/pane_executor.py
+git commit -m "Extract pane lifecycle functions to pane_executor.py"
+"""
+
+[units.extract-pane-executor.files]
+create = ["src/dgov/pane_executor.py"]
+edit = ["src/dgov/executor.py"]
+
+[units.extract-review-executor]
+summary = "Extract review+merge pipeline to review_executor.py"
+agent = "kimi-k25"
+timeout_s = 900
+depends_on = ["extract-pane-executor"]
+satisfies = ["E2", "E7"]
+commit_message = "Extract review and merge pipeline to review_executor.py"
+prompt = """
+Goal: Extract review and merge functions from executor.py into review_executor.py.
+
+Steps:
+1. Read src/dgov/executor.py. Find:
+   - run_review_only() - full review pipeline
+   - run_merge_only() - merge approved panes
+   - review_merge_gate() - wrapper
+   - All internal review helpers
+   - ReviewOnlyResult, MergeOnlyResult, ReviewGate dataclasses
+   - _merge_result_error() helper
+
+2. Create src/dgov/review_executor.py with all above.
+
+3. In executor.py, add re-exports:
+   from dgov.review_executor import (
+       MergeOnlyResult, ReviewGate, ReviewOnlyResult,
+       review_merge_gate, run_merge_only, run_review_only,
+   )
+
+4. Run: uv run ruff check src/dgov/executor.py src/dgov/review_executor.py
+5. Run: uv run ruff format src/dgov/executor.py src/dgov/review_executor.py
+
+git add src/dgov/executor.py src/dgov/review_executor.py
+git commit -m "Extract review and merge pipeline to review_executor.py"
+"""
+
+[units.extract-review-executor.files]
+create = ["src/dgov/review_executor.py"]
+edit = ["src/dgov/executor.py"]
+
+[units.extract-dispatch-executor]
+summary = "Extract dispatch functions to dispatch_executor.py"
+agent = "kimi-k25"
+timeout_s = 900
+depends_on = ["extract-review-executor"]
+satisfies = ["E3", "E7"]
+commit_message = "Extract dispatch functions to dispatch_executor.py"
+prompt = """
+Goal: Extract dispatch functions from executor.py into dispatch_executor.py.
+
+Steps:
+1. Read src/dgov/executor.py. Find: run_dispatch_only(), run_dispatch_preflight()
+2. Create src/dgov/dispatch_executor.py with both functions.
+3. In executor.py, add re-exports.
+4. Run: uv run ruff check src/dgov/executor.py src/dgov/dispatch_executor.py
+5. Run: uv run ruff format src/dgov/executor.py src/dgov/dispatch_executor.py
+
+git add src/dgov/executor.py src/dgov/dispatch_executor.py
+git commit -m "Extract dispatch functions to dispatch_executor.py"
+"""
+
+[units.extract-dispatch-executor.files]
+create = ["src/dgov/dispatch_executor.py"]
+edit = ["src/dgov/executor.py"]
+
+[units.extract-dag-executor]
+summary = "Move DAG kernel to dag_executor.py, thin facade remains"
+agent = "kimi-k25"
+timeout_s = 900
+depends_on = ["extract-dispatch-executor"]
+satisfies = ["E4", "E5", "E6", "E7"]
+commit_message = "Move DAG kernel to dag_executor.py, executor.py becomes thin facade"
+prompt = """
+Goal: Move all remaining DAG code from executor.py to dag_executor.py.
+executor.py becomes a thin facade that re-exports everything.
+
+Steps:
+1. Read src/dgov/executor.py. What remains should be DAG functions:
+   run_dag_kernel, run_cancel_dag, run_force_complete_dag, run_skip_dag_task, run_resume_dag,
+   DagReactor class, all _dag_* helpers, DagRunResult dataclass,
+   utility functions (_dedupe_paths, derive_prompt_touches, resolve_touches).
+
+2. Create src/dgov/dag_executor.py with ALL remaining DAG code.
+
+3. Rewrite executor.py as thin facade (~100-150 lines):
+   - Module docstring: backward-compat facade
+   - Re-exports from all 4 sub-modules
+   - Keep shared utility functions if small
+
+4. Verify: grep -rn 'from dgov.executor import' src/ tests/
+   All existing imports must still work via re-exports.
+
+5. Run: uv run ruff check src/dgov/executor.py src/dgov/dag_executor.py
+6. Run: uv run ruff format src/dgov/executor.py src/dgov/dag_executor.py
+
+git add src/dgov/executor.py src/dgov/dag_executor.py
+git commit -m "Move DAG kernel to dag_executor.py, executor.py becomes thin facade"
+"""
+
+[units.extract-dag-executor.files]
+create = ["src/dgov/dag_executor.py"]
+edit = ["src/dgov/executor.py"]
