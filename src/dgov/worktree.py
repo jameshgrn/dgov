@@ -56,28 +56,20 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
     branch_name = f"dgov/{slug}"
     git_env = _git_env(project_root)
 
-    # Idempotent cleanup of existing worktree/branch
-    try:
+    # Idempotent cleanup of existing worktree/branch (skip prune — done once at end)
+    if wt_path.exists():
         subprocess.run(
             ["git", "worktree", "remove", "-f", str(wt_path)],
             cwd=project_root,
             env=git_env,
             capture_output=True,
         )
-        subprocess.run(
-            ["git", "worktree", "prune"],
-            cwd=project_root,
-            env=git_env,
-            capture_output=True,
-        )
-        subprocess.run(
-            ["git", "branch", "-D", branch_name],
-            cwd=project_root,
-            env=git_env,
-            capture_output=True,
-        )
-    except Exception:
-        pass
+    subprocess.run(
+        ["git", "branch", "-D", branch_name],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+    )
 
     # Pillar #3: Add worktree with a dedicated branch
     subprocess.run(
@@ -158,7 +150,7 @@ def merge_worktree(project_root: str, wt: Worktree) -> str:
 
 
 def remove_worktree(project_root: str, wt: Worktree) -> None:
-    """Annihilate the sandbox (Pillar #10)."""
+    """Annihilate the sandbox (Pillar #10). Prune deferred to caller."""
     git_env = _git_env(project_root)
     subprocess.run(
         ["git", "worktree", "remove", "-f", str(wt.path)],
@@ -167,17 +159,16 @@ def remove_worktree(project_root: str, wt: Worktree) -> None:
         capture_output=True,
     )
     subprocess.run(
-        ["git", "branch", "-D", wt.branch], cwd=project_root, env=git_env, capture_output=True
-    )
-    subprocess.run(
-        ["git", "worktree", "prune"], cwd=project_root, env=git_env, capture_output=True
+        ["git", "branch", "-D", wt.branch],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
     )
 
 
 def commit_in_worktree(wt: Worktree, message: str) -> str:
-    """Commit changes inside the sandbox."""
+    """Stage all + commit in one shot."""
     env = _git_env(wt.path)
-    # Ensure agent identity
     env["GIT_AUTHOR_NAME"] = "dgov-worker"
     env["GIT_AUTHOR_EMAIL"] = "agent@dgov.local"
     env["GIT_COMMITTER_NAME"] = "dgov-worker"
@@ -189,9 +180,9 @@ def commit_in_worktree(wt: Worktree, message: str) -> str:
         cwd=wt.path,
         env=env,
         check=True,
+        capture_output=True,
     )
-
-    res = subprocess.run(
+    sha_res = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         cwd=wt.path,
         env=env,
@@ -199,4 +190,4 @@ def commit_in_worktree(wt: Worktree, message: str) -> str:
         capture_output=True,
         text=True,
     )
-    return res.stdout.strip()
+    return sha_res.stdout.strip()
