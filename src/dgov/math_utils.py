@@ -17,7 +17,7 @@ class ModularAddition:
             raise ValueError("Modulus p must be positive")
         self.p = p
 
-    def __call__(self, a: int, b: int) -> int:
+    def add(self, a: int, b: int) -> int:
         """Compute (a + b) mod p, ensuring the result is in [0, p-1].
 
         Args:
@@ -28,3 +28,15 @@ class ModularAddition:
             The result of (a + b) mod p, normalized to [0, p-1].
         """
         return (a + b) % self.p
+
+    def __call__(self, a: int, b: int) -> int:
+        """Compute (a + b) mod p, ensuring the result is in [0, p-1].
+
+        Args:
+            a: First operand.
+            b: Second operand.
+
+        Returns:
+            The result of (a + b) mod p, normalized to [0, p-1].
+        """
+        return self.add(a, b)
