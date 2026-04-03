@@ -1,4 +1,4 @@
-"""dgov CLI — unified HFT surface. One command, context-aware dispatch."""
+"""dgov CLI — headless governor surface."""
 
 from __future__ import annotations
 
@@ -47,15 +47,15 @@ def cli(
     watch: bool,
     json: bool,
 ) -> None:
-    """dgov — unified governor surface.
+    """dgov — headless governor.
 
     \b
     USAGE:
       dgov                    Show status
       dgov plan.toml          Run a plan
-      dgov --watch            Start governor daemon
+      dgov --watch            Stream events
 
-    Everything routes through the governor event loop.
+    Tasks run in isolated git worktrees. No tmux required.
     """
     if json:
         os.environ["DGOV_JSON"] = "1"
@@ -85,25 +85,25 @@ def cli(
 
 def _cmd_status(project_root: str) -> None:
     """Show governor status — what's running now."""
-    from dgov.persistence import all_panes
+    from dgov.persistence import all_tasks
 
     try:
-        panes = all_panes(project_root)
+        tasks = all_tasks(project_root)
     except Exception as exc:
         _output({"status": "error", "message": str(exc)})
         return
 
-    if not panes:
-        _output({"status": "idle", "panes": 0})
+    if not tasks:
+        _output({"status": "idle", "tasks": 0})
         return
 
-    active = [p for p in panes if p.get("state") == "active"]
+    active = [t for t in tasks if t.get("state") == "active"]
     _output(
         {
             "status": "active" if active else "idle",
-            "panes": len(panes),
+            "tasks": len(tasks),
             "active": len(active),
-            "pane_list": [{"slug": p.get("slug"), "state": p.get("state")} for p in panes[:10]],
+            "task_list": [{"slug": t.get("slug"), "state": t.get("state")} for t in tasks[:10]],
         }
     )
 
@@ -123,7 +123,10 @@ def _cmd_watch(project_root: str) -> None:
             events = read_events(project_root, limit=50)
             new_events = [e for e in events if e.get("id", 0) > last_id]
             for ev in new_events:
-                click.echo(f"[{ev.get('ts', '?')}] {ev.get('event', '?')}: {ev.get('pane', '?')}")
+                # Use 'slug' or 'task' field, fall back to 'pane' for backwards compatibility
+                task_slug = ev.get("slug") or ev.get("task") or ev.get("pane", "?")
+                click.echo(f"[{ev.get('ts', '?')}] {ev.get('event', '?')}: {task_slug}")
+                last_id = max(last_id, ev.get("id", 0))
                 last_id = max(last_id, ev.get("id", 0))
             time.sleep(1)
     except KeyboardInterrupt:

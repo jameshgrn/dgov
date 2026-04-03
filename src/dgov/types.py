@@ -8,7 +8,9 @@ from enum import StrEnum
 from typing import NamedTuple
 
 
-class PaneState(StrEnum):
+class TaskState(StrEnum):
+    """Task lifecycle states for the governor event loop."""
+
     ACTIVE = "active"
     DONE = "done"
     FAILED = "failed"
@@ -35,12 +37,14 @@ class WorkerPhase(StrEnum):
     UNKNOWN = "unknown"
 
 
-class PaneInfo(NamedTuple):
+class TaskInfo(NamedTuple):
+    """Lightweight task handle for CLI/API responses."""
+
     slug: str
     task_slug: str
-    pane_id: str
+    task_id: str  # headless: worktree path; tmux: pane_id when available
     agent: str | None
-    state: PaneState = PaneState.ACTIVE
+    state: TaskState = TaskState.ACTIVE
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,9 @@ class WorkerObservation:
     exit_code: int | None = None
 
 
-# -- ANSI stripping --
+# Backwards compatibility aliases (deprecated, use TaskState/TaskInfo)
+PaneState = TaskState
+PaneInfo = TaskInfo
 
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI sequences
@@ -167,3 +173,9 @@ _NOISE_RE = [
 def is_noise_line(line: str) -> bool:
     """Return True if line is TUI chrome or noise."""
     return any(pat.search(line) for pat in _NOISE_RE)
+
+
+# -- Backwards compatibility aliases --
+
+PaneState = TaskState
+PaneInfo = TaskInfo

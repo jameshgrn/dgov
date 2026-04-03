@@ -1,7 +1,7 @@
 """Schema definitions for persistence layer.
 
-PaneState is imported from types.py (single source of truth).
-Only tables used by the Lacustrine kernel are referenced here.
+TaskState is imported from types.py (single source of truth).
+SQL tables retain 'pane' names for backwards compatibility.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from dgov.persistence.sql import (
     _CREATE_SLUG_HISTORY_TABLE_SQL,
     _CREATE_TABLE_SQL,
 )
-from dgov.types import PaneState
+from dgov.types import TaskState
 
 # -- Constants --
 
@@ -25,47 +25,54 @@ _STATE_FILE = "state.db"
 _SCHEMA_VERSION = 4  # Bumped: stripped monitor/tiered columns
 
 # Re-export PaneState from types.py (single source of truth)
-PANE_STATES = frozenset(PaneState)
+TASK_STATES = frozenset(TaskState)
 
-# Transition table: enforced in update_pane_state
+# Deprecated aliases
+PANE_STATES = TASK_STATES
+PaneState = TaskState
+
+# Transition table: enforced in update_task_state
 # Review is mandatory before merge — no direct done->merged or active->merged.
-VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
-    PaneState.ACTIVE: frozenset(
+VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
+    TaskState.ACTIVE: frozenset(
         {
-            PaneState.DONE,
-            PaneState.FAILED,
-            PaneState.ABANDONED,
-            PaneState.TIMED_OUT,
-            PaneState.CLOSED,
+            TaskState.DONE,
+            TaskState.FAILED,
+            TaskState.ABANDONED,
+            TaskState.TIMED_OUT,
+            TaskState.CLOSED,
         }
     ),
-    PaneState.DONE: frozenset(
+    TaskState.DONE: frozenset(
         {
-            PaneState.REVIEWED_PASS,
-            PaneState.REVIEWED_FAIL,
-            PaneState.CLOSED,
+            TaskState.REVIEWED_PASS,
+            TaskState.REVIEWED_FAIL,
+            TaskState.CLOSED,
         }
     ),
-    PaneState.FAILED: frozenset({PaneState.CLOSED}),
-    PaneState.REVIEWED_PASS: frozenset({PaneState.MERGED, PaneState.FAILED, PaneState.CLOSED}),
-    PaneState.REVIEWED_FAIL: frozenset({PaneState.CLOSED}),
-    PaneState.MERGED: frozenset({PaneState.CLOSED}),
-    PaneState.TIMED_OUT: frozenset({PaneState.CLOSED}),
-    PaneState.SUPERSEDED: frozenset({PaneState.CLOSED}),
-    PaneState.CLOSED: frozenset(),
-    PaneState.ABANDONED: frozenset({PaneState.CLOSED}),
+    TaskState.FAILED: frozenset({TaskState.CLOSED}),
+    TaskState.REVIEWED_PASS: frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.CLOSED}),
+    TaskState.REVIEWED_FAIL: frozenset({TaskState.CLOSED}),
+    TaskState.MERGED: frozenset({TaskState.CLOSED}),
+    TaskState.TIMED_OUT: frozenset({TaskState.CLOSED}),
+    TaskState.SUPERSEDED: frozenset({TaskState.CLOSED}),
+    TaskState.CLOSED: frozenset(),
+    TaskState.ABANDONED: frozenset({TaskState.CLOSED}),
 }
 
 _COMPLETION_TARGET_STATES = frozenset(
-    {PaneState.DONE, PaneState.FAILED, PaneState.ABANDONED, PaneState.TIMED_OUT}
+    {TaskState.DONE, TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT}
 )
-_SETTLED_PANE_STATES = PANE_STATES - {PaneState.ACTIVE}
+_SETTLED_TASK_STATES = TASK_STATES - {TaskState.ACTIVE}
+
+# Deprecated aliases
+_SETTLED_PANE_STATES = _SETTLED_TASK_STATES
 
 
 class IllegalTransitionError(ValueError):
     """Raised when an invalid state transition is attempted."""
 
-    def __init__(self, current: str | PaneState, target: str | PaneState, slug: str):
+    def __init__(self, current: str | TaskState, target: str | TaskState, slug: str):
         self.current = current
         self.target = target
         self.slug = slug
@@ -77,7 +84,7 @@ class CompletionTransitionResult:
     """Result of a completion state transition attempt."""
 
     changed: bool
-    state: PaneState = PaneState.ACTIVE
+    state: TaskState = TaskState.ACTIVE
 
 
 # -- Provenance --
@@ -85,29 +92,32 @@ class CompletionTransitionResult:
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceOriginal:
-    """Original pane — not derived from another."""
+    """Original task — not derived from another."""
 
     kind: Literal["original"] = "original"
 
 
 @dataclass(frozen=True, slots=True)
 class ProvenanceRetry:
-    """Retry of a failed pane."""
+    """Retry of a failed task."""
 
     original_slug: str
     attempt: int = 1
     kind: Literal["retry"] = "retry"
 
 
-PaneProvenance = ProvenanceOriginal | ProvenanceRetry
+TaskProvenance = ProvenanceOriginal | ProvenanceRetry
+
+# Deprecated alias
+PaneProvenance = TaskProvenance
 
 
-# -- WorkerPane Dataclass --
+# -- WorkerTask Dataclass --
 
 
 @dataclass(frozen=True, slots=True)
-class WorkerPane:
-    """Represents a worker pane record — immutable, strictly validated."""
+class WorkerTask:
+    """Represents a worker task record — immutable, strictly validated."""
 
     slug: str
     prompt: str
@@ -115,20 +125,20 @@ class WorkerPane:
     project_root: str
     worktree_path: str
     branch_name: str
-    pane_id: str | None = None
+    task_id: str | None = None  # tmux pane_id when in pane mode; None for headless
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
     base_sha: str | None = None
-    provenance: PaneProvenance = field(default_factory=ProvenanceOriginal)
+    provenance: TaskProvenance = field(default_factory=ProvenanceOriginal)
     role: str = "worker"
-    state: PaneState = PaneState.ACTIVE
+    state: TaskState = TaskState.ACTIVE
     file_claims: tuple[str, ...] = ()
     commit_message: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.state, PaneState):
+        if not isinstance(self.state, TaskState):
             raise TypeError(
-                f"state must be PaneState, got {type(self.state).__name__}: {self.state!r}"
+                f"state must be TaskState, got {type(self.state).__name__}: {self.state!r}"
             )
         if not self.slug:
             raise ValueError("slug must be non-empty")
@@ -136,11 +146,15 @@ class WorkerPane:
             raise ValueError("prompt must be non-empty")
 
 
-_PANE_COLUMNS = frozenset(
+# Deprecated alias
+WorkerPane = WorkerTask
+
+
+_TASK_COLUMNS = frozenset(
     {
         "slug",
         "prompt",
-        "pane_id",
+        "task_id",  # maps to DB column 'pane_id' for backwards compatibility
         "agent",
         "project_root",
         "worktree_path",
@@ -154,12 +168,16 @@ _PANE_COLUMNS = frozenset(
     }
 )
 
-_PANE_TYPED_COLS = frozenset(
+_TASK_TYPED_COLS = frozenset(
     {
         "file_claims",
         "commit_message",
     }
 )
+
+# Deprecated aliases
+_PANE_COLUMNS = _TASK_COLUMNS
+_PANE_TYPED_COLS = _TASK_TYPED_COLS
 
 # -- Path Helpers --
 
@@ -175,6 +193,11 @@ def state_path(session_root: str) -> Path:
 VALID_EVENTS = frozenset(
     {
         # Runner lifecycle
+        "task_created",
+        "task_done",
+        "task_failed",
+        "task_closed",
+        # Deprecated aliases (deprecated, use task_* events)
         "pane_created",
         "pane_done",
         "pane_failed",
@@ -188,6 +211,8 @@ VALID_EVENTS = frozenset(
         "review_fail",
         # Merge
         "merge_completed",
+        "task_merge_failed",
+        # Deprecated alias
         "pane_merge_failed",
         # Worker subprocess
         "worker_log",
@@ -214,15 +239,17 @@ __all__ = [
     "STATE_DIR",
     "_STATE_FILE",
     "_SCHEMA_VERSION",
-    "PaneState",
-    "PANE_STATES",
+    # Types imported from types.py (not re-exported here)
+    # "TaskState",
+    # "TASK_STATES",
     "VALID_TRANSITIONS",
     "IllegalTransitionError",
     "CompletionTransitionResult",
-    "WorkerPane",
+    "WorkerTask",
+    "TaskProvenance",
     "replace",
-    "_PANE_COLUMNS",
-    "_PANE_TYPED_COLS",
+    "_TASK_COLUMNS",
+    "_TASK_TYPED_COLS",
     "_CREATE_TABLE_SQL",
     "_CREATE_EVENTS_TABLE_SQL",
     "_CREATE_SLUG_HISTORY_TABLE_SQL",
@@ -230,5 +257,13 @@ __all__ = [
     "VALID_EVENTS",
     "_EVENT_TYPED_COLS",
     "_COMPLETION_TARGET_STATES",
+    "_SETTLED_TASK_STATES",
+    # Deprecated aliases
+    "PaneState",
+    "PANE_STATES",
+    "WorkerPane",
+    "PaneProvenance",
+    "_PANE_COLUMNS",
+    "_PANE_TYPED_COLS",
     "_SETTLED_PANE_STATES",
 ]

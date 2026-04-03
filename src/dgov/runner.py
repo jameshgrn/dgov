@@ -31,7 +31,7 @@ from dgov.dag_parser import DagDefinition
 from dgov.kernel import DagKernel
 from dgov.persistence import emit_event
 from dgov.settlement import validate_sandbox
-from dgov.types import PaneState
+from dgov.types import TaskState
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
     Worktree,
@@ -111,14 +111,14 @@ class EventDagRunner:
                     timeout=5.0,
                 )
                 self._pending_dispatches.discard(exit_event.task_slug)
-                status = PaneState.DONE if exit_event.exit_code == 0 else PaneState.FAILED
+                status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
 
                 actions = self.kernel.handle(
                     TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
                 )
                 emit_event(
                     self.session_root,
-                    "pane_done" if status == PaneState.DONE else "pane_failed",
+                    "task_done" if status == TaskState.DONE else "task_failed",
                     exit_event.pane_slug,
                     task_slug=exit_event.task_slug,
                 )
@@ -266,7 +266,7 @@ class EventDagRunner:
 
         emit_event(
             self.session_root,
-            "merge_completed" if not error else "pane_merge_failed",
+            "merge_completed" if not error else "task_merge_failed",
             action.pane_slug,
             task_slug=action.task_slug,
             error=error,

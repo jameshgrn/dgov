@@ -28,7 +28,7 @@ from dgov.actions import (
     TaskWaitDone,
     WaitForAny,
 )
-from dgov.types import PaneState
+from dgov.types import TaskState
 
 __all__ = [
     "DagTaskState",
@@ -139,7 +139,7 @@ class DagKernel:
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != DagTaskState.WAITING:
             return []
-        if event.pane_state == PaneState.DONE:
+        if event.pane_state == TaskState.DONE:
             self.task_states[event.task_slug] = DagTaskState.REVIEWING
             return [ReviewTask(event.task_slug, event.pane_slug)]
         # Fail-closed: any non-DONE state triggers governor interrupt
