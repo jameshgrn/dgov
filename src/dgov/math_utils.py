@@ -1,24 +1,27 @@
+"""Math utilities for modular arithmetic."""
+
+
 class ModularAddition:
-    """A utility class for modular addition operations."""
+    """Performs modular addition with proper handling of negative values."""
 
     @staticmethod
     def add(a: int, b: int, p: int) -> int:
         """
-        Compute (a + b) mod p, handling negative results correctly.
-        
+        Compute (a + b) mod p, ensuring the result is always non-negative.
+
         Args:
-            a: First integer operand
-            b: Second integer operand
+            a: First operand
+            b: Second operand
             p: Modulus (must be positive)
-        
+
         Returns:
-            The result of (a + b) mod p, always in range [0, p-1]
-        
+            The result of (a + b) mod p in the range [0, p-1]
+
         Raises:
-            ValueError: If modulus p is not positive
+            ValueError: If p is not positive
         """
         if p <= 0:
             raise ValueError(f"Modulus p must be positive, got {p}")
-        
+
         result = (a + b) % p
         return result
