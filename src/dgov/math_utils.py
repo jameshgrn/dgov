@@ -1,13 +1,13 @@
-"""Mathematical utilities for dgov."""
+"""Math utilities for modular arithmetic operations."""
 
 
 class ModularAddition:
-    """Class for performing modular addition operations."""
+    """Provides modular addition operations with proper negative result handling."""
 
     @staticmethod
     def add(a: int, b: int, p: int) -> int:
         """
-        Compute (a + b) mod p.
+        Compute (a + b) mod p with proper handling of negative results.
 
         Args:
             a: First operand
@@ -15,16 +15,17 @@ class ModularAddition:
             p: Modulus (must be positive)
 
         Returns:
-            The result of (a + b) mod p, guaranteed to be in [0, p-1].
+            The result of (a + b) % p in the range [0, p-1]
 
         Raises:
-            ValueError: If p is not positive.
+            ValueError: If p is not positive
         """
         if p <= 0:
-            raise ValueError("Modulus p must be positive")
-        
+            raise ValueError(f"Modulus p must be positive, got {p}")
+
         result = (a + b) % p
-        # Ensure result is non-negative (Python's % already does this, but explicit for clarity)
+        # Ensure result is non-negative even with Python's modulo behavior
         if result < 0:
             result += p
+
         return result
