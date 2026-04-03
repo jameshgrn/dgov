@@ -56,10 +56,21 @@ class AtomicTools:
         return f"Successfully wrote {len(content)} bytes to {path}"
 
     def run_bash(self, cmd: str) -> str:
-        """Pillar #7: Zero Ambient Authority - runs strictly in worktree."""
+        """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
+        # Restricted env: PATH only, no HOME/credentials/network config
+        sandbox_env = {
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "HOME": str(self.worktree),
+            "LANG": "en_US.UTF-8",
+        }
         try:
             res = subprocess.run(
-                cmd, shell=True, cwd=self.worktree, capture_output=True, text=True, timeout=60
+                ["/bin/sh", "-c", cmd],
+                cwd=self.worktree,
+                env=sandbox_env,
+                capture_output=True,
+                text=True,
+                timeout=60,
             )
             return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}\nEXIT:{res.returncode}"
         except subprocess.TimeoutExpired:
@@ -151,7 +162,7 @@ def run_worker(goal: str, worktree: Path, model: str):
             sys.exit(1)
 
         msg = resp.choices[0].message
-        messages.append(msg)
+        messages.append(msg.model_dump(exclude_none=True))
 
         if msg.content:
             WorkerEvent("thought", msg.content).emit()

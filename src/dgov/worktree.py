@@ -25,8 +25,9 @@ def _git_env(cwd: str | Path | None = None) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("GIT_DIR", None)
     env.pop("GIT_WORK_TREE", None)
-    env["GIT_CONFIG_GLOBAL"] = ""
-    env["GIT_CONFIG_SYSTEM"] = ""
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"
+    env["GIT_CONFIG_SYSTEM"] = "/dev/null"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     if cwd:
         env["PWD"] = str(cwd)
     return env
@@ -122,13 +123,23 @@ def merge_worktree(project_root: str, wt: Worktree) -> str:
         )
         commits = [c for c in res.stdout.strip().split("\n") if c]
         for c in commits:
-            subprocess.run(
-                ["git", "cherry-pick", c],
-                cwd=project_root,
-                env=git_env,
-                check=True,
-                capture_output=True,
-            )
+            try:
+                subprocess.run(
+                    ["git", "cherry-pick", c],
+                    cwd=project_root,
+                    env=git_env,
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError:
+                # Abort cherry-pick to leave repo in clean state, then re-raise
+                subprocess.run(
+                    ["git", "cherry-pick", "--abort"],
+                    cwd=project_root,
+                    env=git_env,
+                    capture_output=True,
+                )
+                raise
 
     res = subprocess.run(
         ["git", "rev-parse", "HEAD"],
