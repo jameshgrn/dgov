@@ -39,10 +39,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# DAG Kernel — multi-pane orchestration with dependency tracking
-# ---------------------------------------------------------------------------
-
 
 class DagTaskState(StrEnum):
     PENDING = "pending"
@@ -77,12 +73,7 @@ class ConflictResolution(StrEnum):
 
 @dataclass
 class DagKernel:
-    """Pure state machine for multi-pane DAG orchestration.
-
-    The kernel tracks per-task state and the dependency graph. It emits
-    actions for the runtime to execute and consumes events reporting
-    the outcome of those actions.
-    """
+    """Pure state machine for multi-pane DAG orchestration."""
 
     deps: dict[str, tuple[str, ...]]
     task_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -112,11 +103,8 @@ class DagKernel:
             return DagState.IDLE
         if self.done:
             if any(state == DagTaskState.FAILED for state in self.task_states.values()):
-                return (
-                    DagState.FAILED
-                    if not any(s == DagTaskState.MERGED for s in self.task_states.values())
-                    else DagState.PARTIAL
-                )
+                merged = any(s == DagTaskState.MERGED for s in self.task_states.values())
+                return DagState.PARTIAL if merged else DagState.FAILED
             return DagState.COMPLETED
         return DagState.RUNNING
 
@@ -134,127 +122,132 @@ class DagKernel:
         return self._schedule()
 
     def handle(self, event: DagEvent) -> list[DagAction]:
-        """React to an external event and return resulting actions."""
+        """React to an external event via focused sub-handlers (Pillar #1)."""
         actions: list[DagAction] = []
-        task = event.task_slug
 
-        if isinstance(event, TaskDispatched):
-            if self.task_states.get(task) == DagTaskState.PENDING:
-                self.task_states[task] = DagTaskState.WAITING
-                self.pane_slugs[task] = event.pane_slug
-                actions.extend(self._maybe_wait())
+        # Dispatch to specific handler based on event type
+        handler_name = f"_handle_{_to_snake(event.__class__.__name__)}"
+        handler = getattr(self, handler_name, self._handle_unknown)
 
-        elif isinstance(event, TaskWaitDone):
-            if self.task_states.get(task) == DagTaskState.WAITING:
-                # Basic transition: WAITING -> REVIEWING (happy path auto-pass)
-                if event.pane_state == PaneState.DONE:
-                    self.task_states[task] = DagTaskState.REVIEWING
-                    actions.append(ReviewTask(task, event.pane_slug))
-                else:
-                    # Pillar #10: Fail-closed on error
-                    reason = str(event.pane_state)
-                    pane_slug = self.pane_slugs.get(task, "")
-                    actions.append(InterruptGovernor(task, pane_slug, reason=reason))
-
-        elif isinstance(event, TaskReviewDone):
-            if self.task_states.get(task) == DagTaskState.REVIEWING:
-                if event.passed:
-                    self.task_states[task] = DagTaskState.MERGE_READY
-                    actions.extend(self._maybe_merge())
-                else:
-                    self.task_states[task] = DagTaskState.FAILED
-                    actions.extend(self._schedule())
-
-        elif isinstance(event, TaskMergeDone):
-            if self.task_states.get(task) == DagTaskState.MERGING:
-                if event.error:
-                    self.task_states[task] = DagTaskState.FAILED
-                else:
-                    self.task_states[task] = DagTaskState.MERGED
-                    self._merge_cursor += 1
-
-                actions.extend(self._maybe_merge())
-                actions.extend(self._schedule())
-
-        elif isinstance(event, TaskGovernorResumed):
-            # External intervention (human or auto-retry)
-            if event.action == GovernorAction.RETRY:
-                self.task_states[task] = DagTaskState.PENDING
-                self.attempts[task] = self.attempts.get(task, 0) + 1
-                actions.extend(self._schedule())
-            elif event.action == GovernorAction.FAIL:
-                self.task_states[task] = DagTaskState.FAILED
-                actions.extend(self._schedule())
+        actions.extend(handler(event))
 
         if self.done:
-            actions.append(
-                DagDone(
-                    status=self.status,
-                    merged=tuple(
-                        s for s, st in self.task_states.items() if st == DagTaskState.MERGED
-                    ),
-                    failed=tuple(
-                        s for s, st in self.task_states.items() if st == DagTaskState.FAILED
-                    ),
-                    skipped=tuple(
-                        s for s, st in self.task_states.items() if st == DagTaskState.SKIPPED
-                    ),
-                    blocked=tuple(
-                        s
-                        for s, st in self.task_states.items()
-                        if st == DagTaskState.BLOCKED_ON_GOVERNOR
-                    ),
-                )
-            )
+            actions.append(self._emit_done())
 
         return actions
 
+    # --- Event Handlers (Pillar #4: Determinism) ---
+
+    def _handle_task_dispatched(self, event: TaskDispatched) -> list[DagAction]:
+        task = event.task_slug
+        if self.task_states.get(task) == DagTaskState.PENDING:
+            self.task_states[task] = DagTaskState.WAITING
+            self.pane_slugs[task] = event.pane_slug
+            return self._maybe_wait()
+        return []
+
+    def _handle_task_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
+        task = event.task_slug
+        if self.task_states.get(task) == DagTaskState.WAITING:
+            if event.pane_state == PaneState.DONE:
+                self.task_states[task] = DagTaskState.REVIEWING
+                return [ReviewTask(task, event.pane_slug)]
+
+            # Pillar #10: Fail-closed on error
+            pane_slug = self.pane_slugs.get(task, "")
+            return [InterruptGovernor(task, pane_slug, reason=str(event.pane_state))]
+        return []
+
+    def _handle_task_review_done(self, event: TaskReviewDone) -> list[DagAction]:
+        task = event.task_slug
+        if self.task_states.get(task) == DagTaskState.REVIEWING:
+            if event.passed:
+                self.task_states[task] = DagTaskState.MERGE_READY
+                return self._maybe_merge()
+
+            self.task_states[task] = DagTaskState.FAILED
+            return self._schedule()
+        return []
+
+    def _handle_task_merge_done(self, event: TaskMergeDone) -> list[DagAction]:
+        task = event.task_slug
+        actions = []
+        if self.task_states.get(task) == DagTaskState.MERGING:
+            if event.error:
+                self.task_states[task] = DagTaskState.FAILED
+            else:
+                self.task_states[task] = DagTaskState.MERGED
+                self._merge_cursor += 1
+
+            actions.extend(self._maybe_merge())
+            actions.extend(self._schedule())
+        return actions
+
+    def _handle_task_governor_resumed(self, event: TaskGovernorResumed) -> list[DagAction]:
+        task = event.task_slug
+        if event.action == GovernorAction.RETRY:
+            self.task_states[task] = DagTaskState.PENDING
+            self.attempts[task] = self.attempts.get(task, 0) + 1
+            return self._schedule()
+        if event.action == GovernorAction.FAIL:
+            self.task_states[task] = DagTaskState.FAILED
+            return self._schedule()
+        return []
+
+    def _handle_unknown(self, event: DagEvent) -> list[DagAction]:
+        logger.debug("Kernel: ignoring unhandled event %s", type(event).__name__)
+        return []
+
+    # --- Internal Primitives ---
+
     def _schedule(self) -> list[DagAction]:
-        """Find pending tasks with met dependencies and emit DispatchTask actions."""
         actions: list[DagAction] = []
         for slug, state in self.task_states.items():
             if state == DagTaskState.PENDING:
-                # Check deps
-                deps_met = True
-                for dep in self.deps.get(slug, ()):
-                    if self.task_states[dep] != DagTaskState.MERGED:
-                        deps_met = False
-                        break
-
-                if deps_met:
+                if all(
+                    self.task_states[d] == DagTaskState.MERGED for d in self.deps.get(slug, ())
+                ):
                     actions.append(DispatchTask(slug))
         return actions
 
     def _maybe_wait(self) -> list[DagAction]:
-        """Return WaitForAny if multiple tasks are active."""
         waiting = [s for s, st in self.task_states.items() if st == DagTaskState.WAITING]
-        if waiting:
-            return [WaitForAny(tuple(waiting))]
-        return []
+        return [WaitForAny(tuple(waiting))] if waiting else []
 
     def _maybe_merge(self) -> list[DagAction]:
-        """Try to advance the merge cursor."""
         if self._merge_cursor >= len(self.merge_order):
             return []
 
         target = self.merge_order[self._merge_cursor]
         if self.task_states[target] == DagTaskState.MERGE_READY:
             self.task_states[target] = DagTaskState.MERGING
-            pane_slug = self.pane_slugs.get(target, "")
-            return [MergeTask(target, pane_slug, file_claims=self.task_files.get(target, ()))]
-
+            return [
+                MergeTask(
+                    target,
+                    self.pane_slugs.get(target, ""),
+                    file_claims=self.task_files.get(target, ()),
+                )
+            ]
         return []
+
+    def _emit_done(self) -> DagDone:
+        return DagDone(
+            status=self.status,
+            merged=tuple(s for s, st in self.task_states.items() if st == DagTaskState.MERGED),
+            failed=tuple(s for s, st in self.task_states.items() if st == DagTaskState.FAILED),
+            skipped=tuple(s for s, st in self.task_states.items() if st == DagTaskState.SKIPPED),
+            blocked=tuple(
+                s for s, st in self.task_states.items() if st == DagTaskState.BLOCKED_ON_GOVERNOR
+            ),
+        )
 
 
 def _topological_sort(deps: dict[str, tuple[str, ...]]) -> list[str]:
-    """Simple DFS topological sort."""
-    order = []
-    visited = set()
-    path = set()
+    order, visited, path = [], set(), set()
 
     def _visit(node):
         if node in path:
-            raise ValueError(f"Circular dependency involving {node}")
+            raise ValueError(f"Cycle: {node}")
         if node in visited:
             return
         path.add(node)
@@ -266,5 +259,10 @@ def _topological_sort(deps: dict[str, tuple[str, ...]]) -> list[str]:
 
     for node in sorted(deps.keys()):
         _visit(node)
-
     return order
+
+
+def _to_snake(name: str) -> str:
+    import re
+
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()

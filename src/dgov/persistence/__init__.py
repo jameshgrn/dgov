@@ -20,7 +20,7 @@ from dgov.persistence.schema import (
     PaneState,
     WorkerPane,
 )
-from dgov.persistence.state_ops import (
+from dgov.persistence.panes import (
     add_pane,
     all_panes,
     get_pane,
