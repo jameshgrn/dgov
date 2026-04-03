@@ -1,0 +1,22 @@
+[plan]
+version = 1
+name = "modular-math-battle-test"
+description = "Implement a modular addition utility and verify it with a dependent test task."
+goal = "Build a verified math utility module"
+project_root = "."
+session_root = "."
+
+[units.impl-math]
+summary = "Implement ModularAddition class"
+prompt = "Create src/dgov/math_utils.py containing a class ModularAddition with an add(a, b, p) method. Use type hints. Ensure it handles negative results correctly. Call done."
+commit_message = "feat: implement modular addition utility"
+agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+files.create = ["src/dgov/math_utils.py"]
+
+[units.test-math]
+summary = "Test ModularAddition utility"
+prompt = "Create tests/test_math_utils.py that imports ModularAddition from dgov.math_utils and tests it with p=113. Include at least 3 test cases. Call done."
+commit_message = "test: add modular addition suite"
+agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+depends_on = ["impl-math"]
+files.create = ["tests/test_math_utils.py"]

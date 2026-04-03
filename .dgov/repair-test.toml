@@ -1,0 +1,14 @@
+[plan]
+version = 1
+name = "math-repair-dag"
+description = "Fix the hallucinated interface in ModularAddition"
+goal = "Align implementation with test expectations"
+project_root = "."
+session_root = "."
+
+[units.repair-math]
+summary = "Fix ModularAddition interface"
+prompt = "The test suite expects ModularAddition(p=113) and then calling the instance. Update src/dgov/math_utils.py to accept 'p' in __init__ and implement __call__(a, b) that returns (a + b) % p. Call done."
+commit_message = "fix: align ModularAddition interface with tests"
+agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+files.edit = ["src/dgov/math_utils.py"]
