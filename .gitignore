@@ -1,3 +1,4 @@
 .dgov/worktrees/
 __pycache__/
 config.toml
+HANDOVER.md
