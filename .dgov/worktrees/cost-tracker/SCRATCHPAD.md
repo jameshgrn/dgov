@@ -1,1 +1,0 @@
-ENOENT: no such file or directory, access '/Users/jakegearon/projects/dgov/.dgov/worktrees/cost-tracker/SCRATCHPAD.md'
