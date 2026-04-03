@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.actions import (
+    DagAction,
     DagDone,
     DispatchTask,
     GovernorAction,
@@ -71,32 +72,40 @@ class EventDagRunner:
         actions = self.kernel.start()
 
         while True:
-            dispatch_coros = []
-            next_actions = []
-
             # 1. Process Actions from Kernel
-            for action in actions:
-                if isinstance(action, DispatchTask):
-                    dispatch_coros.append(self._dispatch(action))
-                elif isinstance(action, MergeTask):
-                    dispatch_coros.append(self._merge(action))
-                elif isinstance(action, InterruptGovernor):
-                    logger.info("Governor interrupt: %s (auto-retry)", action.reason)
-                    next_actions.extend(
-                        self.kernel.handle(
-                            TaskGovernorResumed(action.task_slug, GovernorAction.RETRY)
+            if actions:
+                dispatch_coros = []
+                next_immediate_actions = []
+
+                for action in actions:
+                    if isinstance(action, DispatchTask):
+                        dispatch_coros.append(self._dispatch(action))
+                    elif isinstance(action, MergeTask):
+                        dispatch_coros.append(self._merge(action))
+                    elif isinstance(action, InterruptGovernor):
+                        logger.info("Governor interrupt: %s (auto-retry)", action.reason)
+                        next_immediate_actions.extend(
+                            self.kernel.handle(
+                                TaskGovernorResumed(action.task_slug, GovernorAction.RETRY)
+                            )
                         )
-                    )
-                elif isinstance(action, DagDone):
-                    return {slug: state.value for slug, state in self.kernel.task_states.items()}
+                    elif isinstance(action, DagDone):
+                        return {
+                            slug: state.value for slug, state in self.kernel.task_states.items()
+                        }
 
-            if dispatch_coros:
-                await asyncio.gather(*dispatch_coros)
+                if dispatch_coros:
+                    results = await asyncio.gather(*dispatch_coros)
+                    # Accumulate any immediate actions (like follow-up merges)
+                    for r in results:
+                        if isinstance(r, list):
+                            next_immediate_actions.extend(r)
 
-            # If dispatch/merge produced immediate new work, loop again
-            if next_actions:
-                actions = next_actions
-                continue
+                if next_immediate_actions:
+                    actions = next_immediate_actions
+                    continue
+
+                actions = []
 
             if self.kernel.done:
                 break
@@ -114,26 +123,42 @@ class EventDagRunner:
                 actions = self.kernel.handle(
                     TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
                 )
+                emit_event(
+                    self.session_root,
+                    "pane_done" if status == PaneState.DONE else "pane_failed",
+                    exit_event.pane_slug,
+                    task_slug=exit_event.task_slug,
+                )
 
                 # Auto-approve successful reviews for happy path
                 review_actions = [a for a in actions if isinstance(a, ReviewTask)]
                 for ra in review_actions:
-                    actions = self.kernel.handle(
+                    new_actions = self.kernel.handle(
                         TaskReviewDone(
                             ra.task_slug, passed=True, verdict="auto-pass", commit_count=1
                         )
                     )
+                    actions.extend(new_actions)
+
+                    emit_event(
+                        self.session_root,
+                        "review_pass",
+                        ra.pane_slug,
+                        task_slug=ra.task_slug,
+                        verdict="auto-pass",
+                    )
+
+                # Re-loop to process immediate follow-ups (like MergeTasks)
+                continue
 
             except asyncio.TimeoutError:
                 if not self._pending_dispatches and self.kernel.done:
                     break
-                # Check if stalled, otherwise keep waiting
-                actions = []
                 continue
 
         return {slug: state.value for slug, state in self.kernel.task_states.items()}
 
-    async def _dispatch(self, action: DispatchTask) -> None:
+    async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         task = self.dag.tasks[action.task_slug]
         output_dir = Path(self.session_root) / ".dgov" / "out" / action.task_slug
@@ -141,7 +166,7 @@ class EventDagRunner:
 
         import uuid
 
-        # Pillar #3: Snapshot Isolation via dedicated worktree
+        # Pillar #3: Snapshot Isolation
         wt = await asyncio.get_event_loop().run_in_executor(
             self._executor, create_worktree, self.session_root, action.task_slug
         )
@@ -151,7 +176,7 @@ class EventDagRunner:
         self._pending_dispatches.add(action.task_slug)
 
         # Atomic transition to WAITING
-        self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
+        kernel_actions = self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
 
         emit_event(
             self.session_root,
@@ -170,7 +195,6 @@ class EventDagRunner:
             )
             asyncio.get_event_loop().call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
-        # Start background worker
         asyncio.create_task(
             run_headless_worker(
                 self.session_root,
@@ -178,48 +202,44 @@ class EventDagRunner:
                 pane_slug,
                 wt.path,
                 task,
-                None,  # pipe_path no longer used
+                Path("dummy"),
                 asyncio.get_event_loop(),
                 _on_worker_exit,
             )
         )
+        return kernel_actions
 
-    async def _merge(self, action: MergeTask) -> None:
+    async def _merge(self, action: MergeTask) -> list[DagAction]:
         """Commit-or-Kill: Merge worktree branch into base (Pillar #2)."""
         wt = self._worktrees.get(action.task_slug)
         if not wt:
-            self.kernel.handle(TaskMergeDone(action.task_slug))
-            return
+            return self.kernel.handle(TaskMergeDone(action.task_slug))
 
         error = None
         try:
-            # 1. Commit everything in the sandbox
+            # 1. Commit
             task = self.dag.tasks[action.task_slug]
             msg = task.commit_message or f"feat: completed {action.task_slug}"
-
             await asyncio.get_event_loop().run_in_executor(
                 self._executor, commit_in_worktree, wt, msg
             )
 
-            # 2. Pillar #8: Falsifiable Validation (The Gate)
+            # 2. Validate
             gate_result = await asyncio.get_event_loop().run_in_executor(
-                self._executor,
-                validate_sandbox,
-                wt.path,
-                wt.commit,
-                self.session_root
+                self._executor, validate_sandbox, wt.path, wt.commit, self.session_root
             )
 
             if not gate_result.passed:
                 error = gate_result.error
                 logger.warning("REJECTED %s: %s", action.task_slug, error)
             else:
+                # 3. Merge
                 await asyncio.get_event_loop().run_in_executor(
                     self._executor, merge_worktree, self.session_root, wt
                 )
                 logger.info("COMMITTED %s", action.task_slug)
 
-            # 3. Cleanup Sandbox (Pillar #10)
+            # 4. Cleanup
             await asyncio.get_event_loop().run_in_executor(
                 self._executor, remove_worktree, self.session_root, wt
             )
@@ -228,4 +248,13 @@ class EventDagRunner:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
             error = str(exc)
 
-        self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
+        actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
+
+        emit_event(
+            self.session_root,
+            "merge_completed" if not error else "pane_merge_failed",
+            action.pane_slug,
+            task_slug=action.task_slug,
+            error=error,
+        )
+        return actions
