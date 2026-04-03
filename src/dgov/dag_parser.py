@@ -1,68 +1,72 @@
-"""DAG file dataclasses and TOML parser — minimal governor loop version."""
+"""DAG file models and TOML parser via Pydantic V2.
+
+Pillar #4: Determinism - Validates all plan inputs before execution starts.
+Pillar #10: Fail-Closed - Rejects invalid TOML schemas immediately.
+"""
 
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+)
 
 
-@dataclass(frozen=True)
-class DagFileSpec:
-    create: tuple[str, ...] = ()
-    edit: tuple[str, ...] = ()
-    delete: tuple[str, ...] = ()
+class DagFileSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    create: Tuple[str, ...] = ()
+    edit: Tuple[str, ...] = ()
+    delete: Tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
-class DagTaskSpec:
+class DagTaskSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
     slug: str
     summary: str
     prompt: str
     commit_message: str
-    agent: str
-    escalation: tuple[str, ...] = ()
-    depends_on: tuple[str, ...] = ()
-    files: DagFileSpec = field(default_factory=DagFileSpec)
+    agent: str = "worker"
+    escalation: Tuple[str, ...] = ()
+    depends_on: Tuple[str, ...] = ()
+    files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
     permission_mode: str = "bypassPermissions"
-    template: str | None = None
-    template_vars: dict[str, str] | None = None
+    template: Optional[str] = None
+    template_vars: Optional[Dict[str, str]] = None
 
     # Acceptance criteria (hardened post-merge truth)
     tests_pass: bool = True
     lint_clean: bool = True
-    post_merge_check: str | None = None
-    review_agent: str | None = None
+    post_merge_check: Optional[str] = None
+    review_agent: Optional[str] = None
     role: str = "worker"
 
-    def all_touches(self) -> tuple[str, ...]:
+    def all_touches(self) -> Tuple[str, ...]:
         return tuple(dict.fromkeys((*self.files.create, *self.files.edit, *self.files.delete)))
 
 
-@dataclass(frozen=True)
-class DagEvalSpec:
-    """A deterministic eval command with a name."""
-
-    name: str
-    command: str
-
-    def __post_init__(self):
-        if not self.name or not self.name.strip():
-            raise ValueError("Eval name must not be empty")
-        if not self.command or not self.command.strip():
-            raise ValueError(f"Eval {self.name!r}: command must not be empty")
+class DagEvalSpec(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    id: str
+    kind: str = "smoke"
+    statement: str
+    evidence: str
 
 
-@dataclass(frozen=True)
-class DagDefinition:
+class DagDefinition(BaseModel):
+    model_config = ConfigDict(frozen=True)
     name: str
     dag_file: str
-    project_root: str
-    session_root: str
-    max_concurrent: int
-    tasks: dict[str, DagTaskSpec]
-    evals: tuple[DagEvalSpec, ...] = ()
+    project_root: str = "."
+    session_root: str = "."
+    max_concurrent: int = 0
+    tasks: Dict[str, DagTaskSpec]
+    evals: Tuple[DagEvalSpec, ...] = ()
 
     # Merge / Policy defaults
     default_max_retries: int = 3
@@ -71,78 +75,47 @@ class DagDefinition:
 
 
 def parse_dag_file(path: str) -> DagDefinition:
-    """Parse a TOML DAG file into a DagDefinition."""
-    raw_bytes = Path(path).read_bytes()
-    raw = tomllib.loads(raw_bytes.decode())
+    """Parse and validate a TOML DAG file into a DagDefinition."""
+    path_obj = Path(path)
+    if not path_obj.exists():
+        raise FileNotFoundError(f"Plan file not found: {path}")
 
-    dag_section = raw.get("dag", raw.get("plan", {}))
-    if not dag_section:
+    raw = tomllib.loads(path_obj.read_text())
+
+    # Support both [plan] and [dag] naming
+    plan_section = raw.get("plan", raw.get("dag", {}))
+    if not plan_section:
         raise ValueError("Missing [plan] or [dag] section")
-    if "name" not in dag_section:
-        raise ValueError("Missing plan.name")
 
-    project_root = dag_section.get("project_root", ".")
-    session_root = dag_section.get("session_root", ".")
+    # Support both [units] and [tasks] naming
+    tasks_raw = raw.get("units", raw.get("tasks", {}))
+    if not tasks_raw:
+        raise ValueError("Missing [units] or [tasks] section")
 
-    tasks: dict[str, DagTaskSpec] = {}
-    tasks_raw = raw.get("tasks", raw.get("units", {}))
-    for slug, task_raw in tasks_raw.items():
-        tasks[slug] = _parse_task(slug, task_raw)
+    # Process tasks to include slug
+    tasks: Dict[str, Any] = {}
+    for slug, task_data in tasks_raw.items():
+        if isinstance(task_data, dict):
+            task_data["slug"] = slug
+            # Flatten 'acceptance' sub-dictionary if it exists
+            if "acceptance" in task_data:
+                acc = task_data.pop("acceptance")
+                task_data.update(acc)
+            tasks[slug] = task_data
 
-    evals: list[DagEvalSpec] = []
+    # Map evals
     evals_raw = raw.get("evals", [])
-    if isinstance(evals_raw, list):
-        for ev in evals_raw:
-            evals.append(DagEvalSpec(name=ev["id"], command=ev["evidence"]))
-    elif isinstance(evals_raw, dict):
-        for name, command in evals_raw.items():
-            evals.append(DagEvalSpec(name=name, command=command))
 
+    # Construct the final DagDefinition
     return DagDefinition(
-        name=dag_section["name"],
-        dag_file=str(Path(path).resolve()),
-        project_root=project_root,
-        session_root=session_root,
-        max_concurrent=dag_section.get("max_concurrent", 0),
+        name=plan_section.get("name", "unnamed-plan"),
+        dag_file=str(path_obj.resolve()),
+        project_root=plan_section.get("project_root", "."),
+        session_root=plan_section.get("session_root", "."),
+        max_concurrent=plan_section.get("max_concurrent", 0),
         tasks=tasks,
-        evals=tuple(evals),
-        default_max_retries=dag_section.get("default_max_retries", 3),
-        merge_resolve=dag_section.get("merge_resolve", "skip"),
-        merge_squash=dag_section.get("merge_squash", True),
-    )
-
-
-def _parse_task(slug: str, raw: dict) -> DagTaskSpec:
-    """Parse and validate a single task block."""
-    for req in ("summary", "prompt", "commit_message"):
-        if not raw.get(req):
-            raise ValueError(f"Task {slug!r}: missing required field {req!r}")
-
-    files_raw = raw.get("files", {})
-    files = DagFileSpec(
-        create=tuple(files_raw.get("create", [])),
-        edit=tuple(files_raw.get("edit", [])),
-        delete=tuple(files_raw.get("delete", [])),
-    )
-
-    acceptance = raw.get("acceptance", {})
-
-    return DagTaskSpec(
-        slug=slug,
-        summary=raw["summary"],
-        prompt=raw["prompt"],
-        commit_message=raw["commit_message"],
-        agent=raw.get("agent", "worker"),
-        escalation=tuple(raw.get("escalation", ())),
-        depends_on=tuple(raw.get("depends_on", ())),
-        files=files,
-        timeout_s=raw.get("timeout_s", 900),
-        permission_mode=raw.get("permission_mode", "bypassPermissions"),
-        template=raw.get("template"),
-        template_vars=raw.get("template_vars"),
-        tests_pass=bool(acceptance.get("tests_pass", True)),
-        lint_clean=bool(acceptance.get("lint_clean", True)),
-        post_merge_check=acceptance.get("post_merge_check") or acceptance.get("custom_check"),
-        review_agent=raw.get("review_agent"),
-        role=raw.get("role", "worker"),
+        evals=evals_raw,
+        default_max_retries=plan_section.get("default_max_retries", 3),
+        merge_resolve=plan_section.get("merge_resolve", "skip"),
+        merge_squash=plan_section.get("merge_squash", True),
     )

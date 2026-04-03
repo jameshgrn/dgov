@@ -447,9 +447,7 @@ VALID_EVENTS = frozenset(
         "worker_contradiction",
         "worker_heartbeat",
         "pane_pruned",
-        "worker_thought",
-        "worker_call",
-        "worker_result",
+        "worker_log",
         "worker_done",
         "worker_error",
     }

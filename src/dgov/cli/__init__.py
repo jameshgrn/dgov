@@ -195,7 +195,7 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     })
 
     if failed:
-        raise click.Exit(code=1)
+        raise click.exceptions.Exit(code=1)
 
 
 if __name__ == "__main__":
