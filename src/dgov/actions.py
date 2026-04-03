@@ -8,11 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Optional, Tuple, Union
-
-if TYPE_CHECKING:
-    pass
-
+from typing import Optional, Tuple, Union
 
 # --- Actions (Kernel -> Runner) ---
 
@@ -44,21 +40,8 @@ class MergeTask:
 
 
 @dataclass(frozen=True)
-class SkipTask:
-    task_slug: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class CloseTask:
-    task_slug: str
-    pane_slug: str
-    reason: str
-
-
-@dataclass(frozen=True)
 class DagDone:
-    status: Any  # Should be DagState
+    status: str  # DagState value
     merged: Tuple[str, ...]
     failed: Tuple[str, ...]
     skipped: Tuple[str, ...]
@@ -77,8 +60,6 @@ DagAction = Union[
     WaitForAny,
     ReviewTask,
     MergeTask,
-    SkipTask,
-    CloseTask,
     InterruptGovernor,
     DagDone,
 ]
@@ -103,14 +84,14 @@ class TaskDispatchFailed:
 class TaskWaitDone:
     task_slug: str
     pane_slug: str
-    pane_state: Union[str, Any]  # str | PaneState
+    pane_state: str  # PaneState value
 
 
 @dataclass(frozen=True)
 class TaskReviewDone:
     task_slug: str
     passed: bool
-    verdict: str  # accepts ReviewVerdict (StrEnum) + raw model strings
+    verdict: str
     commit_count: int
 
 
@@ -118,36 +99,6 @@ class TaskReviewDone:
 class TaskMergeDone:
     task_slug: str
     error: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class MergeConflictDetected:
-    """Emitted when a merge conflict is detected and requires manual resolution."""
-
-    task_slug: str
-    pane_slug: str
-    conflict_details: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class TaskConflictResolved:
-    """Emitted when a merge conflict has been manually resolved."""
-
-    task_slug: str
-    resolution: Any  # Should be ConflictResolution
-
-
-@dataclass(frozen=True)
-class TaskDispatchDeferred:
-    """Emitted when dispatch fails due to capacity exhaustion."""
-
-    task_slug: str
-    reason: str
-
-
-@dataclass(frozen=True)
-class TaskClosed:
-    task_slug: str
 
 
 class GovernorAction(StrEnum):
@@ -168,9 +119,5 @@ DagEvent = Union[
     TaskWaitDone,
     TaskReviewDone,
     TaskMergeDone,
-    TaskDispatchDeferred,
-    TaskClosed,
     TaskGovernorResumed,
-    MergeConflictDetected,
-    TaskConflictResolved,
 ]

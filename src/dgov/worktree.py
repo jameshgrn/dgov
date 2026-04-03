@@ -168,7 +168,12 @@ def commit_in_worktree(wt: Worktree, message: str) -> str:
     env["GIT_COMMITTER_EMAIL"] = "agent@dgov.local"
 
     subprocess.run(["git", "add", "."], cwd=wt.path, env=env, check=True)
-    subprocess.run(["git", "commit", "--allow-empty", "-m", message], cwd=wt.path, env=env, check=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", message],
+        cwd=wt.path,
+        env=env,
+        check=True,
+    )
 
     res = subprocess.run(
         ["git", "rev-parse", "HEAD"],

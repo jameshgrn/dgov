@@ -15,24 +15,25 @@ from dgov.persistence.events import (
     read_events,
     wait_for_events,
 )
-from dgov.persistence.schema import (
-    STATE_DIR,
-    PaneState,
-    WorkerPane,
-)
 from dgov.persistence.panes import (
     add_pane,
     all_panes,
     get_pane,
     get_panes,
+    get_slug_history,
     remove_pane,
     replace_all_panes,
     set_pane_metadata,
+    settle_completion_state,
     update_pane_state,
+)
+from dgov.persistence.schema import (
+    PaneState,
+    WorkerPane,
+    state_path,
 )
 
 __all__ = [
-    "STATE_DIR",
     "PaneState",
     "WorkerPane",
     "_get_db",
@@ -42,11 +43,14 @@ __all__ = [
     "emit_event",
     "get_pane",
     "get_panes",
-    "read_events",
-    "wait_for_events",
+    "get_slug_history",
     "latest_event_id",
+    "read_events",
     "remove_pane",
     "replace_all_panes",
-    "update_pane_state",
     "set_pane_metadata",
+    "settle_completion_state",
+    "state_path",
+    "update_pane_state",
+    "wait_for_events",
 ]

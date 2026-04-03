@@ -133,7 +133,10 @@ def run_worker(goal: str, worktree: Path, model: str):
     messages = [
         {
             "role": "system",
-            "content": f"You are a dgov Atomic Worker. Worktree: {worktree}{rules_context}\nStrictly use tools. Call 'done' when complete.",
+            "content": (
+                f"You are a dgov Atomic Worker. Worktree: {worktree}"
+                f"{rules_context}\nStrictly use tools. Call 'done' when complete."
+            ),
         },
         {"role": "user", "content": goal},
     ]

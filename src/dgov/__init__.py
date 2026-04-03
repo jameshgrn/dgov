@@ -1,2 +1,2 @@
-# dgov: governor pane orchestration.
-__version__ = "0.9.0"
+# dgov: deterministic kernel for multi-agent orchestration.
+__version__ = "1.0.0a1"

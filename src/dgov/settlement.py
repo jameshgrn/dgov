@@ -1,7 +1,9 @@
 """Settlement Layer: Validation Gates and Commit-or-Kill logic.
 
 Pillar #8: Falsifiable Validation - All work is machine-verified before merge.
-Pillar #10: Fail-Closed - Cleanup happens automatically on rejection.
+Pillar #10: Fail-Closed - Rejected work is never merged.
+
+Pure validation only — no auto-fix. Workers must produce clean code.
 """
 
 from __future__ import annotations
@@ -26,9 +28,12 @@ class GateResult:
 
 
 def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -> GateResult:
-    """Run Ruff and Sentrux checks on changed files in the sandbox."""
+    """Run Ruff and Sentrux checks on changed files in the sandbox.
+
+    No auto-fix — if the code isn't clean, it's rejected.
+    """
     try:
-        # 0. Pillar #3: Inject policy context
+        # 0. Inject policy context
         sx_src = Path(project_root) / ".sentrux"
         sx_dst = worktree_path / ".sentrux"
         if sx_src.exists():
@@ -47,32 +52,38 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
         if not changed_files:
             return GateResult(passed=True)
 
-        # 2. Pillar #8: Auto-Fix (Mechanical Quality)
-        subprocess.run(["ruff", "format", *changed_files], cwd=worktree_path, capture_output=True)
-        subprocess.run(
-            ["ruff", "check", "--fix", *changed_files], cwd=worktree_path, capture_output=True
-        )
-
-        # 3. Final Lint Check
+        # 2. Lint gate (no --fix)
         res_ruff = subprocess.run(
-            ["ruff", "check", *changed_files], cwd=worktree_path, capture_output=True, text=True
+            ["ruff", "check", *changed_files],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
         )
         if res_ruff.returncode != 0:
-            return GateResult(
-                passed=False, error=f"Lint failure after auto-fix:\n{res_ruff.stdout}"
-            )
+            return GateResult(passed=False, error=f"Lint failure:\n{res_ruff.stdout}")
 
-        # 4. Sentrux Gate (Policy)
-        # Use temp file to avoid pipe deadlock (Pillar #9)
+        # 3. Format check (no modification)
+        res_fmt = subprocess.run(
+            ["ruff", "format", "--check", *changed_files],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        if res_fmt.returncode != 0:
+            return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
+
+        # 4. Sentrux gate (policy)
         with tempfile.TemporaryFile(mode="w+") as tmp:
             res_sx = subprocess.run(
-                ["sentrux", "gate", "."], cwd=worktree_path, stdout=tmp, stderr=subprocess.STDOUT
+                ["sentrux", "gate", "."],
+                cwd=worktree_path,
+                stdout=tmp,
+                stderr=subprocess.STDOUT,
             )
             tmp.seek(0)
             sx_output = tmp.read()
 
         if res_sx.returncode != 0:
-            # NO LAZY FIX: If it's degraded, it's rejected.
             return GateResult(passed=False, error=f"Policy violation (Sentrux):\n{sx_output}")
 
         return GateResult(passed=True)

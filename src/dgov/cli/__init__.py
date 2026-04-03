@@ -6,9 +6,7 @@ import asyncio
 import json
 import logging
 import os
-import sys
 from pathlib import Path
-from typing import Any
 
 import click
 
@@ -39,7 +37,6 @@ def _output(data: dict) -> None:
 @click.argument("target", required=False)
 @click.option("--status", is_flag=True, help="Show governor status")
 @click.option("--watch", is_flag=True, help="Start governor daemon/watch mode")
-@click.option("--pane", "-p", help="Target specific pane")
 @click.option("--json", is_flag=True, help="Output as JSON")
 @click.version_option(version=__version__, prog_name="dgov")
 @click.pass_context
@@ -48,7 +45,6 @@ def cli(
     target: str | None,
     status: bool,
     watch: bool,
-    pane: str | None,
     json: bool,
 ) -> None:
     """dgov — unified governor surface.
@@ -58,7 +54,6 @@ def cli(
       dgov                    Show status
       dgov plan.toml          Run a plan
       dgov --watch            Start governor daemon
-      dgov --pane <slug>      Inspect/reconnect to pane
 
     Everything routes through the governor event loop.
     """
@@ -76,27 +71,19 @@ def cli(
         _cmd_watch(project_root)
         return
 
-    if pane:
-        _cmd_pane(pane, project_root)
-        return
-
     if target:
-        # Auto-detect target type
         target_path = Path(target)
         if target_path.suffix == ".toml":
             _cmd_run_plan(target, project_root)
-        elif target_path.is_dir():
-            _cmd_status(project_root, filter_path=target)
         else:
             click.echo(f"Unknown target: {target}", err=True)
             raise click.Exit(code=1)
         return
 
-    # Default: show help
     click.echo(cli.get_help(ctx))
 
 
-def _cmd_status(project_root: str, filter_path: str | None = None) -> None:
+def _cmd_status(project_root: str) -> None:
     """Show governor status — what's running now."""
     from dgov.persistence import all_panes
 
@@ -110,20 +97,19 @@ def _cmd_status(project_root: str, filter_path: str | None = None) -> None:
         _output({"status": "idle", "panes": 0})
         return
 
-    active = [p for p in panes if p.state == "running"]
-    _output({
-        "status": "active" if active else "idle",
-        "panes": len(panes),
-        "active": len(active),
-        "pane_list": [
-            {"slug": p.slug, "task": p.task_slug, "state": p.state}
-            for p in panes[:10]  # Limit output
-        ],
-    })
+    active = [p for p in panes if p.get("state") == "active"]
+    _output(
+        {
+            "status": "active" if active else "idle",
+            "panes": len(panes),
+            "active": len(active),
+            "pane_list": [{"slug": p.get("slug"), "state": p.get("state")} for p in panes[:10]],
+        }
+    )
 
 
 def _cmd_watch(project_root: str) -> None:
-    """Start governor watch mode — TUI or stream events."""
+    """Start governor watch mode — stream events."""
     from dgov.persistence import read_events
 
     click.echo("Governor watch mode (Ctrl-C to exit)")
@@ -131,6 +117,7 @@ def _cmd_watch(project_root: str) -> None:
 
     try:
         import time
+
         last_id = 0
         while True:
             events = read_events(project_root, limit=50)
@@ -141,28 +128,6 @@ def _cmd_watch(project_root: str) -> None:
             time.sleep(1)
     except KeyboardInterrupt:
         click.echo("\nExiting watch mode.")
-
-
-def _cmd_pane(slug: str, project_root: str) -> None:
-    """Inspect or reconnect to a specific pane."""
-    from dgov.persistence import get_pane
-    from dgov.tmux import pane_exists
-
-    pane = get_pane(project_root, slug)
-    if not pane:
-        _output({"error": f"Pane {slug} not found"})
-        raise click.Exit(code=1)
-
-    exists = pane_exists(slug)
-    _output({
-        "slug": pane.slug,
-        "task": pane.task_slug,
-        "state": pane.state,
-        "tmux_exists": exists,
-    })
-
-    if exists and not want_json():
-        click.echo(f"\nAttach: tmux attach -t {slug}")
 
 
 def _cmd_run_plan(plan_file: str, project_root: str) -> None:
@@ -187,12 +152,14 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     succeeded = [s for s, st in results.items() if st == "merged"]
     failed = [s for s, st in results.items() if st == "failed"]
 
-    _output({
-        "status": "complete" if not failed else "failed",
-        "succeeded": len(succeeded),
-        "failed": len(failed),
-        "failed_tasks": failed if failed else None,
-    })
+    _output(
+        {
+            "status": "complete" if not failed else "failed",
+            "succeeded": len(succeeded),
+            "failed": len(failed),
+            "failed_tasks": failed if failed else None,
+        }
+    )
 
     if failed:
         raise click.exceptions.Exit(code=1)

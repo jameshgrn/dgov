@@ -1,62 +1,34 @@
 """Schema definitions for persistence layer.
 
-Contains PaneState enum, SQL table definitions, and core data structures.
+PaneState is imported from types.py (single source of truth).
+Only tables used by the Lacustrine kernel are referenced here.
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, replace
-from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
 from dgov.persistence.sql import (
-    _CREATE_DECISION_JOURNAL_TABLE_SQL,
-    _CREATE_DAG_EVAL_RESULTS_TABLE_SQL,
-    _CREATE_DAG_EVALS_TABLE_SQL,
-    _CREATE_DAG_RUNS_TABLE_SQL,
-    _CREATE_DAG_TASKS_TABLE_SQL,
-    _CREATE_DAG_UNIT_EVAL_LINKS_TABLE_SQL,
     _CREATE_EVENTS_TABLE_SQL,
-    _CREATE_MERGE_QUEUE_TABLE_SQL,
     _CREATE_SLUG_HISTORY_TABLE_SQL,
     _CREATE_TABLE_SQL,
 )
+from dgov.types import PaneState
 
 # -- Constants --
 
 STATE_DIR = ".dgov"
-PROTECTED_FILES = {"CLAUDE.md", "THEORY.md", "ARCH-NOTES.md"}
 _STATE_FILE = "state.db"
-_NOTIFY_DIR = "notify"
+_SCHEMA_VERSION = 4  # Bumped: stripped monitor/tiered columns
 
-CIRCUIT_BREAKER_THRESHOLD = 3
-_SCHEMA_VERSION = 3
-
-# -- Pane State Enum --
-
-
-class PaneState(StrEnum):
-    """Canonical pane states — no others allowed."""
-
-    ACTIVE = "active"
-    DONE = "done"
-    FAILED = "failed"
-    REVIEWED_PASS = "reviewed_pass"
-    REVIEWED_FAIL = "reviewed_fail"
-    MERGED = "merged"
-    TIMED_OUT = "timed_out"
-    SUPERSEDED = "superseded"
-    CLOSED = "closed"
-    ABANDONED = "abandoned"
-
-
-# Backward-compat set for membership checks and SQLite validation
+# Re-export PaneState from types.py (single source of truth)
 PANE_STATES = frozenset(PaneState)
 
 # Transition table: enforced in update_pane_state
-# Review is mandatory before merge — no direct done→merged or active→merged.
+# Review is mandatory before merge — no direct done->merged or active->merged.
 VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
     PaneState.ACTIVE: frozenset(
         {
@@ -65,7 +37,6 @@ VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
             PaneState.ABANDONED,
             PaneState.TIMED_OUT,
             PaneState.CLOSED,
-            PaneState.SUPERSEDED,
         }
     ),
     PaneState.DONE: frozenset(
@@ -73,23 +44,16 @@ VALID_TRANSITIONS: dict[PaneState, frozenset[PaneState]] = {
             PaneState.REVIEWED_PASS,
             PaneState.REVIEWED_FAIL,
             PaneState.CLOSED,
-            PaneState.SUPERSEDED,
         }
     ),
-    PaneState.FAILED: frozenset({PaneState.CLOSED, PaneState.SUPERSEDED}),
+    PaneState.FAILED: frozenset({PaneState.CLOSED}),
     PaneState.REVIEWED_PASS: frozenset({PaneState.MERGED, PaneState.FAILED, PaneState.CLOSED}),
-    PaneState.REVIEWED_FAIL: frozenset({PaneState.CLOSED, PaneState.SUPERSEDED}),
+    PaneState.REVIEWED_FAIL: frozenset({PaneState.CLOSED}),
     PaneState.MERGED: frozenset({PaneState.CLOSED}),
-    PaneState.TIMED_OUT: frozenset(
-        {
-            PaneState.DONE,
-            PaneState.CLOSED,
-            PaneState.SUPERSEDED,
-        }
-    ),
+    PaneState.TIMED_OUT: frozenset({PaneState.CLOSED}),
     PaneState.SUPERSEDED: frozenset({PaneState.CLOSED}),
     PaneState.CLOSED: frozenset(),
-    PaneState.ABANDONED: frozenset({PaneState.CLOSED, PaneState.SUPERSEDED}),
+    PaneState.ABANDONED: frozenset({PaneState.CLOSED}),
 }
 
 _COMPLETION_TARGET_STATES = frozenset(
@@ -116,7 +80,7 @@ class CompletionTransitionResult:
     state: PaneState = PaneState.ACTIVE
 
 
-# -- Provenance Union (replaces mutually-exclusive optional fields) --
+# -- Provenance --
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,24 +99,7 @@ class ProvenanceRetry:
     kind: Literal["retry"] = "retry"
 
 
-@dataclass(frozen=True, slots=True)
-class ProvenanceSuperseded:
-    """Pane that was superseded by another (replaced without merge)."""
-
-    by_slug: str
-    kind: Literal["superseded"] = "superseded"
-
-
-@dataclass(frozen=True, slots=True)
-class ProvenanceTiered:
-    """Pane spawned as part of tiered dispatch (tier-based routing)."""
-
-    tier_id: str
-    parent_slug: str  # The pane that spawned this tier child
-    kind: Literal["tiered"] = "tiered"
-
-
-PaneProvenance = ProvenanceOriginal | ProvenanceRetry | ProvenanceSuperseded | ProvenanceTiered
+PaneProvenance = ProvenanceOriginal | ProvenanceRetry
 
 
 # -- WorkerPane Dataclass --
@@ -172,8 +119,6 @@ class WorkerPane:
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
     base_sha: str | None = None
-    # Provenance: discriminated union encoding lifecycle origin
-    # Replaces mutually-exclusive: parent_slug, tier_id, retried_from, superseded_by
     provenance: PaneProvenance = field(default_factory=ProvenanceOriginal)
     role: str = "worker"
     state: PaneState = PaneState.ACTIVE
@@ -191,17 +136,6 @@ class WorkerPane:
             raise ValueError("prompt must be non-empty")
 
 
-# Mutation helper for frozen dataclasses:
-# from dataclasses import replace; new_pane = replace(pane, state=PaneState.DONE)
-
-
-def _validate_state(state: str) -> str:
-    """Validate and return a canonical pane state. Raises ValueError for unknown states."""
-    if state not in PANE_STATES:
-        raise ValueError(f"Unknown pane state: {state!r}. Valid: {sorted(PANE_STATES)}")
-    return state
-
-
 _PANE_COLUMNS = frozenset(
     {
         "slug",
@@ -214,7 +148,7 @@ _PANE_COLUMNS = frozenset(
         "created_at",
         "owns_worktree",
         "base_sha",
-        "provenance",  # Discriminated union: original | retry | superseded | tiered
+        "provenance",
         "role",
         "state",
     }
@@ -224,14 +158,6 @@ _PANE_TYPED_COLS = frozenset(
     {
         "file_claims",
         "commit_message",
-        "circuit_breaker",
-        "retry_count",
-        "max_retries",
-        "monitor_reason",
-        "last_checkpoint",
-        "last_hook_match",
-        "preserve_reason",
-        "preserve_recoverable",
     }
 )
 
@@ -243,77 +169,27 @@ def state_path(session_root: str) -> Path:
     return Path(session_root) / STATE_DIR / _STATE_FILE
 
 
-def notify_dir_path(session_root: str) -> Path:
-    """Return the path to the notification directory."""
-    return Path(session_root) / STATE_DIR / _NOTIFY_DIR
-
-
 # -- Event Constants --
 
+# Only events emitted by the Lacustrine kernel + runner
 VALID_EVENTS = frozenset(
     {
-        "dispatch_queued",
+        # Runner lifecycle
         "pane_created",
         "pane_done",
         "pane_failed",
-        "pane_resumed",
-        "pane_timed_out",
-        "pane_merged",
-        "pane_merge_failed",
-        "pane_escalated",
-        "pane_superseded",
         "pane_closed",
-        "pane_retry_spawned",
-        "pane_auto_retried",
-        "pane_blocked",
-        "pane_auto_responded",
-        "pane_review_pending",
-        "checkpoint_created",
-        "pane_reviewed_pass",
-        "pane_reviewed_fail",
-        "review_pass",
-        "review_fail",
-        "review_fix_started",
-        "review_fix_finding",
-        "review_fix_completed",
-        "mission_pending",
-        "mission_running",
-        "mission_waiting",
-        "mission_reviewing",
-        "mission_merging",
-        "mission_completed",
-        "mission_failed",
-        "dag_started",
-        "dag_resumed",
-        "dag_blocked",
-        "dag_cancelled",
-        "dag_tier_started",
+        # DAG lifecycle
         "dag_task_dispatched",
-        "dag_task_completed",
-        "dag_task_failed",
-        "dag_task_escalated",
-        "dag_tier_completed",
         "dag_completed",
         "dag_failed",
-        "merge_enqueued",
+        # Review
+        "review_pass",
+        "review_fail",
+        # Merge
         "merge_completed",
-        "yap_received",
-        "pane_circuit_breaker",
-        "monitor_nudge",
-        "monitor_auto_complete",
-        "monitor_idle_timeout",
-        "monitor_blocked",
-        "monitor_auto_merge",
-        "monitor_auto_retry",
-        "monitor_alive",
-        "monitor_agent_degraded",
-        "monitor_tick",
-        "claim_violation",
-        "quality_retry",
-        "quality_escalate",
-        "worker_contradiction",
-        "worker_heartbeat",
-        "pane_pruned",
+        "pane_merge_failed",
+        # Worker subprocess
         "worker_log",
         "worker_done",
         "worker_error",
@@ -336,10 +212,7 @@ _EVENT_TYPED_COLS = frozenset(
 
 __all__ = [
     "STATE_DIR",
-    "PROTECTED_FILES",
     "_STATE_FILE",
-    "_NOTIFY_DIR",
-    "CIRCUIT_BREAKER_THRESHOLD",
     "_SCHEMA_VERSION",
     "PaneState",
     "PANE_STATES",
@@ -347,21 +220,13 @@ __all__ = [
     "IllegalTransitionError",
     "CompletionTransitionResult",
     "WorkerPane",
-    "replace",  # Re-exported: use replace(pane, state=...) for mutations
+    "replace",
     "_PANE_COLUMNS",
     "_PANE_TYPED_COLS",
     "_CREATE_TABLE_SQL",
     "_CREATE_EVENTS_TABLE_SQL",
-    "_CREATE_DAG_RUNS_TABLE_SQL",
-    "_CREATE_DAG_TASKS_TABLE_SQL",
-    "_CREATE_DAG_EVALS_TABLE_SQL",
-    "_CREATE_DAG_UNIT_EVAL_LINKS_TABLE_SQL",
-    "_CREATE_DAG_EVAL_RESULTS_TABLE_SQL",
-    "_CREATE_MERGE_QUEUE_TABLE_SQL",
-    "_CREATE_DECISION_JOURNAL_TABLE_SQL",
     "_CREATE_SLUG_HISTORY_TABLE_SQL",
     "state_path",
-    "notify_dir_path",
     "VALID_EVENTS",
     "_EVENT_TYPED_COLS",
     "_COMPLETION_TARGET_STATES",

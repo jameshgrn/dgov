@@ -11,7 +11,7 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from dgov.persistence import emit_event
 
@@ -20,6 +20,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Absolute path to worker.py — resolved at import time, not runtime.
+_WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "worker.py"
+
 
 async def run_headless_worker(
     project_root: str,
@@ -27,16 +30,12 @@ async def run_headless_worker(
     pane_slug: str,
     worktree_path: Path,
     task: DagTaskSpec,
-    pipe_path: Path,
-    loop: asyncio.AbstractEventLoop,
-    on_exit: callable,
+    on_exit: Callable[[str, str, int], None],
 ) -> None:
     """Execute the headless worker lifecycle."""
-
-    # Pillar #10: Use current executable to bypass 'uv run' overhead
     cmd = [
         sys.executable,
-        "src/dgov/worker.py",
+        str(_WORKER_SCRIPT),
         "--goal",
         task.prompt,
         "--worktree",
@@ -53,7 +52,6 @@ async def run_headless_worker(
             cwd=project_root,
         )
 
-        # Pillar #6: Async event stream processing
         while True:
             line_bytes = await process.stdout.readline()
             if not line_bytes:
@@ -63,7 +61,6 @@ async def run_headless_worker(
                 data = json.loads(line)
                 if "worker_event" in data:
                     ev = data["worker_event"]
-                    # Map worker events to journal (Pillar #6 condensation)
                     emit_event(
                         project_root,
                         "worker_log",
@@ -77,8 +74,6 @@ async def run_headless_worker(
                     logger.debug("Worker [%s] raw: %s", task_slug, line)
 
         exit_code = await process.wait()
-
-        # Pillar #10: Unify signaling via the provided callback
         on_exit(task_slug, pane_slug, exit_code)
 
     except Exception as exc:

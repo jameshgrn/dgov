@@ -75,7 +75,7 @@ class EventDagRunner:
             # 1. Process Actions from Kernel
             if actions:
                 dispatch_coros = []
-                next_immediate_actions = []
+                next_immediate_actions: list[DagAction] = []
 
                 for action in actions:
                     if isinstance(action, DispatchTask):
@@ -83,12 +83,7 @@ class EventDagRunner:
                     elif isinstance(action, MergeTask):
                         dispatch_coros.append(self._merge(action))
                     elif isinstance(action, InterruptGovernor):
-                        logger.info("Governor interrupt: %s (auto-retry)", action.reason)
-                        next_immediate_actions.extend(
-                            self.kernel.handle(
-                                TaskGovernorResumed(action.task_slug, GovernorAction.RETRY)
-                            )
-                        )
+                        next_immediate_actions.extend(self._handle_interrupt(action))
                     elif isinstance(action, DagDone):
                         return {
                             slug: state.value for slug, state in self.kernel.task_states.items()
@@ -96,7 +91,6 @@ class EventDagRunner:
 
                 if dispatch_coros:
                     results = await asyncio.gather(*dispatch_coros)
-                    # Accumulate any immediate actions (like follow-up merges)
                     for r in results:
                         if isinstance(r, list):
                             next_immediate_actions.extend(r)
@@ -119,7 +113,6 @@ class EventDagRunner:
                 self._pending_dispatches.discard(exit_event.task_slug)
                 status = PaneState.DONE if exit_event.exit_code == 0 else PaneState.FAILED
 
-                # Update kernel and get next actions
                 actions = self.kernel.handle(
                     TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
                 )
@@ -139,7 +132,6 @@ class EventDagRunner:
                         )
                     )
                     actions.extend(new_actions)
-
                     emit_event(
                         self.session_root,
                         "review_pass",
@@ -148,7 +140,6 @@ class EventDagRunner:
                         verdict="auto-pass",
                     )
 
-                # Re-loop to process immediate follow-ups (like MergeTasks)
                 continue
 
             except asyncio.TimeoutError:
@@ -158,6 +149,24 @@ class EventDagRunner:
 
         return {slug: state.value for slug, state in self.kernel.task_states.items()}
 
+    def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
+        """Decide retry vs fail based on attempt count."""
+        attempts = self.kernel.attempts.get(action.task_slug, 0)
+        if attempts < self.kernel.max_retries:
+            logger.info(
+                "Governor interrupt: %s — retry %d/%d",
+                action.reason,
+                attempts + 1,
+                self.kernel.max_retries,
+            )
+            return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.RETRY))
+        logger.warning(
+            "Governor interrupt: %s — max retries (%d) exceeded, failing",
+            action.reason,
+            self.kernel.max_retries,
+        )
+        return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.FAIL))
+
     async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         task = self.dag.tasks[action.task_slug]
@@ -166,8 +175,10 @@ class EventDagRunner:
 
         import uuid
 
+        loop = asyncio.get_running_loop()
+
         # Pillar #3: Snapshot Isolation
-        wt = await asyncio.get_event_loop().run_in_executor(
+        wt = await loop.run_in_executor(
             self._executor, create_worktree, self.session_root, action.task_slug
         )
         self._worktrees[action.task_slug] = wt
@@ -193,7 +204,7 @@ class EventDagRunner:
                 exit_code=exit_code,
                 output_dir=str(output_dir),
             )
-            asyncio.get_event_loop().call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
+            loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
         asyncio.create_task(
             run_headless_worker(
@@ -202,8 +213,6 @@ class EventDagRunner:
                 pane_slug,
                 wt.path,
                 task,
-                Path("dummy"),
-                asyncio.get_event_loop(),
                 _on_worker_exit,
             )
         )
@@ -215,17 +224,16 @@ class EventDagRunner:
         if not wt:
             return self.kernel.handle(TaskMergeDone(action.task_slug))
 
+        loop = asyncio.get_running_loop()
         error = None
         try:
             # 1. Commit
             task = self.dag.tasks[action.task_slug]
             msg = task.commit_message or f"feat: completed {action.task_slug}"
-            await asyncio.get_event_loop().run_in_executor(
-                self._executor, commit_in_worktree, wt, msg
-            )
+            await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg)
 
-            # 2. Validate
-            gate_result = await asyncio.get_event_loop().run_in_executor(
+            # 2. Validate (pure gate — no auto-fix)
+            gate_result = await loop.run_in_executor(
                 self._executor, validate_sandbox, wt.path, wt.commit, self.session_root
             )
 
@@ -234,19 +242,20 @@ class EventDagRunner:
                 logger.warning("REJECTED %s: %s", action.task_slug, error)
             else:
                 # 3. Merge
-                await asyncio.get_event_loop().run_in_executor(
-                    self._executor, merge_worktree, self.session_root, wt
-                )
+                await loop.run_in_executor(self._executor, merge_worktree, self.session_root, wt)
                 logger.info("COMMITTED %s", action.task_slug)
-
-            # 4. Cleanup
-            await asyncio.get_event_loop().run_in_executor(
-                self._executor, remove_worktree, self.session_root, wt
-            )
 
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
             error = str(exc)
+
+        # 4. Cleanup worktree regardless of outcome
+        try:
+            await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+        except Exception as exc:
+            logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
+
+        self._worktrees.pop(action.task_slug, None)
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
