@@ -15,3 +15,4 @@
 2026-04-04T02:01:24Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Worktree split: Worktree type moved to types.py
 2026-04-04T02:01:35Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Quality now 6835 after Worktree split (+36)
 2026-04-04T02:10:51Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Split persistence/tasks.py - helpers extracted
+2026-04-04T02:27:28Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Fixed sentrux_lite to analyze subdirectories - imports now resolving correctly

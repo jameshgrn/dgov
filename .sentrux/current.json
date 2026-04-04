@@ -1,8 +1,8 @@
 {
   "cycle_count": 0,
   "cycles": [],
-  "max_depth": 3,
-  "deepest_module": "dgov.runner",
+  "max_depth": 4,
+  "deepest_module": "dgov.persistence.tasks",
   "god_file_count": 0,
   "god_files": [],
   "high_fan_out": []
