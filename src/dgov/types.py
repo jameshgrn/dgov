@@ -78,6 +78,17 @@ class WorkerExit:
     output_dir: str
 
 
+# -- Worktree type --
+
+
+class Worktree(NamedTuple):
+    """Represents a git worktree sandbox."""
+
+    path: Path
+    branch: str
+    commit: str
+
+
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI sequences
     r"|\x1b\].*?(?:\x07|\x1b\\)"  # OSC sequences

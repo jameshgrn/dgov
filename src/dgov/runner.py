@@ -37,10 +37,9 @@ from dgov.settlement import (
     review_sandbox,
     validate_sandbox,
 )
-from dgov.types import WorkerExit
+from dgov.types import WorkerExit, Worktree
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
-    Worktree,
     commit_in_worktree,
     create_worktree,
     merge_worktree,

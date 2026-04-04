@@ -12,7 +12,8 @@ import logging
 import os
 import subprocess
 from pathlib import Path
-from typing import NamedTuple
+
+from dgov.types import Worktree
 
 logger = logging.getLogger(__name__)
 
@@ -31,14 +32,6 @@ def _git_env(cwd: str | Path | None = None) -> dict[str, str]:
     if cwd:
         env["PWD"] = str(cwd)
     return env
-
-
-class Worktree(NamedTuple):
-    """Represents a git worktree sandbox."""
-
-    path: Path
-    branch: str
-    commit: str
 
 
 def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
