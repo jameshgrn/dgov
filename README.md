@@ -1,92 +1,74 @@
 # dgov
 
-Distributed governance for AI coding agents. Orchestrates any CLI agent across git worktrees with tmux.
+Deterministic kernel for multi-agent orchestration via git worktrees.
 
 ## Install
 
 ```bash
-uv tool install dgov
+uv pip install -e .
 ```
 
-Requires: Python 3.12+, git, tmux.
+Requires Python 3.12+, git.
 
 ## How it works
 
-dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch, tmux pane, and agent CLI. A governor (usually Claude or pi) dispatches, reviews, and merges work.
+dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch and subprocess. Plans are defined in TOML, compiled to DAGs, and executed through a pure kernel with event-sourced state.
 
-State is stored in `.dgov/state.db` (SQLite WAL). Events are logged to `.dgov/events.jsonl`.
+State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolated via OpenAI-compatible APIs (Fireworks, Kimi).
 
-## Commands
+## Usage
 
-### Core
+```bash
+dgov run plan.toml       # Execute a plan
+dgov --status            # Show task status
+dgov --watch             # Stream events
+dgov sentrux check       # Run architectural quality check
+dgov sentrux gate-save   # Save quality baseline
+dgov sentrux gate        # Compare against baseline
+```
 
-| Command | Description |
-|---------|-------------|
-| `dgov status` | Show session state, pane health, tunnel and Kerberos status |
-| `dgov agents` | List all registered agents and install status |
-| `dgov dashboard` | Live TUI showing pane status, events, and metrics |
+## Plan format
 
-### Pane lifecycle
+Plans are TOML files that compile to DAGs:
 
-| Command | Description |
-|---------|-------------|
-| `dgov pane create` | Create a new worker pane (worktree + tmux + agent) |
-| `dgov pane list` | List all panes |
-| `dgov pane wait` | Block until a pane finishes |
-| `dgov pane review` | Inspect a pane's diff and verdict |
-| `dgov pane merge` | Merge a pane's branch into main |
-| `dgov pane close` | Close a pane and clean up worktree |
-| `dgov pane resume` | Reattach to a running pane's tmux session |
-| `dgov pane preflight` | Run pre-dispatch checks |
-| `dgov pane edit` | Edit a pane's prompt while running |
-| `dgov pane top` | Launch btop in a utility pane |
-| `dgov pane k9s` | Launch k9s in a utility pane |
+```toml
+[plan]
+name = "example"
 
-### Automation
+[[unit]]
+slug = "add-feature"
+prompt = "Add the feature to src/foo.py"
+agent = "kimi-k2.5"
+files = ["src/foo.py"]
 
-| Command | Description |
-|---------|-------------|
-| `dgov batch <spec>` | Execute a batch spec with DAG-ordered parallelism |
-| `dgov experiment` | Run iterative experiments with accept/reject loop |
-| `dgov review-fix` | Review-then-fix pipeline with severity filtering |
+[[unit]]
+slug = "add-tests"
+prompt = "Write tests for the feature"
+agent = "kimi-k2.5"
+files = ["tests/test_foo.py"]
+depends_on = ["add-feature"]
+```
 
-### Tools
+## Architecture
 
-| Command | Description |
-|---------|-------------|
-| `dgov blame <file>` | Show which agent/pane last touched a file (`--line-level` for per-line) |
-| `dgov openrouter models` | List available free models on OpenRouter |
-| `dgov openrouter status` | Show API key status, default model, connectivity |
-| `dgov openrouter test` | Send a test prompt via OpenRouter |
-| `dgov template list` | List all prompt templates (built-in + user) |
-| `dgov template create` | Create a new template in `.dgov/templates/` |
-| `dgov template show` | Show template details and required variables |
-| `dgov checkpoint create` | Create a named checkpoint of current state |
-| `dgov checkpoint list` | List all checkpoints |
+| Module | Role |
+|--------|------|
+| `kernel.py` | Pure `(state, event) → (new_state, actions)` — no I/O |
+| `runner.py` | Async DAG executor feeding the kernel |
+| `worker.py` | Standalone OpenAI-client subprocess |
+| `settlement.py` | ruff auto-fix + lint gate + sentrux policy gate |
+| `worktree.py` | Git worktree create/merge/remove |
+| `plan.py` | TOML plan parsing, DAG compilation |
+| `persistence/` | SQLite event store (panes + events + slug history) |
 
-## Built-in agents
+## Development
 
-| Agent | CLI | Install check |
-|-------|-----|---------------|
-| `claude` | Claude Code | `claude` |
-| `codex` | Codex | `codex` |
-| `gemini` | Gemini CLI | `gemini` |
-| `cursor` | Cursor CLI | `cursor` |
-| `opencode` | OpenCode | `opencode` |
-| `cline` | Cline CLI | `cline` |
-| `amp` | Amp CLI | `amp` |
-| `copilot` | Copilot CLI | `copilot` |
-| `crush` | Crush CLI | `crush` |
-
-User-defined agents can be added to `.dgov/agents.json`.
-
-## Configuration
-
-- `.dgov/agents.json` — custom agent definitions
-- `.dgov/templates/` — prompt templates
-- `.dgov/batch/` — batch spec files
-- `.dgov/state.db` — SQLite state (auto-created)
-- `.dgov/events.jsonl` — event log
+```bash
+uv pip install -e .
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+uv run pytest tests/ -q
+```
 
 ## License
 
