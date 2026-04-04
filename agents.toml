@@ -1,9 +1,0 @@
-# dgov routing contract — simplified worker-only configuration
-# Routes only the 'worker' logical role to the kimi-k25 pool
-
-[groups]
-worker = { max_concurrent = 5, timeout = 600, retry_policy = { max_attempts = 2, backoff = "exponential", jitter = true } }
-
-[routing.worker]
-backends = ["kimi-k25-0", "kimi-k25-1", "kimi-k25-2", "kimi-k25-3", "kimi-k25-4"]
-group = "worker"

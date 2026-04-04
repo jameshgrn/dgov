@@ -1,1 +1,0 @@
-{"task": "r141-persistence", "status": "complete", "commit": "422536a", "files_changed": ["src/dgov/persistence.py"], "notes": "Fixed PaneState type hints in two dataclasses: CompletionTransitionResult and WorkerPane"}

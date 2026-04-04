@@ -1,6 +1,9 @@
-.dgov/worktrees/
+.dgov/
+.venv/
 __pycache__/
-config.toml
-HANDOVER.md
+*.pyc
 *.db-shm
 *.db-wal
+config.toml
+HANDOVER.md
+.napkin.md
