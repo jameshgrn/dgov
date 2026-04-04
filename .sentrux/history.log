@@ -10,3 +10,5 @@
 2026-04-04T01:12:49Z | PASS | Q:6799 C:0.23 CY:0 G:0 | commit: modernize typing across actions, dag_parser
 2026-04-04T01:13:17Z | PASS | Q:6799 C:0.23 CY:0 G:0 | final check
 2026-04-04T01:48:50Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Quality at 6812 - exceeds target
+2026-04-04T01:58:43Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Runner split: WorkerExit moved to types.py
+2026-04-04T01:58:57Z | PASS | Q:6799 C:0.23 CY:0 G:0 | Runner refactor complete - Quality now 6824

@@ -64,6 +64,20 @@ class WorkerObservation:
 PaneState = TaskState
 PaneInfo = TaskInfo
 
+
+# -- Runner events --
+
+
+@dataclass(frozen=True)
+class WorkerExit:
+    """Worker exit event — source of truth for completion."""
+
+    task_slug: str
+    pane_slug: str
+    exit_code: int
+    output_dir: str
+
+
 _ANSI_RE = re.compile(
     r"\x1b\[[0-9;?]*[a-zA-Z]"  # CSI sequences
     r"|\x1b\].*?(?:\x07|\x1b\\)"  # OSC sequences

@@ -12,7 +12,6 @@ import asyncio
 import logging
 import signal
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.actions import (
@@ -38,6 +37,7 @@ from dgov.settlement import (
     review_sandbox,
     validate_sandbox,
 )
+from dgov.types import WorkerExit
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
     Worktree,
@@ -48,16 +48,6 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class WorkerExit:
-    """Worker exit event — source of truth for completion."""
-
-    task_slug: str
-    pane_slug: str
-    exit_code: int
-    output_dir: str
 
 
 class EventDagRunner:
