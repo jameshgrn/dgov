@@ -76,7 +76,7 @@ class TaskDispatchFailed:
 class TaskWaitDone:
     task_slug: str
     pane_slug: str
-    pane_state: str  # PaneState value
+    task_state: str
 
 
 @dataclass(frozen=True)

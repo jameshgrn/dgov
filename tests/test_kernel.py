@@ -28,7 +28,7 @@ from dgov.kernel import (
     DagTaskState,
     _topological_sort,
 )
-from dgov.types import PaneState
+from dgov.types import TaskState
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -44,7 +44,7 @@ def _happy(kernel: DagKernel, slug: str, pane: str = "p") -> list:
     """Drive a single task through dispatch -> done -> review pass -> merge ok."""
     a = []
     a.extend(kernel.handle(TaskDispatched(slug, pane)))
-    a.extend(kernel.handle(TaskWaitDone(slug, pane, PaneState.DONE)))
+    a.extend(kernel.handle(TaskWaitDone(slug, pane, TaskState.DONE)))
     a.extend(kernel.handle(TaskReviewDone(slug, passed=True, verdict="ok", commit_count=1)))
     a.extend(kernel.handle(TaskMergeDone(slug)))
     return a
@@ -145,7 +145,7 @@ class TestSingleHappy:
         assert k.task_states["a"] == DagTaskState.WAITING
         assert any(isinstance(a, WaitForAny) for a in actions)
 
-        actions = k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        actions = k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         assert k.task_states["a"] == DagTaskState.REVIEWING
         assert any(isinstance(a, ReviewTask) for a in actions)
 
@@ -208,8 +208,8 @@ class TestParallel:
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskDispatched("b", "p-b"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
@@ -223,8 +223,8 @@ class TestParallel:
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskDispatched("b", "p-b"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
@@ -245,14 +245,14 @@ class TestFailure:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        actions = k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        actions = k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         assert any(isinstance(a, InterruptGovernor) for a in actions)
 
     def test_review_fail(self):
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
         assert k.task_states["a"] == DagTaskState.FAILED
 
@@ -260,7 +260,7 @@ class TestFailure:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskMergeDone("a", error="conflict"))
         assert k.task_states["a"] == DagTaskState.FAILED
@@ -269,7 +269,7 @@ class TestFailure:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
         assert k.status == DagState.FAILED
 
@@ -278,7 +278,7 @@ class TestFailure:
         k.start()
         _happy(k, "a", "p-a")
         k.handle(TaskDispatched("b", "p-b"))
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("b", passed=False, verdict="bad", commit_count=0))
         assert k.status == DagState.PARTIAL
 
@@ -298,8 +298,8 @@ class TestMergeScanSkipsFailures:
         # Both dispatch and complete
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskDispatched("b", "p-b"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
 
         # a fails review (first in topo order)
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
@@ -317,8 +317,8 @@ class TestMergeScanSkipsFailures:
 
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskDispatched("b", "p-b"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         # a starts merging (first in order)
         assert k.task_states["a"] == DagTaskState.MERGING
@@ -339,14 +339,14 @@ class TestMergeScanSkipsFailures:
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskDispatched("b", "p-b"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
 
         # Governor skips a
         k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
         assert k.task_states["a"] == DagTaskState.SKIPPED
 
         # b completes and should merge without being blocked
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
         assert k.task_states["b"] == DagTaskState.MERGING
 
@@ -358,7 +358,7 @@ class TestMergeScanSkipsFailures:
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskDispatched("b", "p-b"))
         # a still WAITING, b completes
-        k.handle(TaskWaitDone("b", "p-b", PaneState.DONE))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         actions = k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
         # b is MERGE_READY but a is WAITING (non-terminal), so b can't merge yet
@@ -376,7 +376,7 @@ class TestGovernorResume:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
         assert k.task_states["a"] == DagTaskState.PENDING
         assert k.attempts["a"] == 1
@@ -386,7 +386,7 @@ class TestGovernorResume:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         k.handle(TaskGovernorResumed("a", GovernorAction.FAIL))
         assert k.task_states["a"] == DagTaskState.FAILED
         assert k.done
@@ -395,7 +395,7 @@ class TestGovernorResume:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
         assert k.task_states["a"] == DagTaskState.SKIPPED
         assert k.done
@@ -404,7 +404,7 @@ class TestGovernorResume:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
         dones = [a for a in actions if isinstance(a, DagDone)]
         assert len(dones) == 1
@@ -415,7 +415,7 @@ class TestGovernorResume:
         k.start()
         for i in range(3):
             k.handle(TaskDispatched("a", f"p-{i}"))
-            k.handle(TaskWaitDone("a", f"p-{i}", PaneState.FAILED))
+            k.handle(TaskWaitDone("a", f"p-{i}", TaskState.FAILED))
             k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
             assert k.attempts["a"] == i + 1
 
@@ -434,7 +434,7 @@ class TestGovernorResume:
         k = _k({"a": ()})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         assert k.task_states["a"] == DagTaskState.REVIEWING
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
         assert actions == []
@@ -445,7 +445,7 @@ class TestGovernorResume:
         k = _k({"a": (), "b": ("a",)})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.FAILED))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
         # b depends on a. a is SKIPPED, not MERGED. b should NOT dispatch.
         assert not any(isinstance(a, DispatchTask) and a.task_slug == "b" for a in actions)
@@ -472,7 +472,7 @@ class TestDeps:
         k = _k({"a": (), "b": ("a",)})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
-        k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
         assert not any(isinstance(a, DispatchTask) for a in k._schedule())
 
@@ -505,7 +505,7 @@ class TestGuardRails:
     def test_wait_done_wrong_state_ignored(self):
         k = _k({"a": ()})
         k.start()
-        actions = k.handle(TaskWaitDone("a", "p-a", PaneState.DONE))
+        actions = k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         assert actions == []
 
     def test_review_wrong_state_ignored(self):

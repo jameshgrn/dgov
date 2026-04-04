@@ -1,7 +1,6 @@
 """Persistence layer for dgov.
 
 State file management for task records and event log via SQLite.
-SQL tables retain 'pane' names for backwards compatibility.
 """
 
 from __future__ import annotations
@@ -16,11 +15,6 @@ from dgov.persistence.events import (
     read_events,
     wait_for_events,
 )
-from dgov.persistence.panes import (
-    get_slug_history,
-    remove_pane,
-    settle_completion_state,
-)
 from dgov.persistence.schema import (
     TaskState,
     WorkerTask,
@@ -29,10 +23,13 @@ from dgov.persistence.schema import (
 from dgov.persistence.tasks import (
     add_task,
     all_tasks,
+    get_slug_history,
     get_task,
     get_tasks,
+    remove_task,
     replace_all_tasks,
     set_task_metadata,
+    settle_completion_state,
     update_task_state,
 )
 
@@ -55,7 +52,7 @@ __all__ = [
     "get_slug_history",
     "latest_event_id",
     "read_events",
-    "remove_pane",
+    "remove_task",
     "settle_completion_state",
     "state_path",
     "wait_for_events",

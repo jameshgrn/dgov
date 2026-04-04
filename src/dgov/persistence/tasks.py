@@ -1,7 +1,6 @@
 """Task state operations.
 
 CRUD operations for task records and state transitions.
-SQL tables retain 'pane' names for backwards compatibility.
 """
 
 from __future__ import annotations

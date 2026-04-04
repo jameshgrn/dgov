@@ -139,12 +139,12 @@ class DagKernel:
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != DagTaskState.WAITING:
             return []
-        if event.pane_state == TaskState.DONE:
+        if event.task_state == TaskState.DONE:
             self.task_states[event.task_slug] = DagTaskState.REVIEWING
             return [ReviewTask(event.task_slug, event.pane_slug)]
         # Fail-closed: any non-DONE state triggers governor interrupt
         pane = self.pane_slugs.get(event.task_slug, "")
-        return [InterruptGovernor(event.task_slug, pane, reason=str(event.pane_state))]
+        return [InterruptGovernor(event.task_slug, pane, reason=str(event.task_state))]
 
     def _on_review_done(self, event: TaskReviewDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != DagTaskState.REVIEWING:

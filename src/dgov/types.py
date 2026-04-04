@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import NamedTuple
 
 
@@ -58,11 +59,6 @@ class WorkerObservation:
     last_output: str = ""
     progress: dict | None = None
     exit_code: int | None = None
-
-
-# Backwards compatibility aliases (deprecated, use TaskState/TaskInfo)
-PaneState = TaskState
-PaneInfo = TaskInfo
 
 
 # -- Runner events --
@@ -197,9 +193,3 @@ _NOISE_RE = [
 def is_noise_line(line: str) -> bool:
     """Return True if line is TUI chrome or noise."""
     return any(pat.search(line) for pat in _NOISE_RE)
-
-
-# -- Backwards compatibility aliases --
-
-PaneState = TaskState
-PaneInfo = TaskInfo

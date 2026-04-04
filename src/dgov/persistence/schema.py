@@ -1,7 +1,6 @@
 """Schema definitions for persistence layer.
 
 TaskState is imported from types.py (single source of truth).
-SQL tables retain 'pane' names for backwards compatibility.
 """
 
 from __future__ import annotations
@@ -24,12 +23,7 @@ STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
 _SCHEMA_VERSION = 4  # Bumped: stripped monitor/tiered columns
 
-# Re-export PaneState from types.py (single source of truth)
 TASK_STATES = frozenset(TaskState)
-
-# Deprecated aliases
-PANE_STATES = TASK_STATES
-PaneState = TaskState
 
 # Transition table: enforced in update_task_state
 # Review is mandatory before merge — no direct done->merged or active->merged.
@@ -63,9 +57,6 @@ _COMPLETION_TARGET_STATES = frozenset(
     {TaskState.DONE, TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT}
 )
 _SETTLED_TASK_STATES = TASK_STATES - {TaskState.ACTIVE}
-
-# Deprecated aliases
-_SETTLED_PANE_STATES = _SETTLED_TASK_STATES
 
 
 class IllegalTransitionError(ValueError):
@@ -107,9 +98,6 @@ class ProvenanceRetry:
 
 TaskProvenance = ProvenanceOriginal | ProvenanceRetry
 
-# Deprecated alias
-PaneProvenance = TaskProvenance
-
 
 # -- WorkerTask Dataclass --
 
@@ -145,10 +133,6 @@ class WorkerTask:
             raise ValueError("prompt must be non-empty")
 
 
-# Deprecated alias
-WorkerPane = WorkerTask
-
-
 _TASK_COLUMNS = frozenset(
     {
         "slug",
@@ -174,10 +158,6 @@ _TASK_TYPED_COLS = frozenset(
     }
 )
 
-# Deprecated aliases
-_PANE_COLUMNS = _TASK_COLUMNS
-_PANE_TYPED_COLS = _TASK_TYPED_COLS
-
 # -- Path Helpers --
 
 
@@ -196,11 +176,6 @@ VALID_EVENTS = frozenset(
         "task_done",
         "task_failed",
         "task_closed",
-        # Deprecated aliases (deprecated, use task_* events)
-        "pane_created",
-        "pane_done",
-        "pane_failed",
-        "pane_closed",
         # DAG lifecycle
         "dag_task_dispatched",
         "dag_completed",
@@ -211,8 +186,6 @@ VALID_EVENTS = frozenset(
         # Merge
         "merge_completed",
         "task_merge_failed",
-        # Deprecated alias
-        "pane_merge_failed",
         # Worker subprocess
         "worker_log",
         "worker_done",
@@ -238,9 +211,7 @@ __all__ = [
     "STATE_DIR",
     "_STATE_FILE",
     "_SCHEMA_VERSION",
-    # Types imported from types.py (not re-exported here)
-    # "TaskState",
-    # "TASK_STATES",
+    "TASK_STATES",
     "VALID_TRANSITIONS",
     "IllegalTransitionError",
     "CompletionTransitionResult",
@@ -257,12 +228,4 @@ __all__ = [
     "_EVENT_TYPED_COLS",
     "_COMPLETION_TARGET_STATES",
     "_SETTLED_TASK_STATES",
-    # Deprecated aliases
-    "PaneState",
-    "PANE_STATES",
-    "WorkerPane",
-    "PaneProvenance",
-    "_PANE_COLUMNS",
-    "_PANE_TYPED_COLS",
-    "_SETTLED_PANE_STATES",
 ]
