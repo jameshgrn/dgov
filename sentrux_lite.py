@@ -203,8 +203,8 @@ def main():
         "max_depth": max_depth,
         "deepest_module": deepest,
         "god_file_count": len(gods),
-        "god_files": [{"file": n, "lines": l} for n, l in gods],
-        "high_fan_out": [{"file": n, "imports": c} for n, c in fanouts if c > 15],
+        "god_files": [{"file": n, "lines": lines} for n, lines in gods],
+        "high_fan_out": [{"file": n, "imports": count} for n, count in fanouts if count > 15],
     }
     Path(".sentrux").mkdir(exist_ok=True)
     Path(".sentrux/current.json").write_text(json.dumps(report, indent=2))
