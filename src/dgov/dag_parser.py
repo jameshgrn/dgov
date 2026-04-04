@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -19,9 +19,9 @@ from pydantic import (
 
 class DagFileSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
-    create: Tuple[str, ...] = ()
-    edit: Tuple[str, ...] = ()
-    delete: Tuple[str, ...] = ()
+    create: tuple[str, ...] = ()
+    edit: tuple[str, ...] = ()
+    delete: tuple[str, ...] = ()
 
 
 class DagTaskSpec(BaseModel):
@@ -31,22 +31,22 @@ class DagTaskSpec(BaseModel):
     prompt: str
     commit_message: str
     agent: str = "worker"
-    escalation: Tuple[str, ...] = ()
-    depends_on: Tuple[str, ...] = ()
+    escalation: tuple[str, ...] = ()
+    depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
     permission_mode: str = "bypassPermissions"
-    template: Optional[str] = None
-    template_vars: Optional[Dict[str, str]] = None
+    template: str | None = None
+    template_vars: dict[str, str] | None = None
 
     # Acceptance criteria (hardened post-merge truth)
     tests_pass: bool = True
     lint_clean: bool = True
-    post_merge_check: Optional[str] = None
-    review_agent: Optional[str] = None
+    post_merge_check: str | None = None
+    review_agent: str | None = None
     role: str = "worker"
 
-    def all_touches(self) -> Tuple[str, ...]:
+    def all_touches(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys((*self.files.create, *self.files.edit, *self.files.delete)))
 
 
@@ -65,8 +65,8 @@ class DagDefinition(BaseModel):
     project_root: str = "."
     session_root: str = "."
     max_concurrent: int = 0
-    tasks: Dict[str, DagTaskSpec]
-    evals: Tuple[DagEvalSpec, ...] = ()
+    tasks: dict[str, DagTaskSpec]
+    evals: tuple[DagEvalSpec, ...] = ()
 
     # Merge / Policy defaults
     default_max_retries: int = 3
@@ -93,7 +93,7 @@ def parse_dag_file(path: str) -> DagDefinition:
         raise ValueError("Missing [units] or [tasks] section")
 
     # Process tasks to include slug
-    tasks: Dict[str, Any] = {}
+    tasks: dict[str, Any] = {}
     for slug, task_data in tasks_raw.items():
         if isinstance(task_data, dict):
             task_data["slug"] = slug

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Optional, Tuple, Union
 
 # --- Actions (Kernel -> Runner) ---
 
@@ -22,30 +21,30 @@ class DispatchTask:
 class WaitForAny:
     """Wait for any of these tasks' panes to complete."""
 
-    task_slugs: Tuple[str, ...]
+    task_slugs: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class ReviewTask:
     task_slug: str
     pane_slug: str
-    review_agent: Optional[str] = None
+    review_agent: str | None = None
 
 
 @dataclass(frozen=True)
 class MergeTask:
     task_slug: str
     pane_slug: str
-    file_claims: Tuple[str, ...] = ()
+    file_claims: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class DagDone:
     status: str  # DagState value
-    merged: Tuple[str, ...]
-    failed: Tuple[str, ...]
-    skipped: Tuple[str, ...]
-    blocked: Tuple[str, ...]
+    merged: tuple[str, ...]
+    failed: tuple[str, ...]
+    skipped: tuple[str, ...]
+    blocked: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -55,14 +54,7 @@ class InterruptGovernor:
     reason: str
 
 
-DagAction = Union[
-    DispatchTask,
-    WaitForAny,
-    ReviewTask,
-    MergeTask,
-    InterruptGovernor,
-    DagDone,
-]
+DagAction = DispatchTask | WaitForAny | ReviewTask | MergeTask | InterruptGovernor | DagDone
 
 
 # --- Events (Runner -> Kernel) ---
@@ -98,7 +90,7 @@ class TaskReviewDone:
 @dataclass(frozen=True)
 class TaskMergeDone:
     task_slug: str
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class GovernorAction(StrEnum):
@@ -113,11 +105,11 @@ class TaskGovernorResumed:
     action: GovernorAction
 
 
-DagEvent = Union[
-    TaskDispatched,
-    TaskDispatchFailed,
-    TaskWaitDone,
-    TaskReviewDone,
-    TaskMergeDone,
-    TaskGovernorResumed,
-]
+DagEvent = (
+    TaskDispatched
+    | TaskDispatchFailed
+    | TaskWaitDone
+    | TaskReviewDone
+    | TaskMergeDone
+    | TaskGovernorResumed
+)
