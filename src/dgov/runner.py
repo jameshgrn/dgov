@@ -29,7 +29,7 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition
 from dgov.kernel import DagKernel
-from dgov.persistence import emit_event
+from dgov.persistence import emit_event, get_task
 from dgov.settlement import review_sandbox, validate_sandbox
 from dgov.types import TaskState
 from dgov.workers.headless import run_headless_worker
@@ -140,7 +140,11 @@ class EventDagRunner:
                         actions.extend(new_actions)
                         continue
 
-                    review_result = review_sandbox(wt.path)
+                    # Fetch file claims from task record for scope enforcement
+                    task_record = get_task(self.session_root, ra.task_slug)
+                    claimed_files = task_record.get("file_claims") if task_record else None
+
+                    review_result = review_sandbox(wt.path, claimed_files=claimed_files)
 
                     new_actions = self.kernel.handle(
                         TaskReviewDone(
