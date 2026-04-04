@@ -61,7 +61,12 @@ class EventDagRunner:
         self.dag = dag
         self.session_root = session_root
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
-        self.kernel = DagKernel(deps=self.deps)
+        # Build file claims from plan for scope enforcement in review gate
+        self.task_files = {
+            slug: tuple(dict.fromkeys(t.files.create + t.files.edit + t.files.delete))
+            for slug, t in dag.tasks.items()
+        }
+        self.kernel = DagKernel(deps=self.deps, task_files=self.task_files)
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
@@ -209,6 +214,23 @@ class EventDagRunner:
 
         pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
         self._pending_dispatches.add(action.task_slug)
+
+        # Create task record with file claims for scope enforcement
+        from dgov.persistence import add_task
+        from dgov.persistence.schema import TaskState, WorkerTask
+
+        file_claims = tuple(dict.fromkeys(task.files.create + task.files.edit + task.files.delete))
+        task_record = WorkerTask(
+            slug=action.task_slug,
+            prompt=task.prompt,
+            agent=task.agent,
+            project_root=self.session_root,
+            worktree_path=str(wt.path),
+            branch_name=wt.branch,
+            state=TaskState.ACTIVE,
+            file_claims=file_claims,
+        )
+        add_task(self.session_root, task_record)
 
         # Atomic transition to WAITING
         kernel_actions = self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
