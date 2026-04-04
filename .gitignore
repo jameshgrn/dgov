@@ -2,3 +2,5 @@
 __pycache__/
 config.toml
 HANDOVER.md
+*.db-shm
+*.db-wal
