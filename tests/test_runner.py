@@ -92,9 +92,9 @@ _P_VALIDATE = "dgov.runner.validate_sandbox"
 _P_ADD_TASK = "dgov.runner.add_task"
 _P_EMIT_EVENT = "dgov.runner.emit_event"
 _P_HEADLESS = "dgov.runner.run_headless_worker"
-# _run_review does local imports — patch at source
-_P_GET_TASK = "dgov.persistence.tasks.get_task"
-_P_REVIEW = "dgov.settlement.review_sandbox"
+# review_sandbox and get_task now imported at top level in runner
+_P_GET_TASK = "dgov.runner.get_task"
+_P_REVIEW = "dgov.runner.review_sandbox"
 
 
 async def _fake_worker_success(project_root, task_slug, pane_slug, wt_path, task, on_exit):

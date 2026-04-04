@@ -30,10 +30,11 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition
 from dgov.kernel import DagKernel
-from dgov.persistence import add_task, emit_event
+from dgov.persistence import add_task, emit_event, get_task
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.settlement import (
     autofix_sandbox,
+    review_sandbox,
     validate_sandbox,
 )
 from dgov.types import WorkerExit, Worktree
@@ -211,8 +212,6 @@ class EventDagRunner:
 
     def _run_review(self, action: ReviewTask) -> list[DagAction]:
         """Execute fast review gate — git sanity checks (microseconds)."""
-        from dgov.persistence import get_task
-        from dgov.settlement import review_sandbox
 
         wt = self._worktrees.get(action.task_slug)
         if not wt:

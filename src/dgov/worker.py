@@ -15,8 +15,10 @@ Pillar #6: Event-Sourced - Every thought and tool call is emitted as a JSON line
 import argparse
 import json
 import os
+import shutil  # noqa: F401 — used in _cleanup() inside run_worker()
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,8 +45,6 @@ class AtomicTools:
         self._python_bin = Path(sys.executable).parent
         self._python = sys.executable
         # Sandbox HOME outside worktree — prevents macOS Library/ polluting git status
-        import tempfile
-
         self._sandbox_home = Path(tempfile.mkdtemp(prefix="dgov-sandbox-"))
 
     def read_file(self, path: str) -> str:
@@ -143,6 +143,9 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
     client = OpenAI(base_url="https://api.fireworks.ai/inference/v1", api_key=api_key)
     actuators = AtomicTools(worktree)
 
+    def _cleanup() -> None:
+        shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
+
     # Pillar #2: The Atomic Attempt includes rules injection
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
     rules_context = ""
@@ -180,6 +183,7 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
             )
         except Exception as e:
             WorkerEvent("error", f"API Failure: {str(e)}").emit()
+            _cleanup()
             sys.exit(1)
 
         msg = resp.choices[0].message
@@ -191,6 +195,7 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
         if not msg.tool_calls:
             if resp.choices[0].finish_reason == "stop":
                 WorkerEvent("error", "Agent stopped without calling 'done'").emit()
+                _cleanup()
                 sys.exit(1)
             continue
 
@@ -201,6 +206,7 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
 
             if name == "done":
                 WorkerEvent("done", args.get("summary")).emit()
+                _cleanup()
                 sys.exit(0)
 
             # Execute tool
@@ -216,6 +222,7 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
             )
 
     WorkerEvent("error", "Exceeded max iterations (30)").emit()
+    _cleanup()
     sys.exit(1)
 
 
