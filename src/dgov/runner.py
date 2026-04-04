@@ -3,12 +3,14 @@
 Follows Lacustrine Pillars:
 - Pillar #1: Separation of Powers - Runner orchestrates; Worker implements.
 - Pillar #9: Hot-Path - Zero-latency async signaling, no polling or pipes.
+- Pillar #10: Fail-Closed - Graceful shutdown leaves no dangling state.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,9 +73,59 @@ class EventDagRunner:
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
         self._worktrees: dict[str, Worktree] = {}
+        self._shutdown_event = asyncio.Event()
+
+    def _setup_signal_handlers(self) -> None:
+        """Install signal handlers for graceful shutdown (Pillar #10)."""
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._request_shutdown)
+
+    def _request_shutdown(self) -> None:
+        """Signal handler — trigger graceful shutdown."""
+        logger.info("Shutdown requested — initiating graceful cleanup")
+        self._shutdown_event.set()
+        emit_event(
+            self.session_root,
+            "shutdown_requested",
+            "runner",
+            reason="signal",
+        )
+
+    async def _cleanup(self) -> None:
+        """Cleanup all resources — worktrees, executor, connections (Pillar #3, #10)."""
+        logger.info("Cleaning up %d worktrees", len(self._worktrees))
+
+        # Cancel pending worker tasks
+        for task_slug in list(self._pending_dispatches):
+            logger.debug("Cancelling pending task: %s", task_slug)
+
+        # Close all worktrees
+        loop = asyncio.get_running_loop()
+        for task_slug, wt in list(self._worktrees.items()):
+            try:
+                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+                logger.debug("Removed worktree: %s", task_slug)
+            except Exception as exc:
+                logger.warning("Failed to remove worktree %s: %s", task_slug, exc)
+
+        self._worktrees.clear()
+
+        # Shutdown executor
+        self._executor.shutdown(wait=False)
+        logger.info("Cleanup complete")
 
     async def run(self) -> dict[str, str]:
         """Execute DAG with high-performance async loop."""
+        self._setup_signal_handlers()
+
+        try:
+            return await self._run_loop()
+        finally:
+            await self._cleanup()
+
+    async def _run_loop(self) -> dict[str, str]:
+        """Main event loop — separated for graceful shutdown handling."""
         actions = self.kernel.start()
 
         while True:
@@ -107,6 +159,11 @@ class EventDagRunner:
                 actions = []
 
             if self.kernel.done:
+                break
+
+            # Check for shutdown request
+            if self._shutdown_event.is_set():
+                logger.info("Shutdown detected — breaking main loop")
                 break
 
             # 2. Wait for any Worker to finish (Hot-path)
