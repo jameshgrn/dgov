@@ -21,6 +21,7 @@ from dgov.persistence.connection import _get_db, _retry_on_lock
 from dgov.persistence.schema import (
     _COMPLETION_TARGET_STATES,
     _SETTLED_TASK_STATES,
+    _TASK_TYPED_COLS,
     VALID_TRANSITIONS,
     CompletionTransitionResult,
     IllegalTransitionError,
