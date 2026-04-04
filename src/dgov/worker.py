@@ -39,6 +39,9 @@ class AtomicTools:
 
     def __init__(self, worktree: Path) -> None:
         self.worktree = worktree.resolve()
+        # Resolve python/venv paths once at init, not per-command
+        self._python_bin = Path(sys.executable).parent
+        self._python = sys.executable
 
     def read_file(self, path: str) -> str:
         target = (self.worktree / path).resolve()
@@ -58,12 +61,8 @@ class AtomicTools:
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
-        import sys
-
-        # Use the python that launched the worker (project venv)
-        python_bin = Path(sys.executable).parent
         sandbox_env = {
-            "PATH": f"{python_bin}:/usr/local/bin:/usr/bin:/bin",
+            "PATH": f"{self._python_bin}:/usr/local/bin:/usr/bin:/bin",
             "HOME": str(self.worktree),
             "LANG": "en_US.UTF-8",
             "PYTHONPATH": str(self.worktree / "src"),
@@ -146,12 +145,25 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
     if rules_path.exists():
         rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
 
+    # Environment info so the worker doesn't waste iterations discovering paths
+    python_path = sys.executable
+    env_info = (
+        f"\n\nENVIRONMENT:\n"
+        f"- Python: {python_path}\n"
+        f"- Run tests: python -m pytest tests/ -q\n"
+        f"- Run linter: python -m ruff check <file>\n"
+        f"- Source code: src/ (already on PYTHONPATH)\n"
+        f"- Do NOT install packages or create venvs. Everything is pre-installed.\n"
+        f"- Use relative paths for file tools (e.g. 'src/dgov/foo.py' not absolute).\n"
+    )
+
     messages = [
         {
             "role": "system",
             "content": (
                 f"You are a dgov Atomic Worker. Worktree: {worktree}"
-                f"{rules_context}\nStrictly use tools. Call 'done' when complete."
+                f"{rules_context}{env_info}"
+                f"\nStrictly use tools. Call 'done' when complete."
             ),
         },
         {"role": "user", "content": goal},

@@ -168,9 +168,11 @@ def autofix_sandbox(worktree_path: Path, file_claims: tuple[str, ...] = ()) -> N
         return
 
     # Lint fix first (may remove imports, change lines)
-    subprocess.run(["ruff", "check", "--fix", *rel], cwd=worktree_path, capture_output=True)
+    subprocess.run(
+        ["uv", "run", "ruff", "check", "--fix", *rel], cwd=worktree_path, capture_output=True
+    )
     # Format LAST (canonical formatting after all mutations)
-    subprocess.run(["ruff", "format", *rel], cwd=worktree_path, capture_output=True)
+    subprocess.run(["uv", "run", "ruff", "format", *rel], cwd=worktree_path, capture_output=True)
 
 
 def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -> GateResult:
@@ -191,7 +193,7 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
 
         # 2. Lint gate (no --fix)
         res_ruff = subprocess.run(
-            ["ruff", "check", *changed_files],
+            ["uv", "run", "ruff", "check", *changed_files],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -201,7 +203,7 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
 
         # 3. Format check (no modification)
         res_fmt = subprocess.run(
-            ["ruff", "format", "--check", *changed_files],
+            ["uv", "run", "ruff", "format", "--check", *changed_files],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -209,7 +211,21 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
-        # 4. Sentrux gate (policy) — warn on degradation, don't hard-fail
+        # 4. Test gate — run pytest on changed test files via uv
+        test_files = [f for f in changed_files if f.startswith("tests/")]
+        if test_files:
+            res_test = subprocess.run(
+                ["uv", "run", "pytest", *test_files, "-q", "--tb=short"],
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if res_test.returncode != 0:
+                output = (res_test.stdout + res_test.stderr)[-500:]
+                return GateResult(passed=False, error=f"Test failure:\n{output}")
+
+        # 5. Sentrux gate (policy) — warn on degradation, don't hard-fail
         # Hard-failing on +1 complex function blocks test generation.
         # TODO: make configurable (hard-fail for prod, warn for tests)
         baseline = Path(project_root) / ".sentrux" / "baseline.json"
