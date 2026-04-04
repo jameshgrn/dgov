@@ -154,6 +154,27 @@ class TestAutofixSandbox:
         # No .py files — should not crash
         autofix_sandbox(tmp_path)
 
+    def test_scoped_to_claims(self, tmp_path: Path):
+        """When file_claims given, only those files are fixed."""
+        _init_repo(tmp_path)
+        (tmp_path / "claimed.py").write_text("x=1\n")
+        (tmp_path / "unclaimed.py").write_text("y=2\n")
+        autofix_sandbox(tmp_path, file_claims=("claimed.py",))
+        # claimed.py should be formatted
+        assert "x = 1" in (tmp_path / "claimed.py").read_text()
+        # unclaimed.py should NOT be touched
+        assert (tmp_path / "unclaimed.py").read_text() == "y=2\n"
+
+    def test_lint_fix_then_format_order(self, tmp_path: Path):
+        """Lint fix runs before format — format is canonical last step."""
+        _init_repo(tmp_path)
+        # unused import that ruff --fix will remove, then format cleans up
+        (tmp_path / "fixme.py").write_text("import os\nx=1\n")
+        autofix_sandbox(tmp_path, file_claims=("fixme.py",))
+        content = (tmp_path / "fixme.py").read_text()
+        assert "import os" not in content  # lint-fix removed it
+        assert "x = 1" in content  # format cleaned up
+
 
 # ---------------------------------------------------------------------------
 # validate_sandbox
@@ -196,3 +217,36 @@ class TestValidateSandbox:
         result = validate_sandbox(tmp_path, base, str(tmp_path))
         # May fail on lint or format depending on ruff config
         assert not result.passed
+
+    def test_pass_test_file_that_passes(self, tmp_path: Path):
+        """Test gate runs pytest on changed test files and passes."""
+        base = _init_repo(tmp_path)
+        # Create a minimal passing test
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_smoke.py").write_text("def test_one():\n    assert 1 + 1 == 2\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add passing test")
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert result.passed
+
+    def test_fail_test_file_that_fails(self, tmp_path: Path):
+        """Test gate runs pytest on changed test files and rejects failures."""
+        base = _init_repo(tmp_path)
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_broken.py").write_text("def test_bad():\n    assert False\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add failing test")
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert not result.passed
+        assert "Test failure" in (result.error or "")
+
+    def test_no_test_gate_for_non_test_files(self, tmp_path: Path):
+        """Pytest gate only runs on tests/ files, not all python."""
+        base = _init_repo(tmp_path)
+        (tmp_path / "lib.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add lib")
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert result.passed

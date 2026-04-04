@@ -42,6 +42,10 @@ class AtomicTools:
         # Resolve python/venv paths once at init, not per-command
         self._python_bin = Path(sys.executable).parent
         self._python = sys.executable
+        # Sandbox HOME outside worktree — prevents macOS Library/ polluting git status
+        import tempfile
+
+        self._sandbox_home = Path(tempfile.mkdtemp(prefix="dgov-sandbox-"))
 
     def read_file(self, path: str) -> str:
         target = (self.worktree / path).resolve()
@@ -63,7 +67,7 @@ class AtomicTools:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
         sandbox_env = {
             "PATH": f"{self._python_bin}:/usr/local/bin:/usr/bin:/bin",
-            "HOME": str(self.worktree),
+            "HOME": str(self._sandbox_home),
             "LANG": "en_US.UTF-8",
             "PYTHONPATH": str(self.worktree / "src"),
         }

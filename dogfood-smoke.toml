@@ -1,0 +1,29 @@
+[dag]
+name = "dogfood-smoke-test"
+max_concurrent = 1
+
+[tasks.test-dag-parser]
+summary = "Write unit tests for dag_parser.py"
+agent = "accounts/fireworks/models/kimi-k2p5"
+prompt = """
+Write tests for dgov's dag_parser.py module. Read src/dgov/dag_parser.py first.
+
+Test:
+- parse_dag_file() with valid TOML (create a temp file, parse it)
+- parse_dag_file() with missing [dag] section → ValueError
+- parse_dag_file() with missing [tasks] section → ValueError
+- parse_dag_file() with nonexistent file → FileNotFoundError
+- DagTaskSpec.all_touches() returns deduplicated union of create+edit+delete
+- DagFileSpec defaults to empty tuples
+
+Write to tests/test_dag_parser.py. Use pytest and tmp_path.
+
+IMPORTANT:
+- Use relative paths for file tools (e.g. 'tests/test_dag_parser.py')
+- Run tests: python -m pytest tests/test_dag_parser.py -q
+- Source is on PYTHONPATH already. Import with: from dgov.dag_parser import ...
+- Do NOT install packages or create venvs.
+- Call 'done' when tests pass.
+"""
+commit_message = "Add unit tests for dag_parser.py"
+files.create = ["tests/test_dag_parser.py"]

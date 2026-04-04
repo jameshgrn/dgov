@@ -56,3 +56,19 @@ class TestSettlementPurity:
         forbidden = {"dgov.persistence", "dgov.runner", "dgov.kernel", "dgov.worker"}
         violations = imports & forbidden
         assert not violations, f"settlement.py imports forbidden modules: {violations}"
+
+
+class TestUvRequired:
+    """uv must be discoverable — wrong state should be impossible."""
+
+    def test_find_uv_succeeds(self):
+        from dgov.workers.headless import _find_uv
+
+        uv = _find_uv()
+        assert uv.endswith("uv") or "uv" in uv
+
+    def test_headless_cmd_uses_uv(self):
+        """Headless worker cmd starts with uv run, not sys.executable."""
+        source = (_SRC / "workers" / "headless.py").read_text()
+        assert "sys.executable" not in source
+        assert "_find_uv()" in source
