@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Any
 
 from dgov.persistence.schema import (
     _CREATE_EVENTS_TABLE_SQL,
@@ -62,7 +63,7 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     return conn
 
 
-def _retry_on_lock(fn, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+def _retry_on_lock(fn, *args, **kwargs) -> Any:  # noqa: ANN001, ANN002, ANN003
     """Call *fn* with retries on 'database is locked' errors."""
     import logging
     import time

@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
-    def __init__(self, dag: DagDefinition, session_root: str = "."):
+    def __init__(self, dag: DagDefinition, session_root: str = ".") -> None:
         self.dag = dag
         self.session_root = session_root
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
@@ -290,7 +290,7 @@ class EventDagRunner:
             agent=task.agent,
         )
 
-        def _on_worker_exit(task_slug: str, pane_slug: str, exit_code: int):
+        def _on_worker_exit(task_slug: str, pane_slug: str, exit_code: int) -> None:
             exit_event = WorkerExit(
                 task_slug=task_slug,
                 pane_slug=pane_slug,

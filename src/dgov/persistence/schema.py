@@ -71,7 +71,7 @@ _SETTLED_PANE_STATES = _SETTLED_TASK_STATES
 class IllegalTransitionError(ValueError):
     """Raised when an invalid state transition is attempted."""
 
-    def __init__(self, current: str | TaskState, target: str | TaskState, slug: str):
+    def __init__(self, current: str | TaskState, target: str | TaskState, slug: str) -> None:
         self.current = current
         self.target = target
         self.slug = slug

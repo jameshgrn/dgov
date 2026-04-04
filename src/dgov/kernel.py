@@ -82,7 +82,7 @@ class DagKernel:
     attempts: dict[str, int] = field(default_factory=dict)
     merge_order: list[str] = field(init=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.task_states = {slug: DagTaskState.PENDING for slug in self.deps}
         self.merge_order = _topological_sort(self.deps)
 

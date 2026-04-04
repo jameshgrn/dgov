@@ -29,7 +29,7 @@ class WorkerEvent:
     type: str  # thought | call | result | done | error
     content: Any
 
-    def emit(self):
+    def emit(self) -> None:
         """Pillar #9: Hot-path signaling via stdout JSON lines."""
         print(json.dumps({"worker_event": self.__dict__}), flush=True)
 
@@ -37,7 +37,7 @@ class WorkerEvent:
 class AtomicTools:
     """The Actuator Layer: Strict, isolated tools."""
 
-    def __init__(self, worktree: Path):
+    def __init__(self, worktree: Path) -> None:
         self.worktree = worktree.resolve()
 
     def read_file(self, path: str) -> str:
