@@ -159,15 +159,21 @@ def remove_worktree(project_root: str, wt: Worktree) -> None:
     )
 
 
-def commit_in_worktree(wt: Worktree, message: str) -> str:
-    """Stage all + commit in one shot."""
+def commit_in_worktree(wt: Worktree, message: str, file_claims: tuple[str, ...] = ()) -> str:
+    """Stage claimed files + commit. Falls back to git add . if no claims."""
     env = _git_env(wt.path)
     env["GIT_AUTHOR_NAME"] = "dgov-worker"
     env["GIT_AUTHOR_EMAIL"] = "agent@dgov.local"
     env["GIT_COMMITTER_NAME"] = "dgov-worker"
     env["GIT_COMMITTER_EMAIL"] = "agent@dgov.local"
 
-    subprocess.run(["git", "add", "."], cwd=wt.path, env=env, check=True)
+    if file_claims:
+        # Stage only claimed files (avoids pre-existing lint failures)
+        existing = [f for f in file_claims if (wt.path / f).exists()]
+        if existing:
+            subprocess.run(["git", "add", *existing], cwd=wt.path, env=env, check=True)
+    else:
+        subprocess.run(["git", "add", "."], cwd=wt.path, env=env, check=True)
     subprocess.run(
         ["git", "commit", "--allow-empty", "-m", message],
         cwd=wt.path,

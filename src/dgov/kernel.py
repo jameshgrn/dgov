@@ -167,9 +167,9 @@ class DagKernel:
     def _on_governor_resumed(self, event: TaskGovernorResumed) -> list[DagAction]:
         slug = event.task_slug
         current = self.task_states.get(slug)
-        # Guard: only accept from WAITING (interrupt) or FAILED (manual retry).
+        # Guard: accept from PENDING (dispatch failure), WAITING (interrupt), or FAILED (manual).
         # Prevents accidentally un-merging or un-reviewing a task.
-        if current not in (DagTaskState.WAITING, DagTaskState.FAILED):
+        if current not in (DagTaskState.PENDING, DagTaskState.WAITING, DagTaskState.FAILED):
             return []
         if event.action == GovernorAction.RETRY:
             self.task_states[slug] = DagTaskState.PENDING

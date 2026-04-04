@@ -58,11 +58,15 @@ class AtomicTools:
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
-        # Restricted env: PATH only, no HOME/credentials/network config
+        import sys
+
+        # Use the python that launched the worker (project venv)
+        python_bin = Path(sys.executable).parent
         sandbox_env = {
-            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "PATH": f"{python_bin}:/usr/local/bin:/usr/bin:/bin",
             "HOME": str(self.worktree),
             "LANG": "en_US.UTF-8",
+            "PYTHONPATH": str(self.worktree / "src"),
         }
         try:
             res = subprocess.run(
@@ -153,7 +157,7 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
         {"role": "user", "content": goal},
     ]
 
-    for step in range(15):  # Pillar #10: Fail-closed via iteration limit
+    for step in range(30):  # Pillar #10: Fail-closed via iteration limit
         try:
             resp = client.chat.completions.create(
                 model=model, messages=messages, tools=get_tool_spec(), tool_choice="auto"
@@ -195,7 +199,7 @@ def run_worker(goal: str, worktree: Path, model: str) -> None:
                 {"role": "tool", "tool_call_id": call.id, "name": name, "content": result}
             )
 
-    WorkerEvent("error", "Exceeded max iterations (15)").emit()
+    WorkerEvent("error", "Exceeded max iterations (30)").emit()
     sys.exit(1)
 
 
