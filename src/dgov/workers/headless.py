@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -24,6 +24,14 @@ logger = logging.getLogger(__name__)
 _WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "worker.py"
 
 
+def _find_uv() -> str:
+    """Find uv binary. Fail fast if missing — wrong state should be impossible."""
+    uv = shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv not found in PATH — required for worker dispatch")
+    return uv
+
+
 async def run_headless_worker(
     project_root: str,
     task_slug: str,
@@ -34,7 +42,8 @@ async def run_headless_worker(
 ) -> None:
     """Execute the headless worker lifecycle."""
     cmd = [
-        sys.executable,
+        _find_uv(),
+        "run",
         str(_WORKER_SCRIPT),
         "--goal",
         task.prompt,
