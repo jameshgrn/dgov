@@ -78,7 +78,7 @@ class AtomicTools:
             return "Error: Command timed out after 60s."
 
 
-def get_tool_spec():
+def get_tool_spec() -> list[dict]:
     return [
         {
             "type": "function",
@@ -127,7 +127,7 @@ def get_tool_spec():
     ]
 
 
-def run_worker(goal: str, worktree: Path, model: str):
+def run_worker(goal: str, worktree: Path, model: str) -> None:
     api_key = os.environ.get("FIREWORKS_API_KEY")
     if not api_key:
         WorkerEvent("error", "FIREWORKS_API_KEY missing").emit()
