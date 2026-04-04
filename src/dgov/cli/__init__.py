@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 from pathlib import Path
 
 import click
@@ -22,6 +23,33 @@ logging.basicConfig(
 logger = logging.getLogger("dgov")
 
 
+def _sentrux_available() -> bool:
+    """Check if sentrux binary is available."""
+    try:
+        subprocess.run(
+            ["sentrux", "--version"],
+            capture_output=True,
+            timeout=5.0,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def _run_sentrux(args: list[str], cwd: str | None = None, timeout: float = 30.0) -> str:
+    """Run sentrux command, return stdout."""
+    result = subprocess.run(
+        ["sentrux"] + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=True,
+    )
+    return result.stdout
+
+
 def want_json() -> bool:
     """Check if JSON output is requested via env var or context."""
     return os.environ.get("DGOV_JSON", "").strip() in ("1", "true", "yes")
@@ -36,8 +64,7 @@ def _output(data: dict) -> None:
             click.echo(f"{key}: {value}")
 
 
-@click.command(context_settings=dict(ignore_unknown_options=True))
-@click.argument("target", required=False)
+@click.group()
 @click.option("--status", is_flag=True, help="Show governor status")
 @click.option("--watch", is_flag=True, help="Start governor daemon/watch mode")
 @click.option("--json", is_flag=True, help="Output as JSON")
@@ -45,7 +72,6 @@ def _output(data: dict) -> None:
 @click.pass_context
 def cli(
     ctx: click.Context,
-    target: str | None,
     status: bool,
     watch: bool,
     json: bool,
@@ -55,35 +81,43 @@ def cli(
     \b
     USAGE:
       dgov                    Show status
-      dgov plan.toml          Run a plan
+      dgov run plan.toml      Run a plan
       dgov --watch            Stream events
+      dgov sentrux check      Run Sentrux architectural check
 
     Tasks run in isolated git worktrees. No tmux required.
     """
+    if ctx.invoked_subcommand is not None:
+        if json:
+            os.environ["DGOV_JSON"] = "1"
+        return
+
     if json:
         os.environ["DGOV_JSON"] = "1"
 
     project_root = str(Path.cwd())
 
-    # Route by intent
-    if status or (target is None and not watch):
-        _cmd_status(project_root)
-        return
-
     if watch:
         _cmd_watch(project_root)
         return
 
-    if target:
-        target_path = Path(target)
-        if target_path.suffix == ".toml":
-            _cmd_run_plan(target, project_root)
-        else:
-            click.echo(f"Unknown target: {target}", err=True)
-            raise click.Exit(code=1)
-        return
+    # Default: show status
+    _cmd_status(project_root)
 
-    click.echo(cli.get_help(ctx))
+
+@cli.command(name="run")
+@click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
+@click.pass_context
+def run_cmd(ctx: click.Context, plan_file: Path) -> None:
+    """Run a plan file (TOML).
+
+    Example: dgov run plan.toml
+    """
+    if not plan_file.suffix == ".toml":
+        click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
+        raise SystemExit(1)
+    project_root = str(Path.cwd())
+    _cmd_run_plan(str(plan_file), project_root)
 
 
 def _cmd_status(project_root: str) -> None:
@@ -133,14 +167,58 @@ def _cmd_watch(project_root: str) -> None:
 
 
 def _cmd_run_plan(plan_file: str, project_root: str) -> None:
-    """Execute a plan TOML."""
+    """Execute a plan TOML with Sentrux quality gates."""
+
     plan = parse_plan_file(plan_file)
     dag = compile_plan(plan)
+
+    # Pre-flight: check sentrux availability and save baseline if available
+    sentrux_available = False
+    baseline_quality: int | None = None
+    try:
+        result = subprocess.run(
+            ["sentrux", "--version"],
+            capture_output=True,
+            timeout=5.0,
+            check=True,
+        )
+        sentrux_available = True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    if sentrux_available:
+        if not want_json():
+            click.echo("[sentrux] Saving baseline...")
+        try:
+            result = subprocess.run(
+                ["sentrux", "gate", "--save", project_root],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=True,
+            )
+            # Parse quality from output
+            for line in result.stdout.splitlines():
+                if line.startswith("Quality: "):
+                    try:
+                        baseline_quality = int(line.split(":", 1)[1].strip())
+                    except ValueError:
+                        pass
+                    break
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            if not want_json():
+                click.echo(f"[sentrux] Baseline save failed: {e}", err=True)
 
     runner = EventDagRunner(dag, session_root=project_root)
 
     if want_json():
-        click.echo(json.dumps({"status": "starting", "dag": dag.name}))
+        click.echo(
+            json.dumps(
+                {"status": "starting", "dag": dag.name, "sentrux_baseline": baseline_quality}
+            )
+        )
+    elif sentrux_available:
+        click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
 
     try:
         results = asyncio.run(runner.run())
@@ -148,21 +226,194 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
         _output({"status": "interrupted"})
         raise click.Exit(code=130)
 
+    # Post-flight: compare against baseline
+    gate_result: dict[str, object] = {
+        "degradation": None,
+        "quality_before": baseline_quality,
+        "quality_after": None,
+    }
+    if sentrux_available:
+        if not want_json():
+            click.echo("[sentrux] Comparing against baseline...")
+        try:
+            result = subprocess.run(
+                ["sentrux", "gate", project_root],
+                capture_output=True,
+                text=True,
+                timeout=30.0,
+                check=True,
+            )
+            gate_output = result.stdout
+            degradation = False
+            quality_after = None
+            for line in gate_output.splitlines():
+                if line.startswith("Quality:") and "->" in line:
+                    parts = line.split("->")
+                    if len(parts) == 2:
+                        try:
+                            quality_after = int(parts[1].strip())
+                        except ValueError:
+                            pass
+                elif "No degradation detected" in line or "✓ No degradation" in line:
+                    degradation = False
+                elif "degradation" in line.lower():
+                    degradation = True
+            gate_result["degradation"] = degradation
+            gate_result["quality_after"] = quality_after
+            if not want_json():
+                status = "✓ clean" if not degradation else "✗ degradation detected"
+                click.echo(f"[sentrux] Gate result: {status}")
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            gate_result["error"] = str(e)
+            if not want_json():
+                click.echo(f"[sentrux] Gate comparison failed: {e}", err=True)
+
     succeeded = [s for s, st in results.items() if st == "merged"]
     failed = [s for s, st in results.items() if st == "failed"]
 
-    _output(
-        {
-            "status": "complete" if not failed else "failed",
-            "succeeded": len(succeeded),
-            "failed": len(failed),
-            "failed_tasks": failed if failed else None,
-        }
-    )
+    output = {
+        "status": "complete" if not failed else "failed",
+        "succeeded": len(succeeded),
+        "failed": len(failed),
+        "failed_tasks": failed if failed else None,
+        "sentrux": gate_result if sentrux_available else None,
+    }
+    _output(output)
 
     if failed:
         raise click.exceptions.Exit(code=1)
 
 
-if __name__ == "__main__":
-    cli()
+@cli.group(name="sentrux")
+def sentrux_cmd() -> None:
+    """Sentrux architectural sensing commands."""
+    pass
+
+
+@sentrux_cmd.command(name="check")
+@click.argument("path", required=False, type=click.Path(path_type=Path, exists=True))
+@click.option("--json-output", "json_fmt", is_flag=True, help="Output as JSON")
+def sentrux_check(path: Path | None, json_fmt: bool) -> None:
+    """Run Sentrux check on a directory.
+
+    PATH defaults to current directory if not specified.
+    """
+    if not _sentrux_available():
+        click.echo(
+            "Error: sentrux not found. Install: https://github.com/sentrux/sentrux", err=True
+        )
+        raise click.Exit(code=1)
+
+    target = str(path) if path else "."
+    try:
+        output = _run_sentrux(["check", target], cwd=target)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error: sentrux check failed: {e.stderr or e.stdout}", err=True)
+        raise click.Exit(code=1)
+    except subprocess.TimeoutExpired:
+        click.echo("Error: sentrux check timed out", err=True)
+        raise click.Exit(code=1)
+
+    # Parse quality from output
+    quality = 0
+    for line in output.splitlines():
+        if line.startswith("Quality: "):
+            try:
+                quality = int(line.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+            break
+
+    if json_fmt or want_json():
+        _output({"quality": quality, "path": target})
+    else:
+        click.echo(output)
+        click.echo(f"\nQuality: {quality}")
+
+
+@sentrux_cmd.command(name="gate-save")
+@click.argument("path", required=False, type=click.Path(path_type=Path, exists=True))
+def sentrux_gate_save(path: Path | None) -> None:
+    """Save Sentrux baseline before making changes.
+
+    PATH defaults to current directory if not specified.
+    """
+    if not _sentrux_available():
+        click.echo(
+            "Error: sentrux not found. Install: https://github.com/sentrux/sentrux", err=True
+        )
+        raise click.Exit(code=1)
+
+    target = str(path) if path else "."
+    try:
+        output = _run_sentrux(["gate", "--save", target], cwd=target)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error: sentrux gate-save failed: {e.stderr or e.stdout}", err=True)
+        raise click.Exit(code=1)
+    except subprocess.TimeoutExpired:
+        click.echo("Error: sentrux gate-save timed out", err=True)
+        raise click.Exit(code=1)
+
+    # Parse quality from output
+    quality = 0
+    for line in output.splitlines():
+        if line.startswith("Quality: "):
+            try:
+                quality = int(line.split(":", 1)[1].strip())
+            except ValueError:
+                pass
+            break
+
+    click.echo(f"Baseline saved at {Path(target) / '.sentrux' / 'baseline.json'}")
+    click.echo(f"Quality: {quality}")
+
+
+@sentrux_cmd.command(name="gate")
+@click.argument("path", required=False, type=click.Path(path_type=Path, exists=True))
+@click.option(
+    "--fail-on-degradation", is_flag=True, help="Exit with error code if degradation detected"
+)
+def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
+    """Compare current state against saved Sentrux baseline.
+
+    PATH defaults to current directory if not specified.
+    """
+    if not _sentrux_available():
+        click.echo(
+            "Error: sentrux not found. Install: https://github.com/sentrux/sentrux", err=True
+        )
+        raise click.Exit(code=1)
+
+    target = str(path) if path else "."
+    try:
+        output = _run_sentrux(["gate", target], cwd=target)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"Error: sentrux gate failed: {e.stderr or e.stdout}", err=True)
+        raise click.Exit(code=1)
+    except subprocess.TimeoutExpired:
+        click.echo("Error: sentrux gate timed out", err=True)
+        raise click.Exit(code=1)
+
+    # Detect degradation
+    degradation = "degradation" in output.lower() and "no degradation" not in output.lower()
+
+    click.echo(output)
+
+    if degradation and fail_on_degradation:
+        click.echo("\nDegradation detected — failing.", err=True)
+        raise click.Exit(code=1)
+
+
+@sentrux_cmd.command(name="status")
+def sentrux_status() -> None:
+    """Check if Sentrux is installed and available."""
+    if _sentrux_available():
+        click.echo("sentrux: installed and available")
+    else:
+        click.echo("sentrux: not found in PATH")
+        click.echo("Install: https://github.com/sentrux/sentrux")
+        raise click.Exit(code=1)
+
+
+# Register the sentrux command group
+cli.add_command(sentrux_cmd, name="sentrux")
