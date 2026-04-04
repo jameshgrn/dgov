@@ -41,10 +41,13 @@ def parse_top_level_imports(filepath: Path) -> Tuple[List[str], List[str]]:
 def build_graph(src_dir: Path) -> Dict[str, Set[str]]:
     """Build import dependency graph: module -> set of imported modules (top-level only)."""
     graph = {}
-    for pyfile in src_dir.glob("*.py"):
+    for pyfile in src_dir.rglob("*.py"):
         if pyfile.name.startswith("_"):
             continue
-        module = f"dgov.{pyfile.stem}"
+        # Compute module name from relative path: persistence/tasks.py -> dgov.persistence.tasks
+        rel_path = pyfile.relative_to(src_dir)
+        parts = rel_path.with_suffix("").parts
+        module = f"dgov.{'.'.join(parts)}"
         imports, _ = parse_top_level_imports(pyfile)
         deps = set()
         for imp in imports:
@@ -120,23 +123,25 @@ def compute_depth(
 def find_god_files(src_dir: Path, max_lines: int = 500) -> List[Tuple[str, int]]:
     """Find files exceeding line limit."""
     gods = []
-    for pyfile in src_dir.glob("*.py"):
+    for pyfile in src_dir.rglob("*.py"):
         if pyfile.name.startswith("_"):
             continue
         line_count = len(pyfile.read_text().splitlines())
         if line_count > max_lines:
-            gods.append((pyfile.name, line_count))
+            rel_path = pyfile.relative_to(src_dir)
+            gods.append((str(rel_path), line_count))
     return sorted(gods, key=lambda x: -x[1])
 
 
 def compute_fan_out(src_dir: Path) -> List[Tuple[str, int]]:
     """Compute fan-out (number of top-level imports) per file."""
     fanouts = []
-    for pyfile in src_dir.glob("*.py"):
+    for pyfile in src_dir.rglob("*.py"):
         if pyfile.name.startswith("_"):
             continue
         imports, _ = parse_top_level_imports(pyfile)
-        fanouts.append((pyfile.name, len(imports)))
+        rel_path = pyfile.relative_to(src_dir)
+        fanouts.append((str(rel_path), len(imports)))
     return sorted(fanouts, key=lambda x: -x[1])
 
 
