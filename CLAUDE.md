@@ -1,27 +1,55 @@
-# Worker Instructions — lifecycle-slug-history-source-6
+# dgov
 
-You are a **worker**. Complete the task, commit, and signal done.
+Deterministic kernel for multi-agent orchestration via git worktrees.
 
-## Rules
-- Edit ONLY the files specified in your task
-- Do NOT modify CLAUDE.md, .gitignore, pyproject.toml
-- Do NOT create new files unless the task requires it
-- Do NOT push to remote
-- You are in a git worktree, not the main repo
-- CLAUDE.md/AGENTS.md are git-excluded and cannot be committed
+## Architecture (src/dgov/)
 
-## Current Status
+| Module | Role |
+|--------|------|
+| `kernel.py` | Pure function: `(state, event) -> (new_state, actions)`. No I/O. |
+| `actions.py` | Frozen dataclass command/event vocabulary |
+| `types.py` | `TaskState` enum — single source of truth for state |
+| `runner.py` | `EventDagRunner` — async bridge feeding kernel |
+| `worker.py` | Standalone OpenAI-client subprocess (Fireworks/Kimi) |
+| `workers/headless.py` | Subprocess launcher, JSON event stream |
+| `settlement.py` | ruff auto-fix + lint gate + sentrux policy gate |
+| `worktree.py` | create/merge/remove git worktrees (FF + cherry-pick) |
+| `plan.py` | PlanSpec/PlanUnit/PlanEval, TOML parse, compile to DAG |
+| `dag_parser.py` | Pydantic v2 models, TOML → DagDefinition |
+| `config.py` | Layered TOML config (defaults ← user ← project) |
+| `persistence/` | SQLite (panes + events + slug_history), WAL mode |
+| `cli/` | Click CLI: `dgov [run plan.toml \| --status \| --watch]` |
 
-**Analysis Complete**: No changes needed. The slug reservation feature is already fully implemented:
+## Principles
 
-1. `slug_history` table exists in DB schema (persistence.py:327)
-2. `remove_pane()` records slugs into history (persistence.py:468-470)
-3. `_find_unique_slug()` checks active panes AND historical slugs (lifecycle.py:189-195)
+- **Kernel is pure** — no persistence imports, no I/O
+- **Workers are subprocess-isolated** — own worktree, own branch
+- **Settlement = commit-or-kill** — ruff + lint + sentrux gates
+- **Event-sourced** — all state transitions logged to SQLite
 
-**Tests Pass**: All 47 tests in test_lifecycle.py pass, including:
-- `test_historical_slug_remains_reserved_after_close` - verifies slugs reserved after close
-- `test_slug_allocation_increments_numeric_suffix` - verifies incremental numbering
+## Dev workflow
 
-## Commit Message
+```bash
+uv pip install -e .          # editable install
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+uv run pytest tests/ -q      # full suite (~250 tests, <10s)
+```
 
-No changes to lifecycle.py. The feature was already implemented.
+## Testing
+
+- `tests/test_kernel.py` — kernel state machine
+- `tests/test_runner.py` — DAG runner async logic
+- `tests/test_plan.py` — TOML plan parsing + compilation
+- `tests/test_dag_parser.py` — DAG definition parsing
+- `tests/test_settlement.py` — settlement pipeline
+- `tests/test_boundaries.py` — import boundary enforcement
+- `tests/test_integration.py` — end-to-end with real git repos
+- `tests/test_tasks.py` — persistence CRUD
+- `tests/test_types.py` — type/enum validation
+
+Markers: `unit`, `integration`. Use `-m unit` for fast feedback.
+
+## Branch strategy
+
+Feature branches only. Never push directly to main.
