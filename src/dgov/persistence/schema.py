@@ -55,7 +55,6 @@ VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
     TaskState.REVIEWED_FAIL: frozenset({TaskState.CLOSED}),
     TaskState.MERGED: frozenset({TaskState.CLOSED}),
     TaskState.TIMED_OUT: frozenset({TaskState.CLOSED}),
-    TaskState.SUPERSEDED: frozenset({TaskState.CLOSED}),
     TaskState.CLOSED: frozenset(),
     TaskState.ABANDONED: frozenset({TaskState.CLOSED}),
 }

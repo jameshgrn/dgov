@@ -18,7 +18,6 @@ class TaskState(StrEnum):
     REVIEWED_FAIL = "reviewed_fail"
     MERGED = "merged"
     TIMED_OUT = "timed_out"
-    SUPERSEDED = "superseded"
     CLOSED = "closed"
     ABANDONED = "abandoned"
 

@@ -17,23 +17,13 @@ from dgov.persistence.events import (
     wait_for_events,
 )
 from dgov.persistence.panes import (
-    add_pane,
-    all_panes,
-    get_pane,
-    get_panes,
     get_slug_history,
     remove_pane,
-    replace_all_panes,
-    set_pane_metadata,
     settle_completion_state,
-    update_pane_state,
 )
 from dgov.persistence.schema import (
-    # Deprecated aliases
-    PaneState,
-    TaskState,  # preferred
-    WorkerPane,
-    WorkerTask,  # preferred
+    TaskState,
+    WorkerTask,
     state_path,
 )
 from dgov.persistence.tasks import (
@@ -47,10 +37,10 @@ from dgov.persistence.tasks import (
 )
 
 __all__ = [
-    # Types (preferred)
+    # Types
     "TaskState",
     "WorkerTask",
-    # Task operations (preferred)
+    # Task operations
     "add_task",
     "all_tasks",
     "get_task",
@@ -58,16 +48,6 @@ __all__ = [
     "replace_all_tasks",
     "set_task_metadata",
     "update_task_state",
-    # Deprecated aliases (use task versions)
-    "PaneState",
-    "WorkerPane",
-    "add_pane",
-    "all_panes",
-    "get_pane",
-    "get_panes",
-    "replace_all_panes",
-    "set_pane_metadata",
-    "update_pane_state",
     # Utilities
     "_get_db",
     "clear_connection_cache",
