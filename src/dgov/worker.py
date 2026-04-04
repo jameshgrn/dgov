@@ -5,6 +5,7 @@
 #     "rich",
 # ]
 # ///
+
 """
 DGOV Bespoke Worker: The Compute Engine.
 Pillar #1: Separation of Powers - This script only implements; the Governor validates.

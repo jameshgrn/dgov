@@ -31,9 +31,13 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition
 from dgov.kernel import DagKernel
-from dgov.persistence import emit_event, get_task
-from dgov.settlement import review_sandbox, validate_sandbox
-from dgov.types import TaskState
+from dgov.persistence import add_task, emit_event, get_task
+from dgov.persistence.schema import TaskState, WorkerTask
+from dgov.settlement import (
+    autofix_sandbox,
+    review_sandbox,
+    validate_sandbox,
+)
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
     Worktree,
@@ -273,9 +277,6 @@ class EventDagRunner:
         self._pending_dispatches.add(action.task_slug)
 
         # Create task record with file claims for scope enforcement
-        from dgov.persistence import add_task
-        from dgov.persistence.schema import TaskState, WorkerTask
-
         file_claims = tuple(dict.fromkeys(task.files.create + task.files.edit + task.files.delete))
         task_record = WorkerTask(
             slug=action.task_slug,
@@ -331,8 +332,6 @@ class EventDagRunner:
         error = None
         try:
             # 1. Auto-fix (format + lint fix) BEFORE commit
-            from dgov.settlement import autofix_sandbox
-
             await loop.run_in_executor(self._executor, autofix_sandbox, wt.path)
 
             # 2. Commit (includes auto-fixes)

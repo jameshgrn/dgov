@@ -1,0 +1,5 @@
+2026-04-04T00:32:05Z | PASS | Q:6810 C:0.23 CY:0 G:0 | baseline
+2026-04-04T00:32:34Z | PASS | Q:6810 C:0.23 CY:0 G:0 | runner: inline imports → top-level
+2026-04-04T00:33:08Z | PASS | Q:6810 C:0.23 CY:0 G:0 | cli+plan: inline imports → top-level
+2026-04-04T00:33:42Z | PASS | Q:6810 C:0.23 CY:0 G:0 | +__future__ annotations (2 files)
+2026-04-04T00:39:04Z | PASS | Q:6810 C:0.23 CY:0 G:0 | current state (after edits)

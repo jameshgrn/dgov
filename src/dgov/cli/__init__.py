@@ -11,6 +11,9 @@ from pathlib import Path
 import click
 
 from dgov import __version__
+from dgov.persistence import all_tasks, read_events
+from dgov.plan import compile_plan, parse_plan_file
+from dgov.runner import EventDagRunner
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -85,8 +88,6 @@ def cli(
 
 def _cmd_status(project_root: str) -> None:
     """Show governor status — what's running now."""
-    from dgov.persistence import all_tasks
-
     try:
         tasks = all_tasks(project_root)
     except Exception as exc:
@@ -110,8 +111,6 @@ def _cmd_status(project_root: str) -> None:
 
 def _cmd_watch(project_root: str) -> None:
     """Start governor watch mode — stream events."""
-    from dgov.persistence import read_events
-
     click.echo("Governor watch mode (Ctrl-C to exit)")
     click.echo("-" * 40)
 
@@ -135,9 +134,6 @@ def _cmd_watch(project_root: str) -> None:
 
 def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     """Execute a plan TOML."""
-    from dgov.plan import compile_plan, parse_plan_file
-    from dgov.runner import EventDagRunner
-
     plan = parse_plan_file(plan_file)
     dag = compile_plan(plan)
 

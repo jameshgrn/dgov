@@ -19,3 +19,10 @@ max_cycles = 0
 # Current count: 23 files ranging from 512-2206 lines.
 # This rule prevents growth, not cleanup.
 god_file_limit = 23
+
+# Target: keep coupling below 0.25 (current: 0.23)
+max_coupling = 0.25
+
+# Target: improve quality signal (current: 6810)
+# This is a floor — we want this to increase over time
+min_quality_signal = 6800

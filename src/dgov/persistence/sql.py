@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """SQL Table Definitions for dgov.
 
 Only tables actively used by the Lacustrine kernel are initialized.

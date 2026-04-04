@@ -7,10 +7,9 @@ Pillar #4: Determinism - Validates all inputs and dependencies before dispatch.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-if TYPE_CHECKING:
-    from dgov.dag_parser import DagDefinition
+from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
 
 
 def _normalize_touch_path(path: str) -> str:
@@ -111,8 +110,6 @@ class PlanIssue:
 
 def parse_plan_file(path: str) -> PlanSpec:
     """Parse a TOML plan file into a PlanSpec."""
-    from dgov.dag_parser import parse_dag_file
-
     # We use our new Pydantic-powered dag_parser to do the heavy lifting
     dag_def = parse_dag_file(path)
 
@@ -161,8 +158,6 @@ def parse_plan_file(path: str) -> PlanSpec:
 
 def compile_plan(plan: PlanSpec) -> DagDefinition:
     """Compile a PlanSpec into a DagDefinition."""
-    from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
-
     tasks: dict[str, DagTaskSpec] = {}
     evals_by_id = {plan_eval.eval_id: plan_eval for plan_eval in plan.evals}
 
