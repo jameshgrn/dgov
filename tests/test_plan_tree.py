@@ -1,4 +1,4 @@
-"""Tests for plan_tree walker + merger."""
+"""Tests for plan_tree walker + merger + resolver."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dgov.plan_tree import FlatPlan, merge_tree, walk_tree
+from dgov.plan_tree import FlatPlan, merge_tree, resolve_refs, walk_tree
 
 pytestmark = pytest.mark.unit
 
@@ -391,3 +391,204 @@ class TestMergerDogfood:
         }
         assert set(plan.units.keys()) == expected_ids
         assert plan.source_mtime_max > 0.0
+
+
+# =============================================================================
+# resolver tests
+# =============================================================================
+
+
+def _unit_toml(slug: str, depends_on: list[str] | None = None) -> str:
+    """Build a minimal [tasks.<slug>] block with optional depends_on."""
+    deps = ""
+    if depends_on is not None:
+        deps_str = "[" + ", ".join(f'"{d}"' for d in depends_on) + "]"
+        deps = f"depends_on = {deps_str}\n"
+    return f'[tasks.{slug}]\nsummary = "s"\nprompt = "p"\ncommit_message = "c"\n{deps}'
+
+
+def _resolve(tmp_path: Path, sections: list[str], files: dict[str, str]) -> FlatPlan:
+    _build_tree(tmp_path, sections, files)
+    return resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+
+class TestResolverHappyPath:
+    def test_bare_ref_resolves_to_same_file(self, tmp_path: Path) -> None:
+        content = _unit_toml("foo") + _unit_toml("bar", depends_on=["foo"])
+        plan = _resolve(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert plan.units["alpha/one.bar"].depends_on == ("alpha/one.foo",)
+
+    def test_path_qualified_ref_resolves_directly(self, tmp_path: Path) -> None:
+        plan = _resolve(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("foo"),
+                "alpha/two.toml": _unit_toml("bar", depends_on=["alpha/one.foo"]),
+            },
+        )
+        assert plan.units["alpha/two.bar"].depends_on == ("alpha/one.foo",)
+
+    def test_mixed_bare_and_qualified(self, tmp_path: Path) -> None:
+        plan = _resolve(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("a") + _unit_toml("b"),
+                "alpha/two.toml": (
+                    _unit_toml("x", depends_on=["alpha/one.a", "y"]) + _unit_toml("y")
+                ),
+            },
+        )
+        assert plan.units["alpha/two.x"].depends_on == ("alpha/one.a", "alpha/two.y")
+
+    def test_forward_ref_within_file_allowed(self, tmp_path: Path) -> None:
+        content = _unit_toml("bar", depends_on=["foo"]) + _unit_toml("foo")
+        plan = _resolve(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert plan.units["alpha/one.bar"].depends_on == ("alpha/one.foo",)
+
+    def test_empty_depends_on_preserved(self, tmp_path: Path) -> None:
+        plan = _resolve(tmp_path, ["alpha"], {"alpha/one.toml": _unit_toml("foo")})
+        assert plan.units["alpha/one.foo"].depends_on == ()
+
+    def test_non_depends_on_fields_preserved(self, tmp_path: Path) -> None:
+        content = (
+            '[tasks.foo]\nsummary = "S"\nprompt = "P"\ncommit_message = "C"\n'
+            'agent = "a"\ntimeout_s = 42\n' + _unit_toml("bar", depends_on=["foo"])
+        )
+        plan = _resolve(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        foo = plan.units["alpha/one.foo"]
+        assert foo.summary == "S"
+        assert foo.prompt == "P"
+        assert foo.commit_message == "C"
+        assert foo.agent == "a"
+        assert foo.timeout_s == 42
+
+    def test_multiple_deps(self, tmp_path: Path) -> None:
+        content = _unit_toml("a") + _unit_toml("b") + _unit_toml("c", depends_on=["a", "b"])
+        plan = _resolve(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert plan.units["alpha/one.c"].depends_on == ("alpha/one.a", "alpha/one.b")
+
+    def test_cross_section_path_qualified(self, tmp_path: Path) -> None:
+        plan = _resolve(
+            tmp_path,
+            ["alpha", "beta"],
+            {
+                "alpha/x.toml": _unit_toml("a"),
+                "beta/y.toml": _unit_toml("b", depends_on=["alpha/x.a"]),
+            },
+        )
+        assert plan.units["beta/y.b"].depends_on == ("alpha/x.a",)
+
+
+class TestResolverSelfReference:
+    def test_bare_self_ref(self, tmp_path: Path) -> None:
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {"alpha/one.toml": _unit_toml("foo", depends_on=["foo"])},
+        )
+        with pytest.raises(ValueError, match="Self-reference"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+    def test_path_qualified_self_ref(self, tmp_path: Path) -> None:
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {"alpha/one.toml": _unit_toml("foo", depends_on=["alpha/one.foo"])},
+        )
+        with pytest.raises(ValueError, match="Self-reference"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+
+class TestResolverUnknownRefs:
+    def test_unknown_bare_ref_no_hint(self, tmp_path: Path) -> None:
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {"alpha/one.toml": _unit_toml("foo", depends_on=["completely-different"])},
+        )
+        with pytest.raises(ValueError, match="Unknown bare ref 'completely-different'"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+    def test_unknown_bare_ref_same_file_hint(self, tmp_path: Path) -> None:
+        content = _unit_toml("migrate-worker") + _unit_toml("x", depends_on=["migrate-walker"])
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        with pytest.raises(ValueError, match="did you mean 'migrate-worker'"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+    def test_unknown_bare_ref_cross_file_hint(self, tmp_path: Path) -> None:
+        """Bare ref with no same-file match but unique cross-file match → hint."""
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("uniq"),
+                "alpha/two.toml": _unit_toml("caller", depends_on=["uniq"]),
+            },
+        )
+        with pytest.raises(ValueError, match="did you mean 'alpha/one.uniq'"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+    def test_unknown_bare_ref_ambiguous_cross_file_no_hint(self, tmp_path: Path) -> None:
+        """If bare slug matches multiple cross-file units, no hint (ambiguous)."""
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("shared"),
+                "alpha/two.toml": _unit_toml("shared"),
+                "alpha/three.toml": _unit_toml("caller", depends_on=["shared"]),
+            },
+        )
+        with pytest.raises(ValueError) as excinfo:
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+        assert "did you mean" not in str(excinfo.value)
+
+    def test_unknown_path_qualified_ref(self, tmp_path: Path) -> None:
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("foo"),
+                "alpha/two.toml": _unit_toml("bar", depends_on=["alpha/one.does-not-exist"]),
+            },
+        )
+        with pytest.raises(ValueError, match="Unknown ref 'alpha/one.does-not-exist'"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+    def test_unknown_path_qualified_ref_with_hint(self, tmp_path: Path) -> None:
+        """Close typo on path-qualified ref → 'did you mean' hint."""
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("builder"),
+                "alpha/two.toml": _unit_toml("x", depends_on=["alpha/one.bilder"]),
+            },
+        )
+        with pytest.raises(ValueError, match="did you mean 'alpha/one.builder'"):
+            resolve_refs(merge_tree(walk_tree(tmp_path)))
+
+
+class TestResolverDogfood:
+    def test_resolves_plan_system_refs(self) -> None:
+        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan = resolve_refs(merge_tree(walk_tree(plan_root)))
+        # compile pipeline chain: walker → merger → resolver → validator → sop-bundler
+        assert plan.units["compile/pipeline.merger"].depends_on == ("compile/pipeline.walker",)
+        assert plan.units["compile/pipeline.validator"].depends_on == (
+            "compile/pipeline.resolver",
+        )
+        # compile-cmd depends on two cross-file qualified refs
+        compile_cmd_deps = set(plan.units["cli/compile-cmd.compile-cmd"].depends_on)
+        assert compile_cmd_deps == {
+            "compile/pipeline.validator",
+            "compile/pipeline.sop-bundler",
+        }
+        # status-cmd depends on two cross-file qualified refs
+        status_deps = set(plan.units["cli/status-cmd.status-cmd"].depends_on)
+        assert status_deps == {
+            "cli/compile-cmd.compile-cmd",
+            "runtime/deploy-log.deploy-log",
+        }

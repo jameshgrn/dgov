@@ -1,7 +1,8 @@
-"""Plan tree walker + merger — phases 1-2 of the compile pipeline.
+"""Plan tree walker + merger + resolver — phases 1-3 of the compile pipeline.
 
 Walker reads `_root.toml` + section directories into a PlanTree.
 Merger flattens the tree into a FlatPlan with path-qualified unit IDs.
+Resolver rewrites each unit's `depends_on` to fully-qualified IDs.
 See .dgov/plans/plan-system/DESIGN.md for the full compile pipeline.
 """
 
@@ -9,7 +10,8 @@ from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
 
@@ -40,8 +42,9 @@ class PlanTree:
 class FlatPlan:
     """Result of merging a PlanTree into path-qualified units.
 
-    `depends_on` values on units are raw strings from source TOMLs (bare or
-    path-qualified). The resolver rewrites them to fq_ids in a later stage.
+    Before `resolve_refs`, `depends_on` values on units are raw strings from
+    source TOMLs (bare or path-qualified). After `resolve_refs`, all values
+    are fully-qualified IDs.
     """
 
     plan_root: Path
@@ -146,6 +149,83 @@ def merge_tree(tree: PlanTree) -> FlatPlan:
         source_map=source_map,
         source_mtime_max=mtime_max,
     )
+
+
+def resolve_refs(plan: FlatPlan) -> FlatPlan:
+    """Rewrite each unit's `depends_on` to fully-qualified IDs.
+
+    - Bare ref (no `/`) → resolved within the unit's own file scope.
+    - Path-qualified ref (contains `/`) → looked up directly in the unit map.
+    - Self-references are rejected.
+    - Unknown refs raise with a `did you mean?` hint when possible.
+
+    Returns a new FlatPlan with identical fields except `depends_on` values
+    on each unit are now all fq_ids.
+    """
+    file_scope_to_ids: dict[str, set[str]] = {}
+    for fq_id in plan.units:
+        scope, _ = _split_fq_id(fq_id)
+        file_scope_to_ids.setdefault(scope, set()).add(fq_id)
+
+    resolved_units: dict[str, PlanUnit] = {}
+    for fq_id, unit in plan.units.items():
+        file_scope, _ = _split_fq_id(fq_id)
+        resolved_deps: list[str] = []
+        for ref in unit.depends_on:
+            target = _resolve_ref(ref, fq_id, file_scope, plan.units, file_scope_to_ids)
+            if target == fq_id:
+                raise ValueError(f"Self-reference in {fq_id!r}: depends_on includes itself")
+            resolved_deps.append(target)
+        resolved_units[fq_id] = replace(unit, depends_on=tuple(resolved_deps))
+
+    return replace(plan, units=resolved_units)
+
+
+def _split_fq_id(fq_id: str) -> tuple[str, str]:
+    """Split a path-qualified unit ID into `(file_scope, bare_slug)`.
+
+    Bare slugs cannot contain `.` (enforced by merger), so `rpartition('.')`
+    always splits correctly even if section or file stem contains `.`.
+    """
+    scope, _, bare = fq_id.rpartition(".")
+    return scope, bare
+
+
+def _resolve_ref(
+    ref: str,
+    from_unit: str,
+    from_file_scope: str,
+    all_units: dict[str, PlanUnit],
+    file_scope_to_ids: dict[str, set[str]],
+) -> str:
+    """Resolve a single `depends_on` ref to a fq_id, or raise with a hint."""
+    if "/" in ref:
+        if ref in all_units:
+            return ref
+        hint = _closest_hint(ref, all_units.keys())
+        raise ValueError(f"Unknown ref {ref!r} in depends_on of {from_unit!r}{hint}")
+
+    # Bare slug — same-file scope
+    target = f"{from_file_scope}.{ref}"
+    if target in all_units:
+        return target
+
+    same_file_bares = {_split_fq_id(uid)[1] for uid in file_scope_to_ids.get(from_file_scope, ())}
+    near = get_close_matches(ref, same_file_bares, n=1, cutoff=0.6)
+    if near:
+        hint = f"; did you mean {near[0]!r}?"
+    else:
+        cross_file = [uid for uid in all_units if _split_fq_id(uid)[1] == ref]
+        hint = f"; did you mean {cross_file[0]!r}?" if len(cross_file) == 1 else ""
+    raise ValueError(
+        f"Unknown bare ref {ref!r} in depends_on of {from_unit!r}"
+        f" (same-file scope: {from_file_scope}){hint}"
+    )
+
+
+def _closest_hint(ref: str, candidates: Any) -> str:
+    matches = get_close_matches(ref, candidates, n=1, cutoff=0.6)
+    return f"; did you mean {matches[0]!r}?" if matches else ""
 
 
 def _str_list(value: Any, field: str, context: Path) -> tuple[str, ...]:
