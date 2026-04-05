@@ -248,39 +248,58 @@ def _cmd_watch(project_root: str) -> None:
     import time
 
     click.echo("dgov watch (Ctrl-C to exit)")
-    click.echo("-" * 50)
 
     last_id = 0
+    last_task = ""
     try:
         while True:
             # Detect DB reset (new run started) — last_id would be ahead of max
             current_max = latest_event_id(project_root)
             if current_max < last_id:
-                click.echo("\n--- new run detected ---\n")
+                click.echo("\n  --- new run ---\n")
                 last_id = 0
+                last_task = ""
 
             events = read_events(project_root, after_id=last_id)
             for ev in events:
                 last_id = max(last_id, ev.get("id", 0))
-                click.echo(_format_event(ev))
+                line = _format_event(ev)
+                if line is None:
+                    continue
+
+                # Blank line between tasks
+                task = ev.get("task_slug") or ev.get("slug") or ""
+                event_type = ev.get("event", "")
+                if event_type == "dag_task_dispatched" and last_task:
+                    click.echo("")
+                if task:
+                    last_task = task
+
+                click.echo(line)
 
             time.sleep(0.5)
     except KeyboardInterrupt:
         click.echo("")
 
 
-def _format_event(ev: dict) -> str:
-    """Format a single event for human-readable watch output."""
+def _format_event(ev: dict) -> str | None:
+    """Format a single event. Returns None to suppress."""
     event_type = ev.get("event", "?")
     task_slug = ev.get("task_slug") or ev.get("slug") or ""
     ts_raw = ev.get("ts", "")
-    # Trim to HH:MM:SS
     ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+
+    # Suppress lifecycle done — worker_log done already has the summary
+    if event_type == "task_done":
+        return None
+    # Suppress review_pass — merged line is enough for happy path
+    if event_type == "review_pass":
+        return None
 
     if event_type == "worker_log":
         return _format_worker_log(ts, task_slug, ev)
 
-    # Lifecycle events — compact one-liners
+    # Lifecycle events
     label = _EVENT_LABELS.get(event_type, event_type)
     suffix = ""
     error = ev.get("error")
@@ -290,40 +309,48 @@ def _format_event(ev: dict) -> str:
     if verdict and verdict != "ok":
         suffix = f" ({verdict})"
 
+    # Dispatch gets a header style
+    if event_type == "dag_task_dispatched":
+        agent = ev.get("agent", "")
+        agent_short = agent.rsplit("/", 1)[-1] if agent else ""
+        return f"{ts}  >> {task_slug} ({agent_short})"
+
     return f"{ts} {label:>12s}  {task_slug}{suffix}"
 
 
-def _format_worker_log(ts: str, task_slug: str, ev: dict) -> str:
-    """Format worker_log events — the bulk of watch output."""
+def _format_worker_log(ts: str, task_slug: str, ev: dict) -> str | None:
+    """Format worker_log events. Returns None to suppress."""
     log_type = ev.get("log_type", "")
     content = ev.get("content")
 
     if log_type == "error":
-        return f"{ts}  {'ERROR':>12s}  {task_slug}: {content}"
+        return f"{ts}       ERROR  {task_slug}: {content}"
     if log_type == "done":
-        return f"{ts}  {'done':>12s}  {task_slug}: {content}"
+        # Summary line for task completion
+        text = str(content)[:150] if content else ""
+        return f"{ts}          ok  {task_slug}: {text}"
     if log_type == "thought":
         text = str(content)[:120] if content else ""
-        return f"{ts}  {'thought':>12s}  {task_slug}: {text}"
+        return f"{ts}             {task_slug}: {text}"
     if log_type == "call":
         if isinstance(content, dict):
             tool = content.get("tool", "?")
             args = content.get("args", {})
             summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
-            return f"{ts}  {'call':>12s}  {task_slug}: {tool}({summary})"
-        return f"{ts}  {'call':>12s}  {task_slug}: {content}"
+            return f"{ts}        call  {task_slug}: {tool}({summary})"
+        return f"{ts}        call  {task_slug}: {content}"
     if log_type == "result":
-        if isinstance(content, dict):
+        # Only show failures — success is noise
+        if isinstance(content, dict) and content.get("status") == "failed":
             tool = content.get("tool", "?")
-            status = content.get("status", "?")
-            return f"{ts}  {'result':>12s}  {task_slug}: {tool} → {status}"
-        return f"{ts}  {'result':>12s}  {task_slug}: {content}"
+            return f"{ts}        FAIL  {task_slug}: {tool}"
+        return None
 
-    return f"{ts}  {'worker':>12s}  {task_slug}: [{log_type}] {content}"
+    return f"{ts}             {task_slug}: [{log_type}] {content}"
 
 
 _EVENT_LABELS: dict[str, str] = {
-    "dag_task_dispatched": "dispatch",
+    "dag_task_dispatched": ">>",
     "task_done": "done",
     "task_failed": "FAILED",
     "review_pass": "review ok",
