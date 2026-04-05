@@ -1,15 +1,22 @@
 # `dgov plan status <plan-root>` — show what's pending vs deployed
 
 [tasks.status-cmd]
-summary = "Add `dgov plan status` CLI — show pending vs deployed units for a plan."
+summary = "Add `dgov plan status` CLI — show pending vs deployed units + staleness."
 prompt = """
 Add `plan` command group to src/dgov/cli/__init__.py with `status` subcommand:
 
-Usage: dgov plan status <plan-root-dir>
+Usage: dgov plan status <plan-root-dir> [--json]
 
 Reads:
 - Compiled plan (.dgov/plans/<name>/_compiled.toml) if it exists
 - Deploy log (.dgov/plans/deployed.jsonl)
+- Source tree TOML mtimes (for staleness check)
+
+Staleness check:
+- Compare `source_mtime_max` from _compiled.toml [plan] against max mtime
+  of current source TOMLs under <plan-root>
+- If any source is newer than source_mtime_max → print warning:
+  "compile stale; rerun 'dgov compile <plan-root>'"
 
 Output (human):
   Plan: arch-refactor
@@ -19,9 +26,11 @@ Output (human):
     ○ coupling/decouple.worker           (pending, blocked by: ...)
     ...
 
-Output (--json): machine-readable struct with same info.
+If _compiled.toml absent → print "not compiled; run 'dgov compile <plan-root>'".
+
+Output (--json): machine-readable struct with same info + `stale: bool` flag.
 """
-commit_message = "Add `dgov plan status` CLI"
+commit_message = "Add `dgov plan status` CLI with staleness detection"
 depends_on = ["cli/compile-cmd.compile-cmd", "runtime/deploy-log.deploy-log"]
 files.edit = ["src/dgov/cli/__init__.py"]
 files.create = ["tests/test_cli_plan_status.py"]

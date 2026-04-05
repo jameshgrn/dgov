@@ -11,8 +11,3 @@
 name = "plan-system"
 summary = "Build plan-tree compiler + SOP-bundler + deploy pipeline."
 sections = ["compile", "cli", "runtime"]
-
-# SOPs are markdown worker-context docs (.dgov/sops/*.md). Governor picks
-# per-unit at compile time. Empty at bootstrap — no SOPs authored yet.
-# Starter set (testing, linting, commits, errors, style) is a follow-up session.
-sops = []

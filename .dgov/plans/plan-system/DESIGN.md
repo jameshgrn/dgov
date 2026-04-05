@@ -13,75 +13,113 @@ deployment deterministic at coarse-grained scale.
 
 | Term | Meaning |
 |---|---|
-| **SOP** | Markdown worker-context doc. Not runnable. Injected into worker prompt at dispatch. |
-| **Invariant** | Hardcoded compile check (cycle, conflict, bad ref). Fails compile, no override. |
+| **SOP** | Markdown worker-context doc. Not runnable. Prepended to unit prompts at compile. |
+| **Invariant** | Hardcoded compile check. Fails compile, no override. |
 | **Plan tree** | Directory of TOML unit specs, organized by section. |
 | **Unit** | Single worker task: prompt, file claims, depends_on. |
-| **Governor** | Conversational AI (Claude Code). Authors plans + SOPs, picks SOPs per unit at compile. |
-| **Worker** | Disposable LLM (Kimi) dispatched into a git worktree for one unit. |
+| **Root unit** | Unit with empty `depends_on`. |
+| **Governor** | Conversational AI. Authors plans + SOPs, picks SOPs per unit at compile. |
+| **Worker** | Disposable LLM dispatched into a git worktree for one unit. |
 | **Compile** | walker→merger→resolver→validator→sop-bundler → `_compiled.toml`. |
-| **Deploy** | Run compiled plan, dispatch units, record to `deployed.jsonl`. |
+| **Deploy** | Run compiled plan via `dgov run`, append to `deployed.jsonl`. |
 
 ## Tree structure
 
 ```
 .dgov/plans/<plan-name>/
-  _root.toml            # [plan] name, sections=[], sops=[]
-  compile/              # compile pipeline machinery
-  runtime/              # runtime/settlement feature tasks
-  cli/                  # CLI commands
+  _root.toml            # [plan] name, summary, sections=[]
+  compile/              # flat depth-1 directory of unit files
+  runtime/
+  cli/
+  _compiled.toml        # output of compile; flat PlanSpec format
 ```
 
-**Unit IDs**: path-qualified globally — `section/file.slug`
-**Bare slugs**: same-file scope only. Cross-file refs must contain `/` (path-qualified).
+**Walker is flat, depth-1.** Nested subdirs under sections are ignored for v0.
+**Declared section missing its dir** → hard error.
+**Dir without a declared section** → silently ignored.
+
+## Slug grammar
+
+- **Bare slug**: `[A-Za-z0-9_-]+`. No `.`, no `/`. Same-file scope.
+- **Path-qualified unit ID**: `<section>/<file-stem>.<bare-slug>`.
+- **Cross-file ref**: contains `/` → path-qualified. Bare ref = same-file only.
+- Unit IDs appear in TOML as quoted keys: `[tasks."compile/pipeline.merger"]`.
 
 ## Compile pipeline
 
 ```
-walker      → reads _root.toml, enumerates sections, collects *.toml files
-merger      → flattens, assigns path-qualified IDs (section/file.slug)
+walker      → reads _root.toml, enumerates sections, collects *.toml files (depth-1)
+merger      → assigns path-qualified IDs; detects within-file slug dupes
 resolver    → resolves depends_on (bare=same-file, qualified=cross-file)
-validator   → hardcoded invariant checks: cycles, conflicts, bad refs, self-refs
-sop-bundler → governor picks SOPs per unit, injects into system_prompt
-              outputs _compiled.toml (flat, dispatch-ready)
+validator   → cycles, unreachable units
+sop-bundler → governor picks SOPs per unit; prepends SOP bodies to each prompt
+              outputs _compiled.toml (flat PlanSpec format, dispatch-ready)
 ```
 
-**sop-bundler** issues ONE governor call that sees all units + all available SOPs,
-emits unit→[sops] mapping. Mapping cached in `_compiled.toml` for deterministic
-re-runs. Governor is load-bearing — no fallback.
+## Compile output format
+
+`_compiled.toml` is the existing flat PlanSpec format — `[plan] + [tasks.<id>]`
+— with three additions:
+
+- Unit IDs as quoted TOML table keys (e.g. `[tasks."compile/pipeline.merger"]`)
+- Each unit's `prompt` = concatenated SOP bodies + `\n\n` + original unit prompt
+- `[plan]` gains `source_mtime_max` (ISO timestamp, newest source TOML) and
+  `sop_set_hash` (hash of sorted SOP `(filename, title)` pairs)
+- Each unit gains `sop_mapping` (list of SOP names picked by governor; cached
+  to skip governor re-call when `sop_set_hash` is unchanged)
+
+**Dispatch**: `dgov run .dgov/plans/<name>/_compiled.toml`. Reuses existing
+runner, persistence, settlement — no new dispatch path.
+
+## Integration with existing plan.py
+
+Tree compile outputs `_compiled.toml` that parses directly via existing
+`parse_plan_file` → `PlanSpec` → `compile_plan` → `DagDefinition`.
+
+- **Tree validator** adds: cycles, unreachable units, self-refs, unresolved refs, within-file slug dupes.
+- **Existing `validate_plan`** continues to check: file-claim conflicts between independent units.
+- No duplication — each check lives in one place.
+
+Claim semantics (both validators): `create ∪ edit ∪ delete`. `read` is not a
+claim. Lifecycle ordering (create→edit→delete within a chain) is out of scope
+for v0.
 
 ## SOPs
 
-Project-local at `.dgov/sops/*.md`. Prose, not runnable. Python in markdown is
-illustrative, not executed. Examples:
+Project-local at `.dgov/sops/*.md`. Prose only. Governor selects via one LLM
+call per compile, seeing all units + all SOP titles/summaries. Mapping cached
+in `_compiled.toml` for deterministic re-runs.
 
-- `testing.md` — pytest conventions, what to test, what to mock
-- `linting.md` — ruff order (lint→format), zero warnings, inline-ignore justification
-- `commits.md` — imperative mood, ≤72 char subject, one logical change
-- `errors.md` — fail fast, clear messages, no silent swallow
-- `style.md` — no commented-out code, absolute paths, explicit > clever
+**SopBundler protocol**: `LLMSopBundler` (production, no fallback) +
+`IdentityBundler` (test stub, returns empty mapping). `dgov compile --dry-run`
+selects the stub. Production path has no fallback — governor call is
+load-bearing by design.
 
-Governor attaches per unit. When no SOPs exist, bundler no-ops (unit prompts
-unchanged).
+**Cache key**: `sop_set_hash` = SHA256 of sorted `(filename, title)` pairs.
+Add/remove/rename a SOP, or edit a title → miss (governor re-called). Edits
+to SOP bodies do NOT invalidate — workers always read current bodies at
+compile. `dgov compile --recompile-sops` forces a miss.
 
-### Promotion (draft → canonical)
+**Empty `.dgov/sops/`**: bundler no-ops, units keep original prompts.
+
+### Promotion
 Governor suggests SOPs for promotion when stable; human confirms. Canonical
-SOPs land in the project's default set for new plans.
+SOPs land in the project's default set.
 
 ### SOPs are NOT policy checks
-SOPs are thought artifacts — reference for workers. Enforcement comes from
-settlement gates (lint, test, sentrux), not SOP validation.
+Enforcement lives in settlement gates (lint, test, sentrux), not SOP validation.
 
 ## Invariants (hardcoded compile checks)
 
 Fixed set in `src/dgov/plan_tree.py`. No plugin system. Fail compile, no override.
 
-1. Dep cycles
-2. File-claim conflicts between independent units
-3. Unresolved depends_on refs
-4. Self-references
+1. Within-file slug duplicates (merger)
+2. Unresolved `depends_on` refs (resolver)
+3. Self-references (resolver)
+4. Dep cycles (validator)
+5. Unreachable units — no path from any root unit (validator)
 
-Analogous to a type-checker's built-in errors.
+File-claim conflicts are enforced post-compile by existing `validate_plan`.
 
 ## Deploy log
 
@@ -90,6 +128,12 @@ Analogous to a type-checker's built-in errors.
 ```json
 {"plan": "arch-refactor", "unit": "modularity/extract.runner", "sha": "abc", "ts": "..."}
 ```
+
+## Staleness detection
+
+`dgov plan status` compares `source_mtime_max` (on `_compiled.toml`) to current
+source TOML mtimes. If any source is newer → warn:
+`compile stale; rerun 'dgov compile <plan-root>'`.
 
 ## Status (v0 / branch state)
 
@@ -102,6 +146,8 @@ Analogous to a type-checker's built-in errors.
 - Canonical SOP library (follow-up: decompose CLAUDE.md → ~5 files)
 - `dgov init --with-sops` wizard
 - Global SOP layering (`~/.config/dgov/sops/`)
+- Subdirs under sections (walker is flat depth-1)
+- Lifecycle ordering (create→edit→delete within a chain)
 - Drift/kill instrumentation
 - Semantic review gate
 - Resume/checkpoint
