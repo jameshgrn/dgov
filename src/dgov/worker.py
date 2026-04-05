@@ -387,35 +387,21 @@ def get_tool_spec() -> list[dict]:
     ]
 
 
-def run_worker(goal: str, worktree: Path, model: str, project_config_json: str = "") -> None:
-    api_key = os.environ.get("FIREWORKS_API_KEY")
-    if not api_key:
-        WorkerEvent("error", "FIREWORKS_API_KEY missing").emit()
-        sys.exit(1)
-
-    # Load project config — from JSON arg (passed by headless.py) or from worktree
+def _resolve_config(worktree: Path, project_config_json: str) -> _ProjectConfig:
+    """Load config from the JSON arg (passed by headless.py) or fall back to worktree TOML."""
     if project_config_json:
         try:
-            d = json.loads(project_config_json)
-            config = _ProjectConfig(**d)
+            return _ProjectConfig(**json.loads(project_config_json))
         except Exception:
-            config = _load_project_config(worktree)
-    else:
-        config = _load_project_config(worktree)
+            pass
+    return _load_project_config(worktree)
 
-    client = OpenAI(base_url="https://api.fireworks.ai/inference/v1", api_key=api_key)
-    actuators = AtomicTools(worktree, config)
 
-    def _cleanup() -> None:
-        shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
-
-    # Pillar #2: The Atomic Attempt includes rules injection
+def _build_system_prompt(worktree: Path, config: _ProjectConfig) -> str:
+    """Construct the worker's system prompt with rules, conventions, and env info."""
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
-    rules_context = ""
-    if rules_path.exists():
-        rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
+    rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}" if rules_path.exists() else ""
 
-    # Project conventions
     project_section = (
         f"\n\nPROJECT:\n"
         f"- Language: {config.language}\n"
@@ -429,30 +415,60 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
         for key, val in config.conventions.items():
             project_section += f"- {key}: {val}\n"
 
-    # Environment info
-    python_path = sys.executable
     env_info = (
         f"\n\nENVIRONMENT:\n"
-        f"- Python: {python_path}\n"
+        f"- Python: {sys.executable}\n"
         f"- Do NOT install packages or create venvs. Everything is pre-installed.\n"
         f"- Use relative paths for file tools (e.g. 'src/dgov/foo.py' not absolute).\n"
         f"- Use run_tests, lint_check, format_file instead of raw bash for standard ops.\n"
         f"- Use grep, glob, list_dir to navigate the codebase efficiently.\n"
     )
 
+    return (
+        f"You are a dgov Atomic Worker. Worktree: {worktree}"
+        f"{rules_context}{project_section}{env_info}"
+        f"\nStrictly use tools. Call 'done' when complete."
+    )
+
+
+def _execute_tool_call(call, actuators: AtomicTools) -> tuple[str, bool]:
+    """Execute one tool call. Returns (result_text, is_done_signal)."""
+    name = call.function.name
+    args = json.loads(call.function.arguments)
+    WorkerEvent("call", {"tool": name, "args": args}).emit()
+
+    if name == "done":
+        WorkerEvent("done", args.get("summary")).emit()
+        return args.get("summary", ""), True
+
+    func = getattr(actuators, name, None)
+    result = func(**args) if func else f"Error: Unknown tool {name}"
+    WorkerEvent(
+        "result",
+        {"tool": name, "status": "failed" if result.startswith("Error:") else "success"},
+    ).emit()
+    return result, False
+
+
+def run_worker(goal: str, worktree: Path, model: str, project_config_json: str = "") -> None:
+    api_key = os.environ.get("FIREWORKS_API_KEY")
+    if not api_key:
+        WorkerEvent("error", "FIREWORKS_API_KEY missing").emit()
+        sys.exit(1)
+
+    config = _resolve_config(worktree, project_config_json)
+    client = OpenAI(base_url="https://api.fireworks.ai/inference/v1", api_key=api_key)
+    actuators = AtomicTools(worktree, config)
+
+    def _cleanup() -> None:
+        shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
+
     messages = [
-        {
-            "role": "system",
-            "content": (
-                f"You are a dgov Atomic Worker. Worktree: {worktree}"
-                f"{rules_context}{project_section}{env_info}"
-                f"\nStrictly use tools. Call 'done' when complete."
-            ),
-        },
+        {"role": "system", "content": _build_system_prompt(worktree, config)},
         {"role": "user", "content": goal},
     ]
 
-    for step in range(30):  # Pillar #10: Fail-closed via iteration limit
+    for _ in range(30):  # Pillar #10: Fail-closed via iteration limit
         try:
             resp = client.chat.completions.create(
                 model=model, messages=messages, tools=get_tool_spec(), tool_choice="auto"
@@ -476,25 +492,17 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
             continue
 
         for call in msg.tool_calls:
-            name = call.function.name
-            args = json.loads(call.function.arguments)
-            WorkerEvent("call", {"tool": name, "args": args}).emit()
-
-            if name == "done":
-                WorkerEvent("done", args.get("summary")).emit()
+            result, is_done = _execute_tool_call(call, actuators)
+            if is_done:
                 _cleanup()
                 sys.exit(0)
-
-            # Execute tool
-            func = getattr(actuators, name, None)
-            result = func(**args) if func else f"Error: Unknown tool {name}"
-
-            WorkerEvent(
-                "result",
-                {"tool": name, "status": "failed" if result.startswith("Error:") else "success"},
-            ).emit()
             messages.append(
-                {"role": "tool", "tool_call_id": call.id, "name": name, "content": result}
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "name": call.function.name,
+                    "content": result,
+                }
             )
 
     WorkerEvent("error", "Exceeded max iterations (30)").emit()

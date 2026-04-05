@@ -150,89 +150,96 @@ class EventDagRunner:
         if not os.environ.get("FIREWORKS_API_KEY"):
             raise RuntimeError("FIREWORKS_API_KEY not set")
 
+    def _task_state_snapshot(self) -> dict[str, str]:
+        return {slug: state.value for slug, state in self.kernel.task_states.items()}
+
+    async def _gather_dispatch_results(
+        self, dispatch_coros: list[tuple[str, object]]
+    ) -> list[DagAction]:
+        """Await dispatch/merge coros, convert exceptions to FAIL actions."""
+        next_actions: list[DagAction] = []
+        coros = [c for _, c in dispatch_coros]
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        for (task_slug, _), result in zip(dispatch_coros, results):
+            if isinstance(result, BaseException):
+                logger.error("Dispatch/merge failed for %s: %s", task_slug, result)
+                next_actions.extend(
+                    self.kernel.handle(TaskGovernorResumed(task_slug, GovernorAction.FAIL))
+                )
+            elif isinstance(result, list):
+                next_actions.extend(result)
+        return next_actions
+
+    async def _process_actions(
+        self, actions: list[DagAction]
+    ) -> tuple[list[DagAction], dict[str, str] | None]:
+        """Fan out kernel actions. Returns (next_actions, final_result_if_done)."""
+        dispatch_coros: list[tuple[str, object]] = []
+        next_actions: list[DagAction] = []
+
+        for action in actions:
+            if isinstance(action, DispatchTask):
+                dispatch_coros.append((action.task_slug, self._dispatch(action)))
+            elif isinstance(action, MergeTask):
+                dispatch_coros.append((action.task_slug, self._merge(action)))
+            elif isinstance(action, ReviewTask):
+                next_actions.extend(self._run_review(action))
+            elif isinstance(action, InterruptGovernor):
+                next_actions.extend(self._handle_interrupt(action))
+            elif isinstance(action, DagDone):
+                return [], self._task_state_snapshot()
+
+        if dispatch_coros:
+            next_actions.extend(await self._gather_dispatch_results(dispatch_coros))
+        return next_actions, None
+
+    def _handle_worker_exit(self, exit_event: WorkerExit) -> list[DagAction]:
+        """Convert a worker exit into kernel actions, recording errors and emitting events."""
+        self._pending_dispatches.discard(exit_event.task_slug)
+        self._worker_tasks.pop(exit_event.task_slug, None)
+        status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
+
+        if exit_event.last_error:
+            self._task_errors[exit_event.task_slug] = exit_event.last_error
+
+        actions = self.kernel.handle(
+            TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
+        )
+        emit_event(
+            self.session_root,
+            "task_done" if status == TaskState.DONE else "task_failed",
+            exit_event.pane_slug,
+            task_slug=exit_event.task_slug,
+            error=exit_event.last_error if status == TaskState.FAILED else None,
+        )
+        return actions
+
     async def _run_loop(self) -> dict[str, str]:
         """Main event loop — separated for graceful shutdown handling."""
         actions = self.kernel.start()
 
         while True:
-            # 1. Process Actions from Kernel
             if actions:
-                dispatch_coros: list[tuple[str, asyncio.coroutines]] = []
-                next_actions: list[DagAction] = []
-
-                for action in actions:
-                    if isinstance(action, DispatchTask):
-                        dispatch_coros.append((action.task_slug, self._dispatch(action)))
-                    elif isinstance(action, MergeTask):
-                        dispatch_coros.append((action.task_slug, self._merge(action)))
-                    elif isinstance(action, ReviewTask):
-                        next_actions.extend(self._run_review(action))
-                    elif isinstance(action, InterruptGovernor):
-                        next_actions.extend(self._handle_interrupt(action))
-                    elif isinstance(action, DagDone):
-                        return {
-                            slug: state.value for slug, state in self.kernel.task_states.items()
-                        }
-
-                if dispatch_coros:
-                    coros = [c for _, c in dispatch_coros]
-                    results = await asyncio.gather(*coros, return_exceptions=True)
-                    for (task_slug, _), result in zip(dispatch_coros, results):
-                        if isinstance(result, BaseException):
-                            logger.error("Dispatch/merge failed for %s: %s", task_slug, result)
-                            next_actions.extend(
-                                self.kernel.handle(
-                                    TaskGovernorResumed(task_slug, GovernorAction.FAIL)
-                                )
-                            )
-                        elif isinstance(result, list):
-                            next_actions.extend(result)
-
+                next_actions, final = await self._process_actions(actions)
+                if final is not None:
+                    return final
                 if next_actions:
                     actions = next_actions
                     continue
-
                 actions = []
 
-            if self.kernel.done:
+            if self.kernel.done or self._shutdown_event.is_set():
                 break
 
-            # Check for shutdown request
-            if self._shutdown_event.is_set():
-                logger.info("Shutdown detected — breaking main loop")
-                break
-
-            # 2. Wait for any Worker to finish (Hot-path)
+            # Wait for any worker to finish (hot-path)
             try:
-                exit_event = await asyncio.wait_for(
-                    self._event_queue.get(),
-                    timeout=5.0,
-                )
-                self._pending_dispatches.discard(exit_event.task_slug)
-                self._worker_tasks.pop(exit_event.task_slug, None)
-                status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
-
-                if exit_event.last_error:
-                    self._task_errors[exit_event.task_slug] = exit_event.last_error
-
-                actions = self.kernel.handle(
-                    TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
-                )
-                emit_event(
-                    self.session_root,
-                    "task_done" if status == TaskState.DONE else "task_failed",
-                    exit_event.pane_slug,
-                    task_slug=exit_event.task_slug,
-                    error=exit_event.last_error if status == TaskState.FAILED else None,
-                )
-                continue
-
+                exit_event = await asyncio.wait_for(self._event_queue.get(), timeout=5.0)
+                actions = self._handle_worker_exit(exit_event)
             except asyncio.TimeoutError:
                 if not self._pending_dispatches and self.kernel.done:
                     break
-                continue
 
-        return {slug: state.value for slug, state in self.kernel.task_states.items()}
+        return self._task_state_snapshot()
 
     def _run_review(self, action: ReviewTask) -> list[DagAction]:
         """Execute fast review gate — git sanity checks (microseconds)."""

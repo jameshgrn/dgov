@@ -109,6 +109,42 @@ def watch_cmd() -> None:
     _cmd_watch(str(Path.cwd()))
 
 
+def _format_unit_files(unit: object) -> str:
+    """Render a PlanUnit's file claims as 'create=[...], edit=[...], delete=[...]'."""
+    parts = []
+    for kind in ("create", "edit", "delete"):
+        files = getattr(unit.files, kind)  # type: ignore[attr-defined]
+        if files:
+            parts.append(f"{kind}={list(files)}")
+    return ", ".join(parts)
+
+
+def _echo_plan_summary(plan: object, errors: list, warnings: list) -> None:
+    """Print human-readable plan summary with errors/warnings."""
+    click.echo(f"Plan: {plan.name}")  # type: ignore[attr-defined]
+    click.echo(f"Tasks: {len(plan.units)}")  # type: ignore[attr-defined]
+    for slug, unit in plan.units.items():  # type: ignore[attr-defined]
+        deps = f" (depends: {', '.join(unit.depends_on)})" if unit.depends_on else ""
+        click.echo(f"  - {slug}: {unit.summary}{deps}")
+        files_str = _format_unit_files(unit)
+        if files_str:
+            click.echo(f"    files: {files_str}")
+
+    if errors:
+        click.echo("")
+        for issue in errors:
+            click.echo(f"  ERROR: {issue.message}", err=True)
+    if warnings:
+        click.echo("")
+        for issue in warnings:
+            click.echo(f"  WARNING: {issue.message}")
+
+    if errors:
+        click.echo(f"\nValidation FAILED ({len(errors)} error(s))")
+    else:
+        click.echo("\nValidation passed.")
+
+
 @cli.command(name="validate")
 @click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
 def validate_cmd(plan_file: Path) -> None:
@@ -135,44 +171,20 @@ def validate_cmd(plan_file: Path) -> None:
     warnings = [i for i in issues if i.severity == "warning"]
 
     if want_json():
-        data: dict[str, object] = {
-            "valid": len(errors) == 0,
-            "name": plan.name,
-            "tasks": len(plan.units),
-            "errors": [{"message": i.message, "unit": i.unit} for i in errors],
-            "warnings": [{"message": i.message, "unit": i.unit} for i in warnings],
-        }
-        click.echo(json.dumps(data, indent=2))
+        click.echo(
+            json.dumps(
+                {
+                    "valid": len(errors) == 0,
+                    "name": plan.name,
+                    "tasks": len(plan.units),
+                    "errors": [{"message": i.message, "unit": i.unit} for i in errors],
+                    "warnings": [{"message": i.message, "unit": i.unit} for i in warnings],
+                },
+                indent=2,
+            )
+        )
     else:
-        click.echo(f"Plan: {plan.name}")
-        click.echo(f"Tasks: {len(plan.units)}")
-        for slug, unit in plan.units.items():
-            deps = f" (depends: {', '.join(unit.depends_on)})" if unit.depends_on else ""
-            files_parts = []
-            if unit.files.create:
-                files_parts.append(f"create={list(unit.files.create)}")
-            if unit.files.edit:
-                files_parts.append(f"edit={list(unit.files.edit)}")
-            if unit.files.delete:
-                files_parts.append(f"delete={list(unit.files.delete)}")
-            files_str = f"  files: {', '.join(files_parts)}" if files_parts else ""
-            click.echo(f"  - {slug}: {unit.summary}{deps}")
-            if files_str:
-                click.echo(f"  {files_str}")
-
-        if errors:
-            click.echo("")
-            for issue in errors:
-                click.echo(f"  ERROR: {issue.message}", err=True)
-        if warnings:
-            click.echo("")
-            for issue in warnings:
-                click.echo(f"  WARNING: {issue.message}")
-
-        if errors:
-            click.echo(f"\nValidation FAILED ({len(errors)} error(s))")
-        else:
-            click.echo("\nValidation passed.")
+        _echo_plan_summary(plan, errors, warnings)
 
     if errors:
         raise click.exceptions.Exit(code=1)
