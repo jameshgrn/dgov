@@ -491,7 +491,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
 
             WorkerEvent(
                 "result",
-                {"tool": name, "status": "success" if "Error" not in result else "failed"},
+                {"tool": name, "status": "failed" if result.startswith("Error:") else "success"},
             ).emit()
             messages.append(
                 {"role": "tool", "tool_call_id": call.id, "name": name, "content": result}
