@@ -26,8 +26,8 @@ Support --json flag for machine-readable output.
 """
 commit_message = "Add `dgov compile` CLI command"
 depends_on = [
-  "compile/validator.validator",
-  "compile/sop-bundler.sop-bundler",
+  "compile/pipeline.validator",
+  "compile/pipeline.sop-bundler",
 ]
 files.edit = ["src/dgov/cli/__init__.py"]
 files.create = ["tests/test_cli_compile.py"]

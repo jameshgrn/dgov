@@ -1,0 +1,112 @@
+# Compile pipeline: walker → merger → resolver → validator → sop-bundler.
+# All five stages edit the same module (src/dgov/plan_tree.py + sop_bundler.py),
+# so they live in one file. Depends_on refs are bare (same-file scope).
+
+[tasks.walker]
+summary = "Walk a hybrid plan tree: read _root.toml, enumerate sections, collect child TOMLs."
+prompt = """
+Implement `src/dgov/plan_tree.py` with a function that walks a hybrid plan tree:
+
+1. Read `_root.toml` at the given plan-root path
+2. Parse `[plan]` metadata: name, summary, sections, sops
+3. For each section in `sections`, walk the matching subdirectory
+4. Collect all `*.toml` files (excluding `_root.toml` and any `_`-prefixed files)
+5. Return a `PlanTree` dataclass with: root_meta, section_files (dict[section, list[Path]])
+
+Must:
+- Skip hidden files and `_`-prefixed files
+- Fail loudly if a declared section has no corresponding dir
+- Not parse child TOMLs yet (that's the merger's job)
+- Use pathlib, no os.walk
+"""
+commit_message = "Add hybrid plan tree walker"
+files.create = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.merger]
+summary = "Merge all child TOMLs into one flat unit dict with path-qualified IDs."
+prompt = """
+Extend `src/dgov/plan_tree.py` with a merger function:
+
+1. Take PlanTree output from walker
+2. For each child TOML file, parse its `[tasks.*]` tables
+3. For each task, assign a fully-qualified ID: `<section>/<stem>.<bare-slug>`
+   e.g. tasks.merger in compile/pipeline.toml → `compile/pipeline.merger`
+4. Detect duplicate bare slugs WITHIN a single file (fail compile)
+5. Return a `FlatPlan` with: units (dict[fq_id, UnitSpec]), source_map (fq_id → file path)
+
+Cross-file slug collisions are fine — path qualification guarantees uniqueness.
+Only flag WITHIN-FILE duplicates.
+
+Do NOT resolve depends_on refs yet — that's the resolver's job.
+"""
+commit_message = "Add plan tree merger with path-qualified IDs"
+depends_on = ["walker"]
+files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.resolver]
+summary = "Resolve depends_on refs in a FlatPlan to fully-qualified IDs."
+prompt = """
+Extend `src/dgov/plan_tree.py` with a depends_on resolver:
+
+For each unit's depends_on list:
+- If ref contains `/` → path-qualified (`section/file.slug`), resolve to matching fq_id directly
+- If ref is bare slug (no `/`) → assume same file; prepend the unit's own file scope
+- Fail compile if ref doesn't resolve to any known unit
+- Replace original depends_on with resolved fq_id list
+
+Edge cases:
+- Self-reference: error
+- Unknown ref: error with 'did you mean?' suggestion (closest match by Levenshtein)
+- Forward refs within a file: allowed (scope is file, order doesn't matter yet)
+
+Return ResolvedPlan (same as FlatPlan but with resolved deps).
+"""
+commit_message = "Add depends_on resolver for path-qualified refs"
+depends_on = ["merger"]
+files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.validator]
+summary = "Validate the resolved plan DAG: cycles, unreachable units, shared-file invariants."
+prompt = """
+Extend `src/dgov/plan_tree.py` with DAG validation:
+
+1. Cycle detection via DFS — report all cycles found, not just first
+2. Unreachable unit detection (units with no path from any root unit)
+3. File-claim collision map: which units touch which files
+4. Return ValidationReport: {cycles, unreachable, file_claims_map}
+
+Do NOT enforce dep-closure or tests-accompany-source here — those are SOP
+checks, not compiler invariants. Compiler validates STRUCTURE. SOPs validate
+POLICY.
+
+Return the full report even if violations exist — caller decides what's fatal.
+"""
+commit_message = "Add DAG validator with cycle + reachability checks"
+depends_on = ["resolver"]
+files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.sop-bundler]
+summary = "Bundle markdown SOPs into per-unit system prompts at compile time."
+prompt = """
+Extend src/dgov/plan_tree.py (or new src/dgov/sop_bundler.py) with:
+
+def bundle_sops(plan, sops_dir: Path) -> CompiledPlan:
+    1. Read all .dgov/sops/*.md files (if none, return plan with empty bundling)
+    2. Parse each: front-matter name, title, body (prose)
+    3. ONE governor LLM call sees (all units, all SOP titles+summaries)
+       → emits mapping {unit_id: [sop_name, ...]}
+    4. For each unit, build system_prompt = base + concat(selected SOP bodies) + unit.prompt
+    5. Cache the unit→[sops] mapping in _compiled.toml (deterministic re-runs)
+    6. Return CompiledPlan with system_prompt + sop_bundle per unit
+
+Governor call is load-bearing — no fallback. If LLM unavailable, fail compile.
+
+Notes:
+- SOPs are markdown, NOT runnable; no check() functions
+- Python in SOP markdown is illustrative (fenced blocks), not executed
+- When .dgov/sops/ is empty, bundler no-ops (units keep original prompts)
+- Mapping is cached so second compile of same plan + same SOPs is deterministic
+"""
+commit_message = "Add SOP bundler: inject markdown SOPs into unit prompts at compile"
+depends_on = ["validator"]
+files.create = ["src/dgov/sop_bundler.py", "tests/test_sop_bundler.py"]
