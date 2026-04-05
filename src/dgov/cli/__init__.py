@@ -282,12 +282,16 @@ def _cmd_watch(project_root: str) -> None:
         click.echo("")
 
 
+def _dim(text: str) -> str:
+    return click.style(text, dim=True)
+
+
 def _format_event(ev: dict) -> str | None:
     """Format a single event. Returns None to suppress."""
     event_type = ev.get("event", "?")
     task_slug = ev.get("task_slug") or ev.get("slug") or ""
     ts_raw = ev.get("ts", "")
-    ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+    ts = _dim(ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw)
 
     # Suppress lifecycle done — worker_log done already has the summary
     if event_type == "task_done":
@@ -299,23 +303,35 @@ def _format_event(ev: dict) -> str | None:
     if event_type == "worker_log":
         return _format_worker_log(ts, task_slug, ev)
 
-    # Lifecycle events
-    label = _EVENT_LABELS.get(event_type, event_type)
-    suffix = ""
-    error = ev.get("error")
-    if error:
-        suffix = f" — {error[:100]}"
-    verdict = ev.get("verdict")
-    if verdict and verdict != "ok":
-        suffix = f" ({verdict})"
-
-    # Dispatch gets a header style
+    # Dispatch header
     if event_type == "dag_task_dispatched":
         agent = ev.get("agent", "")
         agent_short = agent.rsplit("/", 1)[-1] if agent else ""
-        return f"{ts}  >> {task_slug} ({agent_short})"
+        return (
+            f"{ts}  {click.style('>>', bold=True)} "
+            f"{click.style(task_slug, bold=True)} "
+            f"{_dim(f'({agent_short})')}"
+        )
 
-    return f"{ts} {label:>12s}  {task_slug}{suffix}"
+    # Failure events
+    if event_type in ("task_failed", "review_fail", "task_merge_failed"):
+        label = _EVENT_LABELS.get(event_type, event_type)
+        suffix = ""
+        error = ev.get("error")
+        if error:
+            suffix = f" — {error[:100]}"
+        verdict = ev.get("verdict")
+        if verdict and verdict != "ok":
+            suffix = f" ({verdict})"
+        return f"{ts} {click.style(f'{label:>12s}', fg='red')}  {task_slug}{suffix}"
+
+    # Merged
+    if event_type == "merge_completed":
+        return f"{ts} {click.style('      merged', fg='green')}  {task_slug}"
+
+    # Everything else
+    label = _EVENT_LABELS.get(event_type, event_type)
+    return f"{ts} {label:>12s}  {task_slug}"
 
 
 def _format_worker_log(ts: str, task_slug: str, ev: dict) -> str | None:
@@ -324,29 +340,27 @@ def _format_worker_log(ts: str, task_slug: str, ev: dict) -> str | None:
     content = ev.get("content")
 
     if log_type == "error":
-        return f"{ts}       ERROR  {task_slug}: {content}"
+        return f"{ts} {click.style('      ERROR', fg='red', bold=True)}  {task_slug}: {content}"
     if log_type == "done":
-        # Summary line for task completion
         text = str(content)[:150] if content else ""
-        return f"{ts}          ok  {task_slug}: {text}"
+        return f"{ts} {click.style('         ok', fg='green')}  {task_slug}: {text}"
     if log_type == "thought":
         text = str(content)[:120] if content else ""
-        return f"{ts}             {task_slug}: {text}"
+        return f"{ts}  {_dim(f'           {task_slug}: {text}')}"
     if log_type == "call":
         if isinstance(content, dict):
             tool = content.get("tool", "?")
             args = content.get("args", {})
             summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
-            return f"{ts}        call  {task_slug}: {tool}({summary})"
-        return f"{ts}        call  {task_slug}: {content}"
+            return f"{ts} {_dim('       call')}  {task_slug}: {tool}({_dim(summary)})"
+        return f"{ts} {_dim('       call')}  {task_slug}: {content}"
     if log_type == "result":
-        # Only show failures — success is noise
         if isinstance(content, dict) and content.get("status") == "failed":
             tool = content.get("tool", "?")
-            return f"{ts}        FAIL  {task_slug}: {tool}"
+            return f"{ts} {click.style('       FAIL', fg='red')}  {task_slug}: {tool}"
         return None
 
-    return f"{ts}             {task_slug}: [{log_type}] {content}"
+    return f"{ts}  {_dim(f'           {task_slug}: [{log_type}] {content}')}"
 
 
 _EVENT_LABELS: dict[str, str] = {
