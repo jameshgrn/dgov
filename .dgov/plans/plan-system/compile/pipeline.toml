@@ -66,22 +66,25 @@ depends_on = ["merger"]
 files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
 
 [tasks.validator]
-summary = "Validate the resolved plan DAG: cycles, unreachable units, shared-file invariants."
+summary = "Validate the resolved plan DAG: cycles, reachability, file-claim ordering."
 prompt = """
 Extend `src/dgov/plan_tree.py` with DAG validation:
 
 1. Cycle detection via DFS — report all cycles found, not just first
 2. Unreachable unit detection (units with no path from any root unit)
 3. File-claim collision map: which units touch which files
-4. Return ValidationReport: {cycles, unreachable, file_claims_map}
+4. File-claim ordering check: for every pair of units claiming the same file,
+   one must be a transitive ancestor of the other. Report unordered pairs
+   (concurrent clobber risk) as violations.
+5. Return ValidationReport: {cycles, unreachable, file_claims_map, unordered_collisions}
 
-Do NOT enforce dep-closure or tests-accompany-source here — those are SOP
-checks, not compiler invariants. Compiler validates STRUCTURE. SOPs validate
-POLICY.
+Compiler validates STRUCTURE only (correctness, not policy). Project-specific
+rules like tests-accompany-source don't live here — they belong in settlement
+gates (diff-level, post-dispatch) or future project.toml toggles.
 
 Return the full report even if violations exist — caller decides what's fatal.
 """
-commit_message = "Add DAG validator with cycle + reachability checks"
+commit_message = "Add DAG validator with cycle, reachability, file-claim ordering"
 depends_on = ["resolver"]
 files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
 
