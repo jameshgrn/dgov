@@ -143,69 +143,11 @@ class EventDagRunner:
             await self._cleanup()
 
     async def _preflight_check_models(self) -> None:
-        """Validate all agent model IDs exist before dispatching any work.
-
-        Probes each unique model with a minimal completion request.
-        Works with both models/ and routers/ namespaces.
-        """
-        import json as _json
+        """Check FIREWORKS_API_KEY is set. Model errors surface on first attempt."""
         import os
-        import urllib.request
 
-        api_key = os.environ.get("FIREWORKS_API_KEY")
-        if not api_key:
+        if not os.environ.get("FIREWORKS_API_KEY"):
             raise RuntimeError("FIREWORKS_API_KEY not set")
-
-        agents = {t.agent for t in self.dag.tasks.values()}
-        loop = asyncio.get_running_loop()
-
-        def _probe_model(model: str) -> str | None:
-            """Return error string if model is invalid, None if ok."""
-            body = _json.dumps(
-                {
-                    "model": model,
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 1,
-                }
-            ).encode()
-            req = urllib.request.Request(
-                "https://api.fireworks.ai/inference/v1/chat/completions",
-                data=body,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "dgov/1.0",
-                },
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=10):
-                    return None
-            except urllib.error.HTTPError as exc:
-                if exc.code == 404:
-                    return f"Model not found: {model}"
-                if exc.code == 401:
-                    return "Authentication failed (check FIREWORKS_API_KEY)"
-                try:
-                    detail = _json.loads(exc.read()).get("error", {}).get("message", "")
-                except Exception:
-                    detail = ""
-                return f"Model probe failed ({exc.code}): {model} — {detail}"
-            except Exception as exc:
-                return f"Model probe failed: {model} — {exc}"
-
-        errors: list[str] = []
-        for agent in sorted(agents):
-            try:
-                err = await loop.run_in_executor(self._executor, _probe_model, agent)
-                if err:
-                    errors.append(err)
-                else:
-                    logger.info("Preflight: %s ok", agent)
-            except Exception as exc:
-                logger.warning("Model preflight check skipped for %s: %s", agent, exc)
-
-        if errors:
-            raise RuntimeError("Preflight failed:\n" + "\n".join(errors))
 
     async def _run_loop(self) -> dict[str, str]:
         """Main event loop — separated for graceful shutdown handling."""
