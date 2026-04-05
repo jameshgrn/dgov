@@ -33,12 +33,15 @@ Extend `src/dgov/plan_tree.py` with a merger function:
 3. Validate bare slugs match `^[A-Za-z0-9_-]+$` (no `.`, no `/`) — reject otherwise
 4. Assign a fully-qualified ID: `<section>/<stem>.<bare-slug>`
    e.g. tasks.merger in compile/pipeline.toml → `compile/pipeline.merger`
-5. Detect duplicate bare slugs WITHIN a single file (fail compile)
-6. Track newest mtime across all source TOMLs for staleness detection later
-7. Return a `FlatPlan` with: units (dict[fq_id, UnitSpec]), source_map (fq_id → file path), source_mtime_max
+5. Track newest mtime across all source TOMLs for staleness detection later
+6. Return a `FlatPlan` with: units (dict[fq_id, PlanUnit]), source_map (fq_id → file path), source_mtime_max
 
 Cross-file slug collisions are fine — path qualification guarantees uniqueness.
-Only flag WITHIN-FILE duplicates.
+Within-file duplicates are impossible: tomllib rejects duplicate tables at
+parse time (TOML syntax error), so no explicit check is needed here.
+
+Reuse PlanUnit + PlanUnitFiles from plan.py — the compile output feeds
+directly into the existing DagDefinition pipeline.
 
 Do NOT resolve depends_on refs yet — that's the resolver's job.
 """

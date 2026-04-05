@@ -113,11 +113,14 @@ Enforcement lives in settlement gates (lint, test, sentrux), not SOP validation.
 
 Fixed set in `src/dgov/plan_tree.py`. No plugin system. Fail compile, no override.
 
-1. Within-file slug duplicates (merger)
+1. Slug grammar violations (merger)
 2. Unresolved `depends_on` refs (resolver)
 3. Self-references (resolver)
 4. Dep cycles (validator)
 5. Unreachable units — no path from any root unit (validator)
+
+Within-file slug duplicates are rejected by `tomllib` at parse time (duplicate
+tables are a TOML syntax error), so the merger inherits that check for free.
 
 File-claim conflicts are enforced post-compile by existing `validate_plan`.
 
