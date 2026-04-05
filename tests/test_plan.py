@@ -15,6 +15,7 @@ from dgov.plan import (
     PlanSpec,
     PlanUnit,
     PlanUnitFiles,
+    PlanValidationError,
     _normalize_touch_path,
     _paths_overlap,
     compile_plan,
@@ -704,7 +705,6 @@ class TestValidatePlan:
     """Tests for validate_plan function."""
 
     def test_returns_empty_list_for_valid_plan(self):
-        """Should return empty list for valid plan."""
         plan = PlanSpec(
             name="valid-plan",
             goal="Goal",
@@ -718,26 +718,175 @@ class TestValidatePlan:
                 )
             },
         )
-
-        issues = validate_plan(plan)
-
-        assert issues == []
+        assert validate_plan(plan) == []
 
     def test_returns_empty_list_for_empty_plan(self):
-        """Should return empty list for plan with no units."""
         plan = PlanSpec(name="empty-plan", goal="Goal", units={})
-
-        issues = validate_plan(plan)
-
-        assert issues == []
+        assert validate_plan(plan) == []
 
     def test_returns_list_type(self):
-        """Should always return a list."""
         plan = PlanSpec(name="any-plan", goal="Goal", units={})
+        assert isinstance(validate_plan(plan), list)
 
+    def test_detects_file_conflict_between_independent_tasks(self):
+        plan = PlanSpec(
+            name="conflict-plan",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+            },
+        )
         issues = validate_plan(plan)
+        assert len(issues) == 1
+        assert issues[0].severity == "error"
+        assert "src/main.py" in issues[0].message
+        assert "a" in issues[0].message
+        assert "b" in issues[0].message
 
-        assert isinstance(issues, list)
+    def test_no_conflict_when_dependent(self):
+        """B depends on A, so same-file edits are safe (sequential)."""
+        plan = PlanSpec(
+            name="dep-plan",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                    depends_on=("a",),
+                ),
+            },
+        )
+        assert validate_plan(plan) == []
+
+    def test_no_conflict_different_files(self):
+        plan = PlanSpec(
+            name="no-conflict",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(edit=("src/foo.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(edit=("src/bar.py",)),
+                ),
+            },
+        )
+        assert validate_plan(plan) == []
+
+    def test_detects_directory_overlap(self):
+        """Task A edits src/utils/helper.py, task B edits src/utils/ directory."""
+        plan = PlanSpec(
+            name="dir-overlap",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(edit=("src/utils/helper.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(delete=("src/utils",)),
+                ),
+            },
+        )
+        issues = validate_plan(plan)
+        assert len(issues) >= 1
+        assert issues[0].severity == "error"
+
+    def test_transitive_dependency_not_conflict(self):
+        """A->B->C: A and C share a file but are transitively dependent."""
+        plan = PlanSpec(
+            name="transitive",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(edit=("src/other.py",)),
+                    depends_on=("a",),
+                ),
+                "c": PlanUnit(
+                    slug="c",
+                    summary="C",
+                    prompt="Do C",
+                    commit_message="C",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                    depends_on=("b",),
+                ),
+            },
+        )
+        assert validate_plan(plan) == []
+
+    def test_compile_rejects_conflicting_plan(self):
+        plan = PlanSpec(
+            name="bad-plan",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+            },
+        )
+        with pytest.raises(PlanValidationError) as exc_info:
+            compile_plan(plan)
+        assert len(exc_info.value.issues) == 1
 
 
 # =============================================================================
