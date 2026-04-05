@@ -12,7 +12,7 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, read_events, reset_state
+from dgov.persistence import all_tasks, latest_event_id, read_events, reset_state
 from dgov.plan import compile_plan, parse_plan_file, validate_plan
 from dgov.runner import EventDagRunner
 
@@ -244,24 +244,96 @@ def _cmd_status(project_root: str) -> None:
 
 
 def _cmd_watch(project_root: str) -> None:
-    """Start governor watch mode — stream events."""
-    click.echo("Governor watch mode (Ctrl-C to exit)")
-    click.echo("-" * 40)
+    """Stream events from the current run. Open in a second tab."""
+    import time
 
+    click.echo("dgov watch (Ctrl-C to exit)")
+    click.echo("-" * 50)
+
+    last_id = 0
     try:
-        import time
-
-        last_id = 0
         while True:
-            events = read_events(project_root, limit=50)
-            new_events = [e for e in events if e.get("id", 0) > last_id]
-            for ev in new_events:
-                task_slug = ev.get("slug") or ev.get("task") or ev.get("pane", "?")
-                click.echo(f"[{ev.get('ts', '?')}] {ev.get('event', '?')}: {task_slug}")
+            # Detect DB reset (new run started) — last_id would be ahead of max
+            current_max = latest_event_id(project_root)
+            if current_max < last_id:
+                click.echo("\n--- new run detected ---\n")
+                last_id = 0
+
+            events = read_events(project_root, after_id=last_id)
+            for ev in events:
                 last_id = max(last_id, ev.get("id", 0))
-            time.sleep(1)
+                click.echo(_format_event(ev))
+
+            time.sleep(0.5)
     except KeyboardInterrupt:
-        click.echo("\nExiting watch mode.")
+        click.echo("")
+
+
+def _format_event(ev: dict) -> str:
+    """Format a single event for human-readable watch output."""
+    event_type = ev.get("event", "?")
+    task_slug = ev.get("task_slug") or ev.get("slug") or ""
+    ts_raw = ev.get("ts", "")
+    # Trim to HH:MM:SS
+    ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+
+    if event_type == "worker_log":
+        return _format_worker_log(ts, task_slug, ev)
+
+    # Lifecycle events — compact one-liners
+    label = _EVENT_LABELS.get(event_type, event_type)
+    suffix = ""
+    error = ev.get("error")
+    if error:
+        suffix = f" — {error[:100]}"
+    verdict = ev.get("verdict")
+    if verdict and verdict != "ok":
+        suffix = f" ({verdict})"
+
+    return f"{ts} {label:>12s}  {task_slug}{suffix}"
+
+
+def _format_worker_log(ts: str, task_slug: str, ev: dict) -> str:
+    """Format worker_log events — the bulk of watch output."""
+    log_type = ev.get("log_type", "")
+    content = ev.get("content")
+
+    if log_type == "error":
+        return f"{ts}  {'ERROR':>12s}  {task_slug}: {content}"
+    if log_type == "done":
+        return f"{ts}  {'done':>12s}  {task_slug}: {content}"
+    if log_type == "thought":
+        text = str(content)[:120] if content else ""
+        return f"{ts}  {'thought':>12s}  {task_slug}: {text}"
+    if log_type == "call":
+        if isinstance(content, dict):
+            tool = content.get("tool", "?")
+            args = content.get("args", {})
+            summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
+            return f"{ts}  {'call':>12s}  {task_slug}: {tool}({summary})"
+        return f"{ts}  {'call':>12s}  {task_slug}: {content}"
+    if log_type == "result":
+        if isinstance(content, dict):
+            tool = content.get("tool", "?")
+            status = content.get("status", "?")
+            return f"{ts}  {'result':>12s}  {task_slug}: {tool} → {status}"
+        return f"{ts}  {'result':>12s}  {task_slug}: {content}"
+
+    return f"{ts}  {'worker':>12s}  {task_slug}: [{log_type}] {content}"
+
+
+_EVENT_LABELS: dict[str, str] = {
+    "dag_task_dispatched": "dispatch",
+    "task_done": "done",
+    "task_failed": "FAILED",
+    "review_pass": "review ok",
+    "review_fail": "review FAIL",
+    "merge_completed": "merged",
+    "task_merge_failed": "merge FAIL",
+    "shutdown_requested": "shutdown",
+    "dag_completed": "dag done",
+    "dag_failed": "dag FAILED",
+}
 
 
 def _cmd_run_plan(plan_file: str, project_root: str) -> None:

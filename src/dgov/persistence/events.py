@@ -47,16 +47,24 @@ def read_events(
     session_root: str,
     slug: str | None = None,
     limit: int | None = None,
+    after_id: int = 0,
 ) -> list[dict]:
-    """Read events from the SQLite events table, optionally filtered by slug."""
+    """Read events from the SQLite events table, optionally filtered by slug.
+
+    Use after_id to poll for new events since a known position.
+    """
     _typed = ", ".join(_EVENT_TYPED_COLS)
-    _select = f"ts, event, pane, data, {_typed}"
+    _select = f"id, ts, event, pane, data, {_typed}"
     conn = _get_db(session_root)
-    where = ""
+    conditions: list[str] = []
     params: list[str | int] = []
     if slug is not None:
-        where = " WHERE pane = ?"
+        conditions.append("pane = ?")
         params.append(slug)
+    if after_id > 0:
+        conditions.append("id > ?")
+        params.append(after_id)
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
     # Limited queries fetch newest-first for perf, reversed below for chronological order
     order = "ORDER BY id DESC" if limit is not None else "ORDER BY id"
     limit_clause = ""
@@ -74,15 +82,15 @@ def read_events(
     if limit is not None:
         rows = list(reversed(rows))
     for row in rows:
-        ts, event, pane, data_str = row[0], row[1], row[2], row[3]
-        ev = {"ts": ts, "event": event, "pane": pane}
+        row_id, ts, event, pane, data_str = row[0], row[1], row[2], row[3], row[4]
+        ev: dict = {"id": row_id, "ts": ts, "event": event, "pane": pane}
         try:
             ev.update(json.loads(data_str))
         except (json.JSONDecodeError, TypeError):
             pass
         # Overlay typed columns (non-empty values win over JSON blob)
         for i, col in enumerate(typed_col_names):
-            val = row[4 + i]
+            val = row[5 + i]
             if val:
                 ev[col] = val
         events.append(ev)
