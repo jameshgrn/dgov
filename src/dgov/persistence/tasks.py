@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-import time
 from dataclasses import asdict
 
 from dgov.persistence._tasks_helpers import (
@@ -18,13 +17,9 @@ from dgov.persistence._tasks_helpers import (
 )
 from dgov.persistence.connection import _get_db, _retry_on_lock
 from dgov.persistence.schema import (
-    _COMPLETION_TARGET_STATES,
-    _SETTLED_TASK_STATES,
     _TASK_TYPED_COLS,
     VALID_TRANSITIONS,
-    CompletionTransitionResult,
     IllegalTransitionError,
-    TaskState,
     WorkerTask,
 )
 
@@ -53,6 +48,8 @@ def remove_task(session_root: str, slug: str) -> None:
             (slug, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
         )
         conn.commit()
+
+    import time
 
     _retry_on_lock(_do)
 
@@ -143,74 +140,6 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
     _retry_on_lock(_do)
 
 
-def settle_completion_state(
-    session_root: str,
-    slug: str,
-    new_state: str,
-    *,
-    allow_abandoned: bool = False,
-) -> CompletionTransitionResult:
-    """Set a completion state without raising on late terminal races."""
-    _validate_state(new_state)
-    if new_state not in _COMPLETION_TARGET_STATES:
-        raise ValueError(
-            f"settle_completion_state only supports {_COMPLETION_TARGET_STATES}, got {new_state!r}"
-        )
-
-    def _do() -> CompletionTransitionResult:
-        conn = _get_db(session_root)
-        conn.row_factory = sqlite3.Row
-
-        allow_from = list(_COMPLETION_TARGET_STATES)
-        if allow_abandoned:
-            allow_from.append(TaskState.ABANDONED)
-
-        placeholders = ", ".join("?" * len(allow_from))
-        cur = conn.execute(
-            f"UPDATE tasks SET state = ? WHERE slug = ? AND state IN ({placeholders})",
-            [new_state, slug, *allow_from],
-        )
-        changed = cur.rowcount > 0
-        conn.commit()
-        return CompletionTransitionResult(changed, new_state)
-
-    return _retry_on_lock(_do)
-
-
-def settle_closed(session_root: str, slug: str) -> CompletionTransitionResult:
-    """Idempotent close — safe to call multiple times."""
-    return settle_completion_state(session_root, slug, TaskState.CLOSED)
-
-
-def settled_tasks(session_root: str) -> list[dict]:
-    """Return all settled (non-active) tasks."""
-    conn = _get_db(session_root)
-    conn.row_factory = sqlite3.Row
-    placeholders = ", ".join("?" * len(_SETTLED_TASK_STATES))
-    rows = conn.execute(
-        f"SELECT * FROM tasks WHERE state IN ({placeholders})",
-        list(_SETTLED_TASK_STATES),
-    ).fetchall()
-    return [_row_to_dict(row) for row in rows]
-
-
-def active_tasks(session_root: str) -> list[dict]:
-    """Return all currently active tasks."""
-    conn = _get_db(session_root)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM tasks WHERE state = ?", (TaskState.ACTIVE,)).fetchall()
-    return [_row_to_dict(row) for row in rows]
-
-
-def count_active(session_root: str) -> int:
-    """Return count of currently active tasks."""
-    conn = _get_db(session_root)
-    row = conn.execute(
-        "SELECT COUNT(*) FROM tasks WHERE state = ?", (TaskState.ACTIVE,)
-    ).fetchone()
-    return row[0] if row else 0
-
-
 def replace_all_tasks(session_root: str, tasks_list: list[dict] | dict) -> None:
     """Replace all tasks in the database with the given list.
 
@@ -261,13 +190,3 @@ def set_task_metadata(session_root: str, slug: str, **kwargs: object) -> None:
         conn.commit()
 
     _retry_on_lock(_do)
-
-
-def update_file_claims(session_root: str, slug: str, paths: list[str]) -> None:
-    """Store file claims for a task (for later settlement)."""
-    conn = _get_db(session_root)
-    conn.execute(
-        "UPDATE tasks SET file_claims = ? WHERE slug = ?",
-        (json.dumps(paths), slug),
-    )
-    conn.commit()

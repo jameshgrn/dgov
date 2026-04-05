@@ -84,52 +84,6 @@ def test_get_multiple_tasks(tmp_project):
     assert slugs == {"task-001", "task-002"}
 
 
-def test_active_and_settled_tasks(tmp_project):
-    """Can filter tasks by active vs settled state."""
-    # Add active task
-    active = WorkerTask(
-        slug="active-task",
-        prompt="Still working",
-        agent="qwen",
-        project_root=tmp_project,
-        worktree_path=os.path.join(tmp_project, "worktrees/active"),
-        branch_name="task/active",
-        state=TaskState.ACTIVE,
-    )
-    tasks.add_task(tmp_project, active)
-
-    # Add done task
-    done = WorkerTask(
-        slug="done-task",
-        prompt="Finished",
-        agent="qwen",
-        project_root=tmp_project,
-        worktree_path=os.path.join(tmp_project, "worktrees/done"),
-        branch_name="task/done",
-        state=TaskState.DONE,
-    )
-    tasks.add_task(tmp_project, done)
-
-    active_list = tasks.active_tasks(tmp_project)
-    assert len(active_list) == 1
-    assert active_list[0]["slug"] == "active-task"
-
-    settled = tasks.settled_tasks(tmp_project)
-    assert len(settled) == 1
-    assert settled[0]["slug"] == "done-task"
-
-
-def test_count_active(tmp_project, sample_task):
-    """Can count active tasks."""
-    assert tasks.count_active(tmp_project) == 0
-
-    tasks.add_task(tmp_project, sample_task)
-    assert tasks.count_active(tmp_project) == 1
-
-    tasks.update_task_state(tmp_project, "test-task-001", TaskState.DONE)
-    assert tasks.count_active(tmp_project) == 0
-
-
 def test_remove_task(tmp_project, sample_task):
     """Can remove a task and it records slug history."""
     tasks.add_task(tmp_project, sample_task)
@@ -137,21 +91,6 @@ def test_remove_task(tmp_project, sample_task):
 
     assert tasks.get_task(tmp_project, "test-task-001") is None
     assert "test-task-001" in tasks.get_slug_history(tmp_project)
-
-
-def test_settle_completion_state(tmp_project, sample_task):
-    """Settle completion state works with proper transitions between completion states."""
-    tasks.add_task(tmp_project, sample_task)
-
-    # First, transition to DONE via normal path (ACTIVE -> DONE is valid)
-    tasks.update_task_state(tmp_project, "test-task-001", TaskState.DONE)
-
-    # Then settle to FAILED (DONE -> FAILED is a valid completion state transition)
-    result = tasks.settle_completion_state(tmp_project, "test-task-001", TaskState.FAILED)
-    assert result.changed is True
-
-    retrieved = tasks.get_task(tmp_project, "test-task-001")
-    assert retrieved["state"] == "failed"
 
 
 def test_replace_all_tasks(tmp_project):
@@ -210,12 +149,3 @@ def test_set_task_metadata(tmp_project, sample_task):
     retrieved = tasks.get_task(tmp_project, "test-task-001")
     assert retrieved["file_claims"] == ["src/foo.py"]
     assert retrieved["commit_message"] == "Fix foo"
-
-
-def test_update_file_claims(tmp_project, sample_task):
-    """Can update file claims."""
-    tasks.add_task(tmp_project, sample_task)
-    tasks.update_file_claims(tmp_project, "test-task-001", ["a.py", "b.py"])
-
-    retrieved = tasks.get_task(tmp_project, "test-task-001")
-    assert retrieved["file_claims"] == ["a.py", "b.py"]

@@ -6,9 +6,8 @@ TaskState is imported from types.py (single source of truth).
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from dgov.persistence.sql import (
     _CREATE_EVENTS_TABLE_SQL,
@@ -53,11 +52,6 @@ VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
     TaskState.ABANDONED: frozenset({TaskState.CLOSED}),
 }
 
-_COMPLETION_TARGET_STATES = frozenset(
-    {TaskState.DONE, TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT}
-)
-_SETTLED_TASK_STATES = TASK_STATES - {TaskState.ACTIVE}
-
 
 class IllegalTransitionError(ValueError):
     """Raised when an invalid state transition is attempted."""
@@ -67,36 +61,6 @@ class IllegalTransitionError(ValueError):
         self.target = target
         self.slug = slug
         super().__init__(f"Illegal state transition for '{slug}': {current} -> {target}")
-
-
-@dataclass(frozen=True)
-class CompletionTransitionResult:
-    """Result of a completion state transition attempt."""
-
-    changed: bool
-    state: TaskState = TaskState.ACTIVE
-
-
-# -- Provenance --
-
-
-@dataclass(frozen=True, slots=True)
-class ProvenanceOriginal:
-    """Original task — not derived from another."""
-
-    kind: Literal["original"] = "original"
-
-
-@dataclass(frozen=True, slots=True)
-class ProvenanceRetry:
-    """Retry of a failed task."""
-
-    original_slug: str
-    attempt: int = 1
-    kind: Literal["retry"] = "retry"
-
-
-TaskProvenance = ProvenanceOriginal | ProvenanceRetry
 
 
 # -- WorkerTask Dataclass --
@@ -116,7 +80,6 @@ class WorkerTask:
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
     base_sha: str | None = None
-    provenance: TaskProvenance = field(default_factory=ProvenanceOriginal)
     role: str = "worker"
     state: TaskState = TaskState.ACTIVE
     file_claims: tuple[str, ...] = ()
@@ -176,6 +139,7 @@ VALID_EVENTS = frozenset(
         "task_done",
         "task_failed",
         "task_closed",
+        "shutdown_requested",
         # DAG lifecycle
         "dag_task_dispatched",
         "dag_completed",
@@ -214,10 +178,7 @@ __all__ = [
     "TASK_STATES",
     "VALID_TRANSITIONS",
     "IllegalTransitionError",
-    "CompletionTransitionResult",
     "WorkerTask",
-    "TaskProvenance",
-    "replace",
     "_TASK_COLUMNS",
     "_TASK_TYPED_COLS",
     "_CREATE_TABLE_SQL",
@@ -226,6 +187,4 @@ __all__ = [
     "state_path",
     "VALID_EVENTS",
     "_EVENT_TYPED_COLS",
-    "_COMPLETION_TARGET_STATES",
-    "_SETTLED_TASK_STATES",
 ]

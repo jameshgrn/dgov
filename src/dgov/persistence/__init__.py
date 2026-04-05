@@ -13,7 +13,6 @@ from dgov.persistence.events import (
     emit_event,
     latest_event_id,
     read_events,
-    wait_for_events,
 )
 from dgov.persistence.schema import (
     TaskState,
@@ -29,7 +28,6 @@ from dgov.persistence.tasks import (
     remove_task,
     replace_all_tasks,
     set_task_metadata,
-    settle_completion_state,
     update_task_state,
 )
 
@@ -53,7 +51,5 @@ __all__ = [
     "latest_event_id",
     "read_events",
     "remove_task",
-    "settle_completion_state",
     "state_path",
-    "wait_for_events",
 ]

@@ -96,67 +96,8 @@ def latest_event_id(session_root: str) -> int:
     return int(row[0]) if row is not None else 0
 
 
-def wait_for_events(
-    session_root: str,
-    *,
-    after_id: int,
-    panes: tuple[str, ...] = (),
-    event_types: tuple[str, ...] = (),
-    timeout_s: float = 5.0,
-) -> list[dict]:
-    """Simple polling-based wait for new events after *after_id*."""
-    import time
-
-    conn = _get_db(session_root)
-    pane_filters = tuple(dict.fromkeys(p for p in panes if p))
-    event_filters = tuple(dict.fromkeys(e for e in event_types if e))
-
-    typed_col_names = list(_EVENT_TYPED_COLS)
-    typed_select = ", ".join(typed_col_names)
-    query = [f"SELECT id, ts, event, pane, data, {typed_select} FROM events WHERE id > ?"]
-    params: list[object] = [after_id]
-
-    if pane_filters:
-        placeholders = ", ".join("?" for _ in pane_filters)
-        query.append(f"AND pane IN ({placeholders})")
-        params.extend(pane_filters)
-    if event_filters:
-        placeholders = ", ".join("?" for _ in event_filters)
-        query.append(f"AND event IN ({placeholders})")
-        params.extend(event_filters)
-
-    query.append("ORDER BY id")
-    sql = " ".join(query)
-    start = time.monotonic()
-    deadline = start + timeout_s
-
-    while True:
-        rows = conn.execute(sql, tuple(params)).fetchall()
-        if rows:
-            events: list[dict] = []
-            for row in rows:
-                event_id, ts, event, pane, data_str = row[:5]
-                ev = {"id": event_id, "ts": ts, "event": event, "pane": pane}
-                try:
-                    ev.update(json.loads(data_str))
-                except (json.JSONDecodeError, TypeError):
-                    pass
-                for i, col in enumerate(typed_col_names):
-                    val = row[5 + i]
-                    if val:
-                        ev[col] = val
-                events.append(ev)
-            return events
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return []
-        time.sleep(0.1)  # Simple polling fallback
-
-
 __all__ = [
     "emit_event",
     "latest_event_id",
     "read_events",
-    "wait_for_events",
 ]
