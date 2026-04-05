@@ -1,6 +1,8 @@
-.dgov/
+.dgov/*
 !.dgov/project.toml
 !.dgov/runs.log
+!.dgov/plans/
+!.dgov/sops/
 .venv/
 __pycache__/
 *.pyc
