@@ -41,6 +41,23 @@ async def run_headless_worker(
     on_exit: Callable[[str, str, int], None],
 ) -> None:
     """Execute the headless worker lifecycle."""
+    from dgov.config import load_project_config
+
+    # Serialize project config to JSON for the subprocess
+    pc = load_project_config(project_root)
+    config_json = json.dumps(
+        {
+            "language": pc.language,
+            "src_dir": pc.src_dir,
+            "test_dir": pc.test_dir,
+            "test_cmd": pc.test_cmd,
+            "lint_cmd": pc.lint_cmd,
+            "format_cmd": pc.format_cmd,
+            "test_markers": list(pc.test_markers),
+            "conventions": dict(pc.conventions) if pc.conventions else None,
+        }
+    )
+
     cmd = [
         _find_uv(),
         "run",
@@ -51,6 +68,8 @@ async def run_headless_worker(
         str(worktree_path),
         "--model",
         task.agent,
+        "--project-config",
+        config_json,
     ]
 
     try:
