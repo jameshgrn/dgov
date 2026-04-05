@@ -238,7 +238,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert result.name == "simple-plan"
         assert "task-1" in result.tasks
@@ -264,7 +264,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].agent == "qwen-35b"
 
@@ -285,7 +285,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].agent == "claude-3-opus"
 
@@ -306,7 +306,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].timeout_s == 1200
 
@@ -326,7 +326,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-2"].depends_on == ("task-1",)
 
@@ -349,7 +349,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         task = result.tasks["file-task"]
         assert task.files.create == ("new.py",)
@@ -378,7 +378,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert len(result.tasks) == 2
 
@@ -399,7 +399,7 @@ class TestCompilePlan:
             },
         )
 
-        result = compile_plan(plan)
+        result = compile_plan(plan, project_agent="test-agent")
 
         assert result.project_root == "/home/user/project"
         assert result.session_root == "/tmp/session"
@@ -579,7 +579,7 @@ class TestValidatePlan:
             },
         )
         with pytest.raises(PlanValidationError) as exc_info:
-            compile_plan(plan)
+            compile_plan(plan, project_agent="test-agent")
         assert len(exc_info.value.issues) == 1
 
 

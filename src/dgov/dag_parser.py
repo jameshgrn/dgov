@@ -30,7 +30,7 @@ class DagTaskSpec(BaseModel):
     summary: str
     prompt: str
     commit_message: str
-    agent: str = "worker"
+    agent: str = ""
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
@@ -46,6 +46,7 @@ class DagDefinition(BaseModel):
     project_root: str = "."
     session_root: str = "."
     tasks: dict[str, DagTaskSpec]
+    default_agent: str = ""
     default_max_retries: int = 3
 
 
@@ -78,5 +79,6 @@ def parse_dag_file(path: str) -> DagDefinition:
         project_root=plan_section.get("project_root", "."),
         session_root=plan_section.get("session_root", "."),
         tasks=tasks,
+        default_agent=plan_section.get("default_agent", ""),
         default_max_retries=plan_section.get("default_max_retries", 3),
     )

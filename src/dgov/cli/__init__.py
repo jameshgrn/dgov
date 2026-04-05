@@ -380,8 +380,11 @@ _EVENT_LABELS: dict[str, str] = {
 def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
 
+    from dgov.config import load_project_config
+
     plan = parse_plan_file(plan_file)
-    dag = compile_plan(plan)
+    pc = load_project_config(project_root)
+    dag = compile_plan(plan, project_agent=pc.default_agent)
 
     # Clean slate — no stale events/tasks from prior runs
     reset_state(project_root)

@@ -63,7 +63,7 @@ class PlanSpec:
     units: dict[str, PlanUnit]
     project_root: str = "."
     session_root: str = "."
-    default_agent: str = "qwen-35b"
+    default_agent: str = ""
     default_timeout_s: int = 600
     max_retries: int = 1
 
@@ -102,6 +102,7 @@ def parse_plan_file(path: str) -> PlanSpec:
         project_root=dag_def.project_root,
         session_root=dag_def.session_root,
         units=units,
+        default_agent=dag_def.default_agent,
         max_retries=dag_def.default_max_retries,
     )
 
@@ -115,9 +116,10 @@ class PlanValidationError(ValueError):
         super().__init__("Plan validation failed:\n" + "\n".join(msgs))
 
 
-def compile_plan(plan: PlanSpec) -> DagDefinition:
+def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
     """Compile a PlanSpec into a DagDefinition.
 
+    Agent resolution: task.agent → plan.default_agent → project_agent.
     Raises PlanValidationError if the plan has structural errors.
     """
     issues = validate_plan(plan)
@@ -128,7 +130,18 @@ def compile_plan(plan: PlanSpec) -> DagDefinition:
     tasks: dict[str, DagTaskSpec] = {}
 
     for slug, unit in plan.units.items():
-        agent = unit.agent if unit.agent else plan.default_agent
+        agent = unit.agent or plan.default_agent or project_agent
+        if not agent:
+            raise PlanValidationError(
+                [
+                    PlanIssue(
+                        severity="error",
+                        message=f"No agent for task '{slug}'"
+                        " — set in task, [plan] default_agent, or project.toml",
+                        unit=slug,
+                    )
+                ]
+            )
         timeout_s = unit.timeout_s if unit.timeout_s else plan.default_timeout_s
 
         dag_files = DagFileSpec(

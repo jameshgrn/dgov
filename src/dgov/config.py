@@ -9,6 +9,9 @@ from pathlib import Path
 # -- Project config: per-repo conventions for workers --
 
 
+_DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p5-turbo"
+
+
 @dataclass(frozen=True)
 class ProjectConfig:
     """Per-project conventions. Loaded from .dgov/project.toml."""
@@ -17,6 +20,7 @@ class ProjectConfig:
     src_dir: str = "src/"
     test_dir: str = "tests/"
     source_extensions: tuple[str, ...] = (".py",)
+    default_agent: str = _DEFAULT_AGENT
     # Worker SOP + settlement validate
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
@@ -87,6 +91,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         src_dir=proj.get("src_dir", "src/"),
         test_dir=proj.get("test_dir", "tests/"),
         source_extensions=extensions,
+        default_agent=proj.get("default_agent", _DEFAULT_AGENT),
         test_cmd=proj.get("test_cmd", ProjectConfig.test_cmd),
         lint_cmd=proj.get("lint_cmd", ProjectConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),
