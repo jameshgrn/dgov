@@ -1,0 +1,5 @@
+# Append-only logs: union-merge avoids conflicts when two branches
+# both append entries. Post-merge ordering may interleave entries
+# from both branches — that's acceptable for these log files.
+.dgov/runs.log                   merge=union
+.dgov/plans/deployed.jsonl       merge=union
