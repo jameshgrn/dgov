@@ -22,6 +22,6 @@ Output (human):
 Output (--json): machine-readable struct with same info.
 """
 commit_message = "Add `dgov plan status` CLI"
-depends_on = ["compile-cmd", "invariants/deploy-log:deploy-log"]
+depends_on = ["cli/compile-cmd:compile-cmd", "runtime/deploy-log:deploy-log"]
 files.edit = ["src/dgov/cli/__init__.py"]
 files.create = ["tests/test_cli_plan_status.py"]

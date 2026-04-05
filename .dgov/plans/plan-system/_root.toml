@@ -9,9 +9,10 @@
 
 [plan]
 name = "plan-system"
-summary = "Build plan-tree compiler, SOP plugin engine, deploy pipeline."
-sections = ["compile", "sops", "cli", "invariants"]
+summary = "Build plan-tree compiler + SOP-bundler + deploy pipeline."
+sections = ["compile", "cli", "runtime"]
 
-# Self-reference: this plan will eventually enforce these SOPs on itself.
-# Empty at bootstrap — no SOPs exist yet. Populate after sops/ section ships.
+# SOPs are markdown worker-context docs (.dgov/sops/*.md). Governor picks
+# per-unit at compile time. Empty at bootstrap — no SOPs authored yet.
+# Starter set (testing, linting, commits, errors, style) is a follow-up session.
 sops = []
