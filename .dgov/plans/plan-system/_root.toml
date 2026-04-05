@@ -1,0 +1,17 @@
+# Bootstrap plan: build the plan-tree compile + deploy system in dgov.
+#
+# This file is both design spec and executable plan. Iterated on across
+# sessions. When dgov can compile this, we use it to ship the rest of
+# the plan system.
+#
+# Format is the NEW tree format we're designing. Current `dgov run` can't
+# execute this yet — it's a static design artifact until compile ships.
+
+[plan]
+name = "plan-system"
+summary = "Build plan-tree compiler, SOP plugin engine, deploy pipeline."
+sections = ["compile", "sops", "cli", "invariants"]
+
+# Self-reference: this plan will eventually enforce these SOPs on itself.
+# Empty at bootstrap — no SOPs exist yet. Populate after sops/ section ships.
+sops = []

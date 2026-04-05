@@ -1,0 +1,27 @@
+# `dgov plan status <plan-root>` — show what's pending vs deployed
+
+[tasks.status-cmd]
+summary = "Add `dgov plan status` CLI — show pending vs deployed units for a plan."
+prompt = """
+Add `plan` command group to src/dgov/cli/__init__.py with `status` subcommand:
+
+Usage: dgov plan status <plan-root-dir>
+
+Reads:
+- Compiled plan (.dgov/plans/<name>/_compiled.toml) if it exists
+- Deploy log (.dgov/plans/deployed.jsonl)
+
+Output (human):
+  Plan: arch-refactor
+  Units: 12 total | 4 deployed | 8 pending
+    ✓ modularity/extract:helpers         (deployed 2026-04-05, sha abc123)
+    ✓ modularity/extract:runner          (deployed 2026-04-05, sha def456)
+    ○ coupling/decouple:worker           (pending, blocked by: ...)
+    ...
+
+Output (--json): machine-readable struct with same info.
+"""
+commit_message = "Add `dgov plan status` CLI"
+depends_on = ["compile-cmd", "invariants/deploy-log:deploy-log"]
+files.edit = ["src/dgov/cli/__init__.py"]
+files.create = ["tests/test_cli_plan_status.py"]

@@ -1,0 +1,33 @@
+# `dgov compile <plan-root>` — walks tree, validates, runs SOPs, writes compiled DAG.
+
+[tasks.compile-cmd]
+summary = "Add `dgov compile` CLI command — wires walker→merger→resolver→validator→SOPs."
+prompt = """
+Add `compile` command to src/dgov/cli/__init__.py:
+
+Usage: dgov compile <plan-root-dir>
+
+Steps:
+1. walk_tree(plan_root) → PlanTree
+2. merge(PlanTree) → FlatPlan
+3. resolve_refs(FlatPlan) → ResolvedPlan
+4. validate(ResolvedPlan) → ValidationReport  [hard-fail on cycles/unreachable]
+5. Load SOPs from plan root's `sops = [...]` list
+6. Run each SOP.check(plan) → collect Violations
+7. Emit compiled plan to `.dgov/plans/<name>/_compiled.toml` (flat, deployable)
+8. Print summary: N units, M edges, K violations (grouped by SOP)
+
+Exit codes:
+- 0: clean compile
+- 1: structural error (cycle, unreachable, missing ref)
+- 2: SOP violations
+
+Support --json flag for machine-readable output.
+"""
+commit_message = "Add `dgov compile` CLI command"
+depends_on = [
+  "compile/validator:validator",
+  "sops/plugin-loader:plugin-loader",
+]
+files.edit = ["src/dgov/cli/__init__.py"]
+files.create = ["tests/test_cli_compile.py"]

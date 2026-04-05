@@ -1,0 +1,17 @@
+# Load Python SOP plugins from .dgov/sops/*.py
+
+[tasks.plugin-loader]
+summary = "Dynamically load SOP plugin modules from .dgov/sops/*.py."
+prompt = """
+Implement `src/dgov/sops.py` with a plugin loader:
+
+1. Accept a list of SOP names from plan root (e.g. ["tests-accompany-source"])
+2. Look up each name in .dgov/sops/<name>.py (convert dashes to underscores)
+3. Import the module, verify it exposes `check(plan) -> list[Violation]`
+4. Fail compile if any named SOP is missing its file or `check` function
+5. Also define the `Violation` dataclass: {sop_name, unit_id, message, severity}
+
+Use importlib.util for dynamic loading. Cache loaded modules per-process.
+"""
+commit_message = "Add SOP plugin loader"
+files.create = ["src/dgov/sops.py", "tests/test_sops.py"]

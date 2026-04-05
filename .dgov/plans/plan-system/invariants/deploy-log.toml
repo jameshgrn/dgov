@@ -1,0 +1,20 @@
+# Append-only deploy log — tracks which units have shipped.
+
+[tasks.deploy-log]
+summary = "Append-only JSONL log of shipped units at .dgov/plans/deployed.jsonl."
+prompt = """
+Add to src/dgov/plan_tree.py (or new module src/dgov/deploy_log.py):
+
+- append(plan_name, unit_id, commit_sha, timestamp) → writes one JSON line
+- read(plan_name) → list of shipped {unit_id, sha, timestamp}
+- is_deployed(plan_name, unit_id) → bool
+
+Format (JSONL, one record per line):
+  {"plan": "arch-refactor", "unit": "modularity/extract:runner", "sha": "abc...", "ts": "2026-04-05T..."}
+
+File: .dgov/plans/deployed.jsonl (NOT per-plan — single log, filter by plan name).
+Append-only; never mutate or delete entries.
+Tolerate malformed lines (skip with warning, don't fail).
+"""
+commit_message = "Add deploy log for tracking shipped units"
+files.create = ["src/dgov/deploy_log.py", "tests/test_deploy_log.py"]

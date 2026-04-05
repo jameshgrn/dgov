@@ -1,0 +1,19 @@
+# Settlement gate: reject merges that would create conflicts.
+# Enforces "claims are predictions, merge-conflict is the hard rail."
+
+[tasks.merge-conflict-gate]
+summary = "Harden settlement merge to fail-closed on conflicts; emit claim-drift warning."
+prompt = """
+Review src/dgov/worktree.py:merge_worktree and src/dgov/settlement.py:
+
+1. Verify merge_worktree already fails hard on conflicts during FF or cherry-pick
+   (it aborts on cherry-pick conflict but may need clearer error surface).
+2. Add claim-drift warning: compare actual diff files vs. task.files claims.
+   Emit structured warning event (not error) when drift occurs.
+3. Confirm conflict = hard fail (kill worker, rollback worktree, no retry on conflict).
+
+Do NOT enforce strict claim-matching — claims are predictions.
+The HARD rail is: "your changes must merge cleanly." That's the only rule.
+"""
+commit_message = "Harden merge-conflict gate, add claim-drift warning"
+files.edit = ["src/dgov/worktree.py", "src/dgov/settlement.py"]
