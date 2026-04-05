@@ -53,8 +53,11 @@ class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
     def __init__(self, dag: DagDefinition, session_root: str = ".") -> None:
+        from dgov.config import load_project_config
+
         self.dag = dag
         self.session_root = session_root
+        self.project_config = load_project_config(session_root)
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
         # Build file claims from plan for scope enforcement in review gate
         self.task_files = {
@@ -357,7 +360,8 @@ class EventDagRunner:
             # 1. Auto-fix (lint fix then format) BEFORE commit — scoped to claimed files
             task = self.dag.tasks[action.task_slug]
             file_claims = action.file_claims
-            await loop.run_in_executor(self._executor, autofix_sandbox, wt.path, file_claims)
+            pc = self.project_config
+            await loop.run_in_executor(self._executor, autofix_sandbox, wt.path, file_claims, pc)
 
             # 2. Commit (includes auto-fixes) — stage only claimed files
             msg = task.commit_message or f"feat: completed {action.task_slug}"
@@ -365,7 +369,7 @@ class EventDagRunner:
 
             # 3. Validate (read-only gate)
             gate_result = await loop.run_in_executor(
-                self._executor, validate_sandbox, wt.path, wt.commit, self.session_root
+                self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, pc
             )
 
             if not gate_result.passed:

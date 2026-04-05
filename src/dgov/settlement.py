@@ -12,12 +12,15 @@ Three phases:
 from __future__ import annotations
 
 import logging
+import shlex
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+from dgov.config import ProjectConfig, load_project_config
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,17 @@ class ReviewResult:
     verdict: str
     actual_files: frozenset[str] = frozenset()
     error: Optional[str] = None
+
+
+def _run_cmd(
+    cmd_template: str, files: list[str], cwd: Path, timeout: int = 120
+) -> subprocess.CompletedProcess[str]:
+    """Run a command template, substituting {file} with the file list."""
+    file_args = " ".join(shlex.quote(f) for f in files)
+    cmd = cmd_template.replace("{file}", file_args)
+    return subprocess.run(
+        cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
+    )
 
 
 def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
@@ -77,17 +91,6 @@ def _check_size(actual_files: frozenset[str], max_diff_lines: int) -> ReviewResu
             verdict="diff_too_large",
             error=f"Diff has {len(actual_files)} files, max is {max_diff_lines}",
         )
-    return None
-
-
-def _check_dirty_worktree(
-    worktree_path: Path, actual_files: frozenset[str]
-) -> ReviewResult | None:
-    """No-op — dirty worktree check is now handled by _get_all_changes.
-
-    All files (tracked changes + untracked) are captured upfront.
-    This function exists for the scope check below.
-    """
     return None
 
 
@@ -150,35 +153,58 @@ def review_sandbox(
         return ReviewResult(passed=False, verdict="exception", error=f"Review failed: {exc}")
 
 
-def autofix_sandbox(worktree_path: Path, file_claims: tuple[str, ...] = ()) -> None:
+def autofix_sandbox(
+    worktree_path: Path,
+    file_claims: tuple[str, ...] = (),
+    config: ProjectConfig | None = None,
+) -> None:
     """Mechanical auto-fix: lint fix then format. Called BEFORE commit.
 
     Order matters: lint fix can change formatting, so format runs LAST.
-    Scoped to claimed files if provided, otherwise all .py files.
+    Scoped to claimed files if provided, otherwise all source files.
     """
+    if config is None:
+        config = load_project_config(worktree_path)
+
+    extensions = config.source_extensions
+
     if file_claims:
-        rel = [f for f in file_claims if f.endswith(".py") and (worktree_path / f).exists()]
+        rel = [
+            f
+            for f in file_claims
+            if any(f.endswith(ext) for ext in extensions) and (worktree_path / f).exists()
+        ]
     else:
-        py_files = list(worktree_path.rglob("*.py"))
-        if not py_files:
+        source_files: list[Path] = []
+        for ext in extensions:
+            source_files.extend(worktree_path.rglob(f"*{ext}"))
+        if not source_files:
             return
-        rel = [str(f.relative_to(worktree_path)) for f in py_files]
+        rel = [str(f.relative_to(worktree_path)) for f in source_files]
 
     if not rel:
         return
 
     # Lint fix first (may remove imports, change lines)
-    subprocess.run(
-        ["uv", "run", "ruff", "check", "--fix", *rel], cwd=worktree_path, capture_output=True
-    )
+    _run_cmd(config.lint_fix_cmd, rel, worktree_path)
     # Format LAST (canonical formatting after all mutations)
-    subprocess.run(["uv", "run", "ruff", "format", *rel], cwd=worktree_path, capture_output=True)
+    _run_cmd(config.format_cmd, rel, worktree_path)
 
 
-def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -> GateResult:
+def validate_sandbox(
+    worktree_path: Path,
+    base_commit: str,
+    project_root: str,
+    config: ProjectConfig | None = None,
+) -> GateResult:
     """Read-only validation gate. Called AFTER commit. No mutations."""
+    if config is None:
+        config = load_project_config(project_root)
+
+    extensions = config.source_extensions
+
     try:
-        # 1. Identify changed python files
+        # 1. Identify changed source files
         diff_res = subprocess.run(
             ["git", "diff", "--name-only", base_commit, "HEAD"],
             cwd=worktree_path,
@@ -186,36 +212,35 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
             text=True,
             check=True,
         )
-        changed_files = [f for f in diff_res.stdout.strip().split("\n") if f.endswith(".py")]
+        changed_files = [
+            f
+            for f in diff_res.stdout.strip().split("\n")
+            if any(f.endswith(ext) for ext in extensions)
+        ]
 
         if not changed_files:
             return GateResult(passed=True)
 
         # 2. Lint gate (no --fix)
-        res_ruff = subprocess.run(
-            ["uv", "run", "ruff", "check", *changed_files],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-        )
-        if res_ruff.returncode != 0:
-            return GateResult(passed=False, error=f"Lint failure:\n{res_ruff.stdout}")
+        res_lint = _run_cmd(config.lint_cmd, changed_files, worktree_path)
+        if res_lint.returncode != 0:
+            return GateResult(passed=False, error=f"Lint failure:\n{res_lint.stdout}")
 
         # 3. Format check (no modification)
-        res_fmt = subprocess.run(
-            ["uv", "run", "ruff", "format", "--check", *changed_files],
-            cwd=worktree_path,
-            capture_output=True,
-            text=True,
-        )
+        res_fmt = _run_cmd(config.format_check_cmd, changed_files, worktree_path)
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
-        # 4. Test gate — run pytest on changed test files via uv
-        test_files = [f for f in changed_files if f.startswith("tests/")]
+        # 4. Test gate — run on changed test files
+        test_dir = config.test_dir.rstrip("/")
+        test_files = [f for f in changed_files if f.startswith(test_dir)]
         if test_files:
+            test_cmd = config.test_cmd.replace(
+                "{test_dir}", " ".join(shlex.quote(f) for f in test_files)
+            )
             res_test = subprocess.run(
-                ["uv", "run", "pytest", *test_files, "-q", "--tb=short"],
+                test_cmd,
+                shell=True,
                 cwd=worktree_path,
                 capture_output=True,
                 text=True,
@@ -226,8 +251,6 @@ def validate_sandbox(worktree_path: Path, base_commit: str, project_root: str) -
                 return GateResult(passed=False, error=f"Test failure:\n{output}")
 
         # 5. Sentrux gate (policy) — warn on degradation, don't hard-fail
-        # Hard-failing on +1 complex function blocks test generation.
-        # TODO: make configurable (hard-fail for prod, warn for tests)
         baseline = Path(project_root) / ".sentrux" / "baseline.json"
         if baseline.exists():
             sx_dst = worktree_path / ".sentrux"

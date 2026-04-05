@@ -1,0 +1,19 @@
+[project]
+language = "python"
+src_dir = "src/"
+test_dir = "tests/"
+source_extensions = [".py"]
+test_cmd = "python -m pytest {test_dir} -q --tb=short"
+lint_cmd = "python -m ruff check {file}"
+format_cmd = "python -m ruff format {file}"
+lint_fix_cmd = "python -m ruff check --fix {file}"
+format_check_cmd = "python -m ruff format --check {file}"
+test_markers = ["unit", "integration"]
+
+[conventions]
+test_framework = "pytest"
+fixture_style = "function-scoped, in conftest.py or inline"
+imports = "absolute only, ruff-enforced"
+type_checking = "ty check"
+no_commented_code = "delete it, don't comment it out"
+error_handling = "fail fast with context, never swallow exceptions"

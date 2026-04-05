@@ -70,13 +70,13 @@ def _mock_review_fail(wt_path, claimed_files=None, max_diff_lines=100):
     return ReviewResult(passed=False, verdict="scope_violation", error="touched unclaimed files")
 
 
-def _mock_gate_pass(wt_path, base_commit, project_root):
+def _mock_gate_pass(wt_path, base_commit, project_root, config=None):
     from dgov.settlement import GateResult
 
     return GateResult(passed=True)
 
 
-def _mock_gate_fail(wt_path, base_commit, project_root):
+def _mock_gate_fail(wt_path, base_commit, project_root, config=None):
     from dgov.settlement import GateResult
 
     return GateResult(passed=False, error="lint failure")

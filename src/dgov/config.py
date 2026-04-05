@@ -40,9 +40,14 @@ class ProjectConfig:
     language: str = "python"
     src_dir: str = "src/"
     test_dir: str = "tests/"
+    source_extensions: tuple[str, ...] = (".py",)
+    # Worker SOP + settlement validate
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
+    # Settlement-specific (autofix + validate)
+    lint_fix_cmd: str = "python -m ruff check --fix {file}"
+    format_check_cmd: str = "python -m ruff format --check {file}"
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] = field(default_factory=dict)
 
@@ -59,6 +64,13 @@ class ProjectConfig:
 
     def resolve_format_cmd(self, file: str) -> str:
         return self.format_cmd.replace("{file}", file)
+
+    def resolve_format_check_cmd(self, file: str) -> str:
+        return self.format_check_cmd.replace("{file}", file)
+
+    def resolve_lint_fix_cmd(self, file: str = "") -> str:
+        target = file if file else self.src_dir
+        return self.lint_fix_cmd.replace("{file}", target)
 
     def to_prompt_section(self) -> str:
         """Render as text for injection into worker system prompt."""
@@ -90,13 +102,20 @@ def load_project_config(root: str | Path) -> ProjectConfig:
     if isinstance(markers, list):
         markers = tuple(markers)
 
+    extensions = proj.get("source_extensions", (".py",))
+    if isinstance(extensions, list):
+        extensions = tuple(extensions)
+
     return ProjectConfig(
         language=proj.get("language", "python"),
         src_dir=proj.get("src_dir", "src/"),
         test_dir=proj.get("test_dir", "tests/"),
+        source_extensions=extensions,
         test_cmd=proj.get("test_cmd", ProjectConfig.test_cmd),
         lint_cmd=proj.get("lint_cmd", ProjectConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),
+        lint_fix_cmd=proj.get("lint_fix_cmd", ProjectConfig.lint_fix_cmd),
+        format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
         test_markers=markers,
         conventions=conventions,
     )

@@ -1,4 +1,5 @@
 .dgov/
+!.dgov/project.toml
 .venv/
 __pycache__/
 *.pyc
