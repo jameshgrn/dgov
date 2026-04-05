@@ -32,14 +32,14 @@ deployment deterministic at coarse-grained scale.
   cli/                  # CLI commands
 ```
 
-**Unit IDs**: path-qualified globally — `section/file:slug`
-**Bare slugs**: same-file scope only. Cross-file refs must be path-qualified.
+**Unit IDs**: path-qualified globally — `section/file.slug`
+**Bare slugs**: same-file scope only. Cross-file refs must contain `/` (path-qualified).
 
 ## Compile pipeline
 
 ```
 walker      → reads _root.toml, enumerates sections, collects *.toml files
-merger      → flattens, assigns path-qualified IDs (section/file:slug)
+merger      → flattens, assigns path-qualified IDs (section/file.slug)
 resolver    → resolves depends_on (bare=same-file, qualified=cross-file)
 validator   → hardcoded invariant checks: cycles, conflicts, bad refs, self-refs
 sop-bundler → governor picks SOPs per unit, injects into system_prompt
@@ -88,7 +88,7 @@ Analogous to a type-checker's built-in errors.
 `.dgov/plans/deployed.jsonl` — single append-only file, filter by plan name:
 
 ```json
-{"plan": "arch-refactor", "unit": "modularity/extract:runner", "sha": "abc", "ts": "..."}
+{"plan": "arch-refactor", "unit": "modularity/extract.runner", "sha": "abc", "ts": "..."}
 ```
 
 ## Status (v0 / branch state)

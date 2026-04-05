@@ -14,14 +14,14 @@ Reads:
 Output (human):
   Plan: arch-refactor
   Units: 12 total | 4 deployed | 8 pending
-    ✓ modularity/extract:helpers         (deployed 2026-04-05, sha abc123)
-    ✓ modularity/extract:runner          (deployed 2026-04-05, sha def456)
-    ○ coupling/decouple:worker           (pending, blocked by: ...)
+    ✓ modularity/extract.helpers         (deployed 2026-04-05, sha abc123)
+    ✓ modularity/extract.runner          (deployed 2026-04-05, sha def456)
+    ○ coupling/decouple.worker           (pending, blocked by: ...)
     ...
 
 Output (--json): machine-readable struct with same info.
 """
 commit_message = "Add `dgov plan status` CLI"
-depends_on = ["cli/compile-cmd:compile-cmd", "runtime/deploy-log:deploy-log"]
+depends_on = ["cli/compile-cmd.compile-cmd", "runtime/deploy-log.deploy-log"]
 files.edit = ["src/dgov/cli/__init__.py"]
 files.create = ["tests/test_cli_plan_status.py"]
