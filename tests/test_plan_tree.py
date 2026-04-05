@@ -1,4 +1,4 @@
-"""Tests for plan_tree walker."""
+"""Tests for plan_tree walker + merger."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from dgov.plan_tree import walk_tree
+from dgov.plan_tree import FlatPlan, merge_tree, walk_tree
 
 pytestmark = pytest.mark.unit
 
@@ -187,3 +187,207 @@ class TestDogfood:
         assert len(tree.section_files["compile"]) == 1
         assert len(tree.section_files["cli"]) == 2
         assert len(tree.section_files["runtime"]) == 1
+
+
+# =============================================================================
+# merger tests
+# =============================================================================
+
+
+_TASK_STUB = """
+[tasks.{slug}]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+"""
+
+
+def _build_tree(tmp_path: Path, sections: list[str], files: dict[str, str]) -> Path:
+    """Create a plan tree from a dict of {relative_path: content}."""
+    sections_toml = "[" + ", ".join(f'"{s}"' for s in sections) + "]"
+    _write(
+        tmp_path / "_root.toml",
+        f'[plan]\nname = "test"\nsummary = "t"\nsections = {sections_toml}\n',
+    )
+    for s in sections:
+        (tmp_path / s).mkdir(exist_ok=True)
+    for rel_path, content in files.items():
+        _write(tmp_path / rel_path, content)
+    return tmp_path
+
+
+class TestMergerHappyPath:
+    def test_single_task_single_file(self, tmp_path: Path) -> None:
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": _TASK_STUB.format(slug="foo")})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert isinstance(plan, FlatPlan)
+        assert set(plan.units.keys()) == {"alpha/one.foo"}
+        unit = plan.units["alpha/one.foo"]
+        assert unit.slug == "alpha/one.foo"
+        assert unit.summary == "s"
+        assert unit.prompt == "p"
+        assert unit.commit_message == "c"
+
+    def test_multiple_tasks_per_file(self, tmp_path: Path) -> None:
+        content = _TASK_STUB.format(slug="foo") + _TASK_STUB.format(slug="bar")
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert set(plan.units.keys()) == {"alpha/one.foo", "alpha/one.bar"}
+
+    def test_multiple_files_per_section(self, tmp_path: Path) -> None:
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _TASK_STUB.format(slug="foo"),
+                "alpha/two.toml": _TASK_STUB.format(slug="bar"),
+            },
+        )
+        plan = merge_tree(walk_tree(tmp_path))
+        assert set(plan.units.keys()) == {"alpha/one.foo", "alpha/two.bar"}
+
+    def test_multiple_sections(self, tmp_path: Path) -> None:
+        _build_tree(
+            tmp_path,
+            ["alpha", "beta"],
+            {
+                "alpha/x.toml": _TASK_STUB.format(slug="a"),
+                "beta/y.toml": _TASK_STUB.format(slug="b"),
+            },
+        )
+        plan = merge_tree(walk_tree(tmp_path))
+        assert set(plan.units.keys()) == {"alpha/x.a", "beta/y.b"}
+
+    def test_cross_file_slug_collisions_ok(self, tmp_path: Path) -> None:
+        """Same bare slug in different files is fine — path qualification."""
+        _build_tree(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _TASK_STUB.format(slug="foo"),
+                "alpha/two.toml": _TASK_STUB.format(slug="foo"),
+            },
+        )
+        plan = merge_tree(walk_tree(tmp_path))
+        assert set(plan.units.keys()) == {"alpha/one.foo", "alpha/two.foo"}
+
+    def test_source_map_populated(self, tmp_path: Path) -> None:
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": _TASK_STUB.format(slug="foo")})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert plan.source_map["alpha/one.foo"] == tmp_path / "alpha" / "one.toml"
+
+    def test_source_mtime_max_tracked(self, tmp_path: Path) -> None:
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": _TASK_STUB.format(slug="foo")})
+        plan = merge_tree(walk_tree(tmp_path))
+        expected = (tmp_path / "alpha" / "one.toml").stat().st_mtime
+        assert plan.source_mtime_max == expected
+
+    def test_root_meta_carried_through(self, tmp_path: Path) -> None:
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": _TASK_STUB.format(slug="foo")})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert plan.root_meta.name == "test"
+        assert plan.root_meta.sections == ("alpha",)
+
+    def test_preserves_all_unit_fields(self, tmp_path: Path) -> None:
+        content = """
+[tasks.full]
+summary = "sum"
+prompt = "prm"
+commit_message = "msg"
+agent = "acct/model"
+depends_on = ["a", "b/c.d"]
+timeout_s = 123
+files.create = ["new.py"]
+files.edit = ["old.py"]
+files.delete = ["gone.py"]
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        unit = plan.units["alpha/one.full"]
+        assert unit.summary == "sum"
+        assert unit.prompt == "prm"
+        assert unit.commit_message == "msg"
+        assert unit.agent == "acct/model"
+        assert unit.depends_on == ("a", "b/c.d")
+        assert unit.timeout_s == 123
+        assert unit.files.create == ("new.py",)
+        assert unit.files.edit == ("old.py",)
+        assert unit.files.delete == ("gone.py",)
+
+    def test_defaults_for_missing_fields(self, tmp_path: Path) -> None:
+        content = '[tasks.minimal]\nsummary = "s"\nprompt = "p"\ncommit_message = "c"\n'
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        unit = plan.units["alpha/one.minimal"]
+        assert unit.agent == ""
+        assert unit.depends_on == ()
+        assert unit.timeout_s == 0
+        assert unit.files.create == ()
+
+    def test_file_with_no_tasks_section(self, tmp_path: Path) -> None:
+        _build_tree(tmp_path, ["alpha"], {"alpha/empty.toml": "# just a comment\n"})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert plan.units == {}
+
+
+class TestMergerSlugGrammar:
+    @pytest.mark.parametrize("slug", ["foo.bar", "foo/bar", "foo bar", "foo!", "foo$", ""])
+    def test_invalid_slug_rejected(self, tmp_path: Path, slug: str) -> None:
+        content = f'[tasks."{slug}"]\nsummary = "s"\nprompt = "p"\ncommit_message = "c"\n'
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        with pytest.raises(ValueError, match="Invalid slug"):
+            merge_tree(walk_tree(tmp_path))
+
+    @pytest.mark.parametrize("slug", ["foo", "foo-bar", "foo_bar", "a1b2", "FOO", "x", "A_B-C_1"])
+    def test_valid_slug_accepted(self, tmp_path: Path, slug: str) -> None:
+        content = f'[tasks.{slug}]\nsummary = "s"\nprompt = "p"\ncommit_message = "c"\n'
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert f"alpha/one.{slug}" in plan.units
+
+
+class TestMergerTypeChecks:
+    def test_depends_on_not_list(self, tmp_path: Path) -> None:
+        content = (
+            '[tasks.foo]\nsummary = "s"\nprompt = "p"\n'
+            'commit_message = "c"\ndepends_on = "single-string"\n'
+        )
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        with pytest.raises(ValueError, match="depends_on must be a list"):
+            merge_tree(walk_tree(tmp_path))
+
+    def test_depends_on_mixed_types(self, tmp_path: Path) -> None:
+        content = (
+            '[tasks.foo]\nsummary = "s"\nprompt = "p"\n'
+            'commit_message = "c"\ndepends_on = ["a", 1]\n'
+        )
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        with pytest.raises(ValueError, match="depends_on must be a list"):
+            merge_tree(walk_tree(tmp_path))
+
+    def test_files_create_not_list(self, tmp_path: Path) -> None:
+        content = (
+            '[tasks.foo]\nsummary = "s"\nprompt = "p"\n'
+            'commit_message = "c"\n[tasks.foo.files]\ncreate = "nope"\n'
+        )
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        with pytest.raises(ValueError, match="files.create must be a list"):
+            merge_tree(walk_tree(tmp_path))
+
+
+class TestMergerDogfood:
+    def test_merges_plan_system_tree(self) -> None:
+        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan = merge_tree(walk_tree(plan_root))
+        expected_ids = {
+            "compile/pipeline.walker",
+            "compile/pipeline.merger",
+            "compile/pipeline.resolver",
+            "compile/pipeline.validator",
+            "compile/pipeline.sop-bundler",
+            "cli/compile-cmd.compile-cmd",
+            "cli/status-cmd.status-cmd",
+            "runtime/deploy-log.deploy-log",
+        }
+        assert set(plan.units.keys()) == expected_ids
+        assert plan.source_mtime_max > 0.0
