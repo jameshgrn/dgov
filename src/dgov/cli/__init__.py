@@ -284,10 +284,10 @@ def _format_event(ev: dict) -> str:
     label = _EVENT_LABELS.get(event_type, event_type)
     suffix = ""
     error = ev.get("error")
-    if error and error != "None":
+    if error:
         suffix = f" — {error[:100]}"
     verdict = ev.get("verdict")
-    if verdict and verdict not in ("ok", "None"):
+    if verdict and verdict != "ok":
         suffix = f" ({verdict})"
 
     return f"{ts} {label:>12s}  {task_slug}{suffix}"
