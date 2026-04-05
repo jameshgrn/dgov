@@ -16,11 +16,10 @@ from dgov.dag_parser import (
 # =============================================================================
 
 VALID_DAG_TOML = """
-[dag]
+[plan]
 name = "test-dag"
 project_root = "./src"
 session_root = "."
-max_concurrent = 2
 
 [tasks.init]
 summary = "Initialize project"
@@ -51,14 +50,11 @@ def test_parse_dag_file_valid_toml(tmp_path: Path):
     assert isinstance(result, DagDefinition)
     assert result.name == "test-dag"
     assert result.project_root == "./src"
-    assert result.max_concurrent == 2
     assert len(result.tasks) == 2
 
-    # Check task slugs are correctly assigned
     assert "init" in result.tasks
     assert "build" in result.tasks
 
-    # Check task properties
     init_task = result.tasks["init"]
     assert init_task.slug == "init"
     assert init_task.summary == "Initialize project"
@@ -70,31 +66,31 @@ def test_parse_dag_file_valid_toml(tmp_path: Path):
     assert build_task.files.edit == ("src/main.py",)
 
 
-def test_parse_dag_file_missing_dag_section(tmp_path: Path):
-    """Test parse_dag_file() with missing [dag] section raises ValueError."""
+def test_parse_dag_file_missing_plan_section(tmp_path: Path):
+    """Test parse_dag_file() with missing [plan] section raises ValueError."""
     toml_content = """
 [tasks.test]
 summary = "Test task"
 prompt = "Run test"
 commit_message = "test"
 """
-    dag_file = tmp_path / "no_dag.dag.toml"
+    dag_file = tmp_path / "no_plan.dag.toml"
     dag_file.write_text(toml_content)
 
-    with pytest.raises(ValueError, match="Missing \\[plan\\] or \\[dag\\] section"):
+    with pytest.raises(ValueError, match="Missing \\[plan\\] section"):
         parse_dag_file(str(dag_file))
 
 
 def test_parse_dag_file_missing_tasks_section(tmp_path: Path):
     """Test parse_dag_file() with missing [tasks] section raises ValueError."""
     toml_content = """
-[dag]
+[plan]
 name = "no-tasks-dag"
 """
     dag_file = tmp_path / "no_tasks.dag.toml"
     dag_file.write_text(toml_content)
 
-    with pytest.raises(ValueError, match="Missing \\[units\\] or \\[tasks\\] section"):
+    with pytest.raises(ValueError, match="Missing \\[tasks\\] section"):
         parse_dag_file(str(dag_file))
 
 
@@ -102,6 +98,25 @@ def test_parse_dag_file_nonexistent_file():
     """Test parse_dag_file() with nonexistent file raises FileNotFoundError."""
     with pytest.raises(FileNotFoundError, match="Plan file not found"):
         parse_dag_file("/nonexistent/path/to/file.dag.toml")
+
+
+def test_parse_dag_file_rejects_unknown_fields(tmp_path: Path):
+    """extra='forbid' catches typos like deps instead of depends_on."""
+    toml_content = """
+[plan]
+name = "typo-dag"
+
+[tasks.task1]
+summary = "Task 1"
+prompt = "Do it"
+commit_message = "task 1"
+deps = ["other"]
+"""
+    dag_file = tmp_path / "typo.dag.toml"
+    dag_file.write_text(toml_content)
+
+    with pytest.raises(Exception):
+        parse_dag_file(str(dag_file))
 
 
 # =============================================================================
@@ -127,7 +142,6 @@ def test_all_touches_returns_deduplicated_union():
 
     result = task.all_touches()
 
-    # shared.py appears in both create and edit - should be deduplicated
     assert result == (
         "file1.txt",
         "file2.txt",
@@ -194,104 +208,14 @@ def test_dag_file_spec_partial_defaults():
 
 
 # =============================================================================
-# Additional integration tests
+# Tests for default values
 # =============================================================================
-
-
-def test_parse_dag_file_with_alternative_plan_naming(tmp_path: Path):
-    """Test parse_dag_file() supports [plan] instead of [dag]."""
-    toml_content = """
-[plan]
-name = "plan-named-dag"
-
-[tasks.task1]
-summary = "Task 1"
-prompt = "Do task 1"
-commit_message = "task 1"
-"""
-    dag_file = tmp_path / "plan_named.dag.toml"
-    dag_file.write_text(toml_content)
-
-    result = parse_dag_file(str(dag_file))
-    assert result.name == "plan-named-dag"
-
-
-def test_parse_dag_file_with_alternative_units_naming(tmp_path: Path):
-    """Test parse_dag_file() supports [units] instead of [tasks]."""
-    toml_content = """
-[dag]
-name = "units-dag"
-
-[units.unit1]
-summary = "Unit 1"
-prompt = "Do unit 1"
-commit_message = "unit 1"
-"""
-    dag_file = tmp_path / "units_named.dag.toml"
-    dag_file.write_text(toml_content)
-
-    result = parse_dag_file(str(dag_file))
-    assert "unit1" in result.tasks
-
-
-def test_parse_dag_file_with_acceptance_criteria(tmp_path: Path):
-    """Test parse_dag_file() with acceptance criteria flattening."""
-    toml_content = """
-[dag]
-name = "acceptance-dag"
-
-[tasks.test]
-summary = "Test task"
-prompt = "Test it"
-commit_message = "test"
-
-[tasks.test.acceptance]
-tests_pass = false
-lint_clean = true
-post_merge_check = "verify.sh"
-"""
-    dag_file = tmp_path / "acceptance.dag.toml"
-    dag_file.write_text(toml_content)
-
-    result = parse_dag_file(str(dag_file))
-    task = result.tasks["test"]
-
-    # Acceptance fields should be flattened into task
-    assert task.tests_pass is False
-    assert task.lint_clean is True
-    assert task.post_merge_check == "verify.sh"
-
-
-def test_parse_dag_file_with_evals(tmp_path: Path):
-    """Test parse_dag_file() with evals section."""
-    toml_content = """
-[dag]
-name = "evals-dag"
-
-[tasks.task1]
-summary = "Task 1"
-prompt = "Do it"
-commit_message = "task 1"
-
-[[evals]]
-id = "eval-1"
-kind = "unit"
-statement = "All tests pass"
-evidence = "pytest output"
-"""
-    dag_file = tmp_path / "evals.dag.toml"
-    dag_file.write_text(toml_content)
-
-    result = parse_dag_file(str(dag_file))
-    assert len(result.evals) == 1
-    assert result.evals[0].id == "eval-1"
-    assert result.evals[0].statement == "All tests pass"
 
 
 def test_parse_dag_file_with_default_values(tmp_path: Path):
     """Test parse_dag_file() applies default values correctly."""
     toml_content = """
-[dag]
+[plan]
 name = "minimal-dag"
 
 [tasks.task1]
@@ -304,21 +228,11 @@ commit_message = "task 1"
 
     result = parse_dag_file(str(dag_file))
 
-    # Check DagDefinition defaults
     assert result.project_root == "."
     assert result.session_root == "."
-    assert result.max_concurrent == 0
     assert result.default_max_retries == 3
-    assert result.merge_resolve == "skip"
-    assert result.merge_squash is True
 
-    # Check DagTaskSpec defaults
     task = result.tasks["task1"]
     assert task.agent == "worker"
-    assert task.escalation == ()
     assert task.depends_on == ()
     assert task.timeout_s == 900
-    assert task.permission_mode == "bypassPermissions"
-    assert task.tests_pass is True
-    assert task.lint_clean is True
-    assert task.role == "worker"

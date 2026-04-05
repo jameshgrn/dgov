@@ -28,7 +28,6 @@ class WaitForAny:
 class ReviewTask:
     task_slug: str
     pane_slug: str
-    review_agent: str | None = None
 
 
 @dataclass(frozen=True)
