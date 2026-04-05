@@ -96,8 +96,17 @@ def latest_event_id(session_root: str) -> int:
     return int(row[0]) if row is not None else 0
 
 
+def reset_state(session_root: str) -> None:
+    """Clear events and tasks tables. Called at the start of each run."""
+    conn = _get_db(session_root)
+    conn.execute("DELETE FROM events")
+    conn.execute("DELETE FROM tasks")
+    conn.commit()
+
+
 __all__ = [
     "emit_event",
     "latest_event_id",
     "read_events",
+    "reset_state",
 ]

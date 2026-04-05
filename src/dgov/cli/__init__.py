@@ -12,7 +12,7 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, read_events
+from dgov.persistence import all_tasks, read_events, reset_state
 from dgov.plan import compile_plan, parse_plan_file, validate_plan
 from dgov.runner import EventDagRunner
 
@@ -270,6 +270,9 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     plan = parse_plan_file(plan_file)
     dag = compile_plan(plan)
 
+    # Clean slate — no stale events/tasks from prior runs
+    reset_state(project_root)
+
     # Pre-flight: check sentrux availability and save baseline if available
     sentrux_available = False
     baseline_quality: int | None = None
@@ -395,8 +398,44 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     }
     _output(output)
 
+    # Permanent run log — append-only, git-tracked
+    _append_run_log(project_root, dag.name, plan_file, results, gate_result)
+
     if failed:
         raise click.exceptions.Exit(code=1)
+
+
+def _append_run_log(
+    project_root: str,
+    plan_name: str,
+    plan_file: str,
+    results: dict[str, str],
+    gate_result: dict[str, object],
+) -> None:
+    """Append a run summary to .dgov/runs.log — permanent, git-tracked."""
+    from datetime import datetime, timezone
+
+    log_path = Path(project_root) / ".dgov" / "runs.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    merged = [s for s, st in results.items() if st == "merged"]
+    failed = [s for s, st in results.items() if st == "failed"]
+    status = "ok" if not failed else "fail"
+
+    lines = [f"[{ts}] {plan_name} ({plan_file}) — {status}"]
+    if merged:
+        lines.append(f"  merged: {', '.join(merged)}")
+    if failed:
+        lines.append(f"  failed: {', '.join(failed)}")
+    quality_before = gate_result.get("quality_before")
+    quality_after = gate_result.get("quality_after")
+    if quality_before is not None:
+        lines.append(f"  sentrux: {quality_before} -> {quality_after}")
+    lines.append("")
+
+    with open(log_path, "a") as f:
+        f.write("\n".join(lines) + "\n")
 
 
 def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
