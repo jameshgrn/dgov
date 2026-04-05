@@ -14,11 +14,11 @@ Deterministic kernel for multi-agent orchestration via git worktrees.
 | `workers/headless.py` | Subprocess launcher, JSON event stream |
 | `settlement.py` | ruff auto-fix + lint gate + sentrux policy gate |
 | `worktree.py` | create/merge/remove git worktrees (FF + cherry-pick) |
-| `plan.py` | PlanSpec/PlanUnit/PlanEval, TOML parse, compile to DAG |
+| `plan.py` | PlanSpec/PlanUnit, TOML parse, compile to DAG |
 | `dag_parser.py` | Pydantic v2 models, TOML → DagDefinition |
-| `config.py` | Layered TOML config (defaults ← user ← project) |
-| `persistence/` | SQLite (panes + events + slug_history), WAL mode |
-| `cli/` | Click CLI: `dgov [run plan.toml \| --status \| --watch]` |
+| `config.py` | ProjectConfig + load_project_config |
+| `persistence/` | SQLite (tasks + events + slug_history), WAL mode |
+| `cli/` | Click CLI: `dgov [status \| run \| validate \| init \| watch \| sentrux]` |
 
 ## Principles
 
@@ -47,9 +47,6 @@ uv run pytest tests/ -q      # full suite (~250 tests, <10s)
 - `tests/test_integration.py` — end-to-end with real git repos
 - `tests/test_tasks.py` — persistence CRUD
 - `tests/test_types.py` — type/enum validation
+- `tests/test_cli.py` — CLI commands (status, validate, init, watch)
 
 Markers: `unit`, `integration`. Use `-m unit` for fast feedback.
-
-## Branch strategy
-
-Feature branches only. Never push directly to main.
