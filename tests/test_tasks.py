@@ -149,3 +149,22 @@ def test_set_task_metadata(tmp_project, sample_task):
     retrieved = tasks.get_task(tmp_project, "test-task-001")
     assert retrieved["file_claims"] == ["src/foo.py"]
     assert retrieved["commit_message"] == "Fix foo"
+
+
+def test_emit_event_none_kwargs_excluded(tmp_path, monkeypatch):
+    """None kwargs should not appear as the string 'None' in events."""
+    from dgov.persistence import clear_connection_cache, emit_event, read_events
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    clear_connection_cache()
+
+    session_root = str(tmp_path)
+    emit_event(session_root, "task_done", "test-pane", error=None, reason="ok")
+
+    events = read_events(session_root)
+    assert len(events) == 1
+    ev = events[0]
+    # error=None should be excluded, not stored as "None"
+    assert ev.get("error") is None or ev.get("error") == ""
+    # reason="ok" should still be stored
+    assert ev.get("reason") == "ok"
