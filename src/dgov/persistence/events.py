@@ -24,8 +24,10 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
         conn = _get_db(session_root)
         ts = datetime.now(timezone.utc).isoformat()
 
-        typed = {k: str(v) for k, v in kwargs.items() if k in _EVENT_TYPED_COLS}
-        overflow = {k: v for k, v in kwargs.items() if k not in _EVENT_TYPED_COLS}
+        typed = {k: str(v) for k, v in kwargs.items() if k in _EVENT_TYPED_COLS and v is not None}
+        overflow = {
+            k: v for k, v in kwargs.items() if k not in _EVENT_TYPED_COLS and v is not None
+        }
         data = json.dumps(overflow, default=str) if overflow else "{}"
 
         cols = ["ts", "event", "pane", "data", *typed.keys()]
