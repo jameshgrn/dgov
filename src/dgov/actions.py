@@ -18,13 +18,6 @@ class DispatchTask:
 
 
 @dataclass(frozen=True)
-class WaitForAny:
-    """Wait for any of these tasks to complete."""
-
-    task_slugs: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class ReviewTask:
     task_slug: str
     pane_slug: str
@@ -53,7 +46,7 @@ class InterruptGovernor:
     reason: str
 
 
-DagAction = DispatchTask | WaitForAny | ReviewTask | MergeTask | InterruptGovernor | DagDone
+DagAction = DispatchTask | ReviewTask | MergeTask | InterruptGovernor | DagDone
 
 
 # --- Events (Runner -> Kernel) ---
@@ -63,12 +56,6 @@ DagAction = DispatchTask | WaitForAny | ReviewTask | MergeTask | InterruptGovern
 class TaskDispatched:
     task_slug: str
     pane_slug: str
-
-
-@dataclass(frozen=True)
-class TaskDispatchFailed:
-    task_slug: str
-    error: str
 
 
 @dataclass(frozen=True)
@@ -104,11 +91,4 @@ class TaskGovernorResumed:
     action: GovernorAction
 
 
-DagEvent = (
-    TaskDispatched
-    | TaskDispatchFailed
-    | TaskWaitDone
-    | TaskReviewDone
-    | TaskMergeDone
-    | TaskGovernorResumed
-)
+DagEvent = TaskDispatched | TaskWaitDone | TaskReviewDone | TaskMergeDone | TaskGovernorResumed

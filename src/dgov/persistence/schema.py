@@ -20,7 +20,7 @@ from dgov.types import TaskState
 
 STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
-_SCHEMA_VERSION = 5  # Renamed panes->tasks, pane_id->task_id
+_SCHEMA_VERSION = 6  # Added task_slug typed column to events
 
 TASK_STATES = frozenset(TaskState)
 
@@ -159,6 +159,7 @@ VALID_EVENTS = frozenset(
 
 _EVENT_TYPED_COLS = frozenset(
     {
+        "task_slug",
         "commit_count",
         "error",
         "reason",

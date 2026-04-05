@@ -267,6 +267,34 @@ class TestPartialDAG:
             assert runner.kernel.status == DagState.PARTIAL
 
 
+class TestTimeout:
+    def test_worker_timeout_marks_failed(self):
+        """Task with short timeout_s should fail when worker exceeds it."""
+
+        async def _forever_worker(
+            project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+        ):
+            await asyncio.sleep(999)  # will be cancelled by timeout
+            on_exit(task_slug, pane_slug, 0, "")
+
+        # Build a dag with a 1-second timeout
+        short_task = DagTaskSpec(
+            slug="a",
+            summary="Test timeout",
+            prompt="Do a",
+            commit_message="feat: a",
+            agent="test-agent",
+            files=DagFileSpec(create=("a.py",)),
+            timeout_s=1,
+        )
+        dag = _dag({"a": short_task})
+
+        with _io_patches(headless=_forever_worker):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+
+
 class TestCleanup:
     def test_cleanup_cancels_workers_and_removes_worktrees(self):
         with _io_patches(headless=_fake_worker_slow):

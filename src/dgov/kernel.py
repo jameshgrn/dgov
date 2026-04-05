@@ -26,7 +26,6 @@ from dgov.actions import (
     TaskMergeDone,
     TaskReviewDone,
     TaskWaitDone,
-    WaitForAny,
 )
 from dgov.types import TaskState
 
@@ -133,8 +132,7 @@ class DagKernel:
             return []
         self.task_states[event.task_slug] = DagTaskState.WAITING
         self.pane_slugs[event.task_slug] = event.pane_slug
-        waiting = [s for s, st in self.task_states.items() if st == DagTaskState.WAITING]
-        return [WaitForAny(tuple(waiting))]
+        return []
 
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != DagTaskState.WAITING:

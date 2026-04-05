@@ -20,7 +20,6 @@ from dgov.actions import (
     TaskMergeDone,
     TaskReviewDone,
     TaskWaitDone,
-    WaitForAny,
 )
 from dgov.kernel import (
     DagKernel,
@@ -143,7 +142,7 @@ class TestSingleHappy:
 
         actions = k.handle(TaskDispatched("a", "p-a"))
         assert k.task_states["a"] == DagTaskState.WAITING
-        assert any(isinstance(a, WaitForAny) for a in actions)
+        assert actions == []  # dispatched is ack-only, no action needed
 
         actions = k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         assert k.task_states["a"] == DagTaskState.REVIEWING
@@ -528,10 +527,14 @@ class TestGuardRails:
 
     def test_unknown_event_type_safe(self):
         """Event type not in dispatch table returns empty."""
-        from dgov.actions import TaskDispatchFailed
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True)
+        class FakeEvent:
+            task_slug: str
 
         k = _k({"a": ()})
-        actions = k.handle(TaskDispatchFailed("a", "boom"))
+        actions = k.handle(FakeEvent("a"))
         assert actions == []
 
 

@@ -390,18 +390,8 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     reset_state(project_root)
 
     # Pre-flight: check sentrux availability and save baseline if available
-    sentrux_available = False
+    sentrux_available = _sentrux_available()
     baseline_quality: int | None = None
-    try:
-        result = subprocess.run(
-            ["sentrux", "--version"],
-            capture_output=True,
-            timeout=5.0,
-            check=True,
-        )
-        sentrux_available = True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        pass
 
     if sentrux_available:
         if not want_json():
@@ -554,6 +544,37 @@ def _append_run_log(
         f.write("\n".join(lines) + "\n")
 
 
+_EXCLUDE_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "node_modules",
+        "__pycache__",
+        ".tox",
+        ".venv",
+        "venv",
+        ".eggs",
+        "dist",
+        "build",
+        ".dgov-worktrees",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".pytest_cache",
+    }
+)
+
+
+def _source_files(root: Path, ext: str) -> list[Path]:
+    """Glob for files, skipping common non-source directories."""
+    results: list[Path] = []
+    for f in root.rglob(f"*{ext}"):
+        if any(part in _EXCLUDE_DIRS for part in f.relative_to(root).parts):
+            continue
+        results.append(f)
+    return results
+
+
 def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
     """Auto-detect language, src dir, test dir, and extensions."""
     language = "python"
@@ -562,10 +583,10 @@ def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
     extensions = [".py"]
 
     # Language detection by file prevalence
-    py_files = list(root.glob("**/*.py"))
-    js_files = list(root.glob("**/*.js")) + list(root.glob("**/*.ts"))
-    rs_files = list(root.glob("**/*.rs"))
-    go_files = list(root.glob("**/*.go"))
+    py_files = _source_files(root, ".py")
+    js_files = _source_files(root, ".js") + _source_files(root, ".ts")
+    rs_files = _source_files(root, ".rs")
+    go_files = _source_files(root, ".go")
 
     counts = {
         "python": len(py_files),

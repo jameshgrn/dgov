@@ -17,7 +17,7 @@ import fnmatch
 import json
 import os
 import re
-import shutil  # noqa: F401 — used in _cleanup() inside run_worker()
+import shutil
 import subprocess
 import sys
 import tempfile

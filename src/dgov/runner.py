@@ -78,6 +78,7 @@ class EventDagRunner:
         self._worktrees: dict[str, Worktree] = {}
         self._worker_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_errors: dict[str, str] = {}
+        self._task_timeouts: dict[str, float] = {}
         self._shutdown_event = asyncio.Event()
 
     def _setup_signal_handlers(self) -> None:
@@ -290,6 +291,40 @@ class EventDagRunner:
         )
         return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.FAIL))
 
+    async def _run_with_timeout(
+        self,
+        task_slug: str,
+        pane_slug: str,
+        worktree_path: Path,
+        task: object,
+        on_exit: Callable[[str, str, int, str], None],
+        timeout_s: int,
+    ) -> None:
+        """Run headless worker with wall-clock timeout enforcement."""
+        try:
+            await asyncio.wait_for(
+                run_headless_worker(
+                    self.session_root,
+                    task_slug,
+                    pane_slug,
+                    worktree_path,
+                    task,
+                    on_exit,
+                    on_event=self.on_event,
+                ),
+                timeout=float(timeout_s) if timeout_s > 0 else None,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Task %s timed out after %ds", task_slug, timeout_s)
+            emit_event(
+                self.session_root,
+                "task_failed",
+                pane_slug,
+                task_slug=task_slug,
+                error=f"Wall-clock timeout after {timeout_s}s",
+            )
+            on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s")
+
     async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         import uuid
@@ -348,15 +383,15 @@ class EventDagRunner:
                 )
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
+            timeout_s = task.timeout_s
             worker_task = asyncio.create_task(
-                run_headless_worker(
-                    self.session_root,
+                self._run_with_timeout(
                     action.task_slug,
                     pane_slug,
                     wt.path,
                     task,
                     _on_worker_exit,
-                    on_event=self.on_event,
+                    timeout_s,
                 )
             )
             self._worker_tasks[action.task_slug] = worker_task

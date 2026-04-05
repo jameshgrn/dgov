@@ -231,13 +231,22 @@ def validate_sandbox(
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
-        # 4. Test gate — run on changed test files
+        # 4. Test gate — run full suite if source files changed, else only changed tests
         test_dir = config.test_dir.rstrip("/")
+        test_dir_exists = (worktree_path / test_dir).is_dir()
         test_files = [f for f in changed_files if f.startswith(test_dir)]
-        if test_files:
+        source_files = [f for f in changed_files if not f.startswith(test_dir)]
+        if source_files and test_dir_exists:
+            # Source code changed — must run the full test suite to catch regressions
+            test_cmd = config.test_cmd.replace("{test_dir}", config.test_dir)
+        elif test_files:
+            # Only test files changed — run just those
             test_cmd = config.test_cmd.replace(
                 "{test_dir}", " ".join(shlex.quote(f) for f in test_files)
             )
+        else:
+            test_cmd = ""
+        if test_cmd:
             res_test = subprocess.run(
                 test_cmd,
                 shell=True,

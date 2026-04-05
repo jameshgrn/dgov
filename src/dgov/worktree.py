@@ -175,7 +175,7 @@ def commit_in_worktree(wt: Worktree, message: str, file_claims: tuple[str, ...] 
     else:
         subprocess.run(["git", "add", "."], cwd=wt.path, env=env, check=True)
     subprocess.run(
-        ["git", "commit", "--allow-empty", "-m", message],
+        ["git", "commit", "-m", message],
         cwd=wt.path,
         env=env,
         check=True,

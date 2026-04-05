@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS events (
     event TEXT NOT NULL,
     pane TEXT NOT NULL,
     data TEXT NOT NULL DEFAULT '{}',
+    task_slug TEXT DEFAULT NULL,
     commit_count TEXT DEFAULT NULL,
     error TEXT DEFAULT NULL,
     reason TEXT DEFAULT NULL,

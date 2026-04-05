@@ -242,11 +242,27 @@ class TestValidateSandbox:
         assert not result.passed
         assert "Test failure" in (result.error or "")
 
-    def test_no_test_gate_for_non_test_files(self, tmp_path: Path):
-        """Pytest gate only runs on tests/ files, not all python."""
-        base = _init_repo(tmp_path)
+    def test_source_change_runs_full_suite(self, tmp_path: Path):
+        """Source file change triggers full test suite, catches regressions."""
+        _init_repo(tmp_path)
+        # Create a passing test that depends on lib.py
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_lib.py").write_text(
+            "from pathlib import Path\n"
+            "def test_lib_value():\n"
+            "    content = (Path(__file__).parent.parent / 'lib.py').read_text()\n"
+            "    assert 'x = 1' in content\n"
+        )
         (tmp_path / "lib.py").write_text("x = 1\n")
         _git(tmp_path, "add", ".")
-        _git(tmp_path, "commit", "-m", "add lib")
-        result = validate_sandbox(tmp_path, base, str(tmp_path))
-        assert result.passed
+        _git(tmp_path, "commit", "-m", "add lib + test")
+
+        # Now break lib.py — only lib.py is in the diff, not the test file
+        new_base = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+        (tmp_path / "lib.py").write_text("x = 999\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "break lib")
+        result = validate_sandbox(tmp_path, new_base, str(tmp_path))
+        assert not result.passed
+        assert "Test failure" in (result.error or "")
