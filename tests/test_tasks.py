@@ -1,4 +1,4 @@
-"""Tests for task persistence (successor to pane-based persistence)."""
+"""Tests for task persistence."""
 
 import os
 import tempfile
@@ -42,7 +42,6 @@ def test_add_and_get_task(tmp_project, sample_task):
     assert retrieved["slug"] == "test-task-001"
     assert retrieved["prompt"] == "Fix the bug in src/foo.py"
     assert retrieved["state"] == "active"
-    # task_id is mapped from DB pane_id for headless tasks
     assert retrieved.get("task_id") is None
 
 

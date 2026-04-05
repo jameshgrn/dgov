@@ -21,7 +21,7 @@ from dgov.types import TaskState
 
 STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
-_SCHEMA_VERSION = 4  # Bumped: stripped monitor/tiered columns
+_SCHEMA_VERSION = 5  # Renamed panes->tasks, pane_id->task_id
 
 TASK_STATES = frozenset(TaskState)
 
@@ -112,7 +112,7 @@ class WorkerTask:
     project_root: str
     worktree_path: str
     branch_name: str
-    task_id: str | None = None  # tmux pane_id when in pane mode; None for headless
+    task_id: str | None = None  # worker instance ID; None for headless
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
     base_sha: str | None = None
@@ -137,7 +137,7 @@ _TASK_COLUMNS = frozenset(
     {
         "slug",
         "prompt",
-        "task_id",  # maps to DB column 'pane_id' for backwards compatibility
+        "task_id",
         "agent",
         "project_root",
         "worktree_path",

@@ -42,7 +42,7 @@ class TaskInfo(NamedTuple):
 
     slug: str
     task_slug: str
-    task_id: str  # headless: worktree path; tmux: pane_id when available
+    task_id: str  # worker instance identifier
     agent: str | None
     state: TaskState = TaskState.ACTIVE
 

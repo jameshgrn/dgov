@@ -6,10 +6,10 @@ Only tables actively used by the Lacustrine kernel are initialized.
 """
 
 _CREATE_TABLE_SQL = """\
-CREATE TABLE IF NOT EXISTS panes (
+CREATE TABLE IF NOT EXISTS tasks (
     slug TEXT PRIMARY KEY,
     prompt TEXT,
-    pane_id TEXT,
+    task_id TEXT,
     agent TEXT,
     project_root TEXT,
     worktree_path TEXT,

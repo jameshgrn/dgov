@@ -25,9 +25,6 @@ def _validate_state(state: str) -> str:
 def _row_to_dict(row: sqlite3.Row) -> dict:
     """Convert a SQLite row to a task dict."""
     d = dict(row)
-    # Map DB column 'pane_id' to 'task_id' for internal use
-    if "pane_id" in d:
-        d["task_id"] = d.pop("pane_id")
     if d.get("owns_worktree") is not None:
         d["owns_worktree"] = bool(d["owns_worktree"])
     fc = d.get("file_claims")
@@ -56,19 +53,17 @@ def _insert_task_dict(conn: sqlite3.Connection, task_dict: dict) -> None:
     values: dict = {}
     extras: dict = {}
     for k, v in task_dict.items():
-        # Map 'task_id' to DB column 'pane_id' for backwards compatibility
-        db_key = "pane_id" if k == "task_id" else k
         if k in _TASK_COLUMNS:
             # Serialize complex types to JSON for DB columns that expect TEXT
             if isinstance(v, (dict, list, tuple)):
-                values[db_key] = json.dumps(v, default=str)
+                values[k] = json.dumps(v, default=str)
             else:
-                values[db_key] = v
+                values[k] = v
         elif k in _TASK_TYPED_COLS:
             if isinstance(v, (dict, list, tuple)):
-                values[db_key] = json.dumps(v, default=str)
+                values[k] = json.dumps(v, default=str)
             else:
-                values[db_key] = v
+                values[k] = v
         else:
             # Serialize complex types (dataclasses become dicts) to JSON
             if isinstance(v, (dict, list, tuple)):
@@ -84,6 +79,6 @@ def _insert_task_dict(conn: sqlite3.Connection, task_dict: dict) -> None:
     cols = ", ".join(values.keys())
     placeholders = ", ".join("?" * len(values))
     conn.execute(
-        f"INSERT OR REPLACE INTO panes ({cols}) VALUES ({placeholders})",
+        f"INSERT OR REPLACE INTO tasks ({cols}) VALUES ({placeholders})",
         list(values.values()),
     )

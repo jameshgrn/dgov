@@ -47,7 +47,7 @@ def remove_task(session_root: str, slug: str) -> None:
 
     def _do() -> None:
         conn = _get_db(session_root)
-        conn.execute("DELETE FROM panes WHERE slug = ?", (slug,))
+        conn.execute("DELETE FROM tasks WHERE slug = ?", (slug,))
         conn.execute(
             "INSERT OR IGNORE INTO slug_history (slug, used_at) VALUES (?, ?)",
             (slug, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
@@ -68,7 +68,7 @@ def get_task(session_root: str, slug: str) -> dict | None:
     """Get a single task by slug."""
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM panes WHERE slug = ?", (slug,)).fetchone()
+    row = conn.execute("SELECT * FROM tasks WHERE slug = ?", (slug,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
@@ -81,7 +81,7 @@ def get_tasks(session_root: str, slugs: set[str] | list[str] | tuple[str, ...]) 
     conn.row_factory = sqlite3.Row
     placeholders = ", ".join("?" for _ in ordered_slugs)
     rows = conn.execute(
-        f"SELECT * FROM panes WHERE slug IN ({placeholders})",
+        f"SELECT * FROM tasks WHERE slug IN ({placeholders})",
         ordered_slugs,
     ).fetchall()
     by_slug = {str(row["slug"]): _row_to_dict(row) for row in rows}
@@ -92,7 +92,7 @@ def all_tasks(session_root: str) -> list[dict]:
     """Return all tasks."""
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM panes").fetchall()
+    rows = conn.execute("SELECT * FROM tasks").fetchall()
     return [_row_to_dict(row) for row in rows]
 
 
@@ -112,7 +112,7 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
 
         if force:
             cur = conn.execute(
-                "UPDATE panes SET state = ? WHERE slug = ? AND state != ?",
+                "UPDATE tasks SET state = ? WHERE slug = ? AND state != ?",
                 (new_state, slug, new_state),
             )
         else:
@@ -120,19 +120,19 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
                 st for st, targets in VALID_TRANSITIONS.items() if new_state in targets
             ]
             if not allowed_from:
-                row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
+                row = conn.execute("SELECT state FROM tasks WHERE slug = ?", (slug,)).fetchone()
                 if row is not None and row["state"] != new_state:
                     raise IllegalTransitionError(row["state"], new_state, slug)
                 return False
 
             placeholders = ", ".join("?" * len(allowed_from))
             cur = conn.execute(
-                f"UPDATE panes SET state = ? WHERE slug = ? AND state IN ({placeholders})",
+                f"UPDATE tasks SET state = ? WHERE slug = ? AND state IN ({placeholders})",
                 [new_state, slug, *allowed_from],
             )
 
             if cur.rowcount == 0:
-                row = conn.execute("SELECT state FROM panes WHERE slug = ?", (slug,)).fetchone()
+                row = conn.execute("SELECT state FROM tasks WHERE slug = ?", (slug,)).fetchone()
                 if row is not None and row["state"] != new_state:
                     raise IllegalTransitionError(row["state"], new_state, slug)
                 return False
@@ -167,7 +167,7 @@ def settle_completion_state(
 
         placeholders = ", ".join("?" * len(allow_from))
         cur = conn.execute(
-            f"UPDATE panes SET state = ? WHERE slug = ? AND state IN ({placeholders})",
+            f"UPDATE tasks SET state = ? WHERE slug = ? AND state IN ({placeholders})",
             [new_state, slug, *allow_from],
         )
         changed = cur.rowcount > 0
@@ -188,7 +188,7 @@ def settled_tasks(session_root: str) -> list[dict]:
     conn.row_factory = sqlite3.Row
     placeholders = ", ".join("?" * len(_SETTLED_TASK_STATES))
     rows = conn.execute(
-        f"SELECT * FROM panes WHERE state IN ({placeholders})",
+        f"SELECT * FROM tasks WHERE state IN ({placeholders})",
         list(_SETTLED_TASK_STATES),
     ).fetchall()
     return [_row_to_dict(row) for row in rows]
@@ -198,7 +198,7 @@ def active_tasks(session_root: str) -> list[dict]:
     """Return all currently active tasks."""
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM panes WHERE state = ?", (TaskState.ACTIVE,)).fetchall()
+    rows = conn.execute("SELECT * FROM tasks WHERE state = ?", (TaskState.ACTIVE,)).fetchall()
     return [_row_to_dict(row) for row in rows]
 
 
@@ -206,7 +206,7 @@ def count_active(session_root: str) -> int:
     """Return count of currently active tasks."""
     conn = _get_db(session_root)
     row = conn.execute(
-        "SELECT COUNT(*) FROM panes WHERE state = ?", (TaskState.ACTIVE,)
+        "SELECT COUNT(*) FROM tasks WHERE state = ?", (TaskState.ACTIVE,)
     ).fetchone()
     return row[0] if row else 0
 
@@ -217,11 +217,11 @@ def replace_all_tasks(session_root: str, tasks_list: list[dict] | dict) -> None:
     Intended for test setup where you need to establish a known state.
     """
     if isinstance(tasks_list, dict):
-        tasks_list = tasks_list.get("tasks", tasks_list.get("panes", []))
+        tasks_list = tasks_list.get("tasks", [])
 
     def _do() -> None:
         conn = _get_db(session_root)
-        conn.execute("DELETE FROM panes")
+        conn.execute("DELETE FROM tasks")
         for task_dict in tasks_list:
             _insert_task_dict(conn, task_dict)
         conn.commit()
@@ -240,14 +240,12 @@ def set_task_metadata(session_root: str, slug: str, **kwargs: object) -> None:
         typed_vals: list[object] = []
 
         for k, v in kwargs.items():
-            # Map 'task_id' to DB column 'pane_id'
-            db_key = "pane_id" if k == "task_id" else k
             if k in _TASK_TYPED_COLS:
                 if isinstance(v, dict | list):
-                    typed_sets.append(f"{db_key} = ?")
+                    typed_sets.append(f"{k} = ?")
                     typed_vals.append(json.dumps(v, default=str))
                 else:
-                    typed_sets.append(f"{db_key} = ?")
+                    typed_sets.append(f"{k} = ?")
                     typed_vals.append(v)
             else:
                 raise ValueError(
@@ -257,7 +255,7 @@ def set_task_metadata(session_root: str, slug: str, **kwargs: object) -> None:
 
         if typed_sets:
             conn.execute(
-                f"UPDATE panes SET {', '.join(typed_sets)} WHERE slug = ?",
+                f"UPDATE tasks SET {', '.join(typed_sets)} WHERE slug = ?",
                 [*typed_vals, slug],
             )
         conn.commit()
@@ -269,7 +267,7 @@ def update_file_claims(session_root: str, slug: str, paths: list[str]) -> None:
     """Store file claims for a task (for later settlement)."""
     conn = _get_db(session_root)
     conn.execute(
-        "UPDATE panes SET file_claims = ? WHERE slug = ?",
+        "UPDATE tasks SET file_claims = ? WHERE slug = ?",
         (json.dumps(paths), slug),
     )
     conn.commit()

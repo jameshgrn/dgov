@@ -19,7 +19,7 @@ class DispatchTask:
 
 @dataclass(frozen=True)
 class WaitForAny:
-    """Wait for any of these tasks' panes to complete."""
+    """Wait for any of these tasks to complete."""
 
     task_slugs: tuple[str, ...]
 

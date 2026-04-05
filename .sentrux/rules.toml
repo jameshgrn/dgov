@@ -1,23 +1,22 @@
 # Sentrux rules for dgov — drift detection + architectural boundaries
 #
 # Regenerated post-cleanup (1.0.0a1 Lacustrine rebuild).
+#
+# Section must be [constraints] — sentrux ignores unknown top-level tables.
+# Field names must match the Constraints struct in sentrux-core exactly.
 
-[structure]
-# Current max depth is 4 (DSM level_breaks)
-max_depth = 4
-
+[constraints]
 # 0 cycles — keep it that way
 max_cycles = 0
 
-[metrics]
 # No god files after cleanup
-god_file_limit = 0
+no_god_files = true
 
-# Coupling: 0 above-diagonal deps — clean layering
-max_coupling = 0.10
+# Coupling: cross-module edge ratio (current: ~0.60)
+max_coupling_score = 0.65
 
-# Quality signal floor (current: 6989)
-min_quality_signal = 6900
+# Quality signal floor (current: ~0.69, expressed as 0-1 not 0-10000)
+min_quality = 0.69
 
 # Boundary rules (enforced by test, not sentrux plugin):
 # - kernel.py → only actions.py, types.py (pure, no I/O)

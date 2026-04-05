@@ -156,10 +156,8 @@ def _cmd_watch(project_root: str) -> None:
             events = read_events(project_root, limit=50)
             new_events = [e for e in events if e.get("id", 0) > last_id]
             for ev in new_events:
-                # Use 'slug' or 'task' field, fall back to 'pane' for backwards compatibility
                 task_slug = ev.get("slug") or ev.get("task") or ev.get("pane", "?")
                 click.echo(f"[{ev.get('ts', '?')}] {ev.get('event', '?')}: {task_slug}")
-                last_id = max(last_id, ev.get("id", 0))
                 last_id = max(last_id, ev.get("id", 0))
             time.sleep(1)
     except KeyboardInterrupt:
