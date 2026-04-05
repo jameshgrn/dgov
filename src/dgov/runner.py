@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -52,11 +53,17 @@ logger = logging.getLogger(__name__)
 class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
-    def __init__(self, dag: DagDefinition, session_root: str = ".") -> None:
+    def __init__(
+        self,
+        dag: DagDefinition,
+        session_root: str = ".",
+        on_event: Callable[[str, str, object], None] | None = None,
+    ) -> None:
         from dgov.config import load_project_config
 
         self.dag = dag
         self.session_root = session_root
+        self.on_event = on_event
         self.project_config = load_project_config(session_root)
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
         # Build file claims from plan for scope enforcement in review gate
@@ -70,6 +77,7 @@ class EventDagRunner:
         self._executor = ThreadPoolExecutor(max_workers=8)
         self._worktrees: dict[str, Worktree] = {}
         self._worker_tasks: dict[str, asyncio.Task[None]] = {}
+        self._task_errors: dict[str, str] = {}
         self._shutdown_event = asyncio.Event()
 
     def _setup_signal_handlers(self) -> None:
@@ -127,11 +135,49 @@ class EventDagRunner:
     async def run(self) -> dict[str, str]:
         """Execute DAG with high-performance async loop."""
         self._setup_signal_handlers()
+        await self._preflight_check_models()
 
         try:
             return await self._run_loop()
         finally:
             await self._cleanup()
+
+    async def _preflight_check_models(self) -> None:
+        """Validate all agent model IDs exist before dispatching any work."""
+        import json as _json
+        import os
+        import urllib.request
+
+        api_key = os.environ.get("FIREWORKS_API_KEY")
+        if not api_key:
+            raise RuntimeError("FIREWORKS_API_KEY not set")
+
+        agents = {t.agent for t in self.dag.tasks.values()}
+
+        loop = asyncio.get_running_loop()
+        try:
+
+            def _fetch_models() -> set[str]:
+                req = urllib.request.Request(
+                    "https://api.fireworks.ai/inference/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data = _json.loads(resp.read())
+                return {m["id"] for m in data.get("data", [])}
+
+            available = await loop.run_in_executor(self._executor, _fetch_models)
+        except Exception as exc:
+            logger.warning("Model preflight check skipped: %s", exc)
+            return
+
+        missing = agents - available
+        if missing:
+            kimi_models = sorted(m for m in available if "kimi" in m.lower())
+            hint = f"\nAvailable kimi models: {', '.join(kimi_models)}" if kimi_models else ""
+            raise RuntimeError(
+                f"Model(s) not found on Fireworks: {', '.join(sorted(missing))}{hint}"
+            )
 
     async def _run_loop(self) -> dict[str, str]:
         """Main event loop — separated for graceful shutdown handling."""
@@ -195,6 +241,9 @@ class EventDagRunner:
                 self._worker_tasks.pop(exit_event.task_slug, None)
                 status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
 
+                if exit_event.last_error:
+                    self._task_errors[exit_event.task_slug] = exit_event.last_error
+
                 actions = self.kernel.handle(
                     TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
                 )
@@ -203,6 +252,7 @@ class EventDagRunner:
                     "task_done" if status == TaskState.DONE else "task_failed",
                     exit_event.pane_slug,
                     task_slug=exit_event.task_slug,
+                    error=exit_event.last_error if status == TaskState.FAILED else None,
                 )
                 continue
 
@@ -252,18 +302,21 @@ class EventDagRunner:
     def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
         """Decide retry vs fail based on attempt count."""
         attempts = self.kernel.attempts.get(action.task_slug, 0)
+        error_detail = self._task_errors.get(action.task_slug, "")
         if attempts < self.kernel.max_retries:
             logger.info(
-                "Governor interrupt: %s — retry %d/%d",
-                action.reason,
+                "Task %s failed — retry %d/%d: %s",
+                action.task_slug,
                 attempts + 1,
                 self.kernel.max_retries,
+                error_detail or action.reason,
             )
             return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.RETRY))
-        logger.warning(
-            "Governor interrupt: %s — max retries (%d) exceeded, failing",
-            action.reason,
+        logger.error(
+            "Task %s failed — max retries (%d) exceeded: %s",
+            action.task_slug,
             self.kernel.max_retries,
+            error_detail or action.reason,
         )
         return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.FAIL))
 
@@ -313,12 +366,15 @@ class EventDagRunner:
                 agent=task.agent,
             )
 
-            def _on_worker_exit(task_slug: str, pane_slug: str, exit_code: int) -> None:
+            def _on_worker_exit(
+                task_slug: str, pane_slug: str, exit_code: int, last_error: str = ""
+            ) -> None:
                 exit_event = WorkerExit(
                     task_slug=task_slug,
                     pane_slug=pane_slug,
                     exit_code=exit_code,
                     output_dir=str(output_dir),
+                    last_error=last_error,
                 )
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
@@ -330,6 +386,7 @@ class EventDagRunner:
                     wt.path,
                     task,
                     _on_worker_exit,
+                    on_event=self.on_event,
                 )
             )
             self._worker_tasks[action.task_slug] = worker_task

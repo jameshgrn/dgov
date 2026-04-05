@@ -21,6 +21,16 @@ from dgov.settlement import GateResult
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _skip_preflight(monkeypatch):
+    """Skip model preflight check in integration tests."""
+
+    async def _noop(self):
+        pass
+
+    monkeypatch.setattr("dgov.runner.EventDagRunner._preflight_check_models", _noop)
+
+
 @pytest.fixture()
 def git_repo(tmp_path: Path) -> Path:
     """Fresh git repo with one initial commit."""
@@ -79,16 +89,20 @@ def _task(
     )
 
 
-async def _mock_worker_ok(project_root, task_slug, pane_slug, worktree_path, task, on_exit):
+async def _mock_worker_ok(
+    project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+):
     """Mock worker: write a file to worktree and exit 0."""
     out = worktree_path / f"{task_slug}.txt"
     out.write_text(f"output from {task_slug}\n")
-    on_exit(task_slug, pane_slug, 0)
+    on_exit(task_slug, pane_slug, 0, "")
 
 
-async def _mock_worker_fail(project_root, task_slug, pane_slug, worktree_path, task, on_exit):
+async def _mock_worker_fail(
+    project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+):
     """Mock worker: exit 1 immediately."""
-    on_exit(task_slug, pane_slug, 1)
+    on_exit(task_slug, pane_slug, 1, "mock failure")
 
 
 def _mock_settlement_pass(*_args, **_kwargs):
@@ -300,13 +314,13 @@ class TestParallel:
         """alpha fails, beta still merges (scan-based merge fix)."""
 
         async def _selective_worker(
-            project_root, task_slug, pane_slug, worktree_path, task, on_exit
+            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
         ):
             if task_slug == "alpha":
-                on_exit(task_slug, pane_slug, 1)
+                on_exit(task_slug, pane_slug, 1, "")
             else:
                 (worktree_path / f"{task_slug}.txt").write_text(f"output from {task_slug}\n")
-                on_exit(task_slug, pane_slug, 0)
+                on_exit(task_slug, pane_slug, 0, "")
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _selective_worker)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)

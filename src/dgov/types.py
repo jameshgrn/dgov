@@ -33,6 +33,7 @@ class WorkerExit:
     pane_slug: str
     exit_code: int
     output_dir: str
+    last_error: str = ""
 
 
 # -- Worktree type --

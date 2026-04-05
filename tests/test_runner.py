@@ -97,24 +97,35 @@ _P_GET_TASK = "dgov.runner.get_task"
 _P_REVIEW = "dgov.runner.review_sandbox"
 
 
-async def _fake_worker_success(project_root, task_slug, pane_slug, wt_path, task, on_exit):
+async def _fake_worker_success(
+    project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+):
     await asyncio.sleep(0.01)
-    on_exit(task_slug, pane_slug, 0)
+    on_exit(task_slug, pane_slug, 0, "")
 
 
-async def _fake_worker_fail(project_root, task_slug, pane_slug, wt_path, task, on_exit):
+async def _fake_worker_fail(
+    project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+):
     await asyncio.sleep(0.01)
-    on_exit(task_slug, pane_slug, 1)
+    on_exit(task_slug, pane_slug, 1, "test failure")
 
 
-async def _fake_worker_slow(project_root, task_slug, pane_slug, wt_path, task, on_exit):
+async def _fake_worker_slow(
+    project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+):
     await asyncio.sleep(0.5)
-    on_exit(task_slug, pane_slug, 0)
+    on_exit(task_slug, pane_slug, 0, "")
 
 
 def _make_runner(dag: DagDefinition) -> EventDagRunner:
     runner = EventDagRunner(dag, session_root="/tmp/test-project")
     runner._setup_signal_handlers = lambda: None
+
+    async def _noop() -> None:
+        pass
+
+    runner._preflight_check_models = _noop
     return runner
 
 
@@ -242,9 +253,11 @@ class TestDispatchFailure:
 
 class TestPartialDAG:
     def test_partial_success(self):
-        async def _alternating_worker(project_root, task_slug, pane_slug, wt_path, task, on_exit):
+        async def _alternating_worker(
+            project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+        ):
             await asyncio.sleep(0.01)
-            on_exit(task_slug, pane_slug, 0 if task_slug == "a" else 1)
+            on_exit(task_slug, pane_slug, 0 if task_slug == "a" else 1, "")
 
         with _io_patches(headless=_alternating_worker):
             runner = _make_runner(_parallel_dag())

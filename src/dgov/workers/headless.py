@@ -38,7 +38,8 @@ async def run_headless_worker(
     pane_slug: str,
     worktree_path: Path,
     task: DagTaskSpec,
-    on_exit: Callable[[str, str, int], None],
+    on_exit: Callable[[str, str, int, str], None],
+    on_event: Callable[[str, str, object], None] | None = None,
 ) -> None:
     """Execute the headless worker lifecycle."""
     from dgov.config import load_project_config
@@ -72,6 +73,8 @@ async def run_headless_worker(
         config_json,
     ]
 
+    last_error = ""
+
     try:
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -89,21 +92,27 @@ async def run_headless_worker(
                 data = json.loads(line)
                 if "worker_event" in data:
                     ev = data["worker_event"]
+                    log_type = ev["type"]
+                    content = ev.get("content")
                     emit_event(
                         project_root,
                         "worker_log",
                         pane_slug,
                         task_slug=task_slug,
-                        log_type=ev["type"],
-                        content=ev.get("content"),
+                        log_type=log_type,
+                        content=content,
                     )
+                    if log_type == "error":
+                        last_error = str(content) if content else ""
+                    if on_event is not None:
+                        on_event(task_slug, log_type, content)
             except json.JSONDecodeError:
                 if line:
                     logger.debug("Worker [%s] raw: %s", task_slug, line)
 
         exit_code = await process.wait()
-        on_exit(task_slug, pane_slug, exit_code)
+        on_exit(task_slug, pane_slug, exit_code, last_error)
 
     except Exception as exc:
         logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
-        on_exit(task_slug, pane_slug, 1)
+        on_exit(task_slug, pane_slug, 1, str(exc))

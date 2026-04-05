@@ -307,7 +307,24 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
             if not want_json():
                 click.echo(f"[sentrux] Baseline save failed: {e}", err=True)
 
-    runner = EventDagRunner(dag, session_root=project_root)
+    # Live event callback — print worker activity to stderr
+    def _on_worker_event(task_slug: str, log_type: str, content: object) -> None:
+        if want_json():
+            return
+        if log_type == "error":
+            click.echo(f"  [{task_slug}] ERROR: {content}", err=True)
+        elif log_type == "thought":
+            click.echo(f"  [{task_slug}] {str(content)[:120]}", err=True)
+        elif log_type == "call":
+            if isinstance(content, dict):
+                tool = content.get("tool", "?")
+                args = content.get("args", {})
+                summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
+                click.echo(f"  [{task_slug}] {tool}({summary})", err=True)
+        elif log_type == "done":
+            click.echo(f"  [{task_slug}] done: {content}", err=True)
+
+    runner = EventDagRunner(dag, session_root=project_root, on_event=_on_worker_event)
 
     if want_json():
         click.echo(
