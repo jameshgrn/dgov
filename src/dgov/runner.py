@@ -44,10 +44,19 @@ from dgov.worktree import (
     commit_in_worktree,
     create_worktree,
     merge_worktree,
+    prune_orphans,
     remove_worktree,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _prune_orphans_safe(session_root: str) -> None:
+    """Best-effort orphan prune at session start — never aborts a run."""
+    try:
+        prune_orphans(session_root)
+    except Exception as exc:
+        logger.warning("Orphan prune skipped: %s", exc)
 
 
 class EventDagRunner:
@@ -135,6 +144,7 @@ class EventDagRunner:
 
     async def run(self) -> dict[str, str]:
         """Execute DAG with high-performance async loop."""
+        _prune_orphans_safe(self.session_root)
         self._setup_signal_handlers()
         await self._preflight_check_models()
 

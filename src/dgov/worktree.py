@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -157,6 +158,118 @@ def remove_worktree(project_root: str, wt: Worktree) -> None:
         env=git_env,
         capture_output=True,
     )
+
+
+def _worktrees_dir(project_root: str) -> Path:
+    """Return the sibling worktrees directory for a project."""
+    root = Path(project_root).resolve()
+    return root.parent / f".dgov-worktrees-{root.name}"
+
+
+def _list_git_worktrees(project_root: str, git_env: dict[str, str]) -> tuple[set[str], set[str]]:
+    """Parse `git worktree list --porcelain` once, return (paths, attached_branches)."""
+    res = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    paths: set[str] = set()
+    branches: set[str] = set()
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            paths.add(line[len("worktree ") :].strip())
+        elif line.startswith("branch "):
+            ref = line[len("branch ") :].strip()
+            branches.add(ref.removeprefix("refs/heads/"))
+    return paths, branches
+
+
+def prune_orphans(project_root: str) -> dict[str, int]:
+    """Remove orphaned dgov worktrees and merged branches from prior sessions.
+
+    Safe + idempotent. Only touches:
+      - Directories under <project>/.dgov-worktrees-<name>/ not tracked by git
+      - dgov/* branches with no live worktree AND fully merged into HEAD
+
+    Returns counts under keys "worktrees" and "branches".
+    """
+    git_env = _git_env(project_root)
+
+    # Clear stale .git/worktrees/<name>/ metadata so the listing is accurate.
+    subprocess.run(
+        ["git", "worktree", "prune"],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+        check=False,
+    )
+
+    live_paths, attached_branches = _list_git_worktrees(project_root, git_env)
+    removed_dirs = _prune_orphan_dirs(project_root, git_env, live_paths)
+    removed_branches = _prune_orphan_branches(project_root, git_env, attached_branches)
+
+    if removed_dirs or removed_branches:
+        logger.info(
+            "Pruned %d orphan worktree(s) and %d merged dgov/* branch(es)",
+            removed_dirs,
+            removed_branches,
+        )
+    return {"worktrees": removed_dirs, "branches": removed_branches}
+
+
+def _prune_orphan_dirs(project_root: str, git_env: dict[str, str], live_paths: set[str]) -> int:
+    """Remove worktree directories git no longer tracks."""
+    worktrees_dir = _worktrees_dir(project_root)
+    if not worktrees_dir.exists():
+        return 0
+
+    live = {Path(p).resolve() for p in live_paths}
+    removed = 0
+    for child in worktrees_dir.iterdir():
+        if not child.is_dir() or child.resolve() in live:
+            continue
+        # Try git first (handles metadata); fall back to rm if git is unaware.
+        rc = subprocess.run(
+            ["git", "worktree", "remove", "-f", str(child)],
+            cwd=project_root,
+            env=git_env,
+            capture_output=True,
+        )
+        if rc.returncode != 0:
+            shutil.rmtree(child, ignore_errors=True)
+        removed += 1
+    return removed
+
+
+def _prune_orphan_branches(project_root: str, git_env: dict[str, str], attached: set[str]) -> int:
+    """Delete dgov/* branches with no live worktree AND fully merged into HEAD."""
+    res = subprocess.run(
+        ["git", "branch", "--list", "dgov/*", "--format=%(refname:short)"],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    candidates = [b.strip() for b in res.stdout.splitlines() if b.strip()]
+
+    removed = 0
+    for branch in candidates:
+        if branch in attached:
+            continue
+        # -d (safe) — only deletes if merged into HEAD. Skips unmerged branches.
+        rc = subprocess.run(
+            ["git", "branch", "-d", branch],
+            cwd=project_root,
+            env=git_env,
+            capture_output=True,
+        )
+        if rc.returncode == 0:
+            removed += 1
+    return removed
 
 
 def commit_in_worktree(wt: Worktree, message: str, file_claims: tuple[str, ...] = ()) -> str:

@@ -83,6 +83,7 @@ def cli(
       dgov validate plan.toml Validate a plan without running
       dgov init               Bootstrap .dgov/project.toml
       dgov watch              Stream events
+      dgov clean              Prune orphan worktrees + merged branches
       dgov sentrux check      Run Sentrux architectural check
 
     Tasks run in isolated git worktrees. No tmux required.
@@ -107,6 +108,21 @@ def status_cmd() -> None:
 def watch_cmd() -> None:
     """Stream governor events in real time."""
     _cmd_watch(str(Path.cwd()))
+
+
+@cli.command(name="clean")
+def clean_cmd() -> None:
+    """Prune orphaned worktrees and merged dgov/* branches from prior sessions."""
+    from dgov.worktree import prune_orphans
+
+    result = prune_orphans(str(Path.cwd()))
+    if want_json():
+        click.echo(json.dumps(result, indent=2))
+    else:
+        click.echo(
+            f"Removed {result['worktrees']} orphan worktree(s), "
+            f"{result['branches']} merged branch(es)."
+        )
 
 
 def _format_unit_files(unit: object) -> str:
