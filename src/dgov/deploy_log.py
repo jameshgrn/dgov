@@ -1,7 +1,9 @@
 """Append-only deploy log — tracks which plan units have shipped.
 
+Pillar #6: Event-Sourced - Append-only JSONL, never mutate or delete.
+Pillar #10: Fail-Closed - Malformed lines skipped with warning, not crash.
+
 Single JSONL file at `.dgov/plans/deployed.jsonl`, filtered by plan name.
-Never mutate or delete entries. Malformed lines are skipped with a warning.
 """
 
 from __future__ import annotations

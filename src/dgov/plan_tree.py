@@ -1,9 +1,13 @@
-"""Plan tree walker + merger + resolver + validator — phases 1-4 of compile.
+"""Plan tree walker + merger + resolver + validator + serializer.
+
+Pillar #4: Determinism - Validates all structural invariants before compile output.
+Pillar #10: Fail-Closed - Rejects cycles, unreachable units, bad refs immediately.
 
 Walker reads `_root.toml` + section directories into a PlanTree.
 Merger flattens the tree into a FlatPlan with path-qualified unit IDs.
 Resolver rewrites each unit's `depends_on` to fully-qualified IDs.
 Validator runs structural DAG checks (cycles, unreachability).
+Serializer writes dispatch-ready `_compiled.toml` in flat PlanSpec format.
 See .dgov/plans/plan-system/DESIGN.md for the full compile pipeline.
 """
 
