@@ -2,6 +2,7 @@
 !.dgov/project.toml
 !.dgov/runs.log
 !.dgov/plans/
+_compiled.toml
 !.dgov/sops/
 .venv/
 __pycache__/

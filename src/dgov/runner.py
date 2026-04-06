@@ -446,8 +446,15 @@ class EventDagRunner:
                 logger.warning("REJECTED %s: %s", action.task_slug, error)
             else:
                 # 3. Merge
-                await loop.run_in_executor(self._executor, merge_worktree, self.session_root, wt)
+                merge_sha = await loop.run_in_executor(
+                    self._executor, merge_worktree, self.session_root, wt
+                )
                 logger.info("COMMITTED %s", action.task_slug)
+
+                # 4. Deploy log — record shipped unit
+                from dgov import deploy_log
+
+                deploy_log.append(self.session_root, self.dag.name, action.task_slug, merge_sha)
 
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
