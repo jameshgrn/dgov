@@ -1,4 +1,4 @@
-"""Tests for plan_tree walker + merger + resolver."""
+"""Tests for plan_tree walker + merger + resolver + validator."""
 
 from __future__ import annotations
 
@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from dgov.plan_tree import FlatPlan, merge_tree, resolve_refs, walk_tree
+from dgov.plan_tree import (
+    FlatPlan,
+    ValidationReport,
+    merge_tree,
+    resolve_refs,
+    validate,
+    walk_tree,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -592,3 +599,166 @@ class TestResolverDogfood:
             "cli/compile-cmd.compile-cmd",
             "runtime/deploy-log.deploy-log",
         }
+
+
+# =============================================================================
+# validator tests
+# =============================================================================
+
+
+def _validate(tmp_path: Path, sections: list[str], files: dict[str, str]) -> ValidationReport:
+    _build_tree(tmp_path, sections, files)
+    return validate(resolve_refs(merge_tree(walk_tree(tmp_path))))
+
+
+class TestValidatorHappyPath:
+    def test_empty_plan(self, tmp_path: Path) -> None:
+        report = _validate(tmp_path, ["alpha"], {})
+        assert report.cycles == ()
+        assert report.unreachable == ()
+
+    def test_single_root_unit(self, tmp_path: Path) -> None:
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": _unit_toml("foo")})
+        assert report.cycles == ()
+        assert report.unreachable == ()
+
+    def test_linear_chain(self, tmp_path: Path) -> None:
+        # a -> b -> c (b depends on a, c depends on b)
+        content = (
+            _unit_toml("a") + _unit_toml("b", depends_on=["a"]) + _unit_toml("c", depends_on=["b"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == ()
+        assert report.unreachable == ()
+
+    def test_diamond(self, tmp_path: Path) -> None:
+        content = (
+            _unit_toml("a")
+            + _unit_toml("b", depends_on=["a"])
+            + _unit_toml("c", depends_on=["a"])
+            + _unit_toml("d", depends_on=["b", "c"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == ()
+        assert report.unreachable == ()
+
+    def test_multiple_independent_roots(self, tmp_path: Path) -> None:
+        content = _unit_toml("r1") + _unit_toml("r2") + _unit_toml("c", depends_on=["r1", "r2"])
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == ()
+        assert report.unreachable == ()
+
+
+class TestValidatorCycles:
+    def test_two_node_cycle(self, tmp_path: Path) -> None:
+        content = _unit_toml("a", depends_on=["b"]) + _unit_toml("b", depends_on=["a"])
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == (("alpha/one.a", "alpha/one.b"),)
+
+    def test_three_node_cycle(self, tmp_path: Path) -> None:
+        content = (
+            _unit_toml("a", depends_on=["c"])
+            + _unit_toml("b", depends_on=["a"])
+            + _unit_toml("c", depends_on=["b"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == (("alpha/one.a", "alpha/one.b", "alpha/one.c"),)
+
+    def test_two_disjoint_cycles_reported(self, tmp_path: Path) -> None:
+        content = (
+            _unit_toml("a", depends_on=["b"])
+            + _unit_toml("b", depends_on=["a"])
+            + _unit_toml("c", depends_on=["d"])
+            + _unit_toml("d", depends_on=["c"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == (
+            ("alpha/one.a", "alpha/one.b"),
+            ("alpha/one.c", "alpha/one.d"),
+        )
+
+    def test_cycle_across_files(self, tmp_path: Path) -> None:
+        report = _validate(
+            tmp_path,
+            ["alpha"],
+            {
+                "alpha/one.toml": _unit_toml("a", depends_on=["alpha/two.b"]),
+                "alpha/two.toml": _unit_toml("b", depends_on=["alpha/one.a"]),
+            },
+        )
+        assert report.cycles == (("alpha/one.a", "alpha/two.b"),)
+
+    def test_cycle_with_off_cycle_dependent(self, tmp_path: Path) -> None:
+        # cycle {a,b}, plus c depends on a (dependent of the cycle), plus root d
+        content = (
+            _unit_toml("a", depends_on=["b"])
+            + _unit_toml("b", depends_on=["a"])
+            + _unit_toml("c", depends_on=["a"])
+            + _unit_toml("d")
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == (("alpha/one.a", "alpha/one.b"),)
+        # cycle is isolated (no root feeds it), so a,b,c all unreachable; d reachable
+        assert set(report.unreachable) == {
+            "alpha/one.a",
+            "alpha/one.b",
+            "alpha/one.c",
+        }
+
+    def test_long_cycle_five_nodes(self, tmp_path: Path) -> None:
+        content = (
+            _unit_toml("a", depends_on=["e"])
+            + _unit_toml("b", depends_on=["a"])
+            + _unit_toml("c", depends_on=["b"])
+            + _unit_toml("d", depends_on=["c"])
+            + _unit_toml("e", depends_on=["d"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == (
+            (
+                "alpha/one.a",
+                "alpha/one.b",
+                "alpha/one.c",
+                "alpha/one.d",
+                "alpha/one.e",
+            ),
+        )
+
+
+class TestValidatorUnreachable:
+    def test_isolated_cycle_all_unreachable(self, tmp_path: Path) -> None:
+        content = _unit_toml("a", depends_on=["b"]) + _unit_toml("b", depends_on=["a"])
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.unreachable == ("alpha/one.a", "alpha/one.b")
+
+    def test_no_roots_everything_unreachable(self, tmp_path: Path) -> None:
+        # Every unit has a dep — nothing has empty depends_on.
+        content = (
+            _unit_toml("a", depends_on=["b"])
+            + _unit_toml("b", depends_on=["c"])
+            + _unit_toml("c", depends_on=["a"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.unreachable == ("alpha/one.a", "alpha/one.b", "alpha/one.c")
+
+    def test_cycle_reachable_via_root(self, tmp_path: Path) -> None:
+        # root r, c depends on r, a depends on {b,c}, b depends on a.
+        # Root r reaches c, then a via a.deps=[c], then b via b.deps=[a].
+        content = (
+            _unit_toml("r")
+            + _unit_toml("c", depends_on=["r"])
+            + _unit_toml("a", depends_on=["b", "c"])
+            + _unit_toml("b", depends_on=["a"])
+        )
+        report = _validate(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        assert report.cycles == (("alpha/one.a", "alpha/one.b"),)
+        assert report.unreachable == ()
+
+
+class TestValidatorDogfood:
+    def test_plan_system_validates_clean(self) -> None:
+        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan = resolve_refs(merge_tree(walk_tree(plan_root)))
+        report = validate(plan)
+        assert report.cycles == ()
+        assert report.unreachable == ()

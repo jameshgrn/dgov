@@ -1,8 +1,9 @@
-"""Plan tree walker + merger + resolver — phases 1-3 of the compile pipeline.
+"""Plan tree walker + merger + resolver + validator — phases 1-4 of compile.
 
 Walker reads `_root.toml` + section directories into a PlanTree.
 Merger flattens the tree into a FlatPlan with path-qualified unit IDs.
 Resolver rewrites each unit's `depends_on` to fully-qualified IDs.
+Validator runs structural DAG checks (cycles, unreachability).
 See .dgov/plans/plan-system/DESIGN.md for the full compile pipeline.
 """
 
@@ -255,3 +256,96 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
         agent=data.get("agent", ""),
         timeout_s=data.get("timeout_s", 0),
     )
+
+
+@dataclass(frozen=True)
+class ValidationReport:
+    """Structural DAG validation results.
+
+    `cycles` holds each non-trivial strongly connected component as a
+    tuple of fq_ids sorted alphabetically. `unreachable` lists fq_ids
+    with no execution-order path from any root (empty depends_on).
+    Self-loops are rejected by `resolve_refs`, so single-node cycles
+    only arise from malformed input that bypasses the resolver.
+    """
+
+    cycles: tuple[tuple[str, ...], ...]
+    unreachable: tuple[str, ...]
+
+
+def validate(plan: FlatPlan) -> ValidationReport:
+    """Run structural DAG checks on a resolved plan: cycles + unreachability.
+
+    Returns the full report even if violations exist — callers decide what
+    is fatal. File-claim conflicts are delegated to `plan.validate_plan`
+    which runs against the compiled `_compiled.toml` output.
+    """
+    return ValidationReport(
+        cycles=_find_cycles(plan.units),
+        unreachable=_find_unreachable(plan.units),
+    )
+
+
+def _find_cycles(units: dict[str, PlanUnit]) -> tuple[tuple[str, ...], ...]:
+    """Return every non-trivial SCC as a sorted fq_id tuple (Tarjan's)."""
+    index_counter = 0
+    indices: dict[str, int] = {}
+    lowlinks: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[tuple[str, ...]] = []
+
+    def strongconnect(node: str) -> None:
+        nonlocal index_counter
+        indices[node] = index_counter
+        lowlinks[node] = index_counter
+        index_counter += 1
+        stack.append(node)
+        on_stack.add(node)
+        for dep in units[node].depends_on:
+            if dep not in units:
+                continue
+            if dep not in indices:
+                strongconnect(dep)
+                lowlinks[node] = min(lowlinks[node], lowlinks[dep])
+            elif dep in on_stack:
+                lowlinks[node] = min(lowlinks[node], indices[dep])
+        if lowlinks[node] == indices[node]:
+            scc: list[str] = []
+            while True:
+                w = stack.pop()
+                on_stack.discard(w)
+                scc.append(w)
+                if w == node:
+                    break
+            if len(scc) > 1 or (len(scc) == 1 and scc[0] in units[scc[0]].depends_on):
+                components.append(tuple(sorted(scc)))
+
+    for node in sorted(units):
+        if node not in indices:
+            strongconnect(node)
+    return tuple(sorted(components))
+
+
+def _find_unreachable(units: dict[str, PlanUnit]) -> tuple[str, ...]:
+    """Return fq_ids with no execution-order path from any root.
+
+    Execution-order edges go prerequisite → dependent (reversed depends_on).
+    Roots are units with empty `depends_on`; a unit is unreachable when no
+    BFS/DFS traversal from any root touches it. Isolated cycles land here.
+    """
+    reverse_edges: dict[str, list[str]] = {uid: [] for uid in units}
+    for uid, unit in units.items():
+        for dep in unit.depends_on:
+            if dep in reverse_edges:
+                reverse_edges[dep].append(uid)
+
+    visited: set[str] = set()
+    stack = [uid for uid, unit in units.items() if not unit.depends_on]
+    while stack:
+        node = stack.pop()
+        if node in visited:
+            continue
+        visited.add(node)
+        stack.extend(reverse_edges[node])
+    return tuple(sorted(uid for uid in units if uid not in visited))
