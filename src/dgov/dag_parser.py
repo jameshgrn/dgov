@@ -34,6 +34,7 @@ class DagTaskSpec(BaseModel):
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
+    sop_mapping: tuple[str, ...] = ()
 
     def all_touches(self) -> tuple[str, ...]:
         return tuple(dict.fromkeys((*self.files.create, *self.files.edit, *self.files.delete)))
@@ -48,6 +49,8 @@ class DagDefinition(BaseModel):
     tasks: dict[str, DagTaskSpec]
     default_agent: str = ""
     default_max_retries: int = 3
+    source_mtime_max: str = ""
+    sop_set_hash: str = ""
 
 
 def parse_dag_file(path: str) -> DagDefinition:
@@ -81,4 +84,6 @@ def parse_dag_file(path: str) -> DagDefinition:
         tasks=tasks,
         default_agent=plan_section.get("default_agent", ""),
         default_max_retries=plan_section.get("default_max_retries", 3),
+        source_mtime_max=plan_section.get("source_mtime_max", ""),
+        sop_set_hash=plan_section.get("sop_set_hash", ""),
     )
