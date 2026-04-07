@@ -420,6 +420,17 @@ class EventDagRunner:
         output_dir.mkdir(parents=True, exist_ok=True)
         loop = asyncio.get_running_loop()
 
+        # Enrich prompt with prior failure context on retry
+        prompt = task.prompt
+        prior_error = self._task_errors.get(action.task_slug)
+        if prior_error:
+            attempt = self.kernel.attempts.get(action.task_slug, 0)
+            prompt = (
+                f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
+                f"Fix the issue described above, then complete the original task.\n\n"
+                f"ORIGINAL TASK:\n{task.prompt}"
+            )
+
         # Pillar #3: Snapshot Isolation
         wt = await loop.run_in_executor(
             self._executor, create_worktree, self.session_root, action.task_slug
@@ -436,7 +447,7 @@ class EventDagRunner:
             )
             task_record = WorkerTask(
                 slug=action.task_slug,
-                prompt=task.prompt,
+                prompt=prompt,
                 agent=task.agent,
                 project_root=self.session_root,
                 worktree_path=str(wt.path),
@@ -471,13 +482,14 @@ class EventDagRunner:
                 )
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
+            dispatch_task = task if not prior_error else task.model_copy(update={"prompt": prompt})
             timeout_s = task.timeout_s
             worker_task = asyncio.create_task(
                 self._run_with_timeout(
                     action.task_slug,
                     pane_slug,
                     wt.path,
-                    task,
+                    dispatch_task,
                     _on_worker_exit,
                     timeout_s,
                 )
