@@ -137,3 +137,8 @@
   failed: track_timing
   sentrux: 7334 -> 7334
 
+[2026-04-07 23:17:03Z] flesh-out-docs (plan_docs.toml) — ok (67.63s)
+  merged: cli_reference, plan_reference, update_config
+  durations: cli_reference: 42.28s, plan_reference: 48.04s, update_config: 11.19s
+  sentrux: 2316 -> 2316
+
