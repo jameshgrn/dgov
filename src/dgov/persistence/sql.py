@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     role TEXT DEFAULT 'worker',
     state TEXT,
     metadata TEXT,
+    plan_name TEXT DEFAULT NULL,
     file_claims TEXT NOT NULL DEFAULT '[]',
     commit_message TEXT DEFAULT NULL
 )"""
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS events (
     pane TEXT NOT NULL,
     data TEXT NOT NULL DEFAULT '{}',
     task_slug TEXT DEFAULT NULL,
+    plan_name TEXT DEFAULT NULL,
     commit_count TEXT DEFAULT NULL,
     error TEXT DEFAULT NULL,
     reason TEXT DEFAULT NULL,

@@ -30,27 +30,14 @@ from dgov.actions import (
 from dgov.types import TaskState
 
 __all__ = [
-    "DagTaskState",
+    "TaskState",
     "DagState",
     "DagKernel",
 ]
 
 logger = logging.getLogger(__name__)
 
-
-class DagTaskState(StrEnum):
-    PENDING = "pending"
-    WAITING = "waiting"
-    REVIEWING = "reviewing"
-    MERGE_READY = "merge_ready"
-    MERGING = "merging"
-    # Terminal
-    MERGED = "merged"
-    FAILED = "failed"
-    SKIPPED = "skipped"
-
-
-_TERMINAL = frozenset({DagTaskState.MERGED, DagTaskState.FAILED, DagTaskState.SKIPPED})
+_TERMINAL = frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.SKIPPED})
 
 
 class DagState(StrEnum):
@@ -76,13 +63,13 @@ class DagKernel:
     max_retries: int = 3
 
     # Mutable state
-    task_states: dict[str, DagTaskState] = field(init=False)
+    task_states: dict[str, TaskState] = field(init=False)
     pane_slugs: dict[str, str] = field(default_factory=dict)
     attempts: dict[str, int] = field(default_factory=dict)
     merge_order: list[str] = field(init=False)
 
     def __post_init__(self) -> None:
-        self.task_states = {slug: DagTaskState.PENDING for slug in self.deps}
+        self.task_states = {slug: TaskState.PENDING for slug in self.deps}
         self.merge_order = _topological_sort(self.deps)
 
     # -- Public API --
@@ -93,12 +80,12 @@ class DagKernel:
 
     @property
     def status(self) -> DagState:
-        if all(st == DagTaskState.PENDING for st in self.task_states.values()):
+        if all(st == TaskState.PENDING for st in self.task_states.values()):
             return DagState.IDLE
         if not self.done:
             return DagState.RUNNING
-        has_failed = any(st == DagTaskState.FAILED for st in self.task_states.values())
-        has_merged = any(st == DagTaskState.MERGED for st in self.task_states.values())
+        has_failed = any(st == TaskState.FAILED for st in self.task_states.values())
+        has_merged = any(st == TaskState.MERGED for st in self.task_states.values())
         if has_failed:
             return DagState.PARTIAL if has_merged else DagState.FAILED
         return DagState.COMPLETED
@@ -128,38 +115,38 @@ class DagKernel:
     # -- Event handlers --
 
     def _on_dispatched(self, event: TaskDispatched) -> list[DagAction]:
-        if self.task_states.get(event.task_slug) != DagTaskState.PENDING:
+        if self.task_states.get(event.task_slug) != TaskState.PENDING:
             return []
-        self.task_states[event.task_slug] = DagTaskState.WAITING
+        self.task_states[event.task_slug] = TaskState.ACTIVE
         self.pane_slugs[event.task_slug] = event.pane_slug
         return []
 
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
-        if self.task_states.get(event.task_slug) != DagTaskState.WAITING:
+        if self.task_states.get(event.task_slug) != TaskState.ACTIVE:
             return []
         if event.task_state == TaskState.DONE:
-            self.task_states[event.task_slug] = DagTaskState.REVIEWING
+            self.task_states[event.task_slug] = TaskState.REVIEWING
             return [ReviewTask(event.task_slug, event.pane_slug)]
         # Fail-closed: any non-DONE state triggers governor interrupt
         pane = self.pane_slugs.get(event.task_slug, "")
         return [InterruptGovernor(event.task_slug, pane, reason=str(event.task_state))]
 
     def _on_review_done(self, event: TaskReviewDone) -> list[DagAction]:
-        if self.task_states.get(event.task_slug) != DagTaskState.REVIEWING:
+        if self.task_states.get(event.task_slug) != TaskState.REVIEWING:
             return []
         if event.passed:
-            self.task_states[event.task_slug] = DagTaskState.MERGE_READY
+            self.task_states[event.task_slug] = TaskState.REVIEWED_PASS
             return self._try_merge()
-        self.task_states[event.task_slug] = DagTaskState.FAILED
+        self.task_states[event.task_slug] = TaskState.FAILED
         return [*self._try_merge(), *self._schedule()]
 
     def _on_merge_done(self, event: TaskMergeDone) -> list[DagAction]:
-        if self.task_states.get(event.task_slug) != DagTaskState.MERGING:
+        if self.task_states.get(event.task_slug) != TaskState.MERGING:
             return []
         if event.error:
-            self.task_states[event.task_slug] = DagTaskState.FAILED
+            self.task_states[event.task_slug] = TaskState.FAILED
         else:
-            self.task_states[event.task_slug] = DagTaskState.MERGED
+            self.task_states[event.task_slug] = TaskState.MERGED
         return [*self._try_merge(), *self._schedule()]
 
     def _on_governor_resumed(self, event: TaskGovernorResumed) -> list[DagAction]:
@@ -167,17 +154,17 @@ class DagKernel:
         current = self.task_states.get(slug)
         # Guard: accept from PENDING (dispatch failure), WAITING (interrupt), or FAILED (manual).
         # Prevents accidentally un-merging or un-reviewing a task.
-        if current not in (DagTaskState.PENDING, DagTaskState.WAITING, DagTaskState.FAILED):
+        if current not in (TaskState.PENDING, TaskState.ACTIVE, TaskState.FAILED):
             return []
         if event.action == GovernorAction.RETRY:
-            self.task_states[slug] = DagTaskState.PENDING
+            self.task_states[slug] = TaskState.PENDING
             self.attempts[slug] = self.attempts.get(slug, 0) + 1
             return self._schedule()
         if event.action == GovernorAction.SKIP:
-            self.task_states[slug] = DagTaskState.SKIPPED
+            self.task_states[slug] = TaskState.SKIPPED
             return [*self._try_merge(), *self._schedule()]
         if event.action == GovernorAction.FAIL:
-            self.task_states[slug] = DagTaskState.FAILED
+            self.task_states[slug] = TaskState.FAILED
             return [*self._try_merge(), *self._schedule()]
         return []
 
@@ -187,9 +174,9 @@ class DagKernel:
         """Dispatch all PENDING tasks whose deps are fully MERGED."""
         actions: list[DagAction] = []
         for slug, st in self.task_states.items():
-            if st == DagTaskState.PENDING:
+            if st == TaskState.PENDING:
                 deps = self.deps.get(slug, ())
-                if all(self.task_states[d] == DagTaskState.MERGED for d in deps):
+                if all(self.task_states[d] == TaskState.MERGED for d in deps):
                     actions.append(DispatchTask(slug))
         return actions
 
@@ -199,12 +186,12 @@ class DagKernel:
         Scan-based: skips terminal states, blocks on in-progress tasks.
         No cursor to drift out of sync.
         """
-        if any(st == DagTaskState.MERGING for st in self.task_states.values()):
+        if any(st == TaskState.MERGING for st in self.task_states.values()):
             return []
         for slug in self.merge_order:
             st = self.task_states[slug]
-            if st == DagTaskState.MERGE_READY:
-                self.task_states[slug] = DagTaskState.MERGING
+            if st == TaskState.REVIEWED_PASS:
+                self.task_states[slug] = TaskState.MERGING
                 return [
                     MergeTask(
                         slug,
@@ -220,9 +207,9 @@ class DagKernel:
     def _summary(self) -> DagDone:
         return DagDone(
             status=self.status,
-            merged=tuple(s for s, st in self.task_states.items() if st == DagTaskState.MERGED),
-            failed=tuple(s for s, st in self.task_states.items() if st == DagTaskState.FAILED),
-            skipped=tuple(s for s, st in self.task_states.items() if st == DagTaskState.SKIPPED),
+            merged=tuple(s for s, st in self.task_states.items() if st == TaskState.MERGED),
+            failed=tuple(s for s, st in self.task_states.items() if st == TaskState.FAILED),
+            skipped=tuple(s for s, st in self.task_states.items() if st == TaskState.SKIPPED),
             blocked=(),
         )
 

@@ -13,7 +13,7 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, latest_event_id, read_events, reset_state
+from dgov.persistence import all_tasks, latest_event_id, read_events
 from dgov.plan import compile_plan, parse_plan_file, validate_plan
 from dgov.runner import EventDagRunner
 
@@ -222,8 +222,9 @@ def init_cmd(force: bool) -> None:
 
 @cli.command(name="run")
 @click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
+@click.option("--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state")
 @click.pass_context
-def run_cmd(ctx: click.Context, plan_file: Path) -> None:
+def run_cmd(ctx: click.Context, plan_file: Path, restart: bool) -> None:
     """Run a plan file (TOML).
 
     Example: dgov run plan.toml
@@ -232,7 +233,7 @@ def run_cmd(ctx: click.Context, plan_file: Path) -> None:
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
         raise SystemExit(1)
     project_root = str(Path.cwd())
-    _cmd_run_plan(str(plan_file), project_root)
+    _cmd_run_plan(str(plan_file), project_root, restart=restart)
 
 
 @cli.command(name="compile")
@@ -736,7 +737,7 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
     return _on_event
 
 
-def _cmd_run_plan(plan_file: str, project_root: str) -> None:
+def _cmd_run_plan(plan_file: str, project_root: str, restart: bool = False) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
 
@@ -744,13 +745,12 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     pc = load_project_config(project_root)
     dag = compile_plan(plan, project_agent=pc.default_agent)
 
-    # Clean slate — no stale events/tasks from prior runs
-    reset_state(project_root)
-
     sentrux_available = _sentrux_available()
     baseline_quality = _sentrux_save_baseline(project_root) if sentrux_available else None
 
-    runner = EventDagRunner(dag, session_root=project_root, on_event=_make_worker_event_callback())
+    runner = EventDagRunner(
+        dag, session_root=project_root, on_event=_make_worker_event_callback(), restart=restart
+    )
 
     if want_json():
         click.echo(

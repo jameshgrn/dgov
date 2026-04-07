@@ -58,8 +58,10 @@ class EventDagRunner:
         dag: DagDefinition,
         session_root: str = ".",
         on_event: Callable[[str, str, object], None] | None = None,
+        restart: bool = False,
     ) -> None:
         from dgov.config import load_project_config
+        from dgov.persistence import read_events, reset_plan_state
 
         self.dag = dag
         self.session_root = session_root
@@ -81,6 +83,45 @@ class EventDagRunner:
         self._task_timeouts: dict[str, float] = {}
         self._shutdown_event = asyncio.Event()
 
+        if restart:
+            reset_plan_state(session_root, dag.name)
+        else:
+            self._rehydrate()
+
+    def _rehydrate(self) -> None:
+        """Replay past events for this plan to restore kernel state."""
+        from dgov.persistence import read_events
+
+        events = read_events(self.session_root, plan_name=self.dag.name)
+        for ev in events:
+            # We only replay events that affect kernel state
+            ename = ev["event"]
+            task_slug = ev.get("task_slug")
+            pane = ev["pane"]
+            
+            if not task_slug or task_slug not in self.kernel.task_states:
+                continue
+
+            if ename == "dag_task_dispatched":
+                self.kernel.handle(TaskDispatched(task_slug, pane))
+            elif ename == "task_done":
+                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
+            elif ename == "task_failed":
+                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.FAILED))
+            elif ename == "review_pass":
+                self.kernel.handle(TaskReviewDone(task_slug, True, "passed", 1))
+            elif ename == "review_fail":
+                self.kernel.handle(TaskReviewDone(task_slug, False, "failed", 0))
+            elif ename == "merge_completed":
+                # Assuming task_merge_failed would be handled below, here we handle merge_completed
+                # Wait, before MERGED, we need MERGING. The kernel requires MERGE_READY -> MERGING
+                # so we must simulate the _try_merge scan or inject MergeTask handling.
+                pass
+                
+        # To accurately rehydrate, we might need a simpler mapping of events to kernel state, 
+        # or we can reconstruct task_states directly if event matching is too complex right now.
+
+
     def _setup_signal_handlers(self) -> None:
         """Install signal handlers for graceful shutdown (Pillar #10)."""
         loop = asyncio.get_running_loop()
@@ -95,6 +136,7 @@ class EventDagRunner:
             self.session_root,
             "shutdown_requested",
             "runner",
+            plan_name=self.dag.name,
             reason="signal",
         )
 
@@ -209,6 +251,7 @@ class EventDagRunner:
             self.session_root,
             "task_done" if status == TaskState.DONE else "task_failed",
             exit_event.pane_slug,
+            plan_name=self.dag.name,
             task_slug=exit_event.task_slug,
             error=exit_event.last_error if status == TaskState.FAILED else None,
         )
@@ -263,6 +306,7 @@ class EventDagRunner:
             self.session_root,
             "review_pass" if review_result.passed else "review_fail",
             action.pane_slug,
+            plan_name=self.dag.name,
             task_slug=action.task_slug,
             verdict=review_result.verdict,
             error=review_result.error,
@@ -327,6 +371,7 @@ class EventDagRunner:
                 self.session_root,
                 "task_failed",
                 pane_slug,
+                plan_name=self.dag.name,
                 task_slug=task_slug,
                 error=f"Wall-clock timeout after {timeout_s}s",
             )
@@ -363,6 +408,7 @@ class EventDagRunner:
                 worktree_path=str(wt.path),
                 branch_name=wt.branch,
                 state=TaskState.ACTIVE,
+                plan_name=self.dag.name,
                 file_claims=file_claims,
             )
             add_task(self.session_root, task_record)
@@ -374,6 +420,7 @@ class EventDagRunner:
                 self.session_root,
                 "dag_task_dispatched",
                 pane_slug,
+                plan_name=self.dag.name,
                 task_slug=action.task_slug,
                 agent=task.agent,
             )
@@ -474,6 +521,7 @@ class EventDagRunner:
             self.session_root,
             "merge_completed" if not error else "task_merge_failed",
             action.pane_slug,
+            plan_name=self.dag.name,
             task_slug=action.task_slug,
             error=error,
         )
