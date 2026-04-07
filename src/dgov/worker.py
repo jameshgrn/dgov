@@ -1100,10 +1100,41 @@ def _resolve_config(worktree: Path, project_config_json: str) -> _ProjectConfig:
     return _load_project_config(worktree)
 
 
+def _snapshot_tree(worktree: Path, max_depth: int = 2) -> str:
+    """Generate a compact project tree for the system prompt."""
+    lines: list[str] = []
+    for root_dir, dirs, files in os.walk(worktree):
+        depth = Path(root_dir).relative_to(worktree).parts
+        if len(depth) >= max_depth:
+            dirs.clear()
+            continue
+        # Skip hidden dirs, __pycache__, node_modules, .venv
+        dirs[:] = sorted(
+            d
+            for d in dirs
+            if not d.startswith(".") and d not in ("__pycache__", "node_modules", ".venv")
+        )
+        indent = "  " * len(depth)
+        rel = str(Path(root_dir).relative_to(worktree))
+        if rel == ".":
+            rel = ""
+        else:
+            lines.append(f"{indent}{Path(root_dir).name}/")
+        for f in sorted(files):
+            if f.startswith("."):
+                continue
+            lines.append(f"{indent}  {f}")
+    return "\n".join(lines[:80])  # cap at 80 lines
+
+
 def _build_system_prompt(worktree: Path, config: _ProjectConfig) -> str:
     """Construct the worker's system prompt with rules, conventions, and env info."""
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
-    rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}" if rules_path.exists() else ""
+    rules_context = ""
+    if rules_path.exists():
+        rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
+
+    project_tree = _snapshot_tree(worktree)
 
     project_section = (
         f"\n\nPROJECT:\n"
@@ -1118,27 +1149,41 @@ def _build_system_prompt(worktree: Path, config: _ProjectConfig) -> str:
         for key, val in config.conventions.items():
             project_section += f"- {key}: {val}\n"
 
-    env_info = (
-        f"\n\nENVIRONMENT:\n"
-        f"- Python: {sys.executable}\n"
-        f"- Do NOT install packages or create venvs. Everything is pre-installed.\n"
-        f"- Use relative paths for file tools (e.g. 'src/dgov/foo.py' not absolute).\n"
-        f"- ALWAYS use edit_file to modify existing files (not write_file).\n"
-        f"- Use file_symbols to find definitions without reading entire files.\n"
-        f"- Use related_files before editing to see what depends on your changes.\n"
-        f"- Use search_tests_for to find relevant tests before running them.\n"
-        f"- Use check_syntax after edits for fast feedback; lint_fix to auto-clean.\n"
-        f"- Use git_diff + assert_file_unchanged before done to verify scope.\n"
-        f"- Use read_file with start_line/end_line for large files.\n"
-        f"- Use run_tests, lint_check, format_file for standard ops.\n"
-        f"- Use grep, glob, list_dir to navigate the codebase.\n"
-    )
+    sections = [
+        f"You are a dgov Atomic Worker. Worktree: {worktree}",
+        rules_context,
+        project_section,
+        f"\nPROJECT TREE:\n{project_tree}",
+        f"""
+ENVIRONMENT:
+- Python: {sys.executable}
+- Available: rg, jq, tree, git, python, pytest, ruff (all pre-installed)
+- Everything is pre-installed. Do NOT install packages, create venvs, or pip install.
+- Use relative paths for all file tools (e.g. 'src/dgov/foo.py' not absolute).
 
-    return (
-        f"You are a dgov Atomic Worker. Worktree: {worktree}"
-        f"{rules_context}{project_section}{env_info}"
-        f"\nStrictly use tools. Call 'done' when complete."
-    )
+WORKFLOW — follow this order:
+1. ORIENT: Use file_symbols, tree, or head to understand before changing.
+   Use related_files to see what imports from the file you're editing.
+   Use word_count to gauge file size before reading.
+2. EDIT: Use edit_file for existing files (NEVER write_file to modify).
+   Use write_file only for new files. Use apply_patch for multi-hunk edits.
+3. VERIFY: check_syntax immediately after editing (instant).
+   lint_fix to auto-clean trivial issues (unused imports/vars).
+   search_tests_for to find relevant tests, then run_tests on those files.
+4. FINISH: git_diff to review all your changes.
+   assert_file_unchanged on files you should NOT have touched.
+   Call done with a summary.
+
+DO NOT:
+- Debug PATH, PYTHONPATH, or venv issues. Everything works already.
+- Run raw bash for things tools handle (use run_tests not 'python -m pytest').
+- Modify .git/, .dgov/, or config files unless your task says to.
+- Rewrite entire files when editing a few lines.
+- Spend iterations exploring when file_symbols + head gives you what you need.
+""",
+        "Strictly use tools. Call 'done' when complete.",
+    ]
+    return "".join(sections)
 
 
 def _execute_tool_call(call, actuators: AtomicTools) -> tuple[str, bool]:
