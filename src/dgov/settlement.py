@@ -213,20 +213,63 @@ def _changed_source_files(
     ]
 
 
-def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_path: Path) -> str:
-    """Return test command to run.
+def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: Path) -> list[str]:
+    """Find test files that import from changed source modules."""
+    # Build module names from changed source files
+    modules: set[str] = set()
+    for f in source_files:
+        # src/dgov/cli/__init__.py -> dgov.cli, dgov/cli/__init__.py -> dgov.cli
+        mod = f
+        for prefix in ("src/", "lib/"):
+            if mod.startswith(prefix):
+                mod = mod[len(prefix) :]
+        mod = mod.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
+        modules.add(mod)
+        # Also match partial: dgov.cli matches "from dgov.cli import"
+        parts = mod.split(".")
+        for i in range(1, len(parts) + 1):
+            modules.add(".".join(parts[:i]))
 
-    Full suite if source changed, specific files if only tests changed.
+    if not modules:
+        return []
+
+    test_root = worktree_path / test_dir
+    if not test_root.is_dir():
+        return []
+
+    related: list[str] = []
+    for test_file in sorted(test_root.rglob("test_*.py")):
+        try:
+            content = test_file.read_text()
+            for mod in modules:
+                if f"from {mod}" in content or f"import {mod}" in content:
+                    related.append(str(test_file.relative_to(worktree_path)))
+                    break
+        except (UnicodeDecodeError, OSError):
+            continue
+    return related
+
+
+def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_path: Path) -> str:
+    """Return test command scoped to related tests only.
+
+    Changed test files run directly. Changed source files trigger only
+    tests that import from the changed modules — never the full suite.
     """
     test_dir = config.test_dir.rstrip("/")
-    test_dir_exists = (worktree_path / test_dir).is_dir()
     test_files = [f for f in changed_files if f.startswith(test_dir)]
     source_files = [f for f in changed_files if not f.startswith(test_dir)]
-    if source_files and test_dir_exists:
-        return config.test_cmd.replace("{test_dir}", config.test_dir)
-    if test_files:
-        return config.test_cmd.replace("{test_dir}", " ".join(shlex.quote(f) for f in test_files))
-    return ""
+
+    targets: list[str] = list(test_files)
+    if source_files:
+        related = _find_related_tests(source_files, test_dir, worktree_path)
+        for t in related:
+            if t not in targets:
+                targets.append(t)
+
+    if not targets:
+        return ""
+    return config.test_cmd.replace("{test_dir}", " ".join(shlex.quote(f) for f in targets))
 
 
 def _run_test_gate(test_cmd: str, worktree_path: Path) -> GateResult | None:

@@ -242,17 +242,14 @@ class TestValidateSandbox:
         assert not result.passed
         assert "Test failure" in (result.error or "")
 
-    def test_source_change_runs_full_suite(self, tmp_path: Path):
-        """Source file change triggers full test suite, catches regressions."""
+    def test_source_change_runs_related_tests(self, tmp_path: Path):
+        """Source file change runs tests that import from the changed module."""
         _init_repo(tmp_path)
-        # Create a passing test that depends on lib.py
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
+        # Test imports from lib — related_tests will find it
         (tests_dir / "test_lib.py").write_text(
-            "from pathlib import Path\n"
-            "def test_lib_value():\n"
-            "    content = (Path(__file__).parent.parent / 'lib.py').read_text()\n"
-            "    assert 'x = 1' in content\n"
+            "import lib\ndef test_lib_value():\n    assert lib.x == 1\n"
         )
         (tmp_path / "lib.py").write_text("x = 1\n")
         _git(tmp_path, "add", ".")
