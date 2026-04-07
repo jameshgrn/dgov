@@ -138,6 +138,7 @@ class DagKernel:
             self.task_states[event.task_slug] = TaskState.REVIEWED_PASS
             return self._try_merge()
         self.task_states[event.task_slug] = TaskState.FAILED
+        self._cascade_failure(event.task_slug)
         return [*self._try_merge(), *self._schedule()]
 
     def _on_merge_done(self, event: TaskMergeDone) -> list[DagAction]:
@@ -145,6 +146,7 @@ class DagKernel:
             return []
         if event.error:
             self.task_states[event.task_slug] = TaskState.FAILED
+            self._cascade_failure(event.task_slug)
         else:
             self.task_states[event.task_slug] = TaskState.MERGED
         return [*self._try_merge(), *self._schedule()]
@@ -162,13 +164,32 @@ class DagKernel:
             return self._schedule()
         if event.action == GovernorAction.SKIP:
             self.task_states[slug] = TaskState.SKIPPED
+            self._cascade_failure(slug)
             return [*self._try_merge(), *self._schedule()]
         if event.action == GovernorAction.FAIL:
             self.task_states[slug] = TaskState.FAILED
+            self._cascade_failure(slug)
             return [*self._try_merge(), *self._schedule()]
         return []
 
     # -- Internal primitives --
+
+    def _cascade_failure(self, failed_slug: str) -> None:
+        """Mark all PENDING tasks transitively depending on failed_slug as SKIPPED."""
+        blocked: set[str] = set()
+        changed = True
+        while changed:
+            changed = False
+            for slug, st in self.task_states.items():
+                if st != TaskState.PENDING or slug in blocked:
+                    continue
+                deps = self.deps.get(slug, ())
+                if failed_slug in deps or any(d in blocked for d in deps):
+                    blocked.add(slug)
+                    changed = True
+        for slug in blocked:
+            self.task_states[slug] = TaskState.SKIPPED
+            logger.warning("SKIPPED %s (blocked by failed %s)", slug, failed_slug)
 
     def _schedule(self) -> list[DagAction]:
         """Dispatch all PENDING tasks whose deps are fully MERGED."""

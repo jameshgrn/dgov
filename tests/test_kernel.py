@@ -439,15 +439,16 @@ class TestGovernorResume:
         assert actions == []
         assert k.task_states["a"] == TaskState.REVIEWING
 
-    def test_skip_unblocks_dependent(self):
-        """Skipping a task does NOT satisfy its dependents (only MERGED does)."""
+    def test_skip_cascades_to_dependent(self):
+        """Skipping a task cascades SKIPPED to its dependents."""
         k = _k({"a": (), "b": ("a",)})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
-        actions = k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
-        # b depends on a. a is SKIPPED, not MERGED. b should NOT dispatch.
-        assert not any(isinstance(a, DispatchTask) and a.task_slug == "b" for a in actions)
+        k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
+        assert k.task_states["a"] == TaskState.SKIPPED
+        assert k.task_states["b"] == TaskState.SKIPPED
+        assert k.done
 
 
 # ---------------------------------------------------------------------------
@@ -467,13 +468,15 @@ class TestDeps:
         actions = _happy(k, "a")
         assert any(isinstance(a, DispatchTask) and a.task_slug == "b" for a in actions)
 
-    def test_dep_failure_blocks_forever(self):
+    def test_dep_failure_cascades_to_skip(self):
         k = _k({"a": (), "b": ("a",)})
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
-        assert not any(isinstance(a, DispatchTask) for a in k._schedule())
+        assert k.task_states["a"] == TaskState.FAILED
+        assert k.task_states["b"] == TaskState.SKIPPED
+        assert k.done
 
     def test_diamond(self):
         k = _k({"a": (), "b": ("a",), "c": ("a",), "d": ("b", "c")})
@@ -486,6 +489,54 @@ class TestDeps:
         _happy(k, "c", "p-c")
         dispatched = {a.task_slug for a in k._schedule()}
         assert "d" in dispatched
+
+    def test_cascade_chain(self):
+        """Failure mid-chain skips all downstream: a->b->c->d, b fails."""
+        k = _k({"a": (), "b": ("a",), "c": ("b",), "d": ("c",)})
+        k.start()
+        _happy(k, "a", "p-a")
+        k.handle(TaskDispatched("b", "p-b"))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
+        k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
+        k.handle(TaskMergeDone("b", error="lint failure"))
+        assert k.task_states["b"] == TaskState.FAILED
+        assert k.task_states["c"] == TaskState.SKIPPED
+        assert k.task_states["d"] == TaskState.SKIPPED
+        assert k.done
+        assert k.status == DagState.PARTIAL
+
+    def test_cascade_diamond_partial(self):
+        """Diamond: a->b, a->c, b+c->d. b fails, d cascaded, c still merges."""
+        k = _k({"a": (), "b": ("a",), "c": ("a",), "d": ("b", "c")})
+        k.start()
+        _happy(k, "a", "p-a")
+        # b fails at merge (b merges first in topo order)
+        k.handle(TaskDispatched("b", "p-b"))
+        k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
+        k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
+        k.handle(TaskMergeDone("b", error="lint failure"))
+        # d depends on b (failed) — cascaded to SKIPPED
+        assert k.task_states["d"] == TaskState.SKIPPED
+        # c can still complete — drive it through after b is terminal
+        k.handle(TaskDispatched("c", "p-c"))
+        k.handle(TaskWaitDone("c", "p-c", TaskState.DONE))
+        k.handle(TaskReviewDone("c", passed=True, verdict="ok", commit_count=1))
+        k.handle(TaskMergeDone("c"))
+        assert k.task_states["c"] == TaskState.MERGED
+        assert k.done
+        assert k.status == DagState.PARTIAL
+
+    def test_cascade_does_not_touch_active_tasks(self):
+        """Already-dispatched parallel tasks are not cascaded."""
+        k = _k({"a": (), "b": ("a",), "c": ()})
+        k.start()
+        k.handle(TaskDispatched("c", "p-c"))  # c is ACTIVE
+        k.handle(TaskDispatched("a", "p-a"))
+        k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
+        k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
+        # a FAILED → b cascaded to SKIPPED, c untouched (ACTIVE, no dep on a)
+        assert k.task_states["b"] == TaskState.SKIPPED
+        assert k.task_states["c"] == TaskState.ACTIVE
 
 
 # ---------------------------------------------------------------------------
