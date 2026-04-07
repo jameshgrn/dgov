@@ -1,0 +1,44 @@
+# Getting Started
+
+Deterministic kernel for multi-agent orchestration via git worktrees.
+
+## Install
+
+```bash
+uv pip install -e .
+```
+
+Requires Python 3.12+, git.
+
+## Usage
+
+```bash
+dgov init                # Bootstrap .dgov/project.toml
+dgov run plan.toml       # Execute a plan
+dgov status              # Show task status
+dgov watch               # Stream events
+dgov sentrux check       # Run architectural quality check
+dgov cleanup             # Annihilate zombie worktrees
+```
+
+## Plan format
+
+Plans are TOML files that compile to DAGs:
+
+```toml
+[plan]
+name = "example"
+
+[[unit]]
+slug = "add-feature"
+prompt = "Add the feature to src/foo.py"
+agent = "kimi-k2.5"
+files = ["src/foo.py"]
+
+[[unit]]
+slug = "add-tests"
+prompt = "Write tests for the feature"
+agent = "kimi-k2.5"
+files = ["tests/test_foo.py"]
+depends_on = ["add-feature"]
+```
