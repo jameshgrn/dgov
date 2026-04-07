@@ -94,11 +94,10 @@ class EventDagRunner:
 
         events = read_events(self.session_root, plan_name=self.dag.name)
         for ev in events:
-            # We only replay events that affect kernel state
             ename = ev["event"]
             task_slug = ev.get("task_slug")
             pane = ev["pane"]
-            
+
             if not task_slug or task_slug not in self.kernel.task_states:
                 continue
 
@@ -107,19 +106,25 @@ class EventDagRunner:
             elif ename == "task_done":
                 self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
             elif ename == "task_failed":
+                # Handle both terminal failures and intermediate timeouts
                 self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.FAILED))
             elif ename == "review_pass":
-                self.kernel.handle(TaskReviewDone(task_slug, True, "passed", 1))
+                self.kernel.handle(TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1))
             elif ename == "review_fail":
-                self.kernel.handle(TaskReviewDone(task_slug, False, "failed", 0))
+                self.kernel.handle(TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0))
             elif ename == "merge_completed":
-                # Assuming task_merge_failed would be handled below, here we handle merge_completed
-                # Wait, before MERGED, we need MERGING. The kernel requires MERGE_READY -> MERGING
-                # so we must simulate the _try_merge scan or inject MergeTask handling.
-                pass
-                
-        # To accurately rehydrate, we might need a simpler mapping of events to kernel state, 
-        # or we can reconstruct task_states directly if event matching is too complex right now.
+                self.kernel.handle(TaskMergeDone(task_slug, error=None))
+            elif ename == "task_merge_failed":
+                self.kernel.handle(TaskMergeDone(task_slug, error=ev.get("error", "unknown error")))
+            elif ename == "dag_task_governor_resumed":
+                # Restore attempt counts and retry/skip/fail state
+                action_str = ev.get("action")
+                if action_str:
+                    try:
+                        action = GovernorAction(action_str)
+                        self.kernel.handle(TaskGovernorResumed(task_slug, action))
+                    except ValueError:
+                        pass
 
 
     def _setup_signal_handlers(self) -> None:
@@ -325,6 +330,8 @@ class EventDagRunner:
         """Decide retry vs fail based on attempt count."""
         attempts = self.kernel.attempts.get(action.task_slug, 0)
         error_detail = self._task_errors.get(action.task_slug, "")
+        
+        gov_action = GovernorAction.FAIL
         if attempts < self.kernel.max_retries:
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
@@ -333,14 +340,24 @@ class EventDagRunner:
                 self.kernel.max_retries,
                 error_detail or action.reason,
             )
-            return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.RETRY))
-        logger.error(
-            "Task %s failed — max retries (%d) exceeded: %s",
-            action.task_slug,
-            self.kernel.max_retries,
-            error_detail or action.reason,
+            gov_action = GovernorAction.RETRY
+        else:
+            logger.error(
+                "Task %s failed — max retries (%d) exceeded: %s",
+                action.task_slug,
+                self.kernel.max_retries,
+                error_detail or action.reason,
+            )
+
+        emit_event(
+            self.session_root,
+            "dag_task_governor_resumed",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            action=gov_action.value,
         )
-        return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.FAIL))
+        return self.kernel.handle(TaskGovernorResumed(action.task_slug, gov_action))
 
     async def _run_with_timeout(
         self,

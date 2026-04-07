@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
     data TEXT NOT NULL DEFAULT '{}',
     task_slug TEXT DEFAULT NULL,
     plan_name TEXT DEFAULT NULL,
+    action TEXT DEFAULT NULL,
     commit_count TEXT DEFAULT NULL,
     error TEXT DEFAULT NULL,
     reason TEXT DEFAULT NULL,

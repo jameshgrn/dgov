@@ -160,6 +160,7 @@ VALID_EVENTS = frozenset(
         "shutdown_requested",
         # DAG lifecycle
         "dag_task_dispatched",
+        "dag_task_governor_resumed",
         "dag_completed",
         "dag_failed",
         # Review
@@ -179,6 +180,7 @@ _EVENT_TYPED_COLS = frozenset(
     {
         "task_slug",
         "plan_name",
+        "action",
         "commit_count",
         "error",
         "reason",
