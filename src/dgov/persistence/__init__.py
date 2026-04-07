@@ -28,6 +28,7 @@ from dgov.persistence.schema import (
 from dgov.persistence.tasks import (
     add_task,
     all_tasks,
+    cleanup_zombies,
     get_slug_history,
     get_task,
     get_tasks,
@@ -44,6 +45,7 @@ __all__ = [
     # Task operations
     "add_task",
     "all_tasks",
+    "cleanup_zombies",
     "get_task",
     "get_tasks",
     "replace_all_tasks",

@@ -20,6 +20,7 @@ from dgov.persistence.schema import (
     _TASK_TYPED_COLS,
     VALID_TRANSITIONS,
     IllegalTransitionError,
+    TaskState,
     WorkerTask,
 )
 
@@ -138,6 +139,21 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
         return True
 
     _retry_on_lock(_do)
+
+
+def cleanup_zombies(session_root: str) -> int:
+    """Transition all ACTIVE tasks to ABANDONED. Returns count of modified tasks."""
+
+    def _do() -> int:
+        conn = _get_db(session_root)
+        cur = conn.execute(
+            "UPDATE tasks SET state = ? WHERE state = ?",
+            (TaskState.ABANDONED.value, TaskState.ACTIVE.value),
+        )
+        conn.commit()
+        return cur.rowcount
+
+    return _retry_on_lock(_do)
 
 
 def replace_all_tasks(session_root: str, tasks_list: list[dict] | dict) -> None:
