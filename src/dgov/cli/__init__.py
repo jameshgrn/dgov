@@ -222,7 +222,9 @@ def init_cmd(force: bool) -> None:
 
 @cli.command(name="run")
 @click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
-@click.option("--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state")
+@click.option(
+    "--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state"
+)
 @click.pass_context
 def run_cmd(ctx: click.Context, plan_file: Path, restart: bool) -> None:
     """Run a plan file (TOML).
@@ -259,10 +261,10 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool) -> Non
     from dgov.plan_tree import (
         merge_tree,
         resolve_refs,
-        serialize_compiled_toml,
         validate,
         walk_tree,
     )
+    from dgov.serializer import serialize_compiled_toml
     from dgov.sop_bundler import IdentityBundler, LLMSopBundler, bundle
 
     # 1. Walk
