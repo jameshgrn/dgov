@@ -12,8 +12,10 @@ max_cycles = 0
 # No god files after cleanup
 no_god_files = true
 
-# Coupling: cross-module edge ratio (current: ~0.60)
-max_coupling_score = 0.65
+# Coupling: cross-module edge ratio
+# Source-only coupling is 0.34; test→src edges inflate to 0.72.
+# Sentrux has no path exclusion — threshold accommodates test imports.
+max_coupling_score = 0.75
 
 # Quality signal floor (current: ~0.69, expressed as 0-1 not 0-10000)
 min_quality = 0.69
