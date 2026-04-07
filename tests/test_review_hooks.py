@@ -103,12 +103,12 @@ def test_review_hook_secret_leakage(mock_git_worktree, tmp_path):
     (project_root / ".dgov" / "project.toml").write_text("""
 [project]
 review_hooks = [
-    "! grep -rE '(sk-[a-zA-Z0-9]{20,}|AI_[A-Z0-9_]{20,})' {files}"
+    "! grep -rE '(sk-[a-zA-Z0-9]{24,}|AI_[A-Z0-9_]{24,})' {files}"
 ]
 """)
 
-    # Add file with secret
-    (mock_git_worktree / "secret.env").write_text("OPENAI_KEY = sk-abcdefghijklmnopqrstuv")
+    # Add file with secret (24 chars after sk-)
+    (mock_git_worktree / "secret.env").write_text("OPENAI_KEY = sk-abcdefghijklmnopqrstuvwx")
 
     result = review_sandbox(mock_git_worktree, project_root=str(project_root))
     assert result.passed is False

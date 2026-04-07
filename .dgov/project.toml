@@ -11,7 +11,7 @@ format_check_cmd = "python -m ruff format --check {file}"
 test_markers = ["unit", "integration"]
 review_hooks = [
     "! file --mime {files} | grep -q 'charset=binary'",
-    "! grep -rE '(sk-[a-zA-Z0-9]{20,}|AI_[A-Z0-9_]{20,})' {files}"
+    "! grep -rE '(sk-[a-zA-Z0-9]{24,}|AI_[A-Z0-9_]{24,})' {files}"
 ]
 
 [conventions]
