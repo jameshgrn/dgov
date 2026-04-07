@@ -38,11 +38,12 @@ def ledger_add(category: str, content: str, root: str) -> None:
     default="open",
     help="Filter by status",
 )
+@click.option("--query", "-q", help="Search content by keyword")
 @click.option("--root", "-r", default=".", help="Project root")
-def ledger_list(category: str | None, status: str, root: str) -> None:
+def ledger_list(category: str | None, status: str, query: str | None, root: str) -> None:
     """List ledger entries."""
     project_root = str(Path(root).resolve())
-    entries = list_ledger_entries(project_root, category=category, status=status)
+    entries = list_ledger_entries(project_root, category=category, status=status, query=query)
 
     if not entries:
         if category:

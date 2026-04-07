@@ -20,11 +20,14 @@ def add_ledger_entry(session_root: str, category: str, content: str) -> int:
 
 
 def list_ledger_entries(
-    session_root: str, category: str | None = None, status: str | None = None
+    session_root: str,
+    category: str | None = None,
+    status: str | None = None,
+    query: str | None = None,
 ) -> list[LedgerEntry]:
-    """List ledger entries, optionally filtered by category and status."""
+    """List ledger entries, optionally filtered by category, status, and keyword query."""
     conn = _get_db(session_root)
-    query = "SELECT id, category, content, status, created_at, resolved_at FROM ledger"
+    sql = "SELECT id, category, content, status, created_at, resolved_at FROM ledger"
     params = []
     filters = []
 
@@ -34,13 +37,16 @@ def list_ledger_entries(
     if status:
         filters.append("status = ?")
         params.append(status)
+    if query:
+        filters.append("content LIKE ?")
+        params.append(f"%{query}%")
 
     if filters:
-        query += " WHERE " + " AND ".join(filters)
+        sql += " WHERE " + " AND ".join(filters)
 
-    query += " ORDER BY created_at DESC"
+    sql += " ORDER BY created_at DESC"
 
-    cursor = conn.execute(query, params)
+    cursor = conn.execute(sql, params)
     return [
         LedgerEntry(
             id=row[0],
