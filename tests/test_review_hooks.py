@@ -71,3 +71,45 @@ review_hooks = [
 
     assert result.passed is True
     assert result.verdict == "ok"
+
+
+@pytest.mark.unit
+def test_review_hook_binary_detection(mock_git_worktree, tmp_path):
+    """Review should fail if a binary file is added."""
+    project_root = tmp_path / "project_bin"
+    project_root.mkdir()
+    (project_root / ".dgov").mkdir()
+    (project_root / ".dgov" / "project.toml").write_text("""
+[project]
+review_hooks = [
+    "! file --mime {files} | grep -q 'charset=binary'"
+]
+""")
+
+    # Create a binary file (contains null byte)
+    (mock_git_worktree / "binary.bin").write_bytes(b"\x00\xff\x00\xff")
+
+    result = review_sandbox(mock_git_worktree, project_root=str(project_root))
+    assert result.passed is False
+    assert result.verdict == "hook_fail"
+
+
+@pytest.mark.unit
+def test_review_hook_secret_leakage(mock_git_worktree, tmp_path):
+    """Review should fail if a secret/key is found."""
+    project_root = tmp_path / "project_secret"
+    project_root.mkdir()
+    (project_root / ".dgov").mkdir()
+    (project_root / ".dgov" / "project.toml").write_text("""
+[project]
+review_hooks = [
+    "! grep -rE '(sk-[a-zA-Z0-9]{24,}|AI_[A-Z0-9_]{24,})' {files}"
+]
+""")
+
+    # Add file with secret (24 chars after sk-)
+    (mock_git_worktree / "secret.env").write_text("OPENAI_KEY = sk-abcdefghijklmnopqrstuvwx")
+
+    result = review_sandbox(mock_git_worktree, project_root=str(project_root))
+    assert result.passed is False
+    assert result.verdict == "hook_fail"

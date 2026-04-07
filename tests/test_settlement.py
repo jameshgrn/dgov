@@ -175,6 +175,22 @@ class TestAutofixSandbox:
         assert "import os" not in content  # lint-fix removed it
         assert "x = 1" in content  # format cleaned up
 
+    def test_settlement_timeout_kills_slow_autofix(self, tmp_path: Path):
+        """Autofix should timeout if command exceeds settlement_timeout."""
+        _init_repo(tmp_path)
+        (tmp_path / "slow.py").write_text("x = 1\n")
+
+        import subprocess
+
+        import pytest
+
+        from dgov.config import ProjectConfig
+
+        # Command that sleeps longer than timeout
+        config = ProjectConfig(lint_fix_cmd="sleep 2", settlement_timeout=1)
+        with pytest.raises(subprocess.TimeoutExpired):
+            autofix_sandbox(tmp_path, file_claims=("slow.py",), config=config)
+
 
 # ---------------------------------------------------------------------------
 # validate_sandbox
@@ -295,3 +311,18 @@ class TestValidateSandbox:
         result = validate_sandbox(tmp_path, base, str(tmp_path))
         assert not result.passed
         assert "Sentrux architectural degradation" in (result.error or "")
+
+    def test_settlement_timeout_kills_slow_validate(self, tmp_path: Path):
+        """Validation should fail if command exceeds settlement_timeout."""
+        base = _init_repo(tmp_path)
+        (tmp_path / "slow.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add slow.py")
+
+        from dgov.config import ProjectConfig
+
+        # Lint command that sleeps
+        config = ProjectConfig(lint_cmd="sleep 2", settlement_timeout=1)
+        result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        assert not result.passed
+        assert "timed out" in (result.error or "").lower()
