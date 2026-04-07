@@ -1,8 +1,8 @@
-# Handover: Ledger CLI, Continue Mode, and Hard-Fail Semantic Validation
+# Handover: Ledger Search, Zombie Cleanup, and Review Hooks
 
-**Date:** 2026-04-07T15:30:00Z
-**Branch:** `main` @ `9ccf4f8`
-**Context:** Implemented operational memory via `dgov ledger`, added `--continue` flag for plan resumption, made settlement timeouts configurable, and converted Sentrux gate to a hard failure for strict architectural enforcement. Refactored `worker.py` to extract `AtomicTools`.
+**Date:** 2026-04-07T18:30:00Z
+**Branch:** `main` @ `2ee7b49`
+**Context:** Implemented keyword search for the ledger, a `cleanup` command for zombie tasks, and user-defined review hooks in `.dgov/project.toml`. Verified all with unit tests.
 
 ---
 
@@ -10,56 +10,43 @@
 
 | Task | Status | Location | Notes |
 |------|--------|----------|-------|
-| Operational Ledger | Done | `src/dgov/cli/ledger.py` | `dgov ledger add/list/resolve` |
-| `dgov run --continue` | Done | `src/dgov/runner.py` | Resumes `FAILED` tasks as `PENDING` |
-| Settlement Timeout | Done | `src/dgov/config.py` | Configurable in `.dgov/project.toml` |
-| Hard-Fail Sentrux | Done | `src/dgov/settlement.py` | Architectural degradation blocks merge |
-| Refactor `worker.py` | Done | `src/dgov/workers/atomic.py` | Extracted actuators to own module |
+| Ledger Keyword Search | Done | `src/dgov/cli/ledger.py` | `dgov ledger list -q <query>` |
+| Zombie Cleanup | Done | `src/dgov/cli/__init__.py` | `dgov cleanup` annihilates worktrees + states |
+| Review Hooks | Done | `src/dgov/settlement.py` | User-defined shell hooks in `project.toml` |
+| Persistence Export | Done | `src/dgov/persistence/__init__.py` | Exported `cleanup_zombies` for CLI use |
 
 ## Blockers
 
-- None currently.
+- **Sentrux Path Exclusion**: Still blocked by upstream `sentrux` limitation where it looks for config in the target directory. Threshold remains at `0.75` to accommodate tests.
 
 ## Next Steps (Priority Order)
 
-1. **Semantic Review Expansion** — Add more static analysis or policy checks to `review_sandbox` beyond git sanity.
-2. **Ledger Search/Filter** — Improve `dgov ledger list` with keyword filtering or full-text search.
-3. **Dogfood Settlement Timeout** — Verify configurable timeout on a project with a very slow test suite.
-4. **Sentrux Path Exclusion** — Monitor for Sentrux upstream fix for `ignored_dirs` to clean up coupling scores (currently inflated by tests).
+1. **Dogfood Settlement Timeout** — Add a slow test to verify `settlement_timeout` in `.dgov/project.toml` actually kills slow validations.
+2. **Expand Review Hooks** — Add default hooks for binary detection and secret leakage to the project's own `project.toml`.
+3. **Monitor Sentrux** — Watch for `sentrux` updates regarding `ignored_dirs` or multi-path checks.
 
 ## Files Modified
 
 ```
- M .dgov/runs.log
- M .sentrux/baseline.json
  M src/dgov/cli/__init__.py
- A src/dgov/cli/ledger.py
- M src/dgov/cli/run.py
- M src/dgov/cli/sentrux.py
+ M src/dgov/cli/ledger.py
  M src/dgov/config.py
  M src/dgov/persistence/__init__.py
- M src/dgov/persistence/connection.py
- A src/dgov/persistence/ledger.py
- M src/dgov/persistence/schema.py
- M src/dgov/persistence/sql.py
+ M src/dgov/persistence/ledger.py
+ M src/dgov/persistence/tasks.py
  M src/dgov/runner.py
  M src/dgov/settlement.py
- M src/dgov/worker.py
- A src/dgov/workers/atomic.py
- M tests/test_boundaries.py
- A tests/test_continue.py
- M tests/test_settlement.py
- M tests/test_worker.py
- M tests/test_worker_tools.py
+ A tests/test_ledger.py
+ A tests/test_review_hooks.py
+ M tests/test_runner.py
 ```
 
 ## Key Decisions
 
-- **Sentrux is a Hard Gate**: Decided that architectural integrity is a "first-class citizen" along with unit tests. Rejects work that meeting behavioral specs but violates coupling rules.
-- **Unified State for Ledger**: Ledger entries are stored in the same `state.db` as tasks and events to keep session state encapsulated.
-- **Worker Isolation Relaxation**: Allowed `dgov.workers.atomic` and `dgov.worker` imports in `worker.py` while maintaining the "no ambient orchestration" rule.
+- **Review Hooks as Config**: Opted for a shell-based hook system in `project.toml` over hardcoding checks like secret detection into the kernel. This keeps the kernel generic.
+- **Cleanup as Terminal Transition**: `dgov cleanup` marks tasks as `ABANDONED` rather than deleting them from the DB, preserving the event log integrity.
+- **Review Sandbox Signature**: Added `project_root` to `review_sandbox` to allow it to load project-specific hooks.
 
 ## References
 
-- PR: `feat/ledger-continue-validation` (merged)
 - Skill: `handover`, `dgov-bootstrap`
