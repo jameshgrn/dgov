@@ -21,9 +21,12 @@ from dgov.runner import EventDagRunner
 @click.option(
     "--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state"
 )
+@click.option(
+    "--continue", "continue_failed", is_flag=True, help="Continue from where you left off, retrying failed tasks"
+)
 @click.option("--only", default=None, help="Run only this task and its deps")
 @click.pass_context
-def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, only: str | None) -> None:
+def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, continue_failed: bool, only: str | None) -> None:
     """Run a plan file (TOML).
 
     Example: dgov run plan.toml
@@ -32,7 +35,7 @@ def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, only: str | None
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
         raise SystemExit(1)
     project_root = str(Path.cwd())
-    _cmd_run_plan(str(plan_file), project_root, restart=restart, only=only)
+    _cmd_run_plan(str(plan_file), project_root, restart=restart, continue_failed=continue_failed, only=only)
 
 
 def _parse_quality(line: str) -> int | None:
@@ -159,7 +162,7 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
 
 
 def _cmd_run_plan(
-    plan_file: str, project_root: str, restart: bool = False, only: str | None = None
+    plan_file: str, project_root: str, restart: bool = False, continue_failed: bool = False, only: str | None = None
 ) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
@@ -195,7 +198,11 @@ def _cmd_run_plan(
     baseline_quality = _sentrux_save_baseline(project_root) if sentrux_ok else None
 
     runner = EventDagRunner(
-        dag, session_root=project_root, on_event=_make_worker_event_callback(), restart=restart
+        dag,
+        session_root=project_root,
+        on_event=_make_worker_event_callback(),
+        restart=restart,
+        continue_failed=continue_failed,
     )
 
     if want_json():

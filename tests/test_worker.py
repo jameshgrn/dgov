@@ -15,13 +15,14 @@ import pytest
 sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore[attr-defined]
 
-from dgov.worker import AtomicTools, _load_project_config, _ProjectConfig, get_tool_spec
+from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec
+from dgov.worker import _load_project_config
 
 
 @pytest.fixture()
 def tools(tmp_path: Path) -> AtomicTools:
     (tmp_path / "hello.py").write_text("x = 1\n")
-    return AtomicTools(tmp_path, _ProjectConfig())
+    return AtomicTools(tmp_path, AtomicConfig())
 
 
 # -- _check_path --

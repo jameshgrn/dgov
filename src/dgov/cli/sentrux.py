@@ -13,7 +13,11 @@ from dgov.cli.run import _run_sentrux, _sentrux_available
 
 @cli.group(name="sentrux")
 def sentrux_cmd() -> None:
-    """Sentrux architectural sensing commands."""
+    """Sentrux architectural sensing commands.
+
+    NOTE: Sentrux currently lacks path exclusion. Feature request filed for
+    'ignored_dirs' in rules.toml to exclude test files from coupling scores.
+    """
     pass
 
 

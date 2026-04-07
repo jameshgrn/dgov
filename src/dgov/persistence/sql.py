@@ -51,3 +51,13 @@ CREATE TABLE IF NOT EXISTS slug_history (
     slug TEXT PRIMARY KEY,
     used_at TEXT NOT NULL)
 """
+
+_CREATE_LEDGER_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL, -- bug, rule, debt
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open', -- open, resolved
+    created_at REAL NOT NULL,
+    resolved_at REAL DEFAULT NULL
+)"""

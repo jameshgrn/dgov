@@ -11,6 +11,7 @@ from pathlib import Path
 
 from dgov.persistence.sql import (
     _CREATE_EVENTS_TABLE_SQL,
+    _CREATE_LEDGER_TABLE_SQL,
     _CREATE_SLUG_HISTORY_TABLE_SQL,
     _CREATE_TABLE_SQL,
 )
@@ -20,7 +21,7 @@ from dgov.types import TaskState
 
 STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
-_SCHEMA_VERSION = 7  # Added plan_name to events
+_SCHEMA_VERSION = 8  # Added ledger table
 
 TASK_STATES = frozenset(TaskState)
 
@@ -111,6 +112,18 @@ class WorkerTask:
             raise ValueError("slug must be non-empty")
         if not self.prompt:
             raise ValueError("prompt must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerEntry:
+    """Represents an entry in the operational ledger."""
+
+    id: int | None
+    category: str
+    content: str
+    status: str = "open"
+    created_at: float = field(default_factory=time.time)
+    resolved_at: float | None = None
 
 
 _TASK_COLUMNS = frozenset(
@@ -207,6 +220,7 @@ __all__ = [
     "_CREATE_TABLE_SQL",
     "_CREATE_EVENTS_TABLE_SQL",
     "_CREATE_SLUG_HISTORY_TABLE_SQL",
+    "_CREATE_LEDGER_TABLE_SQL",
     "state_path",
     "VALID_EVENTS",
     "_EVENT_TYPED_COLS",

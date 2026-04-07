@@ -51,6 +51,7 @@ def cli(
       dgov validate plan.toml Validate a plan without running
       dgov init               Bootstrap .dgov/project.toml
       dgov watch              Stream events
+      dgov ledger add <cat>   Record bug, rule, or debt
       dgov compile <dir>      Compile a plan tree to _compiled.toml
       dgov plan status <dir>  Show pending vs deployed units
       dgov sentrux check      Run Sentrux architectural check
@@ -99,6 +100,7 @@ def _cmd_status(project_root: str) -> None:
 # Register subcommand modules — must be at bottom after cli is defined
 from dgov.cli import compile as _compile  # noqa: E402, F401
 from dgov.cli import init as _init  # noqa: E402, F401
+from dgov.cli import ledger as _ledger  # noqa: E402, F401
 from dgov.cli import plan as _plan  # noqa: E402, F401
 from dgov.cli import run as _run  # noqa: E402, F401
 from dgov.cli import sentrux as _sentrux  # noqa: E402, F401

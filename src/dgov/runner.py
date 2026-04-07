@@ -59,6 +59,7 @@ class EventDagRunner:
         session_root: str = ".",
         on_event: Callable[[str, str, object], None] | None = None,
         restart: bool = False,
+        continue_failed: bool = False,
     ) -> None:
         from dgov.config import load_project_config
         from dgov.persistence import reset_plan_state
@@ -87,6 +88,24 @@ class EventDagRunner:
             reset_plan_state(session_root, dag.name)
         else:
             self._rehydrate()
+            if continue_failed:
+                self._resume_failed()
+
+    def _resume_failed(self) -> None:
+        """Move all FAILED tasks back to PENDING so they can be retried."""
+        logger.info("Resuming failed tasks")
+        for slug, state in list(self.kernel.task_states.items()):
+            if state == TaskState.FAILED:
+                logger.info("Resuming task: %s", slug)
+                self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
+                emit_event(
+                    self.session_root,
+                    "dag_task_governor_resumed",
+                    "runner",
+                    plan_name=self.dag.name,
+                    task_slug=slug,
+                    action=GovernorAction.RETRY.value,
+                )
 
     def _rehydrate(self) -> None:
         """Replay past events for this plan to restore kernel state."""

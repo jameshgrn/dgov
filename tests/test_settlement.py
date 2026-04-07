@@ -263,3 +263,35 @@ class TestValidateSandbox:
         result = validate_sandbox(tmp_path, new_base, str(tmp_path))
         assert not result.passed
         assert "Test failure" in (result.error or "")
+
+    def test_fail_sentrux_degradation(self, tmp_path: Path, monkeypatch):
+        """Sentrux gate rejects architectural degradation."""
+        base = _init_repo(tmp_path)
+        # 1. Setup Sentrux baseline
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"quality": 100}')
+
+        # 2. Add a file that passes other gates
+        (tmp_path / "mod.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add mod")
+
+        # 3. Mock sentrux to fail with degradation
+        import subprocess
+
+        real_run = subprocess.run
+
+        def _mock_run(args, **kwargs):
+            if args[0] == "sentrux" and args[1] == "gate":
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="Architectural degradation: coupling 0.5 -> 0.8\n", stderr=""
+                )
+            # Fallback to real subprocess for git/ruff/pytest
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr("subprocess.run", _mock_run)
+
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert not result.passed
+        assert "Sentrux architectural degradation" in (result.error or "")

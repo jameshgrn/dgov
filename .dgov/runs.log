@@ -61,3 +61,35 @@
   failed: a
   sentrux: 6621 -> 6621
 
+[2026-04-07 03:25:36Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-226/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6864 -> 6864
+
+[2026-04-07 03:25:51Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-227/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6864 -> 6864
+
+[2026-04-07 03:29:14Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-228/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6864 -> 6864
+
+[2026-04-07 03:29:53Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-229/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6864 -> 6864
+
+[2026-04-07 03:57:58Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-230/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7605 -> 7605
+
+[2026-04-07 04:11:17Z] dogfood-fail-test (tests/dogfood_fail.toml) — fail
+  failed: fail-task
+  sentrux: 7605 -> 7605
+
+[2026-04-07 04:12:31Z] dogfood-fail-test (tests/dogfood_fail.toml) — fail
+  failed: fail-task
+  sentrux: 7605 -> 7605
+
+[2026-04-07 04:13:14Z] dogfood-fail-test (tests/dogfood_fail.toml) — fail
+  failed: fail-task
+  sentrux: 7605 -> 7605
+

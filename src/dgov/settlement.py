@@ -190,9 +190,9 @@ def autofix_sandbox(
         return
 
     # Lint fix first (may remove imports, change lines)
-    _run_cmd(config.lint_fix_cmd, rel, worktree_path)
+    _run_cmd(config.lint_fix_cmd, rel, worktree_path, timeout=config.settlement_timeout)
     # Format LAST (canonical formatting after all mutations)
-    _run_cmd(config.format_cmd, rel, worktree_path)
+    _run_cmd(config.format_cmd, rel, worktree_path, timeout=config.settlement_timeout)
 
 
 def _changed_source_files(
@@ -272,7 +272,7 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
     return config.test_cmd.replace("{test_dir}", " ".join(shlex.quote(f) for f in targets))
 
 
-def _run_test_gate(test_cmd: str, worktree_path: Path) -> GateResult | None:
+def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> GateResult | None:
     """Run tests. Return failure GateResult on non-zero exit, None on pass."""
     res = subprocess.run(
         test_cmd,
@@ -280,7 +280,7 @@ def _run_test_gate(test_cmd: str, worktree_path: Path) -> GateResult | None:
         cwd=worktree_path,
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=timeout,
     )
     if res.returncode != 0:
         output = (res.stdout + res.stderr)[-500:]
@@ -288,25 +288,32 @@ def _run_test_gate(test_cmd: str, worktree_path: Path) -> GateResult | None:
     return None
 
 
-def _run_sentrux_gate(worktree_path: Path, project_root: str) -> None:
-    """Run sentrux policy gate — warn on degradation, don't hard-fail."""
+def _run_sentrux_gate(worktree_path: Path, project_root: str) -> GateResult:
+    """Run sentrux policy gate — reject on degradation."""
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
     if not baseline.exists():
-        return
+        return GateResult(passed=True)
+
     sx_dst = worktree_path / ".sentrux"
     if not sx_dst.exists():
         shutil.copytree(baseline.parent, sx_dst, dirs_exist_ok=True)
+
     with tempfile.TemporaryFile(mode="w+") as tmp:
         res_sx = subprocess.run(
             ["sentrux", "gate", "."],
             cwd=worktree_path,
             stdout=tmp,
             stderr=subprocess.STDOUT,
+            text=True,
         )
         tmp.seek(0)
         sx_output = tmp.read()
+
+    # degradation is signaled by non-zero exit in Sentrux gate
     if res_sx.returncode != 0:
-        logger.warning("Sentrux policy warning:\n%s", sx_output)
+        return GateResult(passed=False, error=f"Sentrux architectural degradation:\n{sx_output}")
+
+    return GateResult(passed=True)
 
 
 def validate_sandbox(
@@ -325,24 +332,26 @@ def validate_sandbox(
             return GateResult(passed=True)
 
         # Lint gate
-        res_lint = _run_cmd(config.lint_cmd, changed_files, worktree_path)
+        res_lint = _run_cmd(config.lint_cmd, changed_files, worktree_path, timeout=config.settlement_timeout)
         if res_lint.returncode != 0:
             return GateResult(passed=False, error=f"Lint failure:\n{res_lint.stdout}")
 
         # Format check
-        res_fmt = _run_cmd(config.format_check_cmd, changed_files, worktree_path)
+        res_fmt = _run_cmd(config.format_check_cmd, changed_files, worktree_path, timeout=config.settlement_timeout)
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
         # Test gate
         test_cmd = _build_test_cmd(config, changed_files, worktree_path)
         if test_cmd:
-            test_failure = _run_test_gate(test_cmd, worktree_path)
+            test_failure = _run_test_gate(test_cmd, worktree_path, timeout=config.settlement_timeout)
             if test_failure is not None:
                 return test_failure
 
-        # Sentrux gate (warn only)
-        _run_sentrux_gate(worktree_path, project_root)
+        # Sentrux gate (semantic/architectural check)
+        sx_result = _run_sentrux_gate(worktree_path, project_root)
+        if not sx_result.passed:
+            return sx_result
 
         return GateResult(passed=True)
 

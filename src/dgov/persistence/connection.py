@@ -47,11 +47,12 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout=10000")
 
     # Schema initialization (idempotent)
-    from dgov.persistence.sql import _CREATE_SLUG_HISTORY_TABLE_SQL
+    from dgov.persistence.sql import _CREATE_LEDGER_TABLE_SQL, _CREATE_SLUG_HISTORY_TABLE_SQL
 
     conn.execute(_CREATE_TABLE_SQL)
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
+    conn.execute(_CREATE_LEDGER_TABLE_SQL)
 
     _migrate_schema(conn)
 

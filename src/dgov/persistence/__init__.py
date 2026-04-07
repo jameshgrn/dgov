@@ -15,6 +15,11 @@ from dgov.persistence.events import (
     read_events,
     reset_plan_state,
 )
+from dgov.persistence.ledger import (
+    add_ledger_entry,
+    list_ledger_entries,
+    resolve_ledger_entry,
+)
 from dgov.persistence.schema import (
     TaskState,
     WorkerTask,
@@ -54,4 +59,8 @@ __all__ = [
     "remove_task",
     "reset_plan_state",
     "state_path",
+    # Ledger
+    "add_ledger_entry",
+    "list_ledger_entries",
+    "resolve_ledger_entry",
 ]
