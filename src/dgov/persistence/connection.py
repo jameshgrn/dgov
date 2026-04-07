@@ -53,6 +53,8 @@ def _get_db(session_root: str) -> sqlite3.Connection:
     conn.execute(_CREATE_EVENTS_TABLE_SQL)
     conn.execute(_CREATE_SLUG_HISTORY_TABLE_SQL)
 
+    _migrate_schema(conn)
+
     with _conn_lock:
         # Another racer may have inserted; prefer the first one.
         existing = _conn_cache.get(key)
@@ -61,6 +63,31 @@ def _get_db(session_root: str) -> sqlite3.Connection:
             return existing
         _conn_cache[key] = conn
     return conn
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """Add missing columns to existing tables (safe to run multiple times)."""
+    # 1. Migrate 'events' table
+    cursor = conn.execute("PRAGMA table_info(events)")
+    existing_events_cols = {row[1] for row in cursor.fetchall()}
+
+    new_events_cols = {
+        "task_slug": "TEXT DEFAULT NULL",
+        "plan_name": "TEXT DEFAULT NULL",
+        "action": "TEXT DEFAULT NULL",
+    }
+    for col, dtype in new_events_cols.items():
+        if col not in existing_events_cols:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {col} {dtype}")
+
+    # 2. Migrate 'tasks' table
+    cursor = conn.execute("PRAGMA table_info(tasks)")
+    existing_tasks_cols = {row[1] for row in cursor.fetchall()}
+
+    if "plan_name" not in existing_tasks_cols:
+        conn.execute("ALTER TABLE tasks ADD COLUMN plan_name TEXT DEFAULT NULL")
+
+    conn.commit()
 
 
 def _retry_on_lock(fn, *args, **kwargs) -> Any:  # noqa: ANN001, ANN002, ANN003
