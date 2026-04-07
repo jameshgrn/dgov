@@ -146,3 +146,7 @@
   failed: a
   sentrux: 2304 -> 2316
 
+[2026-04-07 23:47:23Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-293/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2304
+
