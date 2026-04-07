@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from dgov.cli import (
     _detect_project,
+    _format_event,
     _render_project_toml,
     cli,
 )
@@ -318,6 +319,21 @@ class TestInitPlan:
 
 
 # -- run --
+
+
+def test_format_event_settlement_retry() -> None:
+    """Test that _format_event renders settlement_retry events correctly."""
+    ev = {
+        "event": "settlement_retry",
+        "task_slug": "fix-lint",
+        "ts": "2026-04-06T12:34:56Z",
+        "error": "ruff check failed: E501 line too long",
+    }
+    result = _format_event(ev)
+    assert result is not None
+    assert "RETRY" in result
+    assert "fix-lint" in result
+    assert "ruff check failed" in result
 
 
 def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
