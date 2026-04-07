@@ -93,3 +93,7 @@
   failed: fail-task
   sentrux: 7605 -> 7605
 
+[2026-04-07 15:26:46Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-243/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7373 -> 7373
+
