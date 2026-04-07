@@ -302,7 +302,32 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool) -> Non
     # 5. Bundle SOPs
     sops_dir = Path.cwd() / ".dgov" / "sops"
     bundler = IdentityBundler() if dry_run else LLMSopBundler()
-    result = bundle(resolved, sops_dir, bundler)
+
+    # Caching: read existing _compiled.toml if present to reuse mapping if hash matches
+    cached_mapping = None
+    cached_hash = None
+    compiled_path = plan_root / "_compiled.toml"
+    if compiled_path.exists() and not recompile_sops:
+        try:
+            from dgov.dag_parser import parse_dag_file
+
+            old = parse_dag_file(str(compiled_path))
+            cached_hash = old.sop_set_hash
+            cached_mapping = {uid: task.sop_mapping for uid, task in old.tasks.items()}
+        except Exception:
+            pass  # Silently skip cache on parse failure
+
+    try:
+        result = bundle(
+            resolved,
+            sops_dir,
+            bundler,
+            cached_mapping=cached_mapping,
+            cached_hash=cached_hash,
+        )
+    except Exception as e:
+        click.echo(f"  ERROR: {str(e)}", err=True)
+        raise click.exceptions.Exit(code=1) from None
 
     # 6. Serialize + write
     toml_str = serialize_compiled_toml(result, resolved.source_mtime_max)

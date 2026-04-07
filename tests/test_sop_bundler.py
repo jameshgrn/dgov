@@ -13,6 +13,7 @@ from dgov.sop_bundler import (
     IdentityBundler,
     LLMSopBundler,
     Sop,
+    SopBundler,
     bundle,
     compute_sop_set_hash,
     load_sops,
@@ -162,14 +163,92 @@ class TestIdentityBundler:
 
 
 class TestLLMSopBundler:
-    def test_raises_not_implemented(self) -> None:
-        with pytest.raises(NotImplementedError, match="LLM integration"):
+    def test_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="FIREWORKS_API_KEY missing"):
             LLMSopBundler().pick({}, [])
 
+    def test_successful_pick(self, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockerFixture) -> None:
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
+        mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
+        mock_resp = mocker.MagicMock()
+        mock_resp.choices[0].message.content = '{"mapping": {"a": ["s1"], "b": []}}'
+        mock_client.return_value.chat.completions.create.return_value = mock_resp
 
-# =============================================================================
-# bundle()
-# =============================================================================
+        units = {"a": _unit("a"), "b": _unit("b")}
+        sops = [Sop(name="s1", title="S1", body="", path=Path("s1.md"))]
+
+        result = LLMSopBundler().pick(units, sops)
+        assert result == {"a": ["s1"], "b": []}
+
+        # Verify prompt contents
+        _, kwargs = mock_client.return_value.chat.completions.create.call_args
+        prompt = kwargs["messages"][1]["content"]
+        assert "s1: S1" in prompt
+        assert "a: s" in prompt  # summary is "s" from _unit helper
+
+    def test_api_failure_raises_runtime_error(
+        self, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockerFixture
+    ) -> None:
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
+        mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
+        mock_client.return_value.chat.completions.create.side_effect = Exception("API Down")
+
+        with pytest.raises(RuntimeError, match="LLMSopBundler failed: API Down"):
+            LLMSopBundler().pick({"a": _unit("a")}, [])
+
+
+class TestBundleCaching:
+    def test_bundle_reuses_mapping_on_hash_match(self, tmp_path: Path, mocker: pytest_mock.MockerFixture) -> None:
+        sops_dir = tmp_path / "sops"
+        _write(sops_dir / "s1.md", _sop_md("s1", "S1", "Body 1"))
+        plan = _flat_plan({"a": _unit("a", "Prompt")})
+
+        # Pre-calculated hash for s1.md
+        hash_val = compute_sop_set_hash(load_sops(sops_dir))
+
+        # Mock bundler — should NOT be called if cache hits
+        bundler = mocker.Mock(spec=SopBundler)
+
+        # 1. Cache hit
+        cached_mapping = {"a": ("s1",)}
+        result = bundle(
+            plan, sops_dir, bundler, cached_mapping=cached_mapping, cached_hash=hash_val
+        )
+        assert result.sop_mapping == {"a": ("s1",)}
+        assert result.plan.units["a"].prompt == "Body 1\n\nPrompt"
+        bundler.pick.assert_not_called()
+
+    def test_bundle_re_calls_on_hash_mismatch(self, tmp_path: Path, mocker: pytest_mock.MockerFixture) -> None:
+        sops_dir = tmp_path / "sops"
+        _write(sops_dir / "s1.md", _sop_md("s1", "S1", "Body 1"))
+        plan = _flat_plan({"a": _unit("a", "Prompt")})
+
+        bundler = mocker.Mock(spec=SopBundler)
+        bundler.pick.return_value = {"a": ["s1"]}
+
+        # Mismatching hash
+        result = bundle(
+            plan, sops_dir, bundler, cached_mapping={"a": ("s1",)}, cached_hash="WRONG"
+        )
+        assert result.sop_mapping == {"a": ("s1",)}
+        bundler.pick.assert_called_once()
+
+    def test_bundle_re_calls_on_missing_unit_in_cache(self, tmp_path: Path, mocker: pytest_mock.MockerFixture) -> None:
+        sops_dir = tmp_path / "sops"
+        _write(sops_dir / "s1.md", _sop_md("s1", "S1", "Body 1"))
+        plan = _flat_plan({"a": _unit("a"), "b": _unit("b")})
+        hash_val = compute_sop_set_hash(load_sops(sops_dir))
+
+        bundler = mocker.Mock(spec=SopBundler)
+        bundler.pick.return_value = {"a": ["s1"], "b": []}
+
+        # Mapping missing "b"
+        result = bundle(
+            plan, sops_dir, bundler, cached_mapping={"a": ("s1",)}, cached_hash=hash_val
+        )
+        assert result.sop_mapping == {"a": ("s1",), "b": ()}
+        bundler.pick.assert_called_once()
 
 
 class _PickAllBundler:

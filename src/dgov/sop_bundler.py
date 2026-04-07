@@ -8,10 +8,15 @@ See .dgov/plans/plan-system/DESIGN.md for the full compile pipeline.
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
+
+from openai import OpenAI
+from pydantic import BaseModel
 
 from dgov.plan import PlanUnit
 from dgov.plan_tree import FlatPlan
@@ -61,19 +66,81 @@ class IdentityBundler:
         return {uid: [] for uid in units}
 
 
+class SopMappingResponse(BaseModel):
+    """Structured response for SOP mapping."""
+
+    mapping: dict[str, list[str]]
+
+
 class LLMSopBundler:
     """Production bundler — one governor LLM call to pick SOPs per unit.
 
-    Not wired to an LLM yet. Raises NotImplementedError until production
-    LLM integration is added.
+    Uses an OpenAI-compatible client (default: Fireworks) to map units to SOPs.
+    Requires FIREWORKS_API_KEY environment variable.
     """
+
+    def __init__(
+        self,
+        model: str = "accounts/fireworks/routers/kimi-k2p5-turbo",
+        base_url: str = "https://api.fireworks.ai/inference/v1",
+    ) -> None:
+        self.model = model
+        self.base_url = base_url
 
     def pick(
         self,
         units: dict[str, PlanUnit],
         sops: list[Sop],
     ) -> dict[str, list[str]]:
-        raise NotImplementedError("LLMSopBundler requires LLM integration — not yet implemented")
+        api_key = os.environ.get("FIREWORKS_API_KEY")
+        if not api_key:
+            raise ValueError("FIREWORKS_API_KEY missing — required for LLMSopBundler")
+
+        client = OpenAI(base_url=self.base_url, api_key=api_key)
+
+        sop_list = "\n".join(f"- {s.name}: {s.title}" for s in sops)
+        unit_list = "\n".join(f"- {uid}: {u.summary}" for uid, u in units.items())
+
+        prompt = f"""You are the dgov governor. Your task is to assign relevant Standard Operating Procedures (SOPs) 
+to each unit of work in a plan.
+
+AVAILABLE SOPS:
+{sop_list}
+
+PLAN UNITS:
+{unit_list}
+
+For each unit, identify which SOPs are relevant to its task based on the SOP title and unit summary. 
+A unit can have zero, one, or multiple SOPs assigned.
+
+Return a JSON object with a "mapping" key where each key is a unit ID and the value is a list of SOP names.
+Example:
+{{
+  "mapping": {{
+    "unit/id.one": ["sop-a", "sop-b"],
+    "unit/id.two": []
+  }}
+}}
+"""
+
+        try:
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are a precise task-to-SOP assignment engine."},
+                    {"role": "user", "content": prompt},
+                ],
+                response_format={"type": "json_object"},
+            )
+            content = resp.choices[0].message.content
+            if not content:
+                return {uid: [] for uid in units}
+
+            data = SopMappingResponse.model_validate_json(content)
+            return data.mapping
+        except Exception as e:
+            # Pillar #6: Fail fast. If the governor can't pick SOPs, compile fails.
+            raise RuntimeError(f"LLMSopBundler failed: {str(e)}") from e
 
 
 def load_sops(sops_dir: Path) -> list[Sop]:
@@ -103,12 +170,16 @@ def bundle(
     plan: FlatPlan,
     sops_dir: Path,
     bundler: SopBundler,
+    cached_mapping: dict[str, tuple[str, ...]] | None = None,
+    cached_hash: str | None = None,
 ) -> BundleResult:
     """Run SOP bundling: load SOPs, pick per-unit, prepend to prompts.
 
+    If cached_hash matches the current SOP set hash, cached_mapping is reused
+    to skip the bundler.pick() call (usually an expensive LLM call).
+
     When no SOPs exist, returns the plan unchanged with empty mapping and
-    empty hash string. Caching (reuse of prior mapping when hash matches)
-    is a CLI concern — this function is stateless.
+    empty hash string.
     """
     sops = load_sops(sops_dir)
 
@@ -120,7 +191,17 @@ def bundle(
         )
 
     hash_val = compute_sop_set_hash(sops)
-    mapping = bundler.pick(plan.units, sops)
+
+    # Cache hit: reuse mapping if hash matches and mapping covers all current units
+    if (
+        cached_hash == hash_val
+        and cached_mapping is not None
+        and all(uid in cached_mapping for uid in plan.units)
+    ):
+        mapping = {uid: list(names) for uid, names in cached_mapping.items()}
+    else:
+        mapping = bundler.pick(plan.units, sops)
+
     sop_by_name = {s.name: s for s in sops}
 
     rewritten: dict[str, PlanUnit] = {}

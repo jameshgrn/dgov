@@ -171,15 +171,6 @@ def test_compile_unreachable_fails(runner: CliRunner, tmp_path: Path) -> None:
     (plan_dir / "_root.toml").write_text('[plan]\nname = "ur"\nsummary = ""\nsections = ["s"]\n')
     s_dir = plan_dir / "s"
     s_dir.mkdir()
-    # 'orphan' depends on non-existent unit — but let's make a unit that's
-    # unreachable: it depends on something that exists, forming an island.
-    # Easier: one root + one unit depending on a ref that doesn't exist
-    # Actually, unreachable = has deps but no root leads to it.
-    # Make two tasks: root (no deps) and orphan (depends on itself, caught by resolver)
-    # Simpler: root + island of two that depend on each other → cycle + unreachable
-    # Let's just make a single-node "island" that depends on a valid node that
-    # doesn't depend back — but that would be reachable from root. Hmm.
-    # Best: root A, island B→C→B (cycle makes them unreachable from A)
     (s_dir / "tasks.toml").write_text(
         '[tasks.root]\nsummary = "r"\nprompt = "r"\ncommit_message = "r"\n\n'
         '[tasks.island]\nsummary = "i"\nprompt = "i"\ncommit_message = "i"\n'
@@ -235,6 +226,22 @@ def test_compile_dry_run_label(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
     assert result.exit_code == 0
     assert "dry-run" in result.output
+
+
+def test_compile_fails_no_dry_run_no_api_key(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem() as root:
+        plan_dir = _make_plan_tree(Path(root))
+        # Create a SOP to trigger bundling
+        sops_dir = Path(root) / ".dgov" / "sops"
+        sops_dir.mkdir(parents=True)
+        (sops_dir / "style.md").write_text("---\nname: style\ntitle: Style\n---\nUse ruff.\n")
+
+        monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+        result = runner.invoke(cli, ["compile", "myplan"])
+        assert result.exit_code != 0
+        assert "FIREWORKS_API_KEY missing" in result.output
 
 
 # -- serializer edge cases --

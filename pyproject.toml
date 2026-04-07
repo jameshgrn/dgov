@@ -5,6 +5,7 @@ description = "Deterministic kernel for multi-agent orchestration via git worktr
 requires-python = ">=3.12"
 dependencies = [
     "click>=8.1",
+    "openai>=2.30.0",
     "pydantic>=2.0",
     "rich>=13.0",
 ]
