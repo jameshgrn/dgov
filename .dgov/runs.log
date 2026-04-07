@@ -97,3 +97,31 @@
   failed: a
   sentrux: 7373 -> 7373
 
+[2026-04-07 17:03:22Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-247/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7374 -> 7374
+
+[2026-04-07 17:20:24Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-248/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7374 -> 7374
+
+[2026-04-07 17:45:17Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-252/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7349 -> 7349
+
+[2026-04-07 17:45:40Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-253/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7349 -> 7349
+
+[2026-04-07 17:46:21Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-254/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7349 -> 7349
+
+[2026-04-07 17:54:19Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-256/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7349 -> 7349
+
+[2026-04-07 17:55:27Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-257/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 7350 -> 7350
+

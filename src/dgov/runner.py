@@ -79,6 +79,7 @@ class EventDagRunner:
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
         self._worktrees: dict[str, Worktree] = {}
+        self._rejected_worktrees: dict[str, Worktree] = {}  # Preserved for inspection
         self._worker_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_errors: dict[str, str] = {}
         self._task_timeouts: dict[str, float] = {}
@@ -664,6 +665,9 @@ class EventDagRunner:
                 action.task_slug,
                 wt.path,
             )
+            # Move to rejected dict so _cleanup skips it
+            self._worktrees.pop(action.task_slug, None)
+            self._rejected_worktrees[action.task_slug] = wt
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 

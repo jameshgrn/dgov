@@ -234,6 +234,160 @@ class TestSettlementRejection:
 
 
 # ---------------------------------------------------------------------------
+# Settlement retry flow
+# ---------------------------------------------------------------------------
+
+
+class TestSettlementRetry:
+    """Test the settlement retry mechanism: fail → reset → retry → succeed."""
+
+    def test_settlement_retry_succeeds_on_second_attempt(self, git_repo, monkeypatch):
+        """Worker produces bad code → retry with feedback → fix → merge."""
+        call_count = {"initial": 0, "retry": 0}
+
+        async def _retry_worker(
+            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+        ):
+            # Track which call this is by checking pane_slug suffix
+            is_retry = pane_slug.endswith("-retry")
+
+            if not is_retry:
+                # First attempt: write code with undefined variable (F821)
+                call_count["initial"] += 1
+                # F821: Undefined name - ruff check --fix cannot fix this
+                bad_code = "print(undefined_var)\n"  # F821 undefined name
+                (worktree_path / "output.py").write_text(bad_code)
+                on_exit(task_slug, pane_slug, 0, "")
+            else:
+                # Retry: define the variable
+                call_count["retry"] += 1
+                fixed_code = "undefined_var = 'hello'\nprint(undefined_var)\n"
+                (worktree_path / "output.py").write_text(fixed_code)
+                on_exit(task_slug, pane_slug, 0, "")
+
+        # Don't mock settlement — use real ruff validation
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _retry_worker)
+
+        dag = _dag({"retry-task": _task("retry-task", commit_message="feat: retry test")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        # Verify both worker calls were made
+        assert call_count["initial"] == 1, "Initial worker should run once"
+        assert call_count["retry"] == 1, "Retry worker should run once"
+
+        # Task should succeed after retry
+        assert results["retry-task"] == "merged"
+        assert (git_repo / "output.py").exists()
+
+        # Verify final code is correct (ruff may change quotes, so check content not exact format)
+        final_code = (git_repo / "output.py").read_text()
+        assert "undefined_var =" in final_code
+        assert "hello" in final_code
+        assert "print(undefined_var)" in final_code
+
+    def test_settlement_retry_fails_after_second_attempt(self, git_repo, monkeypatch):
+        """Worker produces bad code → retry → still bad → task fails."""
+        call_count = {"initial": 0, "retry": 0}
+
+        async def _failing_retry_worker(
+            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+        ):
+            is_retry = pane_slug.endswith("-retry")
+            # F821: Undefined name - ruff check --fix cannot fix this
+            bad_code = "print(undefined_var)\n"  # Always fails validation
+
+            if not is_retry:
+                call_count["initial"] += 1
+            else:
+                call_count["retry"] += 1
+
+            # Both attempts write bad code
+            (worktree_path / "bad.py").write_text(bad_code)
+            on_exit(task_slug, pane_slug, 0, "")
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _failing_retry_worker)
+
+        dag = _dag({"fail-retry": _task("fail-retry")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        # Both worker calls should be made
+        assert call_count["initial"] == 1
+        assert call_count["retry"] == 1
+
+        # Task should fail after retry also fails
+        assert results["fail-retry"] == "failed"
+        assert not (git_repo / "bad.py").exists()
+
+    def test_settlement_retry_preserves_worktree_for_inspection(self, git_repo, monkeypatch):
+        """When retry fails, worktree is preserved for manual inspection."""
+        call_count = {"retry": 0}
+        # Track the worktree path from the first worker call
+        worktree_paths = []
+
+        async def _always_fail_worker(
+            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+        ):
+            is_retry = pane_slug.endswith("-retry")
+            if is_retry:
+                call_count["retry"] += 1
+
+            worktree_paths.append(worktree_path)
+            # F821: Undefined name - ruff check --fix cannot fix this
+            (worktree_path / "bad.py").write_text("print(undefined_var)\n")
+            on_exit(task_slug, pane_slug, 0, "")
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _always_fail_worker)
+
+        dag = _dag({"inspect-test": _task("inspect-test")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        asyncio.run(runner.run())
+
+        # Should have at least one worktree path
+        assert len(worktree_paths) >= 1
+        # Get the original worktree path (before retry creates new one)
+        worktree_path = worktree_paths[0]
+
+        # Worktree should be preserved for inspection
+        assert worktree_path.exists(), f"Worktree should exist at {worktree_path}"
+        # The worktree should contain our bad file (uncommitted after reset)
+        assert (worktree_path / "bad.py").exists()
+
+    def test_settlement_retry_emits_event(self, git_repo, monkeypatch):
+        """Settlement retry emits a 'settlement_retry' event."""
+        events = []
+
+        async def _event_tracking_worker(
+            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+        ):
+            is_retry = pane_slug.endswith("-retry")
+            # F821: Undefined name - ruff check --fix cannot fix this
+            # Retry attempt fixes it
+            if is_retry:
+                (worktree_path / "out.py").write_text("undefined = 1\nprint(undefined)\n")
+            else:
+                (worktree_path / "out.py").write_text("print(undefined)\n")
+            on_exit(task_slug, pane_slug, 0, "")
+
+        def _capture_event(project_root, event, pane_slug, **kwargs):
+            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _event_tracking_worker)
+        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+
+        dag = _dag({"event-test": _task("event-test")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        asyncio.run(runner.run())
+
+        # Find settlement_retry event
+        retry_events = [e for e in events if e.get("event") == "settlement_retry"]
+        assert len(retry_events) == 1
+        assert retry_events[0]["task_slug"] == "event-test"
+        assert "error" in retry_events[0]
+
+
+# ---------------------------------------------------------------------------
 # Chain: b depends on a
 # ---------------------------------------------------------------------------
 
