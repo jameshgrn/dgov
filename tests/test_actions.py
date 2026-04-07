@@ -4,7 +4,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from src.dgov.actions import (
+from dgov.actions import (
     DagAction,
     DagDone,
     DagEvent,

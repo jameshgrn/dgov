@@ -9,12 +9,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from dgov.cli import (
-    _detect_project,
-    _format_event,
-    _render_project_toml,
-    cli,
-)
+from dgov.cli import cli
+from dgov.cli.init import _detect_project, _render_project_toml
+from dgov.cli.watch import _format_event
 
 pytestmark = pytest.mark.unit
 
