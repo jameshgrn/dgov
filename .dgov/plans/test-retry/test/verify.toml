@@ -1,0 +1,23 @@
+# Tests for the new features.
+
+[tasks.test-graph]
+summary = "Add test for dgov compile --graph flag."
+prompt = """
+Add a test for the `--graph` flag to `tests/test_cli_compile.py`.
+
+Use file_symbols to see the existing test structure, then use edit_file
+to append a new test.
+
+Test:
+1. Create a minimal plan tree (tmp_path) with 3 tasks: a (root), b
+   depends on a, c depends on b.
+2. Run `dgov compile <plan_root> --dry-run --graph` via CliRunner.
+3. Assert exit code 0.
+4. Assert output contains "DAG" and the task names.
+5. Assert "└─►" appears (the connector).
+
+Use edit_file to append the test — do NOT rewrite the file.
+"""
+commit_message = "Add test for compile --graph flag"
+depends_on = ["feature/improvements.compile-graph"]
+files.edit = ["tests/test_cli_compile.py"]

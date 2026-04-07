@@ -37,3 +37,19 @@
   failed: a
   sentrux: 6636 -> 6636
 
+[2026-04-07 02:47:01Z] test-retry (.dgov/plans/test-retry/_compiled.toml) — fail
+  failed: feature/improvements.compile-graph
+  sentrux: 6634 -> 6634
+
+[2026-04-07 02:47:55Z] test-retry (.dgov/plans/test-retry/_compiled.toml) — fail
+  failed: feature/improvements.compile-graph
+  sentrux: 6634 -> 6634
+
+[2026-04-07 02:52:10Z] test-retry (.dgov/plans/test-retry/_compiled.toml) — fail
+  failed: feature/improvements.compile-graph
+  sentrux: 6634 -> 6634
+
+[2026-04-07 02:52:45Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-219/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6628 -> 6628
+

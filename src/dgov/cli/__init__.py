@@ -245,7 +245,8 @@ def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, only: str | None
 @click.option(
     "--recompile-sops", is_flag=True, help="Force SOP re-assignment even if hash matches"
 )
-def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool) -> None:
+@click.option("--graph", is_flag=True, help="Print DAG shape after compile")
+def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile a plan tree into _compiled.toml.
 
     Walks the plan tree, merges units, resolves refs, validates the DAG,
@@ -254,10 +255,10 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool) -> None:
     \b
     Example: dgov compile .dgov/plans/my-plan/
     """
-    _cmd_compile(plan_root, dry_run=dry_run, recompile_sops=recompile_sops)
+    _cmd_compile(plan_root, dry_run=dry_run, recompile_sops=recompile_sops, graph=graph)
 
 
-def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool) -> None:
+def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
     from dgov.plan_tree import (
         merge_tree,
@@ -363,6 +364,65 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool) -> Non
             click.echo(f"  SOPs assigned to {sop_count} unit(s)")
         if dry_run:
             click.echo("  (dry-run: identity bundler, no LLM call)")
+
+    if graph and not want_json():
+        _print_dag_graph(resolved)
+
+
+def _print_dag_graph(resolved: object) -> None:
+    """Print an ASCII representation of the DAG showing task dependencies."""
+    from dgov.plan_tree import FlatPlan
+
+    flat = resolved if isinstance(resolved, FlatPlan) else getattr(resolved, "units", {})
+    units: dict[str, object] = flat.units if isinstance(flat, FlatPlan) else flat  # type: ignore[union-attr]
+
+    # Build reverse dependency map (child -> parents)
+    children: dict[str, set[str]] = {uid: set() for uid in units}
+    for uid, unit in units.items():
+        for dep in getattr(unit, "depends_on", ()):
+            if dep in children:
+                children[dep].add(uid)
+
+    # Find roots (units with no depends_on)
+    roots = [uid for uid, unit in units.items() if not getattr(unit, "depends_on", ())]
+    roots.sort()
+
+    edge_count = sum(len(getattr(u, "depends_on", ())) for u in units.values())
+    click.echo(f"\nDAG ({len(units)} tasks, {edge_count} edges):")
+
+    if not units:
+        click.echo("  (empty)")
+        return
+
+    visited: set[str] = set()
+
+    def _print_node(uid: str, prefix: str, is_last: bool) -> None:
+        """Print a node and its children recursively."""
+        if uid in visited:
+            # Already printed - mark as shared dependency
+            connector = "    └─► " if is_last else "    ├─► "
+            click.echo(f"{prefix}{connector}{uid} ...")
+            return
+
+        visited.add(uid)
+        is_root = uid in roots
+        label = f"{uid} (root)" if is_root else uid
+
+        if not prefix:
+            click.echo(f"  {label}")
+        else:
+            connector = "└─► " if is_last else "├─► "
+            click.echo(f"{prefix}{connector}{label}")
+
+        # Get children sorted for consistent output
+        child_ids = sorted(children.get(uid, set()))
+        for i, child_id in enumerate(child_ids):
+            is_last_child = i == len(child_ids) - 1
+            extension = "    " if is_last else "│   "
+            _print_node(child_id, prefix + extension, is_last_child)
+
+    for root in roots:
+        _print_node(root, "", True)
 
 
 @cli.command(name="init-plan")

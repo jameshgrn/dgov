@@ -1,0 +1,59 @@
+# Feature improvements — all edit existing files.
+
+[tasks.compile-graph]
+summary = "Add --graph flag to dgov compile that prints the DAG shape as ASCII."
+prompt = """
+Add a `--graph` flag to the existing `dgov compile` command in
+`src/dgov/cli/__init__.py`.
+
+When `--graph` is passed, after compilation print an ASCII representation
+of the DAG showing task dependencies. Format:
+
+```
+DAG (4 tasks, 3 edges):
+  task-a (root)
+    └─► task-b
+        └─► task-c
+  task-d (root)
+```
+
+Implementation:
+1. Add `@click.option("--graph", is_flag=True, help="Print DAG shape after compile")`
+   to `compile_cmd`
+2. Pass the flag through to `_cmd_compile`
+3. At the end of `_cmd_compile`, if graph is True, call a new function
+   `_print_dag_graph(resolved)` that prints the ASCII tree
+4. `_print_dag_graph` should:
+   - Find roots (units with no depends_on)
+   - DFS from each root, printing indented tree with └─► connectors
+   - Handle diamond deps (print node only once, mark revisits with "...")
+
+Add the `_print_dag_graph` function right after `_cmd_compile` in the file.
+
+Use edit_file for all changes. Use file_symbols first to find the
+exact locations of compile_cmd and _cmd_compile.
+"""
+commit_message = "Add --graph flag to dgov compile for ASCII DAG view"
+files.edit = ["src/dgov/cli/__init__.py"]
+
+[tasks.watch-settlement]
+summary = "Add settlement_retry event rendering to dgov watch output."
+prompt = """
+Edit `src/dgov/cli/__init__.py` to render the new `settlement_retry`
+event type in the `dgov watch` output.
+
+Use file_symbols to find `_format_event`. Read the function to understand
+the existing event rendering pattern.
+
+Add a case for `settlement_retry` events that renders as:
+  `<timestamp>  ⟳ RETRY  <task_slug> — <error snippet (first 80 chars)>`
+
+Use yellow/bold styling consistent with the existing warning style.
+The event has `task_slug` and `error` fields.
+
+Use edit_file — do NOT rewrite _format_event. Just add the new case
+in the appropriate spot within the function.
+"""
+depends_on = ["compile-graph"]
+commit_message = "Add settlement_retry rendering to dgov watch"
+files.edit = ["src/dgov/cli/__init__.py"]

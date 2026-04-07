@@ -1,0 +1,7 @@
+# Test settlement retry: all tasks edit existing files.
+# Designed to exercise edit_file + settlement retry loop.
+
+[plan]
+name = "test-retry"
+summary = "Add dgov compile --graph and improve watch output. All edits to existing files."
+sections = ["feature", "test"]
