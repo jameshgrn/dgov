@@ -61,7 +61,7 @@ class EventDagRunner:
         restart: bool = False,
     ) -> None:
         from dgov.config import load_project_config
-        from dgov.persistence import read_events, reset_plan_state
+        from dgov.persistence import reset_plan_state
 
         self.dag = dag
         self.session_root = session_root
@@ -109,13 +109,19 @@ class EventDagRunner:
                 # Handle both terminal failures and intermediate timeouts
                 self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.FAILED))
             elif ename == "review_pass":
-                self.kernel.handle(TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1))
+                self.kernel.handle(
+                    TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)
+                )
             elif ename == "review_fail":
-                self.kernel.handle(TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0))
+                self.kernel.handle(
+                    TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0)
+                )
             elif ename == "merge_completed":
                 self.kernel.handle(TaskMergeDone(task_slug, error=None))
             elif ename == "task_merge_failed":
-                self.kernel.handle(TaskMergeDone(task_slug, error=ev.get("error", "unknown error")))
+                self.kernel.handle(
+                    TaskMergeDone(task_slug, error=ev.get("error", "unknown error"))
+                )
             elif ename == "dag_task_governor_resumed":
                 # Restore attempt counts and retry/skip/fail state
                 action_str = ev.get("action")
@@ -125,7 +131,6 @@ class EventDagRunner:
                         self.kernel.handle(TaskGovernorResumed(task_slug, action))
                     except ValueError:
                         pass
-
 
     def _setup_signal_handlers(self) -> None:
         """Install signal handlers for graceful shutdown (Pillar #10)."""
@@ -330,7 +335,7 @@ class EventDagRunner:
         """Decide retry vs fail based on attempt count."""
         attempts = self.kernel.attempts.get(action.task_slug, 0)
         error_detail = self._task_errors.get(action.task_slug, "")
-        
+
         gov_action = GovernorAction.FAIL
         if attempts < self.kernel.max_retries:
             logger.info(
@@ -489,6 +494,7 @@ class EventDagRunner:
 
         loop = asyncio.get_running_loop()
         error = None
+        settlement_rejected = False
         try:
             # 1. Auto-fix (lint fix then format) BEFORE commit — scoped to claimed files
             task = self.dag.tasks[action.task_slug]
@@ -507,6 +513,7 @@ class EventDagRunner:
 
             if not gate_result.passed:
                 error = gate_result.error
+                settlement_rejected = True
                 logger.warning("REJECTED %s: %s", action.task_slug, error)
             else:
                 # 3. Merge
@@ -524,13 +531,15 @@ class EventDagRunner:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
             error = str(exc)
 
-        # 4. Cleanup worktree regardless of outcome
-        try:
-            await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
-        except Exception as exc:
-            logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
-
-        self._worktrees.pop(action.task_slug, None)
+        # 5. Cleanup — keep worktree on settlement rejection so governor can inspect
+        if not settlement_rejected:
+            try:
+                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+            except Exception as exc:
+                logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
+            self._worktrees.pop(action.task_slug, None)
+        else:
+            logger.info("Worktree preserved for inspection: %s (%s)", action.task_slug, wt.path)
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
