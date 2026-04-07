@@ -1,0 +1,2 @@
+{"plan":"break-cycle","unit":"refactor/extract.create-serializer","sha":"28f0126631ec636c1e4299c31b830b2582a81b1b","ts":"2026-04-07T01:37:33Z"}
+{"plan":"break-cycle","unit":"refactor/extract.strip-plan-tree","sha":"f55dd427a31967372a80329eb6ec60105f699cd1","ts":"2026-04-07T01:39:02Z"}

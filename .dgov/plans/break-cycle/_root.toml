@@ -1,0 +1,11 @@
+# Break the plan_tree <-> sop_bundler circular dependency.
+#
+# sentrux found: plan_tree.py imports BundleResult from sop_bundler.py
+# (lazy, inside serialize_compiled_toml), and sop_bundler.py imports
+# FlatPlan from plan_tree.py (top-level). Fix: extract the serializer
+# into its own module that depends on both — no cycle.
+
+[plan]
+name = "break-cycle"
+summary = "Extract serializer from plan_tree to break plan_tree<->sop_bundler cycle, add tests, verify with sentrux."
+sections = ["refactor", "test", "verify"]

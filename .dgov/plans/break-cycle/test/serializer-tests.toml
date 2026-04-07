@@ -1,0 +1,58 @@
+# Tests for the extracted serializer module.
+
+[tasks.unit-tests]
+summary = "Add unit tests for serializer.py: TOML helpers + serialize_compiled_toml."
+prompt = """
+Create `tests/test_serializer.py` with tests for `src/dgov/serializer.py`.
+
+Test `_toml_str`:
+- Plain string → double-quoted
+- String with quotes → escaped
+- String with newlines → escaped \\n
+- String with backslashes → escaped
+
+Test `_toml_ml_str`:
+- Single-line string → falls through to `_toml_str`
+- Multi-line string → triple-quoted
+
+Test `_toml_key`:
+- Simple alphanumeric slug → bare key
+- Slug with `/` or `.` → quoted key
+
+Test `serialize_compiled_toml`:
+- Build a minimal BundleResult (use IdentityBundler on a FlatPlan with
+  2 units, one with depends_on, one with files). Call serialize_compiled_toml.
+  Verify the output:
+  1. Starts with `[plan]`
+  2. Contains `name =`, `source_mtime_max =`, `sop_set_hash =`
+  3. Has `[tasks."section/file.slug"]` for each unit
+  4. Includes `depends_on`, `files.edit`, etc. where present
+  5. Is valid TOML (round-trip through `tomllib.loads`)
+
+- Test with SOP mapping: build a BundleResult where sop_mapping has entries.
+  Verify `sop_mapping = [...]` appears in output.
+
+- Test with agent and timeout_s fields populated.
+
+Use pytest. Import helpers from dgov.plan (PlanUnit, PlanUnitFiles),
+dgov.plan_tree (FlatPlan, RootMeta), dgov.sop_bundler (BundleResult).
+"""
+commit_message = "Add unit tests for serializer module"
+depends_on = ["refactor/extract.create-serializer"]
+files.create = ["tests/test_serializer.py"]
+
+[tasks.existing-pass]
+summary = "Run existing plan_tree and sop_bundler tests to confirm no regressions."
+prompt = """
+Run:
+  pytest tests/test_plan_tree.py tests/test_sop_bundler.py tests/test_cli.py -q
+
+All tests must pass. If any fail, investigate and fix the root cause.
+The most likely failure: a test importing `serialize_compiled_toml` from
+`plan_tree` — redirect to `serializer`.
+
+Do NOT modify test logic or assertions — only fix import paths if needed.
+"""
+commit_message = "Fix any stale imports in existing tests"
+depends_on = ["refactor/extract.update-cli"]
+files.edit = ["tests/test_plan_tree.py", "tests/test_sop_bundler.py", "tests/test_cli.py"]

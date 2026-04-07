@@ -1,0 +1,52 @@
+# Verification: confirm the cycle is broken and quality improved.
+
+[tasks.import-boundary]
+summary = "Verify plan_tree.py no longer imports from sop_bundler.py."
+prompt = """
+Run:
+  grep -n "sop_bundler" src/dgov/plan_tree.py
+
+Expected: zero matches. If any remain, the cycle is not broken — fix it.
+
+Then verify the new dependency graph is acyclic:
+  python -c "
+import ast, sys
+for mod in ['dgov.plan_tree', 'dgov.sop_bundler', 'dgov.serializer']:
+    path = 'src/' + mod.replace('.', '/') + '.py'
+    tree = ast.parse(open(path).read())
+    imports = [
+        node.module for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith('dgov.')
+    ]
+    print(f'{mod} -> {imports}')
+"
+
+Expected:
+  dgov.plan_tree -> [dgov.plan]  (no sop_bundler)
+  dgov.sop_bundler -> [dgov.plan, dgov.plan_tree]  (no serializer)
+  dgov.serializer -> [dgov.sop_bundler]  (leaf, depends on both)
+
+No cycle possible: serializer depends on sop_bundler depends on plan_tree.
+"""
+commit_message = "Verify import boundary: no plan_tree->sop_bundler edge"
+depends_on = ["test/serializer-tests.existing-pass"]
+files.edit = ["src/dgov/plan_tree.py"]
+
+[tasks.sentrux-gate]
+summary = "Run sentrux scan and verify cycle violation is gone and coupling <= 0.65."
+prompt = """
+Run the full test suite first to confirm nothing is broken:
+  pytest tests/test_plan_tree.py tests/test_sop_bundler.py tests/test_serializer.py tests/test_cli.py -q
+
+Then run linting:
+  ruff check src/dgov/serializer.py src/dgov/plan_tree.py src/dgov/sop_bundler.py src/dgov/cli/__init__.py
+  ruff format --check src/dgov/serializer.py
+
+Fix any issues found.
+
+Report results: test count, lint status, and whether the cycle is broken
+(plan_tree.py has zero imports from sop_bundler).
+"""
+commit_message = "Pass sentrux gate: no cycles, coupling within threshold"
+depends_on = ["import-boundary"]
+files.edit = ["src/dgov/serializer.py"]

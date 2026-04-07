@@ -1,0 +1,83 @@
+# Refactor: extract serializer module and update callsites.
+
+[tasks.create-serializer]
+summary = "Create src/dgov/serializer.py with serialize_compiled_toml + helpers moved from plan_tree.py."
+prompt = """
+Create a new module `src/dgov/serializer.py` by extracting these functions
+from `src/dgov/plan_tree.py`:
+
+- `serialize_compiled_toml(bundle_result, source_mtime_max) -> str`
+- `_toml_str(value: str) -> str`
+- `_toml_ml_str(value: str) -> str`
+- `_toml_key(fq_id: str) -> str`
+
+The new module should:
+1. Import `BundleResult` from `dgov.sop_bundler` at top level (no lazy import needed)
+2. Import `re` and `datetime` as needed
+3. Keep the exact same function signatures and logic — pure move, no behavior changes
+4. Keep the docstrings intact
+
+Do NOT modify plan_tree.py or cli/__init__.py yet — other tasks handle that.
+"""
+commit_message = "Add serializer module extracted from plan_tree"
+files.create = ["src/dgov/serializer.py"]
+
+[tasks.strip-plan-tree]
+summary = "Remove serialize_compiled_toml + helpers from plan_tree.py, breaking the cycle."
+prompt = """
+Edit `src/dgov/plan_tree.py`:
+
+1. Delete these functions entirely:
+   - `serialize_compiled_toml` (lines ~358-417)
+   - `_toml_str` (lines ~420-423)
+   - `_toml_ml_str` (lines ~426-432)
+   - `_toml_key` (lines ~435-439)
+
+2. The lazy `from dgov.sop_bundler import BundleResult` inside
+   serialize_compiled_toml was the only import of sop_bundler — removing
+   the function removes the import. Verify no other references to
+   sop_bundler remain in plan_tree.py.
+
+3. Do NOT touch the rest of the module (walk_tree, merge_tree, resolve_refs,
+   validate, etc.) — those stay.
+
+This is the change that actually breaks the cycle.
+"""
+commit_message = "Remove serializer functions from plan_tree"
+depends_on = ["create-serializer"]
+files.edit = ["src/dgov/plan_tree.py"]
+
+[tasks.update-cli]
+summary = "Update CLI import to use dgov.serializer instead of dgov.plan_tree for serialize_compiled_toml."
+prompt = """
+Edit `src/dgov/cli/__init__.py`:
+
+1. In `_cmd_compile()` (around line 259), change the import block:
+
+   BEFORE:
+   ```python
+   from dgov.plan_tree import (
+       merge_tree,
+       resolve_refs,
+       serialize_compiled_toml,
+       validate,
+       walk_tree,
+   )
+   ```
+
+   AFTER:
+   ```python
+   from dgov.plan_tree import (
+       merge_tree,
+       resolve_refs,
+       validate,
+       walk_tree,
+   )
+   from dgov.serializer import serialize_compiled_toml
+   ```
+
+2. Do NOT change any other code in the function — only the import.
+"""
+commit_message = "Update CLI to import serializer from new module"
+depends_on = ["strip-plan-tree"]
+files.edit = ["src/dgov/cli/__init__.py"]
