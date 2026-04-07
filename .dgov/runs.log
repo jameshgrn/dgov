@@ -23,3 +23,8 @@
   merged: write-it, read-it
   sentrux: 6887 -> 6887
 
+[2026-04-07 02:00:31Z] close-quality-gap (.dgov/plans/close-quality-gap/_compiled.toml) — fail
+  merged: sops/minimal-edits.add-edit-rule, tests/add-coverage.actions, tests/add-coverage.persistence-events
+  failed: tests/add-coverage.worktree
+  sentrux: 6665 -> 6679
+

@@ -1,0 +1,10 @@
+# Close the sentrux quality gap: 0.67 -> 0.69+
+#
+# Strategy: add tests for high-value untested source files.
+# Also fix the context engineering gap that caused the break-cycle
+# worker to rewrite entire files instead of making targeted edits.
+
+[plan]
+name = "close-quality-gap"
+summary = "Add tests for untested modules + SOP fix for minimal-edit context engineering."
+sections = ["sops", "tests"]
