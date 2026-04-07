@@ -5,28 +5,36 @@ from pathlib import Path
 import pytest
 
 
-# We can't import from dgov.worker (it's a standalone script with no dgov imports).
-# Instead we exec the module to get its classes. This mirrors how the subprocess works.
+# We import from dgov.workers.atomic (extracted from worker.py).
 @pytest.fixture(scope="module")
 def worker_module():
-    """Load worker.py as a module without triggering openai import."""
-    import importlib.util
+    """Load worker.py as a module and provide its classes/tools."""
     import sys
     from unittest.mock import MagicMock
+    import dgov.workers.atomic as atomic
+    import dgov.worker as worker
 
     # Mock openai so we don't need it installed
     sys.modules["openai"] = MagicMock()
 
-    spec = importlib.util.spec_from_file_location(
-        "dgov_worker",
-        Path(__file__).resolve().parent.parent / "src" / "dgov" / "worker.py",
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    yield mod
+    # Create a container object to mirror the old combined module
+    class WorkerModule:
+        @staticmethod
+        def get_tool_spec():
+            return atomic.get_tool_spec()
+
+        @staticmethod
+        def _load_project_config(path):
+            return worker._load_project_config(path)
+
+        AtomicTools = atomic.AtomicTools
+        AtomicConfig = atomic.AtomicConfig
+
+    yield WorkerModule()
 
     # Cleanup
-    del sys.modules["openai"]
+    if "openai" in sys.modules:
+        del sys.modules["openai"]
 
 
 @pytest.fixture
@@ -44,7 +52,7 @@ def worktree(tmp_path):
 @pytest.fixture
 def tools(worktree, worker_module):
     """Create AtomicTools with default config."""
-    config = worker_module._ProjectConfig()
+    config = worker_module.AtomicConfig()
     return worker_module.AtomicTools(worktree, config)
 
 
@@ -133,7 +141,7 @@ class TestListDir:
 
 class TestRunTests:
     def test_uses_project_config(self, worktree, worker_module):
-        config = worker_module._ProjectConfig(
+        config = worker_module.AtomicConfig(
             test_cmd="echo 'running tests in {test_dir}'",
             test_dir="tests/",
         )
@@ -142,7 +150,7 @@ class TestRunTests:
         assert "running tests in tests/" in result
 
     def test_targets_specific_file(self, worktree, worker_module):
-        config = worker_module._ProjectConfig(
+        config = worker_module.AtomicConfig(
             test_cmd="echo 'testing {test_dir}'",
             test_dir="tests/",
         )
@@ -153,7 +161,7 @@ class TestRunTests:
 
 class TestLintCheck:
     def test_uses_project_config(self, worktree, worker_module):
-        config = worker_module._ProjectConfig(
+        config = worker_module.AtomicConfig(
             lint_cmd="echo 'linting {file}'",
             src_dir="src/",
         )
@@ -162,7 +170,7 @@ class TestLintCheck:
         assert "linting src/" in result
 
     def test_targets_specific_file(self, worktree, worker_module):
-        config = worker_module._ProjectConfig(lint_cmd="echo 'linting {file}'")
+        config = worker_module.AtomicConfig(lint_cmd="echo 'linting {file}'")
         t = worker_module.AtomicTools(worktree, config)
         result = t.lint_check("src/foo.py")
         assert "linting src/foo.py" in result
@@ -170,7 +178,7 @@ class TestLintCheck:
 
 class TestFormatFile:
     def test_uses_project_config(self, worktree, worker_module):
-        config = worker_module._ProjectConfig(format_cmd="echo 'formatting {file}'")
+        config = worker_module.AtomicConfig(format_cmd="echo 'formatting {file}'")
         t = worker_module.AtomicTools(worktree, config)
         result = t.format_file("src/foo.py")
         assert "formatting src/foo.py" in result

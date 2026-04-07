@@ -41,11 +41,13 @@ class TestKernelPurity:
 
 
 class TestWorkerIsolation:
-    """worker.py is a subprocess — must not import any dgov modules."""
+    """worker.py is a subprocess — must only import its own support modules."""
 
     def test_worker_no_dgov_imports(self):
         imports = _get_imports(_SRC / "worker.py")
-        assert not imports, f"worker.py imports dgov modules: {imports}"
+        allowed = {"dgov.workers.atomic", "dgov.worker"}
+        violations = imports - allowed
+        assert not violations, f"worker.py imports forbidden modules: {violations}"
 
 
 class TestSettlementPurity:
