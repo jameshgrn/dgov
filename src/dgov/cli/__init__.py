@@ -225,8 +225,9 @@ def init_cmd(force: bool) -> None:
 @click.option(
     "--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state"
 )
+@click.option("--only", default=None, help="Run only this task and its deps")
 @click.pass_context
-def run_cmd(ctx: click.Context, plan_file: Path, restart: bool) -> None:
+def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, only: str | None) -> None:
     """Run a plan file (TOML).
 
     Example: dgov run plan.toml
@@ -235,7 +236,7 @@ def run_cmd(ctx: click.Context, plan_file: Path, restart: bool) -> None:
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
         raise SystemExit(1)
     project_root = str(Path.cwd())
-    _cmd_run_plan(str(plan_file), project_root, restart=restart)
+    _cmd_run_plan(str(plan_file), project_root, restart=restart, only=only)
 
 
 @cli.command(name="compile")
@@ -804,13 +805,40 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
     return _on_event
 
 
-def _cmd_run_plan(plan_file: str, project_root: str, restart: bool = False) -> None:
+def _cmd_run_plan(
+    plan_file: str, project_root: str, restart: bool = False, only: str | None = None
+) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
 
     plan = parse_plan_file(plan_file)
     pc = load_project_config(project_root)
     dag = compile_plan(plan, project_agent=pc.default_agent)
+
+    # Filter to only specified task and its transitive dependencies
+    if only is not None:
+        if only not in dag.tasks:
+            click.echo(f"Error: Task '{only}' not found in plan", err=True)
+            raise click.exceptions.Exit(code=1)
+
+        # BFS to collect all transitive dependencies
+        to_keep: set[str] = set()
+        queue = [only]
+        while queue:
+            slug = queue.pop()
+            if slug in to_keep:
+                continue
+            if slug not in dag.tasks:
+                continue
+            to_keep.add(slug)
+            # Add dependencies of this task
+            task = dag.tasks[slug]
+            queue.extend(task.depends_on)
+
+        # Filter dag.tasks to only include kept slugs
+        dag = dag.model_copy(
+            update={"tasks": {k: v for k, v in dag.tasks.items() if k in to_keep}}
+        )
 
     sentrux_available = _sentrux_available()
     baseline_quality = _sentrux_save_baseline(project_root) if sentrux_available else None
