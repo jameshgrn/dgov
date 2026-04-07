@@ -2,6 +2,17 @@
 
 Deterministic kernel for multi-agent orchestration via git worktrees.
 
+## Standards
+
+Canonical project standards are maintained as Standard Operating Procedures (SOPs)
+in `.dgov/sops/`. These are dynamically prepended to worker prompts at compile time:
+
+- `architecture.md` — Pure kernel, event-sourcing, isolation
+- `python-style.md` — Toolchain (`uv`, `ruff`, `ty`), zero-warnings
+- `testing.md` — Execution (`pytest -q`), methodology (behavior over implementation)
+- `git-commits.md` — Feature branches, atomic commits, imperative mood
+- `error-handling.md` — Fail-fast, no silent failures, replace don't deprecate
+
 ## Architecture (src/dgov/)
 
 | Module | Role |
@@ -20,23 +31,7 @@ Deterministic kernel for multi-agent orchestration via git worktrees.
 | `persistence/` | SQLite (tasks + events + slug_history), WAL mode |
 | `cli/` | Click CLI: `dgov [status \| run \| validate \| init \| watch \| sentrux]` |
 
-## Principles
-
-- **Kernel is pure** — no persistence imports, no I/O
-- **Workers are subprocess-isolated** — own worktree, own branch
-- **Settlement = commit-or-kill** — ruff + lint + sentrux gates
-- **Event-sourced** — all state transitions logged to SQLite
-
-## Dev workflow
-
-```bash
-uv pip install -e .          # editable install
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
-uv run pytest tests/ -q      # full suite (~250 tests, <10s)
-```
-
-## Testing
+## Testing Map
 
 - `tests/test_kernel.py` — kernel state machine
 - `tests/test_runner.py` — DAG runner async logic
@@ -48,5 +43,3 @@ uv run pytest tests/ -q      # full suite (~250 tests, <10s)
 - `tests/test_tasks.py` — persistence CRUD
 - `tests/test_types.py` — type/enum validation
 - `tests/test_cli.py` — CLI commands (status, validate, init, watch)
-
-Markers: `unit`, `integration`. Use `-m unit` for fast feedback.

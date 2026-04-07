@@ -1,0 +1,41 @@
+# `dgov compile <plan-root>` — walks tree, validates, bundles SOPs, writes compiled plan.
+
+[tasks.compile-cmd]
+summary = "Add `dgov compile` CLI — wires walker→merger→resolver→validator→sop-bundler."
+prompt = """
+Add `compile` command to src/dgov/cli/__init__.py:
+
+Usage: dgov compile <plan-root-dir> [--dry-run] [--recompile-sops] [--json]
+
+Pipeline:
+1. walk_tree(plan_root) → PlanTree
+2. merge(PlanTree) → FlatPlan
+3. resolve_refs(FlatPlan) → ResolvedPlan
+4. validate(ResolvedPlan) → ValidationReport  [hard-fail on cycles or unreachable]
+5. bundle(ResolvedPlan, .dgov/sops/, bundler) → CompiledPlan
+   - bundler = IdentityBundler if --dry-run else LLMSopBundler
+   - --recompile-sops forces governor re-call even if sop_set_hash matches
+
+Output:
+- Write `_compiled.toml` to <plan-root>/_compiled.toml
+- Format: existing flat PlanSpec shape (`[plan] + [tasks.<quoted-id>]`)
+- Unit prompts already have SOP bodies prepended
+- `[plan]` includes `source_mtime_max` + `sop_set_hash`
+- Each unit includes `sop_mapping` (list of SOP names, cached)
+
+Dispatch (handled outside this command):
+    dgov run .dgov/plans/<name>/_compiled.toml
+
+Exit codes:
+- 0: clean compile
+- 1: structural error (cycle, unreachable, bad ref, slug dupes)
+
+Print summary: N units, M edges, SOP mapping counts. --json for machine output.
+"""
+commit_message = "Add `dgov compile` CLI command"
+depends_on = [
+  "compile/pipeline.validator",
+  "compile/pipeline.sop-bundler",
+]
+files.edit = ["src/dgov/cli/__init__.py"]
+files.create = ["tests/test_cli_compile.py"]

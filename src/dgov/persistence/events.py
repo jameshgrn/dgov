@@ -48,10 +48,11 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
 def read_events(
     session_root: str,
     slug: str | None = None,
+    plan_name: str | None = None,
     limit: int | None = None,
     after_id: int = 0,
 ) -> list[dict]:
-    """Read events from the SQLite events table, optionally filtered by slug.
+    """Read events from the SQLite events table, optionally filtered by slug or plan_name.
 
     Use after_id to poll for new events since a known position.
     """
@@ -63,6 +64,9 @@ def read_events(
     if slug is not None:
         conditions.append("pane = ?")
         params.append(slug)
+    if plan_name is not None:
+        conditions.append("plan_name = ?")
+        params.append(plan_name)
     if after_id > 0:
         conditions.append("id > ?")
         params.append(after_id)
@@ -106,11 +110,11 @@ def latest_event_id(session_root: str) -> int:
     return int(row[0]) if row is not None else 0
 
 
-def reset_state(session_root: str) -> None:
-    """Clear events and tasks tables. Called at the start of each run."""
+def reset_plan_state(session_root: str, plan_name: str) -> None:
+    """Clear events and tasks for a specific plan. Called at the start of a fresh run."""
     conn = _get_db(session_root)
-    conn.execute("DELETE FROM events")
-    conn.execute("DELETE FROM tasks")
+    conn.execute("DELETE FROM events WHERE plan_name = ?", (plan_name,))
+    conn.execute("DELETE FROM tasks WHERE plan_name = ?", (plan_name,))
     conn.commit()
 
 
@@ -118,5 +122,5 @@ __all__ = [
     "emit_event",
     "latest_event_id",
     "read_events",
-    "reset_state",
+    "reset_plan_state",
 ]

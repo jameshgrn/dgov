@@ -13,7 +13,7 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, latest_event_id, read_events, reset_state
+from dgov.persistence import all_tasks, latest_event_id, read_events
 from dgov.plan import compile_plan, parse_plan_file, validate_plan
 from dgov.runner import EventDagRunner
 
@@ -83,6 +83,8 @@ def cli(
       dgov validate plan.toml Validate a plan without running
       dgov init               Bootstrap .dgov/project.toml
       dgov watch              Stream events
+      dgov compile <dir>      Compile a plan tree to _compiled.toml
+      dgov plan status <dir>  Show pending vs deployed units
       dgov sentrux check      Run Sentrux architectural check
 
     Tasks run in isolated git worktrees. No tmux required.
@@ -220,8 +222,9 @@ def init_cmd(force: bool) -> None:
 
 @cli.command(name="run")
 @click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
+@click.option("--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state")
 @click.pass_context
-def run_cmd(ctx: click.Context, plan_file: Path) -> None:
+def run_cmd(ctx: click.Context, plan_file: Path, restart: bool) -> None:
     """Run a plan file (TOML).
 
     Example: dgov run plan.toml
@@ -230,7 +233,255 @@ def run_cmd(ctx: click.Context, plan_file: Path) -> None:
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
         raise SystemExit(1)
     project_root = str(Path.cwd())
-    _cmd_run_plan(str(plan_file), project_root)
+    _cmd_run_plan(str(plan_file), project_root, restart=restart)
+
+
+@cli.command(name="compile")
+@click.argument("plan_root", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--dry-run", is_flag=True, help="Use identity SOP bundler (no LLM call)")
+@click.option(
+    "--recompile-sops", is_flag=True, help="Force SOP re-assignment even if hash matches"
+)
+def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool) -> None:
+    """Compile a plan tree into _compiled.toml.
+
+    Walks the plan tree, merges units, resolves refs, validates the DAG,
+    bundles SOPs, and writes a dispatch-ready _compiled.toml.
+
+    \b
+    Example: dgov compile .dgov/plans/my-plan/
+    """
+    _cmd_compile(plan_root, dry_run=dry_run, recompile_sops=recompile_sops)
+
+
+def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool) -> None:
+    """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
+    from dgov.plan_tree import (
+        merge_tree,
+        resolve_refs,
+        serialize_compiled_toml,
+        validate,
+        walk_tree,
+    )
+    from dgov.sop_bundler import IdentityBundler, LLMSopBundler, bundle
+
+    # 1. Walk
+    try:
+        tree = walk_tree(plan_root)
+    except (FileNotFoundError, ValueError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    # 2. Merge
+    try:
+        flat = merge_tree(tree)
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    if not flat.units:
+        click.echo("Error: plan tree has no units", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    # 3. Resolve
+    try:
+        resolved = resolve_refs(flat)
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    # 4. Validate
+    report = validate(resolved)
+    if report.cycles or report.unreachable:
+        if report.cycles:
+            for cycle in report.cycles:
+                click.echo(f"  ERROR: cycle: {' → '.join(cycle)}", err=True)
+        if report.unreachable:
+            click.echo(f"  ERROR: unreachable: {', '.join(report.unreachable)}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    # 5. Bundle SOPs
+    sops_dir = Path.cwd() / ".dgov" / "sops"
+    bundler = IdentityBundler() if dry_run else LLMSopBundler()
+
+    # Caching: read existing _compiled.toml if present to reuse mapping if hash matches
+    cached_mapping = None
+    cached_hash = None
+    compiled_path = plan_root / "_compiled.toml"
+    if compiled_path.exists() and not recompile_sops:
+        try:
+            from dgov.dag_parser import parse_dag_file
+
+            old = parse_dag_file(str(compiled_path))
+            cached_hash = old.sop_set_hash
+            cached_mapping = {uid: task.sop_mapping for uid, task in old.tasks.items()}
+        except Exception:
+            pass  # Silently skip cache on parse failure
+
+    try:
+        result = bundle(
+            resolved,
+            sops_dir,
+            bundler,
+            cached_mapping=cached_mapping,
+            cached_hash=cached_hash,
+        )
+    except Exception as e:
+        click.echo(f"  ERROR: {str(e)}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    # 6. Serialize + write
+    toml_str = serialize_compiled_toml(result, resolved.source_mtime_max)
+    out_path = plan_root / "_compiled.toml"
+    out_path.write_text(toml_str)
+
+    # 7. Summary
+    edge_count = sum(len(u.depends_on) for u in resolved.units.values())
+    sop_count = sum(1 for m in result.sop_mapping.values() if m)
+
+    if want_json():
+        click.echo(
+            json.dumps(
+                {
+                    "status": "compiled",
+                    "output": str(out_path),
+                    "units": len(resolved.units),
+                    "edges": edge_count,
+                    "sops_assigned": sop_count,
+                    "sop_set_hash": result.sop_set_hash,
+                    "dry_run": dry_run,
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo(f"Compiled {len(resolved.units)} units, {edge_count} edges → {out_path}")
+        if sop_count:
+            click.echo(f"  SOPs assigned to {sop_count} unit(s)")
+        if dry_run:
+            click.echo("  (dry-run: identity bundler, no LLM call)")
+
+
+@cli.group(name="plan")
+def plan_cmd() -> None:
+    """Plan tree operations."""
+    pass
+
+
+@plan_cmd.command(name="status")
+@click.argument("plan_root", type=click.Path(path_type=Path, exists=True, file_okay=False))
+def plan_status_cmd(plan_root: Path) -> None:
+    """Show deployment status of a compiled plan.
+
+    Reads _compiled.toml and deployed.jsonl to show pending vs deployed
+    units, with a staleness warning when source TOMLs have changed.
+
+    \b
+    Example: dgov plan status .dgov/plans/my-plan/
+    """
+    _cmd_plan_status(plan_root)
+
+
+def _cmd_plan_status(plan_root: Path) -> None:
+    """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
+    import tomllib
+
+    from dgov.deploy_log import read as read_deploy_log
+    from dgov.plan_tree import walk_tree
+
+    compiled_path = plan_root / "_compiled.toml"
+
+    # Not compiled yet
+    if not compiled_path.exists():
+        msg = f"Not compiled; run 'dgov compile {plan_root}'"
+        if want_json():
+            click.echo(json.dumps({"status": "not_compiled", "message": msg}, indent=2))
+        else:
+            click.echo(msg)
+        raise click.exceptions.Exit(code=1) from None
+
+    # Parse compiled plan
+    raw = tomllib.loads(compiled_path.read_text())
+    plan_section = raw.get("plan", {})
+    plan_name = plan_section.get("name", "unknown")
+    tasks_raw = raw.get("tasks", {})
+
+    # Staleness: any source TOML newer than _compiled.toml itself
+    stale = False
+    compiled_mtime = compiled_path.stat().st_mtime
+    try:
+        tree = walk_tree(plan_root)
+        current_mtime = max(
+            (p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
+            default=0.0,
+        )
+        stale = current_mtime > compiled_mtime
+    except (FileNotFoundError, ValueError):
+        pass  # Can't check staleness if tree is broken — that's fine
+
+    # Deploy log
+    project_root = str(Path.cwd())
+    deployed = read_deploy_log(project_root, plan_name)
+    deployed_units = {r.unit: r for r in deployed}
+
+    # Build per-unit status
+    unit_statuses: list[dict[str, str]] = []
+    for uid in sorted(tasks_raw):
+        if uid in deployed_units:
+            r = deployed_units[uid]
+            unit_statuses.append({"unit": uid, "status": "deployed", "sha": r.sha, "ts": r.ts})
+        else:
+            task = tasks_raw[uid]
+            deps = task.get("depends_on", [])
+            blocked_by = [d for d in deps if d not in deployed_units]
+            unit_statuses.append(
+                {
+                    "unit": uid,
+                    "status": "pending",
+                    "blocked_by": ", ".join(blocked_by) if blocked_by else "",
+                }
+            )
+
+    deployed_count = sum(1 for u in unit_statuses if u["status"] == "deployed")
+    pending_count = len(unit_statuses) - deployed_count
+
+    if want_json():
+        click.echo(
+            json.dumps(
+                {
+                    "plan": plan_name,
+                    "units": len(unit_statuses),
+                    "deployed": deployed_count,
+                    "pending": pending_count,
+                    "stale": stale,
+                    "unit_statuses": unit_statuses,
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo(f"Plan: {plan_name}")
+        total = len(unit_statuses)
+        click.echo(f"Units: {total} total | {deployed_count} deployed | {pending_count} pending")
+        if stale:
+            click.echo(
+                click.style(
+                    f"  WARNING: compile stale; rerun 'dgov compile {plan_root}'",
+                    fg="yellow",
+                )
+            )
+        click.echo("")
+        for u in unit_statuses:
+            if u["status"] == "deployed":
+                line = f"  {click.style('✓', fg='green')} {u['unit']}"
+                line += f"  (deployed {u['ts']}, sha {u['sha'][:7]})"
+            else:
+                line = f"  ○ {u['unit']}"
+                if u.get("blocked_by"):
+                    line += f"  (pending, blocked by: {u['blocked_by']})"
+                else:
+                    line += "  (pending)"
+            click.echo(line)
 
 
 def _cmd_status(project_root: str) -> None:
@@ -486,7 +737,7 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
     return _on_event
 
 
-def _cmd_run_plan(plan_file: str, project_root: str) -> None:
+def _cmd_run_plan(plan_file: str, project_root: str, restart: bool = False) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
 
@@ -494,13 +745,12 @@ def _cmd_run_plan(plan_file: str, project_root: str) -> None:
     pc = load_project_config(project_root)
     dag = compile_plan(plan, project_agent=pc.default_agent)
 
-    # Clean slate — no stale events/tasks from prior runs
-    reset_state(project_root)
-
     sentrux_available = _sentrux_available()
     baseline_quality = _sentrux_save_baseline(project_root) if sentrux_available else None
 
-    runner = EventDagRunner(dag, session_root=project_root, on_event=_make_worker_event_callback())
+    runner = EventDagRunner(
+        dag, session_root=project_root, on_event=_make_worker_event_callback(), restart=restart
+    )
 
     if want_json():
         click.echo(

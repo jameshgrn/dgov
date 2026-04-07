@@ -13,7 +13,7 @@ from dgov.persistence.events import (
     emit_event,
     latest_event_id,
     read_events,
-    reset_state,
+    reset_plan_state,
 )
 from dgov.persistence.schema import (
     TaskState,
@@ -52,6 +52,6 @@ __all__ = [
     "latest_event_id",
     "read_events",
     "remove_task",
-    "reset_state",
+    "reset_plan_state",
     "state_path",
 ]

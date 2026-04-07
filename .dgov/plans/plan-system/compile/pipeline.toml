@@ -1,0 +1,133 @@
+# Compile pipeline: walker → merger → resolver → validator → sop-bundler.
+# All five stages edit the same module (src/dgov/plan_tree.py + sop_bundler.py),
+# so they live in one file. Depends_on refs are bare (same-file scope).
+
+[tasks.walker]
+summary = "Walk a flat depth-1 plan tree: read _root.toml, enumerate sections, collect child TOMLs."
+prompt = """
+Implement `src/dgov/plan_tree.py` with a function that walks a plan tree:
+
+1. Read `_root.toml` at the given plan-root path
+2. Parse `[plan]` metadata: name, summary, sections
+3. For each section in `sections`, list `*.toml` files at depth-1 only (no recursion)
+4. Skip hidden files and `_`-prefixed files (e.g. `_root.toml`, `_compiled.toml`)
+5. Return a `PlanTree` dataclass with: root_meta, section_files (dict[section, list[Path]])
+
+Rules:
+- Declared section whose directory is missing → raise error
+- Directory present but not declared in sections → silently ignored
+- Subdirectories under a section → ignored (depth-1 only, out of scope for v0)
+- Do NOT parse child TOMLs yet (merger's job)
+- Use pathlib, no os.walk
+"""
+commit_message = "Add flat plan tree walker"
+files.create = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.merger]
+summary = "Merge all child TOMLs into one flat unit dict with path-qualified IDs."
+prompt = """
+Extend `src/dgov/plan_tree.py` with a merger function:
+
+1. Take PlanTree output from walker
+2. For each child TOML file, parse its `[tasks.*]` tables
+3. Validate bare slugs match `^[A-Za-z0-9_-]+$` (no `.`, no `/`) — reject otherwise
+4. Assign a fully-qualified ID: `<section>/<stem>.<bare-slug>`
+   e.g. tasks.merger in compile/pipeline.toml → `compile/pipeline.merger`
+5. Track newest mtime across all source TOMLs for staleness detection later
+6. Return a `FlatPlan` with: units (dict[fq_id, PlanUnit]), source_map (fq_id → file path), source_mtime_max
+
+Cross-file slug collisions are fine — path qualification guarantees uniqueness.
+Within-file duplicates are impossible: tomllib rejects duplicate tables at
+parse time (TOML syntax error), so no explicit check is needed here.
+
+Reuse PlanUnit + PlanUnitFiles from plan.py — the compile output feeds
+directly into the existing DagDefinition pipeline.
+
+Do NOT resolve depends_on refs yet — that's the resolver's job.
+"""
+commit_message = "Add plan tree merger with path-qualified IDs"
+depends_on = ["walker"]
+files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.resolver]
+summary = "Resolve depends_on refs in a FlatPlan to fully-qualified IDs."
+prompt = """
+Extend `src/dgov/plan_tree.py` with a depends_on resolver:
+
+For each unit's depends_on list:
+- If ref contains `/` → path-qualified (`section/file.slug`), resolve to matching fq_id directly
+- If ref is bare slug (no `/`) → assume same file; prepend the unit's own file scope
+- Replace original depends_on with resolved fq_id list
+
+Errors (fail compile):
+- Self-reference
+- Unknown bare ref: suggest closest match by Levenshtein across SAME-FILE slugs.
+  If no same-file match but the bare slug uniquely matches a slug in another
+  file, suggest: `did you mean "<section>/<file>.<slug>"?`
+- Unknown path-qualified ref: suggest closest match by Levenshtein across all fq_ids
+
+Forward refs within a file: allowed (scope is file, order doesn't matter yet).
+
+Return ResolvedPlan (same as FlatPlan but with resolved deps).
+"""
+commit_message = "Add depends_on resolver for path-qualified refs"
+depends_on = ["merger"]
+files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.validator]
+summary = "Validate the resolved plan DAG: cycles + unreachable units."
+prompt = """
+Extend `src/dgov/plan_tree.py` with DAG validation:
+
+1. Cycle detection via DFS — report all cycles found, not just first
+2. Unreachable unit detection:
+   - Root unit = unit with empty `depends_on`
+   - Unreachable = unit with no path from any root
+   - Report all unreachable units
+3. Return ValidationReport: {cycles, unreachable}
+
+Scope: structural DAG checks ONLY. File-claim conflicts are delegated to
+existing `src/dgov/plan.py::validate_plan`, which runs post-compile against
+the `_compiled.toml` output. No duplication here.
+
+Return the full report even if violations exist — caller decides what's fatal
+(CLI treats any violation as hard-fail).
+"""
+commit_message = "Add DAG validator: cycles + unreachable"
+depends_on = ["resolver"]
+files.edit = ["src/dgov/plan_tree.py", "tests/test_plan_tree.py"]
+
+[tasks.sop-bundler]
+summary = "Bundle markdown SOPs into per-unit prompts at compile time."
+prompt = """
+Create `src/dgov/sop_bundler.py` with:
+
+class SopBundler(Protocol):
+    def pick(self, units: dict[id, UnitSpec], sops: list[Sop]) -> dict[id, list[str]]: ...
+
+class LLMSopBundler:  # production, no fallback
+class IdentityBundler:  # test stub, returns {uid: [] for uid in units}
+
+def bundle(plan: ResolvedPlan, sops_dir: Path, bundler: SopBundler) -> CompiledPlan:
+    1. Load all .dgov/sops/*.md files: parse front-matter name, title, body (prose)
+    2. If sops list empty → return plan with empty bundling (no-op)
+    3. Compute sop_set_hash = sha256 of sorted [(filename, title), ...]
+    4. If ResolvedPlan already has matching sop_set_hash + sop_mapping → reuse cached mapping
+    5. Else → call bundler.pick(units, sops) → mapping {unit_id: [sop_name, ...]}
+    6. For each unit, rewrite prompt = concat(selected SOP bodies) + "\\n\\n" + unit.prompt
+    7. Return CompiledPlan with sop_mapping + sop_set_hash attached to each unit + plan
+
+LLMSopBundler: ONE governor call sees (all unit summaries, all SOP titles+summaries),
+emits mapping. No fallback — if LLM unavailable, raise.
+
+IdentityBundler: returns empty mapping for each unit. Used by tests and by
+`dgov compile --dry-run`.
+
+Notes:
+- SOPs are markdown, NOT runnable
+- Python in SOP markdown is illustrative, not executed
+- Mapping cached so body edits don't force governor re-call (title edits do)
+"""
+commit_message = "Add SOP bundler with LLM + Identity impls"
+depends_on = ["validator"]
+files.create = ["src/dgov/sop_bundler.py", "tests/test_sop_bundler.py"]

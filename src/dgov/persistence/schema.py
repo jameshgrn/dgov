@@ -20,13 +20,21 @@ from dgov.types import TaskState
 
 STATE_DIR = ".dgov"
 _STATE_FILE = "state.db"
-_SCHEMA_VERSION = 6  # Added task_slug typed column to events
+_SCHEMA_VERSION = 7  # Added plan_name to events
 
 TASK_STATES = frozenset(TaskState)
 
 # Transition table: enforced in update_task_state
 # Review is mandatory before merge — no direct done->merged or active->merged.
 VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
+    TaskState.PENDING: frozenset(
+        {
+            TaskState.ACTIVE,
+            TaskState.FAILED,
+            TaskState.SKIPPED,
+            TaskState.CLOSED,
+        }
+    ),
     TaskState.ACTIVE: frozenset(
         {
             TaskState.DONE,
@@ -38,18 +46,26 @@ VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
     ),
     TaskState.DONE: frozenset(
         {
+            TaskState.REVIEWING,
+            TaskState.CLOSED,
+        }
+    ),
+    TaskState.REVIEWING: frozenset(
+        {
             TaskState.REVIEWED_PASS,
             TaskState.REVIEWED_FAIL,
             TaskState.CLOSED,
         }
     ),
-    TaskState.FAILED: frozenset({TaskState.CLOSED}),
-    TaskState.REVIEWED_PASS: frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.CLOSED}),
-    TaskState.REVIEWED_FAIL: frozenset({TaskState.CLOSED}),
+    TaskState.REVIEWED_FAIL: frozenset({TaskState.FAILED, TaskState.CLOSED}),
+    TaskState.REVIEWED_PASS: frozenset({TaskState.MERGING, TaskState.FAILED, TaskState.CLOSED}),
+    TaskState.MERGING: frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.CLOSED}),
+    TaskState.FAILED: frozenset({TaskState.PENDING, TaskState.CLOSED}),
     TaskState.MERGED: frozenset({TaskState.CLOSED}),
     TaskState.TIMED_OUT: frozenset({TaskState.CLOSED}),
     TaskState.CLOSED: frozenset(),
     TaskState.ABANDONED: frozenset({TaskState.CLOSED}),
+    TaskState.SKIPPED: frozenset({TaskState.CLOSED}),
 }
 
 
@@ -82,6 +98,7 @@ class WorkerTask:
     base_sha: str | None = None
     role: str = "worker"
     state: TaskState = TaskState.ACTIVE
+    plan_name: str | None = None
     file_claims: tuple[str, ...] = ()
     commit_message: str | None = None
 
@@ -116,6 +133,7 @@ _TASK_COLUMNS = frozenset(
 
 _TASK_TYPED_COLS = frozenset(
     {
+        "plan_name",
         "file_claims",
         "commit_message",
     }
@@ -142,6 +160,7 @@ VALID_EVENTS = frozenset(
         "shutdown_requested",
         # DAG lifecycle
         "dag_task_dispatched",
+        "dag_task_governor_resumed",
         "dag_completed",
         "dag_failed",
         # Review
@@ -160,6 +179,8 @@ VALID_EVENTS = frozenset(
 _EVENT_TYPED_COLS = frozenset(
     {
         "task_slug",
+        "plan_name",
+        "action",
         "commit_count",
         "error",
         "reason",

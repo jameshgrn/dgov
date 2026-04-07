@@ -58,8 +58,10 @@ class EventDagRunner:
         dag: DagDefinition,
         session_root: str = ".",
         on_event: Callable[[str, str, object], None] | None = None,
+        restart: bool = False,
     ) -> None:
         from dgov.config import load_project_config
+        from dgov.persistence import read_events, reset_plan_state
 
         self.dag = dag
         self.session_root = session_root
@@ -81,6 +83,50 @@ class EventDagRunner:
         self._task_timeouts: dict[str, float] = {}
         self._shutdown_event = asyncio.Event()
 
+        if restart:
+            reset_plan_state(session_root, dag.name)
+        else:
+            self._rehydrate()
+
+    def _rehydrate(self) -> None:
+        """Replay past events for this plan to restore kernel state."""
+        from dgov.persistence import read_events
+
+        events = read_events(self.session_root, plan_name=self.dag.name)
+        for ev in events:
+            ename = ev["event"]
+            task_slug = ev.get("task_slug")
+            pane = ev["pane"]
+
+            if not task_slug or task_slug not in self.kernel.task_states:
+                continue
+
+            if ename == "dag_task_dispatched":
+                self.kernel.handle(TaskDispatched(task_slug, pane))
+            elif ename == "task_done":
+                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
+            elif ename == "task_failed":
+                # Handle both terminal failures and intermediate timeouts
+                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.FAILED))
+            elif ename == "review_pass":
+                self.kernel.handle(TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1))
+            elif ename == "review_fail":
+                self.kernel.handle(TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0))
+            elif ename == "merge_completed":
+                self.kernel.handle(TaskMergeDone(task_slug, error=None))
+            elif ename == "task_merge_failed":
+                self.kernel.handle(TaskMergeDone(task_slug, error=ev.get("error", "unknown error")))
+            elif ename == "dag_task_governor_resumed":
+                # Restore attempt counts and retry/skip/fail state
+                action_str = ev.get("action")
+                if action_str:
+                    try:
+                        action = GovernorAction(action_str)
+                        self.kernel.handle(TaskGovernorResumed(task_slug, action))
+                    except ValueError:
+                        pass
+
+
     def _setup_signal_handlers(self) -> None:
         """Install signal handlers for graceful shutdown (Pillar #10)."""
         loop = asyncio.get_running_loop()
@@ -95,6 +141,7 @@ class EventDagRunner:
             self.session_root,
             "shutdown_requested",
             "runner",
+            plan_name=self.dag.name,
             reason="signal",
         )
 
@@ -209,6 +256,7 @@ class EventDagRunner:
             self.session_root,
             "task_done" if status == TaskState.DONE else "task_failed",
             exit_event.pane_slug,
+            plan_name=self.dag.name,
             task_slug=exit_event.task_slug,
             error=exit_event.last_error if status == TaskState.FAILED else None,
         )
@@ -263,6 +311,7 @@ class EventDagRunner:
             self.session_root,
             "review_pass" if review_result.passed else "review_fail",
             action.pane_slug,
+            plan_name=self.dag.name,
             task_slug=action.task_slug,
             verdict=review_result.verdict,
             error=review_result.error,
@@ -281,6 +330,8 @@ class EventDagRunner:
         """Decide retry vs fail based on attempt count."""
         attempts = self.kernel.attempts.get(action.task_slug, 0)
         error_detail = self._task_errors.get(action.task_slug, "")
+        
+        gov_action = GovernorAction.FAIL
         if attempts < self.kernel.max_retries:
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
@@ -289,14 +340,24 @@ class EventDagRunner:
                 self.kernel.max_retries,
                 error_detail or action.reason,
             )
-            return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.RETRY))
-        logger.error(
-            "Task %s failed — max retries (%d) exceeded: %s",
-            action.task_slug,
-            self.kernel.max_retries,
-            error_detail or action.reason,
+            gov_action = GovernorAction.RETRY
+        else:
+            logger.error(
+                "Task %s failed — max retries (%d) exceeded: %s",
+                action.task_slug,
+                self.kernel.max_retries,
+                error_detail or action.reason,
+            )
+
+        emit_event(
+            self.session_root,
+            "dag_task_governor_resumed",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            action=gov_action.value,
         )
-        return self.kernel.handle(TaskGovernorResumed(action.task_slug, GovernorAction.FAIL))
+        return self.kernel.handle(TaskGovernorResumed(action.task_slug, gov_action))
 
     async def _run_with_timeout(
         self,
@@ -327,6 +388,7 @@ class EventDagRunner:
                 self.session_root,
                 "task_failed",
                 pane_slug,
+                plan_name=self.dag.name,
                 task_slug=task_slug,
                 error=f"Wall-clock timeout after {timeout_s}s",
             )
@@ -363,6 +425,7 @@ class EventDagRunner:
                 worktree_path=str(wt.path),
                 branch_name=wt.branch,
                 state=TaskState.ACTIVE,
+                plan_name=self.dag.name,
                 file_claims=file_claims,
             )
             add_task(self.session_root, task_record)
@@ -374,6 +437,7 @@ class EventDagRunner:
                 self.session_root,
                 "dag_task_dispatched",
                 pane_slug,
+                plan_name=self.dag.name,
                 task_slug=action.task_slug,
                 agent=task.agent,
             )
@@ -446,8 +510,15 @@ class EventDagRunner:
                 logger.warning("REJECTED %s: %s", action.task_slug, error)
             else:
                 # 3. Merge
-                await loop.run_in_executor(self._executor, merge_worktree, self.session_root, wt)
+                merge_sha = await loop.run_in_executor(
+                    self._executor, merge_worktree, self.session_root, wt
+                )
                 logger.info("COMMITTED %s", action.task_slug)
+
+                # 4. Deploy log — record shipped unit
+                from dgov import deploy_log
+
+                deploy_log.append(self.session_root, self.dag.name, action.task_slug, merge_sha)
 
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
@@ -467,6 +538,7 @@ class EventDagRunner:
             self.session_root,
             "merge_completed" if not error else "task_merge_failed",
             action.pane_slug,
+            plan_name=self.dag.name,
             task_slug=action.task_slug,
             error=error,
         )

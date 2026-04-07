@@ -95,6 +95,7 @@ _P_HEADLESS = "dgov.runner.run_headless_worker"
 # review_sandbox and get_task now imported at top level in runner
 _P_GET_TASK = "dgov.runner.get_task"
 _P_REVIEW = "dgov.runner.review_sandbox"
+_P_DEPLOY_APPEND = "dgov.deploy_log.append"
 
 
 async def _fake_worker_success(
@@ -143,7 +144,7 @@ def _io_patches(
     def _ctx():
         with (
             patch(_P_CREATE_WT, side_effect=create_wt),
-            patch(_P_MERGE_WT, side_effect=merge_wt),
+            patch(_P_MERGE_WT, side_effect=merge_wt, return_value="abc123merge"),
             patch(_P_REMOVE_WT),
             patch(_P_COMMIT_WT, return_value="deadbeef"),
             patch(_P_AUTOFIX),
@@ -153,6 +154,7 @@ def _io_patches(
             patch(_P_HEADLESS, side_effect=headless),
             patch(_P_GET_TASK, return_value={"file_claims": ["test.py"]}),
             patch(_P_REVIEW, side_effect=review),
+            patch(_P_DEPLOY_APPEND),
         ):
             yield
 
@@ -293,6 +295,34 @@ class TestTimeout:
             runner = _make_runner(dag)
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
+
+
+class TestDeployLog:
+    def test_deploy_log_called_on_merge(self):
+        """Successful merge should record to deploy log."""
+        with _io_patches() as _, patch(_P_DEPLOY_APPEND) as mock_append:
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+            mock_append.assert_called_once_with(
+                "/tmp/test-project", "test-dag", "a", "abc123merge"
+            )
+
+    def test_deploy_log_not_called_on_failure(self):
+        """Failed merge should not record to deploy log."""
+        with (
+            _io_patches(merge_wt=MagicMock(side_effect=Exception("conflict"))) as _,
+            patch(_P_DEPLOY_APPEND) as mock_append,
+        ):
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+            mock_append.assert_not_called()
+
+    def test_deploy_log_not_called_on_gate_reject(self):
+        """Validation gate rejection should not record to deploy log."""
+        with _io_patches(validate=_mock_gate_fail) as _, patch(_P_DEPLOY_APPEND) as mock_append:
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+            mock_append.assert_not_called()
 
 
 class TestCleanup:

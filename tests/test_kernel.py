@@ -24,7 +24,7 @@ from dgov.actions import (
 from dgov.kernel import (
     DagKernel,
     DagState,
-    DagTaskState,
+    TaskState,
     _topological_sort,
 )
 from dgov.types import TaskState
@@ -93,7 +93,7 @@ class TestTopoSort:
 class TestInit:
     def test_all_pending(self):
         k = _k({"a": (), "b": ("a",)})
-        assert all(st == DagTaskState.PENDING for st in k.task_states.values())
+        assert all(st == TaskState.PENDING for st in k.task_states.values())
 
     def test_idle_before_start(self):
         k = _k({"a": ()})
@@ -141,19 +141,19 @@ class TestSingleHappy:
         k.start()
 
         actions = k.handle(TaskDispatched("a", "p-a"))
-        assert k.task_states["a"] == DagTaskState.WAITING
+        assert k.task_states["a"] == TaskState.ACTIVE
         assert actions == []  # dispatched is ack-only, no action needed
 
         actions = k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
-        assert k.task_states["a"] == DagTaskState.REVIEWING
+        assert k.task_states["a"] == TaskState.REVIEWING
         assert any(isinstance(a, ReviewTask) for a in actions)
 
         actions = k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
-        assert k.task_states["a"] == DagTaskState.MERGING
+        assert k.task_states["a"] == TaskState.MERGING
         assert any(isinstance(a, MergeTask) for a in actions)
 
         actions = k.handle(TaskMergeDone("a"))
-        assert k.task_states["a"] == DagTaskState.MERGED
+        assert k.task_states["a"] == TaskState.MERGED
         assert k.done
         assert k.status == DagState.COMPLETED
 
@@ -186,7 +186,7 @@ class TestChain:
         for slug in ["a", "b", "c"]:
             _happy(k, slug, f"p-{slug}")
         assert k.status == DagState.COMPLETED
-        assert all(st == DagTaskState.MERGED for st in k.task_states.values())
+        assert all(st == TaskState.MERGED for st in k.task_states.values())
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +212,8 @@ class TestParallel:
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
-        merging = [s for s, st in k.task_states.items() if st == DagTaskState.MERGING]
-        ready = [s for s, st in k.task_states.items() if st == DagTaskState.MERGE_READY]
+        merging = [s for s, st in k.task_states.items() if st == TaskState.MERGING]
+        ready = [s for s, st in k.task_states.items() if st == TaskState.REVIEWED_PASS]
         assert len(merging) == 1
         assert len(ready) == 1
 
@@ -227,9 +227,9 @@ class TestParallel:
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
-        first = [s for s, st in k.task_states.items() if st == DagTaskState.MERGING][0]
+        first = [s for s, st in k.task_states.items() if st == TaskState.MERGING][0]
         k.handle(TaskMergeDone(first))
-        merging = [s for s, st in k.task_states.items() if st == DagTaskState.MERGING]
+        merging = [s for s, st in k.task_states.items() if st == TaskState.MERGING]
         assert len(merging) == 1
         assert merging[0] != first
 
@@ -253,7 +253,7 @@ class TestFailure:
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
-        assert k.task_states["a"] == DagTaskState.FAILED
+        assert k.task_states["a"] == TaskState.FAILED
 
     def test_merge_error(self):
         k = _k({"a": ()})
@@ -262,7 +262,7 @@ class TestFailure:
         k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskMergeDone("a", error="conflict"))
-        assert k.task_states["a"] == DagTaskState.FAILED
+        assert k.task_states["a"] == TaskState.FAILED
 
     def test_all_failed(self):
         k = _k({"a": ()})
@@ -302,11 +302,11 @@ class TestMergeScanSkipsFailures:
 
         # a fails review (first in topo order)
         k.handle(TaskReviewDone("a", passed=False, verdict="bad", commit_count=0))
-        assert k.task_states["a"] == DagTaskState.FAILED
+        assert k.task_states["a"] == TaskState.FAILED
 
         # b passes review — should be MERGE_READY and immediately start merging
         actions = k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
-        assert k.task_states["b"] == DagTaskState.MERGING
+        assert k.task_states["b"] == TaskState.MERGING
         assert any(isinstance(a, MergeTask) and a.task_slug == "b" for a in actions)
 
     def test_first_merge_error_second_proceeds(self):
@@ -320,17 +320,17 @@ class TestMergeScanSkipsFailures:
         k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         # a starts merging (first in order)
-        assert k.task_states["a"] == DagTaskState.MERGING
+        assert k.task_states["a"] == TaskState.MERGING
 
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
         # b is MERGE_READY but blocked by a's in-progress merge
-        assert k.task_states["b"] == DagTaskState.MERGE_READY
+        assert k.task_states["b"] == TaskState.REVIEWED_PASS
 
         # a merge fails
         k.handle(TaskMergeDone("a", error="conflict"))
-        assert k.task_states["a"] == DagTaskState.FAILED
+        assert k.task_states["a"] == TaskState.FAILED
         # b should now be merging
-        assert k.task_states["b"] == DagTaskState.MERGING
+        assert k.task_states["b"] == TaskState.MERGING
 
     def test_skip_also_unblocks(self):
         """Skipped task doesn't block merge scan."""
@@ -342,12 +342,12 @@ class TestMergeScanSkipsFailures:
 
         # Governor skips a
         k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
-        assert k.task_states["a"] == DagTaskState.SKIPPED
+        assert k.task_states["a"] == TaskState.SKIPPED
 
         # b completes and should merge without being blocked
         k.handle(TaskWaitDone("b", "p-b", TaskState.DONE))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
-        assert k.task_states["b"] == DagTaskState.MERGING
+        assert k.task_states["b"] == TaskState.MERGING
 
     def test_in_progress_task_still_blocks(self):
         """Non-terminal task in topo order blocks merge of later task."""
@@ -361,7 +361,7 @@ class TestMergeScanSkipsFailures:
         actions = k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
         # b is MERGE_READY but a is WAITING (non-terminal), so b can't merge yet
-        assert k.task_states["b"] == DagTaskState.MERGE_READY
+        assert k.task_states["b"] == TaskState.REVIEWED_PASS
         assert not any(isinstance(a, MergeTask) for a in actions)
 
 
@@ -377,7 +377,7 @@ class TestGovernorResume:
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
-        assert k.task_states["a"] == DagTaskState.PENDING
+        assert k.task_states["a"] == TaskState.PENDING
         assert k.attempts["a"] == 1
         assert any(isinstance(a, DispatchTask) and a.task_slug == "a" for a in actions)
 
@@ -387,7 +387,7 @@ class TestGovernorResume:
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         k.handle(TaskGovernorResumed("a", GovernorAction.FAIL))
-        assert k.task_states["a"] == DagTaskState.FAILED
+        assert k.task_states["a"] == TaskState.FAILED
         assert k.done
 
     def test_skip_terminal(self):
@@ -396,7 +396,7 @@ class TestGovernorResume:
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         k.handle(TaskGovernorResumed("a", GovernorAction.SKIP))
-        assert k.task_states["a"] == DagTaskState.SKIPPED
+        assert k.task_states["a"] == TaskState.SKIPPED
         assert k.done
 
     def test_skip_in_dag_done(self):
@@ -423,10 +423,10 @@ class TestGovernorResume:
         k = _k({"a": ()})
         k.start()
         _happy(k, "a")
-        assert k.task_states["a"] == DagTaskState.MERGED
+        assert k.task_states["a"] == TaskState.MERGED
         k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
         # State unchanged — guard prevented revert
-        assert k.task_states["a"] == DagTaskState.MERGED
+        assert k.task_states["a"] == TaskState.MERGED
 
     def test_governor_resumed_ignored_for_reviewing(self):
         """Cannot interrupt a task that's being reviewed."""
@@ -434,10 +434,10 @@ class TestGovernorResume:
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         k.handle(TaskWaitDone("a", "p-a", TaskState.DONE))
-        assert k.task_states["a"] == DagTaskState.REVIEWING
+        assert k.task_states["a"] == TaskState.REVIEWING
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
         assert actions == []
-        assert k.task_states["a"] == DagTaskState.REVIEWING
+        assert k.task_states["a"] == TaskState.REVIEWING
 
     def test_skip_unblocks_dependent(self):
         """Skipping a task does NOT satisfy its dependents (only MERGED does)."""
@@ -578,5 +578,5 @@ class TestSerialization:
         k.start()
         k.handle(TaskDispatched("a", "p-a"))
         d = k.to_dict()
-        assert d["task_states"]["a"] == "waiting"
+        assert d["task_states"]["a"] == "active"
         assert d["pane_slugs"]["a"] == "p-a"

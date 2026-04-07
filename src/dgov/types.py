@@ -11,15 +11,19 @@ from typing import NamedTuple
 class TaskState(StrEnum):
     """Task lifecycle states for the governor event loop."""
 
+    PENDING = "pending"
     ACTIVE = "active"
     DONE = "done"
     FAILED = "failed"
+    REVIEWING = "reviewing"
     REVIEWED_PASS = "reviewed_pass"
     REVIEWED_FAIL = "reviewed_fail"
+    MERGING = "merging"
     MERGED = "merged"
     TIMED_OUT = "timed_out"
     CLOSED = "closed"
     ABANDONED = "abandoned"
+    SKIPPED = "skipped"
 
 
 # -- Runner events --
