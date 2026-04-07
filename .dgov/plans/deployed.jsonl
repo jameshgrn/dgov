@@ -3,3 +3,6 @@
 {"plan":"close-quality-gap","unit":"sops/minimal-edits.add-edit-rule","sha":"c81adbc1b840fbb58e724f0857aa4f1322894521","ts":"2026-04-07T01:59:24Z"}
 {"plan":"close-quality-gap","unit":"tests/add-coverage.actions","sha":"3d06a98db60d28e5a6519e066d03d810c7874643","ts":"2026-04-07T01:59:39Z"}
 {"plan":"close-quality-gap","unit":"tests/add-coverage.persistence-events","sha":"4dfe173d34d86b452e451360b91db975b3bef138","ts":"2026-04-07T02:00:30Z"}
+{"plan":"cli-improvements","unit":"cli/features.init-plan","sha":"848ab5a5909dd821c521b683506cd8cbdc8394d0","ts":"2026-04-07T02:25:05Z"}
+{"plan":"cli-improvements","unit":"cli/features.run-only","sha":"304cd4cdf34644155936c40e8cf2f9484a5391ed","ts":"2026-04-07T02:26:36Z"}
+{"plan":"cli-improvements","unit":"test/cli-tests.test-init-plan","sha":"008d52f641f425c89bfde4593505ef83c6e3ff53","ts":"2026-04-07T02:26:38Z"}

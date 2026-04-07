@@ -1,0 +1,58 @@
+# Tests for the new CLI commands.
+
+[tasks.test-init-plan]
+summary = "Add tests for dgov init-plan command."
+prompt = """
+Add tests for `dgov init-plan` to `tests/test_cli.py`.
+
+Use file_symbols to see the existing test structure, then add a new
+test class at the end of the file using edit_file.
+
+Tests (use click.testing.CliRunner):
+1. `test_init_plan_creates_structure` — run `init-plan myplan`, verify:
+   - `.dgov/plans/myplan/_root.toml` exists
+   - `.dgov/plans/myplan/tasks/` directory exists
+   - `_root.toml` contains `name = "myplan"` and `sections = ["tasks"]`
+2. `test_init_plan_custom_sections` — run with `--sections core,extras`:
+   - Both `core/` and `extras/` dirs created
+   - `_root.toml` lists both sections
+3. `test_init_plan_already_exists` — create dir first, run command:
+   - Exit code 1, error message about existing directory
+4. `test_init_plan_force_overwrites` — create dir first, run with `--force`:
+   - Succeeds, `_root.toml` is (re)written
+
+All tests should use `tmp_path` and `monkeypatch.chdir(tmp_path)` to
+isolate from the real filesystem. Create `.dgov/plans/` parent dir in
+setup since init-plan creates within it.
+
+Use edit_file to append the test class — do NOT rewrite test_cli.py.
+"""
+commit_message = "Add tests for dgov init-plan command"
+depends_on = ["cli/features.init-plan"]
+files.edit = ["tests/test_cli.py"]
+
+[tasks.test-run-only]
+summary = "Add tests for dgov run --only flag."
+prompt = """
+Add tests for the `--only` flag on `dgov run` to `tests/test_cli.py`.
+
+Use file_symbols to see the test structure, then add tests using edit_file.
+
+Tests:
+1. `test_run_only_unknown_slug_exits` — run with `--only nonexistent`:
+   - Exit code 1, error message about unknown slug
+2. `test_run_only_filters_plan` — create a simple 3-task plan TOML
+   (a -> b -> c). Run with `--only b`. Verify that:
+   - Only tasks `a` and `b` are included (b + its dep a)
+   - Task `c` is excluded
+
+For the filter test, you can mock the runner or just verify the plan
+filtering logic. The simplest approach: extract the transitive-dep
+collection into a testable helper function if it isn't already, and
+test that directly.
+
+Use edit_file to append — do NOT rewrite test_cli.py.
+"""
+commit_message = "Add tests for dgov run --only flag"
+depends_on = ["cli/features.run-only", "test-init-plan"]
+files.edit = ["tests/test_cli.py"]

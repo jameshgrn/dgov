@@ -315,3 +315,52 @@ class TestInitPlan:
         root_toml = plan_dir / "_root.toml"
         content = root_toml.read_text()
         assert 'name = "myplan"' in content
+
+
+# -- run --
+
+
+def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
+    """Running with --only nonexistent exits with code 1 and error message."""
+    plan = tmp_path / "plan.toml"
+    plan.write_text(
+        '[plan]\nname = "test"\n\n'
+        "[tasks.a]\n"
+        'summary = "do a"\n'
+        'prompt = "do a"\n'
+        'commit_message = "a"\n'
+    )
+    result = runner.invoke(cli, ["run", str(plan), "--only", "nonexistent"])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower() or "nonexistent" in result.output
+
+
+def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
+    """Run with --only b on a->b->c plan: b is accepted, not 'not found'."""
+    plan = tmp_path / "plan.toml"
+    plan.write_text(
+        '[plan]\nname = "filter-test"\n\n'
+        "[tasks.a]\n"
+        'summary = "task a"\n'
+        'prompt = "do a"\n'
+        'commit_message = "a"\n'
+        'files.create = ["a.py"]\n\n'
+        "[tasks.b]\n"
+        'summary = "task b"\n'
+        'prompt = "do b"\n'
+        'commit_message = "b"\n'
+        'depends_on = ["a"]\n'
+        'files.create = ["b.py"]\n\n'
+        "[tasks.c]\n"
+        'summary = "task c"\n'
+        'prompt = "do c"\n'
+        'commit_message = "c"\n'
+        'depends_on = ["b"]\n'
+        'files.create = ["c.py"]\n'
+    )
+    result = runner.invoke(cli, ["validate", str(plan)])
+    assert result.exit_code == 0
+
+    # --only b should accept the slug (not "Task 'b' not found")
+    result = runner.invoke(cli, ["run", str(plan), "--only", "b"])
+    assert "not found" not in result.output.lower()

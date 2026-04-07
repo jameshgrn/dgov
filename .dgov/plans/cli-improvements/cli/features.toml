@@ -1,0 +1,67 @@
+# CLI feature additions — both edit the existing cli/__init__.py.
+
+[tasks.init-plan]
+summary = "Add 'dgov init-plan <name>' command that scaffolds a plan tree directory."
+prompt = """
+Add a new CLI command `dgov init-plan <name>` to `src/dgov/cli/__init__.py`.
+
+Use file_symbols to find where existing commands are defined, then add
+the new command near the other `@cli.command` definitions.
+
+The command should:
+1. Take a required `name` argument (the plan name)
+2. Take an optional `--sections` option (comma-separated, default: "tasks")
+3. Create the directory structure:
+   - `.dgov/plans/<name>/` (plan root)
+   - `.dgov/plans/<name>/_root.toml` with [plan] metadata
+   - `.dgov/plans/<name>/<section>/` for each section
+4. Write a starter `_root.toml`:
+   ```toml
+   [plan]
+   name = "<name>"
+   summary = ""
+   sections = ["tasks"]  # or whatever was passed
+   ```
+5. Print what was created
+6. Fail if the plan directory already exists (unless --force)
+
+Implementation approach:
+- Use edit_file to add the command — do NOT rewrite the whole file
+- Add the command function near the other @cli.command definitions
+  (after `compile_cmd` and before `plan_cmd` is a good spot)
+- Use click decorators: @cli.command, @click.argument, @click.option
+- Import Path from pathlib (already imported at top of file)
+- Keep it simple — no validation of the name beyond basic filesystem safety
+"""
+commit_message = "Add dgov init-plan command for plan tree scaffolding"
+files.edit = ["src/dgov/cli/__init__.py"]
+
+[tasks.run-only]
+summary = "Add --only flag to 'dgov run' for executing a single task from a plan."
+prompt = """
+Add a `--only <slug>` option to the existing `dgov run` command in
+`src/dgov/cli/__init__.py`.
+
+Use file_symbols to find `run_cmd` and `_cmd_run_plan`, then use
+related_files to understand the runner interface.
+
+The --only flag should:
+1. Be an optional string parameter on `run_cmd` (default: None)
+2. When provided, filter the compiled plan to only include:
+   - The named task
+   - All of its transitive dependencies (so deps are satisfied)
+3. Pass this filtered plan to the runner as usual
+
+Implementation:
+- Add `@click.option("--only", default=None, help="Run only this task and its deps")`
+  to `run_cmd`
+- In `_cmd_run_plan`, after parsing the plan, if `only` is set:
+  - Collect the task + all transitive deps via a simple BFS on `depends_on`
+  - Filter `dag.tasks` to only include those slugs
+  - If the slug doesn't exist, print error and exit
+- Use edit_file for all changes — do NOT rewrite the file
+- Pass `only` through from run_cmd to _cmd_run_plan
+"""
+commit_message = "Add --only flag to dgov run for single-task execution"
+depends_on = ["init-plan"]
+files.edit = ["src/dgov/cli/__init__.py"]

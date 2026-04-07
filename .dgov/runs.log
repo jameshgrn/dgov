@@ -28,3 +28,12 @@
   failed: tests/add-coverage.worktree
   sentrux: 6665 -> 6679
 
+[2026-04-07 02:29:34Z] cli-improvements (.dgov/plans/cli-improvements/_compiled.toml) — fail
+  merged: cli/features.init-plan, cli/features.run-only, test/cli-tests.test-init-plan
+  failed: test/cli-tests.test-run-only
+  sentrux: 6642 -> 6635
+
+[2026-04-07 02:32:24Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-212/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6636 -> 6636
+

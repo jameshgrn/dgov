@@ -1,0 +1,10 @@
+# CLI improvements: init-plan scaffolding + run --only flag.
+#
+# Tests the new worker tools (edit_file, file_symbols, related_files)
+# on the 1095-line cli/__init__.py — the exact file that caused
+# settlement rejection in the break-cycle dogfood.
+
+[plan]
+name = "cli-improvements"
+summary = "Add init-plan scaffolding command and run --only flag for partial DAG execution."
+sections = ["cli", "test"]
