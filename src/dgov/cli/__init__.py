@@ -721,6 +721,12 @@ def _format_event(ev: dict) -> str | None:
     if event_type == "merge_completed":
         return f"{ts} {click.style('      merged', fg='green')}  {task_slug}"
 
+    # Settlement retry
+    if event_type == "settlement_retry":
+        error = ev.get("error", "")
+        short = error[:100] if error else ""
+        return f"{ts} {click.style('       RETRY', fg='yellow', bold=True)}  {task_slug}: {short}"
+
     # Everything else
     label = _EVENT_LABELS.get(event_type, event_type)
     return f"{ts} {label:>12s}  {task_slug}"
@@ -766,6 +772,7 @@ _EVENT_LABELS: dict[str, str] = {
     "shutdown_requested": "shutdown",
     "dag_completed": "dag done",
     "dag_failed": "dag FAILED",
+    "settlement_retry": "RETRY",
 }
 
 
