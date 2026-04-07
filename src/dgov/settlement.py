@@ -359,19 +359,28 @@ def validate_sandbox(
             return GateResult(passed=True)
 
         # Lint gate
-        res_lint = _run_cmd(config.lint_cmd, changed_files, worktree_path, timeout=config.settlement_timeout)
+        res_lint = _run_cmd(
+            config.lint_cmd, changed_files, worktree_path, timeout=config.settlement_timeout
+        )
         if res_lint.returncode != 0:
             return GateResult(passed=False, error=f"Lint failure:\n{res_lint.stdout}")
 
         # Format check
-        res_fmt = _run_cmd(config.format_check_cmd, changed_files, worktree_path, timeout=config.settlement_timeout)
+        res_fmt = _run_cmd(
+            config.format_check_cmd,
+            changed_files,
+            worktree_path,
+            timeout=config.settlement_timeout,
+        )
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
         # Test gate
         test_cmd = _build_test_cmd(config, changed_files, worktree_path)
         if test_cmd:
-            test_failure = _run_test_gate(test_cmd, worktree_path, timeout=config.settlement_timeout)
+            test_failure = _run_test_gate(
+                test_cmd, worktree_path, timeout=config.settlement_timeout
+            )
             if test_failure is not None:
                 return test_failure
 

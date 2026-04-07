@@ -16,7 +16,7 @@ def add_ledger_entry(session_root: str, category: str, content: str) -> int:
         "INSERT INTO ledger (category, content, created_at) VALUES (?, ?, ?)",
         (category, content, now),
     )
-    return res.lastrowid
+    return res.lastrowid or 0
 
 
 def list_ledger_entries(
