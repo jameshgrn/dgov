@@ -40,13 +40,18 @@ class DagDone:
 
 
 @dataclass(frozen=True)
+class CleanupTask:
+    task_slug: str
+
+
+@dataclass(frozen=True)
 class InterruptGovernor:
     task_slug: str
     pane_slug: str
     reason: str
 
 
-DagAction = DispatchTask | ReviewTask | MergeTask | InterruptGovernor | DagDone
+DagAction = DispatchTask | ReviewTask | MergeTask | CleanupTask | InterruptGovernor | DagDone
 
 
 # --- Events (Runner -> Kernel) ---

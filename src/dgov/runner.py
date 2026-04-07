@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dgov.actions import (
+    CleanupTask,
     DagAction,
     DagDone,
     DispatchTask,
@@ -175,7 +176,7 @@ class EventDagRunner:
         logger.info(
             "Cleaning up %d worker tasks, %d worktrees",
             len(self._worker_tasks),
-            len(self._worktrees),
+            len(self._worktrees) + len(self._rejected_worktrees),
         )
 
         # Cancel active worker asyncio tasks first — stop work before removing worktrees
@@ -190,16 +191,21 @@ class EventDagRunner:
         self._worker_tasks.clear()
         self._pending_dispatches.clear()
 
-        # Close all worktrees
+        # Close all worktrees (including rejected ones for total cleanup ONLY if shutdown was requested)
         loop = asyncio.get_running_loop()
-        for task_slug, wt in list(self._worktrees.items()):
+        to_clean = list(self._worktrees.values())
+        if self._shutdown_event.is_set():
+            to_clean += list(self._rejected_worktrees.values())
+
+        for wt in to_clean:
             try:
                 await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
-                logger.debug("Removed worktree: %s", task_slug)
             except Exception as exc:
-                logger.warning("Failed to remove worktree %s: %s", task_slug, exc)
+                logger.warning("Failed to remove worktree: %s", exc)
 
         self._worktrees.clear()
+        if self._shutdown_event.is_set():
+            self._rejected_worktrees.clear()
 
         # Shutdown executor
         self._executor.shutdown(wait=False)
@@ -256,6 +262,8 @@ class EventDagRunner:
                 dispatch_coros.append((action.task_slug, self._merge(action)))
             elif isinstance(action, ReviewTask):
                 next_actions.extend(self._run_review(action))
+            elif isinstance(action, CleanupTask):
+                next_actions.extend(await self._cleanup_task(action))
             elif isinstance(action, InterruptGovernor):
                 next_actions.extend(self._handle_interrupt(action))
             elif isinstance(action, DagDone):
@@ -264,6 +272,18 @@ class EventDagRunner:
         if dispatch_coros:
             next_actions.extend(await self._gather_dispatch_results(dispatch_coros))
         return next_actions, None
+
+    async def _cleanup_task(self, action: CleanupTask) -> list[DagAction]:
+        """Remove worktree for a task (terminal failure/skip)."""
+        wt = self._worktrees.pop(action.task_slug, None)
+        if wt:
+            loop = asyncio.get_running_loop()
+            try:
+                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+                logger.debug("Cleaned up worktree for failed task: %s", action.task_slug)
+            except Exception as exc:
+                logger.warning("CleanupTask failed for %s: %s", action.task_slug, exc)
+        return []
 
     def _handle_worker_exit(self, exit_event: WorkerExit) -> list[DagAction]:
         """Convert a worker exit into kernel actions, recording errors and emitting events."""
@@ -665,7 +685,8 @@ class EventDagRunner:
                 action.task_slug,
                 wt.path,
             )
-            # Move to rejected dict so _cleanup skips it
+            # Move to rejected dict so _cleanup skips it during normal task lifecycle
+            # but can still clean it up on process exit.
             self._worktrees.pop(action.task_slug, None)
             self._rejected_worktrees[action.task_slug] = wt
 
