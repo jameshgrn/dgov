@@ -1,0 +1,15 @@
+# Context engineering fix: teach workers to make targeted edits.
+
+[tasks.add-edit-rule]
+summary = "Add minimal-edit directive to python-style SOP."
+prompt = """
+Edit `.dgov/sops/python-style.md`. Add a new rule under `## Style Rules`:
+
+```
+- **Minimal Edits:** When editing an existing file, change only the lines relevant to your task. Never rewrite unchanged code. If your task says "change the import block", change only the import lines — do not touch anything else in the file.
+```
+
+Insert it after the "No Commented-Out Code" bullet. Do not change any other content.
+"""
+commit_message = "Add minimal-edit directive to python-style SOP"
+files.edit = [".dgov/sops/python-style.md"]

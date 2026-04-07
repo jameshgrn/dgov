@@ -26,7 +26,7 @@ class ProjectConfig:
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
     # Settlement-specific (autofix + validate)
-    lint_fix_cmd: str = "python -m ruff check --fix {file}"
+    lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
     format_check_cmd: str = "python -m ruff format --check {file}"
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] = field(default_factory=dict)

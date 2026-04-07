@@ -1,0 +1,134 @@
+# Add tests for untested modules to close the quality signal gap.
+
+[tasks.actions]
+summary = "Add unit tests for actions.py: frozen dataclasses + GovernorAction enum."
+prompt = """
+Create `tests/test_actions.py` with tests for `src/dgov/actions.py`.
+
+This module defines frozen dataclasses (the message vocabulary between kernel
+and runner) plus the GovernorAction enum. Test:
+
+1. **Construction**: Each dataclass can be instantiated with its fields.
+   - DispatchTask(task_slug="a")
+   - ReviewTask(task_slug="a", pane_slug="p")
+   - MergeTask(task_slug="a", pane_slug="p", file_claims=("f.py",))
+   - MergeTask default: file_claims defaults to ()
+   - DagDone with all fields populated
+   - InterruptGovernor(task_slug="a", pane_slug="p", reason="timeout")
+   - TaskDispatched, TaskWaitDone, TaskReviewDone, TaskMergeDone
+   - TaskGovernorResumed(task_slug="a", action=GovernorAction.RETRY)
+
+2. **Frozen**: Attempting to assign a field raises FrozenInstanceError.
+   Test on at least DispatchTask and TaskMergeDone.
+
+3. **GovernorAction enum**: Values are "retry", "fail", "skip".
+   Enum members accessible as GovernorAction.RETRY etc.
+   GovernorAction is a StrEnum (can compare with plain strings).
+
+4. **Type unions**: DagAction and DagEvent are Union types.
+   Verify isinstance checks: DispatchTask is a DagAction,
+   TaskDispatched is a DagEvent.
+
+Use pytest. Keep tests simple — these are data containers.
+"""
+commit_message = "Add unit tests for actions module"
+files.create = ["tests/test_actions.py"]
+
+[tasks.persistence-events]
+summary = "Add tests for persistence/events.py: emit, read, filter, reset."
+prompt = """
+Create `tests/test_persistence_events.py` with tests for
+`src/dgov/persistence/events.py`.
+
+All tests use a tmp_path directory as session_root. The persistence layer
+auto-creates `state.db` inside `.dgov/` under the session root, so each
+test gets an isolated database.
+
+Setup helper: create a function that takes tmp_path and returns a
+session_root string. Must create the `.dgov` directory:
+```python
+def _session(tmp_path):
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    return str(tmp_path)
+```
+
+Test emit_event:
+1. Emit a valid event ("task_dispatched") with pane="p1" and
+   kwargs plan_name="plan", task_slug="slug-a".
+2. Read it back with read_events. Verify fields: event, pane, plan_name, task_slug.
+3. Emit with an invalid event name → raises ValueError.
+4. Emit with extra kwargs not in typed columns → stored in data JSON blob.
+
+Test read_events filtering:
+1. Emit 3 events with different panes. Filter by slug (pane) → only matching.
+2. Emit 3 events with different plan_names. Filter by plan_name → only matching.
+3. Use after_id to get only new events. Emit 2, note last id, emit 2 more,
+   read with after_id → only the 2 new ones.
+4. Use limit parameter → returns at most N events, in chronological order.
+
+Test latest_event_id:
+1. Empty DB → returns 0.
+2. After emitting events → returns highest id.
+
+Test reset_plan_state:
+1. Emit events for 2 different plans. Reset one. Read back → only the
+   other plan's events remain.
+
+Import from dgov.persistence.events (emit_event, read_events,
+latest_event_id, reset_plan_state). Import VALID_EVENTS from
+dgov.persistence.schema for reference.
+
+Use pytest. No mocking — use real in-memory SQLite via tmp_path.
+"""
+commit_message = "Add unit tests for persistence events module"
+files.create = ["tests/test_persistence_events.py"]
+
+[tasks.worktree]
+summary = "Add tests for worktree.py: create, commit, merge, remove."
+prompt = """
+Create `tests/test_worktree.py` with tests for `src/dgov/worktree.py`.
+
+All tests need a real git repo. Use this fixture:
+```python
+@pytest.fixture
+def git_repo(tmp_path):
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "init"],
+        cwd=tmp_path, check=True, capture_output=True,
+        env={**os.environ, "GIT_AUTHOR_NAME": "test", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "test", "GIT_COMMITTER_EMAIL": "t@t"},
+    )
+    return str(tmp_path)
+```
+
+Test create_worktree:
+1. Creates a worktree at the expected path (sibling of project root).
+2. Returns a Worktree with valid path, branch name, and commit SHA.
+3. The worktree directory exists and contains a .git file.
+4. The branch name follows the pattern `dgov/<slug>`.
+5. Calling create_worktree twice with the same slug is idempotent
+   (cleans up first, then re-creates).
+
+Test commit_in_worktree:
+1. Create a worktree. Write a file in it. Commit with file_claims.
+   Returns a SHA. Verify the SHA is different from the base commit.
+2. Commit with no file_claims (falls back to `git add .`).
+
+Test merge_worktree:
+1. Create worktree, add a file, commit, merge back. The file should
+   exist in the project root after merge. Returns a SHA.
+2. FF merge when main hasn't moved.
+
+Test remove_worktree:
+1. Create then remove. The worktree directory no longer exists.
+2. The branch is deleted.
+
+Import from dgov.worktree (create_worktree, commit_in_worktree,
+merge_worktree, remove_worktree). Import Worktree from dgov.types.
+
+Use pytest. subprocess + tmp_path, no mocking.
+"""
+commit_message = "Add unit tests for worktree module"
+files.create = ["tests/test_worktree.py"]

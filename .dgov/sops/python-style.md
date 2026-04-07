@@ -10,6 +10,7 @@ title: Python Toolchain & Code Style
 
 ## Style Rules
 - **No Commented-Out Code:** Delete it; don't leave it in.
+- **Minimal Edits:** When editing an existing file, change only the lines relevant to your task. Never rewrite unchanged code. If your task says "change the import block", change only the import lines — do not touch anything else in the file.
 - **Minimal Annotations:** No docstrings, comments, or type annotations on code you didn't change.
 - **Explicit Logic:** Clarity over cleverness. Explicit readable code over dense one-liners.
 - **No Premature Abstraction:** Don't create utilities until the same code has been written 3x.
