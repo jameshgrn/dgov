@@ -85,6 +85,13 @@ def _load_project_config(worktree: Path) -> _ProjectConfig:
     )
 
 
+def _shell_quote(s: str) -> str:
+    """Shell-safe quoting for subprocess args."""
+    import shlex
+
+    return shlex.quote(s)
+
+
 class AtomicTools:
     """The Actuator Layer: Strict, isolated tools."""
 
@@ -99,7 +106,7 @@ class AtomicTools:
 
     def _sandbox_env(self) -> dict[str, str]:
         return {
-            "PATH": f"{self._python_bin}:/usr/local/bin:/usr/bin:/bin",
+            "PATH": f"{self._python_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             "HOME": str(self._sandbox_home),
             "LANG": "en_US.UTF-8",
             "PYTHONPATH": str(self.worktree / self.config.src_dir.rstrip("/")),
@@ -500,6 +507,83 @@ class AtomicTools:
             mod = mod[: -len("/__init__")]
         return mod.replace("/", ".")
 
+    # -- Power tools (CLI wrappers) --
+
+    def ripgrep(self, pattern: str, path: str = ".", flags: str = "") -> str:
+        """Fast regex search via rg. Supports flags like -i, -l, -C3, --type py."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        rel = str(target.relative_to(self.worktree))
+        cmd = f"rg {flags} -- {_shell_quote(pattern)} {_shell_quote(rel)}"
+        result = self.run_bash(cmd)
+        if "EXIT:2" in result or "command not found" in result:
+            return self.grep(pattern, path)  # fallback to Python grep
+        return result
+
+    def jq(self, expr: str, path: str) -> str:
+        """Query/transform JSON files with jq expressions."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        rel = str(target.relative_to(self.worktree))
+        return self.run_bash(f"jq {_shell_quote(expr)} {_shell_quote(rel)}")
+
+    def tree(self, path: str = ".", max_depth: int = 3) -> str:
+        """Show directory structure as a tree. Excludes hidden dirs and __pycache__."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        rel = str(target.relative_to(self.worktree))
+        # Try system tree, fall back to find-based
+        result = self.run_bash(
+            f"tree -L {max_depth} -I '__pycache__|.git|node_modules|.venv' "
+            f"--noreport {_shell_quote(rel)}"
+        )
+        if "command not found" in result:
+            result = self.run_bash(
+                f"find {_shell_quote(rel)} -maxdepth {max_depth} "
+                f"-not -path '*/__pycache__/*' -not -path '*/.git/*' "
+                f"| head -100 | sort"
+            )
+        return result
+
+    def word_count(self, path: str) -> str:
+        """Count lines, words, chars in a file or directory of files."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        rel = str(target.relative_to(self.worktree))
+        if target.is_dir():
+            return self.run_bash(
+                f"find {_shell_quote(rel)} -name '*.py' -not -path '*/__pycache__/*' "
+                f"| xargs wc -l | tail -20"
+            )
+        return self.run_bash(f"wc -l {_shell_quote(rel)}")
+
+    def head(self, path: str, n: int = 20) -> str:
+        """Show first N lines of a file. Faster than read_file for quick peeks."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        lines = target.read_text().splitlines()[:n]
+        return "\n".join(f"{i + 1}: {line}" for i, line in enumerate(lines))
+
+    def tail(self, path: str, n: int = 20) -> str:
+        """Show last N lines of a file."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        lines = target.read_text().splitlines()
+        start = max(0, len(lines) - n)
+        return "\n".join(f"{start + i + 1}: {line}" for i, line in enumerate(lines[start:]))
+
     # -- SOP compound tools --
 
     def run_tests(self, file: str = "") -> str:
@@ -793,6 +877,133 @@ def get_tool_spec() -> list[dict]:
                         },
                     },
                     "required": ["symbol"],
+                },
+            },
+        },
+        # Power tools (CLI wrappers)
+        {
+            "type": "function",
+            "function": {
+                "name": "ripgrep",
+                "description": (
+                    "Fast regex search via rg. Much faster than grep on large "
+                    "codebases. Supports flags: -i (case insensitive), -l (files "
+                    "only), -C3 (context), --type py (file type filter), -w (word)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "path": {
+                            "type": "string",
+                            "description": "File or dir to search (default: '.')",
+                            "default": ".",
+                        },
+                        "flags": {
+                            "type": "string",
+                            "description": "rg flags e.g. '-i -C3 --type py'",
+                            "default": "",
+                        },
+                    },
+                    "required": ["pattern"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "jq",
+                "description": (
+                    "Query and transform JSON files with jq expressions. "
+                    "Examples: '.key', '.[] | .name', 'keys', 'length'."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "expr": {
+                            "type": "string",
+                            "description": "jq filter expression",
+                        },
+                        "path": {"type": "string"},
+                    },
+                    "required": ["expr", "path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tree",
+                "description": (
+                    "Show directory structure as a tree. Excludes __pycache__, "
+                    ".git, node_modules. Great for understanding project layout."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "default": ".",
+                        },
+                        "max_depth": {
+                            "type": "integer",
+                            "description": "Max directory depth (default: 3)",
+                            "default": 3,
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "word_count",
+                "description": (
+                    "Count lines in a file or all .py files in a directory. "
+                    "Use to gauge file size before reading."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "head",
+                "description": "Show first N lines of a file with line numbers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "n": {
+                            "type": "integer",
+                            "description": "Number of lines (default: 20)",
+                            "default": 20,
+                        },
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "tail",
+                "description": "Show last N lines of a file with line numbers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "n": {
+                            "type": "integer",
+                            "description": "Number of lines (default: 20)",
+                            "default": 20,
+                        },
+                    },
+                    "required": ["path"],
                 },
             },
         },
