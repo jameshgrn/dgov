@@ -331,13 +331,25 @@ class EventDagRunner:
             )
         )
 
+    _NON_RETRYABLE_ERRORS = frozenset(
+        {
+            "Agent stopped without calling 'done'",
+        }
+    )
+
     def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
         """Decide retry vs fail based on attempt count."""
         attempts = self.kernel.attempts.get(action.task_slug, 0)
         error_detail = self._task_errors.get(action.task_slug, "")
 
         gov_action = GovernorAction.FAIL
-        if attempts < self.kernel.max_retries:
+        if error_detail in self._NON_RETRYABLE_ERRORS:
+            logger.error(
+                "Task %s failed — non-retryable: %s",
+                action.task_slug,
+                error_detail,
+            )
+        elif attempts < self.kernel.max_retries:
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
                 action.task_slug,

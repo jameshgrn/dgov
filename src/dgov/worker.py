@@ -1225,6 +1225,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
         {"role": "system", "content": _build_system_prompt(worktree, config)},
         {"role": "user", "content": goal},
     ]
+    nudged = False
 
     for _ in range(60):  # Pillar #10: Fail-closed via iteration limit
         try:
@@ -1244,6 +1245,20 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
 
         if not msg.tool_calls:
             if resp.choices[0].finish_reason == "stop":
+                if not nudged:
+                    nudged = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "You responded with text but did not call any tool. "
+                                "You MUST call the `done` tool to finish. If the task "
+                                "is unclear, call `done` with a summary explaining what "
+                                "is unclear. Do NOT respond with text only."
+                            ),
+                        }
+                    )
+                    continue
                 WorkerEvent("error", "Agent stopped without calling 'done'").emit()
                 _cleanup()
                 sys.exit(1)
