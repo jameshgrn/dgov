@@ -13,6 +13,7 @@ Pillar #6: Event-Sourced - Every thought and tool call is emitted as a JSON line
 """
 
 import argparse
+import ast
 import fnmatch
 import json
 import os
@@ -154,6 +155,50 @@ class AtomicTools:
         target.write_text(content.replace(old_text, new_text, 1))
         return f"Successfully edited {path}"
 
+    def apply_patch(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file. Handles multi-hunk edits."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+
+        original = target.read_text().splitlines(keepends=True)
+        result: list[str] = []
+        orig_idx = 0
+
+        for line in patch.splitlines(keepends=True):
+            # Skip diff headers
+            if line.startswith(("---", "+++", "diff ")):
+                continue
+            if line.startswith("@@"):
+                # Parse hunk header: @@ -start,count +start,count @@
+                m = re.match(r"@@ -(\d+)", line)
+                if not m:
+                    return f"Error: Malformed hunk header: {line.rstrip()}"
+                hunk_start = int(m.group(1)) - 1  # 0-indexed
+                # Copy lines before this hunk
+                result.extend(original[orig_idx:hunk_start])
+                orig_idx = hunk_start
+                continue
+            if line.startswith("-"):
+                # Remove line — advance past it in original
+                if orig_idx < len(original):
+                    orig_idx += 1
+            elif line.startswith("+"):
+                # Add line
+                result.append(line[1:])
+            elif line.startswith(" "):
+                # Context line — copy and advance
+                if orig_idx < len(original):
+                    result.append(original[orig_idx])
+                    orig_idx += 1
+
+        # Copy remaining original lines after last hunk
+        result.extend(original[orig_idx:])
+        target.write_text("".join(result))
+        return f"Successfully patched {path}"
+
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
         try:
@@ -254,7 +299,6 @@ class AtomicTools:
             )
             diff = res.stdout.strip()
             if not diff:
-                # Also check untracked files
                 status = subprocess.run(
                     ["git", "status", "--short"],
                     cwd=self.worktree,
@@ -268,6 +312,193 @@ class AtomicTools:
             return diff
         except subprocess.TimeoutExpired:
             return "Error: git diff timed out."
+
+    def recent_changes(self, path: str) -> str:
+        """Show recent git commits that touched a file. Gives context on intent."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        rel = str(target.relative_to(self.worktree))
+        try:
+            res = subprocess.run(
+                ["git", "log", "--oneline", "-10", "--", rel],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return res.stdout.strip() or f"No git history for {path}."
+        except subprocess.TimeoutExpired:
+            return "Error: git log timed out."
+
+    def assert_file_unchanged(self, path: str) -> str:
+        """Verify a file has NOT been modified from HEAD. Use to self-check scope."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        rel = str(target.relative_to(self.worktree))
+        try:
+            res = subprocess.run(
+                ["git", "diff", "HEAD", "--", rel],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.stdout.strip():
+                return f"FAIL: {path} has been modified:\n{res.stdout[:500]}"
+            return f"OK: {path} is unchanged from HEAD."
+        except subprocess.TimeoutExpired:
+            return "Error: git diff timed out."
+
+    # -- Code intelligence tools --
+
+    def file_symbols(self, path: str) -> str:
+        """List functions, classes, and top-level assignments with line numbers."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        if target.suffix != ".py":
+            return f"Error: file_symbols only works on .py files, got {target.suffix}"
+
+        try:
+            tree = ast.parse(target.read_text(), filename=path)
+        except SyntaxError as e:
+            return f"Error: SyntaxError in {path}: {e}"
+
+        symbols: list[str] = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.ClassDef):
+                symbols.append(f"  class {node.name}:{node.lineno}")
+                for item in ast.iter_child_nodes(node):
+                    if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+                        symbols.append(f"    def {node.name}.{item.name}:{item.lineno}")
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                symbols.append(f"  def {node.name}:{node.lineno}")
+            elif isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        symbols.append(f"  {t.id} = ...:{node.lineno}")
+
+        if not symbols:
+            return f"No symbols found in {path}."
+        return f"{path}:\n" + "\n".join(symbols)
+
+    def check_syntax(self, path: str) -> str:
+        """Quick syntax check via compile(). Faster than full linter."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        try:
+            compile(target.read_text(), path, "exec")
+            return f"OK: {path} has valid syntax."
+        except SyntaxError as e:
+            return f"SyntaxError in {path} line {e.lineno}: {e.msg}"
+
+    def related_files(self, path: str) -> str:
+        """Show files that import from this file AND files this file imports from."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        if target.suffix != ".py":
+            return "Error: related_files only works on .py files."
+
+        rel = str(target.relative_to(self.worktree))
+        # Determine the module path for this file
+        module_name = self._path_to_module(rel)
+
+        imports_from: list[str] = []  # what this file imports
+        imported_by: list[str] = []  # what imports this file
+
+        # Parse this file's imports
+        try:
+            tree = ast.parse(target.read_text(), filename=path)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    imports_from.append(node.module)
+        except SyntaxError:
+            pass
+
+        # Scan all .py files for imports of this module
+        for py_file in sorted(self.worktree.rglob("*.py")):
+            if py_file == target:
+                continue
+            py_rel = str(py_file.relative_to(self.worktree))
+            if any(part.startswith(".") for part in py_file.relative_to(self.worktree).parts):
+                continue
+            try:
+                file_tree = ast.parse(py_file.read_text(), filename=py_rel)
+                for node in ast.walk(file_tree):
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        if node.module == module_name or node.module.startswith(module_name + "."):
+                            imported_by.append(py_rel)
+                            break
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+
+        lines: list[str] = [f"== {rel} =="]
+        if imports_from:
+            lines.append(f"\nImports from ({len(imports_from)}):")
+            for mod in sorted(set(imports_from)):
+                lines.append(f"  {mod}")
+        if imported_by:
+            lines.append(f"\nImported by ({len(imported_by)}):")
+            for f in imported_by:
+                lines.append(f"  {f}")
+        if not imports_from and not imported_by:
+            lines.append("  (no import relationships found)")
+        return "\n".join(lines)
+
+    def search_tests_for(self, symbol: str) -> str:
+        """Find test files that reference a function, class, or module name."""
+        test_dir = self.worktree / self.config.test_dir.rstrip("/")
+        if not test_dir.is_dir():
+            return f"Error: test directory {self.config.test_dir} does not exist."
+
+        matches: list[str] = []
+        try:
+            pattern = re.compile(r"\b" + re.escape(symbol) + r"\b")
+        except re.error:
+            return f"Error: Invalid symbol name: {symbol}"
+
+        for test_file in sorted(test_dir.rglob("test_*.py")):
+            rel = str(test_file.relative_to(self.worktree))
+            try:
+                content = test_file.read_text()
+                hit_lines: list[str] = []
+                for i, line in enumerate(content.splitlines(), 1):
+                    if pattern.search(line):
+                        hit_lines.append(f"    {i}: {line.strip()}")
+                if hit_lines:
+                    matches.append(f"  {rel}:")
+                    matches.extend(hit_lines[:5])
+                    if len(hit_lines) > 5:
+                        matches.append(f"    ... +{len(hit_lines) - 5} more")
+            except (UnicodeDecodeError, PermissionError):
+                continue
+
+        if not matches:
+            return f"No test files reference '{symbol}'."
+        return f"Tests referencing '{symbol}':\n" + "\n".join(matches)
+
+    def _path_to_module(self, rel_path: str) -> str:
+        """Convert a relative file path to a Python module name."""
+        # Strip src/ prefix and .py suffix
+        mod = rel_path
+        src = self.config.src_dir.rstrip("/")
+        if mod.startswith(src + "/"):
+            mod = mod[len(src) + 1 :]
+        if mod.endswith(".py"):
+            mod = mod[:-3]
+        if mod.endswith("/__init__"):
+            mod = mod[: -len("/__init__")]
+        return mod.replace("/", ".")
 
     # -- SOP compound tools --
 
@@ -372,6 +603,31 @@ def get_tool_spec() -> list[dict]:
         {
             "type": "function",
             "function": {
+                "name": "apply_patch",
+                "description": (
+                    "Apply a unified diff patch to a file. Use when edit_file fails "
+                    "due to ambiguity, or when making multi-hunk changes. Format: "
+                    "standard unified diff (@@ -start,count +start,count @@, "
+                    "lines prefixed with -, +, or space)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "patch": {
+                            "type": "string",
+                            "description": (
+                                "Unified diff content (hunks with @@, -, +, space lines)"
+                            ),
+                        },
+                    },
+                    "required": ["path", "patch"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "run_bash",
                 "description": "Run a shell command in the worktree. 60s timeout.",
                 "parameters": {
@@ -439,6 +695,105 @@ def get_tool_spec() -> list[dict]:
                     "before calling done."
                 ),
                 "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "recent_changes",
+                "description": (
+                    "Show recent git commits that touched a file. Gives context "
+                    "about recent modifications and intent before you edit."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "assert_file_unchanged",
+                "description": (
+                    "Verify that a file has NOT been modified from HEAD. Use as a "
+                    "self-check to confirm you only touched the files you intended to."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        # Code intelligence tools
+        {
+            "type": "function",
+            "function": {
+                "name": "file_symbols",
+                "description": (
+                    "List all functions, classes, and top-level assignments in a "
+                    "Python file with line numbers. Use to quickly find where a "
+                    "symbol is defined without reading the whole file."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "check_syntax",
+                "description": (
+                    "Quick syntax check (compile()) without running the full linter. "
+                    "Use right after writing/editing to catch parse errors fast."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "related_files",
+                "description": (
+                    "Show the import neighborhood of a file: what it imports from "
+                    "AND what other files import from it. Use before editing to "
+                    "understand who depends on the code you're changing."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "search_tests_for",
+                "description": (
+                    "Find test files that reference a given function, class, or "
+                    "module name. Returns matching test files with line numbers. "
+                    "Use to find which tests to run after modifying code."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Function, class, or module name to search for",
+                        },
+                    },
+                    "required": ["symbol"],
+                },
             },
         },
         # SOP tools
@@ -557,12 +912,15 @@ def _build_system_prompt(worktree: Path, config: _ProjectConfig) -> str:
         f"- Python: {sys.executable}\n"
         f"- Do NOT install packages or create venvs. Everything is pre-installed.\n"
         f"- Use relative paths for file tools (e.g. 'src/dgov/foo.py' not absolute).\n"
-        f"- Use edit_file to modify existing files (not write_file).\n"
+        f"- ALWAYS use edit_file to modify existing files (not write_file).\n"
+        f"- Use file_symbols to find definitions without reading entire files.\n"
+        f"- Use related_files before editing to see what depends on your changes.\n"
+        f"- Use search_tests_for to find relevant tests before running them.\n"
+        f"- Use check_syntax after edits for fast feedback; lint_fix to auto-clean.\n"
+        f"- Use git_diff + assert_file_unchanged before done to verify scope.\n"
         f"- Use read_file with start_line/end_line for large files.\n"
-        f"- Use lint_fix after editing to auto-fix trivial lint issues.\n"
-        f"- Use git_diff before calling done to review your changes.\n"
         f"- Use run_tests, lint_check, format_file for standard ops.\n"
-        f"- Use grep, glob, list_dir to navigate the codebase efficiently.\n"
+        f"- Use grep, glob, list_dir to navigate the codebase.\n"
     )
 
     return (
