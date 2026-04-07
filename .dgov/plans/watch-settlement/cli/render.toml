@@ -1,0 +1,24 @@
+[tasks.render-settlement-retry]
+summary = "Add settlement_retry event rendering to dgov watch output."
+prompt = """
+Edit `src/dgov/cli/__init__.py` to render the `settlement_retry` event in `_format_event`.
+
+1. Add `"settlement_retry": "RETRY"` to the `_EVENT_LABELS` dict (around line 758).
+
+2. In `_format_event`, add a new branch BEFORE the "Everything else" fallback
+   (around line 724) that handles `settlement_retry`:
+
+   ```python
+   if event_type == "settlement_retry":
+       error = ev.get("error", "")
+       short = error[:100] if error else ""
+       return f"{ts} {click.style('       RETRY', fg='yellow', bold=True)}  {task_slug}: {short}"
+   ```
+
+   This renders the retry in yellow+bold so it stands out between the red
+   failure and the green success on the next attempt.
+
+3. Do NOT change any other event rendering or function signatures.
+"""
+commit_message = "Add settlement_retry rendering to dgov watch"
+files.edit = ["src/dgov/cli/__init__.py"]

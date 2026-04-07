@@ -1,0 +1,3 @@
+[plan]
+name = "watch-settlement"
+sections = ["cli", "test"]

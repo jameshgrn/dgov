@@ -6,3 +6,5 @@
 {"plan":"cli-improvements","unit":"cli/features.init-plan","sha":"848ab5a5909dd821c521b683506cd8cbdc8394d0","ts":"2026-04-07T02:25:05Z"}
 {"plan":"cli-improvements","unit":"cli/features.run-only","sha":"304cd4cdf34644155936c40e8cf2f9484a5391ed","ts":"2026-04-07T02:26:36Z"}
 {"plan":"cli-improvements","unit":"test/cli-tests.test-init-plan","sha":"008d52f641f425c89bfde4593505ef83c6e3ff53","ts":"2026-04-07T02:26:38Z"}
+{"plan":"watch-settlement","unit":"cli/render.render-settlement-retry","sha":"33a1dda74b1651eac34e5992a0a704abba17e332","ts":"2026-04-07T03:03:21Z"}
+{"plan":"watch-settlement","unit":"test/coverage.test-retry-format","sha":"8f197d32cf4afb26e7c03578f8b81053c839d17b","ts":"2026-04-07T03:04:35Z"}

@@ -1,0 +1,30 @@
+[tasks.test-retry-format]
+summary = "Add test for settlement_retry event formatting in _format_event."
+depends_on = ["cli/render.render-settlement-retry"]
+prompt = """
+Edit `tests/test_cli.py` to add a test for the new `settlement_retry` rendering.
+
+Add a test function `test_format_event_settlement_retry` that:
+
+1. Imports `_format_event` from `dgov.cli` (it may already be imported in the file).
+2. Calls `_format_event` with a dict simulating a settlement_retry event:
+   ```python
+   ev = {
+       "event": "settlement_retry",
+       "task_slug": "fix-lint",
+       "ts": "2026-04-06T12:34:56Z",
+       "error": "ruff check failed: E501 line too long",
+   }
+   ```
+3. Asserts the result is not None.
+4. Asserts "RETRY" appears in the result.
+5. Asserts "fix-lint" appears in the result.
+6. Asserts the error snippet appears in the result.
+
+Then run:
+  pytest tests/test_cli.py -q
+
+All tests must pass.
+"""
+commit_message = "Add test for settlement_retry watch rendering"
+files.edit = ["tests/test_cli.py"]

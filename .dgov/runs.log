@@ -53,3 +53,11 @@
   failed: a
   sentrux: 6628 -> 6628
 
+[2026-04-07 03:04:36Z] watch-settlement (.dgov/plans/watch-settlement/_compiled.toml) — ok
+  merged: cli/render.render-settlement-retry, test/coverage.test-retry-format
+  sentrux: 6622 -> 6621
+
+[2026-04-07 03:04:55Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-224/test_run_only_filters_plan0/plan.toml) — fail
+  failed: a
+  sentrux: 6621 -> 6621
+
