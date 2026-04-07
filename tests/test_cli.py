@@ -227,3 +227,91 @@ def test_watch_subcommand_registered(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["watch", "--help"])
     assert result.exit_code == 0
     assert "Stream" in result.output
+
+
+# -- init-plan --
+
+
+class TestInitPlan:
+    """Tests for the dgov init-plan command."""
+
+    def test_init_plan_creates_structure(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Running init-plan myplan creates the expected structure."""
+        monkeypatch.chdir(tmp_path)
+        # Create the parent .dgov/plans directory
+        plans_dir = tmp_path / ".dgov" / "plans"
+        plans_dir.mkdir(parents=True)
+
+        result = runner.invoke(cli, ["init-plan", "myplan"])
+        assert result.exit_code == 0
+
+        # Verify _root.toml exists
+        root_toml = plans_dir / "myplan" / "_root.toml"
+        assert root_toml.exists()
+
+        # Verify tasks directory exists (default section)
+        tasks_dir = plans_dir / "myplan" / "tasks"
+        assert tasks_dir.exists()
+        assert tasks_dir.is_dir()
+
+        # Verify _root.toml content
+        content = root_toml.read_text()
+        assert 'name = "myplan"' in content
+        assert 'sections = ["tasks"]' in content
+
+    def test_init_plan_custom_sections(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Running init-plan with --sections creates custom sections."""
+        monkeypatch.chdir(tmp_path)
+        plans_dir = tmp_path / ".dgov" / "plans"
+        plans_dir.mkdir(parents=True)
+
+        result = runner.invoke(cli, ["init-plan", "myplan", "--sections", "core,extras"])
+        assert result.exit_code == 0
+
+        # Verify both section directories exist
+        core_dir = plans_dir / "myplan" / "core"
+        extras_dir = plans_dir / "myplan" / "extras"
+        assert core_dir.exists()
+        assert extras_dir.exists()
+
+        # Verify _root.toml lists both sections
+        root_toml = plans_dir / "myplan" / "_root.toml"
+        content = root_toml.read_text()
+        assert 'sections = ["core", "extras"]' in content
+
+    def test_init_plan_already_exists(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Running init-plan when directory exists fails with error."""
+        monkeypatch.chdir(tmp_path)
+        # Create the plan directory beforehand
+        plan_dir = tmp_path / ".dgov" / "plans" / "myplan"
+        plan_dir.mkdir(parents=True)
+        (plan_dir / "_root.toml").write_text("[plan]\n")
+
+        result = runner.invoke(cli, ["init-plan", "myplan"])
+        assert result.exit_code == 1
+        assert "already exists" in result.output.lower()
+
+    def test_init_plan_force_overwrites(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Running init-plan with --force overwrites existing plan."""
+        monkeypatch.chdir(tmp_path)
+        # Create the plan directory with old content
+        plan_dir = tmp_path / ".dgov" / "plans" / "myplan"
+        plan_dir.mkdir(parents=True)
+        old_content = '[plan]\nname = "oldname"\n'
+        (plan_dir / "_root.toml").write_text(old_content)
+
+        result = runner.invoke(cli, ["init-plan", "myplan", "--force"])
+        assert result.exit_code == 0
+
+        # Verify _root.toml was overwritten
+        root_toml = plan_dir / "_root.toml"
+        content = root_toml.read_text()
+        assert 'name = "myplan"' in content
