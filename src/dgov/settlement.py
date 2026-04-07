@@ -101,8 +101,12 @@ def _check_scope(
     if not claimed_files:
         return None
 
+    # Exclude infrastructure dirs from scope checks
+    _INFRA_PREFIXES = (".sentrux/", ".dgov/")
     claimed = frozenset(claimed_files)
-    unclaimed = actual_files - claimed
+    unclaimed = {
+        f for f in actual_files - claimed if not any(f.startswith(p) for p in _INFRA_PREFIXES)
+    }
     if unclaimed:
         return ReviewResult(
             passed=False,
