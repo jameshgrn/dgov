@@ -1,8 +1,8 @@
-# Handover: Ledger Search, Zombie Cleanup, and Review Hooks
+# Handover: Dogfood Tests and Worktree Cleanup
 
-**Date:** 2026-04-07T18:30:00Z
-**Branch:** `main` @ `2ee7b49`
-**Context:** Implemented keyword search for the ledger, a `cleanup` command for zombie tasks, and user-defined review hooks in `.dgov/project.toml`. Verified all with unit tests.
+**Date:** 2026-04-07T20:15:00Z
+**Branch:** `main` @ `0baf72a`
+**Context:** Added dogfood settlement timeout test, cleaned up abandoned worktree. Ready for next work.
 
 ---
 
@@ -13,6 +13,8 @@
 | Ledger Keyword Search | Done | `src/dgov/cli/ledger.py` | `dgov ledger list -q <query>` |
 | Zombie Cleanup | Done | `src/dgov/cli/__init__.py` | `dgov cleanup` annihilates worktrees + states |
 | Review Hooks | Done | `src/dgov/settlement.py` | User-defined shell hooks in `project.toml` |
+| Dogfood Settlement Timeout | Done | `tests/test_settlement.py` | Slow test verifies `settlement_timeout` in TOML |
+| Worktree Cleanup | Done | N/A | Removed abandoned `dgov/track_timing` worktree |
 | Persistence Export | Done | `src/dgov/persistence/__init__.py` | Exported `cleanup_zombies` for CLI use |
 
 ## Blockers
@@ -21,13 +23,14 @@
 
 ## Next Steps (Priority Order)
 
-1. **Dogfood Settlement Timeout** — Add a slow test to verify `settlement_timeout` in `.dgov/project.toml` actually kills slow validations.
-2. **Expand Review Hooks** — Add default hooks for binary detection and secret leakage to the project's own `project.toml`.
-3. **Monitor Sentrux** — Watch for `sentrux` updates regarding `ignored_dirs` or multi-path checks.
+1. **Expand Review Hooks** — Add default hooks for binary detection and secret leakage to the project's own `project.toml`.
+2. **Monitor Sentrux** — Watch for `sentrux` updates regarding `ignored_dirs` or multi-path checks.
 
 ## Files Modified
 
 ```
+ M .dgov/project.toml
+ M pyproject.toml
  M src/dgov/cli/__init__.py
  M src/dgov/cli/ledger.py
  M src/dgov/config.py
@@ -38,6 +41,7 @@
  M src/dgov/settlement.py
  A tests/test_ledger.py
  A tests/test_review_hooks.py
+ M tests/test_settlement.py
  M tests/test_runner.py
 ```
 

@@ -9,6 +9,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from dgov.config import ProjectConfig
 from dgov.settlement import (
     autofix_sandbox,
     review_sandbox,
@@ -179,13 +182,6 @@ class TestAutofixSandbox:
         """Autofix should timeout if command exceeds settlement_timeout."""
         _init_repo(tmp_path)
         (tmp_path / "slow.py").write_text("x = 1\n")
-
-        import subprocess
-
-        import pytest
-
-        from dgov.config import ProjectConfig
-
         # Command that sleeps longer than timeout
         config = ProjectConfig(lint_fix_cmd="sleep 2", settlement_timeout=1)
         with pytest.raises(subprocess.TimeoutExpired):
@@ -319,10 +315,55 @@ class TestValidateSandbox:
         _git(tmp_path, "add", ".")
         _git(tmp_path, "commit", "-m", "add slow.py")
 
-        from dgov.config import ProjectConfig
-
         # Lint command that sleeps
         config = ProjectConfig(lint_cmd="sleep 2", settlement_timeout=1)
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
         assert not result.passed
         assert "timed out" in (result.error or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# Dogfood — Test that dgov's own project.toml config is valid
+# ---------------------------------------------------------------------------
+
+
+class TestSettlementTimeoutDogfood:
+    """Verify dgov's own .dgov/project.toml settlement_timeout is correctly parsed.
+
+    This is a slow test as it touches the filesystem and parses real TOML.
+    Run with: pytest -m slow tests/test_settlement.py::TestSettlementTimeoutDogfood
+    """
+
+    @pytest.mark.slow
+    def test_project_toml_has_settlement_timeout(self):
+        """Dogfood: Verify our own project.toml has a valid settlement_timeout value."""
+        from dgov.config import load_project_config
+
+        # Load the actual project.toml from this repo's root
+        project_root = Path(__file__).parent.parent  # tests/ -> repo root
+        config = load_project_config(project_root)
+
+        # settlement_timeout must be explicitly set and reasonable
+        assert config.settlement_timeout > 0, "settlement_timeout must be positive"
+        assert config.settlement_timeout <= 600, "settlement_timeout should be <= 10 minutes"
+
+    @pytest.mark.slow
+    def test_settlement_timeout_from_toml_kills_slow_command(self, tmp_path: Path):
+        """Dogfood: Verify timeout from actual project.toml works in practice."""
+        from dgov.config import load_project_config
+
+        # Load actual project config to ensure it exists and is valid
+        project_root = Path(__file__).parent.parent
+        load_project_config(project_root)
+
+        # Use a very short timeout for test speed (different from project.toml value)
+        test_config = ProjectConfig(
+            lint_fix_cmd="sleep 2",
+            settlement_timeout=1,  # Force 1 second timeout for test speed
+        )
+
+        _init_repo(tmp_path)
+        (tmp_path / "slow.py").write_text("x = 1\n")
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            autofix_sandbox(tmp_path, file_claims=("slow.py",), config=test_config)

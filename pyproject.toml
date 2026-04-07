@@ -64,4 +64,5 @@ testpaths = ["tests"]
 markers = [
     "unit: Unit tests (no external deps)",
     "integration: End-to-end lifecycle tests with real git repos",
+    "slow: Tests that take longer than typical unit tests",
 ]
