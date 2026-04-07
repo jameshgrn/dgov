@@ -199,19 +199,19 @@ class TestWorkerFailure:
         assert not (git_repo / "fail-test.txt").exists()
 
     def test_worktree_cleaned_on_failure(self, git_repo, monkeypatch):
-        """Worktrees cleaned even when worker fails."""
+        """Worktrees cleaned even when worker fails and max retries reached."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
 
         dag = _dag({"fail-cleanup": _task("fail-cleanup")})
         runner = EventDagRunner(dag, session_root=str(git_repo))
 
-        # max_retries=3 means 4 total attempts (0,1,2,3) then fail.
-        # Each creates+destroys a worktree... but the runner only cleans up
-        # in _merge which is only reached on success. Failed workers just
-        # get retried. After final fail, worktrees may leak.
-        # This test documents current behavior.
         asyncio.run(runner.run())
+
+        # Now worktrees should be cleaned up even on terminal failure
+        wt_dir = git_repo.parent / f".dgov-worktrees-{git_repo.name}"
+        leftover = list(wt_dir.iterdir()) if wt_dir.exists() else []
+        assert leftover == []
 
 
 # ---------------------------------------------------------------------------

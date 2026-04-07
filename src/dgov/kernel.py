@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from dgov.actions import (
+    CleanupTask,
     DagAction,
     DagDone,
     DagEvent,
@@ -139,7 +140,7 @@ class DagKernel:
             return self._try_merge()
         self.task_states[event.task_slug] = TaskState.FAILED
         self._cascade_failure(event.task_slug)
-        return [*self._try_merge(), *self._schedule()]
+        return [CleanupTask(event.task_slug), *self._try_merge(), *self._schedule()]
 
     def _on_merge_done(self, event: TaskMergeDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != TaskState.MERGING:
@@ -147,9 +148,13 @@ class DagKernel:
         if event.error:
             self.task_states[event.task_slug] = TaskState.FAILED
             self._cascade_failure(event.task_slug)
+            # Runner's _merge method handles worktree cleanup for this transition
+            # to allow for inspection on settlement rejection.
+            actions: list[DagAction] = []
         else:
             self.task_states[event.task_slug] = TaskState.MERGED
-        return [*self._try_merge(), *self._schedule()]
+            actions = []
+        return [*actions, *self._try_merge(), *self._schedule()]
 
     def _on_governor_resumed(self, event: TaskGovernorResumed) -> list[DagAction]:
         slug = event.task_slug
@@ -165,11 +170,11 @@ class DagKernel:
         if event.action == GovernorAction.SKIP:
             self.task_states[slug] = TaskState.SKIPPED
             self._cascade_failure(slug)
-            return [*self._try_merge(), *self._schedule()]
+            return [CleanupTask(slug), *self._try_merge(), *self._schedule()]
         if event.action == GovernorAction.FAIL:
             self.task_states[slug] = TaskState.FAILED
             self._cascade_failure(slug)
-            return [*self._try_merge(), *self._schedule()]
+            return [CleanupTask(slug), *self._try_merge(), *self._schedule()]
         return []
 
     # -- Internal primitives --

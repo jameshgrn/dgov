@@ -215,7 +215,10 @@ def _cmd_run_plan(
         click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
 
     try:
+        start_time = datetime.now(timezone.utc)
         results = asyncio.run(runner.run())
+        end_time = datetime.now(timezone.utc)
+        duration = end_time - start_time
     except KeyboardInterrupt:
         _output({"status": "interrupted"})
         raise click.exceptions.Exit(code=130) from None
@@ -236,13 +239,11 @@ def _cmd_run_plan(
             "failed": len(failed),
             "failed_tasks": failed if failed else None,
             "sentrux": gate_result if sentrux_ok else None,
+            "duration_s": round(duration.total_seconds(), 2),
         }
     )
 
-    _append_run_log(project_root, dag.name, plan_file, results, gate_result)
-
-    if failed:
-        raise click.exceptions.Exit(code=1)
+    _append_run_log(project_root, dag.name, plan_file, results, gate_result, duration)
 
 
 def _append_run_log(
@@ -251,6 +252,7 @@ def _append_run_log(
     plan_file: str,
     results: dict[str, str],
     gate_result: dict[str, object],
+    duration: datetime.timedelta,
 ) -> None:
     """Append a run summary to .dgov/runs.log — permanent, git-tracked."""
     log_path = Path(project_root) / ".dgov" / "runs.log"
@@ -261,7 +263,7 @@ def _append_run_log(
     failed = [s for s, st in results.items() if st == "failed"]
     status = "ok" if not failed else "fail"
 
-    lines = [f"[{ts}] {plan_name} ({plan_file}) — {status}"]
+    lines = [f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"]
     if merged:
         lines.append(f"  merged: {', '.join(merged)}")
     if failed:
