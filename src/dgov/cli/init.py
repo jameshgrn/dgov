@@ -95,7 +95,7 @@ _LANG_TEMPLATES: dict[str, dict[str, str]] = {
         "test_cmd": "python -m pytest {test_dir} -q --tb=short",
         "lint_cmd": "python -m ruff check {file}",
         "format_cmd": "python -m ruff format {file}",
-        "lint_fix_cmd": "python -m ruff check --fix {file}",
+        "lint_fix_cmd": "python -m ruff check --fix --unsafe-fixes --show-fixes {file}",
         "format_check_cmd": "python -m ruff format --check {file}",
     },
     "javascript": {
