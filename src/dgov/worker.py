@@ -1178,7 +1178,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
         {"role": "user", "content": goal},
     ]
 
-    for _ in range(30):  # Pillar #10: Fail-closed via iteration limit
+    for _ in range(60):  # Pillar #10: Fail-closed via iteration limit
         try:
             resp = client.chat.completions.create(
                 model=model, messages=messages, tools=get_tool_spec(), tool_choice="auto"
@@ -1215,7 +1215,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
                 }
             )
 
-    WorkerEvent("error", "Exceeded max iterations (30)").emit()
+    WorkerEvent("error", "Exceeded max iterations (60)").emit()
     _cleanup()
     sys.exit(1)
 
