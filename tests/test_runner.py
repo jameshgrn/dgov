@@ -58,13 +58,13 @@ def _mock_create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") 
     return Worktree(path=Path(f"/tmp/wt-{slug}"), branch=f"dgov/{slug}", commit="abc123")
 
 
-def _mock_review_pass(wt_path, claimed_files=None, max_diff_lines=100):
+def _mock_review_pass(wt_path, claimed_files=None, max_diff_lines=100, project_root=None):
     from dgov.settlement import ReviewResult
 
     return ReviewResult(passed=True, verdict="ok", actual_files=frozenset({"test.py"}))
 
 
-def _mock_review_fail(wt_path, claimed_files=None, max_diff_lines=100):
+def _mock_review_fail(wt_path, claimed_files=None, max_diff_lines=100, project_root=None):
     from dgov.settlement import ReviewResult
 
     return ReviewResult(passed=False, verdict="scope_violation", error="touched unclaimed files")
