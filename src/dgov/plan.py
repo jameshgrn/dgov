@@ -7,7 +7,6 @@ Pillar #4: Determinism - Validates all inputs and dependencies before dispatch.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
 
@@ -74,7 +73,7 @@ class PlanIssue:
 
     severity: str  # "error" or "warning"
     message: str
-    unit: Optional[str] = None
+    unit: str | None = None
 
 
 def parse_plan_file(path: str) -> PlanSpec:

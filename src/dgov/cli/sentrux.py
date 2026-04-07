@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 from pathlib import Path
 
@@ -40,19 +41,17 @@ def sentrux_check(path: Path | None, json_fmt: bool) -> None:
         output = _run_sentrux(["check", target], cwd=target)
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux check failed: {e.stderr or e.stdout}", err=True)
-        raise click.exceptions.Exit(code=1)
-    except subprocess.TimeoutExpired:
+        raise click.exceptions.Exit(code=1) from e
+    except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux check timed out", err=True)
-        raise click.exceptions.Exit(code=1)
+        raise click.exceptions.Exit(code=1) from e
 
     # Parse quality from output
     quality = 0
     for line in output.splitlines():
         if line.startswith("Quality: "):
-            try:
+            with contextlib.suppress(ValueError):
                 quality = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
             break
 
     if json_fmt or want_json():
@@ -80,18 +79,16 @@ def sentrux_gate_save(path: Path | None) -> None:
         output = _run_sentrux(["gate", "--save", target], cwd=target)
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux gate-save failed: {e.stderr or e.stdout}", err=True)
-        raise click.exceptions.Exit(code=1)
-    except subprocess.TimeoutExpired:
+        raise click.exceptions.Exit(code=1) from e
+    except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux gate-save timed out", err=True)
-        raise click.exceptions.Exit(code=1)
+        raise click.exceptions.Exit(code=1) from e
 
     quality = 0
     for line in output.splitlines():
         if line.startswith("Quality: "):
-            try:
+            with contextlib.suppress(ValueError):
                 quality = int(line.split(":", 1)[1].strip())
-            except ValueError:
-                pass
             break
 
     click.echo(f"Baseline saved at {Path(target) / '.sentrux' / 'baseline.json'}")
@@ -119,10 +116,10 @@ def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
         output = _run_sentrux(["gate", target], cwd=target)
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux gate failed: {e.stderr or e.stdout}", err=True)
-        raise click.exceptions.Exit(code=1)
-    except subprocess.TimeoutExpired:
+        raise click.exceptions.Exit(code=1) from e
+    except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux gate timed out", err=True)
-        raise click.exceptions.Exit(code=1)
+        raise click.exceptions.Exit(code=1) from e
 
     degradation = "degradation" in output.lower() and "no degradation" not in output.lower()
 

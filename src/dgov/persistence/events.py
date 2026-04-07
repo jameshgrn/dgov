@@ -5,9 +5,10 @@ Structured event storage and retrieval via SQLite.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dgov.persistence.connection import _get_db, _retry_on_lock
 from dgov.persistence.schema import _EVENT_TYPED_COLS, VALID_EVENTS
@@ -22,7 +23,7 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
 
     def _do() -> None:
         conn = _get_db(session_root)
-        ts = datetime.now(timezone.utc).isoformat()
+        ts = datetime.now(UTC).isoformat()
 
         typed = {k: str(v) for k, v in kwargs.items() if k in _EVENT_TYPED_COLS and v is not None}
         overflow = {
@@ -90,10 +91,8 @@ def read_events(
     for row in rows:
         row_id, ts, event, pane, data_str = row[0], row[1], row[2], row[3], row[4]
         ev: dict = {"id": row_id, "ts": ts, "event": event, "pane": pane}
-        try:
+        with contextlib.suppress(json.JSONDecodeError, TypeError):
             ev.update(json.loads(data_str))
-        except (json.JSONDecodeError, TypeError):
-            pass
         # Overlay typed columns (non-empty values win over JSON blob)
         for i, col in enumerate(typed_col_names):
             val = row[5 + i]

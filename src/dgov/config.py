@@ -113,7 +113,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
 def _read_toml(path: Path) -> dict:
     """Read a TOML file, return empty dict on any error."""
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             return tomllib.load(f)
     except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
         return {}

@@ -42,27 +42,27 @@ __all__ = [
     # Types
     "TaskState",
     "WorkerTask",
+    # Utilities
+    "_get_db",
+    # Ledger
+    "add_ledger_entry",
     # Task operations
     "add_task",
     "all_tasks",
     "cleanup_zombies",
-    "get_task",
-    "get_tasks",
-    "replace_all_tasks",
-    "set_task_metadata",
-    "update_task_state",
-    # Utilities
-    "_get_db",
     "clear_connection_cache",
     "emit_event",
     "get_slug_history",
+    "get_task",
+    "get_tasks",
     "latest_event_id",
+    "list_ledger_entries",
     "read_events",
     "remove_task",
+    "replace_all_tasks",
     "reset_plan_state",
-    "state_path",
-    # Ledger
-    "add_ledger_entry",
-    "list_ledger_entries",
     "resolve_ledger_entry",
+    "set_task_metadata",
+    "state_path",
+    "update_task_state",
 ]

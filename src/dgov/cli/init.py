@@ -145,7 +145,7 @@ def _render_project_toml(language: str, src_dir: str, test_dir: str, extensions:
         "# Fast review hooks (git sanity checks). {file} is replaced with changed files.",
         "review_hooks = [",
         '  # "grep -q \'TODO\' {file} && exit 1 || exit 0",  # Example: reject TODOs',
-        '  # "detect-secrets-hook --baseline .secrets.baseline {file}",  # Example: secret detection',
+        '  # "detect-secrets-hook --baseline .secrets.baseline {file}",  # Example: secrets',
         "]",
         "",
         "[conventions]",

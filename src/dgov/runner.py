@@ -194,7 +194,7 @@ class EventDagRunner:
         self._worker_tasks.clear()
         self._pending_dispatches.clear()
 
-        # Close all worktrees (including rejected ones for total cleanup ONLY if shutdown was requested)
+        # Close all worktrees (including rejected ones for total cleanup ONLY if shutdown was set)
         loop = asyncio.get_running_loop()
         to_clean = list(self._worktrees.values())
         if self._shutdown_event.is_set():
@@ -241,7 +241,7 @@ class EventDagRunner:
         next_actions: list[DagAction] = []
         coros = [c for _, c in dispatch_coros]
         results = await asyncio.gather(*coros, return_exceptions=True)
-        for (task_slug, _), result in zip(dispatch_coros, results):
+        for (task_slug, _), result in zip(dispatch_coros, results, strict=False):
             if isinstance(result, BaseException):
                 logger.error("Dispatch/merge failed for %s: %s", task_slug, result)
                 next_actions.extend(
@@ -338,7 +338,7 @@ class EventDagRunner:
             try:
                 exit_event = await asyncio.wait_for(self._event_queue.get(), timeout=5.0)
                 actions = self._handle_worker_exit(exit_event)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 if not self._pending_dispatches and self.kernel.done:
                     break
 
@@ -451,7 +451,7 @@ class EventDagRunner:
                 ),
                 timeout=float(timeout_s) if timeout_s > 0 else None,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error("Task %s timed out after %ds", task_slug, timeout_s)
             emit_event(
                 self.session_root,
@@ -566,7 +566,7 @@ class EventDagRunner:
     async def _settle_and_merge(
         self,
         action: MergeTask,
-        wt: "Worktree",
+        wt: Worktree,
         loop: asyncio.AbstractEventLoop,
     ) -> tuple[str | None, bool]:
         """Run autofix → commit → validate → merge. Returns (error, was_settlement)."""
@@ -599,7 +599,7 @@ class EventDagRunner:
     async def _settlement_retry(
         self,
         action: MergeTask,
-        wt: "Worktree",
+        wt: Worktree,
         settlement_error: str,
     ) -> None:
         """Re-launch worker in same worktree with settlement error as feedback."""

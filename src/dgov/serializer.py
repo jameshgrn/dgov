@@ -7,7 +7,7 @@ producing a flat PlanSpec TOML compatible with `parse_dag_file`.
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from dgov.sop_bundler import BundleResult
 
@@ -25,7 +25,7 @@ def serialize_compiled_toml(
     plan = br.plan
     meta = plan.root_meta
 
-    ts = datetime.fromtimestamp(source_mtime_max, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = datetime.fromtimestamp(source_mtime_max, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     lines: list[str] = [
         "[plan]",

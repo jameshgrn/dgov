@@ -108,7 +108,7 @@ def cleanup_cmd() -> None:
 
     except Exception as exc:
         click.echo(f"Cleanup failed: {exc}", err=True)
-        raise click.exceptions.Exit(code=1)
+        raise click.exceptions.Exit(code=1) from exc
 
 
 def _cmd_status(project_root: str) -> None:
@@ -135,10 +135,12 @@ def _cmd_status(project_root: str) -> None:
 
 
 # Register subcommand modules — must be at bottom after cli is defined
-from dgov.cli import compile as _compile  # noqa: E402, F401
-from dgov.cli import init as _init  # noqa: E402, F401
-from dgov.cli import ledger as _ledger  # noqa: E402, F401
-from dgov.cli import plan as _plan  # noqa: E402, F401
-from dgov.cli import run as _run  # noqa: E402, F401
-from dgov.cli import sentrux as _sentrux  # noqa: E402, F401
-from dgov.cli import watch as _watch  # noqa: E402, F401
+from dgov.cli import (
+    compile as _compile,
+    init as _init,
+    ledger as _ledger,
+    plan as _plan,
+    run as _run,
+    sentrux as _sentrux,
+    watch as _watch,
+)

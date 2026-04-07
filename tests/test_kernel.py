@@ -227,7 +227,7 @@ class TestParallel:
         k.handle(TaskReviewDone("a", passed=True, verdict="ok", commit_count=1))
         k.handle(TaskReviewDone("b", passed=True, verdict="ok", commit_count=1))
 
-        first = [s for s, st in k.task_states.items() if st == TaskState.MERGING][0]
+        first = next(s for s, st in k.task_states.items() if st == TaskState.MERGING)
         k.handle(TaskMergeDone(first))
         merging = [s for s, st in k.task_states.items() if st == TaskState.MERGING]
         assert len(merging) == 1

@@ -142,3 +142,7 @@
   durations: cli_reference: 42.28s, plan_reference: 48.04s, update_config: 11.19s
   sentrux: 2316 -> 2316
 
+[2026-04-07 23:18:51Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-286/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2316
+

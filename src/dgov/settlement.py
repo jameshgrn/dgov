@@ -18,7 +18,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from dgov.config import ProjectConfig, load_project_config
 
@@ -30,7 +29,7 @@ class GateResult:
     """The outcome of a validation gate."""
 
     passed: bool
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,7 +39,7 @@ class ReviewResult:
     passed: bool
     verdict: str
     actual_files: frozenset[str] = frozenset()
-    error: Optional[str] = None
+    error: str | None = None
 
 
 def _run_cmd(
@@ -119,9 +118,9 @@ def _check_scope(
 
 def review_sandbox(
     worktree_path: Path,
-    claimed_files: Optional[list[str]] = None,
+    claimed_files: list[str] | None = None,
     max_diff_lines: int = 100,
-    project_root: Optional[str] = None,
+    project_root: str | None = None,
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
 

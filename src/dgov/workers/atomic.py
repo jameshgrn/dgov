@@ -391,10 +391,16 @@ class AtomicTools:
             try:
                 file_tree = ast.parse(py_file.read_text(), filename=py_rel)
                 for node in ast.walk(file_tree):
-                    if isinstance(node, ast.ImportFrom) and node.module:
-                        if node.module == module_name or node.module.startswith(module_name + "."):
-                            imported_by.append(py_rel)
-                            break
+                    if (
+                        isinstance(node, ast.ImportFrom)
+                        and node.module
+                        and (
+                            node.module == module_name
+                            or node.module.startswith(module_name + ".")
+                        )
+                    ):
+                        imported_by.append(py_rel)
+                        break
             except (SyntaxError, UnicodeDecodeError):
                 continue
 

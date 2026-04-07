@@ -102,7 +102,7 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
             cached_hash=cached_hash,
         )
     except Exception as e:
-        click.echo(f"  ERROR: {str(e)}", err=True)
+        click.echo(f"  ERROR: {e!s}", err=True)
         raise click.exceptions.Exit(code=1) from None
 
     # 6. Serialize + write

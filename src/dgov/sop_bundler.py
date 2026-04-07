@@ -8,7 +8,6 @@ See .dgov/plans/plan-system/DESIGN.md for the full compile pipeline.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 from dataclasses import dataclass, replace
@@ -101,8 +100,8 @@ class LLMSopBundler:
         sop_list = "\n".join(f"- {s.name}: {s.title}" for s in sops)
         unit_list = "\n".join(f"- {uid}: {u.summary}" for uid, u in units.items())
 
-        prompt = f"""You are the dgov governor. Your task is to assign relevant Standard Operating Procedures (SOPs) 
-to each unit of work in a plan.
+        prompt = f"""You are the dgov governor. Your task is to assign relevant Standard Operating
+Procedures (SOPs) to each unit of work in a plan.
 
 AVAILABLE SOPS:
 {sop_list}
@@ -110,10 +109,11 @@ AVAILABLE SOPS:
 PLAN UNITS:
 {unit_list}
 
-For each unit, identify which SOPs are relevant to its task based on the SOP title and unit summary. 
-A unit can have zero, one, or multiple SOPs assigned.
+For each unit, identify which SOPs are relevant to its task based on the SOP title and unit
+summary. A unit can have zero, one, or multiple SOPs assigned.
 
-Return a JSON object with a "mapping" key where each key is a unit ID and the value is a list of SOP names.
+Return a JSON object with a "mapping" key where each key is a unit ID and the value is a list of
+SOP names.
 Example:
 {{
   "mapping": {{
@@ -127,7 +127,10 @@ Example:
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a precise task-to-SOP assignment engine."},
+                    {
+                        "role": "system",
+                        "content": "You are a precise task-to-SOP assignment engine.",
+                    },
                     {"role": "user", "content": prompt},
                 ],
                 response_format={"type": "json_object"},
@@ -140,7 +143,7 @@ Example:
             return data.mapping
         except Exception as e:
             # Pillar #6: Fail fast. If the governor can't pick SOPs, compile fails.
-            raise RuntimeError(f"LLMSopBundler failed: {str(e)}") from e
+            raise RuntimeError(f"LLMSopBundler failed: {e!s}") from e
 
 
 def load_sops(sops_dir: Path) -> list[Sop]:

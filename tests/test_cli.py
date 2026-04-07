@@ -179,14 +179,14 @@ def test_detect_rust_project(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     for i in range(5):
         (tmp_path / f"file{i}.rs").touch()
-    lang, src, test, ext = _detect_project(tmp_path)
+    lang, _src, _test, ext = _detect_project(tmp_path)
     assert lang == "rust"
     assert ".rs" in ext
 
 
 def test_detect_fallback_to_python(tmp_path: Path) -> None:
     """Empty dir defaults to python."""
-    lang, src, test, ext = _detect_project(tmp_path)
+    lang, _src, _test, _ext = _detect_project(tmp_path)
     assert lang == "python"
 
 

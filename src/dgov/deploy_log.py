@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger("dgov.deploy_log")
@@ -41,11 +41,11 @@ def append(
     timestamp: str | None = None,
 ) -> None:
     """Append one deploy record. Creates parent dirs if needed."""
-    ts = timestamp or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = timestamp or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     record = {"plan": plan_name, "unit": unit_id, "sha": commit_sha, "ts": ts}
     path = _log_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a") as f:
+    with path.open("a") as f:
         f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 

@@ -212,7 +212,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
                 model=model, messages=messages, tools=get_tool_spec(), tool_choice="auto"
             )
         except Exception as e:
-            WorkerEvent("error", f"API Failure: {str(e)}").emit()
+            WorkerEvent("error", f"API Failure: {e!s}").emit()
             _cleanup()
             sys.exit(1)
 

@@ -9,13 +9,10 @@ Tests cover:
 
 import tomllib
 
-import pytest
-
 from dgov.plan import PlanUnit, PlanUnitFiles
 from dgov.plan_tree import FlatPlan, RootMeta
-from dgov.sop_bundler import BundleResult, IdentityBundler
 from dgov.serializer import _toml_key, _toml_ml_str, _toml_str, serialize_compiled_toml
-
+from dgov.sop_bundler import BundleResult, IdentityBundler
 
 # =============================================================================
 # _toml_str tests

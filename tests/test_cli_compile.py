@@ -232,7 +232,7 @@ def test_compile_fails_no_dry_run_no_api_key(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with runner.isolated_filesystem() as root:
-        plan_dir = _make_plan_tree(Path(root))
+        _make_plan_tree(Path(root))
         # Create a SOP to trigger bundling
         sops_dir = Path(root) / ".dgov" / "sops"
         sops_dir.mkdir(parents=True)
