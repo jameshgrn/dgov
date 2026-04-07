@@ -364,6 +364,71 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool) -> Non
             click.echo("  (dry-run: identity bundler, no LLM call)")
 
 
+@cli.command(name="init-plan")
+@click.argument("name")
+@click.option(
+    "--sections",
+    default="tasks",
+    help="Comma-separated list of sections to create",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing plan directory")
+def init_plan_cmd(name: str, sections: str, force: bool) -> None:
+    """Initialize a new plan with directory structure.
+
+    Creates .dgov/plans/<name>/ with _root.toml and section directories.
+
+    \b
+    Example: dgov init-plan my-plan --sections tasks,docs
+    """
+    plan_root = Path(".dgov") / "plans" / name
+
+    if plan_root.exists() and not force:
+        click.echo(f"Error: plan '{name}' already exists. Use --force to overwrite.", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    # Parse sections
+    section_list = [s.strip() for s in sections.split(",") if s.strip()]
+    if not section_list:
+        section_list = ["tasks"]
+
+    # Create directories
+    plan_root.mkdir(parents=True, exist_ok=force)
+    for section in section_list:
+        (plan_root / section).mkdir(exist_ok=True)
+
+    # Write _root.toml
+    sections_toml = ", ".join(f'"{s}"' for s in section_list)
+    root_toml = f'''[plan]
+name = "{name}"
+summary = ""
+sections = [{sections_toml}]
+'''
+    (plan_root / "_root.toml").write_text(root_toml)
+
+    # Print what was created
+    created = [str(plan_root), str(plan_root / "_root.toml")]
+    for section in section_list:
+        created.append(str(plan_root / section))
+
+    if want_json():
+        click.echo(
+            json.dumps(
+                {
+                    "status": "initialized",
+                    "name": name,
+                    "root": str(plan_root),
+                    "sections": section_list,
+                    "created": created,
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo(f"Initialized plan '{name}':")
+        for path in created:
+            click.echo(f"  {path}")
+
+
 @cli.group(name="plan")
 def plan_cmd() -> None:
     """Plan tree operations."""
