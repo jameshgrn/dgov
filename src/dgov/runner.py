@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -83,6 +84,8 @@ class EventDagRunner:
         self._rejected_worktrees: dict[str, Worktree] = {}  # Preserved for inspection
         self._worker_tasks: dict[str, asyncio.Task[None]] = {}
         self._task_errors: dict[str, str] = {}
+        self._task_start_times: dict[str, float] = {}
+        self._task_durations: dict[str, float] = {}
         self._task_timeouts: dict[str, float] = {}
         self._shutdown_event = asyncio.Event()
 
@@ -294,6 +297,12 @@ class EventDagRunner:
         if exit_event.last_error:
             self._task_errors[exit_event.task_slug] = exit_event.last_error
 
+        # Calculate task duration
+        start_time = self._task_start_times.pop(exit_event.task_slug, None)
+        duration = round(time.time() - start_time, 2) if start_time else None
+        if duration is not None:
+            self._task_durations[exit_event.task_slug] = duration
+
         actions = self.kernel.handle(
             TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
         )
@@ -304,6 +313,7 @@ class EventDagRunner:
             plan_name=self.dag.name,
             task_slug=exit_event.task_slug,
             error=exit_event.last_error if status == TaskState.FAILED else None,
+            duration=duration,
         )
         return actions
 
@@ -482,6 +492,7 @@ class EventDagRunner:
         try:
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
             self._pending_dispatches.add(action.task_slug)
+            self._task_start_times[action.task_slug] = time.time()
 
             # Create task record with file claims for scope enforcement
             file_claims = tuple(

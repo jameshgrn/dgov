@@ -243,7 +243,7 @@ def _cmd_run_plan(
         }
     )
 
-    _append_run_log(project_root, dag.name, plan_file, results, gate_result, duration)
+    _append_run_log(project_root, dag.name, plan_file, results, gate_result, duration, runner._task_durations)
 
 
 def _append_run_log(
@@ -253,6 +253,7 @@ def _append_run_log(
     results: dict[str, str],
     gate_result: dict[str, object],
     duration: datetime.timedelta,
+    task_durations: dict[str, float] | None = None,
 ) -> None:
     """Append a run summary to .dgov/runs.log — permanent, git-tracked."""
     log_path = Path(project_root) / ".dgov" / "runs.log"
@@ -268,6 +269,9 @@ def _append_run_log(
         lines.append(f"  merged: {', '.join(merged)}")
     if failed:
         lines.append(f"  failed: {', '.join(failed)}")
+    if task_durations:
+        dur_str = ", ".join(f"{s}: {d}s" for s, d in task_durations.items())
+        lines.append(f"  durations: {dur_str}")
     quality_before = gate_result.get("quality_before")
     quality_after = gate_result.get("quality_after")
     if quality_before is not None:

@@ -125,3 +125,15 @@
   failed: a
   sentrux: 7350 -> 7350
 
+[2026-04-07 21:41:23Z] task-timing (plan_timing.toml) — fail (3.76s)
+  failed: track_timing
+  sentrux: 7334 -> 7334
+
+[2026-04-07 21:41:35Z] task-timing (plan_timing.toml) — fail (0.0s)
+  failed: track_timing
+  sentrux: 7334 -> 7334
+
+[2026-04-07 21:43:59Z] task-timing (plan_timing.toml) — fail (126.41s)
+  failed: track_timing
+  sentrux: 7334 -> 7334
+

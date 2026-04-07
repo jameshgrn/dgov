@@ -1,0 +1,18 @@
+---
+layout: landing
+---
+
+import { HomePage } from 'vocs/components'
+
+<HomePage.Root>
+  <HomePage.Logo />
+  <HomePage.Tagline>Deterministic kernel for multi-agent orchestration via git worktrees.</HomePage.Tagline>
+  <div className="vocs_HomePage_InstallPackage">
+    <pre className="vocs_CodeBlock_pre"><code className="vocs_CodeBlock_code">uv pip install dgov</code></pre>
+  </div>
+  <HomePage.Description>Isolated, event-sourced, and perfectly repeatable AI coding workflows.</HomePage.Description>
+  <HomePage.Buttons>
+    <HomePage.Button href="/getting-started" variant="accent">Get started</HomePage.Button>
+    <HomePage.Button href="https://github.com/jameshgrn/dgov">GitHub</HomePage.Button>
+  </HomePage.Buttons>
+</HomePage.Root>

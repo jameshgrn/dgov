@@ -1,0 +1,35 @@
+# Concepts
+
+`dgov` is built on a set of core engineering principles designed to make multi-agent orchestration as predictable as a compiler.
+
+## Architecture
+
+| Module | Role |
+|--------|------|
+| `kernel.py` | Pure `(state, event) → (new_state, actions)` — no I/O |
+| `runner.py` | Async DAG executor feeding the kernel |
+| `worker.py` | Standalone OpenAI-client subprocess |
+| `settlement.py` | ruff auto-fix + lint gate + sentrux policy gate |
+| `worktree.py` | Git worktree create/merge/remove |
+| `plan.py` | TOML plan parsing, DAG compilation |
+| `persistence/` | SQLite event store (panes + events + slug history) |
+
+## Deterministic Kernel
+
+The heart of `dgov` is a pure state machine. It doesn't know about the network, the filesystem, or LLMs. It only knows how to transition state based on events (like `TaskDone` or `TaskFailed`) and emit actions (like `MergeTask` or `RetryTask`).
+
+This separation makes the orchestration logic perfectly testable and resilient to process crashes.
+
+## Snapshot Isolation
+
+Every task dispatched by `dgov` runs in its own **git worktree**. 
+- **Isolated Environment**: Workers cannot accidentally interfere with each other's files.
+- **Commit-or-Kill**: Changes are only merged back to the main branch if they pass all settlement gates (linting, tests, and architectural checks).
+- **Audit Trail**: Every attempt is a branch. You can always inspect exactly what a worker was doing by checking its worktree.
+
+## Settlement Layer
+
+The settlement layer acts as a automated PR review. Before any code is merged, `dgov` performs:
+1. **Autofix**: Running formatters and simple lint fixes.
+2. **Review**: Fast sanity checks (e.g. no secrets, no binary files).
+3. **Validation**: Running the project's own test suite and architectural gates.
