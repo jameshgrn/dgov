@@ -1,0 +1,225 @@
+# Plan Reference
+
+A `plan.toml` file declares a deterministic execution graph. It is the contract between the Governor and Workers.
+
+## Structure Overview
+
+```toml
+[plan]
+name = "refactor-api"
+default_agent = "claude-3-5-sonnet"
+max_retries = 2
+
+[tasks.validate]
+summary = "Validate current state"
+prompt = "Review src/api.py and verify the current endpoint structure"
+agent = "reviewer"
+commit_message = "docs: add validation notes"
+
+[tasks.validate.files]
+read = ["src/api.py"]
+
+[tasks.migrate]
+summary = "Migrate to new schema"
+prompt = "Refactor src/api.py to use the new typed response schema"
+depends_on = ["validate"]
+commit_message = "refactor: migrate api to typed schema"
+
+[tasks.migrate.files]
+edit = ["src/api.py"]
+create = ["src/api/types.py"]
+```
+
+---
+
+## `[plan]` Section
+
+The plan metadata and global defaults.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `name` | string | Yes | — | Unique identifier for this plan |
+| `default_agent` | string | No | — | Fallback agent for tasks without explicit `agent` |
+| `max_retries` | integer | No | 3 | Global retry limit for failed tasks |
+| `project_root` | string | No | `.` | Path to project root relative to plan file |
+| `session_root` | string | No | `.` | Path to session work directory |
+
+### Agent Resolution Order
+
+When a task runs, its agent is resolved in this priority:
+
+1. `tasks.<slug>.agent`
+2. `plan.default_agent`
+3. `project.toml` default
+
+If none are set, validation fails before execution.
+
+---
+
+## `[tasks.<slug>]` Section
+
+Individual task definitions. Use `[tasks.slug]` for inline tables or `[[tasks]]` array-of-tables syntax.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `slug` | string | Yes (implicit) | — | Task identifier (from table key) |
+| `summary` | string | Yes | — | Short description for logs and UI |
+| `prompt` | string | Yes | — | Instructions sent to the worker agent |
+| `agent` | string | No | `plan.default_agent` | Agent model for this task |
+| `depends_on` | array of strings | No | `[]` | Slugs that must complete first |
+| `commit_message` | string | Yes | — | Git commit message on success |
+| `timeout_s` | integer | No | 900 | Seconds before task aborts |
+
+### File Claims `[tasks.<slug>.files]`
+
+File claims enforce **isolation** between concurrent tasks. The kernel validates that independent tasks (no dependency edge) never claim overlapping file paths.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `create` | array of strings | Files the task will create |
+| `edit` | array of strings | Files the task will modify |
+| `delete` | array of strings | Files the task will remove |
+| `read` | array of strings | Files the task reads (informational, not enforced) |
+
+---
+
+## File Claim Isolation
+
+File claims are the foundation of deterministic concurrency:
+
+1. **Declaration**: Every task must declare files it touches
+2. **Validation**: Before execution, the kernel checks for conflicts
+3. **Enforcement**: Independent tasks with overlapping paths fail validation
+
+### Conflict Example (Invalid)
+
+```toml
+[tasks.a]
+summary = "Update config"
+prompt = "Change port to 8080"
+files.edit = ["config.yaml"]
+
+[tasks.b]
+summary = "Also update config"
+prompt = "Change port to 9090"
+files.edit = ["config.yaml"]  # ERROR: no dependency edge with task.a
+```
+
+### Valid Dependency Chain
+
+```toml
+[tasks.a]
+summary = "Update config"
+files.edit = ["config.yaml"]
+
+[tasks.b]
+summary = "Read updated config"
+files.read = ["config.yaml"]
+depends_on = ["a"]  # OK: explicit ordering prevents conflict
+```
+
+### Path Overlap Rules
+
+Conflicts are detected when paths are identical or one is a parent of another:
+
+- `src/main.py` overlaps with `src/main.py`
+- `src/` overlaps with `src/main.py`
+- `config.yaml` does NOT overlap with `other.yaml`
+
+---
+
+## Full Example
+
+```toml
+[plan]
+name = "payment-gateway-refactor"
+default_agent = "claude-3-opus"
+max_retries = 2
+project_root = "."
+
+# === Phase 1: Analysis ===
+
+[tasks.audit]
+summary = "Audit current payment code"
+prompt = """
+Review src/payments/ directory and identify:
+1. All external API calls
+2. Error handling gaps
+3. Missing type annotations
+
+Write findings to audit_report.md
+"""
+agent = "senior-reviewer"
+commit_message = "docs: payment system audit report"
+timeout_s = 1200
+
+[tasks.audit.files]
+read = [
+    "src/payments/",
+    "src/payments/stripe.py",
+    "src/payments/paypal.py",
+]
+create = ["audit_report.md"]
+
+# === Phase 2: Design ===
+
+[tasks.design_schema]
+summary = "Design new payment schema"
+prompt = "Based on audit_report.md, design typed models for PaymentMethod and PaymentResult"
+depends_on = ["audit"]
+commit_message = "design: payment type schema"
+
+[tasks.design_schema.files]
+read = ["audit_report.md"]
+create = ["src/payments/types.py"]
+
+# === Phase 3: Implementation ===
+
+[tasks.refactor_stripe]
+summary = "Migrate Stripe integration"
+prompt = "Refactor src/payments/stripe.py to use new types from src/payments/types.py"
+depends_on = ["design_schema"]
+commit_message = "refactor: migrate stripe to typed models"
+
+[tasks.refactor_stripe.files]
+edit = ["src/payments/stripe.py"]
+read = ["src/payments/types.py"]
+
+[tasks.refactor_paypal]
+summary = "Migrate PayPal integration"
+prompt = "Refactor src/payments/paypal.py to use new types from src/payments/types.py"
+depends_on = ["design_schema"]
+commit_message = "refactor: migrate paypal to typed models"
+
+[tasks.refactor_paypal.files]
+edit = ["src/payments/paypal.py"]
+read = ["src/payments/types.py"]
+
+# === Phase 4: Cleanup ===
+
+[tasks.remove_legacy]
+summary = "Remove legacy payment module"
+prompt = "Delete src/payments/legacy.py after confirming no imports remain"
+depends_on = ["refactor_stripe", "refactor_paypal"]
+commit_message = "chore: remove legacy payment module"
+
+[tasks.remove_legacy.files]
+read = ["src/payments/stripe.py", "src/payments/paypal.py"]
+delete = ["src/payments/legacy.py"]
+```
+
+---
+
+## Validation
+
+Validate a plan without executing:
+
+```bash
+dgov validate plan.toml
+```
+
+This checks:
+- TOML syntax and schema
+- All dependencies reference existing tasks
+- No file conflicts between independent tasks
+- All tasks have resolvable agents
