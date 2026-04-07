@@ -169,6 +169,7 @@ VALID_EVENTS = frozenset(
         # Merge
         "merge_completed",
         "task_merge_failed",
+        "settlement_retry",
         # Worker subprocess
         "worker_log",
         "worker_done",

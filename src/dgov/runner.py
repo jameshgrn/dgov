@@ -486,6 +486,90 @@ class EventDagRunner:
             self._worktrees.pop(action.task_slug, None)
             raise
 
+    async def _settle_and_merge(
+        self,
+        action: MergeTask,
+        wt: "Worktree",
+        loop: asyncio.AbstractEventLoop,
+    ) -> tuple[str | None, bool]:
+        """Run autofix → commit → validate → merge. Returns (error, was_settlement)."""
+        task = self.dag.tasks[action.task_slug]
+        file_claims = action.file_claims
+        pc = self.project_config
+
+        await loop.run_in_executor(self._executor, autofix_sandbox, wt.path, file_claims, pc)
+
+        msg = task.commit_message or f"feat: completed {action.task_slug}"
+        await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg, file_claims)
+
+        gate_result = await loop.run_in_executor(
+            self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, pc
+        )
+
+        if not gate_result.passed:
+            return gate_result.error, True
+
+        merge_sha = await loop.run_in_executor(
+            self._executor, merge_worktree, self.session_root, wt
+        )
+        logger.info("COMMITTED %s", action.task_slug)
+
+        from dgov import deploy_log
+
+        deploy_log.append(self.session_root, self.dag.name, action.task_slug, merge_sha)
+        return None, False
+
+    async def _settlement_retry(
+        self,
+        action: MergeTask,
+        wt: "Worktree",
+        settlement_error: str,
+    ) -> None:
+        """Re-launch worker in same worktree with settlement error as feedback."""
+        import subprocess as sp
+
+        # Reset the failed commit so worker sees uncommitted changes
+        sp.run(["git", "reset", "HEAD~1"], cwd=wt.path, capture_output=True)
+
+        task = self.dag.tasks[action.task_slug]
+        feedback_prompt = (
+            "Your previous attempt was REJECTED by settlement. "
+            "Fix the issue and call done.\n\n"
+            f"SETTLEMENT ERROR:\n{settlement_error}\n\n"
+            f"ORIGINAL TASK:\n{task.prompt}\n\n"
+            "The worktree has your changes (uncommitted). "
+            "Use git_diff to see them, fix the problem, then call done."
+        )
+
+        from dgov.dag_parser import DagTaskSpec
+
+        retry_task = DagTaskSpec(
+            slug=action.task_slug,
+            summary=f"[retry] {task.summary}",
+            prompt=feedback_prompt,
+            commit_message=task.commit_message,
+            depends_on=task.depends_on,
+            files=task.files,
+            agent=task.agent,
+            timeout_s=task.timeout_s,
+        )
+
+        pane_slug = action.pane_slug + "-retry"
+
+        def _noop_exit(slug: str, pane: str, code: int, err: str = "") -> None:
+            if code != 0:
+                logger.warning("Settlement retry worker exited %d for %s: %s", code, slug, err)
+
+        await run_headless_worker(
+            self.session_root,
+            action.task_slug,
+            pane_slug,
+            wt.path,
+            retry_task,
+            _noop_exit,
+            on_event=self.on_event,
+        )
+
     async def _merge(self, action: MergeTask) -> list[DagAction]:
         """Commit-or-Kill: Merge worktree branch into base (Pillar #2)."""
         wt = self._worktrees.get(action.task_slug)
@@ -495,43 +579,34 @@ class EventDagRunner:
         loop = asyncio.get_running_loop()
         error = None
         settlement_rejected = False
+
         try:
-            # 1. Auto-fix (lint fix then format) BEFORE commit — scoped to claimed files
-            task = self.dag.tasks[action.task_slug]
-            file_claims = action.file_claims
-            pc = self.project_config
-            await loop.run_in_executor(self._executor, autofix_sandbox, wt.path, file_claims, pc)
+            error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
 
-            # 2. Commit (includes auto-fixes) — stage only claimed files
-            msg = task.commit_message or f"feat: completed {action.task_slug}"
-            await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg, file_claims)
-
-            # 3. Validate (read-only gate)
-            gate_result = await loop.run_in_executor(
-                self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, pc
-            )
-
-            if not gate_result.passed:
-                error = gate_result.error
-                settlement_rejected = True
-                logger.warning("REJECTED %s: %s", action.task_slug, error)
-            else:
-                # 3. Merge
-                merge_sha = await loop.run_in_executor(
-                    self._executor, merge_worktree, self.session_root, wt
+            # Settlement retry: give worker one chance to fix
+            if settlement_rejected and error:
+                logger.info(
+                    "SETTLEMENT RETRY %s — feeding error back to worker",
+                    action.task_slug,
                 )
-                logger.info("COMMITTED %s", action.task_slug)
-
-                # 4. Deploy log — record shipped unit
-                from dgov import deploy_log
-
-                deploy_log.append(self.session_root, self.dag.name, action.task_slug, merge_sha)
+                emit_event(
+                    self.session_root,
+                    "settlement_retry",
+                    action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    error=error,
+                )
+                await self._settlement_retry(action, wt, error)
+                error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
+                if settlement_rejected:
+                    logger.warning("REJECTED %s after retry: %s", action.task_slug, error)
 
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
             error = str(exc)
 
-        # 5. Cleanup — keep worktree on settlement rejection so governor can inspect
+        # Cleanup — keep worktree on settlement rejection so governor can inspect
         if not settlement_rejected:
             try:
                 await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
@@ -539,7 +614,11 @@ class EventDagRunner:
                 logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
             self._worktrees.pop(action.task_slug, None)
         else:
-            logger.info("Worktree preserved for inspection: %s (%s)", action.task_slug, wt.path)
+            logger.info(
+                "Worktree preserved for inspection: %s (%s)",
+                action.task_slug,
+                wt.path,
+            )
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
