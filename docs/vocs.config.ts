@@ -11,5 +11,13 @@ export default defineConfig({
       text: 'Concepts',
       link: '/concepts',
     },
+    {
+      text: 'CLI Reference',
+      link: '/cli-reference',
+    },
+    {
+      text: 'Plan Reference',
+      link: '/plan-reference',
+    },
   ],
 })
