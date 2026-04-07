@@ -48,6 +48,7 @@ class _ProjectConfig:
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
+    lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] | None = None
 
@@ -77,6 +78,7 @@ def _load_project_config(worktree: Path) -> _ProjectConfig:
         test_cmd=proj.get("test_cmd", _ProjectConfig.test_cmd),
         lint_cmd=proj.get("lint_cmd", _ProjectConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", _ProjectConfig.format_cmd),
+        lint_fix_cmd=proj.get("lint_fix_cmd", _ProjectConfig.lint_fix_cmd),
         test_markers=markers,
         conventions=conventions or None,
     )
@@ -111,13 +113,22 @@ class AtomicTools:
 
     # -- Core tools --
 
-    def read_file(self, path: str) -> str:
+    def read_file(self, path: str, start_line: int = 0, end_line: int = 0) -> str:
+        """Read a file, optionally a specific line range (1-indexed, inclusive)."""
         target = self._check_path(path)
         if isinstance(target, str):
             return target
         if not target.exists():
             return f"Error: {path} does not exist."
-        return target.read_text()
+        content = target.read_text()
+        if start_line > 0:
+            lines = content.splitlines(keepends=True)
+            end = end_line if end_line > 0 else len(lines)
+            start = max(1, start_line)
+            selected = lines[start - 1 : end]
+            numbered = [f"{start + i}: {line}" for i, line in enumerate(selected)]
+            return "".join(numbered)
+        return content
 
     def write_file(self, path: str, content: str) -> str:
         target = self._check_path(path)
@@ -126,6 +137,22 @@ class AtomicTools:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
         return f"Successfully wrote {len(content)} bytes to {path}"
+
+    def edit_file(self, path: str, old_text: str, new_text: str) -> str:
+        """Replace old_text with new_text. Fails if not found or ambiguous."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if not target.exists():
+            return f"Error: {path} does not exist."
+        content = target.read_text()
+        count = content.count(old_text)
+        if count == 0:
+            return f"Error: old_text not found in {path}."
+        if count > 1:
+            return f"Error: old_text matches {count} locations in {path}. Be more specific."
+        target.write_text(content.replace(old_text, new_text, 1))
+        return f"Successfully edited {path}"
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
@@ -215,6 +242,33 @@ class AtomicTools:
                 entries.append(f"{rel}  ({size} bytes)")
         return "\n".join(entries) if entries else "(empty directory)"
 
+    def git_diff(self) -> str:
+        """Show uncommitted changes in the worktree."""
+        try:
+            res = subprocess.run(
+                ["git", "diff", "HEAD"],
+                cwd=self.worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            diff = res.stdout.strip()
+            if not diff:
+                # Also check untracked files
+                status = subprocess.run(
+                    ["git", "status", "--short"],
+                    cwd=self.worktree,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return status.stdout.strip() or "No changes."
+            if len(diff) > 5000:
+                return diff[:5000] + "\n... (truncated at 5000 chars)"
+            return diff
+        except subprocess.TimeoutExpired:
+            return "Error: git diff timed out."
+
     # -- SOP compound tools --
 
     def run_tests(self, file: str = "") -> str:
@@ -230,8 +284,14 @@ class AtomicTools:
         cmd = self.config.lint_cmd.replace("{file}", target)
         return self.run_bash(cmd)
 
+    def lint_fix(self, file: str = "") -> str:
+        """Auto-fix lint issues (including unsafe fixes like unused variables)."""
+        target = file if file else self.config.src_dir
+        cmd = self.config.lint_fix_cmd.replace("{file}", target)
+        return self.run_bash(cmd)
+
     def format_file(self, file: str) -> str:
-        """Format a file using the project's declared format command."""
+        """Format a file using the project's formatter."""
         cmd = self.config.format_cmd.replace("{file}", file)
         return self.run_bash(cmd)
 
@@ -243,10 +303,26 @@ def get_tool_spec() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "Read a file's contents. Use relative paths (e.g. 'src/foo.py').",
+                "description": (
+                    "Read a file's contents. Use relative paths (e.g. 'src/foo.py'). "
+                    "Optionally pass start_line and end_line (1-indexed, inclusive) to "
+                    "read a specific range and save tokens on large files."
+                ),
                 "parameters": {
                     "type": "object",
-                    "properties": {"path": {"type": "string"}},
+                    "properties": {
+                        "path": {"type": "string"},
+                        "start_line": {
+                            "type": "integer",
+                            "description": "First line to read (1-indexed). 0 = read whole file.",
+                            "default": 0,
+                        },
+                        "end_line": {
+                            "type": "integer",
+                            "description": "Last line to read (inclusive). 0 = to end of file.",
+                            "default": 0,
+                        },
+                    },
                     "required": ["path"],
                 },
             },
@@ -255,11 +331,41 @@ def get_tool_spec() -> list[dict]:
             "type": "function",
             "function": {
                 "name": "write_file",
-                "description": "Write content to a file. Creates parent directories.",
+                "description": (
+                    "Write content to a file (full replacement). Creates parent dirs. "
+                    "Prefer edit_file for modifying existing files."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
                     "required": ["path", "content"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "edit_file",
+                "description": (
+                    "Replace old_text with new_text in a file. Only the matched section "
+                    "changes — all other content is preserved byte-for-byte. Fails if "
+                    "old_text is not found or matches multiple locations (be more specific). "
+                    "ALWAYS prefer this over write_file when modifying existing files."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "old_text": {
+                            "type": "string",
+                            "description": "Exact text to find (must match uniquely)",
+                        },
+                        "new_text": {
+                            "type": "string",
+                            "description": "Replacement text",
+                        },
+                    },
+                    "required": ["path", "old_text", "new_text"],
                 },
             },
         },
@@ -324,6 +430,17 @@ def get_tool_spec() -> list[dict]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "git_diff",
+                "description": (
+                    "Show your uncommitted changes so far. Use to review your work "
+                    "before calling done."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
         # SOP tools
         {
             "type": "function",
@@ -353,6 +470,26 @@ def get_tool_spec() -> list[dict]:
                         "file": {
                             "type": "string",
                             "description": "Specific file to lint (default: all source)",
+                            "default": "",
+                        },
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "lint_fix",
+                "description": (
+                    "Auto-fix lint issues including unused variables and imports. "
+                    "Run this after editing to clean up trivial issues automatically."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file": {
+                            "type": "string",
+                            "description": "Specific file to fix (default: all source)",
                             "default": "",
                         },
                     },
@@ -420,7 +557,11 @@ def _build_system_prompt(worktree: Path, config: _ProjectConfig) -> str:
         f"- Python: {sys.executable}\n"
         f"- Do NOT install packages or create venvs. Everything is pre-installed.\n"
         f"- Use relative paths for file tools (e.g. 'src/dgov/foo.py' not absolute).\n"
-        f"- Use run_tests, lint_check, format_file instead of raw bash for standard ops.\n"
+        f"- Use edit_file to modify existing files (not write_file).\n"
+        f"- Use read_file with start_line/end_line for large files.\n"
+        f"- Use lint_fix after editing to auto-fix trivial lint issues.\n"
+        f"- Use git_diff before calling done to review your changes.\n"
+        f"- Use run_tests, lint_check, format_file for standard ops.\n"
         f"- Use grep, glob, list_dir to navigate the codebase efficiently.\n"
     )
 
