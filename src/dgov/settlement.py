@@ -118,7 +118,10 @@ def _check_scope(
 
 
 def review_sandbox(
-    worktree_path: Path, claimed_files: Optional[list[str]] = None, max_diff_lines: int = 100
+    worktree_path: Path,
+    claimed_files: Optional[list[str]] = None,
+    max_diff_lines: int = 100,
+    project_root: Optional[str] = None,
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
 
@@ -126,6 +129,7 @@ def review_sandbox(
     1. Empty diff (worker produced nothing)
     2. Diff size (runaway worker)
     3. Scope enforcement (touched unclaimed files)
+    4. Review hooks (user-defined policy via .dgov/project.toml)
 
     Uses git status --porcelain to see ALL changes including new files.
     """
@@ -145,6 +149,29 @@ def review_sandbox(
         result = _check_scope(actual_files, claimed_files)
         if result is not None:
             return result
+
+        # 4. Review hooks
+        if project_root:
+            config = load_project_config(project_root)
+            if config.review_hooks:
+                file_args = " ".join(shlex.quote(f) for f in actual_files)
+                for hook in config.review_hooks:
+                    cmd = hook.replace("{file}", file_args).replace("{files}", file_args)
+                    res = subprocess.run(
+                        cmd,
+                        shell=True,
+                        cwd=worktree_path,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    if res.returncode != 0:
+                        return ReviewResult(
+                            passed=False,
+                            verdict="hook_fail",
+                            actual_files=actual_files,
+                            error=f"Review hook failed: {hook}\n{res.stdout}{res.stderr}",
+                        )
 
         # All checks passed
         return ReviewResult(

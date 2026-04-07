@@ -329,7 +329,9 @@ class EventDagRunner:
 
         task_record = get_task(self.session_root, action.task_slug)
         claimed_files = task_record.get("file_claims") if task_record else None
-        review_result = review_sandbox(wt.path, claimed_files=claimed_files)
+        review_result = review_sandbox(
+            wt.path, claimed_files=claimed_files, project_root=self.session_root
+        )
 
         emit_event(
             self.session_root,
