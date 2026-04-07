@@ -30,6 +30,7 @@ class ProjectConfig:
     format_check_cmd: str = "python -m ruff format --check {file}"
     test_markers: tuple[str, ...] = ()
     settlement_timeout: int = 120
+    line_length: int = 99
     review_hooks: tuple[str, ...] = ()
     conventions: dict[str, str] = field(default_factory=dict)
 
@@ -105,6 +106,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
         test_markers=markers,
         settlement_timeout=proj.get("settlement_timeout", 120),
+        line_length=proj.get("line_length", 99),
         review_hooks=hooks,
         conventions=conventions,
     )
