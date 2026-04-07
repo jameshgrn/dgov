@@ -6,7 +6,7 @@ import asyncio
 import json
 import subprocess
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
@@ -67,7 +67,7 @@ def _sentrux_available() -> bool:
 def _run_sentrux(args: list[str], cwd: str | None = None, timeout: float = 30.0) -> str:
     """Run sentrux command, return stdout."""
     result = subprocess.run(
-        ["sentrux"] + args,
+        ["sentrux", *args],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -215,9 +215,9 @@ def _cmd_run_plan(
         click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
 
     try:
-        start_time = datetime.now(timezone.utc)
+        start_time = datetime.now(UTC)
         results = asyncio.run(runner.run())
-        end_time = datetime.now(timezone.utc)
+        end_time = datetime.now(UTC)
         duration = end_time - start_time
     except KeyboardInterrupt:
         _output({"status": "interrupted"})
@@ -243,7 +243,15 @@ def _cmd_run_plan(
         }
     )
 
-    _append_run_log(project_root, dag.name, plan_file, results, gate_result, duration, runner._task_durations)
+    _append_run_log(
+        project_root,
+        dag.name,
+        plan_file,
+        results,
+        gate_result,
+        duration,
+        runner._task_durations,
+    )
 
 
 def _append_run_log(
@@ -259,7 +267,7 @@ def _append_run_log(
     log_path = Path(project_root) / ".dgov" / "runs.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
     merged = [s for s, st in results.items() if st == "merged"]
     failed = [s for s, st in results.items() if st == "failed"]
     status = "ok" if not failed else "fail"

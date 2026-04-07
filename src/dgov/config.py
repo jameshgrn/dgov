@@ -26,10 +26,11 @@ class ProjectConfig:
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
     # Settlement-specific (autofix + validate)
-    lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
+    lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes --show-fixes {file}"
     format_check_cmd: str = "python -m ruff format --check {file}"
     test_markers: tuple[str, ...] = ()
     settlement_timeout: int = 120
+    line_length: int = 99
     review_hooks: tuple[str, ...] = ()
     conventions: dict[str, str] = field(default_factory=dict)
 
@@ -105,6 +106,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
         test_markers=markers,
         settlement_timeout=proj.get("settlement_timeout", 120),
+        line_length=proj.get("line_length", 99),
         review_hooks=hooks,
         conventions=conventions,
     )
@@ -113,7 +115,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
 def _read_toml(path: Path) -> dict:
     """Read a TOML file, return empty dict on any error."""
     try:
-        with open(path, "rb") as f:
+        with path.open("rb") as f:
             return tomllib.load(f)
     except (FileNotFoundError, tomllib.TOMLDecodeError, OSError):
         return {}

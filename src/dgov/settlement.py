@@ -11,14 +11,16 @@ Three phases:
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import logging
 import shlex
 import shutil
 import subprocess
 import tempfile
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from dgov.config import ProjectConfig, load_project_config
 
@@ -30,7 +32,7 @@ class GateResult:
     """The outcome of a validation gate."""
 
     passed: bool
-    error: Optional[str] = None
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -40,7 +42,114 @@ class ReviewResult:
     passed: bool
     verdict: str
     actual_files: frozenset[str] = frozenset()
-    error: Optional[str] = None
+    error: str | None = None
+
+
+class SmartFixer:
+    """Harness-level refactorer for 'unfixable' lint rules.
+
+    Pillar #8: Falsifiable Validation - Automates choice-making for stylistic/logical rules.
+    """
+
+    def __init__(self, worktree_path: Path, line_length: int = 99):
+        self.worktree_path = worktree_path
+        self.line_length = line_length
+
+    def fix_all(self, files: list[str]) -> None:
+        """Apply all smart fixes to the provided list of relative file paths."""
+        for rel_path in files:
+            path = self.worktree_path / rel_path
+            if not path.exists() or path.suffix != ".py":
+                continue
+
+            content = path.read_text()
+            # 1. Logical fixes (B904)
+            content = self._fix_b904(content)
+            # 2. Stylistic fixes (E501)
+            content = self._fix_e501_comments(content)
+
+            path.write_text(content)
+
+    def _fix_b904(self, content: str) -> str:
+        """Fix B904 (raise-without-from-inside-except).
+
+        If an except block has 'except ... as exc:' and a bare 'raise NewError()',
+        automatically convert to 'raise NewError() from exc'.
+        """
+        try:
+            tree = ast.parse(content)
+        except SyntaxError:
+            return content
+
+        modified = False
+
+        class B904Transformer(ast.NodeTransformer):
+            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.ExceptHandler:
+                # Need an exception variable name to chain from
+                exc_name = node.name
+                if not exc_name:
+                    return self.generic_visit(node)
+
+                # Look for bare 'raise' statements in this handler
+                for body_node in ast.walk(node):
+                    if (
+                        isinstance(body_node, ast.Raise)
+                        and body_node.exc
+                        and not body_node.cause
+                    ):
+                        # Append 'from {exc_name}'
+                        body_node.cause = ast.Name(id=exc_name, ctx=ast.Load())
+                        nonlocal modified
+                        modified = True
+                return node
+
+        new_tree = B904Transformer().visit(tree)
+        return ast.unparse(new_tree) if modified else content
+
+    def _fix_e501_comments(self, content: str) -> str:
+        """Fix E501 (line-too-long) for comments.
+
+        Wraps prose comments to fit within line_length while preserving
+        URLs and indentation.
+        """
+        lines = content.splitlines()
+        new_lines = []
+        for line in lines:
+            # Only process lines that exceed length and are comments
+            if len(line) <= self.line_length or "#" not in line:
+                new_lines.append(line)
+                continue
+
+            indent = line[: len(line) - len(line.lstrip())]
+            parts = line.split("#", 1)
+            code_part = parts[0]
+            comment_part = parts[1].strip()
+
+            # Skip if comment is likely a URL or pragma
+            if any(x in comment_part for x in ("http://", "https://", "noqa:", "type:")):
+                new_lines.append(line)
+                continue
+
+            # Wrap prose comment
+            prefix = f"{indent}# " if not code_part.strip() else f"{code_part}# "
+            wrap_width = self.line_length - len(prefix)
+
+            if wrap_width < 20:  # Code part is too long, can't wrap comment reasonably
+                new_lines.append(line)
+                continue
+
+            wrapped = textwrap.wrap(comment_part, width=wrap_width)
+            if not wrapped:
+                new_lines.append(line)
+                continue
+
+            # First line keeps code part
+            new_lines.append(f"{prefix}{wrapped[0]}")
+            # Subsequent lines are just indented comments
+            for w in wrapped[1:]:
+                new_lines.append(f"{indent}# {w}")
+
+        return "\n".join(new_lines) + ("\n" if content.endswith("\n") else "")
 
 
 def _run_cmd(
@@ -119,9 +228,9 @@ def _check_scope(
 
 def review_sandbox(
     worktree_path: Path,
-    claimed_files: Optional[list[str]] = None,
+    claimed_files: list[str] | None = None,
     max_diff_lines: int = 100,
-    project_root: Optional[str] = None,
+    project_root: str | None = None,
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
 
@@ -216,9 +325,14 @@ def autofix_sandbox(
     if not rel:
         return
 
-    # Lint fix first (may remove imports, change lines)
+    # 1. Standard Lint fix (may remove imports, change lines)
     _run_cmd(config.lint_fix_cmd, rel, worktree_path, timeout=config.settlement_timeout)
-    # Format LAST (canonical formatting after all mutations)
+
+    # 2. Smart Fixer (Logical and Prose fixes that Ruff skips)
+    sf = SmartFixer(worktree_path, line_length=config.line_length)
+    sf.fix_all(rel)
+
+    # 3. Format LAST (canonical formatting after all mutations)
     _run_cmd(config.format_cmd, rel, worktree_path, timeout=config.settlement_timeout)
 
 

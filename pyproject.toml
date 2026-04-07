@@ -35,9 +35,28 @@ packages = ["src/dgov"]
 
 [tool.ruff]
 line-length = 99
+target-version = "py313"
+fix = true
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+select = [
+    "E", "F", "W",  # Pycodestyle/Pyflakes
+    "I",           # Isort
+    "UP",          # Pyupgrade
+    "B",           # Flake8-bugbear
+    "SIM",         # Flake8-simplify
+    "RUF",         # Ruff-specific
+    "TID",         # Flake8-tidy-imports
+    "PTH",         # Flake8-use-pathlib
+]
+fixable = ["ALL"]
+
+[tool.ruff.format]
+docstring-code-format = true
+preview = true
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
 
 
 [tool.pytest.ini_options]

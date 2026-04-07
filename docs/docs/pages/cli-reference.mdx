@@ -1,0 +1,289 @@
+# CLI Reference
+
+Complete reference for the `dgov` command-line interface.
+
+## Commands Overview
+
+| Command | Description |
+|---------|-------------|
+| [`dgov run`](#dgov-run) | Execute a plan file with quality gates |
+| [`dgov status`](#dgov-status) | Show current task state |
+| [`dgov cleanup`](#dgov-cleanup) | Remove zombie worktrees and tasks |
+| [`dgov init`](#dgov-init) | Bootstrap project configuration |
+| [`dgov ledger`](#dgov-ledger) | Record bugs, rules, and technical debt |
+
+---
+
+## `dgov run`
+
+Execute a plan file (TOML) with isolated worktrees and Sentrux quality gates.
+
+```bash
+dgov run plan.toml
+dgov run plan.toml --restart
+dgov run plan.toml --continue
+dgov run plan.toml --only=add-feature
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--restart` | Restart the plan from the beginning, clearing prior state |
+| `--continue` | Continue from where you left off, retrying failed tasks |
+| `--only <task>` | Run only the specified task and its dependencies |
+
+### Examples
+
+**Restart a plan from scratch:**
+```bash
+dgov run feature-plan.toml --restart
+```
+
+**Retry failed tasks:**
+```bash
+dgov run feature-plan.toml --continue
+```
+
+**Run a single task:**
+```bash
+dgov run feature-plan.toml --only=add-tests
+```
+
+### Output
+
+The command outputs task progress to stderr and final results to stdout. In JSON mode (`--json`), it outputs structured data:
+
+```json
+{
+  "status": "complete",
+  "succeeded": 3,
+  "failed": 0,
+  "sentrux": {
+    "degradation": false,
+    "quality_before": 85,
+    "quality_after": 87
+  },
+  "duration_s": 45.23
+}
+```
+
+---
+
+## `dgov status`
+
+Show the current governor state — what's running, what's idle, and task counts.
+
+```bash
+dgov status
+```
+
+### Examples
+
+**Default output:**
+```bash
+$ dgov status
+status: active
+tasks: 5
+active: 2
+task_list:
+  - slug: add-feature, state: active
+  - slug: add-tests, state: pending
+```
+
+**JSON output:**
+```bash
+$ dgov status --json
+{
+  "status": "active",
+  "tasks": 5,
+  "active": 2,
+  "task_list": [
+    {"slug": "add-feature", "state": "active"},
+    {"slug": "add-tests", "state": "pending"}
+  ]
+}
+```
+
+---
+
+## `dgov cleanup`
+
+Annihilate zombie worktrees — marks ACTIVE tasks as ABANDONED and removes worktrees.
+
+Use this when:
+- A task crashed without proper cleanup
+- You killed a run with Ctrl+C and need to clean up
+- Worktrees are left in a broken state
+
+```bash
+dgov cleanup
+```
+
+### Behavior
+
+1. Finds all tasks in ACTIVE state
+2. Removes their git worktrees
+3. Marks them as ABANDONED in the persistence layer
+
+### Examples
+
+```bash
+$ dgov cleanup
+Cleaning up 3 active tasks...
+  [removed worktree] add-feature
+  [removed worktree] add-tests
+  [skip worktree] fix-bug: worktree not found
+Transitions complete: 2 tasks marked as ABANDONED.
+```
+
+---
+
+## `dgov init`
+
+Bootstrap `.dgov/project.toml` for the current repository. Auto-detects language, source directory, and test directory.
+
+```bash
+dgov init
+dgov init --force
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--force` | Overwrite existing project.toml |
+
+### Auto-Detection
+
+The init command detects:
+- **Language**: Python, JavaScript, Rust, or Go (by file prevalence)
+- **Source directory**: `src/`, `lib/`, or current directory
+- **Test directory**: `tests/` or `test/`
+- **Tooling**: Appropriate lint, format, and test commands
+
+### Examples
+
+**Create new project config:**
+```bash
+$ dgov init
+Created .dgov/project.toml
+  language: python
+  src_dir:  src/
+  test_dir: tests/
+```
+
+**Regenerate (overwrite):**
+```bash
+$ dgov init --force
+Created .dgov/project.toml
+  language: python
+  src_dir:  src/
+  test_dir: tests/
+```
+
+---
+
+## `dgov ledger`
+
+Operational ledger — record and list bugs, rules, and technical debt.
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `add` | Add an entry to the ledger |
+| `list` | List ledger entries |
+| `resolve` | Mark a ledger entry as resolved |
+
+### `dgov ledger add`
+
+```bash
+dgov ledger add <category> <content>
+```
+
+**Categories:**
+- `bug` — Known bugs or issues to address
+- `rule` — Project conventions or rules
+- `debt` — Technical debt to pay down
+
+**Examples:**
+```bash
+# Record a known bug
+dgov ledger add bug "Race condition in task_runner.py when handling timeouts"
+
+# Record a project rule
+dgov ledger add rule "Always use absolute imports, ruff-enforced"
+
+# Record technical debt
+dgov ledger add debt "Refactor the persistence layer to use async I/O"
+```
+
+### `dgov ledger list`
+
+```bash
+dgov ledger list [options]
+```
+
+**Options:**
+| Option | Description |
+|--------|-------------|
+| `-c, --category` | Filter by category (bug, rule, debt) |
+| `-s, --status` | Filter by status: `open` (default) or `resolved` |
+| `-q, --query` | Search content by keyword |
+| `-r, --root` | Project root directory |
+
+**Examples:**
+```bash
+# List all open entries
+dgov ledger list
+
+# List only bugs
+dgov ledger list --category=bug
+
+# Search for specific content
+dgov ledger list --query="race condition"
+
+# List resolved rules
+dgov ledger list --category=rule --status=resolved
+```
+
+### `dgov ledger resolve`
+
+```bash
+dgov ledger resolve <entry_id>
+```
+
+**Example:**
+```bash
+# Resolve entry #3
+dgov ledger resolve 3
+# Output: Resolved entry #3
+```
+
+---
+
+## Global Options
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON instead of human-readable text |
+| `--version` | Show version and exit |
+| `--help` | Show help message for any command |
+
+### JSON Mode
+
+Most commands support `--json` for machine-readable output:
+
+```bash
+dgov --json status
+dgov run plan.toml --json
+dgov ledger list --json
+```
+
+You can also enable JSON mode via environment variable:
+
+```bash
+export DGOV_JSON=1
+dgov status  # Will output JSON
+```

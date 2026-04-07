@@ -27,6 +27,7 @@ class AtomicConfig:
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
     lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
+    line_length: int = 99
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] | None = None
 
@@ -391,10 +392,16 @@ class AtomicTools:
             try:
                 file_tree = ast.parse(py_file.read_text(), filename=py_rel)
                 for node in ast.walk(file_tree):
-                    if isinstance(node, ast.ImportFrom) and node.module:
-                        if node.module == module_name or node.module.startswith(module_name + "."):
-                            imported_by.append(py_rel)
-                            break
+                    if (
+                        isinstance(node, ast.ImportFrom)
+                        and node.module
+                        and (
+                            node.module == module_name
+                            or node.module.startswith(module_name + ".")
+                        )
+                    ):
+                        imported_by.append(py_rel)
+                        break
             except (SyntaxError, UnicodeDecodeError):
                 continue
 

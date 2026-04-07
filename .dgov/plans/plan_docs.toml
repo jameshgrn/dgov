@@ -1,0 +1,38 @@
+[plan]
+name = "flesh-out-docs"
+
+[tasks.cli_reference]
+summary = "Create CLI reference documentation"
+prompt = """Create a new file `docs/docs/pages/cli-reference.mdx`.
+It should document the following commands based on `src/dgov/cli/`:
+- `dgov run`: flags like --restart, --continue, --only.
+- `dgov status`: showing task state.
+- `dgov cleanup`: purpose and behavior.
+- `dgov init`: bootstrapping.
+- `dgov ledger`: recording context.
+Use clear headers and code examples.
+"""
+commit_message = "docs: add CLI reference page"
+agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+files = { create = ["docs/docs/pages/cli-reference.mdx"] }
+
+[tasks.plan_reference]
+summary = "Create Plan schema documentation"
+prompt = """Create a new file `docs/docs/pages/plan-reference.mdx`.
+It should document the `plan.toml` format:
+- `[plan]` section: name, default_agent, max_retries.
+- `[[tasks]]` (or `[tasks.slug]`) section: summary, prompt, agent, depends_on, files.
+- Explain how file claims (`files.edit`, `files.create`) work for isolation.
+Use a full TOML example.
+"""
+commit_message = "docs: add Plan reference page"
+agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+files = { create = ["docs/docs/pages/plan-reference.mdx"] }
+
+[tasks.update_config]
+summary = "Update vocs.config.ts with new pages"
+prompt = "Add 'CLI Reference' and 'Plan Reference' to the sidebar in `docs/vocs.config.ts`."
+commit_message = "docs: update sidebar navigation"
+agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+files = { edit = ["docs/vocs.config.ts"] }
+depends_on = ["cli_reference", "plan_reference"]

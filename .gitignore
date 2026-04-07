@@ -12,3 +12,4 @@ __pycache__/
 config.toml
 HANDOVER.md
 .napkin.md
+docs/node_modules/

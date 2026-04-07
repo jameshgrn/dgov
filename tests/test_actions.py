@@ -123,7 +123,7 @@ class TestGovernorAction:
         assert GovernorAction.RETRY == "retry"
         assert GovernorAction.FAIL == "fail"
         assert GovernorAction.SKIP == "skip"
-        assert "retry" == GovernorAction.RETRY
+        assert GovernorAction.RETRY == "retry"
 
 
 class TestTypeUnions:

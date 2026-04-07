@@ -67,6 +67,7 @@ def _load_project_config(worktree: Path) -> AtomicConfig:
         lint_cmd=proj.get("lint_cmd", AtomicConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", AtomicConfig.format_cmd),
         lint_fix_cmd=proj.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
+        line_length=proj.get("line_length", 99),
         test_markers=markers,
         conventions=conventions or None,
     )
@@ -212,7 +213,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
                 model=model, messages=messages, tools=get_tool_spec(), tool_choice="auto"
             )
         except Exception as e:
-            WorkerEvent("error", f"API Failure: {str(e)}").emit()
+            WorkerEvent("error", f"API Failure: {e!s}").emit()
             _cleanup()
             sys.exit(1)
 

@@ -5,6 +5,7 @@ Handles SQLite connection caching, WAL mode, and schema initialization.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 import threading
 from pathlib import Path
@@ -91,7 +92,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _retry_on_lock(fn, *args, **kwargs) -> Any:  # noqa: ANN001, ANN002, ANN003
+def _retry_on_lock(fn, *args, **kwargs) -> Any:
     """Call *fn* with retries on 'database is locked' errors."""
     import logging
     import time
@@ -114,10 +115,8 @@ def clear_connection_cache() -> None:
     global _conn_cache
     with _conn_lock:
         for conn in _conn_cache.values():
-            try:
+            with contextlib.suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
         _conn_cache.clear()
 
 

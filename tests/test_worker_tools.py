@@ -1,6 +1,5 @@
 """Tests for worker tools: navigation, SOP compound tools, project config."""
 
-from pathlib import Path
 
 import pytest
 
@@ -11,8 +10,9 @@ def worker_module():
     """Load worker.py as a module and provide its classes/tools."""
     import sys
     from unittest.mock import MagicMock
-    import dgov.workers.atomic as atomic
+
     import dgov.worker as worker
+    import dgov.workers.atomic as atomic
 
     # Mock openai so we don't need it installed
     sys.modules["openai"] = MagicMock()

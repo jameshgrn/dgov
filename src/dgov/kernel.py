@@ -31,9 +31,9 @@ from dgov.actions import (
 from dgov.types import TaskState
 
 __all__ = [
-    "TaskState",
-    "DagState",
     "DagKernel",
+    "DagState",
+    "TaskState",
 ]
 
 logger = logging.getLogger(__name__)

@@ -8,3 +8,6 @@
 {"plan":"cli-improvements","unit":"test/cli-tests.test-init-plan","sha":"008d52f641f425c89bfde4593505ef83c6e3ff53","ts":"2026-04-07T02:26:38Z"}
 {"plan":"watch-settlement","unit":"cli/render.render-settlement-retry","sha":"33a1dda74b1651eac34e5992a0a704abba17e332","ts":"2026-04-07T03:03:21Z"}
 {"plan":"watch-settlement","unit":"test/coverage.test-retry-format","sha":"8f197d32cf4afb26e7c03578f8b81053c839d17b","ts":"2026-04-07T03:04:35Z"}
+{"plan":"flesh-out-docs","unit":"cli_reference","sha":"c987de3f9b780649a225c30c3f1295f77f24d455","ts":"2026-04-07T23:16:33Z"}
+{"plan":"flesh-out-docs","unit":"plan_reference","sha":"1136b1bcf5df770353803f102f60da863d6b64d3","ts":"2026-04-07T23:16:39Z"}
+{"plan":"flesh-out-docs","unit":"update_config","sha":"323c166d84065aa24712dc3c88bb5634811ed1ee","ts":"2026-04-07T23:16:54Z"}
