@@ -208,9 +208,12 @@ class AtomicTools:
 
     def run_bash(self, cmd: str) -> str:
         """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
+        # Reject commands that reference absolute paths (escape attempts)
+        if re.search(r"(?<![.\w])/(?:etc|tmp|var|usr|opt|home|Users|root|bin|sbin)\b", cmd):
+            return "Error: Absolute paths are not allowed. Use relative paths within the worktree."
         try:
             res = subprocess.run(
-                ["/bin/sh", "-c", cmd],
+                ["/bin/sh", "-c", f"cd {_shell_quote(str(self.worktree))} && {cmd}"],
                 cwd=self.worktree,
                 env=self._sandbox_env(),
                 capture_output=True,
