@@ -26,3 +26,40 @@
 - `tests/test_integration.py`: End-to-end lifecycle with real git repos
 - `tests/test_settlement.py`: Validation gate pipeline
 - `tests/test_tasks.py`: Persistence CRUD
+
+---
+
+## Governor Workflow
+
+### Session Loop
+
+1. **START**: Read `HANDOVER.md` + `.napkin.md`. Run `dgov status` to see live task state.
+2. **PLAN**: `dgov init-plan <name> --sections <s1,s2,..>`, author TOML units, then `dgov compile .dgov/plans/<name>/` + `dgov validate .dgov/plans/<name>/_compiled.toml`.
+3. **RUN**: `dgov run .dgov/plans/<name>/_compiled.toml` -- open a second terminal with `dgov watch` to monitor events live.
+4. **RECOVER**: See Recovery Procedures below.
+5. **POST-RUN**: `dgov plan status .dgov/plans/<name>/` to track deployment. Run relevant tests. Check `dgov status` for final state.
+6. **END**: Run `/handover` to generate `HANDOVER.md`.
+
+### Plan Authoring Guide
+
+- Every task MUST declare `files.edit`, `files.create`, or `files.delete`. Workers are sandboxed to claimed files -- touching unclaimed files = immediate rejection.
+- Keep tasks atomic: one logical change, <=3 files per task.
+- `prompt` structure: (1) orient -- what to read first, (2) edit -- exact change and location, (3) verify -- test command to run.
+- `depends_on` uses full unit IDs: `<section>/<file-stem>.<task-key>`.
+- `commit_message` imperative mood, <=72 chars.
+- Compile and validate before running: `dgov compile <dir>` then `dgov validate _compiled.toml`.
+
+### Recovery Procedures
+
+| Situation | Command |
+|-----------|---------|
+| Tasks failed, rest succeeded | `dgov run <plan> --continue` |
+| Crash / orphaned actives | `dgov run <plan>` (orphan cleanup is automatic) |
+| Want clean slate | `dgov run <plan> --restart` |
+| History noise in status | `dgov prune` |
+| Worktree debris | `dgov cleanup` |
+
+### Failure Diagnosis
+
+When a run exits with failed tasks, the output includes `failed_tasks` and `task_errors`.
+Cross-check with `dgov watch` log or `.dgov/runs.log` for per-task last_error detail.
