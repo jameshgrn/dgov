@@ -94,9 +94,8 @@ def validate_cmd(plan_file: Path) -> None:
 
 
 _EXAMPLE_UNIT_TOML = '''\
-# Example unit — rename this file and fill in the fields.
-# Compiler ignores files with a leading "_", so this is safe to leave as-is.
-# The unit ID will be "<section>/<filename-stem>.<task-key>", e.g. "tasks/example.do-thing".
+# Example unit — rename this file (remove the "_" prefix) and fill in the fields.
+# The unit ID will be "<section>/<filename-stem>.<task-key>", e.g. "tasks/my-task.do-thing".
 
 [tasks.do-thing]
 summary = "One sentence: what does this task accomplish?"
@@ -109,11 +108,14 @@ Steps:
 3. Run lint_fix, then format_file, then run_tests to verify.
 """
 commit_message = "Imperative mood commit message (≤72 chars)"
-files = ["src/module/file.py"]
-# Or use explicit create/edit/delete:
-# files.edit = ["src/module/file.py"]
+
+# Declare files you will touch, edit, create, or delete.
+# The worker can only modify files listed in files.edit or files.create.
+files.edit = ["src/module/file.py"]
 # files.create = ["src/new_file.py"]
 # files.delete = ["src/old_file.py"]
+# files.touch = ["src/read_only.py"]
+
 # depends_on = ["other-section/other-file.other-task"]
 # agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
 '''
