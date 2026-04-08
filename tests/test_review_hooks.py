@@ -46,6 +46,7 @@ review_hooks = [
 
     assert result.passed is False
     assert result.verdict == "hook_fail"
+    assert result.error is not None
     assert "Review hook failed" in result.error
     assert "! grep -q 'import os'" in result.error
 
