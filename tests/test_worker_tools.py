@@ -116,9 +116,8 @@ class TestRevertFile:
         # Note: tools uses git checkout which requires a real git repo.
         # But for unit tests, we can just check if it fails gracefully if not a git repo
         # or mock the subprocess.
-        import subprocess
         from unittest.mock import patch
-        
+
         with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             result = tools.revert_file("src/foo.py")
@@ -132,9 +131,10 @@ class TestRevertFile:
     def test_handles_error(self, tools):
         import subprocess
         from unittest.mock import patch
-        
+
         with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.CalledProcessError(1, "git", stderr="pathspec not matched")
+            err = "pathspec not matched"
+            mock_run.side_effect = subprocess.CalledProcessError(1, "git", stderr=err)
             result = tools.revert_file("nonexistent.py")
             assert "Error" in result
             assert "pathspec not matched" in result

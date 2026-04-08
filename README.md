@@ -2,18 +2,48 @@
 
 Deterministic kernel for multi-agent orchestration via git worktrees.
 
+## Requirements
+
+- Python 3.12+
+- git
+- A [Fireworks AI](https://fireworks.ai) API key (set `FIREWORKS_API_KEY`)
+
 ## Install
 
 ```bash
-uv pip install -e .
+# From PyPI (once released)
+uv add dgov
+
+# From source
+git clone https://github.com/your-org/dgov
+cd dgov
+uv sync
 ```
 
-Requires Python 3.12+, git.
-
-For development (includes ruff, pytest, mypy):
+For development (includes ruff, pytest, ty):
 
 ```bash
-uv pip install -e . --group dev
+uv sync --group dev
+```
+
+## Quick start
+
+```bash
+# 1. Set your API key
+export FIREWORKS_API_KEY=your-key-here
+
+# 2. Bootstrap your project
+cd /path/to/your/repo
+dgov init
+
+# 3. Author a plan and compile it
+dgov compile .dgov/plans/my-plan/
+
+# 4. Run the plan
+dgov run .dgov/plans/my-plan/
+
+# 5. Monitor progress in another terminal
+dgov watch
 ```
 
 ## How it works
@@ -27,13 +57,19 @@ State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolate
 ```bash
 dgov                     # Show status
 dgov status              # Show status (explicit)
-dgov run plan.toml       # Execute a plan
+dgov init                # Bootstrap .dgov/project.toml
+dgov init-plan <name>    # Initialize a new plan directory
+dgov compile <dir>       # Compile a plan tree to _compiled.toml
+dgov run plan.toml       # Execute a compiled plan
 dgov validate plan.toml  # Validate a plan without running
-dgov watch               # Stream events
+dgov watch               # Stream events live
+dgov plan status <dir>   # Show pending vs deployed units
+dgov ledger add <cat>    # Record bug, rule, or debt
+dgov cleanup             # Mark orphaned tasks as abandoned
+dgov prune               # Remove historical task records
 dgov sentrux check       # Run architectural quality check
 dgov sentrux gate-save   # Save quality baseline
 dgov sentrux gate        # Compare against baseline
-dgov plan status <dir>   # Show pending vs deployed units
 ```
 
 ## Plan format
@@ -45,13 +81,15 @@ Plans are TOML files that compile to DAGs:
 name = "example"
 
 [tasks.add-feature]
+summary = "Add the feature"
 prompt = "Add the feature to src/foo.py"
-agent = "kimi-k2.5"
+commit_message = "feat: add feature"
 files = ["src/foo.py"]
 
 [tasks.add-tests]
+summary = "Write tests"
 prompt = "Write tests for the feature"
-agent = "kimi-k2.5"
+commit_message = "test: add tests for feature"
 files = ["tests/test_foo.py"]
 depends_on = ["add-feature"]
 ```
@@ -63,18 +101,27 @@ depends_on = ["add-feature"]
 | `kernel.py` | Pure `(state, event) → (new_state, actions)` — no I/O |
 | `runner.py` | Async DAG executor feeding the kernel |
 | `worker.py` | Standalone OpenAI-client subprocess |
+| `workers/` | Worker tools (read, write, edit, run_bash, grep, etc.) |
 | `settlement.py` | ruff auto-fix + lint gate + sentrux policy gate |
 | `worktree.py` | Git worktree create/merge/remove |
 | `plan.py` | TOML plan parsing, DAG compilation |
-| `persistence/` | SQLite event store (panes + events + slug history) |
+| `plan_tree.py` | Walker + merger + resolver + validator |
+| `dag_parser.py` | Pydantic v2 models, TOML → DagDefinition |
+| `sop_bundler.py` | Load SOPs, pick per unit, prepend to prompts |
+| `deploy_log.py` | Append-only JSONL deploy history |
+| `config.py` | ProjectConfig + `load_project_config()` |
+| `persistence/` | SQLite event store (tasks + events + slug history) |
+| `cli/` | Click interface |
 
 ## Development
 
 ```bash
-uv pip install -e . --group dev
+uv sync --group dev
 uv run ruff check src/ tests/
 uv run ruff format src/ tests/
-uv run pytest tests/ -q
+uv run ty check
+uv run pytest -q -m unit
+uv run pytest -q -m integration
 ```
 
 ## License

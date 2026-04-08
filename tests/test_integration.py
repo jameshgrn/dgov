@@ -16,6 +16,8 @@ from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.runner import EventDagRunner
 from dgov.settlement import GateResult
 
+pytestmark = pytest.mark.integration
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

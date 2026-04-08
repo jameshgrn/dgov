@@ -7,11 +7,11 @@ Thank you for your interest in contributing to dgov! This guide outlines the wor
 We use `uv` for dependency management. To set up your environment:
 
 ```bash
-# Install dependencies
-uv pip install -e .
+# Install all dependencies (including dev)
+uv sync --group dev
 
-# Install dev dependencies (for testing, linting)
-uv pip install -e ".[dev]"
+# Or just runtime deps
+uv sync
 ```
 
 ## Code Quality
@@ -31,15 +31,24 @@ uv run ruff check --fix src/ tests/
 uv run ruff format src/ tests/
 ```
 
-### Testing
-
-Run the test suite with pytest:
+### Type Checking
 
 ```bash
-# Run all tests (quiet mode)
-uv run pytest tests/ -q
+uv run ty check
+```
 
-# Run specific test file
+### Testing
+
+Run tests with pytest. Use markers to select a subset:
+
+```bash
+# Unit tests only (fast, no external deps)
+uv run pytest -q -m unit
+
+# Integration tests (real git repos, mock workers)
+uv run pytest -q -m integration
+
+# Specific test file
 uv run pytest tests/test_kernel.py -q
 ```
 
@@ -80,10 +89,11 @@ Keep the subject line to 72 characters or less. Prefer messages that explain *wh
 
 Before submitting a PR:
 
-1. Ensure tests pass: `uv run pytest tests/ -q`
+1. Ensure tests pass: `uv run pytest -q -m unit`
 2. Run linting: `uv run ruff check src/ tests/`
 3. Format code: `uv run ruff format src/ tests/`
-4. Keep PRs focused on a single logical change
+4. Type check: `uv run ty check`
+5. Keep PRs focused on a single logical change
 
 ## Questions?
 

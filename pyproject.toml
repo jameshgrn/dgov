@@ -12,7 +12,6 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "mypy>=1.0",
     "ty>=0.0.1",
     "pytest>=8.0",
     "pytest-mock>=3.0",
@@ -35,7 +34,7 @@ packages = ["src/dgov"]
 
 [tool.ruff]
 line-length = 99
-target-version = "py313"
+target-version = "py312"
 fix = true
 
 [tool.ruff.lint]
