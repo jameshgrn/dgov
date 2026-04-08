@@ -1,0 +1,50 @@
+[tasks.fix-plan-types]
+summary = "Narrow object parameter types in cli/plan.py to PlanSpec and PlanUnit"
+prompt = """
+Fix 4 ty check errors in src/dgov/cli/plan.py. All errors are caused by using
+`object` as a parameter type where a concrete type is known.
+
+## Current errors
+
+```
+error[unresolved-attribute]: Object of type `object` has no attribute `files`
+  --> src/dgov/cli/plan.py:18
+error[unresolved-attribute]: Object of type `object` has no attribute `name`
+  --> src/dgov/cli/plan.py:27
+error[unresolved-attribute]: Object of type `object` has no attribute `units`
+  --> src/dgov/cli/plan.py:28
+error[unresolved-attribute]: Object of type `object` has no attribute `units`
+  --> src/dgov/cli/plan.py:29
+```
+
+## Root cause
+
+`_format_unit_files(unit: object)` should be `_format_unit_files(unit: PlanUnit)`.
+`_echo_plan_summary(plan: object, ...)` should be `_echo_plan_summary(plan: PlanSpec, ...)`.
+
+`PlanUnit` and `PlanSpec` are defined in `dgov.plan` (already imported in this file via
+`from dgov.plan import parse_plan_file, validate_plan`).
+
+## Steps
+
+1. Read src/dgov/cli/plan.py.
+
+2. Extend the existing import from dgov.plan to also import `PlanSpec` and `PlanUnit`:
+   Change: `from dgov.plan import parse_plan_file, validate_plan`
+   To: `from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan`
+
+3. Change `_format_unit_files(unit: object)` → `_format_unit_files(unit: PlanUnit)`.
+   Now that `unit` is typed as `PlanUnit`, the `getattr(unit.files, kind)` call is fine
+   because `PlanUnit.files` is typed as `PlanUnitFiles`. Remove the `# type: ignore[attr-defined]`
+   comment on line 18.
+
+4. Change `_echo_plan_summary(plan: object, ...)` → `_echo_plan_summary(plan: PlanSpec, ...)`.
+   With `plan: PlanSpec`, the accesses `plan.name`, `plan.units` are valid — remove all
+   three `# type: ignore[attr-defined]` comments on lines 27, 28, 29.
+
+5. Run: `uv run ty check src/dgov/cli/plan.py` — verify 0 errors.
+6. Run: `uv run ruff check src/dgov/cli/plan.py && uv run ruff format src/dgov/cli/plan.py`.
+7. Run: `uv run pytest -q tests/test_cli.py tests/test_plan.py`.
+"""
+commit_message = "fix: narrow object params to PlanSpec/PlanUnit in cli/plan.py"
+files = ["src/dgov/cli/plan.py"]

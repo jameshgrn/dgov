@@ -1,0 +1,41 @@
+[tasks.fix-type-errors]
+summary = "Fix ty check errors in src/dgov/cli/run.py"
+prompt = """
+Fix two type errors in src/dgov/cli/run.py flagged by `uv run ty check src/dgov/cli/run.py`.
+
+## Error 1: `datetime.timedelta` is an invalid attribute
+
+In _append_run_log, the parameter `duration` is annotated as `datetime.timedelta`.
+The import at the top is `from datetime import UTC, datetime` — so `datetime` here is the
+class, not the module. The class has no `timedelta` attribute.
+
+Fix: add `timedelta` to the import line, then change the annotation to plain `timedelta`.
+
+## Error 2: `content.get()` overload mismatch
+
+In `_make_worker_event_callback`, after the isinstance check `isinstance(content, dict)`,
+`content` is typed as `dict[Unknown, Unknown]` (from `Any`). Calling
+`content.get("tool", "?")` hits an overload mismatch.
+
+Fix: cast `content` to `dict[str, object]` inside that branch using `cast()` from typing.
+Then access keys via the cast result.
+
+## Steps
+
+1. Read src/dgov/cli/run.py.
+2. Fix import: `from datetime import UTC, datetime, timedelta`.
+3. Change `duration: datetime.timedelta` → `duration: timedelta` in _append_run_log.
+4. In `_make_worker_event_callback`, import cast from typing (if not already), then cast content:
+   ```python
+   elif log_type == "call" and isinstance(content, dict):
+       data = cast("dict[str, object]", content)
+       tool = data.get("tool", "?")
+       args = data.get("args", {})
+       ...
+   ```
+5. Run: `uv run ty check src/dgov/cli/run.py` — verify 0 errors remain for this file.
+6. Run: `uv run ruff check src/dgov/cli/run.py && uv run ruff format src/dgov/cli/run.py`.
+7. Run: `uv run pytest -q tests/test_cli.py tests/test_cli_run_strict.py`.
+"""
+commit_message = "fix: resolve ty type errors in cli/run.py"
+files = ["src/dgov/cli/run.py"]

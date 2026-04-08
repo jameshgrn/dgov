@@ -1,0 +1,24 @@
+# Example unit — rename this file (remove the "_" prefix) and fill in the fields.
+# The unit ID will be "<section>/<filename-stem>.<task-key>", e.g. "tasks/my-task.do-thing".
+
+[tasks.do-thing]
+summary = "One sentence: what does this task accomplish?"
+prompt = """
+Detailed instructions for the worker agent.
+
+Steps:
+1. Read the relevant files first (read_file / file_symbols).
+2. Make targeted edits (edit_file preferred over write_file for existing files).
+3. Run lint_fix, then format_file, then run_tests to verify.
+"""
+commit_message = "Imperative mood commit message (≤72 chars)"
+
+# Declare files you will touch, edit, create, or delete.
+# The worker can only modify files listed in files.edit or files.create.
+files.edit = ["src/module/file.py"]
+# files.create = ["src/new_file.py"]
+# files.delete = ["src/old_file.py"]
+# files.touch = ["src/read_only.py"]
+
+# depends_on = ["other-section/other-file.other-task"]
+# agent = "accounts/fireworks/routers/kimi-k2p5-turbo"

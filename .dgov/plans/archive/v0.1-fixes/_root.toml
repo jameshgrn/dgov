@@ -1,0 +1,4 @@
+[plan]
+name = "v0.1-fixes"
+summary = "Pre-release fixes: ty check clean across tests/, CI workflow, README URL, gitignore cleanup"
+sections = ["fixes"]

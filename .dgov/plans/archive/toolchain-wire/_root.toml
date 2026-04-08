@@ -1,0 +1,4 @@
+[plan]
+name = "toolchain-wire"
+summary = "Wire type_check_cmd into settlement gate and worker tool (type_check_cmd already in config)"
+sections = ["impl"]

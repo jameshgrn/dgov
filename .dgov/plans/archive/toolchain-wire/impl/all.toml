@@ -1,0 +1,135 @@
+# type_check_cmd is already in ProjectConfig and AtomicConfig (merged).
+# These two tasks wire it through settlement and the worker tool layer.
+# Both are independent — can run in parallel.
+
+# ── Task 1: Settlement type check gate ────────────────────────────────────────
+[tasks.settlement-type-check-gate]
+summary = "Run type_check_cmd as a gate in validate_sandbox() when configured"
+prompt = """
+Read src/dgov/settlement.py and tests/test_settlement.py.
+
+`ProjectConfig` now has a `type_check_cmd: str = ""` field (added in a prior task).
+Empty string means type checking is disabled. Wire it into `validate_sandbox()`.
+
+## src/dgov/settlement.py
+
+In `validate_sandbox()`, after the format check block and before the test gate, add:
+
+```python
+# Type check gate (skipped when type_check_cmd is empty)
+if config.type_check_cmd:
+    res_ty = subprocess.run(
+        config.type_check_cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=config.settlement_timeout,
+    )
+    if res_ty.returncode != 0:
+        output = (res_ty.stdout + res_ty.stderr)[-500:]
+        return GateResult(passed=False, error=f"Type check failure:\\n{output}")
+```
+
+## tests/test_settlement.py
+
+Add three unit tests (all `@pytest.mark.unit`). Look at how existing settlement tests
+set up minimal git worktrees (git init + commit) to understand the pattern, then add:
+
+1. `test_validate_type_check_gate_pass`:
+   - Create a real git worktree in tmp_path with an initial commit
+   - Build a `ProjectConfig` with `type_check_cmd="exit 0"` and `test_cmd=""` (no tests)
+   - Call `validate_sandbox(worktree_path, base_commit, str(tmp_path), config=config)`
+   - Assert `result.passed is True`
+
+2. `test_validate_type_check_gate_fail`:
+   - Same setup, but `type_check_cmd="exit 1"`
+   - Assert `result.passed is False`
+   - Assert `"Type check failure"` in `result.error`
+
+3. `test_validate_type_check_skipped_when_empty`:
+   - Same setup, but `type_check_cmd=""` (default)
+   - Assert the call doesn't fail due to type check (result.passed based on other gates)
+
+For the git worktree setup: use subprocess to run git init, config, add, commit.
+Look at existing integration tests for the exact pattern.
+
+After edits:
+   uv run ty check src/dgov/settlement.py tests/test_settlement.py
+   uv run pytest tests/test_settlement.py -q
+Both should pass with 0 errors.
+"""
+commit_message = "feat: add type check gate to validate_sandbox()"
+files.edit = ["src/dgov/settlement.py", "tests/test_settlement.py"]
+
+
+# ── Task 2: Worker type_check tool + headless serialization ───────────────────
+[tasks.worker-type-check-tool]
+summary = "Add type_check() tool to AtomicTools and wire type_check_cmd through headless"
+prompt = """
+Two changes:
+
+## A. src/dgov/workers/atomic.py
+
+`AtomicConfig` already has `type_check_cmd: str = ""` (added in a prior task).
+Now add the tool method to `AtomicTools`.
+
+Add after `format_file` (around line 605):
+
+```python
+def type_check(self) -> str:
+    \"\"\"Run the project's type checker. Returns a message if not configured.\"\"\"
+    if not self.config.type_check_cmd:
+        return "Type checking not configured for this project."
+    return self.run_bash(self.config.type_check_cmd)
+```
+
+In `get_tool_spec()`, add after the `format_file` entry:
+
+```python
+{
+    "type": "function",
+    "function": {
+        "name": "type_check",
+        "description": (
+            "Run the project's type checker (e.g. ty check). "
+            "Returns checker output. Use after edits to verify type correctness."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+},
+```
+
+## B. src/dgov/workers/headless.py
+
+In `run_headless_worker()`, the `config_json` dict serializes `ProjectConfig` fields
+for the worker subprocess. Add `"type_check_cmd": pc.type_check_cmd` after `"lint_fix_cmd"`.
+
+## C. tests/test_worker_tools.py
+
+Read tests/test_worker_tools.py to understand the fixture (it builds AtomicTools with
+a real tmp worktree). Add two tests:
+
+1. `test_type_check_configured`:
+   Use `AtomicConfig(type_check_cmd="echo 'type check ok'")`.
+   Call `tools.type_check()`. Assert `"type check ok"` in result.
+
+2. `test_type_check_not_configured`:
+   Use `AtomicConfig(type_check_cmd="")`.
+   Call `tools.type_check()`. Assert `"not configured"` in result (case-insensitive).
+
+After edits:
+   uv run ty check src/dgov/workers/atomic.py src/dgov/workers/headless.py tests/test_worker_tools.py
+   uv run pytest tests/test_worker_tools.py -q
+Both should pass.
+"""
+commit_message = "feat: add type_check worker tool and wire through headless serialization"
+files.edit = [
+    "src/dgov/workers/atomic.py",
+    "src/dgov/workers/headless.py",
+    "tests/test_worker_tools.py",
+]

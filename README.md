@@ -64,6 +64,7 @@ dgov run plan.toml       # Execute a compiled plan
 dgov validate plan.toml  # Validate a plan without running
 dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units
+dgov archive-plan <name> # Manually archive a plan to .dgov/plans/archive/
 dgov ledger add <cat>    # Record bug, rule, or debt
 dgov cleanup             # Mark orphaned tasks as abandoned
 dgov prune               # Remove historical task records

@@ -1,0 +1,74 @@
+[tasks.fix-runner-headless-types]
+summary = "Fix 3 ty errors in runner.py (gather overload, task param) and headless.py (stdout None)"
+prompt = """
+Fix 3 ty check errors spread across runner.py and workers/headless.py.
+
+## Error 1 — src/dgov/runner.py: asyncio.gather overload mismatch
+
+```
+error[no-matching-overload]: No overload of function `gather` matches arguments
+  --> src/dgov/runner.py:275
+  results = await asyncio.gather(*coros, return_exceptions=True)
+```
+
+Root cause: `coros` is extracted from `dispatch_coros: list[tuple[str, object]]`,
+so `coros` is typed as `list[object]`. `asyncio.gather` overloads don't accept `*object`.
+
+Fix A: Narrow `dispatch_coros` type. Change the annotation from:
+  `dispatch_coros: list[tuple[str, object]] = []`
+to:
+  `from collections.abc import Coroutine`  (add to imports if not there)
+  `dispatch_coros: list[tuple[str, Coroutine[Any, Any, list[DagAction]]]] = []`
+
+This affects both `_gather_dispatch_results` parameter and `_process_actions` local variable.
+In `_gather_dispatch_results`, update its signature:
+  `async def _gather_dispatch_results(self, dispatch_coros: list[tuple[str, Coroutine[Any, Any, list[DagAction]]]])`
+And inside: `coros: list[Coroutine[Any, Any, list[DagAction]]] = [c for _, c in dispatch_coros]`
+
+If `asyncio.gather` still has an overload issue with return_exceptions=True after the above fix,
+add `# type: ignore[call-overload]` specifically on the gather line — don't suppress others.
+
+## Error 2 — src/dgov/runner.py: task param typed as object
+
+```
+error[invalid-argument-type]: Argument to function `run_headless_worker` is incorrect
+  --> src/dgov/runner.py:497
+  task,  # Expected `DagTaskSpec`, found `object`
+```
+
+Root cause: `_run_with_timeout` has `task: object` in its signature. The callers
+pass a real `DagTaskSpec`. Fix: change `task: object` → `task: DagTaskSpec`.
+`DagTaskSpec` is importable from `dgov.dag_parser` (check existing imports at top of runner.py).
+
+## Error 3 — src/dgov/workers/headless.py:89: stdout may be None
+
+```
+error[unresolved-attribute]: Attribute `readline` is not defined on `None`
+  in union `StreamReader | None`
+  --> src/dgov/workers/headless.py:89
+  line_bytes = await process.stdout.readline()
+```
+
+Root cause: `asyncio.create_subprocess_exec` returns a `Process` where `stdout`
+is `StreamReader | None`. Even though `stdout=asyncio.subprocess.PIPE` is passed at
+creation, ty doesn't track that through.
+
+Fix: add an assertion before the read loop:
+  `assert process.stdout is not None`
+
+Place it just before the `while True:` loop that reads stdout.
+
+## Steps
+
+1. Read src/dgov/runner.py (imports section + _gather_dispatch_results + _process_actions + _run_with_timeout).
+2. Apply fix A: update dispatch_coros type annotation and _gather_dispatch_results signature.
+3. Apply fix 2: change `task: object` → `task: DagTaskSpec` in `_run_with_timeout`.
+4. Read src/dgov/workers/headless.py (around line 85-95).
+5. Apply fix 3: add `assert process.stdout is not None` before the while loop.
+6. Run: `uv run ty check src/dgov/runner.py src/dgov/workers/headless.py` — verify 0 errors.
+7. Run: `uv run ruff check src/dgov/runner.py src/dgov/workers/headless.py`.
+8. Run: `uv run ruff format src/dgov/runner.py src/dgov/workers/headless.py`.
+9. Run: `uv run pytest -q tests/test_runner.py tests/test_integration.py`.
+"""
+commit_message = "fix: resolve ty errors in runner.py and workers/headless.py"
+files = ["src/dgov/runner.py", "src/dgov/workers/headless.py"]

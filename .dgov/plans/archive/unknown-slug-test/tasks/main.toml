@@ -1,0 +1,6 @@
+
+[tasks.a]
+summary = "do a"
+prompt = "do a"
+commit_message = "a"
+files = ["a.py"]

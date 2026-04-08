@@ -1,0 +1,209 @@
+# v0.1 pre-release fixes: ty clean, CI, README, housekeeping
+
+# ── Task 1: Fix subprocess.os real bug ────────────────────────────────────────
+[tasks.fix-subprocess-os]
+summary = "Replace subprocess.os.environ with os.environ in two test fixtures"
+prompt = """
+Read tests/test_continue.py and tests/test_integration.py.
+
+Both files contain a git fixture that does:
+    env={**env, "PATH": subprocess.os.environ["PATH"]}
+
+`subprocess.os` is an undocumented CPython internal — not a public API, and ty
+flags it as unresolved-attribute. Replace with `os.environ["PATH"]`.
+
+Steps:
+1. In each file, add `import os` right after the existing `import subprocess` line
+   (if `import os` is not already present).
+2. In each file, change `subprocess.os.environ["PATH"]` to `os.environ["PATH"]`.
+3. Run: uv run ty check tests/test_continue.py tests/test_integration.py
+   Expect: no errors for these two files.
+4. Run: uv run pytest tests/test_continue.py tests/test_integration.py -q
+   Expect: all pass.
+"""
+commit_message = "fix: replace subprocess.os.environ with os.environ in test fixtures"
+files.edit = ["tests/test_continue.py", "tests/test_integration.py"]
+
+
+# ── Task 2: Fix ty errors in test_actions, test_worker, test_tasks ────────────
+[tasks.fix-ty-simple]
+summary = "Update type-ignore codes and add None guards for ty diagnostics"
+prompt = """
+Run: uv run ty check tests/test_actions.py tests/test_worker.py tests/test_tasks.py
+to confirm the exact errors, then fix them:
+
+tests/test_actions.py:
+  Lines 102 and 107 have `# type: ignore[misc]` but ty's code is `invalid-assignment`.
+  Change both to: # type: ignore[invalid-assignment]
+
+tests/test_worker.py:
+  Line 16: `sys.modules["openai"].OpenAI = object  # type: ignore[attr-defined]`
+  ty's code is `unresolved-attribute`. Change to: # type: ignore[unresolved-attribute]
+
+tests/test_tasks.py:
+  `get_task()` returns `dict | None`. Tests subscript the return directly without
+  asserting not-None, causing `not-subscriptable` errors at lines ~55, 150, 151.
+  Before each subscript block, add:
+      assert retrieved is not None
+
+Steps:
+1. Edit all three files as described.
+2. Run: uv run ty check tests/test_actions.py tests/test_worker.py tests/test_tasks.py
+   Expect: 0 diagnostics.
+3. Run: uv run pytest tests/test_actions.py tests/test_worker.py tests/test_tasks.py -q
+   Expect: all pass.
+"""
+commit_message = "fix: correct type-ignore codes and add None guards in tests"
+files.edit = ["tests/test_actions.py", "tests/test_worker.py", "tests/test_tasks.py"]
+
+
+# ── Task 3: Fix ty errors in test_kernel.py and test_runner.py ────────────────
+[tasks.fix-ty-kernel-runner]
+summary = "Fix dict invariance and method-assign ty errors in test_kernel and test_runner"
+prompt = """
+Run: uv run ty check tests/test_kernel.py tests/test_runner.py
+to confirm the exact errors, then fix them:
+
+tests/test_kernel.py — there are at least 3 error clusters:
+
+1. Line ~84: `deps = {"c": (), "a": (), "b": ("a",)}`
+   ty infers `dict[str, tuple[()] | tuple[str]]` but `_topological_sort` expects
+   `dict[str, tuple[str, ...]]`. Fix: annotate the variable:
+       deps: dict[str, tuple[str, ...]] = {"c": (), "a": (), "b": ("a",)}
+
+2. Lines ~484 and ~489: `{a.task_slug for a in k._schedule()}`
+   `k._schedule()` returns a union that includes `DagDone` which has no `task_slug`.
+   Fix: filter or cast. Preferred: cast each element
+       from typing import cast
+       from dgov.actions import DispatchTask
+       dispatched = {cast(DispatchTask, a).task_slug for a in k._schedule()
+                     if hasattr(a, "task_slug")}
+   Or use a simpler form that avoids the union issue.
+
+3. Line ~587: An `invalid-argument-type` on a `k.handle(...)` call. Read the error,
+   understand the mismatch, and add `# type: ignore[invalid-argument-type]` if the
+   test is intentionally passing a wrong type (e.g. testing error handling).
+
+tests/test_runner.py — method assignment errors at lines ~124, ~129, ~370:
+  The test monkey-patches instance methods: `runner._preflight_check_models = _noop`
+  ty's code is `method-assign`. Add `# type: ignore[method-assign]` to each line.
+
+Steps:
+1. Read tests/test_kernel.py and tests/test_runner.py.
+2. Run `uv run ty check tests/test_kernel.py tests/test_runner.py` to see exact errors.
+3. Apply fixes as described above.
+4. Run `uv run ty check tests/test_kernel.py tests/test_runner.py` again — expect 0.
+5. Run: uv run pytest tests/test_kernel.py tests/test_runner.py -q — expect all pass.
+"""
+commit_message = "fix: resolve ty errors in test_kernel and test_runner"
+files.edit = ["tests/test_kernel.py", "tests/test_runner.py"]
+
+
+# ── Task 4: Fix ty errors in test_serializer and test_sop_bundler ────────────
+[tasks.fix-ty-serializer-bundler]
+summary = "Fix dict-tuple invariance ty errors in test_serializer and test_sop_bundler"
+prompt = """
+Run: uv run ty check tests/test_serializer.py tests/test_sop_bundler.py
+to confirm the exact errors, then fix them:
+
+Both errors are the same pattern: `dict` is invariant in its value type, so
+`dict[str, tuple[str, str] | tuple[str]]` doesn't satisfy `dict[str, tuple[str, ...]]`.
+
+tests/test_serializer.py line ~426:
+  `sop_mapping` is built as a dict literal with mixed-length tuples. Fix: annotate it:
+      sop_mapping: dict[str, tuple[str, ...]] = { ... }
+
+tests/test_sop_bundler.py line ~219:
+  `cached_mapping = {"a": ("s1",)}` Fix: annotate it:
+      cached_mapping: dict[str, tuple[str, ...]] = {"a": ("s1",)}
+
+Steps:
+1. Read both test files.
+2. Run `uv run ty check tests/test_serializer.py tests/test_sop_bundler.py` for exact lines.
+3. Apply the type annotations.
+4. Run `uv run ty check tests/test_serializer.py tests/test_sop_bundler.py` — expect 0.
+5. Run: uv run pytest tests/test_serializer.py tests/test_sop_bundler.py -q — expect all pass.
+"""
+commit_message = "fix: annotate dict types to satisfy ty invariance in serializer/bundler tests"
+files.edit = ["tests/test_serializer.py", "tests/test_sop_bundler.py"]
+
+
+# ── Task 5: Add CI workflow ───────────────────────────────────────────────────
+[tasks.add-ci]
+summary = "Add GitHub Actions CI workflow for lint, type check, and unit tests"
+prompt = """
+Create .github/workflows/ci.yml with a CI workflow that runs on push and pull_request
+to main and feat/** branches.
+
+The workflow should:
+- Run on ubuntu-latest with Python 3.12
+- Use astral-sh/setup-uv@v5 to install uv
+- Run: uv sync --group dev
+- Run: uv run ruff check src/ tests/
+- Run: uv run ruff format --check src/ tests/
+- Run: uv run ty check
+- Run: uv run pytest -q -m unit
+
+Use actions/checkout@v4 and astral-sh/setup-uv@v5.
+Set the job name to "ci" and the workflow name to "CI".
+
+After creating the file, verify the YAML is valid (no syntax errors).
+"""
+commit_message = "ci: add GitHub Actions workflow for lint, type, and unit tests"
+files.create = [".github/workflows/ci.yml"]
+
+
+# ── Task 6: Fix README ────────────────────────────────────────────────────────
+[tasks.fix-readme]
+summary = "Fix placeholder URL and add known limitations section to README"
+prompt = """
+Read README.md and make two changes:
+
+1. Fix placeholder clone URL:
+   Change: git clone https://github.com/your-org/dgov
+   To:     git clone https://github.com/jameshgrn/dgov
+
+2. Add a "Known Limitations" section at the end of the file (before the License section),
+   with this content:
+
+## Known Limitations
+
+- **No resume/checkpoint**: if a run crashes at task N, all N tasks restart. Use `dgov run --continue` to skip already-merged tasks.
+- **No cost tracking**: token usage and API cost are not recorded.
+- **Parallel contention**: running 6+ tasks in parallel may cause contention in the executor. Keep parallelism ≤5 for now.
+- **Worker iteration cap**: workers are capped at 30 tool-call iterations. Tasks requiring many read/fix/test cycles may time out.
+- **Fireworks AI / OpenAI-compat only**: the worker requires an OpenAI-compatible API. Native Anthropic and other providers are not supported.
+
+After editing, verify the markdown renders correctly by reading it back.
+"""
+commit_message = "docs: fix README clone URL and add known limitations section"
+files.edit = ["README.md"]
+
+
+# ── Task 7: Gitignore cleanup + remove stale tracked files ───────────────────
+[tasks.fix-gitignore-cleanup]
+summary = "Add run.log/watch.log to .gitignore and remove stale tracked files"
+prompt = """
+Three stale files are currently tracked by git and should be removed:
+  - plan_timing.toml  (leftover plan draft, should be deleted)
+  - run.log           (empty log file, should be gitignored not tracked)
+  - watch.log         (empty log file, should be gitignored not tracked)
+
+Steps:
+1. Run: git rm plan_timing.toml run.log watch.log
+   (This stages the deletions. All three files are either empty or development artifacts.)
+
+2. Edit .gitignore to add these two lines (after the existing `config.toml` entry):
+   run.log
+   watch.log
+
+3. Read .gitignore to verify the additions look correct.
+
+4. Run: git status --porcelain
+   Confirm: plan_timing.toml, run.log, watch.log are staged as deleted (D prefix).
+
+Do NOT run git commit — the settlement layer handles that.
+"""
+commit_message = "chore: remove stale tracked files; gitignore run.log and watch.log"
+files.edit = [".gitignore"]
+files.delete = ["plan_timing.toml", "run.log", "watch.log"]

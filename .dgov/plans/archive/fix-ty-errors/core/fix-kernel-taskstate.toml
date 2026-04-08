@@ -1,0 +1,50 @@
+[tasks.fix-kernel-taskstate]
+summary = "Fix TaskWaitDone.task_state type from str to TaskState in actions.py"
+prompt = """
+Fix 1 ty check error in src/dgov/kernel.py caused by a loose type in actions.py.
+
+## Error
+
+```
+error[invalid-assignment]: Invalid subscript assignment with key of type `str`
+  and value of type `str & ~Literal[TaskState.DONE]` on object of type `dict[str, TaskState]`
+  --> src/dgov/kernel.py:142
+  self.task_states[event.task_slug] = event.task_state
+```
+
+## Root cause
+
+In src/dgov/actions.py, `TaskWaitDone.task_state` is typed as `str`.
+But `self.task_states` in the kernel is `dict[str, TaskState]` (an Enum).
+Assigning `str` into a `dict[str, TaskState]` fails the type check.
+
+At runtime this works because callers always pass `TaskState` enum values
+(they import and use `TaskState.ABANDONED`, `TaskState.DONE`, etc.).
+The fix is to make the type annotation reflect the runtime reality.
+
+## Fix
+
+In src/dgov/actions.py:
+
+1. Read the file. Find `TaskWaitDone` dataclass (around line 67-70).
+2. Add `from dgov.types import TaskState` if not already imported there.
+   Check: look at the existing imports in actions.py first.
+3. Change `task_state: str` → `task_state: TaskState` in TaskWaitDone.
+
+In src/dgov/kernel.py:
+
+4. Read the file. The error on line 142 should now be resolved since
+   `event.task_state` is `TaskState` not `str`. No code change needed in kernel.py.
+
+## Verify callers
+
+5. Search runner.py for all `TaskWaitDone(...)` instantiations and confirm they
+   all pass a `TaskState` value (not a raw string). Use: `grep -n "TaskWaitDone(" src/dgov/runner.py`
+   Expected: `TaskState.ABANDONED`, `TaskState.DONE`, `status` (which is already a TaskState).
+
+6. Run: `uv run ty check src/dgov/actions.py src/dgov/kernel.py` — verify 0 errors.
+7. Run: `uv run ruff check src/dgov/actions.py && uv run ruff format src/dgov/actions.py`.
+8. Run: `uv run pytest -q tests/test_kernel.py tests/test_actions.py`.
+"""
+commit_message = "fix: type TaskWaitDone.task_state as TaskState not str"
+files = ["src/dgov/actions.py"]
