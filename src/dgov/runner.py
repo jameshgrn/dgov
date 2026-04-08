@@ -755,6 +755,9 @@ class EventDagRunner:
             self._worktrees.pop(action.task_slug, None)
             self._rejected_worktrees[action.task_slug] = wt
 
+        if error:
+            self._task_errors[action.task_slug] = error
+
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
         # Sync terminal state to DB so dgov status reflects reality
