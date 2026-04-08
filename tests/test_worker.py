@@ -13,7 +13,7 @@ import pytest
 
 # worker.py is a script with `openai` dependency; patch it before import
 sys.modules.setdefault("openai", type(sys)("openai"))
-sys.modules["openai"].OpenAI = object  # type: ignore[attr-defined]
+sys.modules["openai"].OpenAI = object  # type: ignore
 
 from dgov.worker import _load_project_config  # noqa: E402
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402

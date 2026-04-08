@@ -99,12 +99,12 @@ class TestFrozen:
     def test_dispatch_task_is_frozen(self) -> None:
         action = DispatchTask(task_slug="a")
         with pytest.raises(FrozenInstanceError):
-            action.task_slug = "b"  # type: ignore[misc]
+            action.task_slug = "b"  # type: ignore
 
     def test_task_merge_done_is_frozen(self) -> None:
         event = TaskMergeDone(task_slug="a")
         with pytest.raises(FrozenInstanceError):
-            event.error = "new error"  # type: ignore[misc]
+            event.error = "new error"  # type: ignore
 
 
 class TestGovernorAction:

@@ -52,6 +52,7 @@ def test_update_task_state(tmp_project, sample_task):
     # ACTIVE -> DONE is valid
     tasks.update_task_state(tmp_project, "test-task-001", TaskState.DONE)
     retrieved = tasks.get_task(tmp_project, "test-task-001")
+    assert retrieved is not None
     assert retrieved["state"] == "done"
 
 
@@ -147,6 +148,7 @@ def test_set_task_metadata(tmp_project, sample_task):
     )
 
     retrieved = tasks.get_task(tmp_project, "test-task-001")
+    assert retrieved is not None
     assert retrieved["file_claims"] == ["src/foo.py"]
     assert retrieved["commit_message"] == "Fix foo"
 
