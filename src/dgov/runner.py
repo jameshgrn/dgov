@@ -93,8 +93,33 @@ class EventDagRunner:
             reset_plan_state(session_root, dag.name)
         else:
             self._rehydrate()
+            self._cleanup_orphaned_actives()
             if continue_failed:
                 self._resume_failed()
+
+    def _cleanup_orphaned_actives(self) -> None:
+        """Abandon any ACTIVE tasks left over from a crashed prior run.
+
+        After rehydration, ACTIVE tasks have no live worker — they are orphans.
+        Mark them ABANDONED so --continue can retry them, and a bare run doesn't
+        deadlock waiting for workers that will never finish.
+        """
+        from dgov.persistence import update_task_state
+
+        for slug, state in list(self.kernel.task_states.items()):
+            if state == TaskState.ACTIVE:
+                logger.warning(
+                    "Orphaned ACTIVE task after rehydration: %s — marking ABANDONED", slug
+                )
+                self.kernel.handle(TaskWaitDone(slug, "cleanup", TaskState.ABANDONED))
+                update_task_state(self.session_root, slug, TaskState.ABANDONED.value, force=True)
+                emit_event(
+                    self.session_root,
+                    "task_abandoned",
+                    "cleanup",
+                    plan_name=self.dag.name,
+                    task_slug=slug,
+                )
 
     def _resume_failed(self) -> None:
         """Move all FAILED/ABANDONED/TIMED_OUT tasks back to PENDING so they can be retried."""
@@ -389,11 +414,9 @@ class EventDagRunner:
             )
         )
 
-    _NON_RETRYABLE_ERRORS = frozenset(
-        {
-            "Agent stopped without calling 'done'",
-        }
-    )
+    _NON_RETRYABLE_ERRORS = frozenset({
+        "Agent stopped without calling 'done'",
+    })
 
     def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
         """Decide retry vs fail based on attempt count."""

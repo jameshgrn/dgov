@@ -71,9 +71,12 @@ def cli(
 
 
 @cli.command(name="status")
-def status_cmd() -> None:
+@click.option(
+    "--all", "show_all", is_flag=True, help="Show all tasks including abandoned/closed history"
+)
+def status_cmd(show_all: bool) -> None:
     """Show governor status — what's running now."""
-    _cmd_status(str(Path.cwd()))
+    _cmd_status(str(Path.cwd()), show_all=show_all)
 
 
 @cli.command(name="cleanup")
@@ -111,7 +114,11 @@ def cleanup_cmd() -> None:
         raise click.exceptions.Exit(code=1) from exc
 
 
-def _cmd_status(project_root: str) -> None:
+# States that represent settled history — not live governor state
+_HISTORICAL_STATES = frozenset({"abandoned", "closed"})
+
+
+def _cmd_status(project_root: str, show_all: bool = False) -> None:
     """Show governor status — what's running now."""
     try:
         tasks = all_tasks(project_root)
@@ -124,18 +131,38 @@ def _cmd_status(project_root: str) -> None:
         return
 
     active = [t for t in tasks if t.get("state") == "active"]
-    _output(
-        {
-            "status": "active" if active else "idle",
-            "tasks": len(tasks),
-            "active": len(active),
-            "task_list": [{"slug": t.get("slug"), "state": t.get("state")} for t in tasks],
-        }
-    )
+    visible = tasks if show_all else [t for t in tasks if t.get("state") not in _HISTORICAL_STATES]
+
+    if want_json():
+        click.echo(
+            json.dumps(
+                {
+                    "status": "active" if active else "idle",
+                    "tasks": len(tasks),
+                    "active": len(active),
+                    "task_list": [
+                        {"slug": t.get("slug"), "state": t.get("state")} for t in visible
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        click.echo(f"status: {'active' if active else 'idle'}")
+        click.echo(f"tasks: {len(tasks)} total")
+        click.echo(f"active: {len(active)}")
+        if visible:
+            click.echo("tasks:")
+            for t in visible:
+                state = t.get("state", "?")
+                slug = t.get("slug", "?")
+                click.echo(f"  {state:14s}  {slug}")
+        elif not show_all:
+            click.echo("  (no live tasks — use --all to show history)")
 
 
 # Register subcommand modules — must be at bottom after cli is defined
-from dgov.cli import (
+from dgov.cli import (  # noqa: E402
     compile as _compile,
     init as _init,
     ledger as _ledger,

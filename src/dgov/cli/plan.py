@@ -92,6 +92,30 @@ def validate_cmd(plan_file: Path) -> None:
         raise click.exceptions.Exit(code=1)
 
 
+_EXAMPLE_UNIT_TOML = '''\
+# Example unit — rename this file and fill in the fields.
+# Compiler ignores files with a leading "_", so this is safe to leave as-is.
+# The unit ID will be "<section>/<filename-stem>.<task-key>", e.g. "tasks/example.do-thing".
+
+[tasks.do-thing]
+summary = "One sentence: what does this task accomplish?"
+prompt = """
+Detailed instructions for the worker agent.
+
+Steps:
+1. Read the relevant files first (read_file / file_symbols).
+2. Make targeted edits (edit_file preferred over write_file for existing files).
+3. Run lint_fix, then format_file, then run_tests to verify.
+"""
+commit_message = "Imperative mood commit message (≤72 chars)"
+files.edit = ["src/module/file.py"]
+# files.create = ["src/new_file.py"]
+# files.delete = ["src/old_file.py"]
+# depends_on = ["other-section/other-file.other-task"]
+# agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+'''
+
+
 @cli.command(name="init-plan")
 @click.argument("name")
 @click.option(
@@ -104,6 +128,7 @@ def init_plan_cmd(name: str, sections: str, force: bool) -> None:
     """Initialize a new plan with directory structure.
 
     Creates .dgov/plans/<name>/ with _root.toml and section directories.
+    Each section gets a _example.toml showing the unit format.
 
     \b
     Example: dgov init-plan my-plan --sections tasks,docs
@@ -121,11 +146,12 @@ def init_plan_cmd(name: str, sections: str, force: bool) -> None:
     plan_root.mkdir(parents=True, exist_ok=force)
     for section in section_list:
         (plan_root / section).mkdir(exist_ok=True)
+        (plan_root / section / "_example.toml").write_text(_EXAMPLE_UNIT_TOML)
 
     sections_toml = ", ".join(f'"{s}"' for s in section_list)
     root_toml = f'''[plan]
 name = "{name}"
-summary = ""
+summary = ""  # One sentence describing what this plan accomplishes
 sections = [{sections_toml}]
 '''
     (plan_root / "_root.toml").write_text(root_toml)
@@ -133,6 +159,7 @@ sections = [{sections_toml}]
     created = [str(plan_root), str(plan_root / "_root.toml")]
     for section in section_list:
         created.append(str(plan_root / section))
+        created.append(str(plan_root / section / "_example.toml"))
 
     if want_json():
         click.echo(
@@ -220,13 +247,11 @@ def _cmd_plan_status(plan_root: Path) -> None:
             task = tasks_raw[uid]
             deps = task.get("depends_on", [])
             blocked_by = [d for d in deps if d not in deployed_units]
-            unit_statuses.append(
-                {
-                    "unit": uid,
-                    "status": "pending",
-                    "blocked_by": ", ".join(blocked_by) if blocked_by else "",
-                }
-            )
+            unit_statuses.append({
+                "unit": uid,
+                "status": "pending",
+                "blocked_by": ", ".join(blocked_by) if blocked_by else "",
+            })
 
     deployed_count = sum(1 for u in unit_statuses if u["status"] == "deployed")
     pending_count = len(unit_statuses) - deployed_count
