@@ -80,7 +80,7 @@ class TestTopoSort:
             _topological_sort({"a": ("b",), "b": ("a",)})
 
     def test_deterministic(self):
-        deps = {"c": (), "a": (), "b": ("a",)}
+        deps: dict[str, tuple[str, ...]] = {"c": (), "a": (), "b": ("a",)}
         assert _topological_sort(deps) == _topological_sort(deps)
 
 
@@ -481,12 +481,12 @@ class TestDeps:
         k = _k({"a": (), "b": ("a",), "c": ("a",), "d": ("b", "c")})
         k.start()
         _happy(k, "a", "p-a")
-        dispatched = {a.task_slug for a in k._schedule()}
+        dispatched = {a.task_slug for a in k._schedule() if hasattr(a, "task_slug")}
         assert dispatched == {"b", "c"}
 
         _happy(k, "b", "p-b")
         _happy(k, "c", "p-c")
-        dispatched = {a.task_slug for a in k._schedule()}
+        dispatched = {a.task_slug for a in k._schedule() if hasattr(a, "task_slug")}
         assert "d" in dispatched
 
     def test_cascade_chain(self):
@@ -584,7 +584,7 @@ class TestGuardRails:
             task_slug: str
 
         k = _k({"a": ()})
-        actions = k.handle(FakeEvent("a"))
+        actions = k.handle(FakeEvent("a"))  # type: ignore
         assert actions == []
 
 

@@ -121,12 +121,12 @@ async def _fake_worker_slow(
 
 def _make_runner(dag: DagDefinition) -> EventDagRunner:
     runner = EventDagRunner(dag, session_root="/tmp/test-project")
-    runner._setup_signal_handlers = lambda: None
+    runner._setup_signal_handlers = lambda: None  # type: ignore
 
     async def _noop() -> None:
         pass
 
-    runner._preflight_check_models = _noop
+    runner._preflight_check_models = _noop  # type: ignore
     return runner
 
 
@@ -367,7 +367,7 @@ class TestCleanup:
                     await asyncio.sleep(0.05)
                     runner._shutdown_event.set()
 
-                runner._setup_signal_handlers = lambda: None
+                runner._setup_signal_handlers = lambda: None  # type: ignore
                 trigger_task = asyncio.create_task(_trigger())
                 try:
                     return await runner.run()
