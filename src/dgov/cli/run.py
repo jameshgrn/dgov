@@ -12,7 +12,9 @@ from typing import cast
 
 import click
 
+from dgov.archive import archive_plan
 from dgov.cli import _output, cli, want_json
+from dgov.deploy_log import is_plan_complete
 from dgov.plan import compile_plan, parse_plan_file
 from dgov.runner import EventDagRunner
 
@@ -38,12 +40,14 @@ def run_cmd(
     Example: dgov run .dgov/plans/my-plan/
     """
     plan_file = plan
+    plan_dir: Path | None = None
     if plan.is_dir():
         plan_file = plan / "_compiled.toml"
         if not plan_file.exists():
             click.echo(f"Error: No _compiled.toml found in {plan}", err=True)
             click.echo("Run 'dgov compile <dir>' first.", err=True)
             raise SystemExit(1)
+        plan_dir = plan
 
     if plan_file.suffix != ".toml":
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
@@ -51,7 +55,12 @@ def run_cmd(
 
     project_root = str(Path.cwd())
     _cmd_run_plan(
-        str(plan_file), project_root, restart=restart, continue_failed=continue_failed, only=only
+        str(plan_file),
+        project_root,
+        restart=restart,
+        continue_failed=continue_failed,
+        only=only,
+        plan_dir=plan_dir,
     )
 
 
@@ -185,6 +194,7 @@ def _cmd_run_plan(
     restart: bool = False,
     continue_failed: bool = False,
     only: str | None = None,
+    plan_dir: Path | None = None,
 ) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     import os
@@ -315,6 +325,17 @@ def _cmd_run_plan(
         runner._task_durations,
         task_errors,
     )
+
+    # Auto-archive when all units are deployed. Suppressed for --only runs (intentionally partial).
+    if (
+        run_status == "complete"
+        and only is None
+        and plan_dir is not None
+        and is_plan_complete(project_root, dag.name, set(dag.tasks))
+    ):
+        dest = archive_plan(plan_dir)
+        if not want_json():
+            click.echo(f"Plan fully deployed → archived to {dest}")
 
 
 def _append_run_log(

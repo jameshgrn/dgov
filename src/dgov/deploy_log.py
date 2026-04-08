@@ -80,3 +80,9 @@ def read(project_root: str, plan_name: str) -> list[DeployRecord]:
 def is_deployed(project_root: str, plan_name: str, unit_id: str) -> bool:
     """Check if a specific unit has been deployed."""
     return any(r.unit == unit_id for r in read(project_root, plan_name))
+
+
+def is_plan_complete(project_root: str, plan_name: str, all_unit_ids: set[str]) -> bool:
+    """Return True if every unit in all_unit_ids has a deploy record."""
+    deployed = {r.unit for r in read(project_root, plan_name)}
+    return all_unit_ids <= deployed

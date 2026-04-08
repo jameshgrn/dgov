@@ -125,6 +125,24 @@ def cleanup_cmd() -> None:
         raise click.exceptions.Exit(code=1) from exc
 
 
+@cli.command(name="archive-plan")
+@click.argument("name")
+def archive_plan_cmd(name: str) -> None:
+    """Manually archive a plan directory to .dgov/plans/archive/<name>."""
+    from dgov.archive import archive_plan
+
+    plan_dir = Path(".dgov") / "plans" / name
+    if not plan_dir.exists():
+        click.echo(f"Error: Plan not found: {plan_dir}", err=True)
+        raise click.exceptions.Exit(code=1)
+    archive_dir = plan_dir.parent / "archive"
+    if (archive_dir / name).exists():
+        click.echo(f"Error: Archive already exists: {archive_dir / name}", err=True)
+        raise click.exceptions.Exit(code=1)
+    dest = archive_plan(plan_dir)
+    click.echo(f"Archived to {dest}")
+
+
 @cli.command(name="prune")
 def prune_cmd() -> None:
     """Prune historical tasks — removes abandoned and closed records."""
