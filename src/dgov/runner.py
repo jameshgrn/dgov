@@ -124,10 +124,15 @@ class EventDagRunner:
                 )
 
     def _resume_failed(self) -> None:
-        """Move all FAILED/ABANDONED/TIMED_OUT tasks back to PENDING so they can be retried."""
+        """Move all FAILED/ABANDONED/TIMED_OUT/SKIPPED tasks back to PENDING for retry."""
         logger.info("Resuming failed tasks")
         for slug, state in list(self.kernel.task_states.items()):
-            if state in (TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT):
+            if state in (
+                TaskState.FAILED,
+                TaskState.ABANDONED,
+                TaskState.TIMED_OUT,
+                TaskState.SKIPPED,
+            ):
                 logger.info("Resuming task: %s (prior state: %s)", slug, state)
                 self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
                 emit_event(

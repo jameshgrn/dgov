@@ -82,30 +82,40 @@ def status_cmd(show_all: bool) -> None:
 
 @cli.command(name="cleanup")
 def cleanup_cmd() -> None:
-    """Annihilate zombies — marks ACTIVE tasks as ABANDONED and removes worktrees."""
+    """Annihilate zombies — marks ACTIVE tasks ABANDONED and removes orphaned worktree branches."""
     project_root = str(Path.cwd())
     try:
         tasks = all_tasks(project_root)
-        active = [t for t in tasks if t.get("state") == TaskState.ACTIVE]
 
-        if not active:
+        # ACTIVE: in-flight tasks from a crashed run
+        # FAILED/ABANDONED: preserved-but-rejected worktrees whose git branches were never deleted
+        needs_wt_cleanup = [
+            t
+            for t in tasks
+            if t.get("state") in (TaskState.ACTIVE, TaskState.FAILED, TaskState.ABANDONED)
+            and t.get("worktree_path")
+            and t.get("branch_name")
+        ]
+
+        if not needs_wt_cleanup:
             click.echo("No active tasks found. Everything is clean.")
             return
 
-        click.echo(f"Cleaning up {len(active)} active tasks...")
+        click.echo(f"Cleaning up {len(needs_wt_cleanup)} tasks...")
 
-        for t in active:
+        for t in needs_wt_cleanup:
             slug = t.get("slug", "unknown")
             wt_path = t.get("worktree_path")
             branch = t.get("branch_name")
 
-            if wt_path and branch:
-                try:
-                    wt = Worktree(path=Path(wt_path), branch=branch, commit="")
-                    remove_worktree(project_root, wt)
-                    click.echo(f"  [removed worktree] {slug}")
-                except Exception as e:
-                    click.echo(f"  [skip worktree] {slug}: {e}")
+            if not (wt_path and branch):
+                continue
+            try:
+                wt = Worktree(path=Path(wt_path), branch=branch, commit="")
+                remove_worktree(project_root, wt)
+                click.echo(f"  [removed worktree] {slug}")
+            except Exception as e:
+                click.echo(f"  [skip worktree] {slug}: {e}")
 
         count = cleanup_zombies(project_root)
         click.echo(f"Transitions complete: {count} tasks marked as ABANDONED.")
