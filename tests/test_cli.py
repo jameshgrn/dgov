@@ -339,6 +339,7 @@ class TestInitPlan:
 def test_format_event_settlement_retry() -> None:
     """Test that _format_event renders settlement_retry events correctly."""
     from rich.console import Console
+
     ev = {
         "event": "settlement_retry",
         "task_slug": "fix-lint",

@@ -66,7 +66,7 @@ dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units
 dgov archive-plan <name> # Manually archive a plan to .dgov/plans/archive/
 dgov ledger add <cat>    # Record bug, rule, or debt
-dgov cleanup             # Mark orphaned tasks as abandoned
+dgov recover             # Recover from a crashed run (mark orphaned tasks abandoned)
 dgov prune               # Remove historical task records
 dgov sentrux check       # Run architectural quality check
 dgov sentrux gate-save   # Save quality baseline

@@ -136,6 +136,7 @@ def _render_project_toml(language: str, src_dir: str, test_dir: str, extensions:
         f'format_cmd = "{cmds["format_cmd"]}"',
         f'lint_fix_cmd = "{cmds["lint_fix_cmd"]}"',
         f'format_check_cmd = "{cmds["format_check_cmd"]}"',
+        "# type_check_cmd = \"\"  # Optional: e.g. 'uv run ty check' for Python",
         "",
         "# Settlement timeout in seconds",
         "settlement_timeout = 120",

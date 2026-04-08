@@ -47,17 +47,16 @@ def cli(
 
     \b
     USAGE:
-      dgov                    Show status
-      dgov status             Show status
-      dgov run plan.toml      Run a plan
-      dgov validate plan.toml Validate a plan without running
-      dgov init               Bootstrap .dgov/project.toml
-      dgov watch              Stream events
-      dgov ledger add <cat>   Record bug, rule, or debt
-      dgov compile <dir>      Compile a plan tree to _compiled.toml
-      dgov plan status <dir>  Show pending vs deployed units
-      dgov prune              Prune historical (abandoned/closed) tasks
-      dgov sentrux check      Run Sentrux architectural check
+      dgov                       Show status
+      dgov run <dir>             Run a compiled plan
+      dgov compile <dir>         Compile plan tree to _compiled.toml
+      dgov init                  Bootstrap .dgov/project.toml
+      dgov init-plan <name>      Initialize a new plan directory
+      dgov watch                 Stream events live
+      dgov recover               Recover from a crashed run
+      dgov archive-plan <name>   Manually archive a plan
+      dgov plan status <dir>     Show pending vs deployed units
+      dgov sentrux check         Run architectural quality check
 
     Tasks run in isolated git worktrees. No tmux required.
     """
@@ -80,9 +79,9 @@ def status_cmd(show_all: bool) -> None:
     _cmd_status(str(Path.cwd()), show_all=show_all)
 
 
-@cli.command(name="cleanup")
-def cleanup_cmd() -> None:
-    """Annihilate zombies — marks ACTIVE tasks ABANDONED and removes orphaned worktree branches."""
+@cli.command(name="recover")
+def recover_cmd() -> None:
+    """Recover from a crashed run — marks ACTIVE tasks ABANDONED and removes orphaned branches."""
     project_root = str(Path.cwd())
     try:
         tasks = all_tasks(project_root)
@@ -101,7 +100,7 @@ def cleanup_cmd() -> None:
             click.echo("No active tasks found. Everything is clean.")
             return
 
-        click.echo(f"Cleaning up {len(needs_wt_cleanup)} tasks...")
+        click.echo(f"Recovering {len(needs_wt_cleanup)} tasks...")
 
         for t in needs_wt_cleanup:
             slug = t.get("slug", "unknown")
@@ -118,10 +117,10 @@ def cleanup_cmd() -> None:
                 click.echo(f"  [skip worktree] {slug}: {e}")
 
         count = cleanup_zombies(project_root)
-        click.echo(f"Transitions complete: {count} tasks marked as ABANDONED.")
+        click.echo(f"Recovery complete: {count} tasks marked as ABANDONED.")
 
     except Exception as exc:
-        click.echo(f"Cleanup failed: {exc}", err=True)
+        click.echo(f"Recovery failed: {exc}", err=True)
         raise click.exceptions.Exit(code=1) from exc
 
 

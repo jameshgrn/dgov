@@ -57,7 +57,7 @@
 | Crash / orphaned actives | `dgov run <plan>` (orphan cleanup is automatic) |
 | Want clean slate | `dgov run <plan> --restart` |
 | History noise in status | `dgov prune` |
-| Worktree debris | `dgov cleanup` |
+| Worktree debris | `dgov recover` |
 
 ### Failure Diagnosis
 
