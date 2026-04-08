@@ -55,6 +55,7 @@ async def run_headless_worker(
         "lint_cmd": pc.lint_cmd,
         "format_cmd": pc.format_cmd,
         "lint_fix_cmd": pc.lint_fix_cmd,
+        "type_check_cmd": pc.type_check_cmd,
         "test_markers": list(pc.test_markers),
         "conventions": dict(pc.conventions) if pc.conventions else None,
     })

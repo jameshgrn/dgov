@@ -236,6 +236,20 @@ class TestFormatFile:
         assert "formatting src/foo.py" in result
 
 
+class TestTypeCheck:
+    def test_type_check_configured(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(type_check_cmd="echo 'type check ok'")
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.type_check()
+        assert "type check ok" in result
+
+    def test_type_check_not_configured(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(type_check_cmd="")
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.type_check()
+        assert "not configured" in result.lower()
+
+
 # -- Project config loading --
 
 

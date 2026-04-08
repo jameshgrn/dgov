@@ -605,6 +605,12 @@ class AtomicTools:
         cmd = self.config.format_cmd.replace("{file}", file)
         return self.run_bash(cmd)
 
+    def type_check(self) -> str:
+        """Run the project's type checker. Returns a message if not configured."""
+        if not self.config.type_check_cmd:
+            return "Type checking not configured for this project."
+        return self.run_bash(self.config.type_check_cmd)
+
 
 def get_tool_spec() -> list[Any]:
     return [
@@ -1103,6 +1109,21 @@ def get_tool_spec() -> list[Any]:
                     "type": "object",
                     "properties": {"file": {"type": "string"}},
                     "required": ["file"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "type_check",
+                "description": (
+                    "Run the project's type checker (e.g. ty check). "
+                    "Returns checker output. Use after edits to verify type correctness."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": [],
                 },
             },
         },
