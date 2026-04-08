@@ -28,6 +28,7 @@ class AtomicConfig:
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
     lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
+    type_check_cmd: str = ""
     line_length: int = 99
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] | None = None

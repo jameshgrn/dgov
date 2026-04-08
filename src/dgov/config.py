@@ -28,6 +28,7 @@ class ProjectConfig:
     # Settlement-specific (autofix + validate)
     lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes --show-fixes {file}"
     format_check_cmd: str = "python -m ruff format --check {file}"
+    type_check_cmd: str = ""
     test_markers: tuple[str, ...] = ()
     settlement_timeout: int = 120
     line_length: int = 99
@@ -56,6 +57,9 @@ class ProjectConfig:
         target = file if file else self.src_dir
         return self.lint_fix_cmd.replace("{file}", target)
 
+    def resolve_type_check_cmd(self) -> str:
+        return self.type_check_cmd
+
     def to_prompt_section(self) -> str:
         """Render as text for injection into worker system prompt."""
         lines = [
@@ -66,6 +70,8 @@ class ProjectConfig:
             f"Lint command: {self.resolve_lint_cmd()}",
             f"Format command: {self.resolve_format_cmd('<file>')}",
         ]
+        if self.type_check_cmd:
+            lines.append(f"Type check command: {self.type_check_cmd}")
         if self.test_markers:
             lines.append(f"Test markers: {', '.join(self.test_markers)}")
         for key, val in self.conventions.items():
@@ -106,6 +112,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),
         lint_fix_cmd=proj.get("lint_fix_cmd", ProjectConfig.lint_fix_cmd),
         format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
+        type_check_cmd=proj.get("type_check_cmd", ""),
         test_markers=markers,
         settlement_timeout=proj.get("settlement_timeout", 120),
         line_length=proj.get("line_length", 99),

@@ -95,3 +95,29 @@ class TestLoadProjectConfig:
         (dgov_dir / "project.toml").write_text('[project]\ntest_markers = ["unit", "slow"]\n')
         pc = load_project_config(tmp_path)
         assert pc.test_markers == ("unit", "slow")
+
+    def test_type_check_cmd_loaded(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text('[project]\ntype_check_cmd = "ty check"\n')
+        pc = load_project_config(tmp_path)
+        assert pc.type_check_cmd == "ty check"
+
+
+class TestTypeCheckCommand:
+    def test_type_check_cmd_default(self):
+        assert ProjectConfig().type_check_cmd == ""
+
+    def test_resolve_type_check_cmd(self):
+        pc = ProjectConfig(type_check_cmd="ty check")
+        assert pc.resolve_type_check_cmd() == "ty check"
+
+    def test_prompt_section_includes_type_check(self):
+        pc = ProjectConfig(type_check_cmd="ty check")
+        section = pc.to_prompt_section()
+        assert "Type check command: ty check" in section
+
+    def test_prompt_section_omits_type_check_when_empty(self):
+        pc = ProjectConfig()
+        section = pc.to_prompt_section()
+        assert "Type check" not in section
