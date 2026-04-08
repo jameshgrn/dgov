@@ -12,6 +12,9 @@ from click.testing import CliRunner
 from dgov.cli import cli
 from dgov.cli.init import _detect_project, _render_project_toml
 from dgov.cli.watch import _format_event
+from dgov.persistence import add_task, all_tasks
+from dgov.persistence.schema import WorkerTask
+from dgov.types import TaskState
 
 pytestmark = pytest.mark.unit
 
@@ -377,3 +380,94 @@ def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
     # --only b should accept the slug (not "Task 'b' not found")
     result = runner.invoke(cli, ["run", str(plan), "--only", "b"])
     assert "not found" not in result.output.lower()
+
+
+# -- prune --
+
+
+def test_prune_nothing_to_prune(runner: CliRunner, tmp_path: Path) -> None:
+    """Prune on empty or non-historical tasks should report nothing to prune."""
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        result = runner.invoke(cli, ["prune"])
+        assert result.exit_code == 0
+        assert "Nothing to prune" in result.output
+
+
+def test_prune_removes_historical_tasks(runner: CliRunner, tmp_path: Path) -> None:
+    """Prune should remove abandoned and closed tasks, keeping pending/merged."""
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        # Create tasks in various states
+        tasks = [
+            WorkerTask(
+                slug="abandoned-task",
+                prompt="test",
+                agent="test",
+                project_root=td,
+                worktree_path=td,
+                branch_name="test",
+                state=TaskState.ABANDONED,
+            ),
+            WorkerTask(
+                slug="closed-task",
+                prompt="test",
+                agent="test",
+                project_root=td,
+                worktree_path=td,
+                branch_name="test",
+                state=TaskState.CLOSED,
+            ),
+            WorkerTask(
+                slug="pending-task",
+                prompt="test",
+                agent="test",
+                project_root=td,
+                worktree_path=td,
+                branch_name="test",
+                state=TaskState.PENDING,
+            ),
+            WorkerTask(
+                slug="merged-task",
+                prompt="test",
+                agent="test",
+                project_root=td,
+                worktree_path=td,
+                branch_name="test",
+                state=TaskState.MERGED,
+            ),
+        ]
+        for task in tasks:
+            add_task(td, task)
+
+        result = runner.invoke(cli, ["prune"])
+        assert result.exit_code == 0
+        assert "Pruned 2 historical task(s)" in result.output
+
+        remaining = all_tasks(td)
+        remaining_slugs = {t["slug"] for t in remaining}
+        assert remaining_slugs == {"pending-task", "merged-task"}
+
+
+def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
+    """Running prune twice should be idempotent — second run finds nothing."""
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        # Create an abandoned task
+        task = WorkerTask(
+            slug="abandoned-task",
+            prompt="test",
+            agent="test",
+            project_root=td,
+            worktree_path=td,
+            branch_name="test",
+            state=TaskState.ABANDONED,
+        )
+        add_task(td, task)
+
+        # First prune removes the task
+        result1 = runner.invoke(cli, ["prune"])
+        assert result1.exit_code == 0
+        assert "Pruned 1 historical task(s)" in result1.output
+
+        # Second prune finds nothing
+        result2 = runner.invoke(cli, ["prune"])
+        assert result2.exit_code == 0
+        assert "Nothing to prune" in result2.output
