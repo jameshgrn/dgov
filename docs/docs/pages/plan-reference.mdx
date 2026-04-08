@@ -15,19 +15,15 @@ summary = "Validate current state"
 prompt = "Review src/api.py and verify the current endpoint structure"
 agent = "reviewer"
 commit_message = "docs: add validation notes"
-
-[tasks.validate.files]
-read = ["src/api.py"]
+files.read = ["src/api.py"]
 
 [tasks.migrate]
 summary = "Migrate to new schema"
 prompt = "Refactor src/api.py to use the new typed response schema"
 depends_on = ["validate"]
 commit_message = "refactor: migrate api to typed schema"
-
-[tasks.migrate.files]
-edit = ["src/api.py"]
-create = ["src/api/types.py"]
+files.edit = ["src/api.py"]
+files.create = ["src/api/types.py"]
 ```
 
 ---
@@ -80,6 +76,28 @@ File claims enforce **isolation** between concurrent tasks. The kernel validates
 | `edit` | array of strings | Files the task will modify |
 | `delete` | array of strings | Files the task will remove |
 | `read` | array of strings | Files the task reads (informational, not enforced) |
+
+### Flat File Claims Shorthand
+
+For simple cases where you only need to claim files without specifying the operation type, use the `files` shorthand. This is equivalent to `touch`—the files will be created if they don't exist, and the task claims ownership.
+
+```toml
+[tasks.generate_config]
+summary = "Generate default config"
+prompt = "Create a default config.json with basic settings"
+files = ["config.json"]
+```
+
+This is equivalent to:
+
+```toml
+[tasks.generate_config]
+summary = "Generate default config"
+prompt = "Create a default config.json with basic settings"
+files.create = ["config.json"]
+```
+
+Use the shorthand for brevity when the operation is clear from context, or use explicit `create`/`edit`/`delete`/`read` when you need precise control.
 
 ---
 
@@ -152,14 +170,12 @@ Write findings to audit_report.md
 agent = "senior-reviewer"
 commit_message = "docs: payment system audit report"
 timeout_s = 1200
-
-[tasks.audit.files]
-read = [
+files.read = [
     "src/payments/",
     "src/payments/stripe.py",
     "src/payments/paypal.py",
 ]
-create = ["audit_report.md"]
+files.create = ["audit_report.md"]
 
 # === Phase 2: Design ===
 
@@ -168,10 +184,8 @@ summary = "Design new payment schema"
 prompt = "Based on audit_report.md, design typed models for PaymentMethod and PaymentResult"
 depends_on = ["audit"]
 commit_message = "design: payment type schema"
-
-[tasks.design_schema.files]
-read = ["audit_report.md"]
-create = ["src/payments/types.py"]
+files.read = ["audit_report.md"]
+files.create = ["src/payments/types.py"]
 
 # === Phase 3: Implementation ===
 
@@ -180,20 +194,16 @@ summary = "Migrate Stripe integration"
 prompt = "Refactor src/payments/stripe.py to use new types from src/payments/types.py"
 depends_on = ["design_schema"]
 commit_message = "refactor: migrate stripe to typed models"
-
-[tasks.refactor_stripe.files]
-edit = ["src/payments/stripe.py"]
-read = ["src/payments/types.py"]
+files.edit = ["src/payments/stripe.py"]
+files.read = ["src/payments/types.py"]
 
 [tasks.refactor_paypal]
 summary = "Migrate PayPal integration"
 prompt = "Refactor src/payments/paypal.py to use new types from src/payments/types.py"
 depends_on = ["design_schema"]
 commit_message = "refactor: migrate paypal to typed models"
-
-[tasks.refactor_paypal.files]
-edit = ["src/payments/paypal.py"]
-read = ["src/payments/types.py"]
+files.edit = ["src/payments/paypal.py"]
+files.read = ["src/payments/types.py"]
 
 # === Phase 4: Cleanup ===
 
@@ -202,10 +212,8 @@ summary = "Remove legacy payment module"
 prompt = "Delete src/payments/legacy.py after confirming no imports remain"
 depends_on = ["refactor_stripe", "refactor_paypal"]
 commit_message = "chore: remove legacy payment module"
-
-[tasks.remove_legacy.files]
-read = ["src/payments/stripe.py", "src/payments/paypal.py"]
-delete = ["src/payments/legacy.py"]
+files.read = ["src/payments/stripe.py", "src/payments/paypal.py"]
+files.delete = ["src/payments/legacy.py"]
 ```
 
 ---
