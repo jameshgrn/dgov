@@ -519,6 +519,20 @@ def validate_sandbox(
         if res_fmt.returncode != 0:
             return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
 
+        # Type check gate (skipped when type_check_cmd is empty)
+        if config.type_check_cmd:
+            res_ty = subprocess.run(
+                config.type_check_cmd,
+                shell=True,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=config.settlement_timeout,
+            )
+            if res_ty.returncode != 0:
+                output = (res_ty.stdout + res_ty.stderr)[-500:]
+                return GateResult(passed=False, error=f"Type check failure:\n{output}")
+
         # Test gate
         test_cmd = _build_test_cmd(config, changed_files, worktree_path)
         if test_cmd:
