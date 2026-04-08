@@ -22,11 +22,16 @@ from dgov.runner import EventDagRunner
     "--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state"
 )
 @click.option(
-    "--continue", "continue_failed", is_flag=True, help="Continue from where you left off, retrying failed tasks"
+    "--continue",
+    "continue_failed",
+    is_flag=True,
+    help="Continue from where you left off, retrying failed tasks",
 )
 @click.option("--only", default=None, help="Run only this task and its deps")
 @click.pass_context
-def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, continue_failed: bool, only: str | None) -> None:
+def run_cmd(
+    ctx: click.Context, plan_file: Path, restart: bool, continue_failed: bool, only: str | None
+) -> None:
     """Run a plan file (TOML).
 
     Example: dgov run plan.toml
@@ -35,7 +40,9 @@ def run_cmd(ctx: click.Context, plan_file: Path, restart: bool, continue_failed:
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
         raise SystemExit(1)
     project_root = str(Path.cwd())
-    _cmd_run_plan(str(plan_file), project_root, restart=restart, continue_failed=continue_failed, only=only)
+    _cmd_run_plan(
+        str(plan_file), project_root, restart=restart, continue_failed=continue_failed, only=only
+    )
 
 
 def _parse_quality(line: str) -> int | None:
@@ -162,7 +169,11 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
 
 
 def _cmd_run_plan(
-    plan_file: str, project_root: str, restart: bool = False, continue_failed: bool = False, only: str | None = None
+    plan_file: str,
+    project_root: str,
+    restart: bool = False,
+    continue_failed: bool = False,
+    only: str | None = None,
 ) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
@@ -207,9 +218,11 @@ def _cmd_run_plan(
 
     if want_json():
         click.echo(
-            json.dumps(
-                {"status": "starting", "dag": dag.name, "sentrux_baseline": baseline_quality}
-            )
+            json.dumps({
+                "status": "starting",
+                "dag": dag.name,
+                "sentrux_baseline": baseline_quality,
+            })
         )
     elif sentrux_ok:
         click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
@@ -231,17 +244,21 @@ def _cmd_run_plan(
 
     failed = [s for s, st in results.items() if st == "failed"]
     succeeded = [s for s, st in results.items() if st == "merged"]
+    task_errors = {slug: err for slug, err in runner._task_errors.items() if slug in failed}
 
-    _output(
-        {
-            "status": "complete" if not failed else "failed",
-            "succeeded": len(succeeded),
-            "failed": len(failed),
-            "failed_tasks": failed if failed else None,
-            "sentrux": gate_result if sentrux_ok else None,
-            "duration_s": round(duration.total_seconds(), 2),
-        }
-    )
+    if task_errors and not want_json():
+        for slug, err in task_errors.items():
+            click.echo(f"  {slug}: {err[:200]}")
+
+    _output({
+        "status": "complete" if not failed else "failed",
+        "succeeded": len(succeeded),
+        "failed": len(failed),
+        "failed_tasks": failed if failed else None,
+        "task_errors": task_errors if task_errors else None,
+        "sentrux": gate_result if sentrux_ok else None,
+        "duration_s": round(duration.total_seconds(), 2),
+    })
 
     _append_run_log(
         project_root,
@@ -251,6 +268,7 @@ def _cmd_run_plan(
         gate_result,
         duration,
         runner._task_durations,
+        task_errors,
     )
 
 
@@ -262,6 +280,7 @@ def _append_run_log(
     gate_result: dict[str, object],
     duration: datetime.timedelta,
     task_durations: dict[str, float] | None = None,
+    task_errors: dict[str, str] | None = None,
 ) -> None:
     """Append a run summary to .dgov/runs.log — permanent, git-tracked."""
     log_path = Path(project_root) / ".dgov" / "runs.log"
@@ -272,11 +291,16 @@ def _append_run_log(
     failed = [s for s, st in results.items() if st == "failed"]
     status = "ok" if not failed else "fail"
 
-    lines = [f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"]
+    lines = [
+        f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"
+    ]
     if merged:
         lines.append(f"  merged: {', '.join(merged)}")
     if failed:
         lines.append(f"  failed: {', '.join(failed)}")
+    if task_errors:
+        for slug, err in task_errors.items():
+            lines.append(f"    error[{slug}]: {err[:200]}")
     if task_durations:
         dur_str = ", ".join(f"{s}: {d}s" for s, d in task_durations.items())
         lines.append(f"  durations: {dur_str}")
@@ -286,5 +310,5 @@ def _append_run_log(
         lines.append(f"  sentrux: {quality_before} -> {quality_after}")
     lines.append("")
 
-    with open(log_path, "a") as f:
+    with log_path.open("a") as f:
         f.write("\n".join(lines) + "\n")
