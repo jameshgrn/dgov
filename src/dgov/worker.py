@@ -19,7 +19,7 @@ import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from openai import OpenAI
 
@@ -237,7 +237,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
     def _cleanup() -> None:
         shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
 
-    messages = [
+    messages: list[Any] = [
         {"role": "system", "content": _build_system_prompt(worktree, config)},
         {"role": "user", "content": goal},
     ]
@@ -245,8 +245,11 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
 
     for _ in range(100):  # Pillar #10: Fail-closed via iteration limit
         try:
-            resp = client.chat.completions.create(
-                model=model, messages=messages, tools=get_tool_spec(), tool_choice="auto"
+            resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
+                model=model,
+                messages=messages,
+                tools=get_tool_spec(),
+                tool_choice="auto",
             )
         except Exception as e:
             WorkerEvent("error", f"API Failure: {e!s}").emit()
@@ -286,7 +289,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "name": call.function.name,
+                "name": cast(Any, call).function.name,
                 "content": result,
             })
 

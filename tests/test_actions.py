@@ -19,6 +19,7 @@ from dgov.actions import (
     TaskReviewDone,
     TaskWaitDone,
 )
+from dgov.types import TaskState
 
 
 class TestConstruction:
@@ -69,10 +70,10 @@ class TestConstruction:
         assert event.pane_slug == "p"
 
     def test_task_wait_done(self) -> None:
-        event = TaskWaitDone(task_slug="a", pane_slug="p", task_state="running")
+        event = TaskWaitDone(task_slug="a", pane_slug="p", task_state=TaskState.ACTIVE)
         assert event.task_slug == "a"
         assert event.pane_slug == "p"
-        assert event.task_state == "running"
+        assert event.task_state == TaskState.ACTIVE
 
     def test_task_review_done(self) -> None:
         event = TaskReviewDone(task_slug="a", passed=True, verdict="LGTM", commit_count=3)
@@ -154,7 +155,7 @@ class TestTypeUnions:
         assert isinstance(event, TaskDispatched)
 
     def test_task_wait_done_is_dag_event(self) -> None:
-        event: DagEvent = TaskWaitDone(task_slug="a", pane_slug="p", task_state="done")
+        event: DagEvent = TaskWaitDone(task_slug="a", pane_slug="p", task_state=TaskState.DONE)
         assert isinstance(event, TaskWaitDone)
 
     def test_task_review_done_is_dag_event(self) -> None:

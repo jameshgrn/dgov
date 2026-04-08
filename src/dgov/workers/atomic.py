@@ -14,6 +14,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -604,7 +605,7 @@ class AtomicTools:
         return self.run_bash(cmd)
 
 
-def get_tool_spec() -> list[dict]:
+def get_tool_spec() -> list[Any]:
     return [
         # Core tools
         {

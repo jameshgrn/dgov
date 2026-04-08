@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from dgov.types import TaskState
+
 # --- Actions (Kernel -> Runner) ---
 
 
@@ -67,7 +69,7 @@ class TaskDispatched:
 class TaskWaitDone:
     task_slug: str
     pane_slug: str
-    task_state: str
+    task_state: TaskState
 
 
 @dataclass(frozen=True)

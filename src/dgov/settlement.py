@@ -84,7 +84,7 @@ class SmartFixer:
         modified = False
 
         class B904Transformer(ast.NodeTransformer):
-            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.ExceptHandler:
+            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.AST:
                 # Need an exception variable name to chain from
                 exc_name = node.name
                 if not exc_name:
