@@ -9,6 +9,7 @@ lint_cmd = "python -m ruff check {file}"
 format_cmd = "python -m ruff format {file}"
 lint_fix_cmd = "python -m ruff check --fix {file}"
 format_check_cmd = "python -m ruff format --check {file}"
+type_check_cmd = "python -m ty check"
 test_markers = ["unit", "integration"]
 review_hooks = [
     "! file --mime {files} | grep -q 'charset=binary'",
