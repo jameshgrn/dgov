@@ -77,7 +77,18 @@ class TestTomlMlStr:
         """Multi-line string should escape backslashes."""
         result = _toml_ml_str("path\\to\\file")
         # In multi-line mode, backslashes are doubled
-        assert '\\\\' in result
+        assert "\\\\" in result
+
+    def test_multi_line_triple_quote_escaped(self):
+        """Triple-quotes in content must be escaped or they terminate the TOML string."""
+        value = 'step 1:\n    def foo():\n        """docstring"""\n        pass\n'
+        result = _toml_ml_str(value)
+        # The output must be parseable TOML — no raw """ inside the string body
+        import tomllib
+
+        toml_src = f"x = {result}"
+        parsed = tomllib.loads(toml_src)
+        assert '"""' in parsed["x"]  # round-trip preserves the triple-quotes
 
 
 # =============================================================================

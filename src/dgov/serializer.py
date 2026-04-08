@@ -77,11 +77,12 @@ def _toml_str(value: str) -> str:
 
 
 def _toml_ml_str(value: str) -> str:
-    """Use TOML multi-line literal string for prompts (triple-quotes)."""
+    """Use TOML multi-line basic string for prompts."""
     if "\n" not in value:
         return _toml_str(value)
-    # Triple-quoted strings: escape only ''' sequences
-    safe = value.replace("\\", "\\\\")
+    # Escape backslashes first, then escape any """ sequences so they don't
+    # terminate the multi-line string early.
+    safe = value.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
     return f'"""\n{safe}"""'
 
 
