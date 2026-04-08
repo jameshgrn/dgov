@@ -215,3 +215,30 @@
   failed: a
   sentrux: 2304 -> 2316
 
+[2026-04-08 03:03:40Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-320/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2304
+
+[2026-04-08 03:14:40Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-323/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2316
+
+[2026-04-08 03:15:04Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-324/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2316
+
+[2026-04-08 03:17:54Z] stress-test (.dgov/plans/stress-test/_compiled.toml) — fail (19.7s)
+  failed: scratch/files.write-constants, scratch/files.write-helpers, scratch/files.write-version-note
+  durations: scratch/files.write-constants: 8.61s, scratch/files.write-helpers: 11.91s, scratch/files.write-version-note: 14.75s
+  sentrux: 2304 -> 2304
+
+[2026-04-08 03:22:47Z] stress-test (.dgov/plans/stress-test/_compiled.toml) — fail (111.96s)
+  failed: scratch/files.write-constants, scratch/files.write-helpers, scratch/files.write-version-note
+  durations: scratch/files.write-helpers: 10.06s, scratch/files.write-version-note: 43.47s, scratch/files.write-constants: 43.74s
+  sentrux: 2304 -> 2316
+
+[2026-04-08 03:25:30Z] stress-test (.dgov/plans/stress-test/_compiled.toml) — ok (36.94s)
+  merged: scratch/files.write-alpha, scratch/files.write-beta, scratch/files.write-gamma, scratch/files.write-index
+  durations: scratch/files.write-alpha: 7.94s, scratch/files.write-gamma: 10.01s, scratch/files.write-beta: 11.24s, scratch/files.write-index: 14.47s
+  sentrux: 2304 -> 2304
+
