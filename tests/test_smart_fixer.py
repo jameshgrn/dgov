@@ -22,7 +22,10 @@ def test_smart_fix_b904(tmp_path: Path):
 
     fixed = path.read_text()
     # ast.unparse might change " to '
-    assert "raise RuntimeError('wrapped') from exc" in fixed or 'raise RuntimeError("wrapped") from exc' in fixed
+    assert (
+        "raise RuntimeError('wrapped') from exc" in fixed
+        or 'raise RuntimeError("wrapped") from exc' in fixed
+    )
 
 
 def test_smart_fix_e501_prose(tmp_path: Path):
@@ -30,7 +33,8 @@ def test_smart_fix_e501_prose(tmp_path: Path):
     # A comment that is exactly 60 chars (plus indent)
     content = textwrap.dedent("""
         def foo():
-            # This is a very long prose comment that definitely exceeds the forty character limit we set for this test.
+            # This is a very long prose comment that definitely exceeds
+            # the forty character limit we set for this test.
             pass
     """).strip()
 

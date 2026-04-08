@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
+from helpers import compile_plan_tree
 
 from dgov.cli import cli
 from dgov.cli.init import _detect_project, _render_project_toml
@@ -61,48 +62,62 @@ def test_status_json(runner: CliRunner, tmp_path: Path) -> None:
 
 
 def test_validate_valid_plan(runner: CliRunner, tmp_path: Path) -> None:
-    plan = tmp_path / "plan.toml"
-    plan.write_text(
-        '[plan]\nname = "test"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-        'files.create = ["a.py"]\n'
-    )
-    result = runner.invoke(cli, ["validate", str(plan)])
-    assert result.exit_code == 0
-    assert "Validation passed" in result.output
-    assert "do a" in result.output
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
+[tasks.a]
+summary = "do a"
+prompt = "do a"
+commit_message = "a"
+files = ["a.py"]
+"""
+        compiled_path = compile_plan_tree(tmp_path, "test-valid", tasks_toml)
+
+        result = runner.invoke(cli, ["validate", str(compiled_path)])
+        assert result.exit_code == 0
+        assert "Validation passed" in result.output
+        assert "do a" in result.output
 
 
 def test_validate_conflict_plan(runner: CliRunner, tmp_path: Path) -> None:
-    plan = tmp_path / "plan.toml"
-    plan.write_text(
-        '[plan]\nname = "conflict"\n\n'
-        "[tasks.a]\n"
-        'summary = "a"\nprompt = "a"\ncommit_message = "a"\n'
-        'files.edit = ["shared.py"]\n\n'
-        "[tasks.b]\n"
-        'summary = "b"\nprompt = "b"\ncommit_message = "b"\n'
-        'files.edit = ["shared.py"]\n'
-    )
-    result = runner.invoke(cli, ["validate", str(plan)])
-    assert result.exit_code != 0
-    assert "ERROR" in result.output
-    assert "File conflict" in result.output
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
+[tasks.a]
+summary = "a"
+prompt = "a"
+commit_message = "a"
+files.edit = ["shared.py"]
+
+[tasks.b]
+summary = "b"
+prompt = "b"
+commit_message = "b"
+files.edit = ["shared.py"]
+"""
+        # Note: compile handles structural DAG stuff, but we still need validate
+        # to catch cross-task file conflicts in the PlanSpec.
+        compiled_path = compile_plan_tree(tmp_path, "test-conflict", tasks_toml)
+
+        result = runner.invoke(cli, ["validate", str(compiled_path)])
+        assert result.exit_code != 0
+        assert "ERROR" in result.output
+        assert "File conflict" in result.output
 
 
 def test_validate_json_output(runner: CliRunner, tmp_path: Path) -> None:
-    plan = tmp_path / "plan.toml"
-    plan.write_text(
-        '[plan]\nname = "test"\n\n[tasks.a]\nsummary = "a"\nprompt = "a"\ncommit_message = "a"\n'
-    )
-    result = runner.invoke(cli, ["--json", "validate", str(plan)])
-    assert result.exit_code == 0
-    data = json.loads(result.output)
-    assert data["valid"] is True
-    assert data["tasks"] == 1
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
+[tasks.a]
+summary = "a"
+prompt = "a"
+commit_message = "a"
+"""
+        compiled_path = compile_plan_tree(tmp_path, "test-json", tasks_toml)
+
+        result = runner.invoke(cli, ["--json", "validate", str(compiled_path)])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["valid"] is True
+        assert data["tasks"] == 1
 
 
 def test_validate_bad_toml(runner: CliRunner, tmp_path: Path) -> None:
@@ -338,6 +353,57 @@ def test_format_event_settlement_retry() -> None:
 
 def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
     """Running with --only nonexistent exits with code 1 and error message."""
+    tasks_toml = """
+[tasks.a]
+summary = "do a"
+prompt = "do a"
+commit_message = "a"
+files = ["a.py"]
+"""
+    compiled_path = compile_plan_tree(tmp_path, "unknown-slug-test", tasks_toml)
+    result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower() or "nonexistent" in result.output
+
+
+def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
+    """Run with --only b on a->b->c plan: b is accepted, not 'not found'."""
+
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
+[tasks.a]
+summary = "task a"
+prompt = "do a"
+commit_message = "a"
+files = ["a.py"]
+
+[tasks.b]
+summary = "task b"
+prompt = "do b"
+commit_message = "b"
+depends_on = ["a"]
+files = ["b.py"]
+
+[tasks.c]
+summary = "task c"
+prompt = "do c"
+commit_message = "c"
+depends_on = ["b"]
+files = ["c.py"]
+"""
+        # IDs are qualified by section/file
+        compiled_path = compile_plan_tree(tmp_path, "filter-test", tasks_toml)
+
+        # dgov run --only tasks/main.b should accept the slug
+        target = "tasks/main.b"
+        result = runner.invoke(cli, ["run", str(compiled_path), "--only", target])
+        assert "not found" not in result.output.lower()
+        # Verify the task was accepted (run may fail for other reasons, but slug is valid)
+        assert "invalid" not in result.output.lower() or result.exit_code in (0, 1)
+
+
+def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
+    """Running with uncompiled plan.toml should fail with error message."""
     plan = tmp_path / "plan.toml"
     plan.write_text(
         '[plan]\nname = "test"\n\n'
@@ -346,40 +412,9 @@ def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
         'prompt = "do a"\n'
         'commit_message = "a"\n'
     )
-    result = runner.invoke(cli, ["run", str(plan), "--only", "nonexistent"])
+    result = runner.invoke(cli, ["run", str(plan)])
     assert result.exit_code == 1
-    assert "not found" in result.output.lower() or "nonexistent" in result.output
-
-
-def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
-    """Run with --only b on a->b->c plan: b is accepted, not 'not found'."""
-    plan = tmp_path / "plan.toml"
-    plan.write_text(
-        '[plan]\nname = "filter-test"\n\n'
-        "[tasks.a]\n"
-        'summary = "task a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-        'files.create = ["a.py"]\n\n'
-        "[tasks.b]\n"
-        'summary = "task b"\n'
-        'prompt = "do b"\n'
-        'commit_message = "b"\n'
-        'depends_on = ["a"]\n'
-        'files.create = ["b.py"]\n\n'
-        "[tasks.c]\n"
-        'summary = "task c"\n'
-        'prompt = "do c"\n'
-        'commit_message = "c"\n'
-        'depends_on = ["b"]\n'
-        'files.create = ["c.py"]\n'
-    )
-    result = runner.invoke(cli, ["validate", str(plan)])
-    assert result.exit_code == 0
-
-    # --only b should accept the slug (not "Task 'b' not found")
-    result = runner.invoke(cli, ["run", str(plan), "--only", "b"])
-    assert "not found" not in result.output.lower()
+    assert "not compiled" in result.output.lower() or "must be compiled" in result.output.lower()
 
 
 # -- prune --

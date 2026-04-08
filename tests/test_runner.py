@@ -368,8 +368,11 @@ class TestCleanup:
                     runner._shutdown_event.set()
 
                 runner._setup_signal_handlers = lambda: None
-                asyncio.create_task(_trigger())
-                return await runner.run()
+                trigger_task = asyncio.create_task(_trigger())
+                try:
+                    return await runner.run()
+                finally:
+                    trigger_task.cancel()
 
             asyncio.run(_run_with_shutdown())
             assert len(runner._worker_tasks) == 0

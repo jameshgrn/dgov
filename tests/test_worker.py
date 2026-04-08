@@ -15,8 +15,8 @@ import pytest
 sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore[attr-defined]
 
-from dgov.worker import _load_project_config
-from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec
+from dgov.worker import _load_project_config  # noqa: E402
+from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
 
 @pytest.fixture()

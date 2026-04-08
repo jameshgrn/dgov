@@ -1,6 +1,5 @@
 """Tests for worker tools: navigation, SOP compound tools, project config."""
 
-
 import pytest
 
 

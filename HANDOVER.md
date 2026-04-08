@@ -1,63 +1,77 @@
-# Handover: Stress-Test & Bug-Fix Session
+# Handover: Flat File Claims Feature
 
-**Date:** 2026-04-07
-**Branch:** `main` @ `e9b94ca0`
-**Context:** Systematic stress-test of dgov before public release. Code audit + live dogfood run surfaced 6 bugs, all fixed and pushed.
+**Date:** 2026-04-08
+**Branch:** `main` @ `11cd8042` (pushed)
+**Context:** Implemented Option B from file claim UX analysis — flat `files = [...]` shorthand replacing verbose `files.edit/create/delete` for common cases.
 
 ---
 
 ## Current State
 
-- `main` is clean and pushed. 60 tests pass (settlement + integration + runner).
-- Stress-test plan ran end-to-end: 3 parallel tasks + 1 downstream, all 4 merged, sentrux clean.
-- HANDOVER.md, runs.log, deployed.jsonl, and sentrux baseline updated.
+- `main` is clean and pushed. 532+ tests passing.
+- Flat file claims feature shipped: plan authors can use `files = ["a.py", "b.py"]` instead of separate `files.edit`/`files.create`/`files.delete` blocks.
+- Old structured format still works — full backward compatibility.
 
 ---
 
-## Bugs Fixed This Session
+## Completed
 
-| Bug | File(s) | Notes |
-|-----|---------|-------|
-| Silent "complete" on crash+re-run | `cli/run.py` | ABANDONED/skipped now surface; warns about `--continue` |
-| `kernel.status = COMPLETED` for all-ABANDONED DAG | `kernel.py` | ABANDONED+TIMED_OUT included in `has_failed` check |
-| DB retry could hang ~200s under high concurrency | `persistence/connection.py` | 20 linear retries → 5 constant 0.25s retries |
-| `scope_violation` on tasks creating files in new dirs | `settlement.py` | `git status --untracked-files=all` lists files not dir markers |
-| Review gate errors silent in CLI output | `runner.py` | `review_fail` verdict stored in `_task_errors` |
-| Settlement errors silent in CLI output | `runner.py` | `_merge()` error stored in `_task_errors` |
-| Missing DB sync test coverage | `test_integration.py` | 5 new tests: fail/merge DB state, orphan×2, downstream skip |
+| Change | File(s) |
+|--------|---------|
+| Added `touch` field to `DagFileSpec` (Pydantic model) | `dag_parser.py` |
+| Added `touch` field to `PlanUnitFiles` (frozen dataclass) | `plan.py` |
+| Parse `files = [list]` as touch shorthand in DAG parser | `dag_parser.py` |
+| Handle list vs dict for `files` in plan tree merger | `plan_tree.py` |
+| Include `touch` in runner's `task_files` + `file_claims` flattening | `runner.py` |
+| Smart serialization: pure touch → `files = [...]`, mixed → subtable | `serializer.py` |
+| Updated CLI display + example TOML template | `cli/plan.py` |
+| Updated plan authoring guide | `CLAUDE.md` |
+| 15 new tests across dag_parser, plan, plan_tree, serializer, runner | `tests/` |
 
 ---
 
 ## Key Decisions
 
-- **Orphan behavior on bare re-run is intentional**: ACTIVE tasks become ABANDONED, cascade to SKIPPED. CLI now warns with `--continue` hint. The silent "complete" was the bug.
-- **Scratch files in git-tracked dirs trigger sentrux**: Even simple data files increase complexity metrics. Use `.txt` or constant-only `.py` for scratch content, or put scratch outside tracked tree.
-- **`DagDone` is NOT dead code**: `handle()` wrapper appends `_summary()` when `done=True`. Initial analysis was wrong.
+- **`touch` field over collapsing into `edit`**: Keeps the semantic distinction clean. `touch` = "I'll modify these files, auto-classify create vs edit at dispatch time." Doesn't conflate with explicit `edit`.
+- **Backward compatible, not replacing**: Old `files.edit/create/delete` still works. Both formats coexist in the same plan. No migration needed.
+- **Conflict detection covers `touch`**: `_all_touches()` and `validate_plan()` detect overlaps between `touch` and `edit`/`create`/`delete` across independent tasks.
+- **Serializer is context-aware**: Pure touch emits `files = [...]` (round-trips as list). Mixed touch+delete emits `files.touch = [...]` + `files.delete = [...]` (subtable format).
+- **Rejected auto-inference approach**: AST-walking prompt tokens for symbol→file matching was fragile, broke conflict detection for vague prompts, and disabled scope enforcement as fallback. Flat list is simpler and preserves all invariants.
 
 ---
 
-## Open Issues (Carried Forward)
+## Open Issues
 
-- **Runner contention under 6+ parallel tasks**: `_run_dispatch_action` / `ThreadPoolExecutor` interaction under large concurrent plans still undiagnosed.
-- **No resume/checkpoint**: crash at task 7/10 = restart with `--continue`. Lost work is re-run.
-- **No token/cost tracking**: no visibility into API spend per run.
-- **Sentrux gate too strict on complexity**: any `Complex functions increased` triggers rejection. Workers can't add new helper functions without hitting the gate. Should warn, not hard-fail.
+- **Runner contention under 6+ parallel tasks** — `ThreadPoolExecutor` interaction undiagnosed.
+- **No token/cost tracking** — no visibility into API spend per run.
+- **No semantic review** — `review_sandbox()` is git sanity checks only.
+- **Sentrux scans scratch/test `.py` files** — any `.py` with functions in a git-tracked dir increases complexity count.
 
 ---
 
 ## Next Steps
 
-1. **Sentrux complexity gate**: treat complexity increases as warnings unless quality score drops.
-2. **Token/cost tracking**: add token counts to `_append_run_log` and exit summary.
-3. **Investigate runner contention**: profile under 8+ concurrent tasks.
+### 1. Dogfood flat files format
+- Author a new plan using `files = [...]` shorthand exclusively.
+- Verify compile → validate → run → merge pipeline end-to-end.
+- Check `dgov watch` output still renders correctly.
+
+### 2. Token/cost tracking (from prior handover)
+- Workers emit token counts via `on_event` callback.
+- Runner aggregates in `_task_durations`-style dict.
+- `_append_run_log` + CLI exit summary include cost.
+
+### 3. Runner contention profiling
+- Add timing instrumentation around `ThreadPoolExecutor` calls in `_merge`.
+- Run a plan with 8+ parallel tasks and check for >10s stalls.
 
 ---
 
 ## Important Files
 
-- `/Users/jakegearon/projects/dgov/src/dgov/settlement.py` — `_get_all_changes` now uses `--untracked-files=all`
-- `/Users/jakegearon/projects/dgov/src/dgov/runner.py` — review + settlement errors in `_task_errors`
-- `/Users/jakegearon/projects/dgov/src/dgov/kernel.py` — `status` property with ABANDONED in `has_failed`
-- `/Users/jakegearon/projects/dgov/src/dgov/persistence/connection.py` — `_LOCK_RETRIES=5`, constant backoff
-- `/Users/jakegearon/projects/dgov/src/dgov/cli/run.py` — abandoned/skipped surfaced in output
-- `/Users/jakegearon/projects/dgov/tests/test_integration.py` — `TestDbStateSync`, `TestOrphanAbandon`
+- `/Users/jakegearon/projects/dgov/src/dgov/dag_parser.py` — `DagFileSpec.touch`, flat list parse in `parse_dag_file`
+- `/Users/jakegearon/projects/dgov/src/dgov/plan.py` — `PlanUnitFiles.touch`, `_all_touches()` includes touch
+- `/Users/jakegearon/projects/dgov/src/dgov/plan_tree.py` — `_unit_from_task()` handles list vs dict vs error
+- `/Users/jakegearon/projects/dgov/src/dgov/runner.py` — `task_files` and `file_claims` include touch
+- `/Users/jakegearon/projects/dgov/src/dgov/serializer.py` — smart flat vs subtable emission
+- `/Users/jakegearon/projects/dgov/src/dgov/cli/plan.py` — `_format_unit_files()`, example TOML template

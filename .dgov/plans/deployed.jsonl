@@ -23,3 +23,4 @@
 {"plan":"stress-test","unit":"scratch/files.write-beta","sha":"c89f16423574abb49844d65298e25028ecb69d5d","ts":"2026-04-08T03:25:00Z"}
 {"plan":"stress-test","unit":"scratch/files.write-gamma","sha":"34cee691e0a173bf9c82efe8df5b0ee18cb016c1","ts":"2026-04-08T03:25:02Z"}
 {"plan":"stress-test","unit":"scratch/files.write-index","sha":"338e0e386254810f6b548b3e6437335c200c447c","ts":"2026-04-08T03:25:20Z"}
+{"plan":"dogfood-clean-cmd","unit":"add-clean-cmd","sha":"ac10d215e6385af0ee8644bd0df8e4361175f324","ts":"2026-04-08T04:32:50Z"}

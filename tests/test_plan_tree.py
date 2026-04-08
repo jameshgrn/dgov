@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -121,7 +122,7 @@ class TestSkipping:
 
 class TestErrors:
     def test_missing_root_file(self, tmp_path: Path) -> None:
-        with pytest.raises(FileNotFoundError, match="_root.toml"):
+        with pytest.raises(FileNotFoundError, match=re.escape("_root.toml")):
             walk_tree(tmp_path)
 
     def test_missing_plan_section(self, tmp_path: Path) -> None:
@@ -458,7 +459,7 @@ class TestMergerTypeChecks:
             'commit_message = "c"\n[tasks.foo.files]\ncreate = "nope"\n'
         )
         _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
-        with pytest.raises(ValueError, match="files.create must be a list"):
+        with pytest.raises(ValueError, match=re.escape("files.create must be a list")):
             merge_tree(walk_tree(tmp_path))
 
 
@@ -614,7 +615,7 @@ class TestResolverUnknownRefs:
                 "alpha/two.toml": _unit_toml("caller", depends_on=["uniq"]),
             },
         )
-        with pytest.raises(ValueError, match="did you mean 'alpha/one.uniq'"):
+        with pytest.raises(ValueError, match=r"did you mean 'alpha/one\.uniq'"):
             resolve_refs(merge_tree(walk_tree(tmp_path)))
 
     def test_unknown_bare_ref_ambiguous_cross_file_no_hint(self, tmp_path: Path) -> None:
@@ -641,7 +642,7 @@ class TestResolverUnknownRefs:
                 "alpha/two.toml": _unit_toml("bar", depends_on=["alpha/one.does-not-exist"]),
             },
         )
-        with pytest.raises(ValueError, match="Unknown ref 'alpha/one.does-not-exist'"):
+        with pytest.raises(ValueError, match=re.escape("Unknown ref 'alpha/one.does-not-exist'")):
             resolve_refs(merge_tree(walk_tree(tmp_path)))
 
     def test_unknown_path_qualified_ref_with_hint(self, tmp_path: Path) -> None:
@@ -654,7 +655,7 @@ class TestResolverUnknownRefs:
                 "alpha/two.toml": _unit_toml("x", depends_on=["alpha/one.bilder"]),
             },
         )
-        with pytest.raises(ValueError, match="did you mean 'alpha/one.builder'"):
+        with pytest.raises(ValueError, match=r"did you mean 'alpha/one\.builder'"):
             resolve_refs(merge_tree(walk_tree(tmp_path)))
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pytest_mock import MockerFixture
 
 from dgov.plan import PlanUnit, PlanUnitFiles
 from dgov.plan_tree import FlatPlan, RootMeta, merge_tree, resolve_refs, walk_tree
@@ -168,7 +169,7 @@ class TestLLMSopBundler:
         with pytest.raises(ValueError, match="FIREWORKS_API_KEY missing"):
             LLMSopBundler().pick({}, [])
 
-    def test_successful_pick(self, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockerFixture) -> None:
+    def test_successful_pick(self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> None:
         monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
         mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
         mock_resp = mocker.MagicMock()
@@ -188,7 +189,7 @@ class TestLLMSopBundler:
         assert "a: s" in prompt  # summary is "s" from _unit helper
 
     def test_api_failure_raises_runtime_error(
-        self, monkeypatch: pytest.MonkeyPatch, mocker: pytest_mock.MockerFixture
+        self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
     ) -> None:
         monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
         mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
@@ -199,7 +200,9 @@ class TestLLMSopBundler:
 
 
 class TestBundleCaching:
-    def test_bundle_reuses_mapping_on_hash_match(self, tmp_path: Path, mocker: pytest_mock.MockerFixture) -> None:
+    def test_bundle_reuses_mapping_on_hash_match(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
         sops_dir = tmp_path / "sops"
         _write(sops_dir / "s1.md", _sop_md("s1", "S1", "Body 1"))
         plan = _flat_plan({"a": _unit("a", "Prompt")})
@@ -219,7 +222,7 @@ class TestBundleCaching:
         assert result.plan.units["a"].prompt == "Body 1\n\nPrompt"
         bundler.pick.assert_not_called()
 
-    def test_bundle_re_calls_on_hash_mismatch(self, tmp_path: Path, mocker: pytest_mock.MockerFixture) -> None:
+    def test_bundle_re_calls_on_hash_mismatch(self, tmp_path: Path, mocker: MockerFixture) -> None:
         sops_dir = tmp_path / "sops"
         _write(sops_dir / "s1.md", _sop_md("s1", "S1", "Body 1"))
         plan = _flat_plan({"a": _unit("a", "Prompt")})
@@ -234,7 +237,9 @@ class TestBundleCaching:
         assert result.sop_mapping == {"a": ("s1",)}
         bundler.pick.assert_called_once()
 
-    def test_bundle_re_calls_on_missing_unit_in_cache(self, tmp_path: Path, mocker: pytest_mock.MockerFixture) -> None:
+    def test_bundle_re_calls_on_missing_unit_in_cache(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
         sops_dir = tmp_path / "sops"
         _write(sops_dir / "s1.md", _sop_md("s1", "S1", "Body 1"))
         plan = _flat_plan({"a": _unit("a"), "b": _unit("b")})
@@ -327,12 +332,10 @@ class TestBundleRewrite:
         sops_dir = tmp_path / "sops"
         _write(sops_dir / "lint.md", _sop_md("lint", "Lint", "Run linter."))
         _write(sops_dir / "test.md", _sop_md("test", "Test", "Run tests."))
-        plan = _flat_plan(
-            {
-                "a": _unit("a", "Task A."),
-                "b": _unit("b", "Task B."),
-            }
-        )
+        plan = _flat_plan({
+            "a": _unit("a", "Task A."),
+            "b": _unit("b", "Task B."),
+        })
         mapping = {"a": ["lint"], "b": ["test"]}
         result = bundle(plan, sops_dir, _SelectiveBundler(mapping))
         assert result.plan.units["a"].prompt == "Run linter.\n\nTask A."

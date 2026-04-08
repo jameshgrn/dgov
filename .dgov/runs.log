@@ -242,3 +242,20 @@
   durations: scratch/files.write-alpha: 7.94s, scratch/files.write-gamma: 10.01s, scratch/files.write-beta: 11.24s, scratch/files.write-index: 14.47s
   sentrux: 2304 -> 2304
 
+[2026-04-08 04:00:17Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-332/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2316
+
+[2026-04-08 04:02:20Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-335/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2304
+
+[2026-04-08 04:32:59Z] dogfood-clean-cmd (.dgov/plans/dogfood-clean-cmd/tasks/clean.toml) — ok (155.34s)
+  merged: add-clean-cmd
+  durations: add-clean-cmd: 94.15s
+  sentrux: 2316 -> None
+
+[2026-04-08 13:38:53Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-341/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2304
+

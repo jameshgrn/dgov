@@ -1,7 +1,7 @@
 """Tests for task persistence."""
 
-import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +25,7 @@ def sample_task(tmp_project):
         prompt="Fix the bug in src/foo.py",
         agent="qwen",
         project_root=tmp_project,
-        worktree_path=os.path.join(tmp_project, "worktrees", "test-task-001"),
+        worktree_path=str(Path(tmp_project) / "worktrees" / "test-task-001"),
         branch_name="task/test-task-001",
         task_id=None,  # headless
         role="worker",
@@ -72,7 +72,7 @@ def test_get_multiple_tasks(tmp_project):
             prompt=f"Task {i}",
             agent="qwen",
             project_root=tmp_project,
-            worktree_path=os.path.join(tmp_project, f"worktrees/task-{i:03d}"),
+            worktree_path=str(Path(tmp_project) / f"worktrees/task-{i:03d}"),
             branch_name=f"task/task-{i:03d}",
             state=TaskState.ACTIVE,
         )
@@ -101,7 +101,7 @@ def test_replace_all_tasks(tmp_project):
         prompt="Original",
         agent="qwen",
         project_root=tmp_project,
-        worktree_path=os.path.join(tmp_project, "worktrees/original"),
+        worktree_path=str(Path(tmp_project) / "worktrees/original"),
         branch_name="task/original",
         state=TaskState.ACTIVE,
     )
@@ -114,7 +114,7 @@ def test_replace_all_tasks(tmp_project):
             "prompt": "Replaced 1",
             "agent": "qwen",
             "project_root": tmp_project,
-            "worktree_path": os.path.join(tmp_project, "worktrees/r1"),
+            "worktree_path": str(Path(tmp_project) / "worktrees/r1"),
             "branch_name": "task/r1",
             "state": TaskState.ACTIVE,
             "task_id": None,
@@ -124,7 +124,7 @@ def test_replace_all_tasks(tmp_project):
             "prompt": "Replaced 2",
             "agent": "claude",
             "project_root": tmp_project,
-            "worktree_path": os.path.join(tmp_project, "worktrees/r2"),
+            "worktree_path": str(Path(tmp_project) / "worktrees/r2"),
             "branch_name": "task/r2",
             "state": TaskState.DONE,
             "task_id": None,

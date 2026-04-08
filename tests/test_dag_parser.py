@@ -115,7 +115,7 @@ deps = ["other"]
     dag_file = tmp_path / "typo.dag.toml"
     dag_file.write_text(toml_content)
 
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError):
         parse_dag_file(str(dag_file))
 
 

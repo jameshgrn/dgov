@@ -22,13 +22,9 @@ from dgov.settlement import GateResult
 
 
 @pytest.fixture(autouse=True)
-def _skip_preflight(monkeypatch):
-    """Skip model preflight check in integration tests."""
-
-    async def _noop(self):
-        pass
-
-    monkeypatch.setattr("dgov.runner.EventDagRunner._preflight_check_models", _noop)
+def _env_with_api_key(monkeypatch):
+    """Set FIREWORKS_API_KEY for preflight check."""
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key-fake")
 
 
 @pytest.fixture()
@@ -551,7 +547,7 @@ class TestOrphanAbandon:
     """Simulate a prior crashed run (orphaned ACTIVE tasks) and verify correct behavior."""
 
     def test_orphaned_task_becomes_abandoned_on_rerun(self, git_repo, monkeypatch):
-        """After a crash, a bare re-run abandons orphaned tasks instead of silently 'completing'."""
+        """After a crash, a bare re-run abandons orphaned tasks."""
         from dgov.persistence import WorkerTask, add_task, clear_connection_cache, emit_event
         from dgov.types import TaskState
 

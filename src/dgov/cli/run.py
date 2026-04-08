@@ -17,7 +17,7 @@ from dgov.runner import EventDagRunner
 
 
 @cli.command(name="run")
-@click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
+@click.argument("plan", type=click.Path(path_type=Path, exists=True))
 @click.option(
     "--restart", is_flag=True, help="Restart the plan from the beginning, clearing prior state"
 )
@@ -30,15 +30,24 @@ from dgov.runner import EventDagRunner
 @click.option("--only", default=None, help="Run only this task and its deps")
 @click.pass_context
 def run_cmd(
-    ctx: click.Context, plan_file: Path, restart: bool, continue_failed: bool, only: str | None
+    ctx: click.Context, plan: Path, restart: bool, continue_failed: bool, only: str | None
 ) -> None:
-    """Run a plan file (TOML).
+    """Run a compiled plan (_compiled.toml or plan directory).
 
-    Example: dgov run plan.toml
+    Example: dgov run .dgov/plans/my-plan/
     """
+    plan_file = plan
+    if plan.is_dir():
+        plan_file = plan / "_compiled.toml"
+        if not plan_file.exists():
+            click.echo(f"Error: No _compiled.toml found in {plan}", err=True)
+            click.echo("Run 'dgov compile <dir>' first.", err=True)
+            raise SystemExit(1)
+
     if plan_file.suffix != ".toml":
         click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
         raise SystemExit(1)
+
     project_root = str(Path.cwd())
     _cmd_run_plan(
         str(plan_file), project_root, restart=restart, continue_failed=continue_failed, only=only
@@ -176,9 +185,23 @@ def _cmd_run_plan(
     only: str | None = None,
 ) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
+    import os
+
     from dgov.config import load_project_config
 
     plan = parse_plan_file(plan_file)
+
+    # Pillar #4: Determinism - Only run compiled plans.
+    # Bypass for bootstrap/tests via DGOV_ALLOW_UNCOMPILED=1
+    if not plan.sop_set_hash and not os.environ.get("DGOV_ALLOW_UNCOMPILED"):
+        click.echo(f"Error: Plan {plan_file} is not compiled.", err=True)
+        click.echo("dgov requires plans to be compiled via the Plan Tree pipeline.", err=True)
+        click.echo("To fix this:", err=True)
+        click.echo("1. Ensure your plan is in a directory with a _root.toml.", err=True)
+        click.echo("2. Run: dgov compile <dir>", err=True)
+        click.echo("3. Run: dgov run <dir>/_compiled.toml", err=True)
+        raise click.exceptions.Exit(code=1)
+
     pc = load_project_config(project_root)
     dag = compile_plan(plan, project_agent=pc.default_agent)
 

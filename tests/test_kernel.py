@@ -27,7 +27,6 @@ from dgov.kernel import (
     TaskState,
     _topological_sort,
 )
-from dgov.types import TaskState
 
 # ---------------------------------------------------------------------------
 # Helpers
