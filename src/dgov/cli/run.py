@@ -6,8 +6,9 @@ import asyncio
 import json
 import subprocess
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import click
 
@@ -167,8 +168,9 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
         elif log_type == "thought":
             click.echo(f"  [{task_slug}] {str(content)[:120]}", err=True)
         elif log_type == "call" and isinstance(content, dict):
-            tool = content.get("tool", "?")
-            args = content.get("args", {})
+            data = cast("dict[str, object]", content)
+            tool = data.get("tool", "?")
+            args = cast("dict[str, object]", data.get("args", {}))
             summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
             click.echo(f"  [{task_slug}] {tool}({summary})", err=True)
         elif log_type == "done":
@@ -321,7 +323,7 @@ def _append_run_log(
     plan_file: str,
     results: dict[str, str],
     gate_result: dict[str, object],
-    duration: datetime.timedelta,
+    duration: timedelta,
     task_durations: dict[str, float] | None = None,
     task_errors: dict[str, str] | None = None,
 ) -> None:
