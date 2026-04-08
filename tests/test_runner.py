@@ -166,6 +166,38 @@ def _io_patches(
 # ---------------------------------------------------------------------------
 
 
+class TestTouchFileClaims:
+    def test_touch_included_in_task_files(self):
+        """Touch field is flattened into runner.task_files for scope enforcement."""
+        task = DagTaskSpec(
+            slug="t",
+            summary="s",
+            prompt="p",
+            commit_message="c",
+            agent="test-agent",
+            files=DagFileSpec(touch=("src/a.py", "tests/test_a.py")),
+        )
+        dag = _dag({"t": task})
+        with _io_patches():
+            runner = _make_runner(dag)
+            assert runner.task_files["t"] == ("src/a.py", "tests/test_a.py")
+
+    def test_touch_merged_with_create_in_task_files(self):
+        """Touch + create are deduplicated in task_files."""
+        task = DagTaskSpec(
+            slug="t",
+            summary="s",
+            prompt="p",
+            commit_message="c",
+            agent="test-agent",
+            files=DagFileSpec(create=("new.py",), touch=("src/a.py", "new.py")),
+        )
+        dag = _dag({"t": task})
+        with _io_patches():
+            runner = _make_runner(dag)
+            assert set(runner.task_files["t"]) == {"new.py", "src/a.py"}
+
+
 class TestSingleTaskHappy:
     def test_single_task_merges(self):
         with _io_patches():

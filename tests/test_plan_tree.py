@@ -388,6 +388,22 @@ files.edit = ["b.py"]
         assert plan.units["alpha/one.flat-one"].files.touch == ("a.py",)
         assert plan.units["alpha/one.struct-one"].files.edit == ("b.py",)
 
+    def test_structured_touch_subkey_parsed(self, tmp_path: Path) -> None:
+        content = """\
+[tasks.with-touch]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+files.touch = ["src/foo.py"]
+files.delete = ["old.py"]
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        unit = plan.units["alpha/one.with-touch"]
+        assert unit.files.touch == ("src/foo.py",)
+        assert unit.files.delete == ("old.py",)
+        assert unit.files.edit == ()
+
     def test_files_as_bad_type_rejected(self, tmp_path: Path) -> None:
         content = """\
 [tasks.bad]
