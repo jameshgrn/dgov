@@ -243,18 +243,38 @@ def _cmd_run_plan(
     )
 
     failed = [s for s, st in results.items() if st == "failed"]
+    abandoned = [s for s, st in results.items() if st in ("abandoned", "timed_out")]
+    skipped = [s for s, st in results.items() if st == "skipped"]
     succeeded = [s for s, st in results.items() if st == "merged"]
     task_errors = {slug: err for slug, err in runner._task_errors.items() if slug in failed}
+
+    any_bad = failed or abandoned
+    if not any_bad:
+        run_status = "complete"
+    elif succeeded:
+        run_status = "partial"
+    else:
+        run_status = "failed"
 
     if task_errors and not want_json():
         for slug, err in task_errors.items():
             click.echo(f"  {slug}: {err[:200]}")
 
+    if abandoned and not want_json():
+        click.echo(
+            f"  {len(abandoned)} task(s) abandoned from a prior crashed run. "
+            "Use `dgov run --continue` to retry them.",
+            err=True,
+        )
+
     _output({
-        "status": "complete" if not failed else "failed",
+        "status": run_status,
         "succeeded": len(succeeded),
         "failed": len(failed),
+        "abandoned": len(abandoned) if abandoned else None,
+        "skipped": len(skipped) if skipped else None,
         "failed_tasks": failed if failed else None,
+        "abandoned_tasks": abandoned if abandoned else None,
         "task_errors": task_errors if task_errors else None,
         "sentrux": gate_result if sentrux_ok else None,
         "duration_s": round(duration.total_seconds(), 2),
@@ -289,7 +309,8 @@ def _append_run_log(
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
     merged = [s for s, st in results.items() if st == "merged"]
     failed = [s for s, st in results.items() if st == "failed"]
-    status = "ok" if not failed else "fail"
+    abandoned = [s for s, st in results.items() if st in ("abandoned", "timed_out")]
+    status = "ok" if not failed and not abandoned else "fail"
 
     lines = [
         f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"
@@ -298,6 +319,8 @@ def _append_run_log(
         lines.append(f"  merged: {', '.join(merged)}")
     if failed:
         lines.append(f"  failed: {', '.join(failed)}")
+    if abandoned:
+        lines.append(f"  abandoned: {', '.join(abandoned)}")
     if task_errors:
         for slug, err in task_errors.items():
             lines.append(f"    error[{slug}]: {err[:200]}")

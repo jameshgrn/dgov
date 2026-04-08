@@ -38,7 +38,13 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL = frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.SKIPPED, TaskState.ABANDONED, TaskState.TIMED_OUT})
+_TERMINAL = frozenset({
+    TaskState.MERGED,
+    TaskState.FAILED,
+    TaskState.SKIPPED,
+    TaskState.ABANDONED,
+    TaskState.TIMED_OUT,
+})
 
 
 class DagState(StrEnum):
@@ -85,7 +91,8 @@ class DagKernel:
             return DagState.IDLE
         if not self.done:
             return DagState.RUNNING
-        has_failed = any(st == TaskState.FAILED for st in self.task_states.values())
+        _BAD = (TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT)
+        has_failed = any(st in _BAD for st in self.task_states.values())
         has_merged = any(st == TaskState.MERGED for st in self.task_states.values())
         if has_failed:
             return DagState.PARTIAL if has_merged else DagState.FAILED
@@ -169,7 +176,13 @@ class DagKernel:
         current = self.task_states.get(slug)
         # Guard: accept from PENDING (dispatch failure), WAITING (interrupt), or terminal states (manual).
         # Prevents accidentally un-merging or un-reviewing a task.
-        if current not in (TaskState.PENDING, TaskState.ACTIVE, TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT):
+        if current not in (
+            TaskState.PENDING,
+            TaskState.ACTIVE,
+            TaskState.FAILED,
+            TaskState.ABANDONED,
+            TaskState.TIMED_OUT,
+        ):
             return []
         if event.action == GovernorAction.RETRY:
             self.task_states[slug] = TaskState.PENDING

@@ -398,12 +398,10 @@ class TestChain:
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
 
-        dag = _dag(
-            {
-                "step-a": _task("step-a"),
-                "step-b": _task("step-b", depends_on=("step-a",)),
-            }
-        )
+        dag = _dag({
+            "step-a": _task("step-a"),
+            "step-b": _task("step-b", depends_on=("step-a",)),
+        })
         runner = EventDagRunner(dag, session_root=str(git_repo))
         results = asyncio.run(runner.run())
 
@@ -417,12 +415,10 @@ class TestChain:
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
 
-        dag = _dag(
-            {
-                "first": _task("first"),
-                "second": _task("second", depends_on=("first",)),
-            }
-        )
+        dag = _dag({
+            "first": _task("first"),
+            "second": _task("second", depends_on=("first",)),
+        })
         runner = EventDagRunner(dag, session_root=str(git_repo))
         asyncio.run(runner.run())
 
@@ -450,12 +446,10 @@ class TestParallel:
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
 
-        dag = _dag(
-            {
-                "alpha": _task("alpha"),
-                "beta": _task("beta"),
-            }
-        )
+        dag = _dag({
+            "alpha": _task("alpha"),
+            "beta": _task("beta"),
+        })
         runner = EventDagRunner(dag, session_root=str(git_repo))
         results = asyncio.run(runner.run())
 
@@ -479,12 +473,10 @@ class TestParallel:
         monkeypatch.setattr("dgov.runner.run_headless_worker", _selective_worker)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
 
-        dag = _dag(
-            {
-                "alpha": _task("alpha"),
-                "beta": _task("beta"),
-            }
-        )
+        dag = _dag({
+            "alpha": _task("alpha"),
+            "beta": _task("beta"),
+        })
         runner = EventDagRunner(dag, session_root=str(git_repo))
         results = asyncio.run(runner.run())
 
@@ -492,3 +484,151 @@ class TestParallel:
         assert results["beta"] == "merged"
         assert not (git_repo / "alpha.txt").exists()
         assert (git_repo / "beta.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# DB state sync: task states written to SQLite after run
+# ---------------------------------------------------------------------------
+
+
+class TestDbStateSync:
+    """Validate that task states are persisted to DB during and after a run."""
+
+    def test_failed_task_state_in_db(self, git_repo, monkeypatch):
+        """Worker exits 1 → DB record shows 'failed' immediately after run."""
+        from dgov.persistence import get_task
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        dag = _dag({"db-fail": _task("db-fail")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        assert results["db-fail"] == "failed"
+        record = get_task(str(git_repo), "db-fail")
+        assert record is not None, "Task record missing from DB after run"
+        assert record["state"] == "failed", f"Expected 'failed', got {record['state']!r}"
+
+    def test_merged_task_state_in_db(self, git_repo, monkeypatch):
+        """Worker exits 0 + settlement passes → DB record shows 'merged'."""
+        from dgov.persistence import get_task
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        dag = _dag({"db-ok": _task("db-ok")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        assert results["db-ok"] == "merged"
+        record = get_task(str(git_repo), "db-ok")
+        assert record is not None, "Task record missing from DB after run"
+        assert record["state"] == "merged", f"Expected 'merged', got {record['state']!r}"
+
+    def test_downstream_skipped_after_failure_in_db(self, git_repo, monkeypatch):
+        """Upstream fails → downstream task is skipped. Snapshot reflects that."""
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        dag = _dag({
+            "upstream": _task("upstream"),
+            "downstream": _task("downstream", depends_on=("upstream",)),
+        })
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        assert results["upstream"] == "failed"
+        assert results["downstream"] == "skipped"
+
+
+# ---------------------------------------------------------------------------
+# Orphan abandon: re-run after crash shows abandoned, not complete
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanAbandon:
+    """Simulate a prior crashed run (orphaned ACTIVE tasks) and verify correct behavior."""
+
+    def test_orphaned_task_becomes_abandoned_on_rerun(self, git_repo, monkeypatch):
+        """After a crash, a bare re-run abandons orphaned tasks instead of silently 'completing'."""
+        from dgov.persistence import WorkerTask, add_task, clear_connection_cache, emit_event
+        from dgov.types import TaskState
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        slug = "orphan-task"
+        dag = _dag({slug: _task(slug)})
+        session_root = str(git_repo)
+
+        # Simulate a crashed run: add task as ACTIVE + emit dispatched event
+        record = WorkerTask(
+            slug=slug,
+            prompt="do the thing",
+            agent="mock",
+            project_root=session_root,
+            worktree_path=str(git_repo / ".dgov" / "worktrees" / slug),
+            branch_name=f"dgov/{slug}",
+            state=TaskState.ACTIVE,
+            plan_name=dag.name,
+        )
+        add_task(session_root, record)
+        emit_event(
+            session_root,
+            "dag_task_dispatched",
+            "pane-crashed",
+            plan_name=dag.name,
+            task_slug=slug,
+        )
+
+        # Re-run bare (no --continue, no --restart)
+        clear_connection_cache()
+        runner = EventDagRunner(dag, session_root=session_root)
+        results = asyncio.run(runner.run())
+
+        assert results[slug] == "abandoned", (
+            f"Expected 'abandoned', got {results[slug]!r}. "
+            "Bare re-run after crash must surface abandoned state, not silently complete."
+        )
+
+    def test_orphan_rerun_kernel_status_is_not_completed(self, git_repo, monkeypatch):
+        """kernel.status must be FAILED (not COMPLETED) when all tasks are abandoned."""
+        from dgov.kernel import DagState
+        from dgov.persistence import WorkerTask, add_task, clear_connection_cache, emit_event
+        from dgov.types import TaskState
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        slug = "status-orphan"
+        dag = _dag({slug: _task(slug)})
+        session_root = str(git_repo)
+
+        record = WorkerTask(
+            slug=slug,
+            prompt="do the thing",
+            agent="mock",
+            project_root=session_root,
+            worktree_path=str(git_repo / ".dgov" / "worktrees" / slug),
+            branch_name=f"dgov/{slug}",
+            state=TaskState.ACTIVE,
+            plan_name=dag.name,
+        )
+        add_task(session_root, record)
+        emit_event(
+            session_root,
+            "dag_task_dispatched",
+            "pane-crashed-2",
+            plan_name=dag.name,
+            task_slug=slug,
+        )
+
+        clear_connection_cache()
+        runner = EventDagRunner(dag, session_root=session_root)
+        asyncio.run(runner.run())
+
+        assert runner.kernel.status != DagState.COMPLETED, (
+            "kernel.status must not be COMPLETED when all tasks were abandoned"
+        )
+        assert runner.kernel.status == DagState.FAILED

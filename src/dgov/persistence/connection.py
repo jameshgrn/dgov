@@ -22,8 +22,10 @@ from dgov.persistence.schema import (
 _conn_cache: dict[tuple[str, int], sqlite3.Connection] = {}
 _conn_lock = threading.Lock()
 
-_LOCK_RETRIES = 20
-_LOCK_BACKOFF_S = 0.5
+# WAL busy_timeout=10s handles most lock contention. These retries are a
+# last-resort layer — cap them tightly so we fail fast instead of hanging.
+_LOCK_RETRIES = 5
+_LOCK_BACKOFF_S = 0.25
 
 
 def _get_db(session_root: str) -> sqlite3.Connection:
@@ -106,7 +108,7 @@ def _retry_on_lock(fn, *args, **kwargs) -> Any:
             if "database is locked" not in str(exc) or attempt == _LOCK_RETRIES - 1:
                 raise
             logger.debug("database locked, retry %d/%d", attempt + 1, _LOCK_RETRIES)
-            time.sleep(_LOCK_BACKOFF_S * (attempt + 1))
+            time.sleep(_LOCK_BACKOFF_S)
     return None  # unreachable, but keeps type checkers happy
 
 
