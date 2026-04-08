@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, cleanup_zombies
+from dgov.persistence import all_tasks, cleanup_zombies, prune_history
 from dgov.types import TaskState, Worktree
 from dgov.worktree import remove_worktree
 
@@ -56,6 +56,7 @@ def cli(
       dgov ledger add <cat>   Record bug, rule, or debt
       dgov compile <dir>      Compile a plan tree to _compiled.toml
       dgov plan status <dir>  Show pending vs deployed units
+      dgov prune              Prune historical (abandoned/closed) tasks
       dgov sentrux check      Run Sentrux architectural check
 
     Tasks run in isolated git worktrees. No tmux required.
@@ -114,6 +115,21 @@ def cleanup_cmd() -> None:
         raise click.exceptions.Exit(code=1) from exc
 
 
+@cli.command(name="prune")
+def prune_cmd() -> None:
+    """Prune historical tasks — removes abandoned and closed records."""
+    project_root = str(Path.cwd())
+    try:
+        count = prune_history(project_root)
+        if count == 0:
+            click.echo("Nothing to prune.")
+        else:
+            click.echo(f"Pruned {count} historical task(s).")
+    except Exception as exc:
+        click.echo(f"Prune failed: {exc}", err=True)
+        raise click.exceptions.Exit(code=1) from exc
+
+
 # States that represent settled history — not live governor state
 _HISTORICAL_STATES = frozenset({"abandoned", "closed"})
 
@@ -163,11 +179,11 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
 
 # Register subcommand modules — must be at bottom after cli is defined
 from dgov.cli import (  # noqa: E402
-    compile as _compile,
-    init as _init,
-    ledger as _ledger,
-    plan as _plan,
-    run as _run,
-    sentrux as _sentrux,
-    watch as _watch,
+    compile as compile,
+    init as init,
+    ledger as ledger,
+    plan as plan,
+    run as run,
+    sentrux as sentrux,
+    watch as watch,
 )

@@ -176,6 +176,23 @@ def cleanup_zombies(session_root: str) -> int:
     return _retry_on_lock(_do)
 
 
+def prune_history(session_root: str) -> int:
+    """Delete all abandoned and closed tasks. Returns count removed."""
+    _HISTORICAL = (TaskState.ABANDONED.value, TaskState.CLOSED.value)
+
+    def _do() -> int:
+        conn = _get_db(session_root)
+        placeholders = ", ".join("?" * len(_HISTORICAL))
+        cur = conn.execute(
+            f"DELETE FROM tasks WHERE state IN ({placeholders})",
+            _HISTORICAL,
+        )
+        conn.commit()
+        return cur.rowcount
+
+    return _retry_on_lock(_do)
+
+
 def replace_all_tasks(session_root: str, tasks_list: list[dict] | dict) -> None:
     """Replace all tasks in the database with the given list.
 
