@@ -91,11 +91,7 @@ class SmartFixer:
 
                 # Look for bare 'raise' statements in this handler
                 for body_node in ast.walk(node):
-                    if (
-                        isinstance(body_node, ast.Raise)
-                        and body_node.exc
-                        and not body_node.cause
-                    ):
+                    if isinstance(body_node, ast.Raise) and body_node.exc and not body_node.cause:
                         # Append 'from {exc_name}'
                         body_node.cause = ast.Name(id=exc_name, ctx=ast.Load())
                         nonlocal modified
@@ -168,8 +164,11 @@ def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     Unlike git diff, this catches untracked files too — critical for workers
     that create new files.
     """
+    # --untracked-files=all ensures new files in new directories are listed
+    # individually (e.g. "scratch/foo.py") rather than as a directory marker
+    # ("scratch/"), which would cause false scope_violation failures.
     status = subprocess.run(
-        ["git", "status", "--porcelain"],
+        ["git", "status", "--porcelain", "--untracked-files=all"],
         cwd=worktree_path,
         capture_output=True,
         text=True,

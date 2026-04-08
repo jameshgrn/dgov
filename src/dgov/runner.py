@@ -418,6 +418,11 @@ class EventDagRunner:
             error=review_result.error,
         )
 
+        if not review_result.passed and review_result.error:
+            self._task_errors[action.task_slug] = (
+                f"review:{review_result.verdict} — {review_result.error}"
+            )
+
         return self.kernel.handle(
             TaskReviewDone(
                 action.task_slug,
