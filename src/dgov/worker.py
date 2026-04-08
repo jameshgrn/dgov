@@ -28,7 +28,7 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
-from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec
+from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
 
 @dataclass
@@ -163,12 +163,29 @@ WORKFLOW — follow this order:
    assert_file_unchanged on files you should NOT have touched.
    Call done with a summary.
 
+ITERATION BUDGET:
+- You have up to 30 tool calls. Budget carefully.
+- Typical well-scoped task uses 8-15 calls: orient(3) + edit(3) + verify(4) + finish(2).
+- If you are past call 20 and not in VERIFY phase, you are off-track. Stop, git_diff, call done.
+- Do NOT loop on test failures more than 3 times. If tests fail after 3 fix attempts, call done
+  with a summary of what you tried and what remains — do not exhaust budget.
+
 DO NOT:
 - Debug PATH, PYTHONPATH, or venv issues. Everything works already.
 - Run raw bash for things tools handle (use run_tests not 'python -m pytest').
 - Modify .git/, .dgov/, or config files unless your task says to.
 - Rewrite entire files when editing a few lines.
 - Spend iterations exploring when file_symbols + head gives you what you need.
+- Do NOT call write_file to modify an existing file. Use edit_file. write_file truncates the file.
+- Do NOT commit an empty diff. If git_diff shows nothing, investigate why no changes were written.
+- Do NOT skip assert_file_unchanged. Call it on any file you were NOT supposed to touch.
+""",
+        """
+COMMON FAILURES (learn from these):
+- Empty diff at done → review fails. Always git_diff before done. If empty, something is wrong.
+- Wrong path → use relative paths from worktree root, not absolute paths.
+- Import added in step 1, ruff strips it before step 2 → add import+usage in same edit_file call.
+- Unclaimed file touched → immediate rejection. Check your files.edit claim before editing.
 """,
         "Strictly use tools. Call 'done' when complete.",
     ]
@@ -233,17 +250,15 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
             if resp.choices[0].finish_reason == "stop":
                 if not nudged:
                     nudged = True
-                    messages.append(
-                        {
-                            "role": "user",
-                            "content": (
-                                "You responded with text but did not call any tool. "
-                                "You MUST call the `done` tool to finish. If the task "
-                                "is unclear, call `done` with a summary explaining what "
-                                "is unclear. Do NOT respond with text only."
-                            ),
-                        }
-                    )
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "You responded with text but did not call any tool. "
+                            "You MUST call the `done` tool to finish. If the task "
+                            "is unclear, call `done` with a summary explaining what "
+                            "is unclear. Do NOT respond with text only."
+                        ),
+                    })
                     continue
                 WorkerEvent("error", "Agent stopped without calling 'done'").emit()
                 _cleanup()
@@ -255,14 +270,12 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
             if is_done:
                 _cleanup()
                 sys.exit(0)
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "name": call.function.name,
-                    "content": result,
-                }
-            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "name": call.function.name,
+                "content": result,
+            })
 
     WorkerEvent("error", "Exceeded max iterations (60)").emit()
     _cleanup()
