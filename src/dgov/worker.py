@@ -144,6 +144,12 @@ ENVIRONMENT:
 - Everything is pre-installed. Do NOT install packages, create venvs, or pip install.
 - Use relative paths for all file tools (e.g. 'src/dgov/foo.py' not absolute).
 
+SETTLEMENT LAYER (THE AUDITOR):
+- Every change you make is machine-verified by the Governor's Auditor.
+- Touching files outside your claimed scope (files.edit) will result in immediate rejection.
+- Do not fix bugs in the kernel or unrelated files. Stay in your lane.
+- If you find a bug, record it in 'dgov ledger' but do not fix it unless tasked.
+
 WORKFLOW — follow this order:
 1. ORIENT: Use file_symbols, tree, or head to understand before changing.
    Use related_files to see what imports from the file you're editing.

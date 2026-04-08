@@ -3,6 +3,7 @@ language = "python"
 src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
+default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
 test_cmd = "python -m pytest {test_dir} -q --tb=short"
 lint_cmd = "python -m ruff check {file}"
 format_cmd = "python -m ruff format {file}"
@@ -15,7 +16,8 @@ review_hooks = [
 ]
 
 [agents]
-kimi = "accounts/fireworks/routers/kimi-k2p5-turbo" # Default dgov router
+kimi = "accounts/fireworks/routers/kimi-k2p5-turbo"
+"kimi-k2.5" = "accounts/fireworks/routers/kimi-k2p5-turbo"
 
 # Settlement timeout in seconds (commands exceeding this are killed)
 settlement_timeout = 120

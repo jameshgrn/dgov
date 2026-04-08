@@ -495,6 +495,11 @@ class EventDagRunner:
         )
         self._worktrees[action.task_slug] = wt
 
+        # Re-resolve agent from project config mapping
+        agent = task.agent
+        if agent in self.project_config.agents:
+            agent = self.project_config.agents[agent]
+
         try:
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
             self._pending_dispatches.add(action.task_slug)
@@ -507,7 +512,7 @@ class EventDagRunner:
             task_record = WorkerTask(
                 slug=action.task_slug,
                 prompt=prompt,
-                agent=task.agent,
+                agent=agent,
                 project_root=self.session_root,
                 worktree_path=str(wt.path),
                 branch_name=wt.branch,
@@ -526,7 +531,7 @@ class EventDagRunner:
                 pane_slug,
                 plan_name=self.dag.name,
                 task_slug=action.task_slug,
-                agent=task.agent,
+                agent=agent,
             )
 
             def _on_worker_exit(
@@ -542,6 +547,8 @@ class EventDagRunner:
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
             dispatch_task = task if not prior_error else task.model_copy(update={"prompt": prompt})
+            # Use re-resolved agent
+            dispatch_task = dispatch_task.model_copy(update={"agent": agent})
             timeout_s = task.timeout_s
             worker_task = asyncio.create_task(
                 self._run_with_timeout(

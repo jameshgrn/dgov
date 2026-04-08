@@ -32,6 +32,7 @@ class ProjectConfig:
     settlement_timeout: int = 120
     line_length: int = 99
     review_hooks: tuple[str, ...] = ()
+    agents: dict[str, str] = field(default_factory=dict)
     conventions: dict[str, str] = field(default_factory=dict)
 
     def resolve_test_cmd(self, file: str = "") -> str:
@@ -80,6 +81,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         return ProjectConfig()
 
     proj = raw.get("project", {})
+    agents = raw.get("agents", {})
     conventions = raw.get("conventions", {})
     markers = proj.get("test_markers", ())
     if isinstance(markers, list):
@@ -108,6 +110,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         settlement_timeout=proj.get("settlement_timeout", 120),
         line_length=proj.get("line_length", 99),
         review_hooks=hooks,
+        agents=agents,
         conventions=conventions,
     )
 

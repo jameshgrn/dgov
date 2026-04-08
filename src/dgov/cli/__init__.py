@@ -129,7 +129,7 @@ def _cmd_status(project_root: str) -> None:
             "status": "active" if active else "idle",
             "tasks": len(tasks),
             "active": len(active),
-            "task_list": [{"slug": t.get("slug"), "state": t.get("state")} for t in tasks[:10]],
+            "task_list": [{"slug": t.get("slug"), "state": t.get("state")} for t in tasks],
         }
     )
 

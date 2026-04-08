@@ -180,3 +180,17 @@
   failed: a
   sentrux: 2316 -> 2304
 
+[2026-04-08 01:09:20Z] alpha-debut (.dgov/plans/alpha-debut/_compiled.toml) — fail (54.62s)
+  failed: docs/updates.bump-version, docs/updates.update-readme, quality/fix.fix-warnings, quality/hooks.expand-hooks
+  durations: quality/fix.fix-warnings: 10.67s, docs/updates.update-readme: 8.54s, docs/updates.bump-version: 6.2s, quality/hooks.expand-hooks: 4.11s
+  sentrux: 2316 -> 2316
+
+[2026-04-08 01:12:19Z] alpha-debut (.dgov/plans/alpha-debut/_compiled.toml) — fail (10.55s)
+  failed: docs/updates.bump-version, docs/updates.update-readme, quality/fix.fix-warnings, quality/hooks.expand-hooks
+  durations: docs/updates.bump-version: 0.73s, quality/fix.fix-warnings: 2.39s, quality/hooks.expand-hooks: 4.21s, docs/updates.update-readme: 5.74s
+  sentrux: 2304 -> 2304
+
+[2026-04-08 02:24:53Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-308/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2316
+

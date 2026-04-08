@@ -12,7 +12,6 @@ Three phases:
 from __future__ import annotations
 
 import ast
-import contextlib
 import logging
 import shlex
 import shutil

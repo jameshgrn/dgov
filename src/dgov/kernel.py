@@ -125,17 +125,17 @@ class DagKernel:
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != TaskState.ACTIVE:
             return []
-        
+
         if event.task_state == TaskState.DONE:
             self.task_states[event.task_slug] = TaskState.REVIEWING
             return [ReviewTask(event.task_slug, event.pane_slug)]
-        
+
         # Terminal states from rehydration or cleanup
         if event.task_state in (TaskState.ABANDONED, TaskState.TIMED_OUT):
             self.task_states[event.task_slug] = event.task_state
             self._cascade_failure(event.task_slug)
             return [CleanupTask(event.task_slug), *self._try_merge(), *self._schedule()]
-            
+
         # Fail-closed: any other non-DONE state triggers governor interrupt (retry logic)
         # This includes TaskState.FAILED which the runner handles via retry count.
         return [InterruptGovernor(event.task_slug, event.pane_slug, reason=str(event.task_state))]

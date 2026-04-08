@@ -12,3 +12,5 @@
 {"plan":"flesh-out-docs","unit":"plan_reference","sha":"1136b1bcf5df770353803f102f60da863d6b64d3","ts":"2026-04-07T23:16:39Z"}
 {"plan":"flesh-out-docs","unit":"update_config","sha":"323c166d84065aa24712dc3c88bb5634811ed1ee","ts":"2026-04-07T23:16:54Z"}
 {"plan":"plans/dogfood-debut","unit":"tasks/dogfood.add-contributing-v2","sha":"15458506cfc521e545d2a1f23e044e6d0d222e32","ts":"2026-04-08T00:01:37Z"}
+{"plan":"alpha-debut","unit":"docs/updates.update-readme","sha":"e2493f816516b270ab69af7eefe63a59aa716563","ts":"2026-04-08T01:20:02Z"}
+{"plan":"alpha-debut","unit":"docs/updates.bump-version","sha":"869dfab92107171627d7e31a785dc3eb232556ad","ts":"2026-04-08T01:22:21Z"}
