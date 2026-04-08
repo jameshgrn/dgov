@@ -179,6 +179,7 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
 
 # Register subcommand modules — must be at bottom after cli is defined
 from dgov.cli import (  # noqa: E402
+    clean as clean,
     compile as compile,
     init as init,
     ledger as ledger,
