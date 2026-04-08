@@ -10,6 +10,12 @@ uv pip install -e .
 
 Requires Python 3.12+, git.
 
+For development (includes ruff, pytest, mypy):
+
+```bash
+uv pip install -e . --group dev
+```
+
 ## How it works
 
 dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch and subprocess. Plans are defined in TOML, compiled to DAGs, and executed through a pure kernel with event-sourced state.
@@ -19,12 +25,15 @@ State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolate
 ## Usage
 
 ```bash
+dgov                     # Show status
+dgov status              # Show status (explicit)
 dgov run plan.toml       # Execute a plan
-dgov --status            # Show task status
-dgov --watch             # Stream events
+dgov validate plan.toml  # Validate a plan without running
+dgov watch               # Stream events
 dgov sentrux check       # Run architectural quality check
 dgov sentrux gate-save   # Save quality baseline
 dgov sentrux gate        # Compare against baseline
+dgov plan status <dir>   # Show pending vs deployed units
 ```
 
 ## Plan format
@@ -64,7 +73,7 @@ depends_on = ["add-feature"]
 ## Development
 
 ```bash
-uv pip install -e .
+uv pip install -e . --group dev
 uv run ruff check src/ tests/
 uv run ruff format src/ tests/
 uv run pytest tests/ -q
