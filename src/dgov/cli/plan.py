@@ -8,25 +8,25 @@ from pathlib import Path
 import click
 
 from dgov.cli import cli, want_json
-from dgov.plan import parse_plan_file, validate_plan
+from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
 
 
-def _format_unit_files(unit: object) -> str:
+def _format_unit_files(unit: PlanUnit) -> str:
     """Render a PlanUnit's file claims as 'files=[...], create=[...], etc.'."""
     parts = []
     for kind in ("touch", "create", "edit", "delete"):
-        files = getattr(unit.files, kind)  # type: ignore[attr-defined]
+        files = getattr(unit.files, kind)
         if files:
             label = "files" if kind == "touch" else kind
             parts.append(f"{label}={list(files)}")
     return ", ".join(parts)
 
 
-def _echo_plan_summary(plan: object, errors: list, warnings: list) -> None:
+def _echo_plan_summary(plan: PlanSpec, errors: list, warnings: list) -> None:
     """Print human-readable plan summary with errors/warnings."""
-    click.echo(f"Plan: {plan.name}")  # type: ignore[attr-defined]
-    click.echo(f"Tasks: {len(plan.units)}")  # type: ignore[attr-defined]
-    for slug, unit in plan.units.items():  # type: ignore[attr-defined]
+    click.echo(f"Plan: {plan.name}")
+    click.echo(f"Tasks: {len(plan.units)}")
+    for slug, unit in plan.units.items():
         deps = f" (depends: {', '.join(unit.depends_on)})" if unit.depends_on else ""
         click.echo(f"  - {slug}: {unit.summary}{deps}")
         files_str = _format_unit_files(unit)
