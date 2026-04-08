@@ -33,7 +33,7 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition
 from dgov.kernel import DagKernel
-from dgov.persistence import add_task, emit_event, get_task
+from dgov.persistence import add_task, emit_event, get_task, update_task_state
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.settlement import (
     autofix_sandbox,
@@ -104,7 +104,6 @@ class EventDagRunner:
         Mark them ABANDONED so --continue can retry them, and a bare run doesn't
         deadlock waiting for workers that will never finish.
         """
-        from dgov.persistence import update_task_state
 
         for slug, state in list(self.kernel.task_states.items()):
             if state == TaskState.ACTIVE:
@@ -317,6 +316,20 @@ class EventDagRunner:
                 logger.debug("Cleaned up worktree for failed task: %s", action.task_slug)
             except Exception as exc:
                 logger.warning("CleanupTask failed for %s: %s", action.task_slug, exc)
+        # Sync kernel's terminal state (FAILED/ABANDONED/TIMED_OUT/SKIPPED) to DB
+        kernel_state = self.kernel.task_states.get(action.task_slug)
+        if kernel_state and kernel_state in (
+            TaskState.FAILED,
+            TaskState.ABANDONED,
+            TaskState.TIMED_OUT,
+            TaskState.SKIPPED,
+        ):
+            try:
+                update_task_state(
+                    self.session_root, action.task_slug, kernel_state.value, force=True
+                )
+            except Exception as exc:
+                logger.warning("DB state sync failed for %s: %s", action.task_slug, exc)
         return []
 
     def _handle_worker_exit(self, exit_event: WorkerExit) -> list[DagAction]:
@@ -738,6 +751,13 @@ class EventDagRunner:
             self._rejected_worktrees[action.task_slug] = wt
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
+
+        # Sync terminal state to DB so dgov status reflects reality
+        db_state = TaskState.MERGED if not error else TaskState.FAILED
+        try:
+            update_task_state(self.session_root, action.task_slug, db_state.value, force=True)
+        except Exception as exc:
+            logger.warning("DB state sync failed for %s: %s", action.task_slug, exc)
 
         emit_event(
             self.session_root,
