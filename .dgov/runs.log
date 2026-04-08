@@ -259,3 +259,15 @@
   failed: a
   sentrux: 2316 -> 2304
 
+[2026-04-08 16:02:09Z] release-prep (.dgov/plans/release-prep/_compiled.toml) — ok (104.93s)
+  merged: fixes/fix-run-type-errors.fix-type-errors
+  durations: fixes/fix-run-type-errors.fix-type-errors: 55.89s
+  sentrux: 2316 -> 2304
+
+[2026-04-08 16:09:48Z] fix-ty-errors (.dgov/plans/fix-ty-errors/_compiled.toml) — fail (197.49s)
+  merged: cli/fix-compile-init-types.fix-compile-init-types, cli/fix-plan-types.fix-plan-types, core/fix-runner-headless-types.fix-runner-headless-types
+  failed: core/fix-kernel-taskstate.fix-kernel-taskstate
+    error[core/fix-kernel-taskstate.fix-kernel-taskstate]: review:scope_violation — Touched unclaimed files: ['tests/test_actions.py']
+  durations: cli/fix-plan-types.fix-plan-types: 22.4s, core/fix-kernel-taskstate.fix-kernel-taskstate: 54.38s, cli/fix-compile-init-types.fix-compile-init-types: 62.37s, core/fix-runner-headless-types.fix-runner-headless-types: 150.76s
+  sentrux: 2304 -> 2304
+

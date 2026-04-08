@@ -24,3 +24,7 @@
 {"plan":"stress-test","unit":"scratch/files.write-gamma","sha":"34cee691e0a173bf9c82efe8df5b0ee18cb016c1","ts":"2026-04-08T03:25:02Z"}
 {"plan":"stress-test","unit":"scratch/files.write-index","sha":"338e0e386254810f6b548b3e6437335c200c447c","ts":"2026-04-08T03:25:20Z"}
 {"plan":"dogfood-clean-cmd","unit":"add-clean-cmd","sha":"ac10d215e6385af0ee8644bd0df8e4361175f324","ts":"2026-04-08T04:32:50Z"}
+{"plan":"release-prep","unit":"fixes/fix-run-type-errors.fix-type-errors","sha":"91fb11e1f6fce8742ebf2572d2357053b605c997","ts":"2026-04-08T16:02:00Z"}
+{"plan":"fix-ty-errors","unit":"cli/fix-compile-init-types.fix-compile-init-types","sha":"5ac8eb5a3fd90e63a78b937014d45311c2e4655a","ts":"2026-04-08T16:08:11Z"}
+{"plan":"fix-ty-errors","unit":"cli/fix-plan-types.fix-plan-types","sha":"82edf162852051b58ff0242629fd193f1fd4ca66","ts":"2026-04-08T16:08:55Z"}
+{"plan":"fix-ty-errors","unit":"core/fix-runner-headless-types.fix-runner-headless-types","sha":"4be65dfa1ac5b665369e048762c92ba5b773569b","ts":"2026-04-08T16:09:39Z"}
