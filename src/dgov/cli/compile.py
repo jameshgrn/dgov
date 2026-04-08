@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import click
 
 from dgov.cli import cli, want_json
+from dgov.plan_tree import FlatPlan
 
 
 @cli.command(name="compile")
@@ -140,12 +142,9 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
         _print_dag_graph(resolved)
 
 
-def _print_dag_graph(resolved: object) -> None:
+def _print_dag_graph(resolved: FlatPlan) -> None:
     """Print an ASCII representation of the DAG showing task dependencies."""
-    from dgov.plan_tree import FlatPlan
-
-    flat = resolved if isinstance(resolved, FlatPlan) else getattr(resolved, "units", {})
-    units: dict[str, object] = flat.units if isinstance(flat, FlatPlan) else flat  # type: ignore[union-attr]
+    units: dict[str, Any] = resolved.units
 
     # Build reverse dependency map (child -> parents)
     children: dict[str, set[str]] = {uid: set() for uid in units}

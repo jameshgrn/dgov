@@ -8,25 +8,23 @@ import click
 
 from dgov.cli import cli
 
-_EXCLUDE_DIRS = frozenset(
-    {
-        ".git",
-        ".hg",
-        ".svn",
-        "node_modules",
-        "__pycache__",
-        ".tox",
-        ".venv",
-        "venv",
-        ".eggs",
-        "dist",
-        "build",
-        ".dgov-worktrees",
-        ".mypy_cache",
-        ".ruff_cache",
-        ".pytest_cache",
-    }
-)
+_EXCLUDE_DIRS = frozenset({
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    "__pycache__",
+    ".tox",
+    ".venv",
+    "venv",
+    ".eggs",
+    "dist",
+    "build",
+    ".dgov-worktrees",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pytest_cache",
+})
 
 
 def _source_files(root: Path, ext: str) -> list[Path]:
@@ -58,7 +56,7 @@ def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
         "rust": len(rs_files),
         "go": len(go_files),
     }
-    language = max(counts, key=counts.get)  # type: ignore[arg-type]
+    language = max(counts, key=lambda k: counts.get(k, 0))
     if counts[language] == 0:
         language = "python"
 
@@ -147,12 +145,12 @@ def _render_project_toml(language: str, src_dir: str, test_dir: str, extensions:
         "",
         "# Fast review hooks (git sanity checks). {file} is replaced with changed files.",
         "review_hooks = [",
-        '  # "grep -q \'TODO\' {file} && exit 1 || exit 0",  # Example: reject TODOs',
+        "  # \"grep -q 'TODO' {file} && exit 1 || exit 0\",  # Example: reject TODOs",
         '  # "detect-secrets-hook --baseline .secrets.baseline {file}",  # Example: secrets',
         "]",
         "",
         "[conventions]",
-        '# Add project-specific rules here for the agent to follow',
+        "# Add project-specific rules here for the agent to follow",
         '# style = "Prefer functional over OOP"',
     ]
     return "\n".join(lines) + "\n"
