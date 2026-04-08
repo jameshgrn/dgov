@@ -1,0 +1,20 @@
+# Example unit — rename this file and fill in the fields.
+# Compiler ignores files with a leading "_", so this is safe to leave as-is.
+# The unit ID will be "<section>/<filename-stem>.<task-key>", e.g. "tasks/example.do-thing".
+
+[tasks.do-thing]
+summary = "One sentence: what does this task accomplish?"
+prompt = """
+Detailed instructions for the worker agent.
+
+Steps:
+1. Read the relevant files first (read_file / file_symbols).
+2. Make targeted edits (edit_file preferred over write_file for existing files).
+3. Run lint_fix, then format_file, then run_tests to verify.
+"""
+commit_message = "Imperative mood commit message (≤72 chars)"
+files.edit = ["src/module/file.py"]
+# files.create = ["src/new_file.py"]
+# files.delete = ["src/old_file.py"]
+# depends_on = ["other-section/other-file.other-task"]
+# agent = "accounts/fireworks/routers/kimi-k2p5-turbo"

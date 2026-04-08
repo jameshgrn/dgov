@@ -1,0 +1,4 @@
+[plan]
+name = "governor-ux"
+summary = "Improve the governor experience: prune command, failure detail, worker prompt, and workflow docs."
+sections = ["docs", "cli", "prompt", "tests"]

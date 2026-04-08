@@ -194,3 +194,24 @@
   failed: a
   sentrux: 2316 -> 2316
 
+[2026-04-08 02:37:32Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-310/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2316
+
+[2026-04-08 02:38:21Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-311/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2304
+
+[2026-04-08 02:57:09Z] governor-ux (.dgov/plans/governor-ux/_compiled.toml) — ok (485.65s)
+  merged: cli/prune.add-prune-cmd, cli/run.improve-failure-detail, docs/governor.add-workflow, prompt/worker.audit-system-prompt, tests/new-cmds.test-prune-cmd
+  durations: docs/governor.add-workflow: 47.0s, prompt/worker.audit-system-prompt: 59.69s, cli/prune.add-prune-cmd: 82.99s, cli/run.improve-failure-detail: 186.77s, tests/new-cmds.test-prune-cmd: 198.58s
+  sentrux: 2316 -> 2316
+
+[2026-04-08 03:00:06Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-318/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2316
+
+[2026-04-08 03:01:16Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-319/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2316
+

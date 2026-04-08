@@ -1,0 +1,41 @@
+# Improve `dgov run` failure detail.
+# Currently the exit summary shows `failed_tasks: [slug1, slug2]` but
+# no per-task error message. The runner already tracks these in
+# `_task_errors: dict[str, str]`. Surface them in the CLI output.
+
+[tasks.improve-failure-detail]
+summary = "Surface per-task last_error in dgov run exit summary"
+prompt = """
+Improve `dgov run` failure output so the governor can immediately see WHY each task failed.
+
+The runner already exposes `runner._task_errors: dict[str, str]` (populated at line ~86 of runner.py).
+The `_cmd_run_plan` function in `src/dgov/cli/run.py` has access to `runner` after `asyncio.run(runner.run())`.
+
+CHANGES needed in `src/dgov/cli/run.py`:
+
+1. In `_cmd_run_plan`, after `results = asyncio.run(runner.run())`, collect task errors:
+       task_errors = {slug: err for slug, err in runner._task_errors.items() if slug in failed}
+   (where `failed` is the list computed from results at line ~232)
+
+2. Pass `task_errors` to `_output()`:
+   - In the human-readable branch (non-JSON): after printing failed tasks, print each with its error:
+         if task_errors:
+             for slug, err in task_errors.items():
+                 click.echo(f"  {slug}: {err[:200]}")
+   - In the JSON branch: add `"task_errors": task_errors` to the dict.
+
+3. Update `_append_run_log` to also record task_errors:
+   - Add `task_errors: dict[str, str] | None = None` parameter.
+   - In the log lines, after the `failed:` line, append:
+         if task_errors:
+             for slug, err in task_errors.items():
+                 lines.append(f"    error[{slug}]: {err[:200]}")
+   - Update the call site in `_cmd_run_plan` to pass `task_errors=task_errors`.
+
+Read the file first with read_file to understand exact line structure before editing.
+Use edit_file for each targeted change. Do NOT rewrite the whole file.
+Run lint_fix after editing, then run_tests on tests/test_cli.py.
+Call done with a summary.
+"""
+commit_message = "feat: surface per-task last_error in dgov run exit summary"
+files.edit = ["src/dgov/cli/run.py"]

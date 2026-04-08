@@ -1,0 +1,73 @@
+# Add `dgov prune` command.
+# Clears abandoned + closed tasks from the SQLite DB to eliminate
+# the noise in `dgov status --all` that accumulates across runs.
+
+[tasks.add-prune-cmd]
+summary = "Add dgov prune command to delete historical tasks from DB"
+prompt = """
+Add a `dgov prune` CLI command that deletes all abandoned and closed tasks from the DB.
+
+STEP 1 — Add `prune_history` to `src/dgov/persistence/tasks.py`.
+
+Read the file first (read_file or file_symbols) to understand the existing pattern.
+Add this function after `cleanup_zombies`:
+
+    def prune_history(session_root: str) -> int:
+        \"\"\"Delete all abandoned and closed tasks. Returns count removed.\"\"\"
+        _HISTORICAL = (TaskState.ABANDONED.value, TaskState.CLOSED.value)
+
+        def _do() -> int:
+            conn = _get_db(session_root)
+            placeholders = ", ".join("?" * len(_HISTORICAL))
+            cur = conn.execute(
+                f"DELETE FROM tasks WHERE state IN ({placeholders})",
+                _HISTORICAL,
+            )
+            conn.commit()
+            return cur.rowcount
+
+        return _retry_on_lock(_do)
+
+STEP 2 — Export `prune_history` from `src/dgov/persistence/__init__.py`.
+
+Add it to the import block after `cleanup_zombies`:
+    from dgov.persistence.tasks import (
+        ...
+        prune_history,
+        ...
+    )
+And to `__all__` in the same file.
+
+STEP 3 — Add `prune_cmd` to `src/dgov/cli/__init__.py`.
+
+Read the file first. Add the command after `cleanup_cmd` (around line 114):
+
+    @cli.command(name="prune")
+    def prune_cmd() -> None:
+        \"\"\"Prune historical tasks — removes abandoned and closed records.\"\"\"
+        project_root = str(Path.cwd())
+        try:
+            from dgov.persistence import prune_history
+            count = prune_history(project_root)
+            if count == 0:
+                click.echo("Nothing to prune.")
+            else:
+                click.echo(f"Pruned {count} historical task(s).")
+        except Exception as exc:
+            click.echo(f"Prune failed: {exc}", err=True)
+            raise click.exceptions.Exit(code=1) from exc
+
+Also update the docstring of the `cli` group to include:
+      dgov prune              Prune historical (abandoned/closed) tasks
+
+STEP 4 — Verify.
+Run lint_fix on each edited file, then run check_syntax.
+Run run_tests targeting tests/test_cli.py to confirm no regressions.
+Call done with a summary of changes.
+"""
+commit_message = "feat: add dgov prune command to clear historical tasks"
+files.edit = [
+    "src/dgov/persistence/tasks.py",
+    "src/dgov/persistence/__init__.py",
+    "src/dgov/cli/__init__.py",
+]

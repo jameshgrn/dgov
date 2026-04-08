@@ -1,0 +1,49 @@
+# Audit and improve the worker system prompt.
+# Two tasks were abandoned in prior sessions: docs/overhaul and worker/prompt.
+# The system prompt in worker.py is functional but has gaps identified via dogfooding:
+# - Doesn't mention the 30-iteration cap or how to budget iterations
+# - Doesn't mention assert_file_unchanged and when to use it
+# - Doesn't explain that empty diffs = failed review
+# - Doesn't tell workers to prefer edit_file path over write_file for modifications
+
+[tasks.audit-system-prompt]
+summary = "Improve worker system prompt with dogfood-driven rules"
+prompt = """
+Improve the worker system prompt in `src/dgov/worker.py` based on known failure patterns.
+
+Read `src/dgov/worker.py` — focus on `_build_system_prompt` (around line 113).
+The prompt is built as a list of sections joined together.
+
+IMPROVEMENTS to make in the WORKFLOW section (the large f-string at ~line 140):
+
+1. After the WORKFLOW steps, add an ITERATION BUDGET section:
+   \"\"\"
+   ITERATION BUDGET:
+   - You have up to 30 tool calls. Budget carefully.
+   - Typical well-scoped task uses 8-15 calls: orient(3) + edit(3) + verify(4) + finish(2).
+   - If you are past call 20 and not in VERIFY phase, you are off-track. Stop, git_diff, call done.
+   - Do NOT loop on test failures more than 3 times. If tests fail after 3 fix attempts, call done
+     with a summary of what you tried and what remains — do not exhaust budget.
+   \"\"\"
+
+2. In the DO NOT list, add:
+   - Do NOT call write_file to modify an existing file. Use edit_file. write_file truncates the file.
+   - Do NOT commit an empty diff. If git_diff shows nothing, your task did not write changes — investigate.
+   - Do NOT skip assert_file_unchanged. Call it on any file you were NOT supposed to touch.
+
+3. Add a COMMON FAILURES section before "Strictly use tools.":
+   \"\"\"
+   COMMON FAILURES (learn from these):
+   - Empty diff at done → review fails. Always git_diff before calling done. If empty, something went wrong.
+   - Wrong path → use relative paths from worktree root, not absolute paths.
+   - Import added in step 1, ruff strips it before step 2 → add import and usage in the same edit_file call.
+   - Unclaimed file touched → immediate rejection. Check your files.edit claim before editing.
+   \"\"\"
+
+Use edit_file to make targeted changes to the f-string. Do NOT rewrite _build_system_prompt entirely.
+Run lint_fix after editing, then check_syntax to confirm no syntax errors.
+Run run_tests with tests/test_runner.py (contains worker/system-prompt related tests if any).
+Call done with a summary of changes made.
+"""
+commit_message = "feat: improve worker system prompt with iteration budget and failure rules"
+files.edit = ["src/dgov/worker.py"]

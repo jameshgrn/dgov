@@ -1,0 +1,40 @@
+# Tests for the new dgov prune command.
+# Depends on cli/prune.add-prune-cmd being merged first.
+
+[tasks.test-prune-cmd]
+summary = "Add tests for dgov prune command"
+prompt = """
+Add tests for the new `dgov prune` CLI command in `tests/test_cli.py`.
+
+Read `tests/test_cli.py` first to understand the existing test pattern (CliRunner, tmp_path, etc).
+Also read `src/dgov/cli/__init__.py` to see the prune_cmd implementation you're testing.
+
+Add the following test functions after the existing cleanup-related tests:
+
+1. `test_prune_nothing_to_prune`:
+   - Set up a fresh tmp_path with no tasks (or only pending/active tasks).
+   - Invoke `dgov prune`.
+   - Assert exit_code == 0 and "Nothing to prune" in output.
+
+2. `test_prune_removes_historical_tasks`:
+   - Set up a tmp_path with tasks in states: abandoned, closed, pending, merged.
+   - Use `replace_all_tasks` or `add_task` + `update_task_state` to populate.
+   - Invoke `dgov prune`.
+   - Assert exit_code == 0 and "Pruned 2 historical task(s)" in output (2 = abandoned + closed).
+   - Call `all_tasks` and assert only pending + merged tasks remain.
+
+3. `test_prune_idempotent`:
+   - Run `dgov prune` twice on the same DB (first call prunes, second call finds nothing).
+   - Assert both calls return exit_code == 0.
+   - Assert second call outputs "Nothing to prune".
+
+Use the CliRunner pattern: `runner = CliRunner(); result = runner.invoke(cli, ["prune"], ...)`.
+Pass `env={"DGOV_STATE_PATH": str(tmp_path)}` or whatever mechanism the existing tests use
+to isolate the DB path — look at existing test fixtures before writing.
+
+After writing, run lint_fix and then run_tests targeting tests/test_cli.py.
+All 3 new tests must pass. Call done with a summary.
+"""
+commit_message = "test: add tests for dgov prune command"
+files.edit = ["tests/test_cli.py"]
+depends_on = ["cli/prune.add-prune-cmd"]

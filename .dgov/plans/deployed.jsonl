@@ -14,3 +14,8 @@
 {"plan":"plans/dogfood-debut","unit":"tasks/dogfood.add-contributing-v2","sha":"15458506cfc521e545d2a1f23e044e6d0d222e32","ts":"2026-04-08T00:01:37Z"}
 {"plan":"alpha-debut","unit":"docs/updates.update-readme","sha":"e2493f816516b270ab69af7eefe63a59aa716563","ts":"2026-04-08T01:20:02Z"}
 {"plan":"alpha-debut","unit":"docs/updates.bump-version","sha":"869dfab92107171627d7e31a785dc3eb232556ad","ts":"2026-04-08T01:22:21Z"}
+{"plan":"governor-ux","unit":"cli/prune.add-prune-cmd","sha":"ad748b12deec009c8e32d47d46fa3f04b5c60dfa","ts":"2026-04-08T02:52:02Z"}
+{"plan":"governor-ux","unit":"cli/run.improve-failure-detail","sha":"41535dedb86bfa80000a958de4a84ee80c68a2f3","ts":"2026-04-08T02:53:42Z"}
+{"plan":"governor-ux","unit":"docs/governor.add-workflow","sha":"bb10eb7042204e10eddbbb62acafabdf8a7cbd89","ts":"2026-04-08T02:53:44Z"}
+{"plan":"governor-ux","unit":"prompt/worker.audit-system-prompt","sha":"823378fb6f35c1c680e7d0bf0093e4c6834f8850","ts":"2026-04-08T02:55:23Z"}
+{"plan":"governor-ux","unit":"tests/new-cmds.test-prune-cmd","sha":"253112e41ea0fac0747e4bbb7021c5264b590324","ts":"2026-04-08T02:56:59Z"}
