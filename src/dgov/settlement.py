@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 import shlex
 import shutil
 import subprocess
@@ -427,8 +428,35 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
     return None
 
 
+_SENTRUX_WARN_ONLY = re.compile(
+    r"complex functions increased",
+    re.IGNORECASE,
+)
+
+_SENTRUX_HARD_FAIL = re.compile(
+    r"(quality.*dropped|coupling increased|cycles increased|god files increased)",
+    re.IGNORECASE,
+)
+
+
+def _sentrux_is_warn_only(output: str) -> bool:
+    """Return True if the only degradation is complexity increase (not a hard failure).
+
+    Complexity going up while overall quality improves is expected when adding
+    new code. Hard-failing on it blocks legitimate work. We log a warning instead.
+    Hard failures: quality drop, coupling increase, cycle increase, god-file increase.
+    """
+    lines = output.splitlines()
+    failing = [ln for ln in lines if ln.strip().startswith("✗") and "DEGRADED" not in ln]
+    if not failing:
+        return False
+    return all(_SENTRUX_WARN_ONLY.search(ln) for ln in failing) and not any(
+        _SENTRUX_HARD_FAIL.search(ln) for ln in lines
+    )
+
+
 def _run_sentrux_gate(worktree_path: Path, project_root: str) -> GateResult:
-    """Run sentrux policy gate — reject on degradation."""
+    """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
     if not baseline.exists():
         return GateResult(passed=True)
@@ -448,8 +476,12 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str) -> GateResult:
         tmp.seek(0)
         sx_output = tmp.read()
 
-    # degradation is signaled by non-zero exit in Sentrux gate
     if res_sx.returncode != 0:
+        if _sentrux_is_warn_only(sx_output):
+            logger.warning(
+                "Sentrux: complexity increased (warn-only, not blocking):\n%s", sx_output
+            )
+            return GateResult(passed=True)
         return GateResult(passed=False, error=f"Sentrux architectural degradation:\n{sx_output}")
 
     return GateResult(passed=True)

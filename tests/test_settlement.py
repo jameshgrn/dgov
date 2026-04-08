@@ -13,10 +13,62 @@ import pytest
 
 from dgov.config import ProjectConfig
 from dgov.settlement import (
+    _sentrux_is_warn_only,
     autofix_sandbox,
     review_sandbox,
     validate_sandbox,
 )
+
+# ---------------------------------------------------------------------------
+# Sentrux warn-only classification
+# ---------------------------------------------------------------------------
+
+
+class TestSentruxWarnOnly:
+    _COMPLEXITY_ONLY = """\
+sentrux gate — structural regression check
+
+Quality:      2304 -> 2316
+Coupling:     0.02 → 0.02
+Cycles:       50 → 50
+God files:    124 → 124
+
+✗ DEGRADED
+  ✗ Complex functions increased: 3779 → 3780
+"""
+    _QUALITY_DROP = """\
+sentrux gate — structural regression check
+
+Quality:      2316 -> 2300
+Coupling:     0.02 → 0.04
+
+✗ DEGRADED
+  ✗ Quality score dropped: 2316 → 2300
+  ✗ Coupling increased: 0.02 → 0.04
+"""
+    _COUPLING_ONLY = """\
+✗ DEGRADED
+  ✗ Coupling increased: 0.02 → 0.05
+"""
+    _CLEAN = "✓ No degradation detected\n"
+
+    def test_complexity_only_is_warn(self):
+        assert _sentrux_is_warn_only(self._COMPLEXITY_ONLY) is True
+
+    def test_quality_drop_is_not_warn(self):
+        assert _sentrux_is_warn_only(self._QUALITY_DROP) is False
+
+    def test_coupling_only_is_not_warn(self):
+        assert _sentrux_is_warn_only(self._COUPLING_ONLY) is False
+
+    def test_clean_output_is_not_warn(self):
+        # No failing lines — not warn-only (it passed, so this branch never fires)
+        assert _sentrux_is_warn_only(self._CLEAN) is False
+
+    def test_complexity_plus_coupling_is_not_warn(self):
+        mixed = self._COMPLEXITY_ONLY + "  ✗ Coupling increased: 0.02 → 0.03\n"
+        assert _sentrux_is_warn_only(mixed) is False
+
 
 # ---------------------------------------------------------------------------
 # Helpers — create real git repos in tmp_path
