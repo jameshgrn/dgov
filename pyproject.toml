@@ -1,6 +1,6 @@
 [project]
 name = "dgov"
-version = "0.0.1"
+version = "0.1.0a1"
 description = "Deterministic kernel for multi-agent orchestration via git worktrees."
 requires-python = ">=3.12"
 dependencies = [
