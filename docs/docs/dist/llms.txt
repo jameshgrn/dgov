@@ -1,0 +1,8 @@
+# dgov
+
+## Docs
+
+- [CLI Reference](/dgov/cli-reference): Complete reference for the `dgov` command-line interface.
+- [Concepts](/dgov/concepts): `dgov` is built on a set of core engineering principles designed to make multi-agent orchestration as predictable as a compiler.
+- [Getting Started](/dgov/getting-started): Deterministic kernel for multi-agent orchestration via git worktrees.
+- [Plan Reference](/dgov/plan-reference): A `plan.toml` file declares a deterministic execution graph. It is the contract between the Governor and Workers.

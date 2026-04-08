@@ -150,3 +150,25 @@
   failed: a
   sentrux: 2316 -> 2304
 
+[2026-04-07 23:56:31Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-299/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2304 -> 2304
+
+[2026-04-07 23:59:28Z] plans/dogfood-debut (.dgov/plans/plans/dogfood-debut/_compiled.toml) — fail (15.76s)
+  failed: tasks/dogfood.add-contributing
+  durations: tasks/dogfood.add-contributing: 0.56s
+  sentrux: 2316 -> 2304
+
+[2026-04-08 00:00:39Z] plans/dogfood-debut (.dgov/plans/plans/dogfood-debut/_compiled.toml) — fail (0.0s)
+  failed: tasks/dogfood.add-contributing
+  sentrux: 2316 -> 2316
+
+[2026-04-08 00:00:58Z] plans/dogfood-debut (.dgov/plans/plans/dogfood-debut/_compiled.toml) — fail (0.0s)
+  failed: tasks/dogfood.add-contributing
+  sentrux: 2316 -> 2304
+
+[2026-04-08 00:01:46Z] plans/dogfood-debut (.dgov/plans/plans/dogfood-debut/_compiled.toml) — ok (23.22s)
+  merged: tasks/dogfood.add-contributing-v2
+  durations: tasks/dogfood.add-contributing-v2: 19.65s
+  sentrux: 2304 -> 2316
+
