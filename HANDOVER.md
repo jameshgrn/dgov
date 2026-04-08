@@ -1,46 +1,59 @@
-# Handover: Flat File Claims Feature
+# Handover: Watch UI + Worker Tools
 
 **Date:** 2026-04-08
-**Branch:** `main` @ `11cd8042` (pushed)
-**Context:** Implemented Option B from file claim UX analysis — flat `files = [...]` shorthand replacing verbose `files.edit/create/delete` for common cases.
+**Branch:** `main` @ `f64381dc` (pushed)
+**Context:** Merged `feature/watch-ui-worker-tools` — Rich-based watch UI and new worker capabilities.
 
 ---
 
 ## Current State
 
 - `main` is clean and pushed. 532+ tests passing.
-- Flat file claims feature shipped: plan authors can use `files = ["a.py", "b.py"]` instead of separate `files.edit`/`files.create`/`files.delete` blocks.
-- Old structured format still works — full backward compatibility.
+- Flat file claims feature shipped (prior handover).
+- **Watch UI overhaul** merged: Rich tables, color-coded tasks, markdown summaries.
+- **New worker tools** merged: `find_references()` and `revert_file()`.
+- **Worker prompt v1.1.0**: Engaging tone, higher budgets (50 calls / 100 loop limit).
 
 ---
 
 ## Completed
 
-| Change | File(s) |
-|--------|---------|
-| Added `touch` field to `DagFileSpec` (Pydantic model) | `dag_parser.py` |
-| Added `touch` field to `PlanUnitFiles` (frozen dataclass) | `plan.py` |
-| Parse `files = [list]` as touch shorthand in DAG parser | `dag_parser.py` |
-| Handle list vs dict for `files` in plan tree merger | `plan_tree.py` |
-| Include `touch` in runner's `task_files` + `file_claims` flattening | `runner.py` |
-| Smart serialization: pure touch → `files = [...]`, mixed → subtable | `serializer.py` |
-| Updated CLI display + example TOML template | `cli/plan.py` |
-| Updated plan authoring guide | `CLAUDE.md` |
-| 15 new tests across dag_parser, plan, plan_tree, serializer, runner | `tests/` |
+### Watch UI Refactor (`src/dgov/cli/watch.py`)
+- Rich tables with grid-aligned columns
+- Task-specific color coding (8-color stable palette)
+- Markdown rendering for worker summaries
+- Agent name resolution from project config
+- Cleaner slug display (strips `tasks/` prefix, `.toml` suffix)
+- "New run" detection with color reset
+
+### Worker Tools (`src/dgov/workers/atomic.py`)
+| Tool | Purpose |
+|------|---------|
+| `find_references(symbol, exclude_tests=False)` | Symbol search via ripgrep/fallback to grep |
+| `revert_file(path)` | Git checkout HEAD to restore file |
+
+### Worker Prompt v1.1.0 (`src/dgov/worker.py`)
+- Engaging "Greetings, Actuator" preamble
+- Clear "DGOV Way" principles (Separation of Powers, Trust but Verify, Surgical Precision)
+- Iteration budget: 50 tool calls, 100 loop limit
+- Tactical guidance: check-in at call 40, max 3 test failure loops
+
+### Infrastructure Fixes
+- `pyproject.toml`: Per-file-ignores for `src/dgov/worker.py` E501 (prompt prose)
+- `src/dgov/cli/watch.py`: Fixed `RenderableType` import path
 
 ---
 
 ## Key Decisions
 
-- **`touch` field over collapsing into `edit`**: Keeps the semantic distinction clean. `touch` = "I'll modify these files, auto-classify create vs edit at dispatch time." Doesn't conflate with explicit `edit`.
-- **Backward compatible, not replacing**: Old `files.edit/create/delete` still works. Both formats coexist in the same plan. No migration needed.
-- **Conflict detection covers `touch`**: `_all_touches()` and `validate_plan()` detect overlaps between `touch` and `edit`/`create`/`delete` across independent tasks.
-- **Serializer is context-aware**: Pure touch emits `files = [...]` (round-trips as list). Mixed touch+delete emits `files.touch = [...]` + `files.delete = [...]` (subtable format).
-- **Rejected auto-inference approach**: AST-walking prompt tokens for symbol→file matching was fragile, broke conflict detection for vague prompts, and disabled scope enforcement as fallback. Flat list is simpler and preserves all invariants.
+- **Rich over plain text**: Significant UX improvement for monitoring plan execution. Tables auto-size, colors help distinguish concurrent tasks.
+- **Tools are additive, not replacing**: Workers can now find symbol references and revert files when they go off track. Both use existing primitives (`run_bash`, git).
+- **Budget increases are justified**: 30→50 calls and 60→100 loop limit based on observed worker behavior on complex tasks. 40-call check-in guidance prevents runaway exploration.
+- **Worker personality matters**: The v1.1.0 prompt frames workers as "Actuators" in a "lineage of precise, surgical contributions." This appears to improve focus and reduce scope creep in testing.
 
 ---
 
-## Open Issues
+## Open Issues (Carried Forward)
 
 - **Runner contention under 6+ parallel tasks** — `ThreadPoolExecutor` interaction undiagnosed.
 - **No token/cost tracking** — no visibility into API spend per run.
@@ -51,12 +64,12 @@
 
 ## Next Steps
 
-### 1. Dogfood flat files format
-- Author a new plan using `files = [...]` shorthand exclusively.
-- Verify compile → validate → run → merge pipeline end-to-end.
-- Check `dgov watch` output still renders correctly.
+### 1. Dogfood new tools
+- Author a plan that uses `find_references` in a prompt.
+- Verify workers can locate symbols across the codebase.
+- Test `revert_file` recovery when a worker makes a bad change.
 
-### 2. Token/cost tracking (from prior handover)
+### 2. Token/cost tracking
 - Workers emit token counts via `on_event` callback.
 - Runner aggregates in `_task_durations`-style dict.
 - `_append_run_log` + CLI exit summary include cost.
@@ -69,9 +82,11 @@
 
 ## Important Files
 
-- `/Users/jakegearon/projects/dgov/src/dgov/dag_parser.py` — `DagFileSpec.touch`, flat list parse in `parse_dag_file`
-- `/Users/jakegearon/projects/dgov/src/dgov/plan.py` — `PlanUnitFiles.touch`, `_all_touches()` includes touch
-- `/Users/jakegearon/projects/dgov/src/dgov/plan_tree.py` — `_unit_from_task()` handles list vs dict vs error
-- `/Users/jakegearon/projects/dgov/src/dgov/runner.py` — `task_files` and `file_claims` include touch
-- `/Users/jakegearon/projects/dgov/src/dgov/serializer.py` — smart flat vs subtable emission
-- `/Users/jakegearon/projects/dgov/src/dgov/cli/plan.py` — `_format_unit_files()`, example TOML template
+| File | Role |
+|------|------|
+| `src/dgov/cli/watch.py` | Rich-based watch UI with tables, colors, markdown |
+| `src/dgov/workers/atomic.py` | New tools: `find_references`, `revert_file` |
+| `src/dgov/worker.py` | v1.1.0 prompt with DGOV Way principles, higher budgets |
+| `pyproject.toml` | Ruff per-file-ignores for worker.py |
+| `tests/test_cli.py` | Updated for Rich table output format |
+| `tests/test_worker_tools.py` | Tests for `find_references` and `revert_file` |
