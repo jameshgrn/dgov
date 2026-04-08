@@ -338,17 +338,23 @@ class TestInitPlan:
 
 def test_format_event_settlement_retry() -> None:
     """Test that _format_event renders settlement_retry events correctly."""
+    from rich.console import Console
     ev = {
         "event": "settlement_retry",
         "task_slug": "fix-lint",
         "ts": "2026-04-06T12:34:56Z",
         "error": "ruff check failed: E501 line too long",
     }
-    result = _format_event(ev)
+    result = _format_event(ev, agents={})
     assert result is not None
-    assert "RETRY" in result
-    assert "fix-lint" in result
-    assert "ruff check failed" in result
+    # Use a dummy console to capture output from the Table renderable
+    console = Console(width=100)
+    with console.capture() as capture:
+        console.print(result)
+    out = capture.get()
+    assert "retry" in out
+    assert "fix-lint" in out
+    assert "ruff check failed" in out
 
 
 def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:

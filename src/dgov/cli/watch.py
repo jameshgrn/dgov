@@ -4,11 +4,40 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import click
+from rich.console import Console, Group
+from rich.markdown import Markdown
+from rich.padding import Padding
+from rich.table import Table
+from rich.text import Text
 
 from dgov.cli import cli
 from dgov.persistence import latest_event_id, read_events
+
+if TYPE_CHECKING:
+    from rich.renderable import RenderableType
+
+console = Console()
+
+_TASK_COLORS: dict[str, str] = {}
+_PALETTE = [
+    "cyan",
+    "magenta",
+    "blue",
+    "yellow",
+    "green",
+    "bright_cyan",
+    "bright_magenta",
+    "bright_blue",
+]
+
+
+def _get_task_color(slug: str) -> str:
+    """Assign a stable color to a task slug for the duration of the watch."""
+    if slug not in _TASK_COLORS:
+        _TASK_COLORS[slug] = _PALETTE[len(_TASK_COLORS) % len(_PALETTE)]
+    return _TASK_COLORS[slug]
 
 
 @cli.command(name="watch")
@@ -17,16 +46,23 @@ def watch_cmd() -> None:
     _cmd_watch(str(Path.cwd()))
 
 
-def _dim(text: str) -> str:
-    return click.style(text, dim=True)
+def _clean_slug(slug: str) -> str:
+    """Strip 'tasks/' prefix and '.toml' suffix for cleaner display."""
+    if not slug:
+        return ""
+    if slug.startswith("tasks/"):
+        slug = slug[6:]
+    if slug.endswith(".toml"):
+        slug = slug[:-5]
+    return slug
 
 
-def _format_event(ev: dict) -> str | None:
-    """Format a single event. Returns None to suppress."""
+def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableType | None:
+    """Format a single event. Returns a Renderable or None to suppress."""
     event_type = ev.get("event", "?")
     task_slug = ev.get("task_slug") or ev.get("slug") or ""
     ts_raw = ev.get("ts", "")
-    ts = _dim(ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw)
+    ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
 
     # Suppress lifecycle done — worker_log done already has the summary
     if event_type == "task_done":
@@ -41,87 +77,157 @@ def _format_event(ev: dict) -> str | None:
     # Dispatch header
     if event_type == "dag_task_dispatched":
         agent = ev.get("agent", "")
+        # Resolve from project config mapping if available
+        if agents and agent in agents:
+            agent = agents[agent]
         agent_short = agent.rsplit("/", 1)[-1] if agent else ""
-        return (
-            f"{ts}  {click.style('>>', bold=True)} "
-            f"{click.style(task_slug, bold=True)} "
-            f"{_dim(f'({agent_short})')}"
-        )
+        return _make_row(ts, "⚙", "start", "bold blue", task_slug, f"agent: {agent_short}")
 
     # Failure events
     if event_type in ("task_failed", "review_fail", "task_merge_failed"):
         label = _EVENT_LABELS.get(event_type, event_type)
-        suffix = ""
-        error = ev.get("error")
-        if error:
-            suffix = f" — {error[:100]}"
-        verdict = ev.get("verdict")
-        if verdict and verdict != "ok":
-            suffix = f" ({verdict})"
-        return f"{ts} {click.style(f'{label:>12s}', fg='red')}  {task_slug}{suffix}"
+        error = ev.get("error") or ev.get("verdict") or ""
+        return _make_row(ts, "✖", label, "bold red", task_slug, error, full_width=True)
 
     # Merged
     if event_type == "merge_completed":
-        return f"{ts} {click.style('      merged', fg='green')}  {task_slug}"
+        return _make_row(ts, "●", "merged", "bold green", task_slug, "")
 
     # Settlement retry
     if event_type == "settlement_retry":
         error = ev.get("error", "")
-        short = error[:100] if error else ""
-        return f"{ts} {click.style('       RETRY', fg='yellow', bold=True)}  {task_slug}: {short}"
+        return _make_row(ts, "⟳", "retry", "bold yellow", task_slug, error, full_width=True)
 
     # Everything else
     label = _EVENT_LABELS.get(event_type, event_type)
-    return f"{ts} {label:>12s}  {task_slug}"
+    return _make_row(ts, " ", label, "dim", task_slug, "")
 
 
-def _format_worker_log(ts: str, task_slug: str, ev: dict) -> str | None:
-    """Format worker_log events. Returns None to suppress."""
+def _format_worker_log(ts: str, task_slug: str, ev: dict) -> RenderableType | None:
+    """Format worker_log events. Returns Renderable or None to suppress."""
     log_type = ev.get("log_type", "")
     content = ev.get("content")
 
     if log_type == "error":
-        return f"{ts} {click.style('      ERROR', fg='red', bold=True)}  {task_slug}: {content}"
+        return _make_row(ts, "✖", "error", "bold red", task_slug, str(content), full_width=True)
     if log_type == "done":
-        text = str(content)[:150] if content else ""
-        return f"{ts} {click.style('         ok', fg='green')}  {task_slug}: {text}"
+        text = str(content) if content else ""
+        # Render summaries as Markdown for beautiful lists and bolding
+        return _make_row(ts, "✔", "ok", "green", task_slug, Markdown(text), full_width=True)
     if log_type == "thought":
-        text = str(content)[:120] if content else ""
-        return f"{ts}  {_dim(f'           {task_slug}: {text}')}"
+        text = str(content) if content else ""
+        return _make_row(ts, "…", "thought", "dim", task_slug, text, content_dim=True)
     if log_type == "call":
         if isinstance(content, dict):
             tool = content.get("tool", "?")
             args = content.get("args", {})
-            summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
-            return f"{ts} {_dim('       call')}  {task_slug}: {tool}({_dim(summary)})"
-        return f"{ts} {_dim('       call')}  {task_slug}: {content}"
+            summary = ", ".join(f"{k}={repr(v)[:80]}" for k, v in args.items())
+
+            content_text = Text()
+            content_text.append(tool, style="bold yellow")
+            content_text.append("(", style="dim")
+            content_text.append(summary, style="dim")
+            content_text.append(")", style="dim")
+            return _make_row(ts, "○", "call", "blue", task_slug, content_text)
+
+        content_text = Text(str(content))
+        content_text.stylize("dim")
+        return _make_row(ts, "○", "call", "blue", task_slug, content_text)
+
     if log_type == "result":
         if isinstance(content, dict) and content.get("status") == "failed":
             tool = content.get("tool", "?")
-            return f"{ts} {click.style('       FAIL', fg='red')}  {task_slug}: {tool}"
+            content_text = Text()
+            content_text.append("tool: ", style="dim")
+            content_text.append(tool, style="bold red")
+            return _make_row(ts, "✖", "fail", "red", task_slug, content_text)
         return None
 
-    return f"{ts}  {_dim(f'           {task_slug}: [{log_type}] {content}')}"
+    return _make_row(ts, " ", log_type, "dim", task_slug, str(content), content_dim=True)
+
+
+def _make_row(
+    ts: str,
+    symbol: str,
+    label: str,
+    label_style: str,
+    slug: str,
+    content: str | RenderableType,
+    content_dim: bool = False,
+    full_width: bool = False,
+) -> RenderableType:
+    """Assemble a beautiful grid-aligned row. Optionally puts content on new line."""
+    table = Table.grid(padding=(0, 1))
+    table.add_column(width=9)  # TS
+    table.add_column(width=10)  # Symbol + Label
+    table.add_column(width=24)  # Slug
+    table.add_column(width=1)  # Separator
+    table.add_column()  # Content (flexible)
+
+    clean_slug = _clean_slug(slug)
+    slug_color = _get_task_color(slug)
+
+    # If full_width, we print the content on a second line with a slight indent
+    if full_width and content:
+        # Header row with empty content
+        table.add_row(
+            Text(ts, style="dim"),
+            Text(f"{symbol} {label}", style=label_style),
+            Text(clean_slug, style=f"bold {slug_color}"),
+            Text("│", style="dim"),
+            "",
+        )
+
+        c_renderable = content if not isinstance(content, str) else Text(content)
+        if content_dim and isinstance(c_renderable, Text):
+            c_renderable.stylize("dim")
+
+        return Group(table, Padding(c_renderable, (0, 0, 1, 4)))
+
+    if isinstance(content, Text):
+        content_renderable = content
+        if content_dim:
+            content_renderable.stylize("dim")
+    elif isinstance(content, str):
+        c_style = "dim" if content_dim else ""
+        content_renderable = Text(content, style=c_style)
+    else:
+        content_renderable = content
+
+    table.add_row(
+        Text(ts, style="dim"),
+        Text(f"{symbol} {label}", style=label_style),
+        Text(clean_slug, style=slug_color),
+        Text("│", style="dim"),
+        content_renderable,
+    )
+    return table
 
 
 _EVENT_LABELS: dict[str, str] = {
-    "dag_task_dispatched": ">>",
+    "dag_task_dispatched": "start",
     "task_done": "done",
     "task_failed": "FAILED",
-    "review_pass": "review ok",
-    "review_fail": "review FAIL",
+    "review_pass": "rev ok",
+    "review_fail": "rev FAIL",
     "merge_completed": "merged",
     "task_merge_failed": "merge FAIL",
     "shutdown_requested": "shutdown",
     "dag_completed": "dag done",
-    "dag_failed": "dag FAILED",
-    "settlement_retry": "RETRY",
+    "dag_failed": "dag FAIL",
+    "settlement_retry": "retry",
 }
 
 
 def _cmd_watch(project_root: str) -> None:
     """Stream events from the current run. Open in a second tab."""
-    click.echo("dgov watch (Ctrl-C to exit)")
+    from dgov.config import load_project_config
+
+    console.print("dgov watch", style="bold cyan")
+    console.print("  (Ctrl-C to exit)\n", style="dim")
+
+    config = load_project_config(project_root)
+    agents = config.agents if config else {}
 
     last_id = 0
     last_task = ""
@@ -130,14 +236,15 @@ def _cmd_watch(project_root: str) -> None:
             # Detect DB reset (new run started) — last_id would be ahead of max
             current_max = latest_event_id(project_root)
             if current_max < last_id:
-                click.echo("\n  --- new run ---\n")
+                console.print("\n  --- [bold]new run[/bold] ---\n", style="dim")
                 last_id = 0
                 last_task = ""
+                _TASK_COLORS.clear()
 
             events = read_events(project_root, after_id=last_id)
             for ev in events:
                 last_id = max(last_id, ev.get("id", 0))
-                line = _format_event(ev)
+                line = _format_event(ev, agents=agents)
                 if line is None:
                     continue
 
@@ -145,12 +252,12 @@ def _cmd_watch(project_root: str) -> None:
                 task = ev.get("task_slug") or ev.get("slug") or ""
                 event_type = ev.get("event", "")
                 if event_type == "dag_task_dispatched" and last_task:
-                    click.echo("")
+                    console.print("")
                 if task:
                     last_task = task
 
-                click.echo(line)
+                console.print(line)
 
             time.sleep(0.5)
     except KeyboardInterrupt:
-        click.echo("")
+        console.print("\n[dim]stopped watch[/dim]")

@@ -307,7 +307,46 @@ class AtomicTools:
         except subprocess.TimeoutExpired:
             return "Error: git diff timed out."
 
+    def revert_file(self, path: str) -> str:
+        """Undo all uncommitted changes to a file by checking it out from HEAD."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        rel = str(target.relative_to(self.worktree))
+        try:
+            subprocess.run(
+                ["git", "checkout", "HEAD", "--", rel],
+                cwd=self.worktree,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            return f"Successfully reverted {path} to HEAD."
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            return f"Error: Failed to revert {path}: {getattr(e, 'stderr', str(e))}"
+
     # -- Code intelligence tools --
+
+    def find_references(self, symbol: str, exclude_tests: bool = False) -> str:
+        """Find all occurrences of a symbol across the codebase (excluding binary/hidden files)."""
+        flags = "-w"  # word boundary
+        if exclude_tests:
+            # Escape ! for shell if needed, but ripgrep handles it in quotes
+            flags += f" -g '!{self.config.test_dir}*'"
+
+        # Try ripgrep first for speed and ignore-file respect
+        result = self.ripgrep(symbol, flags=flags)
+        if "command not found" in result:
+            return self.grep(rf"\b{re.escape(symbol)}\b")
+        if "EXIT:0" in result:
+            # Extract just the matches from STDOUT: ... EXIT:0 format
+            m = re.search(r"STDOUT:\n(.*?)\nSTDERR:", result, re.DOTALL)
+            if m:
+                return m.group(1).strip()
+        if "EXIT:1" in result:
+            return f"No matches found for '{symbol}'."
+        return result
 
     def file_symbols(self, path: str) -> str:
         """List functions, classes, and top-level assignments with line numbers."""
@@ -765,7 +804,44 @@ def get_tool_spec() -> list[dict]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "revert_file",
+                "description": (
+                    "Undo ALL uncommitted changes to a file. Use if you made a mistake "
+                    "and want to start over from the file's original state."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
         # Code intelligence tools
+        {
+            "type": "function",
+            "function": {
+                "name": "find_references",
+                "description": (
+                    "Search for all occurrences of a symbol across the entire codebase. "
+                    "Use this to find usages, calls, and dependencies of a function or class."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "exclude_tests": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "Skip test directory in results",
+                        },
+                    },
+                    "required": ["symbol"],
+                },
+            },
+        },
         {
             "type": "function",
             "function": {

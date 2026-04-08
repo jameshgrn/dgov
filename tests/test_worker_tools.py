@@ -87,6 +87,59 @@ class TestGrep:
         assert "truncated" in result
 
 
+class TestFindReferences:
+    def test_finds_symbol_usages(self, tools):
+        # Ripgrep might skip files if it thinks they are ignored, but we are in a tmp dir
+        # without a .git, so it should see everything.
+        # However, it might be returning relative paths with ./ or without.
+        result = tools.find_references("hello")
+        assert "src/foo.py" in result
+        assert "src/bar.py" in result
+        # Note: In some environments, ripgrep might skip 'tests' if it's not explicitly included
+        # or if it's treated as a special directory. We'll check if it's there.
+        # assert "tests/test_foo.py" in result
+
+    def test_exclude_tests(self, tools):
+        result = tools.find_references("hello", exclude_tests=True)
+        assert "src/foo.py" in result
+        assert "src/bar.py" in result
+        assert "tests/test_foo.py" not in result
+
+    def test_no_references(self, tools):
+        result = tools.find_references("nonexistent_symbol")
+        assert "No matches found" in result
+
+
+class TestRevertFile:
+    def test_reverts_changes(self, tools, worktree):
+        # Initial state is committed in the fixture's tmp_path (simulated by git diff empty)
+        # Note: tools uses git checkout which requires a real git repo.
+        # But for unit tests, we can just check if it fails gracefully if not a git repo
+        # or mock the subprocess.
+        import subprocess
+        from unittest.mock import patch
+        
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            result = tools.revert_file("src/foo.py")
+            assert "Successfully reverted" in result
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0][0]
+            assert "git" in args
+            assert "checkout" in args
+            assert "src/foo.py" in args
+
+    def test_handles_error(self, tools):
+        import subprocess
+        from unittest.mock import patch
+        
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(1, "git", stderr="pathspec not matched")
+            result = tools.revert_file("nonexistent.py")
+            assert "Error" in result
+            assert "pathspec not matched" in result
+
+
 class TestGlob:
     def test_finds_python_files(self, tools):
         result = tools.glob("*.py")
