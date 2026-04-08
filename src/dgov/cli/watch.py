@@ -16,7 +16,7 @@ from dgov.cli import cli
 from dgov.persistence import latest_event_id, read_events
 
 if TYPE_CHECKING:
-    from rich.renderable import RenderableType
+    from rich.console import RenderableType
 
 console = Console()
 
