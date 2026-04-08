@@ -63,9 +63,9 @@ VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
     TaskState.MERGING: frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.CLOSED}),
     TaskState.FAILED: frozenset({TaskState.PENDING, TaskState.CLOSED}),
     TaskState.MERGED: frozenset({TaskState.CLOSED}),
-    TaskState.TIMED_OUT: frozenset({TaskState.CLOSED}),
+    TaskState.TIMED_OUT: frozenset({TaskState.PENDING, TaskState.CLOSED}),
     TaskState.CLOSED: frozenset(),
-    TaskState.ABANDONED: frozenset({TaskState.CLOSED}),
+    TaskState.ABANDONED: frozenset({TaskState.PENDING, TaskState.CLOSED}),
     TaskState.SKIPPED: frozenset({TaskState.CLOSED}),
 }
 
@@ -170,6 +170,8 @@ VALID_EVENTS = frozenset(
         "task_done",
         "task_failed",
         "task_closed",
+        "task_abandoned",
+        "task_timed_out",
         "shutdown_requested",
         # DAG lifecycle
         "dag_task_dispatched",

@@ -38,7 +38,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL = frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.SKIPPED})
+_TERMINAL = frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.SKIPPED, TaskState.ABANDONED, TaskState.TIMED_OUT})
 
 
 class DagState(StrEnum):
@@ -125,12 +125,20 @@ class DagKernel:
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != TaskState.ACTIVE:
             return []
+        
         if event.task_state == TaskState.DONE:
             self.task_states[event.task_slug] = TaskState.REVIEWING
             return [ReviewTask(event.task_slug, event.pane_slug)]
-        # Fail-closed: any non-DONE state triggers governor interrupt
-        pane = self.pane_slugs.get(event.task_slug, "")
-        return [InterruptGovernor(event.task_slug, pane, reason=str(event.task_state))]
+        
+        # Terminal states from rehydration or cleanup
+        if event.task_state in (TaskState.ABANDONED, TaskState.TIMED_OUT):
+            self.task_states[event.task_slug] = event.task_state
+            self._cascade_failure(event.task_slug)
+            return [CleanupTask(event.task_slug), *self._try_merge(), *self._schedule()]
+            
+        # Fail-closed: any other non-DONE state triggers governor interrupt (retry logic)
+        # This includes TaskState.FAILED which the runner handles via retry count.
+        return [InterruptGovernor(event.task_slug, event.pane_slug, reason=str(event.task_state))]
 
     def _on_review_done(self, event: TaskReviewDone) -> list[DagAction]:
         if self.task_states.get(event.task_slug) != TaskState.REVIEWING:
@@ -159,9 +167,9 @@ class DagKernel:
     def _on_governor_resumed(self, event: TaskGovernorResumed) -> list[DagAction]:
         slug = event.task_slug
         current = self.task_states.get(slug)
-        # Guard: accept from PENDING (dispatch failure), WAITING (interrupt), or FAILED (manual).
+        # Guard: accept from PENDING (dispatch failure), WAITING (interrupt), or terminal states (manual).
         # Prevents accidentally un-merging or un-reviewing a task.
-        if current not in (TaskState.PENDING, TaskState.ACTIVE, TaskState.FAILED):
+        if current not in (TaskState.PENDING, TaskState.ACTIVE, TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT):
             return []
         if event.action == GovernorAction.RETRY:
             self.task_states[slug] = TaskState.PENDING

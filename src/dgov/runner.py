@@ -97,11 +97,11 @@ class EventDagRunner:
                 self._resume_failed()
 
     def _resume_failed(self) -> None:
-        """Move all FAILED tasks back to PENDING so they can be retried."""
+        """Move all FAILED/ABANDONED/TIMED_OUT tasks back to PENDING so they can be retried."""
         logger.info("Resuming failed tasks")
         for slug, state in list(self.kernel.task_states.items()):
-            if state == TaskState.FAILED:
-                logger.info("Resuming task: %s", slug)
+            if state in (TaskState.FAILED, TaskState.ABANDONED, TaskState.TIMED_OUT):
+                logger.info("Resuming task: %s (prior state: %s)", slug, state)
                 self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
                 emit_event(
                     self.session_root,
@@ -129,9 +129,15 @@ class EventDagRunner:
                 self.kernel.handle(TaskDispatched(task_slug, pane))
             elif ename == "task_done":
                 self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
+            elif ename == "task_abandoned":
+                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
             elif ename == "task_failed":
-                # Handle both terminal failures and intermediate timeouts
-                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.FAILED))
+                # Check error string for specific terminal states like TIMED_OUT
+                error = ev.get("error", "").lower()
+                status = TaskState.FAILED
+                if "timeout" in error:
+                    status = TaskState.TIMED_OUT
+                self.kernel.handle(TaskWaitDone(task_slug, pane, status))
             elif ename == "review_pass":
                 self.kernel.handle(
                     TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)

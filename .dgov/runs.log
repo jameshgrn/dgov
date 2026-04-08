@@ -172,3 +172,11 @@
   durations: tasks/dogfood.add-contributing-v2: 19.65s
   sentrux: 2304 -> 2316
 
+[2026-04-08 00:41:53Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-305/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2316
+
+[2026-04-08 00:42:44Z] filter-test (/private/var/folders/dx/76plk8g915nf9t5jhg12p4kw0000gn/T/pytest-of-jakegearon/pytest-306/test_run_only_filters_plan0/plan.toml) — fail (0.0s)
+  failed: a
+  sentrux: 2316 -> 2304
+

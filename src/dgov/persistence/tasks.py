@@ -142,14 +142,34 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
 
 
 def cleanup_zombies(session_root: str) -> int:
-    """Transition all ACTIVE tasks to ABANDONED. Returns count of modified tasks."""
+    """Transition all ACTIVE tasks to ABANDONED and emit events. Returns count."""
+    from dgov.persistence.events import emit_event
 
     def _do() -> int:
         conn = _get_db(session_root)
+        conn.row_factory = sqlite3.Row
+        # Get slugs before updating so we can emit events
+        rows = conn.execute(
+            "SELECT slug, plan_name FROM tasks WHERE state = ?",
+            (TaskState.ACTIVE.value,),
+        ).fetchall()
+        if not rows:
+            return 0
+
         cur = conn.execute(
             "UPDATE tasks SET state = ? WHERE state = ?",
             (TaskState.ABANDONED.value, TaskState.ACTIVE.value),
         )
+
+        for row in rows:
+            emit_event(
+                session_root,
+                "task_abandoned",
+                "cleanup",
+                plan_name=row["plan_name"],
+                task_slug=row["slug"],
+            )
+
         conn.commit()
         return cur.rowcount
 

@@ -89,14 +89,12 @@ def test_continue_retries_failed_tasks(git_repo, monkeypatch):
     monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
     runner1 = EventDagRunner(dag, session_root=session_root)
     results1 = asyncio.run(runner1.run())
-    print(f"Results 1: {results1}")
     assert results1["t1"] == "failed"
 
     # 2. Run without continue -> should still be failed, no worker activity
     print("\n--- Phase 2: Run without continue ---")
     runner2 = EventDagRunner(dag, session_root=session_root)
     results2 = asyncio.run(runner2.run())
-    print(f"Results 2: {results2}")
     assert results2["t1"] == "failed"
 
     # 3. Run with continue -> should retry and succeed if worker is now ok
@@ -105,7 +103,50 @@ def test_continue_retries_failed_tasks(git_repo, monkeypatch):
     monkeypatch.setattr("dgov.runner.validate_sandbox", lambda *a, **k: GateResult(passed=True))
 
     runner3 = EventDagRunner(dag, session_root=session_root, continue_failed=True)
-    print(f"Kernel states after rehydrate+resume: {runner3.kernel.task_states}")
     results3 = asyncio.run(runner3.run())
-    print(f"Results 3: {results3}")
     assert results3["t1"] == "merged"
+
+
+def test_continue_retries_abandoned_tasks(git_repo, monkeypatch):
+    """Proves that --continue (continue_failed=True) picks up ABANDONED tasks."""
+    from dgov.persistence import emit_event
+    from dgov.types import TaskState
+
+    async def _noop(self):
+        pass
+
+    monkeypatch.setattr("dgov.runner.EventDagRunner._preflight_check_models", _noop)
+
+    dag = _dag({"t1": _task("t1")}, name="test-abandoned")
+    session_root = str(git_repo)
+
+    # 1. Manually mark as DISPATCHED then ABANDONED in event log
+    emit_event(
+        session_root,
+        "dag_task_dispatched",
+        "t1-pane",
+        plan_name=dag.name,
+        task_slug="t1",
+    )
+    emit_event(
+        session_root,
+        "task_abandoned",
+        "t1-pane",
+        plan_name=dag.name,
+        task_slug="t1",
+    )
+
+    # 2. Run without continue -> should rehydrate to ABANDONED and finish immediately
+    runner1 = EventDagRunner(dag, session_root=session_root)
+    assert runner1.kernel.task_states["t1"] == TaskState.ABANDONED
+    results1 = asyncio.run(runner1.run())
+    assert results1["t1"] == "abandoned"
+
+    # 3. Run with continue -> should retry and succeed
+    monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+    monkeypatch.setattr("dgov.runner.validate_sandbox", lambda *a, **k: GateResult(passed=True))
+
+    runner2 = EventDagRunner(dag, session_root=session_root, continue_failed=True)
+    assert runner2.kernel.task_states["t1"] == TaskState.PENDING
+    results2 = asyncio.run(runner2.run())
+    assert results2["t1"] == "merged"

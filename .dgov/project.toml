@@ -14,6 +14,9 @@ review_hooks = [
     "! grep -rE '(sk-[a-zA-Z0-9]{24,}|AI_[A-Z0-9_]{24,})' {files}"
 ]
 
+[agents]
+kimi = "accounts/fireworks/routers/kimi-k2p5-turbo" # Default dgov router
+
 # Settlement timeout in seconds (commands exceeding this are killed)
 settlement_timeout = 120
 
