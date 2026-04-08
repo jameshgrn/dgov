@@ -142,11 +142,10 @@ class AtomicTools:
             elif line.startswith("+"):
                 # Add line
                 result.append(line[1:])
-            elif line.startswith(" "):
+            elif line.startswith(" ") and orig_idx < len(original):
                 # Context line — copy and advance
-                if orig_idx < len(original):
-                    result.append(original[orig_idx])
-                    orig_idx += 1
+                result.append(original[orig_idx])
+                orig_idx += 1
 
         # Copy remaining original lines after last hunk
         result.extend(original[orig_idx:])
@@ -396,8 +395,7 @@ class AtomicTools:
                         isinstance(node, ast.ImportFrom)
                         and node.module
                         and (
-                            node.module == module_name
-                            or node.module.startswith(module_name + ".")
+                            node.module == module_name or node.module.startswith(module_name + ".")
                         )
                     ):
                         imported_by.append(py_rel)
