@@ -1,61 +1,63 @@
-# Handover: dgov Alpha Debut Stabilization (Phase 1)
+# Handover: Stress-Test & Bug-Fix Session
 
-**Date:** 2026-04-08T02:15:00Z
-**Branch:** `main` @ `869dfab`
-**Context:** Preparing dgov for alpha debut. Resolved worker 404 loops by implementing project-level agent resolution and overhauled documentation. Version bumped to `0.1.0a1`.
+**Date:** 2026-04-07
+**Branch:** `main` @ `e9b94ca0`
+**Context:** Systematic stress-test of dgov before public release. Code audit + live dogfood run surfaced 6 bugs, all fixed and pushed.
 
 ---
 
-## Completed
+## Current State
 
-| Task | Status | Location | Notes |
-|------|--------|----------|-------|
-| Version Bump | Done | `pyproject.toml`, `src/dgov/__init__.py` | To `0.1.0a1` |
-| README Update | Done | `README.md` | Fixed CLI examples |
-| Docs Overhaul | Done | `CLAUDE.md`, `GEMINI.md` | Modern toolchain & Governor role defined |
-| Agent Resolution | Done | `src/dgov/config.py`, `src/dgov/runner.py` | Runners now re-resolve agent short-names via `project.toml` mapping |
-| Status Visibility | Done | `src/dgov/cli/__init__.py` | Removed 10-task limit in `dgov status` |
-| Auditor Prompt | Done | `src/dgov/worker.py` | Added Settlement Layer awareness and scope guardrails |
+- `main` is clean and pushed. 60 tests pass (settlement + integration + runner).
+- Stress-test plan ran end-to-end: 3 parallel tasks + 1 downstream, all 4 merged, sentrux clean.
+- HANDOVER.md, runs.log, deployed.jsonl, and sentrux baseline updated.
 
-## In Progress
+---
 
-| Task | Status | Location | Notes |
-|------|--------|----------|-------|
-| Alpha Debut Plan | Partial | `.dgov/plans/alpha-debut/` | Quality fixes and hooks abandoned due to kernel crash |
-| Kernel Stability | Blocked | `src/dgov/runner.py` | Occasional silent crashes/database locks during `--continue` |
+## Bugs Fixed This Session
 
-## Blockers
+| Bug | File(s) | Notes |
+|-----|---------|-------|
+| Silent "complete" on crash+re-run | `cli/run.py` | ABANDONED/skipped now surface; warns about `--continue` |
+| `kernel.status = COMPLETED` for all-ABANDONED DAG | `kernel.py` | ABANDONED+TIMED_OUT included in `has_failed` check |
+| DB retry could hang ~200s under high concurrency | `persistence/connection.py` | 20 linear retries → 5 constant 0.25s retries |
+| `scope_violation` on tasks creating files in new dirs | `settlement.py` | `git status --untracked-files=all` lists files not dir markers |
+| Review gate errors silent in CLI output | `runner.py` | `review_fail` verdict stored in `_task_errors` |
+| Settlement errors silent in CLI output | `runner.py` | `_merge()` error stored in `_task_errors` |
+| Missing DB sync test coverage | `test_integration.py` | 5 new tests: fail/merge DB state, orphan×2, downstream skip |
 
-- **Runner Deadlocks**: Occasional synchronous contention in `_executor` during settlement validation.
-- **Database Connection Contention**: `dgov watch` polling might conflict with runner writes in high-volume runs.
-
-## Next Steps (Priority Order)
-
-1. **Investigate Runner Contention**: Profile `runner.py` to see why it hangs/crashes during large plan execution.
-2. **Re-run Alpha Debut Plan**: Pick up the abandoned `quality/fix.fix-warnings` and `quality/hooks.expand-hooks` tasks.
-3. **Dogfooding**: Perform a full end-to-end "dogfood" run of a complex plan.
-4. **watch.log / run.log Cleanup**: These are untracked and should be reviewed/archived.
-
-## Files Modified (Uncommitted)
-
-```
- M .dgov/plans/deployed.jsonl
- M .dgov/project.toml
- M .dgov/runs.log
- M .sentrux/baseline.json
- M CLAUDE.md
- M GEMINI.md
- M src/dgov/cli/__init__.py
- M src/dgov/config.py
- M src/dgov/kernel.py
- M src/dgov/runner.py
- M src/dgov/settlement.py
- M src/dgov/worker.py
- M uv.lock
-```
+---
 
 ## Key Decisions
 
-- **Governor Role**: Formally adopted the principle that the Governor never edits `src/` directly (orchestration only).
-- **Project Agents**: Mapping `kimi -> full Fireworks router path` now lives in `.dgov/project.toml` instead of plans.
-- **Settlement Rejection**: Any file touch outside `files.edit` claim is an automatic rejection.
+- **Orphan behavior on bare re-run is intentional**: ACTIVE tasks become ABANDONED, cascade to SKIPPED. CLI now warns with `--continue` hint. The silent "complete" was the bug.
+- **Scratch files in git-tracked dirs trigger sentrux**: Even simple data files increase complexity metrics. Use `.txt` or constant-only `.py` for scratch content, or put scratch outside tracked tree.
+- **`DagDone` is NOT dead code**: `handle()` wrapper appends `_summary()` when `done=True`. Initial analysis was wrong.
+
+---
+
+## Open Issues (Carried Forward)
+
+- **Runner contention under 6+ parallel tasks**: `_run_dispatch_action` / `ThreadPoolExecutor` interaction under large concurrent plans still undiagnosed.
+- **No resume/checkpoint**: crash at task 7/10 = restart with `--continue`. Lost work is re-run.
+- **No token/cost tracking**: no visibility into API spend per run.
+- **Sentrux gate too strict on complexity**: any `Complex functions increased` triggers rejection. Workers can't add new helper functions without hitting the gate. Should warn, not hard-fail.
+
+---
+
+## Next Steps
+
+1. **Sentrux complexity gate**: treat complexity increases as warnings unless quality score drops.
+2. **Token/cost tracking**: add token counts to `_append_run_log` and exit summary.
+3. **Investigate runner contention**: profile under 8+ concurrent tasks.
+
+---
+
+## Important Files
+
+- `/Users/jakegearon/projects/dgov/src/dgov/settlement.py` — `_get_all_changes` now uses `--untracked-files=all`
+- `/Users/jakegearon/projects/dgov/src/dgov/runner.py` — review + settlement errors in `_task_errors`
+- `/Users/jakegearon/projects/dgov/src/dgov/kernel.py` — `status` property with ABANDONED in `has_failed`
+- `/Users/jakegearon/projects/dgov/src/dgov/persistence/connection.py` — `_LOCK_RETRIES=5`, constant backoff
+- `/Users/jakegearon/projects/dgov/src/dgov/cli/run.py` — abandoned/skipped surfaced in output
+- `/Users/jakegearon/projects/dgov/tests/test_integration.py` — `TestDbStateSync`, `TestOrphanAbandon`
