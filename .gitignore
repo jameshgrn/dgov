@@ -10,6 +10,8 @@ __pycache__/
 *.db-shm
 *.db-wal
 config.toml
+run.log
+watch.log
 HANDOVER.md
 .napkin.md
 docs/node_modules/
