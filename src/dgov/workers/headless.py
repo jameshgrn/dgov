@@ -47,19 +47,17 @@ async def run_headless_worker(
 
     # Serialize project config to JSON for the subprocess
     pc = load_project_config(project_root)
-    config_json = json.dumps(
-        {
-            "language": pc.language,
-            "src_dir": pc.src_dir,
-            "test_dir": pc.test_dir,
-            "test_cmd": pc.test_cmd,
-            "lint_cmd": pc.lint_cmd,
-            "format_cmd": pc.format_cmd,
-            "lint_fix_cmd": pc.lint_fix_cmd,
-            "test_markers": list(pc.test_markers),
-            "conventions": dict(pc.conventions) if pc.conventions else None,
-        }
-    )
+    config_json = json.dumps({
+        "language": pc.language,
+        "src_dir": pc.src_dir,
+        "test_dir": pc.test_dir,
+        "test_cmd": pc.test_cmd,
+        "lint_cmd": pc.lint_cmd,
+        "format_cmd": pc.format_cmd,
+        "lint_fix_cmd": pc.lint_fix_cmd,
+        "test_markers": list(pc.test_markers),
+        "conventions": dict(pc.conventions) if pc.conventions else None,
+    })
 
     cmd = [
         _find_uv(),
@@ -84,6 +82,8 @@ async def run_headless_worker(
             stderr=asyncio.subprocess.STDOUT,
             cwd=project_root,
         )
+
+        assert process.stdout is not None
 
         while True:
             line_bytes = await process.stdout.readline()

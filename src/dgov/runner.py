@@ -12,9 +12,10 @@ import asyncio
 import logging
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 from dgov.actions import (
     CleanupTask,
@@ -31,7 +32,7 @@ from dgov.actions import (
     TaskReviewDone,
     TaskWaitDone,
 )
-from dgov.dag_parser import DagDefinition
+from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.kernel import DagKernel
 from dgov.persistence import add_task, emit_event, get_task, update_task_state
 from dgov.persistence.schema import TaskState, WorkerTask
@@ -267,12 +268,12 @@ class EventDagRunner:
         return {slug: state.value for slug, state in self.kernel.task_states.items()}
 
     async def _gather_dispatch_results(
-        self, dispatch_coros: list[tuple[str, object]]
+        self, dispatch_coros: list[tuple[str, Coroutine[Any, Any, list[DagAction]]]]
     ) -> list[DagAction]:
         """Await dispatch/merge coros, convert exceptions to FAIL actions."""
         next_actions: list[DagAction] = []
-        coros = [c for _, c in dispatch_coros]
-        results = await asyncio.gather(*coros, return_exceptions=True)
+        coros: list[Coroutine[Any, Any, list[DagAction]]] = [c for _, c in dispatch_coros]
+        results = await asyncio.gather(*coros, return_exceptions=True)  # type: ignore[call-overload]
         for (task_slug, _), result in zip(dispatch_coros, results, strict=False):
             if isinstance(result, BaseException):
                 logger.error("Dispatch/merge failed for %s: %s", task_slug, result)
@@ -287,7 +288,7 @@ class EventDagRunner:
         self, actions: list[DagAction]
     ) -> tuple[list[DagAction], dict[str, str] | None]:
         """Fan out kernel actions. Returns (next_actions, final_result_if_done)."""
-        dispatch_coros: list[tuple[str, object]] = []
+        dispatch_coros: list[tuple[str, Coroutine[Any, Any, list[DagAction]]]] = []
         next_actions: list[DagAction] = []
 
         for action in actions:
@@ -482,7 +483,7 @@ class EventDagRunner:
         task_slug: str,
         pane_slug: str,
         worktree_path: Path,
-        task: object,
+        task: DagTaskSpec,
         on_exit: Callable[[str, str, int, str], None],
         timeout_s: int,
     ) -> None:
