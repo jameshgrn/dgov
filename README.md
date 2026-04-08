@@ -44,14 +44,12 @@ Plans are TOML files that compile to DAGs:
 [plan]
 name = "example"
 
-[[unit]]
-slug = "add-feature"
+[tasks.add-feature]
 prompt = "Add the feature to src/foo.py"
 agent = "kimi-k2.5"
 files = ["src/foo.py"]
 
-[[unit]]
-slug = "add-tests"
+[tasks.add-tests]
 prompt = "Write tests for the feature"
 agent = "kimi-k2.5"
 files = ["tests/test_foo.py"]
