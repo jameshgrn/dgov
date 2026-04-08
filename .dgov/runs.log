@@ -271,3 +271,28 @@
   durations: cli/fix-plan-types.fix-plan-types: 22.4s, core/fix-kernel-taskstate.fix-kernel-taskstate: 54.38s, cli/fix-compile-init-types.fix-compile-init-types: 62.37s, core/fix-runner-headless-types.fix-runner-headless-types: 150.76s
   sentrux: 2304 -> 2304
 
+[2026-04-08 17:45:09Z] v0.1-fixes (.dgov/plans/v0.1-fixes/_compiled.toml) — ok (111.55s)
+  merged: fixes/all.add-ci, fixes/all.fix-gitignore-cleanup, fixes/all.fix-readme, fixes/all.fix-subprocess-os, fixes/all.fix-ty-kernel-runner, fixes/all.fix-ty-serializer-bundler, fixes/all.fix-ty-simple
+  durations: fixes/all.fix-gitignore-cleanup: 10.72s, fixes/all.fix-readme: 17.14s, fixes/all.fix-ty-serializer-bundler: 22.96s, fixes/all.fix-subprocess-os: 30.89s, fixes/all.add-ci: 35.05s, fixes/all.fix-ty-simple: 66.27s, fixes/all.fix-ty-kernel-runner: 66.36s
+  sentrux: 2304 -> 2304
+
+[2026-04-08 18:01:04Z] unify-toolchain-config (.dgov/plans/unify-toolchain-config/_compiled.toml) — fail (182.27s)
+  merged: impl/all.project-toml-type-check
+  failed: impl/all.config-type-check-cmd
+    error[impl/all.config-type-check-cmd]: Test failure:
+t__() got an unexpected keyword argument 'type_check_cmd'
+=========================== short test summary info ============================
+FAILED tests/test_config.py::TestTypeCheckCmd::
+  durations: impl/all.project-toml-type-check: 12.25s, impl/all.config-type-check-cmd: 55.3s
+  sentrux: 2317 -> 2304
+
+[2026-04-08 18:05:58Z] unify-toolchain-config (/Users/jakegearon/projects/dgov/.dgov/plans/unify-toolchain-config/_compiled.toml) — ok (82.16s)
+  merged: impl/all.config-type-check-cmd, impl/all.project-toml-type-check
+  durations: impl/all.config-type-check-cmd: 33.75s
+  sentrux: 2317 -> 2316
+
+[2026-04-08 18:09:54Z] toolchain-wire (/Users/jakegearon/projects/dgov/.dgov/plans/toolchain-wire/_compiled.toml) — ok (161.32s)
+  merged: impl/all.settlement-type-check-gate, impl/all.worker-type-check-tool
+  durations: impl/all.worker-type-check-tool: 53.53s, impl/all.settlement-type-check-gate: 61.98s
+  sentrux: 2316 -> 2304
+

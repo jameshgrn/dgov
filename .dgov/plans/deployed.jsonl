@@ -28,3 +28,14 @@
 {"plan":"fix-ty-errors","unit":"cli/fix-compile-init-types.fix-compile-init-types","sha":"5ac8eb5a3fd90e63a78b937014d45311c2e4655a","ts":"2026-04-08T16:08:11Z"}
 {"plan":"fix-ty-errors","unit":"cli/fix-plan-types.fix-plan-types","sha":"82edf162852051b58ff0242629fd193f1fd4ca66","ts":"2026-04-08T16:08:55Z"}
 {"plan":"fix-ty-errors","unit":"core/fix-runner-headless-types.fix-runner-headless-types","sha":"4be65dfa1ac5b665369e048762c92ba5b773569b","ts":"2026-04-08T16:09:39Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.add-ci","sha":"4f87873f20e9605d63004e17504e2ecde05b294e","ts":"2026-04-08T17:43:53Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.fix-gitignore-cleanup","sha":"076a0981f1d03cb8a59dbc2f28597cc823c37d87","ts":"2026-04-08T17:43:57Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.fix-readme","sha":"4d829547b1cd0d375510b2d0512220193d662e5a","ts":"2026-04-08T17:43:59Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.fix-subprocess-os","sha":"d0340542b26d55199949672bd21f23a09efada1e","ts":"2026-04-08T17:44:22Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.fix-ty-kernel-runner","sha":"f04f83e3e3af55ffa16400ec70e57eedea41daf3","ts":"2026-04-08T17:44:37Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.fix-ty-serializer-bundler","sha":"fbf7bd61f4a4bd36890c09defa72da4bca48201a","ts":"2026-04-08T17:44:49Z"}
+{"plan":"v0.1-fixes","unit":"fixes/all.fix-ty-simple","sha":"d77bdf0910356517c7e11b7ed2e7c1b2ee388153","ts":"2026-04-08T17:44:59Z"}
+{"plan":"unify-toolchain-config","unit":"impl/all.project-toml-type-check","sha":"abbcfc3ab4ec71b4aae9393b3cb53236eb643f2c","ts":"2026-04-08T18:00:54Z"}
+{"plan":"unify-toolchain-config","unit":"impl/all.config-type-check-cmd","sha":"0c9d30498ee42925b672095673a5cf4f9ba3e1f2","ts":"2026-04-08T18:05:49Z"}
+{"plan":"toolchain-wire","unit":"impl/all.settlement-type-check-gate","sha":"45dcb2112068ca9048ff54ee75e7cebd23c50e3f","ts":"2026-04-08T18:08:58Z"}
+{"plan":"toolchain-wire","unit":"impl/all.worker-type-check-tool","sha":"5153384196f5c90962b69a1b150ceb1e8db4804c","ts":"2026-04-08T18:09:45Z"}

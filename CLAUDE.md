@@ -43,7 +43,7 @@
 ### Plan Authoring Guide
 
 - Every task MUST declare file claims. Prefer flat format: `files = ["src/foo.py", "tests/test_foo.py"]`. Use structured format (`files.edit`, `files.create`, `files.delete`) only when explicit deletes are needed. Workers are sandboxed to claimed files -- touching unclaimed files = immediate rejection.
-- Keep tasks atomic: one logical change, <=3 files per task.
+- Keep tasks atomic: one logical change per task.
 - `prompt` structure: (1) orient -- what to read first, (2) edit -- exact change and location, (3) verify -- test command to run.
 - `depends_on` uses full unit IDs: `<section>/<file-stem>.<task-key>`.
 - `commit_message` imperative mood, <=72 chars.
