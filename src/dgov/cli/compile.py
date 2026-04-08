@@ -112,6 +112,13 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
     out_path = plan_root / "_compiled.toml"
     out_path.write_text(toml_str)
 
+    # 7a. Validate compiled plan — surface unclaimed test file warnings
+    from dgov.plan import parse_plan_file, validate_plan
+
+    compiled_spec = parse_plan_file(str(out_path))
+    plan_issues = validate_plan(compiled_spec)
+    plan_warnings = [i for i in plan_issues if i.severity == "warning"]
+
     # 7. Summary
     edge_count = sum(len(u.depends_on) for u in resolved.units.values())
     sop_count = sum(1 for m in result.sop_mapping.values() if m)
@@ -127,6 +134,7 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
                     "sops_assigned": sop_count,
                     "sop_set_hash": result.sop_set_hash,
                     "dry_run": dry_run,
+                    "warnings": [{"unit": w.unit, "message": w.message} for w in plan_warnings],
                 },
                 indent=2,
             )
@@ -137,6 +145,9 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
             click.echo(f"  SOPs assigned to {sop_count} unit(s)")
         if dry_run:
             click.echo("  (dry-run: identity bundler, no LLM call)")
+        for w in plan_warnings:
+            unit_info = f" [{w.unit}]" if w.unit else ""
+            click.echo(f"  WARNING{unit_info}: {w.message}", err=True)
 
     if graph and not want_json():
         _print_dag_graph(resolved)

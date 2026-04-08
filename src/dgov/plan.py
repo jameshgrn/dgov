@@ -6,9 +6,13 @@ Pillar #4: Determinism - Validates all inputs and dependencies before dispatch.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
+
+# Matches test-file paths embedded in prompt text, e.g. "tests/test_foo.py"
+_TEST_PATH_RE = re.compile(r"\b(tests?/[\w/.+-]+\.py)\b")
 
 
 def _normalize_touch_path(path: str) -> str:
@@ -207,6 +211,7 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
 
     Checks:
     1. File-claim conflicts between independent tasks
+    2. Test file references in prompts that are not in the file claim
     """
     issues: list[PlanIssue] = []
 
@@ -235,5 +240,31 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
                                 ),
                             )
                         )
+
+    # Unclaimed test file reference check
+    # Workers that touch unclaimed files get scope_violation (terminal, no retry).
+    for slug, unit in plan.units.items():
+        claimed = {
+            _normalize_touch_path(p)
+            for p in (*unit.files.create, *unit.files.edit, *unit.files.touch)
+            if p.strip()
+        }
+        seen: set[str] = set()
+        for m in _TEST_PATH_RE.finditer(unit.prompt):
+            test_path = _normalize_touch_path(m.group(1))
+            if test_path in seen or test_path in claimed:
+                continue
+            seen.add(test_path)
+            issues.append(
+                PlanIssue(
+                    severity="warning",
+                    message=(
+                        f"Prompt references '{m.group(1)}' but it is not in the file claim. "
+                        "Workers that touch unclaimed files get scope_violation (terminal, no retry). "
+                        "Add to files.edit if the task may modify tests."
+                    ),
+                    unit=slug,
+                )
+            )
 
     return issues

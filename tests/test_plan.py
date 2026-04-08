@@ -655,6 +655,106 @@ class TestValidatePlan:
 
 
 # =============================================================================
+# validate_plan — unclaimed test file reference tests
+# =============================================================================
+
+
+class TestValidatePlanUnclaimedTestRefs:
+    def _unit(self, prompt: str, **file_kwargs) -> PlanUnit:
+        return PlanUnit(
+            slug="task",
+            summary="Task",
+            prompt=prompt,
+            commit_message="Done",
+            files=PlanUnitFiles(**file_kwargs),
+        )
+
+    def _plan(self, prompt: str, **file_kwargs) -> PlanSpec:
+        return PlanSpec(
+            name="test-plan",
+            goal="Goal",
+            units={"task": self._unit(prompt, **file_kwargs)},
+        )
+
+    def test_no_warning_when_no_test_refs(self):
+        plan = self._plan("Edit src/foo.py to add the feature.")
+        assert validate_plan(plan) == []
+
+    def test_warns_on_unclaimed_test_ref_in_prompt(self):
+        plan = self._plan("Edit src/foo.py. Run tests/test_foo.py to verify.")
+        issues = validate_plan(plan)
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert len(warnings) == 1
+        assert "tests/test_foo.py" in warnings[0].message
+        assert warnings[0].unit == "task"
+
+    def test_no_warning_when_test_ref_claimed_via_touch(self):
+        plan = self._plan(
+            "Edit src/foo.py. Update tests/test_foo.py.",
+            touch=("tests/test_foo.py",),
+        )
+        assert validate_plan(plan) == []
+
+    def test_no_warning_when_test_ref_claimed_via_edit(self):
+        plan = self._plan(
+            "Edit src/foo.py. Update tests/test_foo.py.",
+            edit=("tests/test_foo.py",),
+        )
+        assert validate_plan(plan) == []
+
+    def test_no_warning_when_test_ref_claimed_via_create(self):
+        plan = self._plan(
+            "Create tests/test_new.py with new tests.",
+            create=("tests/test_new.py",),
+        )
+        assert validate_plan(plan) == []
+
+    def test_warns_only_once_for_duplicate_ref(self):
+        plan = self._plan("Run tests/test_foo.py. Then check tests/test_foo.py again.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert len(warnings) == 1
+
+    def test_warns_for_each_distinct_unclaimed_test(self):
+        plan = self._plan("Check tests/test_foo.py and tests/test_bar.py.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert len(warnings) == 2
+
+    def test_warning_includes_scope_violation_guidance(self):
+        plan = self._plan("Run tests/test_foo.py to verify.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert "scope_violation" in warnings[0].message
+
+    def test_warning_includes_unit_slug(self):
+        plan = PlanSpec(
+            name="slug-plan",
+            goal="Goal",
+            units={
+                "my-slug": PlanUnit(
+                    slug="my-slug",
+                    summary="Task",
+                    prompt="Update tests/test_foo.py",
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                )
+            },
+        )
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert warnings[0].unit == "my-slug"
+
+    def test_no_warning_for_src_py_refs(self):
+        """Only test/ paths trigger the warning, not arbitrary .py refs."""
+        plan = self._plan("Edit src/foo.py and src/bar.py.")
+        assert validate_plan(plan) == []
+
+    def test_detects_test_prefix_variants(self):
+        """Both 'test/' and 'tests/' paths are matched."""
+        plan = self._plan("See test/test_foo.py for examples.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert len(warnings) == 1
+        assert "test/test_foo.py" in warnings[0].message
+
+
+# =============================================================================
 # Integration tests
 # =============================================================================
 
