@@ -337,6 +337,70 @@ files.delete = ["gone.py"]
         assert plan.units == {}
 
 
+class TestMergerFlatFiles:
+    def test_flat_files_list_parsed_as_touch(self, tmp_path: Path) -> None:
+        content = """\
+[tasks.flat]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+files = ["src/foo.py", "tests/test_foo.py"]
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        unit = plan.units["alpha/one.flat"]
+        assert unit.files.touch == ("src/foo.py", "tests/test_foo.py")
+        assert unit.files.create == ()
+        assert unit.files.edit == ()
+
+    def test_structured_files_still_works(self, tmp_path: Path) -> None:
+        content = """\
+[tasks.struct]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+files.edit = ["src/foo.py"]
+files.create = ["src/bar.py"]
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        unit = plan.units["alpha/one.struct"]
+        assert unit.files.edit == ("src/foo.py",)
+        assert unit.files.create == ("src/bar.py",)
+        assert unit.files.touch == ()
+
+    def test_flat_and_structured_coexist_across_tasks(self, tmp_path: Path) -> None:
+        content = """\
+[tasks.flat-one]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+files = ["a.py"]
+
+[tasks.struct-one]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+files.edit = ["b.py"]
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        plan = merge_tree(walk_tree(tmp_path))
+        assert plan.units["alpha/one.flat-one"].files.touch == ("a.py",)
+        assert plan.units["alpha/one.struct-one"].files.edit == ("b.py",)
+
+    def test_files_as_bad_type_rejected(self, tmp_path: Path) -> None:
+        content = """\
+[tasks.bad]
+summary = "s"
+prompt = "p"
+commit_message = "c"
+files = "not-a-list"
+"""
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": content})
+        with pytest.raises(ValueError, match="files must be a list or table"):
+            merge_tree(walk_tree(tmp_path))
+
+
 class TestMergerSlugGrammar:
     @pytest.mark.parametrize("slug", ["foo.bar", "foo/bar", "foo bar", "foo!", "foo$", ""])
     def test_invalid_slug_rejected(self, tmp_path: Path, slug: str) -> None:

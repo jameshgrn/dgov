@@ -73,7 +73,9 @@ class EventDagRunner:
         self.deps = {slug: tuple(t.depends_on) for slug, t in dag.tasks.items()}
         # Build file claims from plan for scope enforcement in review gate
         self.task_files = {
-            slug: tuple(dict.fromkeys(t.files.create + t.files.edit + t.files.delete))
+            slug: tuple(
+                dict.fromkeys(t.files.create + t.files.edit + t.files.delete + t.files.touch)
+            )
             for slug, t in dag.tasks.items()
         }
         self.kernel = DagKernel(deps=self.deps, task_files=self.task_files)
@@ -548,7 +550,9 @@ class EventDagRunner:
 
             # Create task record with file claims for scope enforcement
             file_claims = tuple(
-                dict.fromkeys(task.files.create + task.files.edit + task.files.delete)
+                dict.fromkeys(
+                    task.files.create + task.files.edit + task.files.delete + task.files.touch
+                )
             )
             task_record = WorkerTask(
                 slug=action.task_slug,

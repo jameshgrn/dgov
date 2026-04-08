@@ -356,6 +356,28 @@ class TestCompilePlan:
         assert task.files.edit == ("existing.py",)
         assert task.files.delete == ("old.py",)
 
+    def test_preserves_touch_through_compile(self):
+        plan = PlanSpec(
+            name="touch-plan",
+            goal="Goal",
+            units={
+                "task": PlanUnit(
+                    slug="task",
+                    summary="Touch task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    files=PlanUnitFiles(touch=("src/foo.py", "tests/test_foo.py")),
+                )
+            },
+        )
+
+        result = compile_plan(plan, project_agent="test-agent")
+
+        task = result.tasks["task"]
+        assert task.files.touch == ("src/foo.py", "tests/test_foo.py")
+        assert task.files.create == ()
+        assert task.files.edit == ()
+
     def test_compiles_multiple_units(self):
         plan = PlanSpec(
             name="multi-plan",
@@ -582,10 +604,108 @@ class TestValidatePlan:
             compile_plan(plan, project_agent="test-agent")
         assert len(exc_info.value.issues) == 1
 
+    def test_detects_touch_conflict_between_independent_tasks(self):
+        plan = PlanSpec(
+            name="touch-conflict",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(touch=("src/main.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(touch=("src/main.py",)),
+                ),
+            },
+        )
+        issues = validate_plan(plan)
+        assert len(issues) == 1
+        assert "src/main.py" in issues[0].message
+
+    def test_detects_touch_vs_edit_conflict(self):
+        plan = PlanSpec(
+            name="mixed-conflict",
+            goal="Goal",
+            units={
+                "a": PlanUnit(
+                    slug="a",
+                    summary="A",
+                    prompt="Do A",
+                    commit_message="A",
+                    files=PlanUnitFiles(touch=("src/main.py",)),
+                ),
+                "b": PlanUnit(
+                    slug="b",
+                    summary="B",
+                    prompt="Do B",
+                    commit_message="B",
+                    files=PlanUnitFiles(edit=("src/main.py",)),
+                ),
+            },
+        )
+        issues = validate_plan(plan)
+        assert len(issues) == 1
+
 
 # =============================================================================
 # Integration tests
 # =============================================================================
+
+
+class TestFlatFilesParse:
+    def test_parse_plan_with_flat_files(self, tmp_path):
+        plan_file = tmp_path / "plan.toml"
+        plan_content = """
+[plan]
+name = "flat-plan"
+
+[tasks.simple]
+summary = "Simple task"
+prompt = "Do it"
+commit_message = "Done"
+files = ["src/foo.py", "tests/test_foo.py"]
+"""
+        plan_file.write_text(plan_content)
+        result = parse_plan_file(str(plan_file))
+        unit = result.units["simple"]
+        assert unit.files.touch == ("src/foo.py", "tests/test_foo.py")
+        assert unit.files.create == ()
+        assert unit.files.edit == ()
+
+    def test_flat_and_structured_coexist(self, tmp_path):
+        """Different tasks can use flat vs structured format."""
+        plan_file = tmp_path / "plan.toml"
+        plan_content = """
+[plan]
+name = "mixed-plan"
+
+[tasks.flat-task]
+summary = "Flat"
+prompt = "Do"
+commit_message = "Done"
+files = ["src/a.py"]
+
+[tasks.structured-task]
+summary = "Structured"
+prompt = "Do"
+commit_message = "Done"
+
+[tasks.structured-task.files]
+edit = ["src/b.py"]
+create = ["src/c.py"]
+"""
+        plan_file.write_text(plan_content)
+        result = parse_plan_file(str(plan_file))
+        assert result.units["flat-task"].files.touch == ("src/a.py",)
+        assert result.units["structured-task"].files.edit == ("src/b.py",)
+        assert result.units["structured-task"].files.create == ("src/c.py",)
 
 
 class TestPlanIntegration:

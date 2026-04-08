@@ -22,6 +22,7 @@ class DagFileSpec(BaseModel):
     create: tuple[str, ...] = ()
     edit: tuple[str, ...] = ()
     delete: tuple[str, ...] = ()
+    touch: tuple[str, ...] = ()
 
 
 class DagTaskSpec(BaseModel):
@@ -37,7 +38,14 @@ class DagTaskSpec(BaseModel):
     sop_mapping: tuple[str, ...] = ()
 
     def all_touches(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys((*self.files.create, *self.files.edit, *self.files.delete)))
+        return tuple(
+            dict.fromkeys((
+                *self.files.create,
+                *self.files.edit,
+                *self.files.delete,
+                *self.files.touch,
+            ))
+        )
 
 
 class DagDefinition(BaseModel):
@@ -74,6 +82,10 @@ def parse_dag_file(path: str) -> DagDefinition:
     for slug, task_data in tasks_raw.items():
         if isinstance(task_data, dict):
             task_data["slug"] = slug
+            # Flat files shorthand: files = ["a.py", "b.py"] → files.touch
+            files_val = task_data.get("files")
+            if isinstance(files_val, list):
+                task_data["files"] = {"touch": files_val}
             tasks[slug] = task_data
 
     return DagDefinition(

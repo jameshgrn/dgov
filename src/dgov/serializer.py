@@ -52,19 +52,31 @@ def serialize_compiled_toml(
         if mapping:
             items = ", ".join(_toml_str(m) for m in mapping)
             lines.append(f"sop_mapping = [{items}]")
-        # files sub-table
-        has_files = unit.files.create or unit.files.edit or unit.files.delete
+        # files — flat list (touch) or structured sub-table
+        has_files = unit.files.create or unit.files.edit or unit.files.delete or unit.files.touch
         if has_files:
-            if unit.files.create:
-                lines.append(
-                    f"files.create = [{', '.join(_toml_str(f) for f in unit.files.create)}]"
-                )
-            if unit.files.edit:
-                lines.append(f"files.edit = [{', '.join(_toml_str(f) for f in unit.files.edit)}]")
-            if unit.files.delete:
-                lines.append(
-                    f"files.delete = [{', '.join(_toml_str(f) for f in unit.files.delete)}]"
-                )
+            if unit.files.touch and not (
+                unit.files.create or unit.files.edit or unit.files.delete
+            ):
+                # Pure flat list — serialize as `files = [...]`
+                lines.append(f"files = [{', '.join(_toml_str(f) for f in unit.files.touch)}]")
+            else:
+                if unit.files.touch:
+                    lines.append(
+                        f"files.touch = [{', '.join(_toml_str(f) for f in unit.files.touch)}]"
+                    )
+                if unit.files.create:
+                    lines.append(
+                        f"files.create = [{', '.join(_toml_str(f) for f in unit.files.create)}]"
+                    )
+                if unit.files.edit:
+                    lines.append(
+                        f"files.edit = [{', '.join(_toml_str(f) for f in unit.files.edit)}]"
+                    )
+                if unit.files.delete:
+                    lines.append(
+                        f"files.delete = [{', '.join(_toml_str(f) for f in unit.files.delete)}]"
+                    )
         lines.append("")
 
     return "\n".join(lines)

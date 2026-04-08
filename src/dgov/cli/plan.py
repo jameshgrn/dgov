@@ -12,12 +12,13 @@ from dgov.plan import parse_plan_file, validate_plan
 
 
 def _format_unit_files(unit: object) -> str:
-    """Render a PlanUnit's file claims as 'create=[...], edit=[...], delete=[...]'."""
+    """Render a PlanUnit's file claims as 'files=[...], create=[...], etc.'."""
     parts = []
-    for kind in ("create", "edit", "delete"):
+    for kind in ("touch", "create", "edit", "delete"):
         files = getattr(unit.files, kind)  # type: ignore[attr-defined]
         if files:
-            parts.append(f"{kind}={list(files)}")
+            label = "files" if kind == "touch" else kind
+            parts.append(f"{label}={list(files)}")
     return ", ".join(parts)
 
 
@@ -108,7 +109,9 @@ Steps:
 3. Run lint_fix, then format_file, then run_tests to verify.
 """
 commit_message = "Imperative mood commit message (≤72 chars)"
-files.edit = ["src/module/file.py"]
+files = ["src/module/file.py"]
+# Or use explicit create/edit/delete:
+# files.edit = ["src/module/file.py"]
 # files.create = ["src/new_file.py"]
 # files.delete = ["src/old_file.py"]
 # depends_on = ["other-section/other-file.other-task"]

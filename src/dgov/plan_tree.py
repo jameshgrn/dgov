@@ -243,13 +243,18 @@ def _str_list(value: Any, field: str, context: Path) -> tuple[str, ...]:
 def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
     """Build a PlanUnit from a parsed `[tasks.<slug>]` table."""
     files_data = data.get("files", {})
-    if not isinstance(files_data, dict):
-        raise ValueError(f"[tasks.*].files must be a table in {source}")
-    files = PlanUnitFiles(
-        create=_str_list(files_data.get("create", []), "files.create", source),
-        edit=_str_list(files_data.get("edit", []), "files.edit", source),
-        delete=_str_list(files_data.get("delete", []), "files.delete", source),
-    )
+    if isinstance(files_data, list):
+        # Flat shorthand: files = ["a.py", "b.py"] → touch list
+        files = PlanUnitFiles(touch=_str_list(files_data, "files", source))
+    elif isinstance(files_data, dict):
+        files = PlanUnitFiles(
+            create=_str_list(files_data.get("create", []), "files.create", source),
+            edit=_str_list(files_data.get("edit", []), "files.edit", source),
+            delete=_str_list(files_data.get("delete", []), "files.delete", source),
+            touch=_str_list(files_data.get("touch", []), "files.touch", source),
+        )
+    else:
+        raise ValueError(f"[tasks.*].files must be a list or table in {source}")
     return PlanUnit(
         slug=fq_id,
         summary=data.get("summary", ""),

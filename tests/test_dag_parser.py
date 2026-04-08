@@ -196,6 +196,7 @@ def test_dag_file_spec_defaults_to_empty_tuples():
     assert spec.create == ()
     assert spec.edit == ()
     assert spec.delete == ()
+    assert spec.touch == ()
 
 
 def test_dag_file_spec_partial_defaults():
@@ -205,6 +206,87 @@ def test_dag_file_spec_partial_defaults():
     assert spec.create == ("file.txt",)
     assert spec.edit == ()
     assert spec.delete == ()
+    assert spec.touch == ()
+
+
+def test_dag_file_spec_touch_field():
+    """Test DagFileSpec accepts touch field."""
+    spec = DagFileSpec(touch=("a.py", "b.py"))
+    assert spec.touch == ("a.py", "b.py")
+    assert spec.create == ()
+
+
+# =============================================================================
+# Tests for flat files shorthand (files = [...])
+# =============================================================================
+
+
+def test_parse_dag_file_flat_files_list(tmp_path: Path):
+    """Test parse_dag_file() with flat files = [...] shorthand."""
+    toml_content = """
+[plan]
+name = "flat-files-dag"
+
+[tasks.task1]
+summary = "Task with flat files"
+prompt = "Do it"
+commit_message = "done"
+files = ["src/foo.py", "tests/test_foo.py"]
+"""
+    dag_file = tmp_path / "flat.toml"
+    dag_file.write_text(toml_content)
+
+    result = parse_dag_file(str(dag_file))
+    task = result.tasks["task1"]
+    assert task.files.touch == ("src/foo.py", "tests/test_foo.py")
+    assert task.files.create == ()
+    assert task.files.edit == ()
+
+
+def test_parse_dag_file_flat_files_in_all_touches(tmp_path: Path):
+    """Flat files list appears in all_touches()."""
+    toml_content = """
+[plan]
+name = "touch-dag"
+
+[tasks.task1]
+summary = "Task"
+prompt = "Do"
+commit_message = "d"
+files = ["a.py", "b.py"]
+"""
+    dag_file = tmp_path / "touch.toml"
+    dag_file.write_text(toml_content)
+
+    result = parse_dag_file(str(dag_file))
+    assert result.tasks["task1"].all_touches() == ("a.py", "b.py")
+
+
+def test_all_touches_includes_touch_field():
+    """all_touches() includes touch alongside create/edit/delete."""
+    files = DagFileSpec(
+        create=("new.py",),
+        edit=("existing.py",),
+        touch=("touched.py",),
+    )
+    task = DagTaskSpec(
+        slug="t",
+        summary="s",
+        prompt="p",
+        commit_message="c",
+        files=files,
+    )
+    result = task.all_touches()
+    assert "touched.py" in result
+    assert "new.py" in result
+    assert "existing.py" in result
+
+
+def test_all_touches_deduplicates_touch_with_edit():
+    """Touch and edit listing the same file is deduplicated."""
+    files = DagFileSpec(edit=("same.py",), touch=("same.py",))
+    task = DagTaskSpec(slug="t", summary="s", prompt="p", commit_message="c", files=files)
+    assert task.all_touches() == ("same.py",)
 
 
 # =============================================================================

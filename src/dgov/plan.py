@@ -37,6 +37,7 @@ class PlanUnitFiles:
     edit: tuple[str, ...] = ()
     delete: tuple[str, ...] = ()
     read: tuple[str, ...] = ()
+    touch: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -91,7 +92,10 @@ def parse_plan_file(path: str) -> PlanSpec:
             depends_on=task.depends_on,
             timeout_s=task.timeout_s,
             files=PlanUnitFiles(
-                create=task.files.create, edit=task.files.edit, delete=task.files.delete
+                create=task.files.create,
+                edit=task.files.edit,
+                delete=task.files.delete,
+                touch=task.files.touch,
             ),
         )
 
@@ -131,22 +135,21 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
     for slug, unit in plan.units.items():
         agent = unit.agent or plan.default_agent or project_agent
         if not agent:
-            raise PlanValidationError(
-                [
-                    PlanIssue(
-                        severity="error",
-                        message=f"No agent for task '{slug}'"
-                        " — set in task, [plan] default_agent, or project.toml",
-                        unit=slug,
-                    )
-                ]
-            )
+            raise PlanValidationError([
+                PlanIssue(
+                    severity="error",
+                    message=f"No agent for task '{slug}'"
+                    " — set in task, [plan] default_agent, or project.toml",
+                    unit=slug,
+                )
+            ])
         timeout_s = unit.timeout_s if unit.timeout_s else plan.default_timeout_s
 
         dag_files = DagFileSpec(
             create=unit.files.create,
             edit=unit.files.edit,
             delete=unit.files.delete,
+            touch=unit.files.touch,
         )
 
         tasks[slug] = DagTaskSpec(
@@ -170,10 +173,10 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
 
 
 def _all_touches(unit: PlanUnit) -> set[str]:
-    """All file paths a unit claims to touch (create + edit + delete)."""
+    """All file paths a unit claims to touch (create + edit + delete + touch)."""
     return {
         _normalize_touch_path(p)
-        for p in (*unit.files.create, *unit.files.edit, *unit.files.delete)
+        for p in (*unit.files.create, *unit.files.edit, *unit.files.delete, *unit.files.touch)
         if p.strip()
     }
 

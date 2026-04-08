@@ -328,6 +328,87 @@ class TestSerializeCompiledToml:
         assert unit_b["depends_on"] == ["section1/file1.unit_a"]
 
 
+class TestSerializeCompiledTomlFlatFiles:
+    """Test serialization of flat files (touch) format."""
+
+    def test_touch_only_serialized_as_flat_list(self, tmp_path):
+        """Pure touch files should serialize as `files = [...]`."""
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+        root_meta = RootMeta(name="touch-plan", summary="", sections=("s1",))
+        unit = PlanUnit(
+            slug="s1/f.task",
+            summary="Task",
+            prompt="Do",
+            commit_message="Done",
+            files=PlanUnitFiles(touch=("src/foo.py", "tests/test_foo.py")),
+        )
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={"s1/f.task": unit},
+            source_map={"s1/f.task": plan_root / "s1" / "f.toml"},
+            source_mtime_max=1234567890.0,
+        )
+        bundle = BundleResult(plan=flat_plan, sop_mapping={"s1/f.task": ()}, sop_set_hash="h")
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        assert 'files = ["src/foo.py", "tests/test_foo.py"]' in result
+        assert "files.touch" not in result
+        assert "files.edit" not in result
+
+    def test_touch_with_delete_serialized_as_subtable(self, tmp_path):
+        """Mixed touch + delete should use subtable format."""
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+        root_meta = RootMeta(name="mixed-plan", summary="", sections=("s1",))
+        unit = PlanUnit(
+            slug="s1/f.task",
+            summary="Task",
+            prompt="Do",
+            commit_message="Done",
+            files=PlanUnitFiles(touch=("src/foo.py",), delete=("old.py",)),
+        )
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={"s1/f.task": unit},
+            source_map={"s1/f.task": plan_root / "s1" / "f.toml"},
+            source_mtime_max=1234567890.0,
+        )
+        bundle = BundleResult(plan=flat_plan, sop_mapping={"s1/f.task": ()}, sop_set_hash="h")
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        assert 'files.touch = ["src/foo.py"]' in result
+        assert 'files.delete = ["old.py"]' in result
+
+    def test_flat_files_round_trip(self, tmp_path):
+        """Flat files serialization should round-trip through tomllib."""
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+        root_meta = RootMeta(name="rt-plan", summary="", sections=("s1",))
+        unit = PlanUnit(
+            slug="s1/f.task",
+            summary="Task",
+            prompt="Do",
+            commit_message="Done",
+            files=PlanUnitFiles(touch=("a.py", "b.py")),
+        )
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={"s1/f.task": unit},
+            source_map={"s1/f.task": plan_root / "s1" / "f.toml"},
+            source_mtime_max=1234567890.0,
+        )
+        bundle = BundleResult(plan=flat_plan, sop_mapping={"s1/f.task": ()}, sop_set_hash="h")
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        parsed = tomllib.loads(result)
+        task = parsed["tasks"]["s1/f.task"]
+        assert task["files"] == ["a.py", "b.py"]
+
+
 class TestSerializeCompiledTomlWithSopMapping:
     """Test serialize_compiled_toml with SOP mapping entries."""
 
