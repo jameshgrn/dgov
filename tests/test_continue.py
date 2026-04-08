@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -26,7 +27,7 @@ def git_repo(tmp_path: Path) -> Path:
         subprocess.run(
             ["git", *args],
             cwd=tmp_path,
-            env={**env, "PATH": subprocess.os.environ["PATH"]},
+            env={**env, "PATH": os.environ["PATH"]},
             check=True,
             capture_output=True,
         )
