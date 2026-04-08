@@ -15,7 +15,7 @@ Deterministic kernel for multi-agent orchestration via git worktrees.
 uv add dgov
 
 # From source
-git clone https://github.com/your-org/dgov
+git clone https://github.com/jameshgrn/dgov
 cd dgov
 uv sync
 ```
@@ -123,6 +123,14 @@ uv run ty check
 uv run pytest -q -m unit
 uv run pytest -q -m integration
 ```
+
+## Known Limitations
+
+- **No resume/checkpoint**: if a run crashes at task N, all N tasks restart. Use `dgov run --continue` to skip already-merged tasks.
+- **No cost tracking**: token usage and API cost are not recorded.
+- **Parallel contention**: running 6+ tasks in parallel may cause contention in the executor. Keep parallelism ≤5 for now.
+- **Worker iteration cap**: workers are capped at 30 tool-call iterations. Tasks requiring many read/fix/test cycles may time out.
+- **Fireworks AI / OpenAI-compat only**: the worker requires an OpenAI-compatible API. Native Anthropic and other providers are not supported.
 
 ## License
 
