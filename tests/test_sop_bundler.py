@@ -214,7 +214,7 @@ class TestBundleCaching:
         bundler = mocker.Mock(spec=SopBundler)
 
         # 1. Cache hit
-        cached_mapping = {"a": ("s1",)}
+        cached_mapping: dict[str, tuple[str, ...]] = {"a": ("s1",)}
         result = bundle(
             plan, sops_dir, bundler, cached_mapping=cached_mapping, cached_hash=hash_val
         )

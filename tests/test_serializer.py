@@ -417,7 +417,7 @@ class TestSerializeCompiledTomlWithSopMapping:
         flat_plan = _create_flat_plan(tmp_path)
 
         # Create bundle with SOP mapping entries
-        sop_mapping = {
+        sop_mapping: dict[str, tuple[str, ...]] = {
             "section1/file1.unit_a": ("sop-a", "sop-b"),
             "section1/file1.unit_b": ("sop-c",),
         }
