@@ -45,6 +45,14 @@ def mock_run(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return mock
 
 
+@pytest.fixture
+def mock_archive(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Mock the archive_plan function imported by fix.py."""
+    mock = MagicMock()
+    monkeypatch.setattr("dgov.cli.fix.archive_plan", mock)
+    return mock
+
+
 class TestFixHappyPath:
     """Happy path tests for the fix command."""
 
@@ -55,6 +63,7 @@ class TestFixHappyPath:
         monkeypatch: pytest.MonkeyPatch,
         mock_compile: MagicMock,
         mock_run: MagicMock,
+        mock_archive: MagicMock,
     ) -> None:
         """The command writes a single-task plan tree and invokes compile/run helpers."""
         monkeypatch.chdir(tmp_path)
@@ -64,7 +73,7 @@ class TestFixHappyPath:
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
         assert "Created plan" in result.output
 
-        # Verify plan directory structure
+        # Verify plan directory structure (archive is mocked so dir stays)
         plan_dir = tmp_path / ".dgov" / "plans" / "fix-refactor-error-handling"
         assert plan_dir.exists()
         assert (plan_dir / "_root.toml").exists()
@@ -87,6 +96,7 @@ class TestFixHappyPath:
         monkeypatch: pytest.MonkeyPatch,
         mock_compile: MagicMock,
         mock_run: MagicMock,
+        mock_archive: MagicMock,
     ) -> None:
         """Multiple --file options are preserved exactly in the generated task TOML."""
         monkeypatch.chdir(tmp_path)
@@ -107,6 +117,7 @@ class TestFixHappyPath:
 
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
 
+        # archive is mocked so plan dir stays in place
         plan_dir = tmp_path / ".dgov" / "plans" / "fix-update-imports"
         main_toml_path = plan_dir / "fix" / "main.toml"
 
@@ -127,6 +138,7 @@ class TestFixHappyPath:
         monkeypatch: pytest.MonkeyPatch,
         mock_compile: MagicMock,
         mock_run: MagicMock,
+        mock_archive: MagicMock,
     ) -> None:
         """--name overrides the generated plan name."""
         monkeypatch.chdir(tmp_path)
@@ -146,7 +158,7 @@ class TestFixHappyPath:
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
         assert "Created plan 'my-custom-fix'" in result.output
 
-        # Verify plan directory uses custom name
+        # Verify plan directory uses custom name (archive is mocked)
         plan_dir = tmp_path / ".dgov" / "plans" / "my-custom-fix"
         assert plan_dir.exists()
 
@@ -161,6 +173,7 @@ class TestFixHappyPath:
         monkeypatch: pytest.MonkeyPatch,
         mock_compile: MagicMock,
         mock_run: MagicMock,
+        mock_archive: MagicMock,
     ) -> None:
         """--commit-message overrides the default commit message."""
         monkeypatch.chdir(tmp_path)
@@ -179,6 +192,7 @@ class TestFixHappyPath:
 
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
 
+        # archive is mocked so plan dir stays in place
         plan_dir = tmp_path / ".dgov" / "plans" / "fix-fix-the-bug"
         main_toml_path = plan_dir / "fix" / "main.toml"
 
@@ -232,6 +246,7 @@ class TestFixEdgeCases:
         monkeypatch: pytest.MonkeyPatch,
         mock_compile: MagicMock,
         mock_run: MagicMock,
+        mock_archive: MagicMock,
     ) -> None:
         """Auto-generated names should add a numeric suffix on collision."""
         monkeypatch.chdir(tmp_path)
@@ -244,6 +259,7 @@ class TestFixEdgeCases:
 
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
         assert "Created plan 'fix-refactor-code-2'" in result.output
+        # archive is mocked so new plan dir stays in place
         assert (tmp_path / ".dgov" / "plans" / "fix-refactor-code-2").exists()
 
     def test_missing_required_file_option(
@@ -283,3 +299,86 @@ class TestFixHelp:
 
         # Should document the --commit-message option
         assert "--commit-message" in output
+
+
+class TestFixArchive:
+    """Archive behavior tests for the fix command."""
+
+    def test_archives_plan_after_success(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_run: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        """Plan is archived after successful compile and run."""
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
+
+        assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
+
+        # Verify archive was called with the plan directory
+        mock_archive.assert_called_once()
+        call_args = mock_archive.call_args[0]
+        plan_dir = call_args[0]
+        assert plan_dir.name.startswith("fix-")
+        assert str(plan_dir.parent).endswith(".dgov/plans")
+
+    def test_archives_plan_after_run_failure(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        """Plan is archived even when run fails."""
+        monkeypatch.chdir(tmp_path)
+
+        # Mock run to raise an exception
+        def mock_run_fail(*args, **kwargs):
+            raise RuntimeError("Simulated run failure")
+
+        monkeypatch.setattr("dgov.cli.fix._cmd_run_plan", mock_run_fail)
+
+        result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
+
+        assert result.exit_code == 1, f"Expected exit code 1, got {result.exit_code}"
+        assert "Run failed" in result.output
+
+        # Verify archive was called even on failure
+        mock_archive.assert_called_once()
+        call_args = mock_archive.call_args[0]
+        plan_dir = call_args[0]
+        assert plan_dir.name.startswith("fix-")
+
+    def test_archives_plan_after_compile_failure(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        """Plan is archived even when compile fails."""
+        monkeypatch.chdir(tmp_path)
+
+        # Mock compile to raise an exception
+        def mock_compile_fail(*args, **kwargs):
+            raise RuntimeError("Simulated compile failure")
+
+        monkeypatch.setattr("dgov.cli.fix._cmd_compile", mock_compile_fail)
+
+        result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
+
+        assert result.exit_code == 1, f"Expected exit code 1, got {result.exit_code}"
+        assert "Compile failed" in result.output
+
+        # Verify archive was called even on failure
+        mock_archive.assert_called_once()
+        call_args = mock_archive.call_args[0]
+        plan_dir = call_args[0]
+        assert plan_dir.name.startswith("fix-")

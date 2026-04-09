@@ -7,6 +7,7 @@ from pathlib import Path
 
 import click
 
+from dgov.archive import archive_plan
 from dgov.cli import cli
 from dgov.cli.compile import _cmd_compile
 from dgov.cli.run import _cmd_run_plan
@@ -50,6 +51,12 @@ def _render_fix_plan_toml(prompt: str, files: list[str], commit_message: str) ->
         f"commit_message = {_toml_str(commit_message)}\n"
         f"files = [{files_str}]\n"
     )
+
+
+def _archive_if_exists(plan_dir: Path) -> None:
+    """Archive plan_dir if it still exists. Silent noop if already moved or deleted."""
+    if plan_dir.exists():
+        archive_plan(plan_dir)
 
 
 @cli.command(name="fix")
@@ -126,9 +133,11 @@ sections = ["fix"]
     try:
         _cmd_compile(plan_dir, dry_run=False, recompile_sops=False, graph=False)
     except click.exceptions.Exit:
+        _archive_if_exists(plan_dir)
         raise
     except Exception as exc:
         click.echo(f"Compile failed: {exc}", err=True)
+        _archive_if_exists(plan_dir)
         raise click.exceptions.Exit(code=1) from exc
 
     # Run the compiled plan
@@ -143,7 +152,11 @@ sections = ["fix"]
             plan_dir=plan_dir,
         )
     except click.exceptions.Exit:
+        _archive_if_exists(plan_dir)
         raise
     except Exception as exc:
         click.echo(f"Run failed: {exc}", err=True)
+        _archive_if_exists(plan_dir)
         raise click.exceptions.Exit(code=1) from exc
+
+    _archive_if_exists(plan_dir)
