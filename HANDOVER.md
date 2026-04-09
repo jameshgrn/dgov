@@ -1,62 +1,67 @@
-# Handover: dgov public-release UX and state cleanup
+# Handover: dgov release branch, sentrux hardening, and publish prep
 
-**Date:** 2026-04-09T14:47:30Z  
-**Branch:** `main` @ `5e645cc0`  
-**Context:** This session focused on making `dgov` feel more natural for public use. The core work was not kernel refactoring; it was execution-surface cleanup: add a governed one-off path, tighten scope enforcement, make `watch` current-run-first, separate transient runtime state from authored plans, and stop tracking generated artifacts.
+**Date:** 2026-04-09T17:53:14Z  
+**Branch:** `release-prep-polish` @ `1b71ce79`  
+**Context:** This session turned the release-prep work from one large dirty diff into a release branch with coherent commits. The main outcomes were: provider-aware SOP bundling, root-resolution cleanup, installed-tool execution outside the source repo, stricter sentrux baseline semantics, `dgov init` bootstrap/guidance improvements, aligned agent guidance files, updated docs, and removal of stale dogfood artifacts.
 
 ---
 
-## In Progress
+## Current State
 
-| Task | Status | Location | Notes |
+| Area | Status | Location | Notes |
 |------|--------|----------|-------|
-| Public-release truthfulness pass | Partial | `/Users/jakegearon/projects/dgov/README.md`, `/Users/jakegearon/projects/dgov/docs/docs/pages` | Main install/clean/provider wording improved, but release docs still need final consistency pass |
-| Runtime/state cleanup follow-through | Mostly done | `/Users/jakegearon/projects/dgov/.gitignore`, `/Users/jakegearon/projects/dgov/src/dgov/cli/fix.py`, `/Users/jakegearon/projects/dgov/src/dgov/cli/clean.py` | Generated fix plans now live under `.dgov/runtime/fix-plans`; generated artifacts no longer tracked |
+| Release branch split | Done | `/Users/jakegearon/projects/dgov` | Work is now split into 4 coherent commits on `release-prep-polish` |
+| Sentrux integration | Done | `/Users/jakegearon/projects/dgov/src/dgov/cli/run.py`, `/Users/jakegearon/projects/dgov/src/dgov/settlement.py`, `/Users/jakegearon/projects/dgov/src/dgov/cli/init.py` | Baseline is explicit + governor-owned; final post-run compare is authoritative |
+| Bootstrap/init UX | Done | `/Users/jakegearon/projects/dgov/src/dgov/cli/init.py` | `dgov init` now scaffolds governor guidance and offers immediate `dgov sentrux gate-save` when available |
+| Public docs pass | Done | `/Users/jakegearon/projects/dgov/README.md`, `/Users/jakegearon/projects/dgov/docs/docs/pages` | Install/setup/provider/sentrux wording is now aligned with runtime behavior |
+| Dogfood cleanup | Done | `/Users/jakegearon/projects/dgov/.dgov/plans/dogfood-debut` | Untracked plan dir removed; stale indexed leading-space path removed |
 
-## Blockers
+## Commits On This Branch
 
-- No blocker inside the repo right now.
-- Release still depends on non-code work: PyPI/trusted publisher setup and final release notes/changelog.
+1. `10cd687c` — `chore: drop stale dogfood artifacts`
+2. `88371e36` — `feat: add provider-aware SOP bundling`
+3. `df13bb4a` — `feat: harden bootstrap and sentrux flow`
+4. `1b71ce79` — `docs: standardize guidance and release docs`
 
-## Next Steps (Priority Order)
+## Remaining Work
 
-1. Finish the remaining release messaging pass across `/Users/jakegearon/projects/dgov/README.md` and `/Users/jakegearon/projects/dgov/docs/docs/pages`.
-2. Decide whether older authored archives under `/Users/jakegearon/projects/dgov/.dgov/plans/archive` should be retained or pruned.
-3. Push `main` and let CI validate the recent cleanup/UX commits.
-4. Prepare release notes/changelog for the first public release.
+1. Finish the GitHub release/publish steps for PyPI from `release-prep-polish`.
+2. Decide whether to merge this branch to `main` before tagging, or tag directly from the release branch.
+3. Bump version only if `0.1.0` is no longer the intended first public release.
+4. After publish, run one real smoke with `uv tool install dgov` against PyPI rather than a local wheel.
 
-## Files Modified (Uncommitted)
+## GitHub / PyPI Notes
 
-```text
- M /Users/jakegearon/projects/dgov/HANDOVER.md
-```
+- PyPI trusted publisher setup was completed on the PyPI side during the session.
+- The repo already has `/Users/jakegearon/projects/dgov/.github/workflows/publish.yml` configured for OIDC trusted publishing.
+- GitHub-side expectation: environment name `pypi`, workflow file `publish.yml`, tag trigger `v*`.
 
-## Key Decisions
+## Verification Performed
 
-- `dgov fix` remains thin sugar over the normal plan pipeline; it does not introduce a second execution model.
-- Unclaimed writes to `.dgov/` and `.sentrux/` are real scope violations now; infra paths are not exempt.
-- Current-run observability is the default: `dgov watch` infers a single active plan when possible and otherwise live-tails from “now” instead of replaying repo history.
-- Transient one-off plans belong to runtime state, not authored plan state. Generated fix plans now live under `/Users/jakegearon/projects/dgov/.dgov/runtime/fix-plans`, and `dgov clean` may delete them safely when inactive.
-- Generated docs/build/runtime artifacts are not source of truth and should not be git-tracked. `.gitignore` now reflects that.
+- `uv build`
+- `uv run --with twine twine check dist/*`
+- `uv run actionlint .github/workflows/*.yml`
+- `uv run pytest -q -m unit /Users/jakegearon/projects/dgov/tests/test_settlement.py /Users/jakegearon/projects/dgov/tests/test_cli_run_strict.py`
+- `uv run pytest -q -m unit /Users/jakegearon/projects/dgov/tests/test_cli.py /Users/jakegearon/projects/dgov/tests/test_settlement.py /Users/jakegearon/projects/dgov/tests/test_cli_run_strict.py`
+- `uv run pytest -q -m unit /Users/jakegearon/projects/dgov/tests/test_cli.py`
+- `uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/settlement.py /Users/jakegearon/projects/dgov/src/dgov/cli/run.py /Users/jakegearon/projects/dgov/src/dgov/cli/sentrux.py /Users/jakegearon/projects/dgov/tests/test_cli.py /Users/jakegearon/projects/dgov/tests/test_settlement.py /Users/jakegearon/projects/dgov/tests/test_cli_run_strict.py`
+- `uv run ruff check /Users/jakegearon/projects/dgov/src/dgov/cli/init.py /Users/jakegearon/projects/dgov/tests/test_cli.py`
+- `cd /Users/jakegearon/projects/dgov/docs && npm run build`
+- Clean-room installed-wheel smoke:
+  - `uv tool install --from /Users/jakegearon/projects/dgov/dist/dgov-0.1.0-py3-none-any.whl dgov`
+  - installed `dgov --version`
+  - ran installed `dgov init` in a temp git repo
+  - ran installed `dgov status`
 
-## Major Commits From This Session
+## Working Tree
 
-- `4d1dc666` `Enforce infra path scope checks`
-- `c29adbad` `Fix clean command docs`
-- `75c0b32e` `Unify install docs`
-- `f7dc4244` `Focus watch on active runs`
-- `e9d6efcf` `Archive transient fix plans`
-- `77bd0e42` `Clarify provider wording`
-- `a8e4202a` `Separate transient fix plan state`
-- `d24c3215` `Stop tracking generated artifacts`
-- `5e645cc0` `Remove archived test plan debris`
+- The only expected uncommitted file at handoff is this handover itself: `/Users/jakegearon/projects/dgov/HANDOVER.md`
 
 ## References
 
-- `fix` CLI: `/Users/jakegearon/projects/dgov/src/dgov/cli/fix.py`
-- `watch` CLI: `/Users/jakegearon/projects/dgov/src/dgov/cli/watch.py`
-- `clean` CLI: `/Users/jakegearon/projects/dgov/src/dgov/cli/clean.py`
-- settlement scope gate: `/Users/jakegearon/projects/dgov/src/dgov/settlement.py`
-- fix tests: `/Users/jakegearon/projects/dgov/tests/test_cli_fix.py`
-- clean tests: `/Users/jakegearon/projects/dgov/tests/test_cli_clean.py`
-- watch tests: `/Users/jakegearon/projects/dgov/tests/test_cli.py`
+- Publish workflow: `/Users/jakegearon/projects/dgov/.github/workflows/publish.yml`
+- Sentrux runtime gate: `/Users/jakegearon/projects/dgov/src/dgov/cli/run.py`
+- Settlement sentrux gate: `/Users/jakegearon/projects/dgov/src/dgov/settlement.py`
+- Init/bootstrap flow: `/Users/jakegearon/projects/dgov/src/dgov/cli/init.py`
+- Root resolution helper: `/Users/jakegearon/projects/dgov/src/dgov/project_root.py`
+- Agent guidance canonical source: `/Users/jakegearon/projects/dgov/AGENTS.md`
