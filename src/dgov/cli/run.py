@@ -143,7 +143,7 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
     if baseline_path.exists():
         try:
             bdata = _json.loads(baseline_path.read_text())
-            if bdata.get("total_import_edges", 0) == 0:
+            if bdata.get("total_import_edges") == 0:
                 gate_result["degradation"] = False
                 if not want_json():
                     click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")

@@ -468,7 +468,7 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str) -> GateResult:
     # Comparing against an empty baseline always shows "degradation" for any real code.
     try:
         bdata = json.loads(baseline.read_text())
-        if bdata.get("total_import_edges", 0) == 0:
+        if bdata.get("total_import_edges") == 0:
             return GateResult(passed=True)
     except Exception:
         pass
