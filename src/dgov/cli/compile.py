@@ -10,6 +10,7 @@ import click
 
 from dgov.cli import cli, want_json
 from dgov.plan_tree import FlatPlan
+from dgov.project_root import resolve_project_root
 
 
 @cli.command(name="compile")
@@ -33,6 +34,7 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: boo
 
 def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
+    from dgov.config import load_project_config
     from dgov.plan_tree import (
         merge_tree,
         resolve_refs,
@@ -78,8 +80,18 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
         raise click.exceptions.Exit(code=1) from None
 
     # 5. Bundle SOPs
-    sops_dir = Path.cwd() / ".dgov" / "sops"
-    bundler = IdentityBundler() if dry_run else LLMSopBundler()
+    project_root = resolve_project_root()
+    sops_dir = project_root / ".dgov" / "sops"
+    project_config = load_project_config(project_root)
+    bundler = (
+        IdentityBundler()
+        if dry_run
+        else LLMSopBundler(
+            model=project_config.default_agent,
+            base_url=project_config.llm_base_url,
+            api_key_env=project_config.llm_api_key_env,
+        )
+    )
 
     # Caching: read existing _compiled.toml if present to reuse mapping if hash matches
     cached_mapping = None

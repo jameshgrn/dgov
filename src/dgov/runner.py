@@ -79,7 +79,11 @@ class EventDagRunner:
             )
             for slug, t in dag.tasks.items()
         }
-        self.kernel = DagKernel(deps=self.deps, task_files=self.task_files)
+        self.kernel = DagKernel(
+            deps=self.deps,
+            task_files=self.task_files,
+            max_retries=dag.default_max_retries,
+        )
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
@@ -263,11 +267,12 @@ class EventDagRunner:
             await self._cleanup()
 
     async def _preflight_check_models(self) -> None:
-        """Check FIREWORKS_API_KEY is set. Model errors surface on first attempt."""
+        """Check configured OpenAI-compatible API key is set before dispatch."""
         import os
 
-        if not os.environ.get("FIREWORKS_API_KEY"):
-            raise RuntimeError("FIREWORKS_API_KEY not set")
+        key_env = self.project_config.llm_api_key_env
+        if not os.environ.get(key_env):
+            raise RuntimeError(f"{key_env} not set")
 
     def _task_state_snapshot(self) -> dict[str, str]:
         return {slug: state.value for slug, state in self.kernel.task_states.items()}

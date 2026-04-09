@@ -69,7 +69,7 @@ class PlanSpec:
     session_root: str = "."
     default_agent: str = ""
     default_timeout_s: int = 600
-    max_retries: int = 1
+    max_retries: int = 3
     sop_set_hash: str = ""
     source_mtime_max: str = ""
 
@@ -101,6 +101,7 @@ def parse_plan_file(path: str) -> PlanSpec:
                 create=task.files.create,
                 edit=task.files.edit,
                 delete=task.files.delete,
+                read=task.files.read,
                 touch=task.files.touch,
             ),
         )
@@ -157,6 +158,7 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
             create=unit.files.create,
             edit=unit.files.edit,
             delete=unit.files.delete,
+            read=unit.files.read,
             touch=unit.files.touch,
         )
 

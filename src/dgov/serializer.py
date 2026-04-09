@@ -53,10 +53,16 @@ def serialize_compiled_toml(
             items = ", ".join(_toml_str(m) for m in mapping)
             lines.append(f"sop_mapping = [{items}]")
         # files — flat list (touch) or structured sub-table
-        has_files = unit.files.create or unit.files.edit or unit.files.delete or unit.files.touch
+        has_files = (
+            unit.files.create
+            or unit.files.edit
+            or unit.files.delete
+            or unit.files.read
+            or unit.files.touch
+        )
         if has_files:
             if unit.files.touch and not (
-                unit.files.create or unit.files.edit or unit.files.delete
+                unit.files.create or unit.files.edit or unit.files.delete or unit.files.read
             ):
                 # Pure flat list — serialize as `files = [...]`
                 lines.append(f"files = [{', '.join(_toml_str(f) for f in unit.files.touch)}]")
@@ -76,6 +82,10 @@ def serialize_compiled_toml(
                 if unit.files.delete:
                     lines.append(
                         f"files.delete = [{', '.join(_toml_str(f) for f in unit.files.delete)}]"
+                    )
+                if unit.files.read:
+                    lines.append(
+                        f"files.read = [{', '.join(_toml_str(f) for f in unit.files.read)}]"
                     )
         lines.append("")
 

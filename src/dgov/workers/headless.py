@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,14 +23,6 @@ logger = logging.getLogger(__name__)
 
 # Absolute path to worker.py — resolved at import time, not runtime.
 _WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "worker.py"
-
-
-def _find_uv() -> str:
-    """Find uv binary. Fail fast if missing — wrong state should be impossible."""
-    uv = shutil.which("uv")
-    if not uv:
-        raise RuntimeError("uv not found in PATH — required for worker dispatch")
-    return uv
 
 
 async def run_headless_worker(
@@ -51,6 +43,8 @@ async def run_headless_worker(
         "language": pc.language,
         "src_dir": pc.src_dir,
         "test_dir": pc.test_dir,
+        "llm_base_url": pc.llm_base_url,
+        "llm_api_key_env": pc.llm_api_key_env,
         "test_cmd": pc.test_cmd,
         "lint_cmd": pc.lint_cmd,
         "format_cmd": pc.format_cmd,
@@ -61,8 +55,8 @@ async def run_headless_worker(
     })
 
     cmd = [
-        _find_uv(),
-        "run",
+        sys.executable,
+        "-u",
         str(_WORKER_SCRIPT),
         "--goal",
         task.prompt,

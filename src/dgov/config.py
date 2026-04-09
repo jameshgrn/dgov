@@ -10,6 +10,8 @@ from pathlib import Path
 
 
 _DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p5-turbo"
+_DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"
+_DEFAULT_LLM_API_KEY_ENV = "FIREWORKS_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,8 @@ class ProjectConfig:
     test_dir: str = "tests/"
     source_extensions: tuple[str, ...] = (".py",)
     default_agent: str = _DEFAULT_AGENT
+    llm_base_url: str = _DEFAULT_LLM_BASE_URL
+    llm_api_key_env: str = _DEFAULT_LLM_API_KEY_ENV
     # Worker SOP + settlement validate
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
@@ -66,6 +70,8 @@ class ProjectConfig:
             f"Language: {self.language}",
             f"Source: {self.src_dir}",
             f"Tests: {self.test_dir}",
+            f"LLM base URL: {self.llm_base_url}",
+            f"LLM API key env: {self.llm_api_key_env}",
             f"Test command: {self.resolve_test_cmd()}",
             f"Lint command: {self.resolve_lint_cmd()}",
             f"Format command: {self.resolve_format_cmd('<file>')}",
@@ -107,6 +113,8 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         test_dir=proj.get("test_dir", "tests/"),
         source_extensions=extensions,
         default_agent=proj.get("default_agent", _DEFAULT_AGENT),
+        llm_base_url=proj.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
+        llm_api_key_env=proj.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
         test_cmd=proj.get("test_cmd", ProjectConfig.test_cmd),
         lint_cmd=proj.get("lint_cmd", ProjectConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),

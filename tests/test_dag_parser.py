@@ -196,6 +196,7 @@ def test_dag_file_spec_defaults_to_empty_tuples():
     assert spec.create == ()
     assert spec.edit == ()
     assert spec.delete == ()
+    assert spec.read == ()
     assert spec.touch == ()
 
 
@@ -206,6 +207,7 @@ def test_dag_file_spec_partial_defaults():
     assert spec.create == ("file.txt",)
     assert spec.edit == ()
     assert spec.delete == ()
+    assert spec.read == ()
     assert spec.touch == ()
 
 
@@ -214,6 +216,13 @@ def test_dag_file_spec_touch_field():
     spec = DagFileSpec(touch=("a.py", "b.py"))
     assert spec.touch == ("a.py", "b.py")
     assert spec.create == ()
+
+
+def test_dag_file_spec_read_field():
+    """Test DagFileSpec accepts read field."""
+    spec = DagFileSpec(read=("src/a.py", "docs/spec.md"))
+    assert spec.read == ("src/a.py", "docs/spec.md")
+    assert spec.touch == ()
 
 
 # =============================================================================
@@ -260,6 +269,30 @@ files = ["a.py", "b.py"]
 
     result = parse_dag_file(str(dag_file))
     assert result.tasks["task1"].all_touches() == ("a.py", "b.py")
+
+
+def test_parse_dag_file_supports_read_only_files(tmp_path: Path):
+    """files.read should parse without becoming an enforced touch claim."""
+    toml_content = """
+[plan]
+name = "read-files-dag"
+
+[tasks.task1]
+summary = "Inspect files"
+prompt = "Read the source and docs"
+commit_message = "docs: capture findings"
+
+[tasks.task1.files]
+read = ["src/main.py", "docs/spec.md"]
+edit = ["README.md"]
+"""
+    dag_file = tmp_path / "read.toml"
+    dag_file.write_text(toml_content)
+
+    result = parse_dag_file(str(dag_file))
+    task = result.tasks["task1"]
+    assert task.files.read == ("src/main.py", "docs/spec.md")
+    assert task.all_touches() == ("README.md",)
 
 
 def test_all_touches_includes_touch_field():
@@ -318,3 +351,22 @@ commit_message = "task 1"
     assert task.agent == ""
     assert task.depends_on == ()
     assert task.timeout_s == 900
+
+
+def test_parse_dag_file_accepts_max_retries_alias(tmp_path: Path):
+    """User-authored plans may use max_retries; keep accepting it as an alias."""
+    toml_content = """
+[plan]
+name = "retry-dag"
+max_retries = 7
+
+[tasks.task1]
+summary = "Task 1"
+prompt = "Do it"
+commit_message = "task 1"
+"""
+    dag_file = tmp_path / "retry.dag.toml"
+    dag_file.write_text(toml_content)
+
+    result = parse_dag_file(str(dag_file))
+    assert result.default_max_retries == 7

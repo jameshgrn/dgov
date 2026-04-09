@@ -9,6 +9,9 @@ class TestProjectConfigDefaults:
         assert pc.language == "python"
         assert pc.src_dir == "src/"
         assert pc.test_dir == "tests/"
+        assert pc.default_agent == "accounts/fireworks/routers/kimi-k2p5-turbo"
+        assert pc.llm_base_url == "https://api.fireworks.ai/inference/v1"
+        assert pc.llm_api_key_env == "FIREWORKS_API_KEY"
         assert "pytest" in pc.test_cmd
         assert "ruff check" in pc.lint_cmd
 
@@ -38,6 +41,8 @@ class TestPromptSection:
         assert "Language: python" in section
         assert "Source: src/" in section
         assert "Tests: tests/" in section
+        assert "LLM base URL:" in section
+        assert "LLM API key env:" in section
 
     def test_includes_markers(self):
         pc = ProjectConfig(test_markers=("unit", "integration"))
@@ -63,6 +68,9 @@ class TestLoadProjectConfig:
         (dgov_dir / "project.toml").write_text(
             '[project]\nlanguage = "go"\nsrc_dir = "cmd/"\n'
             'test_dir = "cmd/"\ntest_cmd = "go test ./..."\n'
+            'default_agent = "gpt-4.1-mini"\n'
+            'llm_base_url = "https://api.openai.com/v1"\n'
+            'llm_api_key_env = "OPENAI_API_KEY"\n'
             'lint_cmd = "golangci-lint run {file}"\n'
             'format_cmd = "gofmt -w {file}"\n'
         )
@@ -70,6 +78,9 @@ class TestLoadProjectConfig:
         assert pc.language == "go"
         assert pc.src_dir == "cmd/"
         assert pc.test_cmd == "go test ./..."
+        assert pc.default_agent == "gpt-4.1-mini"
+        assert pc.llm_base_url == "https://api.openai.com/v1"
+        assert pc.llm_api_key_env == "OPENAI_API_KEY"
 
     def test_partial_toml_fills_defaults(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"

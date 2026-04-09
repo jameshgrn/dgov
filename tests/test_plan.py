@@ -140,6 +140,29 @@ delete = ["old_file.py"]
         assert unit.files.edit == ("src/existing.py",)
         assert unit.files.delete == ("old_file.py",)
 
+    def test_parses_plan_with_read_only_files(self, tmp_path):
+        plan_file = tmp_path / "plan.toml"
+        plan_content = """
+[plan]
+name = "read-plan"
+
+[tasks.inspect]
+summary = "Inspect state"
+prompt = "Read the implementation before editing docs"
+commit_message = "docs: record findings"
+
+[tasks.inspect.files]
+read = ["src/core.py", "docs/spec.md"]
+edit = ["README.md"]
+"""
+        plan_file.write_text(plan_content)
+
+        result = parse_plan_file(str(plan_file))
+
+        unit = result.units["inspect"]
+        assert unit.files.read == ("src/core.py", "docs/spec.md")
+        assert unit.files.edit == ("README.md",)
+
     def test_parses_plan_with_dependencies(self, tmp_path):
         plan_file = tmp_path / "plan.toml"
         plan_content = """
@@ -355,6 +378,30 @@ class TestCompilePlan:
         assert task.files.create == ("new.py",)
         assert task.files.edit == ("existing.py",)
         assert task.files.delete == ("old.py",)
+
+    def test_preserves_read_only_files(self):
+        plan = PlanSpec(
+            name="read-plan",
+            goal="Goal",
+            units={
+                "file-task": PlanUnit(
+                    slug="file-task",
+                    summary="File task",
+                    prompt="Inspect files",
+                    commit_message="Docs handled",
+                    files=PlanUnitFiles(
+                        read=("src/core.py", "docs/spec.md"),
+                        edit=("README.md",),
+                    ),
+                )
+            },
+        )
+
+        result = compile_plan(plan, project_agent="test-agent")
+
+        task = result.tasks["file-task"]
+        assert task.files.read == ("src/core.py", "docs/spec.md")
+        assert task.all_touches() == ("README.md",)
 
     def test_preserves_touch_through_compile(self):
         plan = PlanSpec(

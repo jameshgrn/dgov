@@ -28,8 +28,103 @@ def _write(path: Path, content: str) -> None:
     path.write_text(content)
 
 
-def _sop_md(name: str, title: str, body: str) -> str:
-    return f"---\nname: {name}\ntitle: {title}\n---\n{body}\n"
+def _sop_md(
+    name: str,
+    title: str,
+    do_item: str,
+    *,
+    summary: str = "Summary.",
+    applies_to: tuple[str, ...] = ("general",),
+    priority: str = "must",
+    when: tuple[str, ...] = ("when it applies",),
+    do_not: tuple[str, ...] = ("do not drift",),
+    verify: tuple[str, ...] = ("verify the outcome",),
+    escalate: tuple[str, ...] = ("escalate if scope changes",),
+) -> str:
+    applies_to_str = ", ".join(applies_to)
+    when_body = "\n".join(f"- {item}" for item in when)
+    do_not_body = "\n".join(f"- {item}" for item in do_not)
+    verify_body = "\n".join(f"- {item}" for item in verify)
+    escalate_body = "\n".join(f"- {item}" for item in escalate)
+    return (
+        "---\n"
+        f"name: {name}\n"
+        f"title: {title}\n"
+        f"summary: {summary}\n"
+        f"applies_to: [{applies_to_str}]\n"
+        f"priority: {priority}\n"
+        "---\n"
+        "## When\n"
+        f"{when_body}\n\n"
+        "## Do\n"
+        f"- {do_item}\n\n"
+        "## Do Not\n"
+        f"{do_not_body}\n\n"
+        "## Verify\n"
+        f"{verify_body}\n\n"
+        "## Escalate\n"
+        f"{escalate_body}\n"
+    )
+
+
+def _sop(
+    name: str,
+    title: str,
+    *,
+    summary: str = "Summary.",
+    applies_to: tuple[str, ...] = ("general",),
+    priority: str = "must",
+    path: str = "s.md",
+) -> Sop:
+    return Sop(
+        name=name,
+        title=title,
+        summary=summary,
+        applies_to=applies_to,
+        priority=priority,
+        when=("when it applies",),
+        do=("do it",),
+        do_not=("do not drift",),
+        verify=("verify the outcome",),
+        escalate=("escalate if scope changes",),
+        path=Path(path),
+    )
+
+
+def _rendered_block(
+    title: str,
+    *,
+    summary: str = "Summary.",
+    applies_to: tuple[str, ...] = ("general",),
+    priority: str = "must",
+    when: tuple[str, ...] = ("when it applies",),
+    do: tuple[str, ...] = ("do it",),
+    do_not: tuple[str, ...] = ("do not drift",),
+    verify: tuple[str, ...] = ("verify the outcome",),
+    escalate: tuple[str, ...] = ("escalate if scope changes",),
+) -> str:
+    lines = [
+        f"[SOP: {title}]",
+        f"Summary: {summary}",
+        f"Applies To: {', '.join(applies_to)}",
+        f"Priority: {priority.upper()}",
+        "",
+        "When:",
+        *(f"- {item}" for item in when),
+        "",
+        "Do:",
+        *(f"- {item}" for item in do),
+        "",
+        "Do Not:",
+        *(f"- {item}" for item in do_not),
+        "",
+        "Verify:",
+        *(f"- {item}" for item in verify),
+        "",
+        "Escalate:",
+        *(f"- {item}" for item in escalate),
+    ]
+    return "\n".join(lines)
 
 
 def _flat_plan(units: dict[str, PlanUnit] | None = None) -> FlatPlan:
@@ -69,12 +164,24 @@ class TestLoadSops:
 
     def test_parses_valid_sop(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
-        _write(sops_dir / "testing.md", _sop_md("testing", "Testing Guide", "Run pytest."))
+        _write(
+            sops_dir / "testing.md",
+            _sop_md(
+                "testing",
+                "Testing Guide",
+                "Run pytest.",
+                summary="Targeted test guidance.",
+                applies_to=("tests", "pytest"),
+            ),
+        )
         sops = load_sops(sops_dir)
         assert len(sops) == 1
         assert sops[0].name == "testing"
         assert sops[0].title == "Testing Guide"
-        assert sops[0].body == "Run pytest."
+        assert sops[0].summary == "Targeted test guidance."
+        assert sops[0].applies_to == ("tests", "pytest")
+        assert sops[0].priority == "must"
+        assert sops[0].do == ("Run pytest.",)
 
     def test_multiple_sops_sorted(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
@@ -83,21 +190,41 @@ class TestLoadSops:
         sops = load_sops(sops_dir)
         assert [s.name for s in sops] == ["alpha", "zulu"]
 
-    def test_skips_no_front_matter(self, tmp_path: Path) -> None:
+    def test_invalid_without_front_matter(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
         _write(sops_dir / "bare.md", "Just markdown, no front matter.")
-        assert load_sops(sops_dir) == []
+        with pytest.raises(ValueError, match="missing front matter"):
+            load_sops(sops_dir)
 
-    def test_skips_missing_name(self, tmp_path: Path) -> None:
+    def test_invalid_missing_name(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
-        _write(sops_dir / "no-name.md", "---\ntitle: Has Title\n---\nBody.\n")
-        assert load_sops(sops_dir) == []
+        _write(
+            sops_dir / "no-name.md",
+            "---\n"
+            "title: Has Title\n"
+            "summary: x\n"
+            "applies_to: [general]\n"
+            "priority: must\n"
+            "---\n"
+            "## When\n- x\n\n## Do\n- x\n\n## Do Not\n- x\n\n## Verify\n- x\n\n## Escalate\n- x\n",
+        )
+        with pytest.raises(ValueError, match="missing required front-matter field 'name'"):
+            load_sops(sops_dir)
 
-    def test_title_defaults_to_empty(self, tmp_path: Path) -> None:
+    def test_invalid_missing_summary(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
-        _write(sops_dir / "notitle.md", "---\nname: notitle\n---\nBody.\n")
-        sops = load_sops(sops_dir)
-        assert sops[0].title == ""
+        _write(
+            sops_dir / "no-summary.md",
+            "---\n"
+            "name: notitle\n"
+            "title: Title\n"
+            "applies_to: [general]\n"
+            "priority: must\n"
+            "---\n"
+            "## When\n- x\n\n## Do\n- x\n\n## Do Not\n- x\n\n## Verify\n- x\n\n## Escalate\n- x\n",
+        )
+        with pytest.raises(ValueError, match="missing required front-matter field 'summary'"):
+            load_sops(sops_dir)
 
     def test_ignores_non_md_files(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
@@ -107,18 +234,45 @@ class TestLoadSops:
         assert len(sops) == 1
         assert sops[0].name == "actual"
 
-    def test_body_strips_whitespace(self, tmp_path: Path) -> None:
+    def test_invalid_missing_required_section(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
-        _write(sops_dir / "ws.md", "---\nname: ws\ntitle: WS\n---\n\n  body  \n\n")
-        sops = load_sops(sops_dir)
-        assert sops[0].body == "body"
+        _write(
+            sops_dir / "ws.md",
+            "---\n"
+            "name: ws\n"
+            "title: WS\n"
+            "summary: x\n"
+            "applies_to: [general]\n"
+            "priority: must\n"
+            "---\n"
+            "## When\n- x\n\n## Do\n- x\n\n## Verify\n- x\n\n## Escalate\n- x\n",
+        )
+        with pytest.raises(ValueError, match="missing required sections: Do Not"):
+            load_sops(sops_dir)
 
     def test_quoted_values(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
-        _write(sops_dir / "q.md", "---\nname: \"quoted-name\"\ntitle: 'quoted-title'\n---\nB\n")
+        _write(
+            sops_dir / "q.md",
+            "---\n"
+            'name: "quoted-name"\n'
+            "title: 'quoted-title'\n"
+            'summary: "quoted summary"\n'
+            'applies_to: ["alpha", "beta"]\n'
+            "priority: 'should'\n"
+            "---\n"
+            "## When\n- quoted\n\n"
+            "## Do\n- B\n\n"
+            "## Do Not\n- no\n\n"
+            "## Verify\n- yes\n\n"
+            "## Escalate\n- maybe\n",
+        )
         sops = load_sops(sops_dir)
         assert sops[0].name == "quoted-name"
         assert sops[0].title == "quoted-title"
+        assert sops[0].summary == "quoted summary"
+        assert sops[0].applies_to == ("alpha", "beta")
+        assert sops[0].priority == "should"
 
 
 # =============================================================================
@@ -129,25 +283,44 @@ class TestLoadSops:
 class TestSopSetHash:
     def test_deterministic(self, tmp_path: Path) -> None:
         sops = [
-            Sop(name="a", title="A", body="", path=tmp_path / "a.md"),
-            Sop(name="b", title="B", body="", path=tmp_path / "b.md"),
+            _sop("a", "A", path=str(tmp_path / "a.md")),
+            _sop("b", "B", path=str(tmp_path / "b.md")),
         ]
         assert compute_sop_set_hash(sops) == compute_sop_set_hash(sops)
 
     def test_order_independent(self, tmp_path: Path) -> None:
-        s1 = Sop(name="a", title="A", body="", path=tmp_path / "a.md")
-        s2 = Sop(name="b", title="B", body="", path=tmp_path / "b.md")
+        s1 = _sop("a", "A", path=str(tmp_path / "a.md"))
+        s2 = _sop("b", "B", path=str(tmp_path / "b.md"))
         assert compute_sop_set_hash([s1, s2]) == compute_sop_set_hash([s2, s1])
 
     def test_changes_on_title_change(self, tmp_path: Path) -> None:
-        s1 = [Sop(name="a", title="A", body="x", path=tmp_path / "a.md")]
-        s2 = [Sop(name="a", title="Changed", body="x", path=tmp_path / "a.md")]
+        s1 = [_sop("a", "A", path=str(tmp_path / "a.md"))]
+        s2 = [_sop("a", "Changed", path=str(tmp_path / "a.md"))]
         assert compute_sop_set_hash(s1) != compute_sop_set_hash(s2)
 
     def test_body_change_does_not_affect_hash(self, tmp_path: Path) -> None:
-        s1 = [Sop(name="a", title="A", body="old body", path=tmp_path / "a.md")]
-        s2 = [Sop(name="a", title="A", body="new body", path=tmp_path / "a.md")]
+        s1 = [_sop("a", "A", path=str(tmp_path / "a.md"))]
+        s2 = [
+            Sop(
+                name="a",
+                title="A",
+                summary="Summary.",
+                applies_to=("general",),
+                priority="must",
+                when=("changed body",),
+                do=("other",),
+                do_not=("no",),
+                verify=("yes",),
+                escalate=("maybe",),
+                path=tmp_path / "a.md",
+            )
+        ]
         assert compute_sop_set_hash(s1) == compute_sop_set_hash(s2)
+
+    def test_summary_change_affects_hash(self, tmp_path: Path) -> None:
+        s1 = [_sop("a", "A", summary="One", path=str(tmp_path / "a.md"))]
+        s2 = [_sop("a", "A", summary="Two", path=str(tmp_path / "a.md"))]
+        assert compute_sop_set_hash(s1) != compute_sop_set_hash(s2)
 
 
 # =============================================================================
@@ -158,7 +331,7 @@ class TestSopSetHash:
 class TestIdentityBundler:
     def test_returns_empty_mapping(self) -> None:
         units = {"a": _unit("a"), "b": _unit("b")}
-        sops = [Sop(name="s", title="S", body="", path=Path("s.md"))]
+        sops = [_sop("s", "S")]
         result = IdentityBundler().pick(units, sops)
         assert result == {"a": [], "b": []}
 
@@ -169,6 +342,13 @@ class TestLLMSopBundler:
         with pytest.raises(ValueError, match="FIREWORKS_API_KEY missing"):
             LLMSopBundler().pick({}, [])
 
+    def test_uses_configured_api_key_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="OPENAI_API_KEY missing"):
+            LLMSopBundler(api_key_env="OPENAI_API_KEY").pick({}, [])
+
     def test_successful_pick(self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> None:
         monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
         mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
@@ -177,7 +357,7 @@ class TestLLMSopBundler:
         mock_client.return_value.chat.completions.create.return_value = mock_resp
 
         units = {"a": _unit("a"), "b": _unit("b")}
-        sops = [Sop(name="s1", title="S1", body="", path=Path("s1.md"))]
+        sops = [_sop("s1", "S1", path="s1.md")]
 
         result = LLMSopBundler().pick(units, sops)
         assert result == {"a": ["s1"], "b": []}
@@ -185,8 +365,30 @@ class TestLLMSopBundler:
         # Verify prompt contents
         _, kwargs = mock_client.return_value.chat.completions.create.call_args
         prompt = kwargs["messages"][1]["content"]
-        assert "s1: S1" in prompt
+        assert "s1: S1 | summary: Summary." in prompt
+        assert "applies_to: general" in prompt
+        assert "priority: must" in prompt
         assert "a: s" in prompt  # summary is "s" from _unit helper
+
+    def test_successful_pick_uses_custom_base_url_and_env(
+        self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "fake")
+        mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
+        mock_resp = mocker.MagicMock()
+        mock_resp.choices[0].message.content = '{"mapping": {"a": []}}'
+        mock_client.return_value.chat.completions.create.return_value = mock_resp
+
+        bundler = LLMSopBundler(
+            model="gpt-4.1-mini",
+            base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+        )
+        bundler.pick({"a": _unit("a")}, [])
+
+        _, kwargs = mock_client.call_args
+        assert kwargs["base_url"] == "https://api.openai.com/v1"
+        assert kwargs["api_key"] == "fake"
 
     def test_api_failure_raises_runtime_error(
         self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -219,7 +421,8 @@ class TestBundleCaching:
             plan, sops_dir, bundler, cached_mapping=cached_mapping, cached_hash=hash_val
         )
         assert result.sop_mapping == {"a": ("s1",)}
-        assert result.plan.units["a"].prompt == "Body 1\n\nPrompt"
+        expected = _rendered_block("S1", do=("Body 1",)) + "\n\nPrompt"
+        assert result.plan.units["a"].prompt == expected
         bundler.pick.assert_not_called()
 
     def test_bundle_re_calls_on_hash_mismatch(self, tmp_path: Path, mocker: MockerFixture) -> None:
@@ -317,7 +520,10 @@ class TestBundleRewrite:
         _write(sops_dir / "style.md", _sop_md("style", "Style", "Use ruff."))
         plan = _flat_plan({"a": _unit("a", "Write code.")})
         result = bundle(plan, sops_dir, _PickAllBundler())
-        assert result.plan.units["a"].prompt == "Use ruff.\n\nWrite code."
+        assert (
+            result.plan.units["a"].prompt
+            == _rendered_block("Style", do=("Use ruff.",)) + "\n\nWrite code."
+        )
         assert result.sop_mapping == {"a": ("style",)}
 
     def test_multiple_sops_concatenated(self, tmp_path: Path) -> None:
@@ -326,7 +532,12 @@ class TestBundleRewrite:
         _write(sops_dir / "b.md", _sop_md("beta", "B", "Beta body."))
         plan = _flat_plan({"x": _unit("x", "Task prompt.")})
         result = bundle(plan, sops_dir, _PickAllBundler())
-        assert result.plan.units["x"].prompt == "Alpha body.\n\nBeta body.\n\nTask prompt."
+        assert result.plan.units["x"].prompt == (
+            _rendered_block("A", do=("Alpha body.",))
+            + "\n\n"
+            + _rendered_block("B", do=("Beta body.",))
+            + "\n\nTask prompt."
+        )
 
     def test_selective_assignment(self, tmp_path: Path) -> None:
         sops_dir = tmp_path / "sops"
@@ -338,8 +549,10 @@ class TestBundleRewrite:
         })
         mapping = {"a": ["lint"], "b": ["test"]}
         result = bundle(plan, sops_dir, _SelectiveBundler(mapping))
-        assert result.plan.units["a"].prompt == "Run linter.\n\nTask A."
-        assert result.plan.units["b"].prompt == "Run tests.\n\nTask B."
+        expected_a = _rendered_block("Lint", do=("Run linter.",)) + "\n\nTask A."
+        expected_b = _rendered_block("Test", do=("Run tests.",)) + "\n\nTask B."
+        assert result.plan.units["a"].prompt == expected_a
+        assert result.plan.units["b"].prompt == expected_b
         assert result.sop_mapping["a"] == ("lint",)
         assert result.sop_mapping["b"] == ("test",)
 
@@ -356,7 +569,8 @@ class TestBundleRewrite:
         _write(sops_dir / "s.md", _sop_md("s", "S", "Body."))
         plan = _flat_plan({"a": _unit("a", "Prompt A."), "b": _unit("b", "Prompt B.")})
         result = bundle(plan, sops_dir, _SelectiveBundler({"a": ["s"]}))
-        assert result.plan.units["a"].prompt == "Body.\n\nPrompt A."
+        expected = _rendered_block("S", do=("Body.",)) + "\n\nPrompt A."
+        assert result.plan.units["a"].prompt == expected
         assert result.plan.units["b"].prompt == "Prompt B."
 
     def test_hash_populated(self, tmp_path: Path) -> None:
@@ -396,10 +610,10 @@ class TestBundleIntegration:
 
     def test_bundle_plan_system_with_identity(self) -> None:
         plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
-        sops_dir = plan_root.parent.parent.parent / "sops"  # .dgov/sops
+        sops_dir = plan_root.parent.parent / "sops"
         plan = resolve_refs(merge_tree(walk_tree(plan_root)))
         result = bundle(plan, sops_dir, IdentityBundler())
-        # All unit prompts unchanged (no SOPs exist yet)
+        # Identity bundler keeps prompts unchanged even when SOPs exist.
         for uid in plan.units:
             assert result.plan.units[uid].prompt == plan.units[uid].prompt
-        assert result.sop_set_hash == ""
+        assert result.sop_set_hash != ""

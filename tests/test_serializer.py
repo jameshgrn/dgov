@@ -289,6 +289,36 @@ class TestSerializeCompiledToml:
 
         assert 'files.delete = ["old_file.py"]' in result
 
+    def test_contains_files_read(self, tmp_path):
+        """Output should include files.read when present."""
+        flat_plan = _create_flat_plan(tmp_path)
+        unit_b = flat_plan.units["section1/file1.unit_b"]
+        flat_plan = FlatPlan(
+            plan_root=flat_plan.plan_root,
+            root_meta=flat_plan.root_meta,
+            units={
+                **flat_plan.units,
+                "section1/file1.unit_b": PlanUnit(
+                    slug=unit_b.slug,
+                    summary=unit_b.summary,
+                    prompt=unit_b.prompt,
+                    commit_message=unit_b.commit_message,
+                    files=PlanUnitFiles(
+                        delete=unit_b.files.delete,
+                        read=("src/main.py", "docs/spec.md"),
+                    ),
+                    depends_on=unit_b.depends_on,
+                ),
+            },
+            source_map=flat_plan.source_map,
+            source_mtime_max=flat_plan.source_mtime_max,
+        )
+        bundle = _create_bundle_result(flat_plan)
+
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        assert 'files.read = ["src/main.py", "docs/spec.md"]' in result
+
     def test_is_valid_toml_round_trip(self, tmp_path):
         """Output should be valid TOML that can be parsed by tomllib."""
         flat_plan = _create_flat_plan(tmp_path)
