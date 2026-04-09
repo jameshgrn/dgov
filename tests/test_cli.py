@@ -12,8 +12,8 @@ from helpers import compile_plan_tree
 
 from dgov.cli import cli
 from dgov.cli.init import _detect_project, _render_project_toml
-from dgov.cli.watch import _format_event
-from dgov.persistence import add_task, all_tasks
+from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
+from dgov.persistence import add_task, all_tasks, emit_event, replace_all_tasks
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
@@ -245,6 +245,157 @@ def test_watch_subcommand_registered(runner: CliRunner) -> None:
     assert "Stream" in result.output
 
 
+def test_watch_help_shows_flags(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["watch", "--help"])
+    assert result.exit_code == 0
+    assert "--all" in result.output
+    assert "--plan" in result.output
+
+
+def test_infer_plan_name_no_active_tasks(tmp_path: Path) -> None:
+    replace_all_tasks(str(tmp_path), [])
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
+
+
+def test_infer_plan_name_single_plan(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
+
+
+def test_infer_plan_name_multiple_plans(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-b",
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
+
+
+def test_infer_plan_name_empty_plan_names(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.ACTIVE.value,
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
+
+
+def test_infer_plan_name_mixed_states(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.MERGED.value,
+                "plan_name": "plan-b",
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
+
+
+def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            }
+        ],
+    )
+    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 0)
+
+
+def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path) -> None:
+    emit_event(str(tmp_path), "task_done", "pane-a", plan_name="old-plan")
+    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == (None, 1)
+
+
 # -- init-plan --
 
 
@@ -360,17 +511,18 @@ def test_format_event_settlement_retry() -> None:
 
 def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
     """Running with --only nonexistent exits with code 1 and error message."""
-    tasks_toml = """
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
 [tasks.a]
 summary = "do a"
 prompt = "do a"
 commit_message = "a"
 files = ["a.py"]
 """
-    compiled_path = compile_plan_tree(tmp_path, "unknown-slug-test", tasks_toml)
-    result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
-    assert result.exit_code == 1
-    assert "not found" in result.output.lower() or "nonexistent" in result.output
+        compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
+        result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower() or "nonexistent" in result.output
 
 
 def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
