@@ -251,6 +251,7 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
             create=_str_list(files_data.get("create", []), "files.create", source),
             edit=_str_list(files_data.get("edit", []), "files.edit", source),
             delete=_str_list(files_data.get("delete", []), "files.delete", source),
+            read=_str_list(files_data.get("read", []), "files.read", source),
             touch=_str_list(files_data.get("touch", []), "files.touch", source),
         )
     else:

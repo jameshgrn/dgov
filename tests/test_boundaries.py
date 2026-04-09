@@ -60,17 +60,11 @@ class TestSettlementPurity:
         assert not violations, f"settlement.py imports forbidden modules: {violations}"
 
 
-class TestUvRequired:
-    """uv must be discoverable — wrong state should be impossible."""
+class TestWorkerLaunchBoundary:
+    """Headless worker must run inside the installed dgov interpreter."""
 
-    def test_find_uv_succeeds(self):
-        from dgov.workers.headless import _find_uv
-
-        uv = _find_uv()
-        assert uv.endswith("uv") or "uv" in uv
-
-    def test_headless_cmd_uses_uv(self):
-        """Headless worker cmd starts with uv run, not sys.executable."""
+    def test_headless_cmd_uses_current_interpreter(self):
+        """Headless worker cmd starts with sys.executable, not uv run."""
         source = (_SRC / "workers" / "headless.py").read_text()
-        assert "sys.executable" not in source
-        assert "_find_uv()" in source
+        assert "sys.executable" in source
+        assert "_find_uv" not in source

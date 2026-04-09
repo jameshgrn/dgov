@@ -38,13 +38,14 @@ def sentrux_check(path: Path | None, json_fmt: bool) -> None:
 
     target = str(path) if path else "."
     try:
-        output = _run_sentrux(["check", target], cwd=target)
+        result = _run_sentrux(["check", target])
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux check failed: {e.stderr or e.stdout}", err=True)
         raise click.exceptions.Exit(code=1) from e
     except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux check timed out", err=True)
         raise click.exceptions.Exit(code=1) from e
+    output = result.stdout
 
     # Parse quality from output
     quality = 0
@@ -76,13 +77,14 @@ def sentrux_gate_save(path: Path | None) -> None:
 
     target = str(path) if path else "."
     try:
-        output = _run_sentrux(["gate", "--save", target], cwd=target)
+        result = _run_sentrux(["gate", "--save", target])
     except subprocess.CalledProcessError as e:
         click.echo(f"Error: sentrux gate-save failed: {e.stderr or e.stdout}", err=True)
         raise click.exceptions.Exit(code=1) from e
     except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux gate-save timed out", err=True)
         raise click.exceptions.Exit(code=1) from e
+    output = result.stdout
 
     quality = 0
     for line in output.splitlines():
@@ -113,15 +115,17 @@ def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
 
     target = str(path) if path else "."
     try:
-        output = _run_sentrux(["gate", target], cwd=target)
-    except subprocess.CalledProcessError as e:
-        click.echo(f"Error: sentrux gate failed: {e.stderr or e.stdout}", err=True)
-        raise click.exceptions.Exit(code=1) from e
+        result = _run_sentrux(["gate", target], check=False)
     except subprocess.TimeoutExpired as e:
         click.echo("Error: sentrux gate timed out", err=True)
         raise click.exceptions.Exit(code=1) from e
+    output = (result.stdout or "") + (result.stderr or "")
 
     degradation = "degradation" in output.lower() and "no degradation" not in output.lower()
+
+    if result.returncode != 0 and not degradation:
+        click.echo(f"Error: sentrux gate failed: {output}", err=True)
+        raise click.exceptions.Exit(code=1)
 
     click.echo(output)
 

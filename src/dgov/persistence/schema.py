@@ -145,7 +145,10 @@ _TASK_TYPED_COLS = frozenset({
 
 def state_path(session_root: str) -> Path:
     """Return the path to the state database file."""
-    return Path(session_root) / STATE_DIR / _STATE_FILE
+    root = Path(session_root)
+    if root.name == STATE_DIR:
+        root = root.parent
+    return root / STATE_DIR / _STATE_FILE
 
 
 # -- Event Constants --

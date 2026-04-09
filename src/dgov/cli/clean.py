@@ -9,6 +9,7 @@ import click
 
 from dgov.cli import cli
 from dgov.persistence import all_tasks
+from dgov.project_root import resolve_project_root
 
 
 def _delete_dir(path: Path, dry_run: bool) -> bool:
@@ -30,7 +31,7 @@ def clean_cmd(dry_run: bool) -> None:
     from .dgov/worktrees/ that are not associated with active tasks.
     Also removes transient one-off fix plans from .dgov/runtime/fix-plans/.
     """
-    project_root = Path.cwd()
+    project_root = resolve_project_root()
     dgov_dir = project_root / ".dgov"
     out_dir = dgov_dir / "out"
     worktrees_dir = dgov_dir / "worktrees"

@@ -8,6 +8,7 @@ import click
 
 from dgov.cli import cli
 from dgov.persistence import add_ledger_entry, list_ledger_entries, resolve_ledger_entry
+from dgov.project_root import resolve_project_root
 
 
 @cli.group(name="ledger")
@@ -22,7 +23,7 @@ def ledger_cmd() -> None:
 @click.option("--root", "-r", default=".", help="Project root")
 def ledger_add(category: str, content: str, root: str) -> None:
     """Add an entry to the ledger."""
-    project_root = str(Path(root).resolve())
+    project_root = str(resolve_project_root(Path(root)))
     entry_id = add_ledger_entry(project_root, category, content)
     click.echo(f"Added {category} entry #{entry_id}")
 
@@ -42,7 +43,7 @@ def ledger_add(category: str, content: str, root: str) -> None:
 @click.option("--root", "-r", default=".", help="Project root")
 def ledger_list(category: str | None, status: str, query: str | None, root: str) -> None:
     """List ledger entries."""
-    project_root = str(Path(root).resolve())
+    project_root = str(resolve_project_root(Path(root)))
     entries = list_ledger_entries(project_root, category=category, status=status, query=query)
 
     if not entries:
@@ -66,7 +67,7 @@ def ledger_list(category: str | None, status: str, query: str | None, root: str)
 @click.option("--root", "-r", default=".", help="Project root")
 def ledger_resolve(entry_id: int, root: str) -> None:
     """Mark a ledger entry as resolved."""
-    project_root = str(Path(root).resolve())
+    project_root = str(resolve_project_root(Path(root)))
     if resolve_ledger_entry(project_root, entry_id):
         click.echo(f"Resolved entry #{entry_id}")
     else:

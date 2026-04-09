@@ -9,6 +9,7 @@ import click
 
 from dgov.cli import cli, want_json
 from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
+from dgov.project_root import resolve_project_root
 
 
 def _format_unit_files(unit: PlanUnit) -> str:
@@ -138,7 +139,8 @@ def init_plan_cmd(name: str, sections: str, force: bool) -> None:
     \b
     Example: dgov init-plan my-plan --sections tasks,docs
     """
-    plan_root = Path(".dgov") / "plans" / name
+    project_root = resolve_project_root()
+    plan_root = project_root / ".dgov" / "plans" / name
 
     if plan_root.exists() and not force:
         click.echo(f"Error: plan '{name}' already exists. Use --force to overwrite.", err=True)
@@ -239,7 +241,7 @@ def _cmd_plan_status(plan_root: Path) -> None:
     except (FileNotFoundError, ValueError):
         pass
 
-    project_root = str(Path.cwd())
+    project_root = str(resolve_project_root())
     deployed = read_deploy_log(project_root, plan_name)
     deployed_units = {r.unit: r for r in deployed}
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
@@ -15,6 +14,7 @@ from rich.text import Text
 
 from dgov.cli import cli
 from dgov.persistence import all_tasks, latest_event_id, read_events
+from dgov.project_root import resolve_project_root
 from dgov.types import TaskState
 
 if TYPE_CHECKING:
@@ -75,7 +75,7 @@ def _default_watch_state(
 @click.option("--plan", "plan_name", help="Stream only events for this plan name")
 def watch_cmd(watch_all: bool, plan_name: str | None) -> None:
     """Stream governor events in real time."""
-    _cmd_watch(str(Path.cwd()), watch_all=watch_all, plan_name=plan_name)
+    _cmd_watch(str(resolve_project_root()), watch_all=watch_all, plan_name=plan_name)
 
 
 def _clean_slug(slug: str) -> str:

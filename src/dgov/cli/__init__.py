@@ -11,6 +11,7 @@ import click
 
 from dgov import __version__
 from dgov.persistence import all_tasks, cleanup_zombies, prune_history
+from dgov.project_root import resolve_project_root
 from dgov.types import TaskState, Worktree
 from dgov.worktree import remove_worktree
 
@@ -50,7 +51,7 @@ def cli(
       dgov                       Show status
       dgov run <dir>             Run a compiled plan
       dgov compile <dir>         Compile plan tree to _compiled.toml
-      dgov init                  Bootstrap .dgov/project.toml
+      dgov init                  Bootstrap .dgov/project.toml and governor.md
       dgov init-plan <name>      Initialize a new plan directory
       dgov fix <prompt>          Create and run a one-off fix plan
       dgov watch                 Stream events live
@@ -68,22 +69,22 @@ def cli(
         return
 
     # Bare `dgov` → show status
-    _cmd_status(str(Path.cwd()))
+    _cmd_status(str(resolve_project_root()))
 
 
 @cli.command(name="status")
 @click.option(
-    "--all", "show_all", is_flag=True, help="Show all tasks including abandoned/closed history"
+    "--all", "show_all", is_flag=True, help="Show persisted task history, not just live tasks"
 )
 def status_cmd(show_all: bool) -> None:
     """Show governor status — what's running now."""
-    _cmd_status(str(Path.cwd()), show_all=show_all)
+    _cmd_status(str(resolve_project_root()), show_all=show_all)
 
 
 @cli.command(name="recover")
 def recover_cmd() -> None:
     """Recover from a crashed run — marks ACTIVE tasks ABANDONED and removes orphaned branches."""
-    project_root = str(Path.cwd())
+    project_root = str(resolve_project_root())
     try:
         tasks = all_tasks(project_root)
 
@@ -131,7 +132,8 @@ def archive_plan_cmd(name: str) -> None:
     """Manually archive a plan directory to .dgov/plans/archive/<name>."""
     from dgov.archive import archive_plan
 
-    plan_dir = Path(".dgov") / "plans" / name
+    project_root = resolve_project_root()
+    plan_dir = project_root / ".dgov" / "plans" / name
     if not plan_dir.exists():
         click.echo(f"Error: Plan not found: {plan_dir}", err=True)
         raise click.exceptions.Exit(code=1)
@@ -146,7 +148,7 @@ def archive_plan_cmd(name: str) -> None:
 @cli.command(name="prune")
 def prune_cmd() -> None:
     """Prune historical tasks — removes abandoned and closed records."""
-    project_root = str(Path.cwd())
+    project_root = str(resolve_project_root())
     try:
         count = prune_history(project_root)
         if count == 0:
@@ -158,8 +160,16 @@ def prune_cmd() -> None:
         raise click.exceptions.Exit(code=1) from exc
 
 
-# States that represent settled history — not live governor state
-_HISTORICAL_STATES = frozenset({"abandoned", "closed"})
+# States that represent in-flight governor work, not persisted history.
+_LIVE_STATES = frozenset({
+    TaskState.PENDING.value,
+    TaskState.ACTIVE.value,
+    TaskState.DONE.value,
+    TaskState.REVIEWING.value,
+    TaskState.REVIEWED_PASS.value,
+    TaskState.REVIEWED_FAIL.value,
+    TaskState.MERGING.value,
+})
 
 
 def _cmd_status(project_root: str, show_all: bool = False) -> None:
@@ -175,7 +185,7 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
         return
 
     active = [t for t in tasks if t.get("state") == "active"]
-    visible = tasks if show_all else [t for t in tasks if t.get("state") not in _HISTORICAL_STATES]
+    visible = tasks if show_all else [t for t in tasks if t.get("state") in _LIVE_STATES]
 
     if want_json():
         click.echo(

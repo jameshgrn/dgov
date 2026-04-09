@@ -11,6 +11,7 @@ from dgov.archive import archive_plan
 from dgov.cli import cli
 from dgov.cli.compile import _cmd_compile
 from dgov.cli.run import _cmd_run_plan
+from dgov.project_root import resolve_project_root
 
 
 def _fix_plans_dir(project_root: Path) -> Path:
@@ -93,7 +94,7 @@ def fix_cmd(
     \b
     Example: dgov fix "Refactor error handling" --file src/utils.py --file src/main.py
     """
-    project_root = Path.cwd()
+    project_root = resolve_project_root()
     plans_dir = _fix_plans_dir(project_root)
     plans_dir.mkdir(parents=True, exist_ok=True)
     archive_dir = plans_dir / "archive"
