@@ -110,11 +110,11 @@ class TestFixHappyPath:
         plan_dir = tmp_path / ".dgov" / "plans" / "fix-update-imports"
         main_toml_path = plan_dir / "fix" / "main.toml"
 
-        # Parse the generated TOML and verify files.edit
+        # Parse the generated TOML and verify the task claims
         content = main_toml_path.read_text()
         parsed = tomllib.loads(content)
 
-        assert parsed["fix"]["apply"]["files"]["edit"] == [
+        assert parsed["tasks"]["apply"]["files"] == [
             "src/main.py",
             "src/config.py",
             "tests/test_main.py",
@@ -183,7 +183,7 @@ class TestFixHappyPath:
         main_toml_path = plan_dir / "fix" / "main.toml"
 
         parsed = tomllib.loads(main_toml_path.read_text())
-        assert parsed["fix"]["apply"]["commit_message"] == "fix: resolve critical bug in parser"
+        assert parsed["tasks"]["apply"]["commit_message"] == "fix: resolve critical bug in parser"
 
 
 class TestFixEdgeCases:
@@ -225,7 +225,7 @@ class TestFixEdgeCases:
         mock_compile.assert_not_called()
         mock_run.assert_not_called()
 
-    def test_auto_generated_name_collision_fails(
+    def test_auto_generated_name_collision_uses_suffix(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -233,18 +233,18 @@ class TestFixEdgeCases:
         mock_compile: MagicMock,
         mock_run: MagicMock,
     ) -> None:
-        """Auto-generated name that collides with existing plan fails gracefully."""
+        """Auto-generated names should add a numeric suffix on collision."""
         monkeypatch.chdir(tmp_path)
 
-        # Create an existing plan with the name that would be auto-generated
         plan_dir = tmp_path / ".dgov" / "plans" / "fix-refactor-code"
         plan_dir.mkdir(parents=True)
         (plan_dir / "_root.toml").write_text('[plan]\nname = "fix-refactor-code"\n')
 
         result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
 
-        assert result.exit_code == 1, f"Expected exit code 1, got {result.exit_code}"
-        assert "already exists" in result.output.lower()
+        assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
+        assert "Created plan 'fix-refactor-code-2'" in result.output
+        assert (tmp_path / ".dgov" / "plans" / "fix-refactor-code-2").exists()
 
     def test_missing_required_file_option(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

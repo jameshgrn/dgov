@@ -23,28 +23,32 @@ def _slugify(text: str) -> str:
 
 
 def _generate_plan_name(prompt: str) -> str:
-    """Generate a unique plan name from the prompt, prefixed with 'fix-'."""
+    """Generate a base plan name from the prompt, prefixed with 'fix-'."""
     slug = _slugify(prompt)
     return f"fix-{slug}"
 
 
-def _render_fix_plan_toml(name: str, prompt: str, files: list[str], commit_message: str) -> str:
-    """Render a single-task fix plan TOML."""
-    files_str = ", ".join(f'"{f}"' for f in files)
-    prompt_escaped = prompt.replace('"""', '"""')
+def _toml_str(value: str) -> str:
+    """Wrap a string in TOML double quotes, escaping as needed."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def _toml_ml_str(value: str) -> str:
+    """Render a TOML multi-line string that tolerates embedded triple quotes."""
+    safe = value.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+    return f'"""\n{safe}\n"""'
+
+
+def _render_fix_plan_toml(prompt: str, files: list[str], commit_message: str) -> str:
+    """Render the single task file for a fix plan tree."""
+    files_str = ", ".join(_toml_str(f) for f in files)
     return (
-        f"[plan]\n"
-        f'name = "{name}"\n'
-        f'summary = "Apply requested fix"\n'
-        f'sections = ["fix"]\n'
-        f"\n"
-        f"[fix.apply]\n"
-        f'summary = "Apply requested fix"\n'
-        f'prompt = """\n'
-        f"{prompt_escaped}\n"
-        f'"""\n'
-        f'commit_message = "{commit_message}"\n'
-        f"files.edit = [{files_str}]\n"
+        "[tasks.apply]\n"
+        'summary = "Apply requested fix"\n'
+        f"prompt = {_toml_ml_str(prompt)}\n"
+        f"commit_message = {_toml_str(commit_message)}\n"
+        f"files = [{files_str}]\n"
     )
 
 
@@ -63,9 +67,7 @@ def _render_fix_plan_toml(name: str, prompt: str, files: list[str], commit_messa
     default="Apply requested fix",
     help="Override the commit message",
 )
-@click.pass_context
 def fix_cmd(
-    ctx: click.Context,
     prompt: str,
     file: tuple[str, ...],
     name: str | None,
@@ -80,14 +82,25 @@ def fix_cmd(
     Example: dgov fix "Refactor error handling" --file src/utils.py --file src/main.py
     """
     project_root = Path.cwd()
-    plan_name = name or _generate_plan_name(prompt)
-    plan_dir = project_root / ".dgov" / "plans" / plan_name
+    plans_dir = project_root / ".dgov" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fail fast if plan already exists
-    if plan_dir.exists():
-        click.echo(f"Error: Plan '{plan_name}' already exists at {plan_dir}", err=True)
-        click.echo("Use --name to specify a different name.", err=True)
-        raise click.exceptions.Exit(code=1)
+    if name:
+        plan_name = name
+        plan_dir = plans_dir / plan_name
+        if plan_dir.exists():
+            click.echo(f"Error: Plan '{plan_name}' already exists at {plan_dir}", err=True)
+            click.echo("Use --name to specify a different name.", err=True)
+            raise click.exceptions.Exit(code=1)
+    else:
+        base_name = _generate_plan_name(prompt)
+        plan_name = base_name
+        suffix = 2
+        plan_dir = plans_dir / plan_name
+        while plan_dir.exists():
+            plan_name = f"{base_name}-{suffix}"
+            plan_dir = plans_dir / plan_name
+            suffix += 1
 
     # Create plan directory structure
     plan_dir.mkdir(parents=True)
@@ -104,7 +117,7 @@ sections = ["fix"]
 
     # Write fix/main.toml
     files_list = list(file)
-    main_toml = _render_fix_plan_toml(plan_name, prompt, files_list, commit_message)
+    main_toml = _render_fix_plan_toml(prompt, files_list, commit_message)
     (fix_section_dir / "main.toml").write_text(main_toml)
 
     click.echo(f"Created plan '{plan_name}' at {plan_dir}")
