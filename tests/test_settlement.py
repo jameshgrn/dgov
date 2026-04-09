@@ -407,6 +407,47 @@ class TestValidateSandbox:
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
         assert result.passed is True
 
+    @pytest.mark.unit
+    def test_pass_no_tests_collected(self, tmp_path: Path):
+        """pytest exit code 5 (no tests collected) is treated as a pass."""
+        base = _init_repo(tmp_path)
+        (tmp_path / "clean.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add clean.py")
+        # exit 5 = pytest "no tests were collected"
+        config = ProjectConfig(test_cmd="exit 5", type_check_cmd="")
+        result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        assert result.passed is True
+
+    @pytest.mark.unit
+    def test_sentrux_empty_baseline_skipped(self, tmp_path: Path, monkeypatch):
+        """Sentrux gate is skipped when baseline has total_import_edges == 0 (empty project)."""
+        import json
+
+        base = _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text(
+            json.dumps({"quality_signal": 1.0, "total_import_edges": 0})
+        )
+        (tmp_path / "mod.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add mod")
+
+        real_run = subprocess.run
+
+        def _mock_run(args, **kwargs):
+            if args[0] == "sentrux" and args[1] == "gate":
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="Quality signal dropped: 1.00 → 0.82\n", stderr=""
+                )
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr("subprocess.run", _mock_run)
+
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert result.passed is True
+
 
 # ---------------------------------------------------------------------------
 # Dogfood — Test that dgov's own project.toml config is valid
