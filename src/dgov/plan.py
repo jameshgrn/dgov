@@ -71,6 +71,7 @@ class PlanSpec:
     default_timeout_s: int = 600
     max_retries: int = 1
     sop_set_hash: str = ""
+    source_mtime_max: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,7 @@ def parse_plan_file(path: str) -> PlanSpec:
         default_agent=dag_def.default_agent,
         max_retries=dag_def.default_max_retries,
         sop_set_hash=dag_def.sop_set_hash,
+        source_mtime_max=dag_def.source_mtime_max,
     )
 
 

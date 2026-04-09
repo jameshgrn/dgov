@@ -18,7 +18,7 @@ def runner():
 
 
 def test_run_uncompiled_plan_fails(runner: CliRunner, tmp_path: Path) -> None:
-    """dgov run should fail if the plan is not compiled (missing sop_set_hash)."""
+    """dgov run should fail if the plan is not compiled (missing source_mtime_max)."""
     plan = tmp_path / "plan.toml"
     plan.write_text(
         '[plan]\nname = "uncompiled"\n\n'
@@ -34,11 +34,10 @@ def test_run_uncompiled_plan_fails(runner: CliRunner, tmp_path: Path) -> None:
 
 
 def test_run_compiled_plan_passes_check(runner: CliRunner, tmp_path: Path, monkeypatch) -> None:
-    """dgov run should pass the check if sop_set_hash is present."""
+    """dgov run should pass the check if source_mtime_max is present (sop_set_hash not required)."""
     plan = tmp_path / "_compiled.toml"
     plan.write_text(
         '[plan]\nname = "compiled"\n'
-        'sop_set_hash = "somehash"\n'
         'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
         "[tasks.a]\n"
         'summary = "do a"\n'

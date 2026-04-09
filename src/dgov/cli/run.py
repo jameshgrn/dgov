@@ -220,8 +220,9 @@ def _cmd_run_plan(
     plan = parse_plan_file(plan_file)
 
     # Pillar #4: Determinism - Only run compiled plans.
-    # Bypass for bootstrap/tests via DGOV_ALLOW_UNCOMPILED=1
-    if not plan.sop_set_hash and not os.environ.get("DGOV_ALLOW_UNCOMPILED"):
+    # source_mtime_max is always set by `dgov compile`; absent on hand-authored files.
+    # Bypass for hand-crafted plans or dev use via DGOV_ALLOW_UNCOMPILED=1.
+    if not plan.source_mtime_max and not os.environ.get("DGOV_ALLOW_UNCOMPILED"):
         click.echo(f"Error: Plan {plan_file} is not compiled.", err=True)
         click.echo("dgov requires plans to be compiled via the Plan Tree pipeline.", err=True)
         click.echo("To fix this:", err=True)
