@@ -702,11 +702,17 @@ class TestValidatePlan:
 
 
 # =============================================================================
-# validate_plan — unclaimed test file reference tests
+# validate_plan — unclaimed prompt path reference tests
 # =============================================================================
 
 
-class TestValidatePlanUnclaimedTestRefs:
+class TestValidatePlanUnclaimedPromptRefs:
+    """Tests for the prompt→claims cross-check.
+
+    The validator scans each task's prompt for file-path references and warns
+    when they aren't covered by the task's file claims.
+    """
+
     def _unit(self, prompt: str, **file_kwargs) -> PlanUnit:
         return PlanUnit(
             slug="task",
@@ -723,33 +729,42 @@ class TestValidatePlanUnclaimedTestRefs:
             units={"task": self._unit(prompt, **file_kwargs)},
         )
 
-    def test_no_warning_when_no_test_refs(self):
-        plan = self._plan("Edit src/foo.py to add the feature.")
+    def test_no_warning_when_no_path_refs(self):
+        plan = self._plan("Add the feature to the main module.")
         assert validate_plan(plan) == []
 
     def test_warns_on_unclaimed_test_ref_in_prompt(self):
-        plan = self._plan("Edit src/foo.py. Run tests/test_foo.py to verify.")
+        plan = self._plan(
+            "Run tests/test_foo.py to verify.",
+            edit=("src/foo.py",),
+        )
         issues = validate_plan(plan)
         warnings = [i for i in issues if i.severity == "warning"]
         assert len(warnings) == 1
         assert "tests/test_foo.py" in warnings[0].message
         assert warnings[0].unit == "task"
 
-    def test_no_warning_when_test_ref_claimed_via_touch(self):
+    def test_warns_on_unclaimed_src_ref_in_prompt(self):
+        plan = self._plan("Read src/adapters/db.py and fix the bug.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert len(warnings) == 1
+        assert "src/adapters/db.py" in warnings[0].message
+
+    def test_no_warning_when_ref_claimed_via_touch(self):
         plan = self._plan(
-            "Edit src/foo.py. Update tests/test_foo.py.",
+            "Update tests/test_foo.py.",
             touch=("tests/test_foo.py",),
         )
         assert validate_plan(plan) == []
 
-    def test_no_warning_when_test_ref_claimed_via_edit(self):
+    def test_no_warning_when_ref_claimed_via_edit(self):
         plan = self._plan(
-            "Edit src/foo.py. Update tests/test_foo.py.",
-            edit=("tests/test_foo.py",),
+            "Update src/foo.py and tests/test_foo.py.",
+            edit=("src/foo.py", "tests/test_foo.py"),
         )
         assert validate_plan(plan) == []
 
-    def test_no_warning_when_test_ref_claimed_via_create(self):
+    def test_no_warning_when_ref_claimed_via_create(self):
         plan = self._plan(
             "Create tests/test_new.py with new tests.",
             create=("tests/test_new.py",),
@@ -761,7 +776,7 @@ class TestValidatePlanUnclaimedTestRefs:
         warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
         assert len(warnings) == 1
 
-    def test_warns_for_each_distinct_unclaimed_test(self):
+    def test_warns_for_each_distinct_unclaimed_path(self):
         plan = self._plan("Check tests/test_foo.py and tests/test_bar.py.")
         warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
         assert len(warnings) == 2
@@ -788,9 +803,9 @@ class TestValidatePlanUnclaimedTestRefs:
         warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
         assert warnings[0].unit == "my-slug"
 
-    def test_no_warning_for_src_py_refs(self):
-        """Only test/ paths trigger the warning, not arbitrary .py refs."""
-        plan = self._plan("Edit src/foo.py and src/bar.py.")
+    def test_no_warning_for_bare_filename(self):
+        """Bare filenames without directories are not flagged."""
+        plan = self._plan("Edit foo.py to fix the bug.")
         assert validate_plan(plan) == []
 
     def test_detects_test_prefix_variants(self):
@@ -799,6 +814,89 @@ class TestValidatePlanUnclaimedTestRefs:
         warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
         assert len(warnings) == 1
         assert "test/test_foo.py" in warnings[0].message
+
+    def test_detects_toml_path_refs(self):
+        plan = self._plan("Read .dgov/project.toml for config.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert any(".dgov/project.toml" in w.message for w in warnings)
+
+    def test_detects_json_path_refs(self):
+        plan = self._plan("Load examples/vector-inspect.json for validation.")
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert any("examples/vector-inspect.json" in w.message for w in warnings)
+
+    def test_all_claimed_paths_no_warnings(self):
+        """When every prompt path is claimed, no warnings emitted."""
+        plan = self._plan(
+            "Edit src/foo.py. Run tests/test_foo.py. Check docs/api.md.",
+            edit=("src/foo.py", "tests/test_foo.py"),
+            touch=("docs/api.md",),
+        )
+        assert validate_plan(plan) == []
+
+
+# =============================================================================
+# validate_plan — verify-only task warnings
+# =============================================================================
+
+
+class TestValidatePlanVerifyOnlyTasks:
+    """Tasks that only create non-code files should not claim .py touch/edit."""
+
+    def _plan(self, **file_kwargs) -> PlanSpec:
+        return PlanSpec(
+            name="test-plan",
+            goal="Goal",
+            units={
+                "task": PlanUnit(
+                    slug="task",
+                    summary="Capture output",
+                    prompt="Run the command and save output.",
+                    commit_message="Capture output",
+                    files=PlanUnitFiles(**file_kwargs),
+                )
+            },
+        )
+
+    def test_warns_on_py_touch_with_non_py_create(self):
+        plan = self._plan(
+            create=("examples/output.json", "examples/output.txt"),
+            touch=("tests/integration/test_cli.py",),
+        )
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert any("tempts the worker" in w.message for w in warnings)
+
+    def test_warns_on_py_edit_with_non_py_create(self):
+        plan = self._plan(
+            create=("docs/architecture.md",),
+            edit=("src/cli/vector.py",),
+        )
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        assert any("tempts the worker" in w.message for w in warnings)
+
+    def test_no_warning_when_create_includes_py(self):
+        plan = self._plan(
+            create=("src/new_module.py", "examples/output.json"),
+            touch=("tests/test_new.py",),
+        )
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        verify_warnings = [w for w in warnings if "tempts the worker" in w.message]
+        assert len(verify_warnings) == 0
+
+    def test_no_warning_when_no_create(self):
+        plan = self._plan(edit=("src/foo.py",))
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        verify_warnings = [w for w in warnings if "tempts the worker" in w.message]
+        assert len(verify_warnings) == 0
+
+    def test_no_warning_when_no_py_touches(self):
+        plan = self._plan(
+            create=("examples/output.json",),
+            touch=("examples/readme.txt",),
+        )
+        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        verify_warnings = [w for w in warnings if "tempts the worker" in w.message]
+        assert len(verify_warnings) == 0
 
 
 # =============================================================================

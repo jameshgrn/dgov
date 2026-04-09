@@ -433,9 +433,13 @@ class EventDagRunner:
         )
 
         if not review_result.passed and review_result.error:
-            self._task_errors[action.task_slug] = (
-                f"review:{review_result.verdict} — {review_result.error}"
-            )
+            error_msg = f"review:{review_result.verdict} — {review_result.error}"
+            if review_result.verdict == "scope_violation":
+                error_msg += (
+                    f"\nhint: add these paths to files.edit in task"
+                    f" '{action.task_slug}', then recompile and re-run"
+                )
+            self._task_errors[action.task_slug] = error_msg
 
         return self.kernel.handle(
             TaskReviewDone(
