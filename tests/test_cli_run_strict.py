@@ -161,7 +161,7 @@ def test_run_returns_nonzero_on_failed_plan(
     assert "boom" in result.output
 
 
-def test_run_prompts_before_bootstrap_commit_in_nonempty_repo(
+def test_run_auto_creates_bootstrap_commit_in_headless(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan = tmp_path / "_compiled.toml"
@@ -177,11 +177,17 @@ def test_run_prompts_before_bootstrap_commit_in_nonempty_repo(
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(cli, ["run", str(plan)], input="n\n", catch_exceptions=False)
+    # In headless (isatty=False), it should auto-create commit and then fail on missing baseline
+    result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)
 
     assert result.exit_code == 1
-    assert "bootstrap commit" in result.output.lower()
-    assert "create worktrees" in result.output.lower()
+    assert "created bootstrap commit from current working tree" in result.output.lower()
+    assert "no sentrux baseline found" in result.output.lower()
+
+    # Verify commit exists
+    git_log = subprocess.run(["git", "log", "-n", "1", "--oneline"],
+                             cwd=tmp_path, capture_output=True, text=True).stdout
+    assert "chore: bootstrap repo for dgov" in git_log
 
 
 def test_run_requires_sentrux_baseline(

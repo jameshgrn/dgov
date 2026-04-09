@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -203,6 +204,12 @@ def _ensure_git_ready(project_root: str) -> None:
             raise click.exceptions.Exit(code=1)
 
         if all(path.startswith(".dgov/") for path in files):
+            _create_bootstrap_commit(project_root, files)
+            return
+
+        should_prompt = sys.stdin.isatty()
+        if not should_prompt:
+            # Headless: auto-create bootstrap commit if files exist
             _create_bootstrap_commit(project_root, files)
             return
 

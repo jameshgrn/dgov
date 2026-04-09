@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import click
@@ -271,7 +272,8 @@ system level. Workers may be probabilistic. Governance should not be.
 
 @cli.command(name="init")
 @click.option("--force", is_flag=True, help="Overwrite bootstrap files")
-def init_cmd(force: bool) -> None:
+@click.option("--yes", "-y", is_flag=True, help="Skip interactive prompts")
+def init_cmd(force: bool, yes: bool) -> None:
     """Bootstrap .dgov/project.toml and .dgov/governor.md.
 
     Auto-detects language, source directory, and test directory.
@@ -310,18 +312,31 @@ def init_cmd(force: bool) -> None:
         click.echo(f"  test_dir: {test_dir}")
         baseline_path = _sentrux_baseline_path(project_root)
         baseline_created = False
-        if not want_json() and not baseline_path.exists() and _sentrux_available():
-            create_baseline = click.confirm(
-                "Run `dgov sentrux gate-save` now to create the repo baseline?",
-                default=True,
-            )
-            if create_baseline:
+
+        should_prompt = not yes and not want_json() and sys.stdin.isatty()
+
+        if not baseline_path.exists() and _sentrux_available():
+            if should_prompt:
+                create_baseline = click.confirm(
+                    "Run `dgov sentrux gate-save` now to create the repo baseline?",
+                    default=True,
+                )
+                if create_baseline:
+                    ok, details = _save_sentrux_baseline(project_root)
+                    if ok:
+                        click.echo(f"Created {baseline_path}")
+                        baseline_created = True
+                    else:
+                        click.echo(f"Could not create sentrux baseline: {details}", err=True)
+            elif yes:
+                # Automate if --yes is passed
                 ok, details = _save_sentrux_baseline(project_root)
                 if ok:
                     click.echo(f"Created {baseline_path}")
                     baseline_created = True
                 else:
                     click.echo(f"Could not create sentrux baseline: {details}", err=True)
+
         click.echo("Next:")
         click.echo("  1. Review .dgov/project.toml and .dgov/governor.md")
         if baseline_created or baseline_path.exists():

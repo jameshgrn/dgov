@@ -345,24 +345,11 @@ def test_init_force_overwrites(
         assert "# Governor Charter" in (dgov_dir / "governor.md").read_text()
 
 
-def test_init_offers_and_creates_sentrux_baseline(
+def test_init_skips_sentrux_baseline_offer_in_headless(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path):
-        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: True)
-        monkeypatch.setattr("dgov.cli.init._save_sentrux_baseline", lambda root: (True, "saved"))
-        result = runner.invoke(cli, ["init"], input="y\n")
-
-        assert result.exit_code == 0
-        assert "Run `dgov sentrux gate-save` now" in result.output
-        assert "Created" in result.output
-        assert ".sentrux/baseline.json" in result.output
-
-
-def test_init_declines_sentrux_baseline_offer(
-    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    with runner.isolated_filesystem(temp_dir=tmp_path):
+        # CliRunner.stdin.isatty() is False by default
         monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: True)
         called = False
 
@@ -372,11 +359,28 @@ def test_init_declines_sentrux_baseline_offer(
             return True, "saved"
 
         monkeypatch.setattr("dgov.cli.init._save_sentrux_baseline", _mock_save)
-        result = runner.invoke(cli, ["init"], input="n\n")
+        result = runner.invoke(cli, ["init"])
 
         assert result.exit_code == 0
-        assert "Run `dgov sentrux gate-save` now" in result.output
+        # Should NOT prompt
+        assert "Run `dgov sentrux gate-save` now to create the repo baseline?" not in result.output
+        # Should show next-step guidance
+        assert "Run `dgov sentrux gate-save` to create the repo baseline" in result.output
         assert called is False
+
+
+def test_init_offers_and_creates_sentrux_baseline(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: True)
+        monkeypatch.setattr("dgov.cli.init._save_sentrux_baseline", lambda root: (True, "saved"))
+        # Force automation with --yes
+        result = runner.invoke(cli, ["init", "--yes"])
+
+        assert result.exit_code == 0
+        assert "Created" in result.output
+        assert ".sentrux/baseline.json" in result.output
 
 
 # -- _detect_project --
