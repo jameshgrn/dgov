@@ -1,92 +1,62 @@
-# Handover: Watch UI + Worker Tools
+# Handover: dgov public-release UX and state cleanup
 
-**Date:** 2026-04-08
-**Branch:** `main` @ `f64381dc` (pushed)
-**Context:** Merged `feature/watch-ui-worker-tools` — Rich-based watch UI and new worker capabilities.
-
----
-
-## Current State
-
-- `main` is clean and pushed. 532+ tests passing.
-- Flat file claims feature shipped (prior handover).
-- **Watch UI overhaul** merged: Rich tables, color-coded tasks, markdown summaries.
-- **New worker tools** merged: `find_references()` and `revert_file()`.
-- **Worker prompt v1.1.0**: Engaging tone, higher budgets (50 calls / 100 loop limit).
+**Date:** 2026-04-09T14:47:30Z  
+**Branch:** `main` @ `5e645cc0`  
+**Context:** This session focused on making `dgov` feel more natural for public use. The core work was not kernel refactoring; it was execution-surface cleanup: add a governed one-off path, tighten scope enforcement, make `watch` current-run-first, separate transient runtime state from authored plans, and stop tracking generated artifacts.
 
 ---
 
-## Completed
+## In Progress
 
-### Watch UI Refactor (`src/dgov/cli/watch.py`)
-- Rich tables with grid-aligned columns
-- Task-specific color coding (8-color stable palette)
-- Markdown rendering for worker summaries
-- Agent name resolution from project config
-- Cleaner slug display (strips `tasks/` prefix, `.toml` suffix)
-- "New run" detection with color reset
+| Task | Status | Location | Notes |
+|------|--------|----------|-------|
+| Public-release truthfulness pass | Partial | `/Users/jakegearon/projects/dgov/README.md`, `/Users/jakegearon/projects/dgov/docs/docs/pages` | Main install/clean/provider wording improved, but release docs still need final consistency pass |
+| Runtime/state cleanup follow-through | Mostly done | `/Users/jakegearon/projects/dgov/.gitignore`, `/Users/jakegearon/projects/dgov/src/dgov/cli/fix.py`, `/Users/jakegearon/projects/dgov/src/dgov/cli/clean.py` | Generated fix plans now live under `.dgov/runtime/fix-plans`; generated artifacts no longer tracked |
 
-### Worker Tools (`src/dgov/workers/atomic.py`)
-| Tool | Purpose |
-|------|---------|
-| `find_references(symbol, exclude_tests=False)` | Symbol search via ripgrep/fallback to grep |
-| `revert_file(path)` | Git checkout HEAD to restore file |
+## Blockers
 
-### Worker Prompt v1.1.0 (`src/dgov/worker.py`)
-- Engaging "Greetings, Actuator" preamble
-- Clear "DGOV Way" principles (Separation of Powers, Trust but Verify, Surgical Precision)
-- Iteration budget: 50 tool calls, 100 loop limit
-- Tactical guidance: check-in at call 40, max 3 test failure loops
+- No blocker inside the repo right now.
+- Release still depends on non-code work: PyPI/trusted publisher setup and final release notes/changelog.
 
-### Infrastructure Fixes
-- `pyproject.toml`: Per-file-ignores for `src/dgov/worker.py` E501 (prompt prose)
-- `src/dgov/cli/watch.py`: Fixed `RenderableType` import path
+## Next Steps (Priority Order)
 
----
+1. Finish the remaining release messaging pass across `/Users/jakegearon/projects/dgov/README.md` and `/Users/jakegearon/projects/dgov/docs/docs/pages`.
+2. Decide whether older authored archives under `/Users/jakegearon/projects/dgov/.dgov/plans/archive` should be retained or pruned.
+3. Push `main` and let CI validate the recent cleanup/UX commits.
+4. Prepare release notes/changelog for the first public release.
+
+## Files Modified (Uncommitted)
+
+```text
+ M /Users/jakegearon/projects/dgov/HANDOVER.md
+```
 
 ## Key Decisions
 
-- **Rich over plain text**: Significant UX improvement for monitoring plan execution. Tables auto-size, colors help distinguish concurrent tasks.
-- **Tools are additive, not replacing**: Workers can now find symbol references and revert files when they go off track. Both use existing primitives (`run_bash`, git).
-- **Budget increases are justified**: 30→50 calls and 60→100 loop limit based on observed worker behavior on complex tasks. 40-call check-in guidance prevents runaway exploration.
-- **Worker personality matters**: The v1.1.0 prompt frames workers as "Actuators" in a "lineage of precise, surgical contributions." This appears to improve focus and reduce scope creep in testing.
+- `dgov fix` remains thin sugar over the normal plan pipeline; it does not introduce a second execution model.
+- Unclaimed writes to `.dgov/` and `.sentrux/` are real scope violations now; infra paths are not exempt.
+- Current-run observability is the default: `dgov watch` infers a single active plan when possible and otherwise live-tails from “now” instead of replaying repo history.
+- Transient one-off plans belong to runtime state, not authored plan state. Generated fix plans now live under `/Users/jakegearon/projects/dgov/.dgov/runtime/fix-plans`, and `dgov clean` may delete them safely when inactive.
+- Generated docs/build/runtime artifacts are not source of truth and should not be git-tracked. `.gitignore` now reflects that.
 
----
+## Major Commits From This Session
 
-## Open Issues (Carried Forward)
+- `4d1dc666` `Enforce infra path scope checks`
+- `c29adbad` `Fix clean command docs`
+- `75c0b32e` `Unify install docs`
+- `f7dc4244` `Focus watch on active runs`
+- `e9d6efcf` `Archive transient fix plans`
+- `77bd0e42` `Clarify provider wording`
+- `a8e4202a` `Separate transient fix plan state`
+- `d24c3215` `Stop tracking generated artifacts`
+- `5e645cc0` `Remove archived test plan debris`
 
-- **Runner contention under 6+ parallel tasks** — `ThreadPoolExecutor` interaction undiagnosed.
-- **No token/cost tracking** — no visibility into API spend per run.
-- **No semantic review** — `review_sandbox()` is git sanity checks only.
-- **Sentrux scans scratch/test `.py` files** — any `.py` with functions in a git-tracked dir increases complexity count.
+## References
 
----
-
-## Next Steps
-
-### 1. Dogfood new tools
-- Author a plan that uses `find_references` in a prompt.
-- Verify workers can locate symbols across the codebase.
-- Test `revert_file` recovery when a worker makes a bad change.
-
-### 2. Token/cost tracking
-- Workers emit token counts via `on_event` callback.
-- Runner aggregates in `_task_durations`-style dict.
-- `_append_run_log` + CLI exit summary include cost.
-
-### 3. Runner contention profiling
-- Add timing instrumentation around `ThreadPoolExecutor` calls in `_merge`.
-- Run a plan with 8+ parallel tasks and check for >10s stalls.
-
----
-
-## Important Files
-
-| File | Role |
-|------|------|
-| `src/dgov/cli/watch.py` | Rich-based watch UI with tables, colors, markdown |
-| `src/dgov/workers/atomic.py` | New tools: `find_references`, `revert_file` |
-| `src/dgov/worker.py` | v1.1.0 prompt with DGOV Way principles, higher budgets |
-| `pyproject.toml` | Ruff per-file-ignores for worker.py |
-| `tests/test_cli.py` | Updated for Rich table output format |
-| `tests/test_worker_tools.py` | Tests for `find_references` and `revert_file` |
+- `fix` CLI: `/Users/jakegearon/projects/dgov/src/dgov/cli/fix.py`
+- `watch` CLI: `/Users/jakegearon/projects/dgov/src/dgov/cli/watch.py`
+- `clean` CLI: `/Users/jakegearon/projects/dgov/src/dgov/cli/clean.py`
+- settlement scope gate: `/Users/jakegearon/projects/dgov/src/dgov/settlement.py`
+- fix tests: `/Users/jakegearon/projects/dgov/tests/test_cli_fix.py`
+- clean tests: `/Users/jakegearon/projects/dgov/tests/test_cli_clean.py`
+- watch tests: `/Users/jakegearon/projects/dgov/tests/test_cli.py`
