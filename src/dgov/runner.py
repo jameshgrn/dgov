@@ -34,7 +34,7 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.kernel import DagKernel
-from dgov.persistence import add_task, emit_event, get_task, update_task_state
+from dgov.persistence import add_task, emit_event, update_task_state
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.settlement import (
     autofix_sandbox,
@@ -415,8 +415,9 @@ class EventDagRunner:
                 )
             )
 
-        task_record = get_task(self.session_root, action.task_slug)
-        claimed_files = task_record.get("file_claims") if task_record else None
+        # Always use the current plan's file claims for review, ensuring resumed
+        # tasks honor the most recent recompiled scope.
+        claimed_files = self.task_files.get(action.task_slug)
         review_result = review_sandbox(
             wt.path, claimed_files=claimed_files, project_root=self.session_root
         )
