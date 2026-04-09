@@ -422,7 +422,8 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
         text=True,
         timeout=timeout,
     )
-    if res.returncode != 0:
+    # Exit code 5 = "no tests were collected" — not a failure (e.g. scaffold tasks)
+    if res.returncode not in (0, 5):
         output = (res.stdout + res.stderr)[-500:]
         return GateResult(passed=False, error=f"Test failure:\n{output}")
     return None
@@ -457,9 +458,20 @@ def _sentrux_is_warn_only(output: str) -> bool:
 
 def _run_sentrux_gate(worktree_path: Path, project_root: str) -> GateResult:
     """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
+    import json
+
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
     if not baseline.exists():
         return GateResult(passed=True)
+
+    # Skip gate when baseline was captured from an empty project (no import edges).
+    # Comparing against an empty baseline always shows "degradation" for any real code.
+    try:
+        bdata = json.loads(baseline.read_text())
+        if bdata.get("total_import_edges", 0) == 0:
+            return GateResult(passed=True)
+    except Exception:
+        pass
 
     sx_dst = worktree_path / ".sentrux"
     if not sx_dst.exists():

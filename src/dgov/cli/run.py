@@ -128,6 +128,8 @@ def _sentrux_save_baseline(project_root: str) -> int | None:
 
 def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[str, object]:
     """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
+    import json as _json
+
     gate_result: dict[str, object] = {
         "degradation": None,
         "quality_before": baseline_quality,
@@ -135,6 +137,20 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
     }
     if not want_json():
         click.echo("[sentrux] Comparing against baseline...")
+
+    # Skip comparison when baseline was from an empty project (no import edges).
+    baseline_path = Path(project_root) / ".sentrux" / "baseline.json"
+    if baseline_path.exists():
+        try:
+            bdata = _json.loads(baseline_path.read_text())
+            if bdata.get("total_import_edges", 0) == 0:
+                gate_result["degradation"] = False
+                if not want_json():
+                    click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")
+                return gate_result
+        except Exception:
+            pass
+
     try:
         result = subprocess.run(
             ["sentrux", "gate", project_root],
