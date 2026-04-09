@@ -50,7 +50,7 @@ dgov watch
 
 dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch and subprocess. Plans are defined in TOML, compiled to DAGs, and executed through a pure kernel with event-sourced state.
 
-State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolated via OpenAI-compatible APIs (Fireworks, Kimi).
+State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolated via Fireworks-backed APIs.
 
 ## Usage
 
