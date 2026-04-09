@@ -14,11 +14,13 @@ Requires Python 3.12+, git.
 
 ```bash
 dgov init                # Bootstrap .dgov/project.toml
-dgov run plan.toml       # Execute a plan
+dgov fix "Refactor utils" -f src/utils.py -f src/main.py  # One-off fix
+dgov run plan.toml       # Execute a compiled plan
 dgov status              # Show task status
 dgov watch               # Stream events
 dgov sentrux check       # Run architectural quality check
-dgov cleanup             # Annihilate zombie worktrees
+dgov clean               # Clean stale worktrees and outputs
+dgov recover             # Recover from a crashed run
 ```
 
 ## Plan format

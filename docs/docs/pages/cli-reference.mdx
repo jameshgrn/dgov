@@ -7,10 +7,43 @@ Complete reference for the `dgov` command-line interface.
 | Command | Description |
 |---------|-------------|
 | [`dgov run`](#dgov-run) | Execute a plan file with quality gates |
+| [`dgov fix`](#dgov-fix) | Create and run a single-task fix plan |
 | [`dgov status`](#dgov-status) | Show current task state |
-| [`dgov cleanup`](#dgov-cleanup) | Remove zombie worktrees and tasks |
+| [`dgov clean`](#dgov-clean) | Clean stale worktrees and output directories |
+| [`dgov recover`](#dgov-recover) | Recover from a crashed run |
 | [`dgov init`](#dgov-init) | Bootstrap project configuration |
 | [`dgov ledger`](#dgov-ledger) | Record bugs, rules, and technical debt |
+
+---
+
+## `dgov fix`
+
+Create and run a single-task fix plan — a shortcut that generates a one-task plan and runs it through the normal compile/run pipeline.
+
+```bash
+dgov fix "Refactor error handling" --file src/utils.py --file src/main.py
+dgov fix "Update docs" -f README.md -f docs/guide.md --name doc-update
+dgov fix "Fix bug" -f src/core.py --commit-message "fix: resolve edge case"
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--file, -f` | File to include in the fix (required, repeatable) |
+| `--name` | Override the generated plan name |
+| `--commit-message` | Override the commit message (default: "Apply requested fix") |
+
+### How It Works
+
+The `fix` command is a thin wrapper around the standard plan pipeline:
+
+1. Generates a plan directory under `.dgov/plans/fix-<slug>/`
+2. Creates a single task with the specified files
+3. Compiles the plan to `_compiled.toml`
+4. Runs the compiled plan through the normal executor
+
+This uses the same compilation, settlement, and quality gates as `dgov run`.
 
 ---
 
@@ -107,34 +140,71 @@ $ dgov status --json
 
 ---
 
-## `dgov cleanup`
+## `dgov clean`
 
-Annihilate zombie worktrees — marks ACTIVE tasks as ABANDONED and removes worktrees.
+Clean stale worktrees and output directories.
 
 Use this when:
-- A task crashed without proper cleanup
-- You killed a run with Ctrl+C and need to clean up
-- Worktrees are left in a broken state
+- Output directories accumulate and need periodic cleanup
+- Inactive worktrees remain after task completion
 
 ```bash
-dgov cleanup
+dgov clean
+dgov clean --dry-run
 ```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Show what would be deleted without deleting |
 
 ### Behavior
 
-1. Finds all tasks in ACTIVE state
-2. Removes their git worktrees
-3. Marks them as ABANDONED in the persistence layer
+1. Deletes all directories from `.dgov/out/`
+2. Removes worktrees from `.dgov/worktrees/` that are not associated with active tasks
+3. Preserves worktrees for tasks in ACTIVE state
 
 ### Examples
 
 ```bash
-$ dgov cleanup
-Cleaning up 3 active tasks...
+$ dgov clean
+Deleted: .dgov/out/build-20240115
+Deleted: .dgov/worktrees/fix-refactor-abc123
+Preserved (active): .dgov/worktrees/feature-login-def456
+Clean complete. Deleted 2 directories.
+```
+
+---
+
+## `dgov recover`
+
+Recover from a crashed run — marks ACTIVE tasks as ABANDONED and removes orphaned worktrees and branches.
+
+Use this when:
+- A task crashed without proper cleanup
+- You killed a run with Ctrl+C and need to recover
+- Worktrees are left in a broken state
+
+```bash
+dgov recover
+```
+
+### Behavior
+
+1. Finds all tasks in ACTIVE, FAILED, or ABANDONED state
+2. Removes their git worktrees
+3. Marks ACTIVE tasks as ABANDONED in the persistence layer
+
+### Examples
+
+```bash
+$ dgov recover
+Recovering 3 tasks...
   [removed worktree] add-feature
   [removed worktree] add-tests
   [skip worktree] fix-bug: worktree not found
-Transitions complete: 2 tasks marked as ABANDONED.
+Recovery complete: 2 tasks marked as ABANDONED.
 ```
 
 ---

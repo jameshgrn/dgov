@@ -59,6 +59,7 @@ dgov                     # Show status
 dgov status              # Show status (explicit)
 dgov init                # Bootstrap .dgov/project.toml
 dgov init-plan <name>    # Initialize a new plan directory
+dgov fix <prompt>        # Create and run a single-task fix plan
 dgov compile <dir>       # Compile a plan tree to _compiled.toml
 dgov run plan.toml       # Execute a compiled plan
 dgov validate plan.toml  # Validate a plan without running
@@ -66,6 +67,7 @@ dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units
 dgov archive-plan <name> # Manually archive a plan to .dgov/plans/archive/
 dgov ledger add <cat>    # Record bug, rule, or debt
+dgov clean               # Clean stale worktrees and output directories
 dgov recover             # Recover from a crashed run (mark orphaned tasks abandoned)
 dgov prune               # Remove historical task records
 dgov sentrux check       # Run architectural quality check
