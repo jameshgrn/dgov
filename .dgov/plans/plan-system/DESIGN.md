@@ -86,19 +86,23 @@ for v0.
 
 ## SOPs
 
-Project-local at `.dgov/sops/*.md`. Prose only. Governor selects via one LLM
-call per compile, seeing all units + all SOP titles/summaries. Mapping cached
-in `_compiled.toml` for deterministic re-runs.
+Project-local at `.dgov/sops/*.md`. Each SOP has required metadata
+(`name`, `title`, `summary`, `applies_to`, `priority`) and required sections
+(`When`, `Do`, `Do Not`, `Verify`, `Escalate`). Governor selects via one LLM
+call per compile, seeing all units + all SOP titles, summaries, applies-to
+tags, and priorities. Mapping cached in `_compiled.toml` for deterministic
+re-runs.
 
 **SopBundler protocol**: `LLMSopBundler` (production, no fallback) +
 `IdentityBundler` (test stub, returns empty mapping). `dgov compile --dry-run`
 selects the stub. Production path has no fallback — governor call is
 load-bearing by design.
 
-**Cache key**: `sop_set_hash` = SHA256 of sorted `(filename, title)` pairs.
-Add/remove/rename a SOP, or edit a title → miss (governor re-called). Edits
-to SOP bodies do NOT invalidate — workers always read current bodies at
-compile. `dgov compile --recompile-sops` forces a miss.
+**Cache key**: `sop_set_hash` = SHA256 of sorted SOP selection metadata
+(`filename`, `name`, `title`, `summary`, `applies_to`, `priority`). Metadata
+edits that affect selection re-call the governor. Body-section edits do NOT
+invalidate — workers always read current section content at compile.
+`dgov compile --recompile-sops` forces a miss.
 
 **Empty `.dgov/sops/`**: bundler no-ops, units keep original prompts.
 

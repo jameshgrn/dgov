@@ -1,0 +1,131 @@
+# LLM Providers
+
+`dgov` uses an OpenAI-compatible client for both:
+
+- worker execution at `dgov run` time
+- SOP assignment at `dgov compile` time
+
+That means provider configuration has to be consistent across the whole repo.
+
+## Configuration Model
+
+The repo-level settings live in `.dgov/project.toml`:
+
+```toml
+[project]
+default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+llm_base_url = "https://api.fireworks.ai/inference/v1"
+llm_api_key_env = "FIREWORKS_API_KEY"
+```
+
+The meanings are:
+
+- `default_agent`: model or router name
+- `llm_base_url`: OpenAI-compatible API base URL
+- `llm_api_key_env`: environment variable name to read the API key from
+
+Task-level `agent = "..."` fields override the model/router name only. They do
+not override the base URL or API key env.
+
+## Fireworks
+
+```toml
+[project]
+default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+llm_base_url = "https://api.fireworks.ai/inference/v1"
+llm_api_key_env = "FIREWORKS_API_KEY"
+```
+
+```bash
+export FIREWORKS_API_KEY=your-key-here
+```
+
+## OpenAI
+
+```toml
+[project]
+default_agent = "gpt-4.1-mini"
+llm_base_url = "https://api.openai.com/v1"
+llm_api_key_env = "OPENAI_API_KEY"
+```
+
+```bash
+export OPENAI_API_KEY=your-key-here
+```
+
+## OpenRouter
+
+```toml
+[project]
+default_agent = "google/gemma-4-26b-a4b-it"
+llm_base_url = "https://openrouter.ai/api/v1"
+llm_api_key_env = "OPENAI_API_KEY"
+```
+
+```bash
+export OPENAI_API_KEY=your-openrouter-key
+```
+
+`dgov` has been smoke-tested with this exact OpenRouter pattern.
+
+## Other OpenAI-Compatible Endpoints
+
+If your provider exposes an OpenAI-compatible API, configure it the same way:
+
+```toml
+[project]
+default_agent = "your-model-name"
+llm_base_url = "https://your-provider.example.com/v1"
+llm_api_key_env = "YOUR_PROVIDER_API_KEY"
+```
+
+```bash
+export YOUR_PROVIDER_API_KEY=your-key-here
+```
+
+## Compile-Time Behavior
+
+`dgov compile` may call the LLM when SOP bundling is enabled. That means the
+provider config must already be correct before compile, not just before run.
+
+If you want to skip the compile-time LLM call:
+
+```bash
+dgov compile .dgov/plans/my-plan --dry-run
+```
+
+That uses the identity SOP bundler instead of the LLM-backed one.
+
+## Common Mistakes
+
+### Wrong env var name
+
+If `.dgov/project.toml` says:
+
+```toml
+llm_api_key_env = "OPENAI_API_KEY"
+```
+
+but you exported `FIREWORKS_API_KEY`, both `dgov compile` and `dgov run` will
+fail preflight.
+
+### Confusing model names with provider endpoints
+
+`default_agent` is just the model/router identifier. It does not imply which
+provider to call. The endpoint is determined by `llm_base_url`.
+
+### Assuming task `agent` overrides provider
+
+This is not how `dgov` works today. Per-task `agent` changes the model name, not
+the base URL or key env. Provider selection is repo-level.
+
+## Recommendation
+
+For release docs, keep the user guidance simple:
+
+1. set `default_agent`
+2. set `llm_base_url`
+3. set `llm_api_key_env`
+4. export the matching env var
+
+That is the whole provider story.

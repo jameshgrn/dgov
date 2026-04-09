@@ -6,7 +6,7 @@ Complete reference for the `dgov` command-line interface.
 
 | Command | Description |
 |---------|-------------|
-| [`dgov run`](#dgov-run) | Execute a plan file with quality gates |
+| [`dgov run`](#dgov-run) | Execute a compiled plan with quality gates |
 | [`dgov fix`](#dgov-fix) | Create and run a single-task fix plan |
 | [`dgov status`](#dgov-status) | Show current task state |
 | [`dgov clean`](#dgov-clean) | Clean stale worktrees and output directories |
@@ -50,14 +50,23 @@ Transient fix plans are archived under `.dgov/runtime/fix-plans/archive/`.
 
 ## `dgov run`
 
-Execute a plan file (TOML) with isolated worktrees and Sentrux quality gates.
+Execute a compiled plan directory or `_compiled.toml` file with isolated worktrees and Sentrux quality gates.
 
 ```bash
-dgov run plan.toml
-dgov run plan.toml --restart
-dgov run plan.toml --continue
-dgov run plan.toml --only=add-feature
+dgov run .dgov/plans/feature-plan/
+dgov run .dgov/plans/feature-plan/ --restart
+dgov run .dgov/plans/feature-plan/ --continue
+dgov run .dgov/plans/feature-plan/ --only=tasks/main.add-feature
+dgov run .dgov/plans/feature-plan/_compiled.toml
 ```
+
+If the repo has no commits yet and only `.dgov` bootstrap files exist, `dgov run`
+creates the bootstrap snapshot automatically. If there are other uncommitted
+files, it asks before creating that bootstrap commit.
+
+`dgov run` requires a saved Sentrux baseline at `.sentrux/baseline.json`.
+Create or refresh it explicitly with `dgov sentrux gate-save`. `dgov run`
+does not auto-save a new baseline.
 
 ### Flags
 
@@ -71,17 +80,17 @@ dgov run plan.toml --only=add-feature
 
 **Restart a plan from scratch:**
 ```bash
-dgov run feature-plan.toml --restart
+dgov run .dgov/plans/feature-plan/ --restart
 ```
 
 **Retry failed tasks:**
 ```bash
-dgov run feature-plan.toml --continue
+dgov run .dgov/plans/feature-plan/ --continue
 ```
 
 **Run a single task:**
 ```bash
-dgov run feature-plan.toml --only=add-tests
+dgov run .dgov/plans/feature-plan/ --only=tasks/main.add-tests
 ```
 
 ### Output
@@ -102,14 +111,18 @@ The command outputs task progress to stderr and final results to stdout. In JSON
 }
 ```
 
+If the final post-run sentrux comparison detects degradation, the run exits
+nonzero even if all tasks merged.
+
 ---
 
 ## `dgov status`
 
-Show the current governor state — what's running, what's idle, and task counts.
+Show the current governor state. By default this surfaces only live task state; use `--all` to include persisted history.
 
 ```bash
 dgov status
+dgov status --all
 ```
 
 ### Examples
@@ -118,16 +131,16 @@ dgov status
 ```bash
 $ dgov status
 status: active
-tasks: 5
+tasks: 5 total
 active: 2
-task_list:
-  - slug: add-feature, state: active
-  - slug: add-tests, state: pending
+tasks:
+  active          add-feature
+  pending         add-tests
 ```
 
 **JSON output:**
 ```bash
-$ dgov status --json
+$ dgov --json status
 {
   "status": "active",
   "tasks": 5,
@@ -138,6 +151,8 @@ $ dgov status --json
   ]
 }
 ```
+
+`--json` is a global flag, so place it before the subcommand.
 
 ---
 
@@ -213,7 +228,7 @@ Recovery complete: 2 tasks marked as ABANDONED.
 
 ## `dgov init`
 
-Bootstrap `.dgov/project.toml` for the current repository. Auto-detects language, source directory, and test directory.
+Bootstrap `.dgov/project.toml` and `.dgov/governor.md` for the current repository. Auto-detects language, source directory, and test directory.
 
 ```bash
 dgov init
@@ -224,7 +239,7 @@ dgov init --force
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Overwrite existing project.toml |
+| `--force` | Overwrite bootstrap files (`project.toml` and `governor.md`) |
 
 ### Auto-Detection
 
@@ -234,24 +249,49 @@ The init command detects:
 - **Test directory**: `tests/` or `test/`
 - **Tooling**: Appropriate lint, format, and test commands
 
+It also writes the repo-level OpenAI-compatible endpoint settings:
+- `default_agent`
+- `llm_base_url`
+- `llm_api_key_env`
+
+It also scaffolds `.dgov/governor.md`, the repo-local governor charter for:
+- planning rules
+- task authoring rules
+- retry/failure rules
+- done criteria
+
+If `sentrux` is installed and `.sentrux/baseline.json` does not exist yet,
+`dgov init` offers to run `dgov sentrux gate-save` immediately.
+
+See [LLM Providers](/llm-providers) for provider-specific examples.
+
 ### Examples
 
 **Create new project config:**
 ```bash
 $ dgov init
 Created .dgov/project.toml
+Created .dgov/governor.md
   language: python
   src_dir:  src/
   test_dir: tests/
+Run `dgov sentrux gate-save` now to create the repo baseline? [Y/n]:
+Next:
+  1. Review .dgov/project.toml and .dgov/governor.md
+  2. Refresh the architectural baseline with `dgov sentrux gate-save` when you intentionally reset it
 ```
 
 **Regenerate (overwrite):**
 ```bash
 $ dgov init --force
 Created .dgov/project.toml
+Created .dgov/governor.md
   language: python
   src_dir:  src/
   test_dir: tests/
+Next:
+  1. Review .dgov/project.toml and .dgov/governor.md
+  2. Run `dgov sentrux gate-save` to create the repo baseline
 ```
 
 ---

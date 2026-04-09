@@ -1,19 +1,20 @@
 # Plan Reference
 
-A `plan.toml` file declares a deterministic execution graph. It is the contract between the Governor and Workers.
+dgov authors plans as plan trees under `.dgov/plans/<name>/`. `dgov compile` turns that tree into `_compiled.toml`, and `dgov run` executes the compiled output.
 
 ## Structure Overview
 
 ```toml
+# .dgov/plans/refactor-api/_root.toml
 [plan]
 name = "refactor-api"
-default_agent = "claude-3-5-sonnet"
-max_retries = 2
+summary = "Refactor the API surface"
+sections = ["tasks"]
 
+# .dgov/plans/refactor-api/tasks/main.toml
 [tasks.validate]
 summary = "Validate current state"
 prompt = "Review src/api.py and verify the current endpoint structure"
-agent = "reviewer"
 commit_message = "docs: add validation notes"
 files.read = ["src/api.py"]
 
@@ -28,40 +29,28 @@ files.create = ["src/api/types.py"]
 
 ---
 
-## `[plan]` Section
+## `_root.toml` `[plan]` Section
 
-The plan metadata and global defaults.
+The plan-tree root metadata.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `name` | string | Yes | — | Unique identifier for this plan |
-| `default_agent` | string | No | — | Fallback agent for tasks without explicit `agent` |
-| `max_retries` | integer | No | 3 | Global retry limit for failed tasks |
-| `project_root` | string | No | `.` | Path to project root relative to plan file |
-| `session_root` | string | No | `.` | Path to session work directory |
-
-### Agent Resolution Order
-
-When a task runs, its agent is resolved in this priority:
-
-1. `tasks.<slug>.agent`
-2. `plan.default_agent`
-3. `project.toml` default
-
-If none are set, validation fails before execution.
+| `summary` | string | No | `""` | One-line summary of the plan |
+| `sections` | array of strings | Yes | — | Top-level section directories to compile |
 
 ---
 
 ## `[tasks.<slug>]` Section
 
-Individual task definitions. Use `[tasks.slug]` for inline tables or `[[tasks]]` array-of-tables syntax.
+Individual task definitions live inside section TOMLs such as `tasks/main.toml`.
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `slug` | string | Yes (implicit) | — | Task identifier (from table key) |
 | `summary` | string | Yes | — | Short description for logs and UI |
 | `prompt` | string | Yes | — | Instructions sent to the worker agent |
-| `agent` | string | No | `plan.default_agent` | Agent model for this task |
+| `agent` | string | No | project default | Model/router override for this task |
 | `depends_on` | array of strings | No | `[]` | Slugs that must complete first |
 | `commit_message` | string | Yes | — | Git commit message on success |
 | `timeout_s` | integer | No | 900 | Seconds before task aborts |
@@ -76,6 +65,7 @@ File claims enforce **isolation** between concurrent tasks. The kernel validates
 | `edit` | array of strings | Files the task will modify |
 | `delete` | array of strings | Files the task will remove |
 | `read` | array of strings | Files the task reads (informational, not enforced) |
+| `touch` | array of strings | Flat claim list used by compiled plans and shorthand authoring |
 
 ### Flat File Claims Shorthand
 
@@ -94,10 +84,13 @@ This is equivalent to:
 [tasks.generate_config]
 summary = "Generate default config"
 prompt = "Create a default config.json with basic settings"
-files.create = ["config.json"]
+files.touch = ["config.json"]
 ```
 
 Use the shorthand for brevity when the operation is clear from context, or use explicit `create`/`edit`/`delete`/`read` when you need precise control.
+
+`agent` only overrides the model/router name for a task. Provider selection stays
+repo-level through `.dgov/project.toml` (`llm_base_url` and `llm_api_key_env`).
 
 ---
 
@@ -151,9 +144,8 @@ Conflicts are detected when paths are identical or one is a parent of another:
 ```toml
 [plan]
 name = "payment-gateway-refactor"
-default_agent = "claude-3-opus"
-max_retries = 2
-project_root = "."
+summary = "Refactor payment integrations safely"
+sections = ["tasks"]
 
 # === Phase 1: Analysis ===
 
@@ -220,10 +212,10 @@ files.delete = ["src/payments/legacy.py"]
 
 ## Validation
 
-Validate a plan without executing:
+Validate a compiled plan without executing:
 
 ```bash
-dgov validate plan.toml
+dgov validate .dgov/plans/payment-gateway-refactor/_compiled.toml
 ```
 
 This checks:

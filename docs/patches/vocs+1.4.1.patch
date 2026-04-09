@@ -1,0 +1,44 @@
+diff --git a/node_modules/vocs/_lib/app/index.server.js b/node_modules/vocs/_lib/app/index.server.js
+index f74ee70..70a3fa6 100644
+--- a/node_modules/vocs/_lib/app/index.server.js
++++ b/node_modules/vocs/_lib/app/index.server.js
+@@ -7,8 +7,13 @@ import { ConfigProvider } from './hooks/useConfig.js';
+ import { routes } from './routes.js';
+ import { createFetchRequest } from './utils/createFetchRequest.js';
+ export async function prerender(location) {
++    const { config } = await resolveVocsConfig();
++    const { basePath } = config;
++    const strippedLocation = basePath && location.startsWith(basePath)
++        ? location.slice(basePath.length) || '/'
++        : location;
+     const unwrappedRoutes = (await Promise.all(routes.map(async (route) => {
+-        const location_ = location === '/' ? '/' : location.replace(/\/$/, '');
++        const location_ = strippedLocation === '/' ? '/' : strippedLocation.replace(/\/$/, '');
+         const path = route.path.replace(/\.html$/, '');
+         if (path !== location_ && path !== '*')
+             return null;
+@@ -18,8 +23,6 @@ export async function prerender(location) {
+             element,
+         };
+     }))).filter(Boolean);
+-    const { config } = await resolveVocsConfig();
+-    const { basePath } = config;
+     return (_jsx(ConfigProvider, { config: config, children: _jsx(NuqsAdapter, { children: _jsx(StaticRouter, { location: location, basename: basePath, children: _jsx(Routes, { children: unwrappedRoutes.map((route) => (_jsx(Route, { path: route.path, element: route.element }, route.path))) }) }) }) }));
+ }
+ export async function render(req) {
+diff --git a/node_modules/vocs/_lib/vite/prerender.js b/node_modules/vocs/_lib/vite/prerender.js
+index 7e47b92..590005e 100644
+--- a/node_modules/vocs/_lib/vite/prerender.js
++++ b/node_modules/vocs/_lib/vite/prerender.js
+@@ -15,8 +15,9 @@ export async function prerender({ logger, outDir }) {
+     const routes = getRoutes(resolve(rootDir, 'pages'));
+     // Prerender each route.
+     for (const route of routes) {
+-        const body = await mod.prerender(route);
+-        const location = route.replace(/(.+)\/$/, '$1');
++        const routePath = route.replace(/(.+)\/$/, '$1');
++        const location = `${basePath}${routePath}` || '/';
++        const body = await mod.prerender(location);
+         const html = await toMarkup({
+             body,
+             config,

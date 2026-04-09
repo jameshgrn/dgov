@@ -6,24 +6,24 @@ Deterministic kernel for multi-agent orchestration via git worktrees.
 
 - Python 3.12+
 - git
-- A [Fireworks AI](https://fireworks.ai) API key (set `FIREWORKS_API_KEY`)
+- [uv](https://docs.astral.sh/uv/)
+- [sentrux](https://github.com/sentrux/sentrux)
+- An OpenAI-compatible API endpoint and API key
 
 ## Install
 
-```bash
-# From PyPI
-pip install dgov
+From source today:
 
-# From source
+```bash
 git clone https://github.com/jameshgrn/dgov
 cd dgov
-uv sync
+uv tool install --from . dgov
 ```
 
-For development (includes ruff, pytest, ty):
+Once published to PyPI:
 
 ```bash
-uv sync --group dev
+uv tool install dgov
 ```
 
 ## Quick start
@@ -34,34 +34,103 @@ export FIREWORKS_API_KEY=your-key-here
 
 # 2. Bootstrap your project
 cd /path/to/your/repo
-dgov init
+git init
+dgov init                # Creates .dgov/project.toml and .dgov/governor.md
 
-# 3. Author a plan and compile it
+# 3. Review bootstrap files
+# .dgov/project.toml: repo toolchain + LLM endpoint config
+# .dgov/governor.md: planning, retry, and done criteria for the governor
+
+# 4. Create a plan tree
+dgov init-plan my-plan
+
+# 5. Save the architectural baseline once for this repo
+dgov sentrux gate-save
+
+# 6. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
 dgov compile .dgov/plans/my-plan/
 
-# 4. Run the plan
+# 7. Run the compiled plan
+# If the repo has no commits yet, dgov will create a bootstrap snapshot.
+# dgov run requires an existing .sentrux/baseline.json and fails if the
+# final post-run comparison detects architectural degradation.
 dgov run .dgov/plans/my-plan/
 
-# 5. Monitor progress in another terminal
+# 8. Monitor progress in another terminal
 dgov watch
 ```
+
+## Sentrux Baseline
+
+`dgov` treats `.sentrux/baseline.json` as governor-owned state.
+
+- Create or refresh it explicitly with `dgov sentrux gate-save`
+- `dgov run` does not auto-save a new baseline
+- worker tasks must not edit `.sentrux/baseline.json`
+- a run fails if the final post-run sentrux comparison reports degradation
+
+## LLM Configuration
+
+`dgov` uses an OpenAI-compatible client. The repo-level endpoint settings live in
+`.dgov/project.toml`, and task-level `agent = "..."` values still only override the model/router
+name.
+
+Default generated config:
+
+```toml
+[project]
+default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+llm_base_url = "https://api.fireworks.ai/inference/v1"
+llm_api_key_env = "FIREWORKS_API_KEY"
+```
+
+To use official OpenAI instead:
+
+```toml
+[project]
+default_agent = "gpt-4.1-mini"
+llm_base_url = "https://api.openai.com/v1"
+llm_api_key_env = "OPENAI_API_KEY"
+```
+
+To use another OpenAI-compatible endpoint:
+
+```toml
+[project]
+default_agent = "your-model-name"
+llm_base_url = "https://your-endpoint.example.com/v1"
+llm_api_key_env = "YOUR_PROVIDER_API_KEY"
+```
+
+Then export the matching env var before `dgov compile` or `dgov run`.
+
+## SOP Format
+
+Worker guidance lives in `.dgov/sops/*.md`. SOP files are standardized:
+- required front matter: `name`, `title`, `summary`, `applies_to`, `priority`
+- required sections: `When`, `Do`, `Do Not`, `Verify`, `Escalate`
+
+`dgov compile` validates SOP structure and fails closed on malformed files.
 
 ## How it works
 
 dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch and subprocess. Plans are defined in TOML, compiled to DAGs, and executed through a pure kernel with event-sourced state.
 
-State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolated via Fireworks-backed APIs.
+State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolated via an
+OpenAI-compatible API client.
 
 ## Usage
 
 ```bash
 dgov                     # Show status
 dgov status              # Show status (explicit)
-dgov init                # Bootstrap .dgov/project.toml
+dgov --json status       # Show status as JSON
+dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
 dgov init-plan <name>    # Initialize a new plan directory
 dgov fix <prompt>        # Create and run a single-task fix plan
 dgov compile <dir>       # Compile a plan tree to _compiled.toml
-dgov run plan.toml       # Execute a compiled plan
+dgov run <dir>           # Execute a compiled plan directory
+dgov run _compiled.toml  # Execute a compiled plan file directly
 dgov validate plan.toml  # Validate a plan without running
 dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units
@@ -71,29 +140,33 @@ dgov clean               # Clean stale worktrees and output directories
 dgov recover             # Recover from a crashed run (mark orphaned tasks abandoned)
 dgov prune               # Remove historical task records
 dgov sentrux check       # Run architectural quality check
-dgov sentrux gate-save   # Save quality baseline
-dgov sentrux gate        # Compare against baseline
+dgov sentrux gate-save   # Create or refresh the explicit baseline
+dgov sentrux gate        # Compare current state against that baseline
 ```
 
 ## Plan format
 
-Plans are TOML files that compile to DAGs:
+Plans are authored as plan trees under `.dgov/plans/<name>/` and compiled to DAGs:
 
 ```toml
+# .dgov/plans/example/_root.toml
 [plan]
 name = "example"
+summary = "Add a feature safely"
+sections = ["tasks"]
 
+# .dgov/plans/example/tasks/main.toml
 [tasks.add-feature]
 summary = "Add the feature"
 prompt = "Add the feature to src/foo.py"
 commit_message = "feat: add feature"
-files = ["src/foo.py"]
+files.edit = ["src/foo.py"]
 
 [tasks.add-tests]
 summary = "Write tests"
 prompt = "Write tests for the feature"
 commit_message = "test: add tests for feature"
-files = ["tests/test_foo.py"]
+files.edit = ["tests/test_foo.py"]
 depends_on = ["add-feature"]
 ```
 
@@ -132,8 +205,8 @@ uv run pytest -q -m integration
 - **No resume/checkpoint**: if a run crashes at task N, all N tasks restart. Use `dgov run --continue` to skip already-merged tasks.
 - **No cost tracking**: token usage and API cost are not recorded.
 - **Parallel contention**: running 6+ tasks in parallel may cause contention in the executor. Keep parallelism ≤5 for now.
-- **Worker iteration cap**: workers are capped at 30 tool-call iterations. Tasks requiring many read/fix/test cycles may time out.
-- **Fireworks AI / OpenAI-compat only**: the worker requires an OpenAI-compatible API. Native Anthropic and other providers are not supported.
+- **Worker iteration cap**: workers are capped at 100 model/tool iterations. Large exploratory tasks should be split into smaller plan units.
+- **OpenAI-compat only**: the worker and SOP bundler require an OpenAI-compatible API. Native Anthropic and other providers are not supported directly.
 
 ## License
 
