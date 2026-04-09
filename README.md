@@ -11,8 +11,8 @@ Deterministic kernel for multi-agent orchestration via git worktrees.
 ## Install
 
 ```bash
-# From PyPI (once released)
-uv add dgov
+# From PyPI
+pip install dgov
 
 # From source
 git clone https://github.com/jameshgrn/dgov
