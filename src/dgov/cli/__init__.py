@@ -52,6 +52,7 @@ def cli(
       dgov compile <dir>         Compile plan tree to _compiled.toml
       dgov init                  Bootstrap .dgov/project.toml
       dgov init-plan <name>      Initialize a new plan directory
+      dgov fix <prompt>          Create and run a one-off fix plan
       dgov watch                 Stream events live
       dgov recover               Recover from a crashed run
       dgov archive-plan <name>   Manually archive a plan
@@ -208,6 +209,7 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
 from dgov.cli import (  # noqa: E402
     clean as clean,
     compile as compile,
+    fix as fix,
     init as init,
     ledger as ledger,
     plan as plan,
