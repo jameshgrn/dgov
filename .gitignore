@@ -1,9 +1,11 @@
 .dgov/*
 !.dgov/project.toml
-!.dgov/runs.log
 !.dgov/plans/
+.dgov/plans/deployed.jsonl
 _compiled.toml
 !.dgov/sops/
+.dgov/runs.log
+.sentrux/
 .venv/
 __pycache__/
 *.pyc
@@ -14,4 +16,5 @@ run.log
 watch.log
 HANDOVER.md
 .napkin.md
+docs/docs/dist/
 docs/node_modules/
