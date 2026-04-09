@@ -34,7 +34,9 @@ def test_run_uncompiled_plan_fails(runner: CliRunner, tmp_path: Path) -> None:
 
 
 def test_run_compiled_plan_passes_check(runner: CliRunner, tmp_path: Path, monkeypatch) -> None:
-    """dgov run should pass the check if source_mtime_max is present (sop_set_hash not required)."""
+    """dgov run should pass the check if source_mtime_max is present
+    (sop_set_hash not required).
+    """
     plan = tmp_path / "_compiled.toml"
     plan.write_text(
         '[plan]\nname = "compiled"\n'
