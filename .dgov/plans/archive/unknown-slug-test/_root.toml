@@ -1,4 +1,0 @@
-[plan]
-name = "unknown-slug-test"
-summary = ""  # One sentence describing what this plan accomplishes
-sections = ["tasks"]
