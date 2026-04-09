@@ -38,12 +38,13 @@ dgov fix "Fix bug" -f src/core.py --commit-message "fix: resolve edge case"
 
 The `fix` command is a thin wrapper around the standard plan pipeline:
 
-1. Generates a plan directory under `.dgov/plans/fix-<slug>/`
+1. Generates a transient plan directory under `.dgov/runtime/fix-plans/fix-<slug>/`
 2. Creates a single task with the specified files
 3. Compiles the plan to `_compiled.toml`
 4. Runs the compiled plan through the normal executor
 
 This uses the same compilation, settlement, and quality gates as `dgov run`.
+Transient fix plans are archived under `.dgov/runtime/fix-plans/archive/`.
 
 ---
 
@@ -163,7 +164,8 @@ dgov clean --dry-run
 
 1. Deletes all directories from `.dgov/out/`
 2. Removes worktrees from `.dgov/worktrees/` that are not associated with active tasks
-3. Preserves worktrees for tasks in ACTIVE state
+3. Removes transient fix plans from `.dgov/runtime/fix-plans/` unless they belong to an ACTIVE task
+4. Preserves worktrees and runtime fix plans for tasks in ACTIVE state
 
 ### Examples
 

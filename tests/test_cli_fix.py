@@ -14,6 +14,11 @@ from dgov.cli import cli
 pytestmark = pytest.mark.unit
 
 
+def _runtime_fix_plans_dir(tmp_path: Path) -> Path:
+    """Return the runtime directory used for generated fix plans in tests."""
+    return tmp_path / ".dgov" / "runtime" / "fix-plans"
+
+
 @pytest.fixture(autouse=True)
 def _clean_json_env():
     """Prevent DGOV_JSON from leaking between tests."""
@@ -74,7 +79,7 @@ class TestFixHappyPath:
         assert "Created plan" in result.output
 
         # Verify plan directory structure (archive is mocked so dir stays)
-        plan_dir = tmp_path / ".dgov" / "plans" / "fix-refactor-error-handling"
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-refactor-error-handling"
         assert plan_dir.exists()
         assert (plan_dir / "_root.toml").exists()
         assert (plan_dir / "fix" / "main.toml").exists()
@@ -118,7 +123,7 @@ class TestFixHappyPath:
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
 
         # archive is mocked so plan dir stays in place
-        plan_dir = tmp_path / ".dgov" / "plans" / "fix-update-imports"
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-update-imports"
         main_toml_path = plan_dir / "fix" / "main.toml"
 
         # Parse the generated TOML and verify the task claims
@@ -159,7 +164,7 @@ class TestFixHappyPath:
         assert "Created plan 'my-custom-fix'" in result.output
 
         # Verify plan directory uses custom name (archive is mocked)
-        plan_dir = tmp_path / ".dgov" / "plans" / "my-custom-fix"
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "my-custom-fix"
         assert plan_dir.exists()
 
         # Verify the name is in _root.toml
@@ -193,7 +198,7 @@ class TestFixHappyPath:
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
 
         # archive is mocked so plan dir stays in place
-        plan_dir = tmp_path / ".dgov" / "plans" / "fix-fix-the-bug"
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-fix-the-bug"
         main_toml_path = plan_dir / "fix" / "main.toml"
 
         parsed = tomllib.loads(main_toml_path.read_text())
@@ -215,7 +220,7 @@ class TestFixEdgeCases:
         monkeypatch.chdir(tmp_path)
 
         # Create an existing plan
-        plan_dir = tmp_path / ".dgov" / "plans" / "existing-plan"
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "existing-plan"
         plan_dir.mkdir(parents=True)
         (plan_dir / "_root.toml").write_text('[plan]\nname = "existing-plan"\n')
 
@@ -251,7 +256,7 @@ class TestFixEdgeCases:
         """Auto-generated names should add a numeric suffix on collision."""
         monkeypatch.chdir(tmp_path)
 
-        plan_dir = tmp_path / ".dgov" / "plans" / "fix-refactor-code"
+        plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-refactor-code"
         plan_dir.mkdir(parents=True)
         (plan_dir / "_root.toml").write_text('[plan]\nname = "fix-refactor-code"\n')
 
@@ -260,7 +265,59 @@ class TestFixEdgeCases:
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
         assert "Created plan 'fix-refactor-code-2'" in result.output
         # archive is mocked so new plan dir stays in place
-        assert (tmp_path / ".dgov" / "plans" / "fix-refactor-code-2").exists()
+        assert (_runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-2").exists()
+
+    def test_auto_generated_name_collision_with_archive_uses_suffix(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_run: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        """Auto-generated names should suffix when the runtime archive already has the name."""
+        monkeypatch.chdir(tmp_path)
+
+        archive_dir = _runtime_fix_plans_dir(tmp_path) / "archive" / "fix-refactor-code"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "_root.toml").write_text('[plan]\nname = "fix-refactor-code"\n')
+
+        result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
+
+        assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
+        assert "Created plan 'fix-refactor-code-2'" in result.output
+        assert (_runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-2").exists()
+
+    def test_existing_archived_plan_name_fails(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_run: MagicMock,
+    ) -> None:
+        """Explicit --name should fail when the runtime archive already contains the name."""
+        monkeypatch.chdir(tmp_path)
+
+        archive_dir = _runtime_fix_plans_dir(tmp_path) / "archive" / "existing-plan"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "_root.toml").write_text('[plan]\nname = "existing-plan"\n')
+
+        result = runner.invoke(
+            cli,
+            [
+                "fix",
+                "Some prompt",
+                "--file",
+                "src/foo.py",
+                "--name",
+                "existing-plan",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "already exists" in result.output.lower()
 
     def test_missing_required_file_option(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -325,7 +382,7 @@ class TestFixArchive:
         call_args = mock_archive.call_args[0]
         plan_dir = call_args[0]
         assert plan_dir.name.startswith("fix-")
-        assert str(plan_dir.parent).endswith(".dgov/plans")
+        assert str(plan_dir.parent).endswith(".dgov/runtime/fix-plans")
 
     def test_archives_plan_after_run_failure(
         self,

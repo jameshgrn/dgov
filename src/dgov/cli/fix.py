@@ -13,6 +13,11 @@ from dgov.cli.compile import _cmd_compile
 from dgov.cli.run import _cmd_run_plan
 
 
+def _fix_plans_dir(project_root: Path) -> Path:
+    """Return the runtime directory for generated fix plans."""
+    return project_root / ".dgov" / "runtime" / "fix-plans"
+
+
 def _slugify(text: str) -> str:
     """Convert text to a safe kebab-case slug."""
     # Lowercase and replace non-alphanumeric with hyphens
@@ -89,14 +94,17 @@ def fix_cmd(
     Example: dgov fix "Refactor error handling" --file src/utils.py --file src/main.py
     """
     project_root = Path.cwd()
-    plans_dir = project_root / ".dgov" / "plans"
+    plans_dir = _fix_plans_dir(project_root)
     plans_dir.mkdir(parents=True, exist_ok=True)
+    archive_dir = plans_dir / "archive"
 
     if name:
         plan_name = name
         plan_dir = plans_dir / plan_name
-        if plan_dir.exists():
-            click.echo(f"Error: Plan '{plan_name}' already exists at {plan_dir}", err=True)
+        archive_path = archive_dir / plan_name
+        if plan_dir.exists() or archive_path.exists():
+            existing_path = plan_dir if plan_dir.exists() else archive_path
+            click.echo(f"Error: Plan '{plan_name}' already exists at {existing_path}", err=True)
             click.echo("Use --name to specify a different name.", err=True)
             raise click.exceptions.Exit(code=1)
     else:
@@ -104,7 +112,7 @@ def fix_cmd(
         plan_name = base_name
         suffix = 2
         plan_dir = plans_dir / plan_name
-        while plan_dir.exists():
+        while plan_dir.exists() or (archive_dir / plan_name).exists():
             plan_name = f"{base_name}-{suffix}"
             plan_dir = plans_dir / plan_name
             suffix += 1
