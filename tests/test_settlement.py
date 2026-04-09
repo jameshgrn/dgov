@@ -189,6 +189,52 @@ class TestReviewSandbox:
         assert not result.passed
         assert result.verdict == "diff_too_large"
 
+    @pytest.mark.unit
+    def test_unclaimed_dgov_file_fails_scope(self, tmp_path: Path):
+        """Unclaimed changes under .dgov/ fail scope enforcement."""
+        _init_repo(tmp_path)
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "config.toml").write_text("key = 'value'\n")
+        result = review_sandbox(tmp_path, claimed_files=["src.py"])
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert ".dgov/config.toml" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_unclaimed_sentrux_file_fails_scope(self, tmp_path: Path):
+        """Unclaimed changes under .sentrux/ fail scope enforcement."""
+        _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"quality": 100}')
+        result = review_sandbox(tmp_path, claimed_files=["src.py"])
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert ".sentrux/baseline.json" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_claimed_dgov_file_passes_scope(self, tmp_path: Path):
+        """Explicitly claimed .dgov/ files pass scope enforcement."""
+        _init_repo(tmp_path)
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "config.toml").write_text("key = 'value'\n")
+        result = review_sandbox(tmp_path, claimed_files=[".dgov/config.toml"])
+        assert result.passed
+        assert result.verdict == "ok"
+
+    @pytest.mark.unit
+    def test_claimed_sentrux_file_passes_scope(self, tmp_path: Path):
+        """Explicitly claimed .sentrux/ files pass scope enforcement."""
+        _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"quality": 100}')
+        result = review_sandbox(tmp_path, claimed_files=[".sentrux/baseline.json"])
+        assert result.passed
+        assert result.verdict == "ok"
+
 
 # ---------------------------------------------------------------------------
 # autofix_sandbox
