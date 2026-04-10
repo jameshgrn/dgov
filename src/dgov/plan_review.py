@@ -250,76 +250,104 @@ def _git_show_full_diff(project_root: str, sha: str) -> str | None:
 # Per-unit event rollup
 # ---------------------------------------------------------------------------
 
+# Events terminal to this run's task lifecycle. review_fail is included
+# because a review rejection prevents merge and is the last thing we'll
+# see for that task, even though task_merge_failed is the "proper"
+# terminal. task_timed_out is also terminal.
+_TERMINAL_EVENTS = {
+    "merge_completed",
+    "task_merge_failed",
+    "review_fail",
+    "task_timed_out",
+}
+
+
+def _maybe_extract_merge_sha(ev: dict, state: dict) -> None:
+    """Extract merge_sha from event if present and valid."""
+    sha = ev.get("merge_sha")
+    if isinstance(sha, str):
+        state["merge_sha"] = sha
+
+
+def _extract_review_fail_fields(ev: dict, state: dict) -> None:
+    """Extract verdict and error from review_fail event."""
+    state["reject_verdict"] = ev.get("verdict") or state["reject_verdict"]
+    err = ev.get("error")
+    if isinstance(err, str):
+        state["error"] = err
+
+
+def _apply_terminal_event(event_type: str, ev: dict, state: dict) -> None:
+    """Apply terminal event effects to state."""
+    state["terminal_ts"] = ev.get("ts")
+    if event_type == "merge_completed":
+        state["merged_in_run"] = True
+        _maybe_extract_merge_sha(ev, state)
+    elif event_type in ("task_merge_failed", "review_fail", "task_timed_out"):
+        state["failed_in_run"] = True
+        if event_type == "task_merge_failed":
+            _maybe_extract_merge_sha(ev, state)
+        elif event_type == "review_fail":
+            _extract_review_fail_fields(ev, state)
+
+
+def _apply_lifecycle_event(ev: dict, state: dict) -> None:
+    """Handle lifecycle events: dispatch, terminal, settlement_retry, review_fail."""
+    event_type = ev.get("event")
+    if event_type == "dag_task_dispatched" and state["dispatched_ts"] is None:
+        state["dispatched_ts"] = ev.get("ts")
+        return
+    if event_type in _TERMINAL_EVENTS:
+        _apply_terminal_event(event_type, ev, state)
+        return
+    if event_type == "settlement_retry":
+        state["settlement_retries"] = state["settlement_retries"] + 1
+        # settlement_retry resets merged-in-run until a later merge_completed.
+        state["merged_in_run"] = False
+        state["failed_in_run"] = False
+
+
+def _apply_worker_log_event(ev: dict, state: dict) -> None:
+    """Handle worker_log events: thoughts, calls, done, error."""
+    log_type = ev.get("log_type")
+    content = ev.get("content")
+    if log_type == "thought" and isinstance(content, str):
+        state["thoughts"].append(content)
+    elif log_type == "call" and isinstance(content, dict):
+        state["iterations"] = state["iterations"] + 1
+        state["activity"].append(content)
+    elif log_type == "done" and isinstance(content, str):
+        state["done_summary"] = content
+    elif log_type == "error" and isinstance(content, str) and state["error"] is None:
+        state["error"] = content
+
 
 def _rollup_unit_events(unit_events: list[dict]) -> dict:
     """Collapse a unit's events into a rollup dict used by _build_unit_review."""
-    thoughts: list[str] = []
-    activity: list[dict] = []
-    iterations = 0
-    done_summary: str | None = None
-    error: str | None = None
-    reject_verdict: str | None = None
-    settlement_retries = 0
-    dispatched_ts: str | None = None
-    terminal_ts: str | None = None
-    merge_sha: str | None = None
-    merged_in_run = False
-    failed_in_run = False
-
-    # Events terminal to this run's task lifecycle. review_fail is included
-    # because a review rejection prevents merge and is the last thing we'll
-    # see for that task, even though task_merge_failed is the "proper"
-    # terminal. task_timed_out is also terminal.
-    _TERMINAL_EVENTS = {
-        "merge_completed",
-        "task_merge_failed",
-        "review_fail",
-        "task_timed_out",
+    state: dict = {
+        "thoughts": [],
+        "activity": [],
+        "iterations": 0,
+        "done_summary": None,
+        "error": None,
+        "reject_verdict": None,
+        "settlement_retries": 0,
+        "dispatched_ts": None,
+        "terminal_ts": None,
+        "merge_sha": None,
+        "merged_in_run": False,
+        "failed_in_run": False,
     }
 
     for ev in unit_events:
-        event_type = ev.get("event")
-        if event_type == "dag_task_dispatched" and dispatched_ts is None:
-            dispatched_ts = ev.get("ts")
-        elif event_type in _TERMINAL_EVENTS:
-            # Always take the latest terminal event ts so duration covers
-            # the whole task lifecycle (including review_fail after task_done).
-            terminal_ts = ev.get("ts")
-            if event_type == "merge_completed":
-                merged_in_run = True
-                sha = ev.get("merge_sha")
-                if isinstance(sha, str):
-                    merge_sha = sha
-            elif event_type in ("task_merge_failed", "review_fail", "task_timed_out"):
-                failed_in_run = True
-                if event_type == "task_merge_failed":
-                    sha = ev.get("merge_sha")
-                    if isinstance(sha, str):
-                        merge_sha = sha
-        elif event_type == "settlement_retry":
-            settlement_retries += 1
-            # settlement_retry resets merged-in-run until a later merge_completed.
-            merged_in_run = False
-            failed_in_run = False
-        if event_type == "review_fail":
-            reject_verdict = ev.get("verdict") or reject_verdict
-            err = ev.get("error")
-            if isinstance(err, str):
-                error = err
-        elif event_type == "worker_log":
-            log_type = ev.get("log_type")
-            content = ev.get("content")
-            if log_type == "thought" and isinstance(content, str):
-                thoughts.append(content)
-            elif log_type == "call" and isinstance(content, dict):
-                iterations += 1
-                activity.append(content)
-            elif log_type == "done" and isinstance(content, str):
-                done_summary = content
-            elif log_type == "error" and isinstance(content, str) and error is None:
-                error = content
+        if ev.get("event") == "worker_log":
+            _apply_worker_log_event(ev, state)
+        else:
+            _apply_lifecycle_event(ev, state)
 
     duration_s: float | None = None
+    dispatched_ts = state["dispatched_ts"]
+    terminal_ts = state["terminal_ts"]
     if dispatched_ts and terminal_ts:
         start = _iso_to_epoch(dispatched_ts)
         end = _iso_to_epoch(terminal_ts)
@@ -331,19 +359,20 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
     # Used by _build_unit_review to distinguish current-run outcomes from
     # stale deploy-log records.
     ran_in_run = bool(unit_events)
+    iterations = state["iterations"]
 
     return {
-        "thoughts": thoughts,
-        "activity": activity,
+        "thoughts": state["thoughts"],
+        "activity": state["activity"],
         "iterations": iterations if iterations > 0 else None,
-        "done_summary": done_summary,
-        "error": error,
-        "reject_verdict": reject_verdict,
-        "settlement_retries": settlement_retries,
+        "done_summary": state["done_summary"],
+        "error": state["error"],
+        "reject_verdict": state["reject_verdict"],
+        "settlement_retries": state["settlement_retries"],
         "duration_s": duration_s,
-        "merge_sha": merge_sha,
-        "merged_in_run": merged_in_run,
-        "failed_in_run": failed_in_run,
+        "merge_sha": state["merge_sha"],
+        "merged_in_run": state["merged_in_run"],
+        "failed_in_run": state["failed_in_run"],
         "ran_in_run": ran_in_run,
     }
 
