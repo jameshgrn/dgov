@@ -36,6 +36,69 @@ def _output(data: dict) -> None:
             click.echo(f"{key}: {value}")
 
 
+def resolve_plan_input(path: Path) -> tuple[Path, Path | None]:
+    """Accept either a plan directory or a compiled TOML file.
+
+    Returns (plan_file, plan_dir) where plan_file is the TOML path to load
+    (may or may not exist — callers that need richer error messages check
+    existence themselves) and plan_dir is the directory when the caller
+    passed one or None when the caller passed a bare file.
+
+    Raises click.ClickException only for clearly invalid inputs (non-TOML
+    file path). Missing _compiled.toml is a caller-level concern.
+    """
+    if path.is_dir():
+        return path / "_compiled.toml", path
+    if path.suffix != ".toml":
+        raise click.ClickException(f"Plan file must be .toml, got: {path}")
+    return path, None
+
+
+def print_dag_graph(units: dict) -> None:
+    """Print an ASCII representation of a plan DAG.
+
+    Works on any mapping of slug → object with a `depends_on` tuple,
+    so it can print both FlatPlan (from plan_tree) and PlanSpec (from plan).
+    """
+    children: dict[str, set[str]] = {uid: set() for uid in units}
+    for uid, unit in units.items():
+        for dep in getattr(unit, "depends_on", ()):
+            if dep in children:
+                children[dep].add(uid)
+
+    roots = sorted(uid for uid, unit in units.items() if not getattr(unit, "depends_on", ()))
+    edge_count = sum(len(getattr(u, "depends_on", ())) for u in units.values())
+    click.echo(f"\nDAG ({len(units)} tasks, {edge_count} edges):")
+
+    if not units:
+        click.echo("  (empty)")
+        return
+
+    visited: set[str] = set()
+
+    def _walk(uid: str, prefix: str, is_last: bool) -> None:
+        if uid in visited:
+            connector = "    └─► " if is_last else "    ├─► "
+            click.echo(f"{prefix}{connector}{uid} ...")
+            return
+        visited.add(uid)
+        is_root = uid in roots
+        label = f"{uid} (root)" if is_root else uid
+        if not prefix:
+            click.echo(f"  {label}")
+        else:
+            connector = "└─► " if is_last else "├─► "
+            click.echo(f"{prefix}{connector}{label}")
+        child_ids = sorted(children.get(uid, set()))
+        for i, child_id in enumerate(child_ids):
+            is_last_child = i == len(child_ids) - 1
+            extension = "    " if is_last else "│   "
+            _walk(child_id, prefix + extension, is_last_child)
+
+    for root in roots:
+        _walk(root, "", True)
+
+
 @click.group(invoke_without_command=True)
 @click.option("--json", is_flag=True, help="Output as JSON")
 @click.version_option(version=__version__, prog_name="dgov")

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import click
 
-from dgov.cli import cli, want_json
+from dgov.cli import cli, print_dag_graph, resolve_plan_input, want_json
 from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
 from dgov.plan_tree import parse_compiled_source_mtime
 from dgov.project_root import resolve_project_root
@@ -53,19 +53,31 @@ def _echo_plan_summary(plan: PlanSpec, errors: list, warnings: list) -> None:
 
 
 @cli.command(name="validate")
-@click.argument("plan_file", type=click.Path(path_type=Path, exists=True))
-def validate_cmd(plan_file: Path) -> None:
-    """Validate a plan file without running it.
+@click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
+def validate_cmd(plan_input: Path) -> None:
+    """Validate a plan without running it.
 
-    Parses the TOML, checks dependencies, detects file-claim conflicts,
-    and prints a summary of the DAG.
+    Accepts either a plan directory (expects `_compiled.toml` inside) or a
+    compiled TOML file directly. Parses the plan, checks dependencies,
+    detects file-claim conflicts, and prints a summary of the DAG with
+    its topology.
 
     \b
-    Example: dgov validate plan.toml
+    Example: dgov validate .dgov/plans/my-plan/
+    Example: dgov validate .dgov/plans/my-plan/_compiled.toml
     """
-    if plan_file.suffix != ".toml":
-        click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
-        raise SystemExit(1)
+    try:
+        plan_file, plan_dir = resolve_plan_input(plan_input)
+    except click.ClickException as exc:
+        click.echo(f"Error: {exc.message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    if plan_dir is not None and not plan_file.exists():
+        click.echo(
+            f"Error: no _compiled.toml in {plan_dir}. Run 'dgov compile {plan_dir}' first.",
+            err=True,
+        )
+        raise click.exceptions.Exit(code=1) from None
 
     try:
         plan = parse_plan_file(str(plan_file))
@@ -92,6 +104,8 @@ def validate_cmd(plan_file: Path) -> None:
         )
     else:
         _echo_plan_summary(plan, errors, warnings)
+        if not errors:
+            print_dag_graph(plan.units)
 
     if errors:
         raise click.exceptions.Exit(code=1)
@@ -207,30 +221,37 @@ def plan_cmd() -> None:
 
 
 @plan_cmd.command(name="status")
-@click.argument("plan_root", type=click.Path(path_type=Path, exists=True, file_okay=False))
-def plan_status_cmd(plan_root: Path) -> None:
+@click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
+def plan_status_cmd(plan_input: Path) -> None:
     """Show deployment status of a compiled plan.
 
-    Reads _compiled.toml and deployed.jsonl to show pending vs deployed
-    units, with a staleness warning when source TOMLs have changed.
+    Accepts either a plan directory or a compiled TOML file. Reads
+    `_compiled.toml` and `deployed.jsonl` to show pending vs deployed
+    units, with a staleness warning when source TOMLs have changed
+    (staleness is only checked when a plan directory is provided).
 
     \b
     Example: dgov plan status .dgov/plans/my-plan/
+    Example: dgov plan status .dgov/plans/my-plan/_compiled.toml
     """
-    _cmd_plan_status(plan_root)
+    try:
+        compiled_path, plan_root = resolve_plan_input(plan_input)
+    except click.ClickException as exc:
+        click.echo(f"Error: {exc.message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+    _cmd_plan_status(compiled_path, plan_root)
 
 
-def _cmd_plan_status(plan_root: Path) -> None:
+def _cmd_plan_status(compiled_path: Path, plan_root: Path | None) -> None:
     """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
     import tomllib
 
     from dgov.deploy_log import read as read_deploy_log
     from dgov.plan_tree import walk_tree
 
-    compiled_path = plan_root / "_compiled.toml"
-
     if not compiled_path.exists():
-        msg = f"Not compiled; run 'dgov compile {plan_root}'"
+        target = plan_root if plan_root is not None else compiled_path
+        msg = f"Not compiled; run 'dgov compile {target}'"
         if want_json():
             click.echo(json.dumps({"status": "not_compiled", "message": msg}, indent=2))
         else:
@@ -244,20 +265,21 @@ def _cmd_plan_status(plan_root: Path) -> None:
 
     stale = False
     compiled_source_mtime = plan_section.get("source_mtime_max", "")
-    try:
-        tree = walk_tree(plan_root)
-        current_mtime = max(
-            (plan_root / "_root.toml").stat().st_mtime,
-            *(p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
-        )
-        baseline_mtime = (
-            parse_compiled_source_mtime(compiled_source_mtime)
-            if isinstance(compiled_source_mtime, str) and compiled_source_mtime
-            else compiled_path.stat().st_mtime
-        )
-        stale = current_mtime > (baseline_mtime + _MTIME_EPSILON_S)
-    except (FileNotFoundError, ValueError):
-        pass
+    if plan_root is not None:
+        try:
+            tree = walk_tree(plan_root)
+            current_mtime = max(
+                (plan_root / "_root.toml").stat().st_mtime,
+                *(p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
+            )
+            baseline_mtime = (
+                parse_compiled_source_mtime(compiled_source_mtime)
+                if isinstance(compiled_source_mtime, str) and compiled_source_mtime
+                else compiled_path.stat().st_mtime
+            )
+            stale = current_mtime > (baseline_mtime + _MTIME_EPSILON_S)
+        except (FileNotFoundError, ValueError):
+            pass
 
     project_root = str(resolve_project_root())
     deployed = read_deploy_log(project_root, plan_name)
@@ -299,7 +321,7 @@ def _cmd_plan_status(plan_root: Path) -> None:
         click.echo(f"Plan: {plan_name}")
         total = len(unit_statuses)
         click.echo(f"Units: {total} total | {deployed_count} deployed | {pending_count} pending")
-        if stale:
+        if stale and plan_root is not None:
             click.echo(
                 click.style(
                     f"  WARNING: compile stale; rerun 'dgov compile {plan_root}'",

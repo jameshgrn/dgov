@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import click
 
-from dgov.cli import cli, want_json
-from dgov.plan_tree import FlatPlan
+from dgov.cli import cli, print_dag_graph, want_json
 from dgov.project_root import resolve_project_root
 
 
@@ -162,55 +160,4 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
             click.echo(f"  WARNING{unit_info}: {w.message}", err=True)
 
     if graph and not want_json():
-        _print_dag_graph(resolved)
-
-
-def _print_dag_graph(resolved: FlatPlan) -> None:
-    """Print an ASCII representation of the DAG showing task dependencies."""
-    units: dict[str, Any] = resolved.units
-
-    # Build reverse dependency map (child -> parents)
-    children: dict[str, set[str]] = {uid: set() for uid in units}
-    for uid, unit in units.items():
-        for dep in getattr(unit, "depends_on", ()):
-            if dep in children:
-                children[dep].add(uid)
-
-    # Find roots (units with no depends_on)
-    roots = [uid for uid, unit in units.items() if not getattr(unit, "depends_on", ())]
-    roots.sort()
-
-    edge_count = sum(len(getattr(u, "depends_on", ())) for u in units.values())
-    click.echo(f"\nDAG ({len(units)} tasks, {edge_count} edges):")
-
-    if not units:
-        click.echo("  (empty)")
-        return
-
-    visited: set[str] = set()
-
-    def _print_node(uid: str, prefix: str, is_last: bool) -> None:
-        """Print a node and its children recursively."""
-        if uid in visited:
-            connector = "    └─► " if is_last else "    ├─► "
-            click.echo(f"{prefix}{connector}{uid} ...")
-            return
-
-        visited.add(uid)
-        is_root = uid in roots
-        label = f"{uid} (root)" if is_root else uid
-
-        if not prefix:
-            click.echo(f"  {label}")
-        else:
-            connector = "└─► " if is_last else "├─► "
-            click.echo(f"{prefix}{connector}{label}")
-
-        child_ids = sorted(children.get(uid, set()))
-        for i, child_id in enumerate(child_ids):
-            is_last_child = i == len(child_ids) - 1
-            extension = "    " if is_last else "│   "
-            _print_node(child_id, prefix + extension, is_last_child)
-
-    for root in roots:
-        _print_node(root, "", True)
+        print_dag_graph(resolved.units)
