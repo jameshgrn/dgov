@@ -516,6 +516,7 @@ class TestValidateSandbox:
             return real_run(args, **kwargs)
 
         monkeypatch.setattr("subprocess.run", _mock_run)
+        monkeypatch.setattr("dgov.settlement.shutil.which", lambda name: "/usr/bin/sentrux")
 
         result = validate_sandbox(tmp_path, base, str(tmp_path))
         assert result.passed is True
@@ -560,6 +561,7 @@ def test_run_sentrux_gate_refreshes_worktree_baseline(tmp_path: Path, monkeypatc
         )
 
     monkeypatch.setattr("subprocess.run", _mock_run)
+    monkeypatch.setattr("dgov.settlement.shutil.which", lambda name: "/usr/bin/sentrux")
 
     result = _run_sentrux_gate(worktree_path, str(tmp_path), timeout=1)
     assert result.passed is True

@@ -18,6 +18,7 @@ import shlex
 import shutil
 import subprocess
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -217,7 +218,7 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
 
 
 def _check_scope(
-    actual_files: frozenset[str], claimed_files: list[str] | None
+    actual_files: frozenset[str], claimed_files: Sequence[str] | None
 ) -> ReviewResult | None:
     """Check that changed files are within claimed scope. Returns ReviewResult on failure."""
     if not claimed_files:
@@ -237,7 +238,7 @@ def _check_scope(
 
 def review_sandbox(
     worktree_path: Path,
-    claimed_files: list[str] | None = None,
+    claimed_files: Sequence[str] | None = None,
     max_diff_lines: int = 100,
     project_root: str | None = None,
 ) -> ReviewResult:

@@ -176,6 +176,7 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
     (tmp_path / "README.md").write_text("hello\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
 
     # In headless (isatty=False), it should auto-create commit and then fail on missing baseline
     result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)

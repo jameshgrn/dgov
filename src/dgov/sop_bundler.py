@@ -352,7 +352,7 @@ def _parse_sections(path: Path, body: str) -> dict[str, tuple[str, ...]]:
 
     parsed: dict[str, list[str]] = {key: [] for _, key in _SECTION_ORDER}
     current: str | None = None
-    heading_map = {display.lower(): key for display, key in _SECTION_ORDER}
+    heading_map: dict[str, str] = {display.lower(): key for display, key in _SECTION_ORDER}
 
     for line in body.splitlines():
         stripped = line.strip()

@@ -20,6 +20,7 @@ from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
 pytestmark = pytest.mark.unit
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -448,7 +449,7 @@ def test_version(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
     assert "dgov" in result.output
-    pyproject = tomllib.loads(Path("/Users/jakegearon/projects/dgov/pyproject.toml").read_text())
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert pyproject["project"]["version"] in result.output
 
 
