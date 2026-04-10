@@ -28,6 +28,7 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
+from dgov.tool_policy import parse_tool_policy  # noqa: E402
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
 
@@ -88,9 +89,13 @@ def _load_project_config(worktree: Path) -> AtomicConfig:
         lint_cmd=proj.get("lint_cmd", AtomicConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", AtomicConfig.format_cmd),
         lint_fix_cmd=proj.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
+        worker_iteration_budget=proj.get("worker_iteration_budget", 50),
+        worker_iteration_warn_at=proj.get("worker_iteration_warn_at", 40),
+        worker_tree_max_lines=proj.get("worker_tree_max_lines", 80),
         line_length=proj.get("line_length", 99),
         test_markers=markers,
         conventions=conventions or None,
+        tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
     )
 
 
@@ -101,7 +106,23 @@ def _resolve_config(worktree: Path, project_config_json: str) -> AtomicConfig:
             raw = json.loads(project_config_json)
             raw.pop("llm_base_url", None)
             raw.pop("llm_api_key_env", None)
-            return AtomicConfig(**raw)
+            return AtomicConfig(
+                language=raw.get("language", "python"),
+                src_dir=raw.get("src_dir", "src/"),
+                test_dir=raw.get("test_dir", "tests/"),
+                test_cmd=raw.get("test_cmd", AtomicConfig.test_cmd),
+                lint_cmd=raw.get("lint_cmd", AtomicConfig.lint_cmd),
+                format_cmd=raw.get("format_cmd", AtomicConfig.format_cmd),
+                lint_fix_cmd=raw.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
+                type_check_cmd=raw.get("type_check_cmd", ""),
+                worker_iteration_budget=raw.get("worker_iteration_budget", 50),
+                worker_iteration_warn_at=raw.get("worker_iteration_warn_at", 40),
+                worker_tree_max_lines=raw.get("worker_tree_max_lines", 80),
+                line_length=raw.get("line_length", 99),
+                test_markers=tuple(raw.get("test_markers", ()) or ()),
+                conventions=raw.get("conventions") or None,
+                tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
+            )
         except Exception:
             pass
     return _load_project_config(worktree)
@@ -121,7 +142,7 @@ def _resolve_llm_runtime_settings(worktree: Path, project_config_json: str) -> t
     return _load_llm_runtime_settings(worktree)
 
 
-def _snapshot_tree(worktree: Path, max_depth: int = 2) -> str:
+def _snapshot_tree(worktree: Path, max_depth: int = 2, max_lines: int = 80) -> str:
     """Generate a compact project tree for the system prompt."""
     lines: list[str] = []
     for root_dir, dirs, files in os.walk(worktree):
@@ -145,7 +166,9 @@ def _snapshot_tree(worktree: Path, max_depth: int = 2) -> str:
             if f.startswith("."):
                 continue
             lines.append(f"{indent}  {f}")
-    return "\n".join(lines[:80])  # cap at 80 lines
+    if max_lines > 0:
+        return "\n".join(lines[:max_lines])
+    return "\n".join(lines)
 
 
 def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
@@ -155,7 +178,7 @@ def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
     if rules_path.exists():
         rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
 
-    project_tree = _snapshot_tree(worktree)
+    project_tree = _snapshot_tree(worktree, max_lines=config.worker_tree_max_lines)
 
     project_section = (
         f"\n\nPROJECT:\n"
@@ -169,6 +192,10 @@ def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
         project_section += "\nCONVENTIONS:\n"
         for key, val in config.conventions.items():
             project_section += f"- {key}: {val}\n"
+    if config.tool_policy.to_prompt_lines():
+        project_section += "\nTOOL POLICY:\n"
+        for line in config.tool_policy.to_prompt_lines():
+            project_section += f"- {line}\n"
 
     sections = [
         f"""[DGOV_WORKER_PROMPT_V1.1.0]
@@ -217,8 +244,8 @@ WORKFLOW — follow this order:
    Call done with a summary.
 
 ITERATION BUDGET:
-- You have a healthy budget of 50 tool calls. This is more than enough for a focused mission.
-- Tactical Check-in: If you find yourself past call 40 and have not yet entered the VERIFY phase, you might be over-exploring. Take a moment to git_diff, simplify your plan, and focus on the specific path to done.
+- You have a healthy budget of {config.worker_iteration_budget} tool calls. This is more than enough for a focused mission.
+- Tactical Check-in: If you find yourself past call {config.worker_iteration_warn_at} and have not yet entered the VERIFY phase, you might be over-exploring. Take a moment to git_diff, simplify your plan, and focus on the specific path to done.
 - Do NOT loop on test failures more than 3 times. If you cannot resolve a failure after 3 focused attempts, call done with a detailed summary of your findings—a clear report of a blocker is more valuable to the Governor than an exhausted worker.
 
 DO NOT:
@@ -255,9 +282,14 @@ def _execute_tool_call(call, actuators: AtomicTools) -> tuple[str, bool]:
 
     func = getattr(actuators, name, None)
     result = func(**args) if func else f"Error: Unknown tool {name}"
+    activity = actuators._consume_activity()
     WorkerEvent(
         "result",
-        {"tool": name, "status": "failed" if result.startswith("Error:") else "success"},
+        {
+            "tool": name,
+            "status": "failed" if result.startswith("Error:") else "success",
+            "activity": activity,
+        },
     ).emit()
     return result, False
 

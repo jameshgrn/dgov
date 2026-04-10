@@ -15,7 +15,13 @@ import pytest
 sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore
 
-from dgov.worker import _load_llm_runtime_settings, _load_project_config  # noqa: E402
+from dgov.tool_policy import ToolPolicy  # noqa: E402
+from dgov.worker import (  # noqa: E402
+    _build_system_prompt,
+    _load_llm_runtime_settings,
+    _load_project_config,
+    _snapshot_tree,
+)
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
 
@@ -74,6 +80,12 @@ def test_write_file_creates_dirs(tools: AtomicTools, tmp_path: Path) -> None:
     result = tools.write_file("sub/dir/file.txt", "nested")
     assert "Successfully" in result
     assert (tmp_path / "sub" / "dir" / "file.txt").read_text() == "nested"
+
+
+def test_write_file_rejects_existing_file(tools: AtomicTools) -> None:
+    result = tools.write_file("hello.py", "x = 2\n")
+    assert result.startswith("Error:")
+    assert "edit_file or apply_patch" in result
 
 
 # -- edit_file --
@@ -196,10 +208,36 @@ def test_load_project_config_from_toml(tmp_path: Path) -> None:
     (dgov_dir / "project.toml").write_text(
         '[project]\nlanguage = "rust"\nsrc_dir = "src/"\n'
         'test_dir = "tests/"\ntest_markers = ["unit"]\n'
+        "worker_iteration_budget = 75\nworker_iteration_warn_at = 60\n"
+        "worker_tree_max_lines = 0\n"
     )
     config = _load_project_config(tmp_path)
     assert config.language == "rust"
     assert config.test_markers == ("unit",)
+    assert config.worker_iteration_budget == 75
+    assert config.worker_iteration_warn_at == 60
+    assert config.worker_tree_max_lines == 0
+
+
+def test_load_project_config_tool_policy(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        """
+[project]
+
+[tool_policy]
+restrict_run_bash = true
+require_wrapped_verify_tools = true
+require_uv_run = true
+"""
+    )
+    config = _load_project_config(tmp_path)
+    assert config.tool_policy == ToolPolicy(
+        restrict_run_bash=True,
+        require_wrapped_verify_tools=True,
+        require_uv_run=True,
+    )
 
 
 def test_load_llm_runtime_settings_defaults(tmp_path: Path) -> None:
@@ -231,3 +269,25 @@ def test_get_tool_spec_returns_list() -> None:
     assert "read_file" in names
     assert "done" in names
     assert "edit_file" in names
+
+
+def test_snapshot_tree_returns_all_lines_when_unbounded(tmp_path: Path) -> None:
+    for idx in range(90):
+        (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
+    tree = _snapshot_tree(tmp_path, max_lines=0)
+    assert "file_000.txt" in tree
+    assert "file_089.txt" in tree
+
+
+def test_build_system_prompt_uses_configured_budget_and_tree(tmp_path: Path) -> None:
+    for idx in range(90):
+        (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
+    config = AtomicConfig(
+        worker_iteration_budget=75,
+        worker_iteration_warn_at=60,
+        worker_tree_max_lines=0,
+    )
+    prompt = _build_system_prompt(tmp_path, config)
+    assert "75 tool calls" in prompt
+    assert "past call 60" in prompt
+    assert "file_089.txt" in prompt

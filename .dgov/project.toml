@@ -4,17 +4,27 @@ src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
 default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
-test_cmd = "PYTHONPATH=src python -m pytest {test_dir} -q --tb=short"
-lint_cmd = "python -m ruff check {file}"
-format_cmd = "python -m ruff format {file}"
-lint_fix_cmd = "python -m ruff check --fix {file}"
-format_check_cmd = "python -m ruff format --check {file}"
-type_check_cmd = "python -m ty check"
+test_cmd = "uv run pytest {test_dir} -q --tb=short"
+lint_cmd = "uv run ruff check {file}"
+format_cmd = "uv run ruff format {file}"
+lint_fix_cmd = "uv run ruff check --fix {file}"
+format_check_cmd = "uv run ruff format --check {file}"
+type_check_cmd = "uv run ty check"
 test_markers = ["unit", "integration"]
+worker_iteration_budget = 75
+worker_iteration_warn_at = 60
+worker_tree_max_lines = 0
 review_hooks = [
     "! file --mime {files} | grep -q 'charset=binary'",
     "! grep -rE '(sk-[a-zA-Z0-9]{24,}|AI_[A-Z0-9_]{24,})' {files}"
 ]
+
+[tool_policy]
+restrict_run_bash = true
+require_wrapped_verify_tools = true
+require_uv_run = true
+deny_shell_file_mutations = true
+deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]
 
 [agents]
 kimi = "accounts/fireworks/routers/kimi-k2p5-turbo"

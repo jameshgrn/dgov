@@ -51,7 +51,11 @@ async def run_headless_worker(
         "lint_fix_cmd": pc.lint_fix_cmd,
         "type_check_cmd": pc.type_check_cmd,
         "test_markers": list(pc.test_markers),
+        "worker_iteration_budget": pc.worker_iteration_budget,
+        "worker_iteration_warn_at": pc.worker_iteration_warn_at,
+        "worker_tree_max_lines": pc.worker_tree_max_lines,
         "conventions": dict(pc.conventions) if pc.conventions else None,
+        "tool_policy": pc.tool_policy.as_jsonable(),
     })
 
     cmd = [

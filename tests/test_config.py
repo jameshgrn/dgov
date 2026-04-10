@@ -1,6 +1,7 @@
 """Tests for dgov config: project config loading and prompt rendering."""
 
 from dgov.config import ProjectConfig, load_project_config
+from dgov.tool_policy import ToolPolicy
 
 
 class TestProjectConfigDefaults:
@@ -14,6 +15,9 @@ class TestProjectConfigDefaults:
         assert pc.llm_api_key_env == "FIREWORKS_API_KEY"
         assert "pytest" in pc.test_cmd
         assert "ruff check" in pc.lint_cmd
+        assert pc.worker_iteration_budget == 50
+        assert pc.worker_iteration_warn_at == 40
+        assert pc.worker_tree_max_lines == 80
 
     def test_resolve_test_cmd(self):
         pc = ProjectConfig(test_cmd="pytest {test_dir} -q", test_dir="tests/")
@@ -50,11 +54,34 @@ class TestPromptSection:
         assert "unit" in section
         assert "integration" in section
 
+    def test_includes_worker_prompt_settings(self):
+        pc = ProjectConfig(
+            worker_iteration_budget=75,
+            worker_iteration_warn_at=60,
+            worker_tree_max_lines=0,
+        )
+        section = pc.to_prompt_section()
+        assert "Worker iteration budget: 75" in section
+        assert "Worker iteration warn at: 60" in section
+        assert "Worker tree max lines: 0" in section
+
     def test_includes_conventions(self):
         pc = ProjectConfig(conventions={"style": "google", "imports": "isort"})
         section = pc.to_prompt_section()
         assert "style: google" in section
         assert "imports: isort" in section
+
+    def test_includes_tool_policy(self):
+        pc = ProjectConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_uv_run=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        section = pc.to_prompt_section()
+        assert "run_bash is restricted" in section
+        assert "must use 'uv run'" in section
 
 
 class TestLoadProjectConfig:
@@ -73,6 +100,9 @@ class TestLoadProjectConfig:
             'llm_api_key_env = "OPENAI_API_KEY"\n'
             'lint_cmd = "golangci-lint run {file}"\n'
             'format_cmd = "gofmt -w {file}"\n'
+            "worker_iteration_budget = 75\n"
+            "worker_iteration_warn_at = 60\n"
+            "worker_tree_max_lines = 0\n"
         )
         pc = load_project_config(tmp_path)
         assert pc.language == "go"
@@ -81,6 +111,9 @@ class TestLoadProjectConfig:
         assert pc.default_agent == "gpt-4.1-mini"
         assert pc.llm_base_url == "https://api.openai.com/v1"
         assert pc.llm_api_key_env == "OPENAI_API_KEY"
+        assert pc.worker_iteration_budget == 75
+        assert pc.worker_iteration_warn_at == 60
+        assert pc.worker_tree_max_lines == 0
 
     def test_partial_toml_fills_defaults(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
@@ -113,6 +146,28 @@ class TestLoadProjectConfig:
         (dgov_dir / "project.toml").write_text('[project]\ntype_check_cmd = "ty check"\n')
         pc = load_project_config(tmp_path)
         assert pc.type_check_cmd == "ty check"
+
+    def test_tool_policy_loaded(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            """
+[project]
+
+[tool_policy]
+restrict_run_bash = true
+require_wrapped_verify_tools = true
+require_uv_run = true
+deny_shell_file_mutations = true
+deny_shell_commands = ["pip", "python -m pip"]
+"""
+        )
+        pc = load_project_config(tmp_path)
+        assert pc.tool_policy.restrict_run_bash is True
+        assert pc.tool_policy.require_wrapped_verify_tools is True
+        assert pc.tool_policy.require_uv_run is True
+        assert pc.tool_policy.deny_shell_file_mutations is True
+        assert pc.tool_policy.deny_shell_commands == ("pip", "python -m pip")
 
 
 class TestTypeCheckCommand:

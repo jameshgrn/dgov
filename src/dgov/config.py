@@ -6,6 +6,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from dgov.tool_policy import ToolPolicy, parse_tool_policy
+
 # -- Project config: per-repo conventions for workers --
 
 
@@ -34,11 +36,15 @@ class ProjectConfig:
     format_check_cmd: str = "python -m ruff format --check {file}"
     type_check_cmd: str = ""
     test_markers: tuple[str, ...] = ()
+    worker_iteration_budget: int = 50
+    worker_iteration_warn_at: int = 40
+    worker_tree_max_lines: int = 80
     settlement_timeout: int = 120
     line_length: int = 99
     review_hooks: tuple[str, ...] = ()
     agents: dict[str, str] = field(default_factory=dict)
     conventions: dict[str, str] = field(default_factory=dict)
+    tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
 
     def resolve_test_cmd(self, file: str = "") -> str:
         """Build the test command with substitutions."""
@@ -80,8 +86,13 @@ class ProjectConfig:
             lines.append(f"Type check command: {self.type_check_cmd}")
         if self.test_markers:
             lines.append(f"Test markers: {', '.join(self.test_markers)}")
+        lines.append(f"Worker iteration budget: {self.worker_iteration_budget}")
+        lines.append(f"Worker iteration warn at: {self.worker_iteration_warn_at}")
+        lines.append(f"Worker tree max lines: {self.worker_tree_max_lines}")
         for key, val in self.conventions.items():
             lines.append(f"{key}: {val}")
+        for line in self.tool_policy.to_prompt_lines():
+            lines.append(f"Tool policy: {line}")
         return "\n".join(lines)
 
 
@@ -122,11 +133,15 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
         type_check_cmd=proj.get("type_check_cmd", ""),
         test_markers=markers,
+        worker_iteration_budget=proj.get("worker_iteration_budget", 50),
+        worker_iteration_warn_at=proj.get("worker_iteration_warn_at", 40),
+        worker_tree_max_lines=proj.get("worker_tree_max_lines", 80),
         settlement_timeout=proj.get("settlement_timeout", 120),
         line_length=proj.get("line_length", 99),
         review_hooks=hooks,
         agents=agents,
         conventions=conventions,
+        tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
     )
 
 

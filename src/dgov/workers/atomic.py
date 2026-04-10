@@ -9,12 +9,15 @@ from __future__ import annotations
 import ast
 import fnmatch
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from dgov.tool_policy import ToolPolicy
 
 
 @dataclass(frozen=True)
@@ -29,9 +32,13 @@ class AtomicConfig:
     format_cmd: str = "python -m ruff format {file}"
     lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
     type_check_cmd: str = ""
+    worker_iteration_budget: int = 50
+    worker_iteration_warn_at: int = 40
+    worker_tree_max_lines: int = 80
     line_length: int = 99
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] | None = None
+    tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
 
 
 def shell_quote(s: str) -> str:
@@ -52,6 +59,7 @@ class AtomicTools:
         self._python = sys.executable
         # Sandbox HOME outside worktree — prevents macOS Library/ polluting git status
         self._sandbox_home = Path(tempfile.mkdtemp(prefix="dgov-sandbox-"))
+        self._activity_log: list[dict[str, Any]] = []
 
     def _sandbox_env(self) -> dict[str, str]:
         return {
@@ -67,6 +75,79 @@ class AtomicTools:
         if not str(target).startswith(str(self.worktree)):
             return "Error: Path traversal attempt blocked."
         return target
+
+    def _record_activity(self, kind: str, path: str, **extra: object) -> None:
+        self._activity_log.append({"kind": kind, "path": path, **extra})
+
+    def _consume_activity(self) -> list[dict[str, Any]]:
+        activity = self._activity_log[:]
+        self._activity_log.clear()
+        return activity
+
+    def _reject_shell_command(self, cmd: str) -> str | None:
+        policy = self.config.tool_policy
+        if not policy.restrict_run_bash:
+            return None
+
+        normalized = cmd.strip()
+        lowered = normalized.lower()
+        for denied in policy.deny_shell_commands:
+            if lowered.startswith(denied.lower()):
+                return (
+                    f"Error: run_bash policy rejected '{cmd}'. "
+                    f"Denied shell command prefix: {denied!r}."
+                )
+
+        if policy.deny_shell_file_mutations:
+            if re.search(r"(^|[;&|]\s*)(rm|mv|cp|touch|mkdir)\b", normalized):
+                return (
+                    "Error: run_bash policy rejected file mutation shell command. "
+                    "Use write_file/edit_file/apply_patch/revert_file instead."
+                )
+            if re.search(r"(>?>|<<|tee\b)", normalized):
+                return (
+                    "Error: run_bash policy rejected shell redirection into repo files. "
+                    "Use write_file/edit_file/apply_patch instead."
+                )
+
+        try:
+            tokens = shlex.split(normalized)
+        except ValueError as exc:
+            return f"Error: Invalid shell command: {exc}"
+        if not tokens:
+            return "Error: Empty shell command."
+
+        uv_wrapped = len(tokens) >= 2 and tokens[0] == "uv" and tokens[1] == "run"
+        core = tokens[2:] if uv_wrapped else tokens
+        if not core:
+            return "Error: Invalid 'uv run' command with no subcommand."
+
+        tool = core[0]
+
+        if policy.require_wrapped_verify_tools:
+            pytest_invocation = tool == "pytest" or core[:3] in (
+                ["python", "-m", "pytest"],
+                ["python3", "-m", "pytest"],
+            )
+            if pytest_invocation:
+                return "Error: run_bash policy requires run_tests() for pytest invocations."
+            if tool == "ruff" and len(core) >= 2 and core[1] == "check":
+                if "--fix" in core:
+                    return "Error: run_bash policy requires lint_fix() for 'ruff check --fix'."
+                return "Error: run_bash policy requires lint_check() for 'ruff check'."
+            if tool == "ruff" and len(core) >= 2 and core[1] == "format":
+                return "Error: run_bash policy requires format_file() for 'ruff format'."
+            if tool == "ty" and len(core) >= 2 and core[1] == "check":
+                return "Error: run_bash policy requires type_check() for 'ty check'."
+
+        if (
+            policy.require_uv_run
+            and tool in {"python", "python3", "pytest", "ruff", "ty"}
+            and not uv_wrapped
+        ):
+            return f"Error: run_bash policy requires 'uv run' for Python command '{tool}'."
+
+        return None
 
     # -- Core tools --
 
@@ -91,8 +172,14 @@ class AtomicTools:
         target = self._check_path(path)
         if isinstance(target, str):
             return target
+        if target.exists():
+            return (
+                f"Error: {path} already exists. "
+                "Use edit_file or apply_patch to modify existing files."
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content)
+        self._record_activity("write_file", path, mode="create")
         return f"Successfully wrote {len(content)} bytes to {path}"
 
     def edit_file(self, path: str, old_text: str, new_text: str) -> str:
@@ -109,6 +196,7 @@ class AtomicTools:
         if count > 1:
             return f"Error: old_text matches {count} locations in {path}. Be more specific."
         target.write_text(content.replace(old_text, new_text, 1))
+        self._record_activity("edit_file", path, mode="edit")
         return f"Successfully edited {path}"
 
     def apply_patch(self, path: str, patch: str) -> str:
@@ -152,13 +240,17 @@ class AtomicTools:
         # Copy remaining original lines after last hunk
         result.extend(original[orig_idx:])
         target.write_text("".join(result))
+        self._record_activity("apply_patch", path, mode="patch")
         return f"Successfully patched {path}"
 
-    def run_bash(self, cmd: str) -> str:
-        """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
-        # Reject commands that reference absolute paths (escape attempts)
+    def _execute_shell(self, cmd: str, *, enforce_policy: bool) -> str:
+        """Run a shell command inside the sandbox, optionally enforcing run_bash policy."""
         if re.search(r"(?<![.\w])/(?:etc|tmp|var|usr|opt|home|Users|root|bin|sbin)\b", cmd):
             return "Error: Absolute paths are not allowed. Use relative paths within the worktree."
+        if enforce_policy:
+            policy_error = self._reject_shell_command(cmd)
+            if policy_error is not None:
+                return policy_error
         try:
             res = subprocess.run(
                 ["/bin/sh", "-c", f"cd {shell_quote(str(self.worktree))} && {cmd}"],
@@ -171,6 +263,10 @@ class AtomicTools:
             return f"STDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}\nEXIT:{res.returncode}"
         except subprocess.TimeoutExpired:
             return "Error: Command timed out after 60s."
+
+    def run_bash(self, cmd: str) -> str:
+        """Pillar #7: Zero Ambient Authority - sandboxed execution in worktree."""
+        return self._execute_shell(cmd, enforce_policy=True)
 
     # -- Navigation tools --
 
@@ -324,6 +420,7 @@ class AtomicTools:
                 text=True,
                 timeout=10,
             )
+            self._record_activity("revert_file", path, mode="revert")
             return f"Successfully reverted {path} to HEAD."
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return f"Error: Failed to revert {path}: {getattr(e, 'stderr', str(e))}"
@@ -511,7 +608,7 @@ class AtomicTools:
             return target
         rel = str(target.relative_to(self.worktree))
         cmd = f"rg {flags} -- {shell_quote(pattern)} {shell_quote(rel)}"
-        result = self.run_bash(cmd)
+        result = self._execute_shell(cmd, enforce_policy=False)
         if "EXIT:2" in result or "command not found" in result:
             return self.grep(pattern, path)  # fallback to Python grep
         return result
@@ -524,7 +621,9 @@ class AtomicTools:
         if not target.exists():
             return f"Error: {path} does not exist."
         rel = str(target.relative_to(self.worktree))
-        return self.run_bash(f"jq {shell_quote(expr)} {shell_quote(rel)}")
+        return self._execute_shell(
+            f"jq {shell_quote(expr)} {shell_quote(rel)}", enforce_policy=False
+        )
 
     def tree(self, path: str = ".", max_depth: int = 3) -> str:
         """Show directory structure as a tree. Excludes hidden dirs and __pycache__."""
@@ -533,15 +632,17 @@ class AtomicTools:
             return target
         rel = str(target.relative_to(self.worktree))
         # Try system tree, fall back to find-based
-        result = self.run_bash(
+        result = self._execute_shell(
             f"tree -L {max_depth} -I '__pycache__|.git|node_modules|.venv' "
-            f"--noreport {shell_quote(rel)}"
+            f"--noreport {shell_quote(rel)}",
+            enforce_policy=False,
         )
         if "command not found" in result:
-            result = self.run_bash(
+            result = self._execute_shell(
                 f"find {shell_quote(rel)} -maxdepth {max_depth} "
                 f"-not -path '*/__pycache__/*' -not -path '*/.git/*' "
-                f"| head -100 | sort"
+                f"| head -100 | sort",
+                enforce_policy=False,
             )
         return result
 
@@ -552,11 +653,12 @@ class AtomicTools:
             return target
         rel = str(target.relative_to(self.worktree))
         if target.is_dir():
-            return self.run_bash(
+            return self._execute_shell(
                 f"find {shell_quote(rel)} -name '*.py' -not -path '*/__pycache__/*' "
-                f"| xargs wc -l | tail -20"
+                f"| xargs wc -l | tail -20",
+                enforce_policy=False,
             )
-        return self.run_bash(f"wc -l {shell_quote(rel)}")
+        return self._execute_shell(f"wc -l {shell_quote(rel)}", enforce_policy=False)
 
     def head(self, path: str, n: int = 20) -> str:
         """Show first N lines of a file. Faster than read_file for quick peeks."""
@@ -586,30 +688,30 @@ class AtomicTools:
         cmd = self.config.test_cmd.replace("{test_dir}", self.config.test_dir)
         if file:
             cmd = cmd.replace(self.config.test_dir, file)
-        return self.run_bash(cmd)
+        return self._execute_shell(cmd, enforce_policy=False)
 
     def lint_check(self, file: str = "") -> str:
         """Run lint using the project's declared lint command."""
         target = file if file else self.config.src_dir
         cmd = self.config.lint_cmd.replace("{file}", target)
-        return self.run_bash(cmd)
+        return self._execute_shell(cmd, enforce_policy=False)
 
     def lint_fix(self, file: str = "") -> str:
         """Auto-fix lint issues (including unsafe fixes like unused variables)."""
         target = file if file else self.config.src_dir
         cmd = self.config.lint_fix_cmd.replace("{file}", target)
-        return self.run_bash(cmd)
+        return self._execute_shell(cmd, enforce_policy=False)
 
     def format_file(self, file: str) -> str:
         """Format a file using the project's formatter."""
         cmd = self.config.format_cmd.replace("{file}", file)
-        return self.run_bash(cmd)
+        return self._execute_shell(cmd, enforce_policy=False)
 
     def type_check(self) -> str:
         """Run the project's type checker. Returns a message if not configured."""
         if not self.config.type_check_cmd:
             return "Type checking not configured for this project."
-        return self.run_bash(self.config.type_check_cmd)
+        return self._execute_shell(self.config.type_check_cmd, enforce_policy=False)
 
 
 def get_tool_spec() -> list[Any]:
