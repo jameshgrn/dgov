@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
+
+_TASK_ROLES = frozenset({"worker", "researcher"})
 
 # Matches file paths embedded in prompt text: any word/path ending in a known
 # extension (.py, .toml, .json, .yaml, .yml, .md, .txt, .cfg, .ini, .sh)
@@ -81,6 +84,7 @@ class PlanUnit:
     files: PlanUnitFiles
     depends_on: tuple[str, ...] = ()
     agent: str = ""
+    role: Literal["worker", "researcher"] = "worker"
     timeout_s: int = 0
 
 
@@ -121,6 +125,7 @@ def parse_plan_file(path: str) -> PlanSpec:
             prompt=task.prompt,
             commit_message=task.commit_message,
             agent=task.agent,
+            role=task.role,
             depends_on=task.depends_on,
             timeout_s=task.timeout_s,
             files=PlanUnitFiles(
@@ -194,6 +199,7 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
             prompt=unit.prompt,
             commit_message=unit.commit_message,
             agent=agent,
+            role=unit.role,
             depends_on=unit.depends_on,
             files=dag_files,
             timeout_s=timeout_s,
@@ -303,6 +309,20 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     # should not have .py files in touch/edit (this tempts the worker to modify code).
     for slug, unit in plan.units.items():
         issues.extend(_check_verify_only_task(slug, unit))
+
+    # Task role check
+    for slug, unit in plan.units.items():
+        if unit.role not in _TASK_ROLES:
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=(
+                        f"Unknown task role '{unit.role}' for '{slug}'. "
+                        f"Expected one of: {', '.join(sorted(_TASK_ROLES))}."
+                    ),
+                    unit=slug,
+                )
+            )
 
     # Prompt structure check: Orient/Edit/Verify headers.
     for slug, unit in plan.units.items():

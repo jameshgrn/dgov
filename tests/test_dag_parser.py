@@ -349,8 +349,29 @@ commit_message = "task 1"
 
     task = result.tasks["task1"]
     assert task.agent == ""
+    assert task.role == "worker"
     assert task.depends_on == ()
     assert task.timeout_s == 900
+
+
+def test_parse_dag_file_with_researcher_role(tmp_path: Path):
+    """Tasks may opt into the researcher worker role."""
+    toml_content = """
+[plan]
+name = "research-dag"
+
+[tasks.task1]
+summary = "Task 1"
+prompt = "Investigate it"
+commit_message = "task 1"
+role = "researcher"
+"""
+    dag_file = tmp_path / "researcher.dag.toml"
+    dag_file.write_text(toml_content)
+
+    result = parse_dag_file(str(dag_file))
+
+    assert result.tasks["task1"].role == "researcher"
 
 
 def test_parse_dag_file_accepts_max_retries_alias(tmp_path: Path):

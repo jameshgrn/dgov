@@ -577,6 +577,7 @@ class EventDagRunner:
                 project_root=self.session_root,
                 worktree_path=str(wt.path),
                 branch_name=wt.branch,
+                role=task.role,
                 state=TaskState.ACTIVE,
                 plan_name=self.dag.name,
                 file_claims=file_claims,

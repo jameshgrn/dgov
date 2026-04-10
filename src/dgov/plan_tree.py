@@ -264,6 +264,7 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
         files=files,
         depends_on=_str_list(data.get("depends_on", []), "depends_on", source),
         agent=data.get("agent", ""),
+        role=data.get("role", "worker"),
         timeout_s=data.get("timeout_s", 0),
     )
 

@@ -44,6 +44,8 @@ def serialize_compiled_toml(
         lines.append(f"commit_message = {_toml_str(unit.commit_message)}")
         if unit.agent:
             lines.append(f"agent = {_toml_str(unit.agent)}")
+        if unit.role != "worker":
+            lines.append(f"role = {_toml_str(unit.role)}")
         if unit.depends_on:
             deps = ", ".join(_toml_str(d) for d in unit.depends_on)
             lines.append(f"depends_on = [{deps}]")

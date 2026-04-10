@@ -303,6 +303,7 @@ summary = "sum"
 prompt = "prm"
 commit_message = "msg"
 agent = "acct/model"
+role = "researcher"
 depends_on = ["a", "b/c.d"]
 timeout_s = 123
 files.create = ["new.py"]
@@ -316,6 +317,7 @@ files.delete = ["gone.py"]
         assert unit.prompt == "prm"
         assert unit.commit_message == "msg"
         assert unit.agent == "acct/model"
+        assert unit.role == "researcher"
         assert unit.depends_on == ("a", "b/c.d")
         assert unit.timeout_s == 123
         assert unit.files.create == ("new.py",)
@@ -328,6 +330,7 @@ files.delete = ["gone.py"]
         plan = merge_tree(walk_tree(tmp_path))
         unit = plan.units["alpha/one.minimal"]
         assert unit.agent == ""
+        assert unit.role == "worker"
         assert unit.depends_on == ()
         assert unit.timeout_s == 0
         assert unit.files.create == ()

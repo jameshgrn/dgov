@@ -315,6 +315,26 @@ class TestCompilePlan:
 
         assert result.tasks["task-1"].agent == "claude-3-opus"
 
+    def test_preserves_unit_role_when_specified(self):
+        plan = PlanSpec(
+            name="research-role-plan",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Investigate it",
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                    role="researcher",
+                )
+            },
+        )
+
+        result = compile_plan(plan, project_agent="test-agent")
+
+        assert result.tasks["task-1"].role == "researcher"
+
     def test_uses_default_timeout_when_unit_has_none(self):
         plan = PlanSpec(
             name="timeout-plan",
@@ -355,6 +375,25 @@ class TestCompilePlan:
         result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-2"].depends_on == ("task-1",)
+
+    def test_rejects_unknown_task_role(self):
+        plan = PlanSpec(
+            name="bad-role-plan",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                    role="mystery",
+                )
+            },
+        )
+
+        with pytest.raises(PlanValidationError, match="Unknown task role"):
+            compile_plan(plan, project_agent="test-agent")
 
     def test_preserves_file_operations(self):
         plan = PlanSpec(

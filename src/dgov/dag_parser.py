@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -33,6 +33,7 @@ class DagTaskSpec(BaseModel):
     prompt: str
     commit_message: str
     agent: str = ""
+    role: Literal["worker", "researcher"] = "worker"
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900

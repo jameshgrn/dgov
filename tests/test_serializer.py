@@ -517,3 +517,41 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
         # Original units don't have agent or timeout set
         assert "agent =" not in result
         assert "timeout_s =" not in result
+
+    def test_role_emitted_for_researcher_tasks(self, tmp_path):
+        """Non-default task roles should round-trip through compiled TOML."""
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+
+        root_meta = RootMeta(
+            name="research-plan",
+            summary="Test with researcher role",
+            sections=("section1",),
+        )
+
+        unit = PlanUnit(
+            slug="section1/file.research_task",
+            summary="Research task",
+            prompt="Investigate something",
+            commit_message="Done",
+            files=PlanUnitFiles(),
+            role="researcher",
+        )
+
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={"section1/file.research_task": unit},
+            source_map={"section1/file.research_task": plan_root / "section1" / "file.toml"},
+            source_mtime_max=1234567890.0,
+        )
+
+        bundle = BundleResult(
+            plan=flat_plan,
+            sop_mapping={"section1/file.research_task": ()},
+            sop_set_hash="research_hash",
+        )
+
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        assert 'role = "researcher"' in result

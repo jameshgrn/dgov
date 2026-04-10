@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 
 # Absolute path to worker.py — resolved at import time, not runtime.
 _WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "worker.py"
+_RESEARCHER_SCRIPT = Path(__file__).resolve().parent.parent / "researcher.py"
+
+
+def _script_for_role(role: str) -> Path:
+    """Resolve the worker entrypoint script for a task role."""
+    if role == "worker":
+        return _WORKER_SCRIPT
+    if role == "researcher":
+        return _RESEARCHER_SCRIPT
+    raise ValueError(f"Unknown task role: {role}")
 
 
 async def run_headless_worker(
@@ -61,7 +71,7 @@ async def run_headless_worker(
     cmd = [
         sys.executable,
         "-u",
-        str(_WORKER_SCRIPT),
+        str(_script_for_role(task.role)),
         "--goal",
         task.prompt,
         "--worktree",
