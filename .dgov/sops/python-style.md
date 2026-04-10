@@ -1,17 +1,34 @@
 ---
 name: python-style
 title: Python Toolchain & Code Style
+summary: Python toolchain defaults and code-style rules for focused, explicit changes.
+applies_to: [python, lint, format, style]
+priority: must
 ---
-## Toolchain
-- **uv over pip/poetry:** Always use `uv run <command>` prefix for Python tools in uv-managed projects.
-- **Ruff over black/pylint/flake8:** Use `ruff format` and `ruff check`.
-- **Ty Check:** Run `ty check` over mypy/pyright.
-- **Zero Warnings:** Fix every warning from linters, type checkers, and tests.
+## When
+- editing Python source or tests
+- choosing lint, format, or type-check commands
+- touching functions or stateful code that could drift toward cleverness or flag piles
 
-## Style Rules
-- **No Commented-Out Code:** Delete it; don't leave it in.
-- **Minimal Edits:** When editing an existing file, change only the lines relevant to your task. Never rewrite unchanged code. If your task says "change the import block", change only the import lines — do not touch anything else in the file.
-- **Minimal Annotations:** No docstrings, comments, or type annotations on code you didn't change.
-- **Explicit Logic:** Clarity over cleverness. Explicit readable code over dense one-liners.
-- **No Premature Abstraction:** Don't create utilities until the same code has been written 3x.
-- **Self-Evident Code:** Only add comments where logic isn't self-evident.
+## Do
+- use `uv run <command>` for Python tools in uv-managed repos
+- use `ruff check` and `ruff format`
+- use `ty check` when the repo config enables type checking
+- keep edits minimal and scoped to the requested change
+- prefer explicit, readable logic over dense cleverness
+- keep semantic functions pure and isolate orchestration side effects
+
+## Do Not
+- leave commented-out code behind
+- add docstrings, comments, or type annotations to code you did not change
+- add premature abstractions before the pattern is repeated enough to justify them
+- accumulate boolean flags or mutate input objects while also returning the same reference
+
+## Verify
+- fix every warning from lint, type checks, and targeted tests
+- run the narrowest relevant Python verification commands for the files you changed
+- review the final diff for unintended rewrites or formatting churn
+
+## Escalate
+- if the requested fix requires a broader refactor than the claimed files allow
+- if repo toolchain commands in `project.toml` do not match the actual project

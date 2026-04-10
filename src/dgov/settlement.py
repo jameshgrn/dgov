@@ -17,14 +17,16 @@ import re
 import shlex
 import shutil
 import subprocess
-import tempfile
 import textwrap
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.config import ProjectConfig, load_project_config
 
 logger = logging.getLogger(__name__)
+
+_SENTRUX_BASELINE = ".sentrux/baseline.json"
 
 
 @dataclass(frozen=True)
@@ -202,19 +204,28 @@ def _check_size(actual_files: frozenset[str], max_diff_lines: int) -> ReviewResu
     return None
 
 
+def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
+    """Reject worker changes to governor-owned files."""
+    reserved = sorted(path for path in actual_files if path == _SENTRUX_BASELINE)
+    if reserved:
+        return ReviewResult(
+            passed=False,
+            verdict="reserved_path",
+            actual_files=actual_files,
+            error=f"Touched governor-owned files: {reserved}",
+        )
+    return None
+
+
 def _check_scope(
-    actual_files: frozenset[str], claimed_files: list[str] | None
+    actual_files: frozenset[str], claimed_files: Sequence[str] | None
 ) -> ReviewResult | None:
     """Check that changed files are within claimed scope. Returns ReviewResult on failure."""
     if not claimed_files:
         return None
 
-    # Exclude infrastructure dirs from scope checks
-    _INFRA_PREFIXES = (".sentrux/", ".dgov/")
     claimed = frozenset(claimed_files)
-    unclaimed = {
-        f for f in actual_files - claimed if not any(f.startswith(p) for p in _INFRA_PREFIXES)
-    }
+    unclaimed = actual_files - claimed
     if unclaimed:
         return ReviewResult(
             passed=False,
@@ -227,7 +238,7 @@ def _check_scope(
 
 def review_sandbox(
     worktree_path: Path,
-    claimed_files: list[str] | None = None,
+    claimed_files: Sequence[str] | None = None,
     max_diff_lines: int = 100,
     project_root: str | None = None,
 ) -> ReviewResult:
@@ -253,12 +264,17 @@ def review_sandbox(
         if result is not None:
             return result
 
-        # 3. Scope enforcement
+        # 3. Reserved-path enforcement
+        result = _check_reserved_paths(actual_files)
+        if result is not None:
+            return result
+
+        # 4. Scope enforcement
         result = _check_scope(actual_files, claimed_files)
         if result is not None:
             return result
 
-        # 4. Review hooks
+        # 5. Review hooks
         if project_root:
             config = load_project_config(project_root)
             if config.review_hooks:
@@ -422,7 +438,8 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
         text=True,
         timeout=timeout,
     )
-    if res.returncode != 0:
+    # Exit code 5 = "no tests were collected" — not a failure (e.g. scaffold tasks)
+    if res.returncode not in (0, 5):
         output = (res.stdout + res.stderr)[-500:]
         return GateResult(passed=False, error=f"Test failure:\n{output}")
     return None
@@ -455,26 +472,50 @@ def _sentrux_is_warn_only(output: str) -> bool:
     )
 
 
-def _run_sentrux_gate(worktree_path: Path, project_root: str) -> GateResult:
+def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> GateResult:
     """Run sentrux policy gate — reject on hard degradation, warn on complexity only."""
+    import json
+
     baseline = Path(project_root) / ".sentrux" / "baseline.json"
     if not baseline.exists():
         return GateResult(passed=True)
 
-    sx_dst = worktree_path / ".sentrux"
-    if not sx_dst.exists():
-        shutil.copytree(baseline.parent, sx_dst, dirs_exist_ok=True)
+    if shutil.which("sentrux") is None:
+        return GateResult(
+            passed=False,
+            error="Sentrux not found in PATH. Fix: install sentrux before running dgov.",
+        )
 
-    with tempfile.TemporaryFile(mode="w+") as tmp:
+    # Skip gate when baseline was captured from an empty project (no import edges).
+    # Comparing against an empty baseline always shows "degradation" for any real code.
+    try:
+        bdata = json.loads(baseline.read_text())
+        if bdata.get("total_import_edges") == 0:
+            return GateResult(passed=True)
+    except Exception:
+        pass
+
+    sx_dst = worktree_path / ".sentrux"
+    if sx_dst.exists():
+        shutil.rmtree(sx_dst)
+    shutil.copytree(baseline.parent, sx_dst)
+
+    try:
         res_sx = subprocess.run(
             ["sentrux", "gate", "."],
             cwd=worktree_path,
-            stdout=tmp,
-            stderr=subprocess.STDOUT,
+            capture_output=True,
             text=True,
+            timeout=timeout,
+            check=False,
         )
-        tmp.seek(0)
-        sx_output = tmp.read()
+    except subprocess.TimeoutExpired:
+        return GateResult(
+            passed=False,
+            error=f"Sentrux gate timed out after {timeout}s.",
+        )
+
+    sx_output = (res_sx.stdout or "") + (res_sx.stderr or "")
 
     if res_sx.returncode != 0:
         if _sentrux_is_warn_only(sx_output):
@@ -507,7 +548,8 @@ def validate_sandbox(
             config.lint_cmd, changed_files, worktree_path, timeout=config.settlement_timeout
         )
         if res_lint.returncode != 0:
-            return GateResult(passed=False, error=f"Lint failure:\n{res_lint.stdout}")
+            output = (res_lint.stdout + res_lint.stderr)[-500:]
+            return GateResult(passed=False, error=f"Lint failure:\n{output}")
 
         # Format check
         res_fmt = _run_cmd(
@@ -517,7 +559,8 @@ def validate_sandbox(
             timeout=config.settlement_timeout,
         )
         if res_fmt.returncode != 0:
-            return GateResult(passed=False, error=f"Format failure:\n{res_fmt.stdout}")
+            output = (res_fmt.stdout + res_fmt.stderr)[-500:]
+            return GateResult(passed=False, error=f"Format failure:\n{output}")
 
         # Type check gate (skipped when type_check_cmd is empty)
         if config.type_check_cmd:
@@ -543,7 +586,7 @@ def validate_sandbox(
                 return test_failure
 
         # Sentrux gate (semantic/architectural check)
-        sx_result = _run_sentrux_gate(worktree_path, project_root)
+        sx_result = _run_sentrux_gate(worktree_path, project_root, config.settlement_timeout)
         if not sx_result.passed:
             return sx_result
 

@@ -1,35 +1,205 @@
 # Concepts
 
-`dgov` is built on a set of core engineering principles designed to make multi-agent orchestration as predictable as a compiler.
+`dgov` is a local governor for AI coding work. It is built around one idea:
+the orchestration layer should behave more like a compiler than like an
+autonomous assistant.
+
+That shapes almost every design decision in the project.
+
+## Philosophy
+
+### Determinism Over Vibes
+
+The worker can be probabilistic. The governor should not be.
+
+`dgov` treats planning, task ordering, retry policy, file claims, settlement,
+and merge decisions as explicit state transitions. The orchestration logic is
+meant to be inspectable and reproducible, even when the model itself is not.
+
+### Isolation Over Shared Context
+
+Each task runs in its own git worktree. That is not an implementation detail.
+It is the main safety boundary.
+
+The benefit is straightforward:
+
+- concurrent tasks do not scribble over the same checkout
+- every attempt has a concrete filesystem snapshot
+- failed work can be rejected without contaminating main
+
+### Validation Over Trust
+
+`dgov` does not assume the worker is correct because it sounds confident.
+Changes are reviewed and validated before merge:
+
+- scope checks
+- formatter and lint fixes
+- format and lint gates
+- targeted tests
+- sentrux architectural checks
+
+This is why the system can be stricter than a chat assistant while still being
+useful.
+
+The sentrux baseline is explicit governor-owned state. Workers are judged
+against `.sentrux/baseline.json`; they do not get to rewrite it as part of a
+task.
+
+### Explicit Claims Over Implicit Intent
+
+Every task must declare the files it touches. That is a constraint, not
+boilerplate.
+
+Without file claims, parallel execution turns into guesswork. With claims,
+`dgov` can reject invalid plans before running them and can explain why two
+tasks cannot safely run independently.
+
+## What dgov Is
+
+`dgov` is:
+
+- a DAG-based execution engine for AI coding tasks
+- a local git-worktree orchestrator
+- a settlement layer around model output
+- a tool for reproducible, inspectable automation in real repos
+
+`dgov` is not:
+
+- a replacement for git
+- a remote task queue
+- a multi-provider abstraction framework
+- a general-purpose chat frontend
+- a system that hides the underlying repo state from you
+
+If you want “just do something smart in this checkout,” there are simpler
+tools. `dgov` exists for cases where the structure and auditability matter.
 
 ## Architecture
 
 | Module | Role |
 |--------|------|
-| `kernel.py` | Pure `(state, event) → (new_state, actions)` — no I/O |
-| `runner.py` | Async DAG executor feeding the kernel |
-| `worker.py` | Standalone OpenAI-client subprocess |
-| `settlement.py` | ruff auto-fix + lint gate + sentrux policy gate |
-| `worktree.py` | Git worktree create/merge/remove |
-| `plan.py` | TOML plan parsing, DAG compilation |
-| `persistence/` | SQLite event store (panes + events + slug history) |
+| `kernel.py` | Pure `(state, event) -> (new_state, actions)` transition logic |
+| `runner.py` | Async bridge from kernel actions to real I/O |
+| `worker.py` | OpenAI-compatible worker subprocess |
+| `worktree.py` | Snapshot isolation via git worktrees |
+| `settlement.py` | Review, autofix, validation, and sentrux gates |
+| `plan_tree.py` | Tree walk, merge, ref resolution, and validation |
+| `plan.py` | Compiled plan parsing and DAG compilation |
+| `persistence/` | SQLite event log and task state |
 
-## Deterministic Kernel
+## Kernel Model
 
-The heart of `dgov` is a pure state machine. It doesn't know about the network, the filesystem, or LLMs. It only knows how to transition state based on events (like `TaskDone` or `TaskFailed`) and emit actions (like `MergeTask` or `RetryTask`).
+The kernel is the center of the system. It does not know about subprocesses,
+git, HTTP, or the OpenAI client. It only knows:
 
-This separation makes the orchestration logic perfectly testable and resilient to process crashes.
+- current task states
+- incoming events
+- outgoing actions
+
+That separation matters because it gives you:
+
+- strong unit-testability
+- crash recovery through event replay
+- clearer failure boundaries
+- fewer “hidden” side effects in orchestration code
+
+The runner does the messy part. The kernel stays small and explicit.
 
 ## Snapshot Isolation
 
-Every task dispatched by `dgov` runs in its own **git worktree**. 
-- **Isolated Environment**: Workers cannot accidentally interfere with each other's files.
-- **Commit-or-Kill**: Changes are only merged back to the main branch if they pass all settlement gates (linting, tests, and architectural checks).
-- **Audit Trail**: Every attempt is a branch. You can always inspect exactly what a worker was doing by checking its worktree.
+Every dispatched task gets a separate branch and worktree rooted at a specific
+commit. That gives `dgov` a concrete notion of “attempt.”
 
-## Settlement Layer
+This is why `dgov` historically required `HEAD`, and why the bootstrap-commit
+behavior is careful: the system needs a real snapshot to branch from. It does
+not need GitHub, but it does need local git state.
 
-The settlement layer acts as a automated PR review. Before any code is merged, `dgov` performs:
-1. **Autofix**: Running formatters and simple lint fixes.
-2. **Review**: Fast sanity checks (e.g. no secrets, no binary files).
-3. **Validation**: Running the project's own test suite and architectural gates.
+## Settlement
+
+The worker is the implementer. Settlement is the auditor.
+
+The sequence is roughly:
+
+1. fast review checks
+2. mechanical cleanup
+3. validation and architectural gates
+4. merge or reject
+
+This is a deliberate split of responsibilities:
+
+- workers edit
+- settlement judges
+- the governor decides retries and lifecycle
+
+If you collapse those roles, you get a system that is harder to reason about
+and much easier to fool.
+
+## Plans As Control Surfaces
+
+Plans are not just prompts in a file. They are the primary control surface for
+execution:
+
+- dependencies define legal order
+- file claims define legal concurrency
+- task prompts define local intent
+- commit messages define merge outcomes
+
+This is why `dgov compile` exists at all. The compile step turns a human-edited
+plan tree into a normalized artifact that the runner can execute without
+reinterpreting structure on the fly.
+
+## Why Git Worktrees
+
+Git worktrees are the core execution primitive because they give `dgov` three
+things at once:
+
+- cheap branch-isolated sandboxes
+- straightforward merge semantics
+- native inspectability with normal git tools
+
+You can look at what happened with ordinary git commands instead of relying on a
+hidden internal state format.
+
+## Tradeoffs
+
+`dgov` makes some tradeoffs on purpose.
+
+### Stronger setup requirements
+
+You need a real local repo, working toolchain commands, and an
+OpenAI-compatible endpoint. That is more setup than a browser chat box.
+
+The payoff is that the system operates on your real repo with real validation.
+
+### More structure up front
+
+Plans, file claims, and compile steps add ceremony. That ceremony buys you
+safer concurrency, replayable execution, and fewer silent footguns.
+
+### Narrower provider model
+
+`dgov` supports OpenAI-compatible endpoints rather than every provider-native
+API shape. That is a deliberate simplification. It keeps the runtime surface
+small while still supporting Fireworks, OpenAI, OpenRouter, and similar APIs.
+
+## Failure Model
+
+A useful way to think about `dgov` is that it fails closed.
+
+Examples:
+
+- invalid plan references stop at compile time
+- missing API key fails before dispatch
+- out-of-scope edits fail review
+- failing tests fail settlement
+- rejected work is not merged
+
+That behavior is not accidental. It is the point.
+
+## Mental Model
+
+The shortest accurate mental model is:
+
+`dgov` is a deterministic governor around a probabilistic worker.
+
+If that framing makes sense, the rest of the project tends to make sense too.

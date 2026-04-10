@@ -1,15 +1,31 @@
 ---
 name: git-commits
 title: Git & Commit Standards
+summary: Commit and git hygiene rules for scoped work, safe history, and no secret leakage.
+applies_to: [git, commit, history]
+priority: should
 ---
-## Git Standards
-- **Feature Branches:** Never push directly to `main`. Use feature branches and PRs.
-- **One Logical Change:** Each commit should be one logical, atomic change.
-- **No Staging:** Do not stage or commit unless explicitly requested.
+## When
+- preparing or reviewing git changes
+- writing commit messages
+- deciding whether to stage or commit work in a task
 
-## Commit Messages
-- **Imperative Mood:** Use the imperative mood (e.g., "Add", "Fix", "Update").
-- **Length:** Subject line must be ≤72 characters.
-- **Format:** Prefer messages that explain *why* over *what*.
-- **HEREDOC:** Use HEREDOC for multi-line commit messages.
-- **Security:** Never commit secrets, API keys, or `.env` files.
+## Do
+- keep each commit to one logical change
+- use imperative mood in commit subjects
+- keep commit subjects at or under 72 characters
+- prefer commit messages that explain why the change exists
+
+## Do Not
+- push directly to `main`
+- stage or commit unless explicitly requested by the task or workflow
+- commit secrets, API keys, or `.env` files
+
+## Verify
+- inspect the diff before any commit step
+- confirm the commit scope matches one logical change
+- confirm no secrets or unrelated files are staged
+
+## Escalate
+- if the requested change obviously spans multiple logical commits
+- if the task asks for history rewriting or other destructive git operations

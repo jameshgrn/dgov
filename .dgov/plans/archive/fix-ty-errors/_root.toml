@@ -1,0 +1,4 @@
+[plan]
+name = "fix-ty-errors"
+summary = "Fix all 13 ty check errors across src/ — zero warnings target"
+sections = ["cli", "core"]

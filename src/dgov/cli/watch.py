@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
+import click
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -13,7 +13,9 @@ from rich.table import Table
 from rich.text import Text
 
 from dgov.cli import cli
-from dgov.persistence import latest_event_id, read_events
+from dgov.persistence import all_tasks, latest_event_id, read_events
+from dgov.project_root import resolve_project_root
+from dgov.types import TaskState
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -40,10 +42,40 @@ def _get_task_color(slug: str) -> str:
     return _TASK_COLORS[slug]
 
 
+def _infer_plan_name_from_active_tasks(project_root: str) -> str | None:
+    """Return the shared active plan name, if there is exactly one."""
+    active_plan_names = {
+        str(task["plan_name"])
+        for task in all_tasks(project_root)
+        if task.get("state") == TaskState.ACTIVE.value and task.get("plan_name")
+    }
+    if len(active_plan_names) != 1:
+        return None
+    return next(iter(active_plan_names))
+
+
+def _default_watch_state(
+    project_root: str,
+    watch_all: bool,
+    plan_name: str | None,
+) -> tuple[str | None, int]:
+    """Return the initial plan filter and event cursor for watch mode."""
+    if plan_name:
+        return plan_name, 0
+    if watch_all:
+        return None, 0
+    inferred_plan_name = _infer_plan_name_from_active_tasks(project_root)
+    if inferred_plan_name:
+        return inferred_plan_name, 0
+    return None, latest_event_id(project_root)
+
+
 @cli.command(name="watch")
-def watch_cmd() -> None:
+@click.option("--all", "watch_all", is_flag=True, help="Stream all plans and history")
+@click.option("--plan", "plan_name", help="Stream only events for this plan name")
+def watch_cmd(watch_all: bool, plan_name: str | None) -> None:
     """Stream governor events in real time."""
-    _cmd_watch(str(Path.cwd()))
+    _cmd_watch(str(resolve_project_root()), watch_all=watch_all, plan_name=plan_name)
 
 
 def _clean_slug(slug: str) -> str:
@@ -219,20 +251,35 @@ _EVENT_LABELS: dict[str, str] = {
 }
 
 
-def _cmd_watch(project_root: str) -> None:
+def _cmd_watch(
+    project_root: str,
+    watch_all: bool = False,
+    plan_name: str | None = None,
+) -> None:
     """Stream events from the current run. Open in a second tab."""
     from dgov.config import load_project_config
 
     console.print("dgov watch", style="bold cyan")
-    console.print("  (Ctrl-C to exit)\n", style="dim")
-
     config = load_project_config(project_root)
     agents = config.agents if config else {}
+    active_plan_name, last_id = _default_watch_state(project_root, watch_all, plan_name)
 
-    last_id = 0
+    if plan_name:
+        console.print(f"  plan: {plan_name}", style="dim")
+    elif watch_all:
+        console.print("  scope: all plans", style="dim")
+    elif active_plan_name:
+        console.print(f"  inferred plan: {active_plan_name}", style="dim")
+    else:
+        console.print("  scope: live tail (no active plan inferred)", style="dim")
+    console.print("  (Ctrl-C to exit)\n", style="dim")
+
     last_task = ""
     try:
         while True:
+            if active_plan_name is None and not watch_all and plan_name is None:
+                active_plan_name = _infer_plan_name_from_active_tasks(project_root)
+
             # Detect DB reset (new run started) — last_id would be ahead of max
             current_max = latest_event_id(project_root)
             if current_max < last_id:
@@ -240,8 +287,10 @@ def _cmd_watch(project_root: str) -> None:
                 last_id = 0
                 last_task = ""
                 _TASK_COLORS.clear()
+                if not watch_all and plan_name is None:
+                    active_plan_name, last_id = _default_watch_state(project_root, False, None)
 
-            events = read_events(project_root, after_id=last_id)
+            events = read_events(project_root, after_id=last_id, plan_name=active_plan_name)
             for ev in events:
                 last_id = max(last_id, ev.get("id", 0))
                 line = _format_event(ev, agents=agents)

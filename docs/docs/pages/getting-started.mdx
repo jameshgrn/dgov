@@ -4,39 +4,122 @@ Deterministic kernel for multi-agent orchestration via git worktrees.
 
 ## Install
 
+From source today:
+
 ```bash
-uv pip install -e .
+git clone https://github.com/jameshgrn/dgov
+cd dgov
+uv tool install --from . dgov
 ```
 
-Requires Python 3.12+, git.
+Once published to PyPI:
+
+```bash
+uv tool install dgov
+```
+
+Requires Python 3.12+, git, `uv`, `sentrux`, and an OpenAI-compatible API key.
 
 ## Usage
 
 ```bash
-dgov init                # Bootstrap .dgov/project.toml
-dgov run plan.toml       # Execute a plan
-dgov status              # Show task status
+git init
+dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
+# Review .dgov/project.toml for repo toolchain defaults
+# Review .dgov/governor.md for planning and retry rules
+# If sentrux is installed, dgov init offers to create the baseline now.
+dgov sentrux gate-save   # Otherwise create the repo's explicit baseline yourself
+dgov init-plan my-plan   # Create a plan tree
+dgov compile .dgov/plans/my-plan/  # Compile it to _compiled.toml
+dgov run .dgov/plans/my-plan/      # Execute the compiled plan
+dgov fix "Refactor utils" -f src/utils.py -f src/main.py  # One-off fix
+dgov status              # Show live task status
+dgov --json status       # JSON status output
 dgov watch               # Stream events
 dgov sentrux check       # Run architectural quality check
-dgov cleanup             # Annihilate zombie worktrees
+dgov clean               # Clean stale worktrees and outputs
+dgov recover             # Recover from a crashed run
 ```
+
+If the repo has no commits yet and only `.dgov` bootstrap files exist, the first `dgov run`
+creates the bootstrap commit automatically. If there are other uncommitted files, dgov asks
+before creating that snapshot.
+
+`dgov init` is idempotent for missing bootstrap files. If `.dgov/project.toml`
+exists but `.dgov/governor.md` does not, running `dgov init` again will scaffold
+the missing governor charter without overwriting project config.
+
+`dgov run` requires an existing `.sentrux/baseline.json`. Create or refresh it
+explicitly with `dgov sentrux gate-save`. The baseline is governor-owned state,
+not a worker-editable file, and the final post-run sentrux comparison can fail
+the run even if every task merged cleanly.
+
+## LLM Endpoint Configuration
+
+`dgov` uses an OpenAI-compatible client. Configure the worker endpoint in `.dgov/project.toml`.
+Task-level `agent = "..."` values override the model/router name only.
+
+Default generated config:
+
+```toml
+[project]
+default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
+llm_base_url = "https://api.fireworks.ai/inference/v1"
+llm_api_key_env = "FIREWORKS_API_KEY"
+```
+
+Official OpenAI:
+
+```toml
+[project]
+default_agent = "gpt-4.1-mini"
+llm_base_url = "https://api.openai.com/v1"
+llm_api_key_env = "OPENAI_API_KEY"
+```
+
+Another OpenAI-compatible endpoint:
+
+```toml
+[project]
+default_agent = "your-model-name"
+llm_base_url = "https://your-endpoint.example.com/v1"
+llm_api_key_env = "YOUR_PROVIDER_API_KEY"
+```
+
+Export the configured env var before `dgov compile` or `dgov run`.
+
+See [LLM Providers](/llm-providers) for provider-specific examples.
+
+## SOPs
+
+Worker guidance in `.dgov/sops/*.md` now uses a standard format:
+- front matter: `name`, `title`, `summary`, `applies_to`, `priority`
+- sections: `When`, `Do`, `Do Not`, `Verify`, `Escalate`
+
+Malformed SOPs fail closed at `dgov compile`.
 
 ## Plan format
 
-Plans are TOML files that compile to DAGs:
+Plans are authored as plan trees and then compiled:
 
 ```toml
+# .dgov/plans/example/_root.toml
 [plan]
 name = "example"
+summary = "Add a feature safely"
+sections = ["tasks"]
 
+# .dgov/plans/example/tasks/main.toml
 [tasks.add-feature]
+summary = "Add the feature"
 prompt = "Add the feature to src/foo.py"
-agent = "kimi-k2.5"
-files = ["src/foo.py"]
+commit_message = "feat: add feature"
+files.edit = ["src/foo.py"]
 
 [tasks.add-tests]
+summary = "Write tests for the feature"
 prompt = "Write tests for the feature"
-agent = "kimi-k2.5"
-files = ["tests/test_foo.py"]
+commit_message = "test: add tests for feature"
+files.edit = ["tests/test_foo.py"]
 depends_on = ["add-feature"]
 ```

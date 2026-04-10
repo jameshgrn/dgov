@@ -1,21 +1,34 @@
 ---
 name: testing
 title: Testing Conventions
+summary: Testing rules for targeted execution, scope discipline, and behavior-first verification.
+applies_to: [tests, pytest, verification]
+priority: must
 ---
-## Execution
-- **`pytest -q`:** Always run tests in quiet mode.
-- **Markers:** Never run the full test suite. Use `-m unit` or `-m integration` to target the right subset.
-- **Unit vs Integration:** `unit` tests have no external deps; `integration` tests use real git repos and temp directories.
+## When
+- writing or editing tests
+- choosing verification commands after a code change
+- investigating test failures during worker verification
 
-## Scope discipline
-- **Do not fix tests in unclaimed files.** If tests fail in a file not in your
-  `files` claim, report the failure message in your `done()` summary — do not
-  edit the test file. The plan author will add it to the claim and retry.
-- **Scope violations are terminal:** touching unclaimed files causes immediate
-  rejection with no retry. Settlement never runs. Report, don't fix.
+## Do
+- use `pytest -q`
+- run targeted subsets with markers like `-m unit` or `-m integration`
+- test behavior and edge cases, not just implementation details
+- mock boundaries only: network, filesystem, and external services
+- confirm a relevant test would fail before claiming the fix is real
 
-## Methodology
-- **Behavior over Implementation:** Test what the code does, not how it's structured.
-- **Edge Cases:** Prioritize testing edges and error paths, not just the happy path.
-- **Mocking:** Mock boundaries only (network, filesystem, external services). Never mock logic or internal state.
-- **Verification:** Break the code to confirm the test fails before fixing it.
+## Do Not
+- run the full test suite
+- edit tests in unclaimed files
+- mock logic or internal state just to force a passing result
+
+## Verify
+- rerun the exact targeted command that covers the changed behavior
+- report verification failures in unclaimed files instead of editing around them
+- confirm scope violations are avoided before settlement
+
+## Escalate
+- if the right test file is outside the current claim
+- if any verification command points to an unclaimed file, report the exact
+  command and path instead of widening scope ad hoc
+- if the change needs broader integration coverage than the task currently allows

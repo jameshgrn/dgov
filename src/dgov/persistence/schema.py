@@ -28,36 +28,28 @@ TASK_STATES = frozenset(TaskState)
 # Transition table: enforced in update_task_state
 # Review is mandatory before merge — no direct done->merged or active->merged.
 VALID_TRANSITIONS: dict[TaskState, frozenset[TaskState]] = {
-    TaskState.PENDING: frozenset(
-        {
-            TaskState.ACTIVE,
-            TaskState.FAILED,
-            TaskState.SKIPPED,
-            TaskState.CLOSED,
-        }
-    ),
-    TaskState.ACTIVE: frozenset(
-        {
-            TaskState.DONE,
-            TaskState.FAILED,
-            TaskState.ABANDONED,
-            TaskState.TIMED_OUT,
-            TaskState.CLOSED,
-        }
-    ),
-    TaskState.DONE: frozenset(
-        {
-            TaskState.REVIEWING,
-            TaskState.CLOSED,
-        }
-    ),
-    TaskState.REVIEWING: frozenset(
-        {
-            TaskState.REVIEWED_PASS,
-            TaskState.REVIEWED_FAIL,
-            TaskState.CLOSED,
-        }
-    ),
+    TaskState.PENDING: frozenset({
+        TaskState.ACTIVE,
+        TaskState.FAILED,
+        TaskState.SKIPPED,
+        TaskState.CLOSED,
+    }),
+    TaskState.ACTIVE: frozenset({
+        TaskState.DONE,
+        TaskState.FAILED,
+        TaskState.ABANDONED,
+        TaskState.TIMED_OUT,
+        TaskState.CLOSED,
+    }),
+    TaskState.DONE: frozenset({
+        TaskState.REVIEWING,
+        TaskState.CLOSED,
+    }),
+    TaskState.REVIEWING: frozenset({
+        TaskState.REVIEWED_PASS,
+        TaskState.REVIEWED_FAIL,
+        TaskState.CLOSED,
+    }),
     TaskState.REVIEWED_FAIL: frozenset({TaskState.FAILED, TaskState.CLOSED}),
     TaskState.REVIEWED_PASS: frozenset({TaskState.MERGING, TaskState.FAILED, TaskState.CLOSED}),
     TaskState.MERGING: frozenset({TaskState.MERGED, TaskState.FAILED, TaskState.CLOSED}),
@@ -126,87 +118,82 @@ class LedgerEntry:
     resolved_at: float | None = None
 
 
-_TASK_COLUMNS = frozenset(
-    {
-        "slug",
-        "prompt",
-        "task_id",
-        "agent",
-        "project_root",
-        "worktree_path",
-        "branch_name",
-        "created_at",
-        "owns_worktree",
-        "base_sha",
-        "provenance",
-        "role",
-        "state",
-    }
-)
+_TASK_COLUMNS = frozenset({
+    "slug",
+    "prompt",
+    "task_id",
+    "agent",
+    "project_root",
+    "worktree_path",
+    "branch_name",
+    "created_at",
+    "owns_worktree",
+    "base_sha",
+    "provenance",
+    "role",
+    "state",
+})
 
-_TASK_TYPED_COLS = frozenset(
-    {
-        "plan_name",
-        "file_claims",
-        "commit_message",
-    }
-)
+_TASK_TYPED_COLS = frozenset({
+    "plan_name",
+    "file_claims",
+    "commit_message",
+})
 
 # -- Path Helpers --
 
 
 def state_path(session_root: str) -> Path:
     """Return the path to the state database file."""
-    return Path(session_root) / STATE_DIR / _STATE_FILE
+    root = Path(session_root)
+    if root.name == STATE_DIR:
+        root = root.parent
+    return root / STATE_DIR / _STATE_FILE
 
 
 # -- Event Constants --
 
 # Only events emitted by the Lacustrine kernel + runner
-VALID_EVENTS = frozenset(
-    {
-        # Runner lifecycle
-        "task_created",
-        "task_done",
-        "task_failed",
-        "task_closed",
-        "task_abandoned",
-        "task_timed_out",
-        "shutdown_requested",
-        # DAG lifecycle
-        "dag_task_dispatched",
-        "dag_task_governor_resumed",
-        "dag_completed",
-        "dag_failed",
-        # Review
-        "review_pass",
-        "review_fail",
-        # Merge
-        "merge_completed",
-        "task_merge_failed",
-        "settlement_retry",
-        # Worker subprocess
-        "worker_log",
-        "worker_done",
-        "worker_error",
-    }
-)
+VALID_EVENTS = frozenset({
+    # Runner lifecycle
+    "task_created",
+    "task_done",
+    "task_failed",
+    "task_closed",
+    "task_abandoned",
+    "task_timed_out",
+    "shutdown_requested",
+    # DAG lifecycle
+    "dag_task_dispatched",
+    "dag_task_governor_resumed",
+    "dag_completed",
+    "dag_failed",
+    # Review
+    "review_pass",
+    "review_fail",
+    # Merge
+    "merge_completed",
+    "task_merge_failed",
+    "settlement_retry",
+    # Worker subprocess
+    "worker_log",
+    "worker_done",
+    "worker_error",
+})
 
-_EVENT_TYPED_COLS = frozenset(
-    {
-        "task_slug",
-        "plan_name",
-        "action",
-        "commit_count",
-        "error",
-        "reason",
-        "merge_sha",
-        "branch",
-        "new_slug",
-        "target_agent",
-        "message",
-    }
-)
+_EVENT_TYPED_COLS = frozenset({
+    "task_slug",
+    "plan_name",
+    "action",
+    "commit_count",
+    "error",
+    "reason",
+    "merge_sha",
+    "branch",
+    "new_slug",
+    "target_agent",
+    "message",
+})
 
 
 __all__ = [

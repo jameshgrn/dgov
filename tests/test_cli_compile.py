@@ -236,12 +236,61 @@ def test_compile_fails_no_dry_run_no_api_key(
         # Create a SOP to trigger bundling
         sops_dir = Path(root) / ".dgov" / "sops"
         sops_dir.mkdir(parents=True)
-        (sops_dir / "style.md").write_text("---\nname: style\ntitle: Style\n---\nUse ruff.\n")
+        (sops_dir / "style.md").write_text(
+            "---\n"
+            "name: style\n"
+            "title: Style\n"
+            "summary: Formatting and lint discipline.\n"
+            "applies_to: [python, lint]\n"
+            "priority: must\n"
+            "---\n"
+            "## When\n- editing Python files\n\n"
+            "## Do\n- Use ruff.\n\n"
+            "## Do Not\n- skip lint cleanup\n\n"
+            "## Verify\n- run targeted lint checks\n\n"
+            "## Escalate\n- if the repo toolchain is unclear\n"
+        )
 
         monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
         result = runner.invoke(cli, ["compile", "myplan"])
         assert result.exit_code != 0
         assert "FIREWORKS_API_KEY missing" in result.output
+
+
+def test_compile_uses_configured_api_key_env(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem() as root:
+        _make_plan_tree(Path(root))
+        dgov_dir = Path(root) / ".dgov"
+        dgov_dir.mkdir(parents=True, exist_ok=True)
+        (dgov_dir / "project.toml").write_text(
+            '[project]\nllm_base_url = "https://api.openai.com/v1"\n'
+            'llm_api_key_env = "OPENAI_API_KEY"\n'
+            'default_agent = "gpt-4.1-mini"\n'
+        )
+        sops_dir = dgov_dir / "sops"
+        sops_dir.mkdir(parents=True)
+        (sops_dir / "style.md").write_text(
+            "---\n"
+            "name: style\n"
+            "title: Style\n"
+            "summary: Formatting and lint discipline.\n"
+            "applies_to: [python, lint]\n"
+            "priority: must\n"
+            "---\n"
+            "## When\n- editing Python files\n\n"
+            "## Do\n- Use ruff.\n\n"
+            "## Do Not\n- skip lint cleanup\n\n"
+            "## Verify\n- run targeted lint checks\n\n"
+            "## Escalate\n- if the repo toolchain is unclear\n"
+        )
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+        result = runner.invoke(cli, ["compile", "myplan"])
+        assert result.exit_code != 0
+        assert "OPENAI_API_KEY missing" in result.output
 
 
 # -- serializer edge cases --

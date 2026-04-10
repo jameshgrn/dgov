@@ -1,0 +1,4 @@
+[plan]
+name = "unify-toolchain-config"
+summary = "Add type_check_cmd to ProjectConfig/AtomicConfig and wire through settlement gate, worker tool, and headless serialization"
+sections = ["impl"]

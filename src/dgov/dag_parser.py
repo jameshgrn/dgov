@@ -22,6 +22,7 @@ class DagFileSpec(BaseModel):
     create: tuple[str, ...] = ()
     edit: tuple[str, ...] = ()
     delete: tuple[str, ...] = ()
+    read: tuple[str, ...] = ()
     touch: tuple[str, ...] = ()
 
 
@@ -95,7 +96,10 @@ def parse_dag_file(path: str) -> DagDefinition:
         session_root=plan_section.get("session_root", "."),
         tasks=tasks,
         default_agent=plan_section.get("default_agent", ""),
-        default_max_retries=plan_section.get("default_max_retries", 3),
+        default_max_retries=plan_section.get(
+            "default_max_retries",
+            plan_section.get("max_retries", 3),
+        ),
         source_mtime_max=plan_section.get("source_mtime_max", ""),
         sop_set_hash=plan_section.get("sop_set_hash", ""),
     )

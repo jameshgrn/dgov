@@ -1,0 +1,4 @@
+[plan]
+name = "release-prep"
+summary = "Fix type errors flagged by ty check in src/dgov/cli/run.py"
+sections = ["fixes"]

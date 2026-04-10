@@ -182,6 +182,7 @@ class DagKernel:
             TaskState.FAILED,
             TaskState.ABANDONED,
             TaskState.TIMED_OUT,
+            TaskState.SKIPPED,
         ):
             return []
         if event.action == GovernorAction.RETRY:

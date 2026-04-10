@@ -1,14 +1,31 @@
 ---
 name: error-handling
 title: Error Handling & Philosophy
+summary: Error handling rules for failing fast, preserving context, and avoiding silent failure.
+applies_to: [errors, exceptions, failure]
+priority: must
 ---
-## Error Handling
-- **Fail Fast:** Fail as early as possible with clear, actionable messages.
-- **No Silent Failures:** Never swallow exceptions or errors silently.
-- **Context:** Always include the operation, input, and a suggested fix in error messages.
+## When
+- adding or changing exception handling
+- introducing new failure paths or validation checks
+- touching code that currently swallows errors or returns ambiguous failure values
 
-## Philosophy
-- **Replace, Don't Deprecate:** Completely remove old code entirely; do not leave shims.
-- **No Speculative Features:** Don't add features or flags unless actively needed.
-- **Bias toward Action:** Decide and move for reversible things; ask for confirmation on data models or architecture.
-- **Explicit over Implicit:** Explicit, readable code beats dense, clever one-liners.
+## Do
+- fail fast with clear, actionable messages
+- include operation, input context, and a suggested fix when reporting errors
+- remove obsolete branches or shims instead of layering deprecation clutter
+- keep control flow explicit when handling failures
+
+## Do Not
+- swallow exceptions silently
+- add speculative features or extra flags while touching failure paths
+- hide important failure details behind generic error text
+
+## Verify
+- exercise at least one error path, not just the happy path
+- confirm failure messages still identify what operation failed and why
+- confirm exceptions propagate to the right boundary instead of disappearing
+
+## Escalate
+- if the right failure contract is unclear at the interface or architecture level
+- if a fix would require changing cross-module error semantics

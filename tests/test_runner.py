@@ -244,6 +244,39 @@ class TestWorkerFailure:
             assert results["a"] == "failed"
             assert runner.kernel.attempts.get("a", 0) >= 1
 
+    def test_runner_honors_dag_retry_budget(self):
+        dag = DagDefinition(
+            name="retry-budget",
+            dag_file="test.toml",
+            project_root="/tmp/test-project",
+            session_root="/tmp/test-project",
+            tasks={"a": _task("a")},
+            default_max_retries=0,
+        )
+        with _io_patches(headless=_fake_worker_fail):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+            assert runner.kernel.max_retries == 0
+
+
+class TestPreflight:
+    def test_preflight_uses_configured_api_key_env(self, tmp_path: Path, monkeypatch) -> None:
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text('[project]\nllm_api_key_env = "OPENAI_API_KEY"\n')
+        dag = DagDefinition(
+            name="preflight",
+            dag_file="test.toml",
+            project_root=str(tmp_path),
+            session_root=str(tmp_path),
+            tasks={"a": _task("a")},
+        )
+        runner = EventDagRunner(dag, session_root=str(tmp_path))
+        monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+        asyncio.run(runner._preflight_check_models())
+
 
 class TestReviewFailure:
     def test_review_fail_marks_failed(self):

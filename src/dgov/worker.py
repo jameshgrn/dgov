@@ -41,6 +41,27 @@ class WorkerEvent:
         print(json.dumps({"worker_event": self.__dict__}), flush=True)
 
 
+def _load_llm_runtime_settings(worktree: Path) -> tuple[str, str]:
+    """Load OpenAI-compatible endpoint settings from .dgov/project.toml."""
+    path = worktree / ".dgov" / "project.toml"
+    default_base_url = "https://api.fireworks.ai/inference/v1"
+    default_api_key_env = "FIREWORKS_API_KEY"
+    if not path.exists():
+        return default_base_url, default_api_key_env
+    try:
+        import tomllib
+
+        raw = tomllib.loads(path.read_text())
+    except Exception:
+        return default_base_url, default_api_key_env
+
+    proj = raw.get("project", {})
+    return (
+        proj.get("llm_base_url", default_base_url),
+        proj.get("llm_api_key_env", default_api_key_env),
+    )
+
+
 def _load_project_config(worktree: Path) -> AtomicConfig:
     """Load .dgov/project.toml from worktree. Returns defaults if missing."""
     path = worktree / ".dgov" / "project.toml"
@@ -77,10 +98,27 @@ def _resolve_config(worktree: Path, project_config_json: str) -> AtomicConfig:
     """Load config from the JSON arg (passed by headless.py) or fall back to worktree TOML."""
     if project_config_json:
         try:
-            return AtomicConfig(**json.loads(project_config_json))
+            raw = json.loads(project_config_json)
+            raw.pop("llm_base_url", None)
+            raw.pop("llm_api_key_env", None)
+            return AtomicConfig(**raw)
         except Exception:
             pass
     return _load_project_config(worktree)
+
+
+def _resolve_llm_runtime_settings(worktree: Path, project_config_json: str) -> tuple[str, str]:
+    """Load LLM endpoint settings from JSON or fall back to worktree TOML."""
+    if project_config_json:
+        try:
+            raw = json.loads(project_config_json)
+            return (
+                raw.get("llm_base_url", "https://api.fireworks.ai/inference/v1"),
+                raw.get("llm_api_key_env", "FIREWORKS_API_KEY"),
+            )
+        except Exception:
+            pass
+    return _load_llm_runtime_settings(worktree)
 
 
 def _snapshot_tree(worktree: Path, max_depth: int = 2) -> str:
@@ -225,13 +263,14 @@ def _execute_tool_call(call, actuators: AtomicTools) -> tuple[str, bool]:
 
 
 def run_worker(goal: str, worktree: Path, model: str, project_config_json: str = "") -> None:
-    api_key = os.environ.get("FIREWORKS_API_KEY")
+    base_url, api_key_env = _resolve_llm_runtime_settings(worktree, project_config_json)
+    api_key = os.environ.get(api_key_env)
     if not api_key:
-        WorkerEvent("error", "FIREWORKS_API_KEY missing").emit()
+        WorkerEvent("error", f"{api_key_env} missing").emit()
         sys.exit(1)
 
     config = _resolve_config(worktree, project_config_json)
-    client = OpenAI(base_url="https://api.fireworks.ai/inference/v1", api_key=api_key)
+    client = OpenAI(base_url=base_url, api_key=api_key)
     actuators = AtomicTools(worktree, config)
 
     def _cleanup() -> None:

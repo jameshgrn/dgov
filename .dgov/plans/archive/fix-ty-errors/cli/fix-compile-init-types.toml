@@ -1,0 +1,52 @@
+[tasks.fix-compile-init-types]
+summary = "Fix ty errors in cli/compile.py (_print_dag_graph) and cli/init.py (max overload)"
+prompt = """
+Fix 2 ty check errors in two adjacent CLI modules.
+
+## Error A — src/dgov/cli/compile.py:148
+
+```
+error[invalid-assignment]: Object of type `dict[str, PlanUnit] | (Any & ~FlatPlan) | ...`
+  is not assignable to `dict[str, object]`
+  --> src/dgov/cli/compile.py:148
+```
+
+The function `_print_dag_graph(resolved: object)` is only ever called with a `FlatPlan`.
+
+Fix: change the parameter type from `object` to `FlatPlan`.
+- Add `FlatPlan` to the import from `dgov.plan_tree` (look at what's already imported there).
+- Change signature: `def _print_dag_graph(resolved: object)` → `def _print_dag_graph(resolved: FlatPlan)`.
+- The body currently does `flat = resolved if isinstance(resolved, FlatPlan) else ...` — since
+  `resolved` is now always `FlatPlan`, simplify to `units = resolved.units`. Remove the now-dead
+  `flat` variable and the isinstance branch entirely.
+- The `# type: ignore[union-attr]` on line 148 should be removed.
+
+## Error B — src/dgov/cli/init.py:61
+
+```
+error[no-matching-overload]: No overload of function `max` matches arguments
+  --> src/dgov/cli/init.py:61
+  language = max(counts, key=counts.get)
+```
+
+`counts.get` returns `int | None`, which doesn't match `max`'s key callable expectation
+(needs a key that returns a comparable, not `int | None`).
+
+Fix: replace `key=counts.get` with a lambda that guarantees an int:
+  `language = max(counts, key=lambda k: counts.get(k, 0))`
+
+Remove the `# type: ignore[arg-type]` comment.
+
+## Steps
+
+1. Read src/dgov/cli/compile.py (focus on _print_dag_graph and its imports).
+2. Read src/dgov/cli/init.py (focus on line 61).
+3. Apply fix A in compile.py.
+4. Apply fix B in init.py.
+5. Run: `uv run ty check src/dgov/cli/compile.py src/dgov/cli/init.py` — verify 0 errors.
+6. Run: `uv run ruff check src/dgov/cli/compile.py src/dgov/cli/init.py`.
+7. Run: `uv run ruff format src/dgov/cli/compile.py src/dgov/cli/init.py`.
+8. Run: `uv run pytest -q tests/test_cli_compile.py tests/test_config.py`.
+"""
+commit_message = "fix: resolve ty errors in cli/compile.py and cli/init.py"
+files = ["src/dgov/cli/compile.py", "src/dgov/cli/init.py"]

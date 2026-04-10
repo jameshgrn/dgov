@@ -15,7 +15,7 @@ import pytest
 sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore
 
-from dgov.worker import _load_project_config  # noqa: E402
+from dgov.worker import _load_llm_runtime_settings, _load_project_config  # noqa: E402
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
 
@@ -200,6 +200,24 @@ def test_load_project_config_from_toml(tmp_path: Path) -> None:
     config = _load_project_config(tmp_path)
     assert config.language == "rust"
     assert config.test_markers == ("unit",)
+
+
+def test_load_llm_runtime_settings_defaults(tmp_path: Path) -> None:
+    base_url, api_key_env = _load_llm_runtime_settings(tmp_path)
+    assert base_url == "https://api.fireworks.ai/inference/v1"
+    assert api_key_env == "FIREWORKS_API_KEY"
+
+
+def test_load_llm_runtime_settings_from_toml(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        '[project]\nllm_base_url = "https://api.openai.com/v1"\n'
+        'llm_api_key_env = "OPENAI_API_KEY"\n'
+    )
+    base_url, api_key_env = _load_llm_runtime_settings(tmp_path)
+    assert base_url == "https://api.openai.com/v1"
+    assert api_key_env == "OPENAI_API_KEY"
 
 
 # -- get_tool_spec --

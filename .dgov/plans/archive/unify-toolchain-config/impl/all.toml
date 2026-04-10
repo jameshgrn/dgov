@@ -1,0 +1,207 @@
+# Unify toolchain config: add type_check_cmd across the full stack
+#
+# Dependency chain:
+#   config (foundation) → settlement + worker (parallel) → project-toml (independent)
+
+# ── Task 1: Add type_check_cmd to ProjectConfig ──────────────────────────────
+[tasks.config-type-check-cmd]
+summary = "Add type_check_cmd field to ProjectConfig and AtomicConfig with loader support"
+prompt = """
+The dgov toolchain commands (lint_cmd, format_cmd, test_cmd, etc.) are unified in
+ProjectConfig (src/dgov/config.py) and mirrored in AtomicConfig (src/dgov/workers/atomic.py).
+The only missing command is type checking. Add it.
+
+## src/dgov/config.py
+
+1. Add `type_check_cmd: str = ""` field to `ProjectConfig` after `format_check_cmd`.
+   Empty string = type checking disabled (not all projects use a type checker).
+
+2. Add a resolver method after `resolve_lint_fix_cmd`:
+   ```python
+   def resolve_type_check_cmd(self) -> str:
+       return self.type_check_cmd
+   ```
+   No `{file}` substitution — type checkers run on the whole project.
+
+3. In `load_project_config()`, load the new field:
+   ```python
+   type_check_cmd=proj.get("type_check_cmd", ""),
+   ```
+   Add it after the `format_check_cmd` line.
+
+4. In `to_prompt_section()`, add a line when the command is set:
+   After the `Format command:` line, add:
+   ```python
+   if self.type_check_cmd:
+       lines.append(f"Type check command: {self.type_check_cmd}")
+   ```
+
+## src/dgov/workers/atomic.py
+
+5. Add `type_check_cmd: str = ""` to `AtomicConfig` after `lint_fix_cmd`.
+
+## tests/test_config.py
+
+6. Add tests:
+   - `test_type_check_cmd_default` — `ProjectConfig().type_check_cmd == ""`
+   - `test_type_check_cmd_loaded` — write a temp project.toml with
+     `type_check_cmd = "ty check"` and assert `load_project_config()` returns it
+   - `test_resolve_type_check_cmd` — `ProjectConfig(type_check_cmd="ty check").resolve_type_check_cmd() == "ty check"`
+   - `test_prompt_section_includes_type_check` — when type_check_cmd is set, it appears in `to_prompt_section()` output
+   - `test_prompt_section_omits_type_check_when_empty` — when default (empty), type check line absent
+
+After edits, run:
+   uv run ty check src/dgov/config.py src/dgov/workers/atomic.py tests/test_config.py
+   uv run pytest tests/test_config.py -q
+Both should pass.
+"""
+commit_message = "feat: add type_check_cmd to ProjectConfig and AtomicConfig"
+files.edit = [
+    "src/dgov/config.py",
+    "src/dgov/workers/atomic.py",
+    "tests/test_config.py",
+]
+
+
+# ── Task 2: Wire type_check_cmd into settlement validate gate ─────────────────
+[tasks.settlement-type-check-gate]
+summary = "Run type_check_cmd as a gate in validate_sandbox() when configured"
+prompt = """
+Read src/dgov/settlement.py. The validate_sandbox() function runs these gates in order:
+  lint gate → format check → test gate → sentrux gate
+
+Add a type check gate between format check and tests.
+
+In validate_sandbox(), after the format check block (around line 518) and before the
+test gate, add:
+
+```python
+# Type check gate (runs if configured)
+if config.type_check_cmd:
+    res_ty = subprocess.run(
+        config.type_check_cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=config.settlement_timeout,
+    )
+    if res_ty.returncode != 0:
+        return GateResult(passed=False, error=f"Type check failure:\\n{res_ty.stdout}{res_ty.stderr}")
+```
+
+## tests/test_settlement.py
+
+Add two unit tests (mark both `@pytest.mark.unit`):
+
+1. `test_validate_type_check_gate_pass` — create a minimal git worktree (use tmp_path),
+   configure a `ProjectConfig` with `type_check_cmd="exit 0"`, call `validate_sandbox()`,
+   assert it passes.
+
+2. `test_validate_type_check_gate_fail` — same setup, `type_check_cmd="exit 1"`,
+   assert `GateResult.passed is False` and `"Type check failure"` in `error`.
+
+3. `test_validate_type_check_skipped_when_empty` — `type_check_cmd=""` (default),
+   confirm type check is not invoked (gate returns based on other checks only).
+
+Look at how existing settlement tests construct fake git worktrees for the pattern
+to follow. Use a simple git init + commit so git status/diff work.
+
+After edits:
+   uv run ty check src/dgov/settlement.py tests/test_settlement.py
+   uv run pytest tests/test_settlement.py -q
+"""
+commit_message = "feat: add type check gate to validate_sandbox()"
+depends_on = ["impl/all.config-type-check-cmd"]
+files.edit = ["src/dgov/settlement.py", "tests/test_settlement.py"]
+
+
+# ── Task 3: Add type_check worker tool + headless serialization ───────────────
+[tasks.worker-type-check-tool]
+summary = "Add type_check() tool to AtomicTools and wire type_check_cmd through headless"
+prompt = """
+Two changes:
+
+## A. src/dgov/workers/atomic.py
+
+Add a `type_check` tool to `AtomicTools` after the `format_file` method (around line 605):
+
+```python
+def type_check(self) -> str:
+    \"\"\"Run the project's type checker. Returns empty string if not configured.\"\"\"
+    if not self.config.type_check_cmd:
+        return "Type checking not configured for this project."
+    return self.run_bash(self.config.type_check_cmd)
+```
+
+Then in `get_tool_spec()`, add the tool spec after the `format_file` entry:
+
+```python
+{
+    "type": "function",
+    "function": {
+        "name": "type_check",
+        "description": (
+            "Run the project's type checker (e.g. ty check). "
+            "Returns checker output. Use after edits to verify type correctness."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+},
+```
+
+## B. src/dgov/workers/headless.py
+
+In `run_headless_worker()`, the config_json dict serializes ProjectConfig for the worker
+subprocess. Add `"type_check_cmd"` to that dict:
+
+```python
+"type_check_cmd": pc.type_check_cmd,
+```
+Add it after the `"lint_fix_cmd"` line.
+
+## C. tests/test_worker_tools.py
+
+Read tests/test_worker_tools.py to understand the fixture pattern, then add:
+
+1. `test_type_check_configured` — build an AtomicTools with
+   `AtomicConfig(type_check_cmd="echo 'type check ok'")`,
+   call `tools.type_check()`, assert `"type check ok"` in result.
+
+2. `test_type_check_not_configured` — `AtomicConfig(type_check_cmd="")`,
+   call `tools.type_check()`, assert `"not configured"` in result.
+
+After edits:
+   uv run ty check src/dgov/workers/atomic.py src/dgov/workers/headless.py tests/test_worker_tools.py
+   uv run pytest tests/test_worker_tools.py -q
+"""
+commit_message = "feat: add type_check worker tool and wire through headless serialization"
+depends_on = ["impl/all.config-type-check-cmd"]
+files.edit = [
+    "src/dgov/workers/atomic.py",
+    "src/dgov/workers/headless.py",
+    "tests/test_worker_tools.py",
+]
+
+
+# ── Task 4: Set type_check_cmd in project.toml ────────────────────────────────
+[tasks.project-toml-type-check]
+summary = "Add type_check_cmd to .dgov/project.toml for this repo"
+prompt = """
+Read .dgov/project.toml. It currently has lint_cmd, format_cmd, test_cmd etc. but no
+type_check_cmd.
+
+Add `type_check_cmd = "python -m ty check"` to the [project] table, after the
+`format_check_cmd` line.
+
+The `python -m ty` form is consistent with how other commands in this file are written
+(e.g. `python -m ruff check`, `python -m pytest`).
+
+After the edit, read the file back to verify it looks correct. No tests to run.
+"""
+commit_message = "config: add type_check_cmd to project.toml"
+files.edit = [".dgov/project.toml"]

@@ -11,8 +11,34 @@ from dataclasses import dataclass
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
 
-# Matches test-file paths embedded in prompt text, e.g. "tests/test_foo.py"
-_TEST_PATH_RE = re.compile(r"\b(tests?/[\w/.+-]+\.py)\b")
+# Matches file paths embedded in prompt text: any word/path ending in a known
+# extension (.py, .toml, .json, .yaml, .yml, .md, .txt, .cfg, .ini, .sh)
+# that contains at least one directory separator.
+_PROMPT_PATH_RE = re.compile(
+    r"(?<!\w)(\.?[\w.+-]+/[\w/.+-]+\.(?:py|toml|json|yaml|yml|md|txt|cfg|ini|sh))\b"
+)
+
+# Verbs that signal a cross-cutting task — these should claim the full call chain.
+_CROSSCUT_VERBS_RE = re.compile(
+    r"\b(fix|stabilize|stabilise|clean\s*up|refactor|migrate)\b", re.IGNORECASE
+)
+
+# Orient/Edit/Verify section headers in prompt text.
+# Matches isolated headings like "Orient:", "## Orient", "**Orient:**", etc.
+_PROMPT_PHASE_RES = {
+    "Orient": re.compile(
+        r"^\s*(?:#{1,6}\s+)?(?:\*\*)?orient(?::)?(?:\*\*)?\s*:?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    "Edit": re.compile(
+        r"^\s*(?:#{1,6}\s+)?(?:\*\*)?edit(?::)?(?:\*\*)?\s*:?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    "Verify": re.compile(
+        r"^\s*(?:#{1,6}\s+)?(?:\*\*)?verify(?::)?(?:\*\*)?\s*:?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+}
 
 
 def _normalize_touch_path(path: str) -> str:
@@ -69,8 +95,9 @@ class PlanSpec:
     session_root: str = "."
     default_agent: str = ""
     default_timeout_s: int = 600
-    max_retries: int = 1
+    max_retries: int = 3
     sop_set_hash: str = ""
+    source_mtime_max: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,6 +127,7 @@ def parse_plan_file(path: str) -> PlanSpec:
                 create=task.files.create,
                 edit=task.files.edit,
                 delete=task.files.delete,
+                read=task.files.read,
                 touch=task.files.touch,
             ),
         )
@@ -113,6 +141,7 @@ def parse_plan_file(path: str) -> PlanSpec:
         default_agent=dag_def.default_agent,
         max_retries=dag_def.default_max_retries,
         sop_set_hash=dag_def.sop_set_hash,
+        source_mtime_max=dag_def.source_mtime_max,
     )
 
 
@@ -155,6 +184,7 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
             create=unit.files.create,
             edit=unit.files.edit,
             delete=unit.files.delete,
+            read=unit.files.read,
             touch=unit.files.touch,
         )
 
@@ -211,7 +241,9 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
 
     Checks:
     1. File-claim conflicts between independent tasks
-    2. Test file references in prompts that are not in the file claim
+    2. Prompt path references not covered by file claims
+    3. Verify-only tasks with .py touch/edit claims (likely over-scoped)
+    4. Prompt structure (Orient/Edit/Verify headers)
     """
     issues: list[PlanIssue] = []
 
@@ -241,30 +273,89 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
                             )
                         )
 
-    # Unclaimed test file reference check
+    # Unclaimed prompt path reference check
     # Workers that touch unclaimed files get scope_violation (terminal, no retry).
     for slug, unit in plan.units.items():
         claimed = {
             _normalize_touch_path(p)
-            for p in (*unit.files.create, *unit.files.edit, *unit.files.touch)
+            for p in (*unit.files.create, *unit.files.edit, *unit.files.touch, *unit.files.read)
             if p.strip()
         }
         seen: set[str] = set()
-        for m in _TEST_PATH_RE.finditer(unit.prompt):
-            test_path = _normalize_touch_path(m.group(1))
-            if test_path in seen or test_path in claimed:
+        for m in _PROMPT_PATH_RE.finditer(unit.prompt):
+            ref_path = _normalize_touch_path(m.group(1))
+            if ref_path in seen or ref_path in claimed:
                 continue
-            seen.add(test_path)
+            seen.add(ref_path)
             issues.append(
                 PlanIssue(
                     severity="warning",
                     message=(
                         f"Prompt references '{m.group(1)}' but it is not in the file claim. "
                         "Workers that touch unclaimed files get scope_violation (terminal, no retry). "
-                        "Add to files.edit if the task may modify tests."
+                        "Add to files.edit or files.read if the task needs this file."
                     ),
                     unit=slug,
                 )
             )
 
+    # Verify-only task check: tasks whose only create targets are non-.py files
+    # should not have .py files in touch/edit (this tempts the worker to modify code).
+    for slug, unit in plan.units.items():
+        issues.extend(_check_verify_only_task(slug, unit))
+
+    # Prompt structure check: Orient/Edit/Verify headers.
+    for slug, unit in plan.units.items():
+        issues.extend(_check_prompt_structure(slug, unit))
+
     return issues
+
+
+def _check_verify_only_task(slug: str, unit: PlanUnit) -> list[PlanIssue]:
+    """Warn when a verify/capture task has .py touch/edit claims.
+
+    A task that only creates non-code files (e.g. .json, .txt, .md) but also
+    claims .py files via touch/edit is likely over-scoped — the worker will
+    be tempted to modify code files, leading to scope violations on unrelated
+    edits.
+    """
+    if not unit.files.create:
+        return []
+    # Only applies when ALL create targets are non-.py
+    if any(f.endswith(".py") for f in unit.files.create):
+        return []
+    py_touches = [f for f in (*unit.files.edit, *unit.files.touch) if f.strip().endswith(".py")]
+    if not py_touches:
+        return []
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                f"Task only creates non-code files ({', '.join(unit.files.create)}) "
+                f"but also claims .py files via edit/touch: {py_touches}. "
+                "This tempts the worker to modify code, risking scope violations. "
+                "Remove the .py claims or split into separate tasks."
+            ),
+            unit=slug,
+        )
+    ]
+
+
+def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:
+    """Warn when a prompt is missing Orient/Edit/Verify section headers."""
+    missing = [
+        phase for phase, pattern in _PROMPT_PHASE_RES.items() if not pattern.search(unit.prompt)
+    ]
+    if not missing:
+        return []
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                f"Prompt is missing section headers: {', '.join(missing)}. "
+                "Structured prompts (Orient/Edit/Verify) have higher "
+                "first-attempt success rates."
+            ),
+            unit=slug,
+        )
+    ]

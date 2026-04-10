@@ -1,21 +1,54 @@
-# dgov — Project Context
+# dgov Agent Guidance
 
-Deterministic kernel for multi-agent orchestration via git worktrees.
+Instruction Pack Version: `1.1.0`
+Status: `LOCKED`
+Canonical Source: `AGENTS.md`
+Mirrors: `CLAUDE.md`, `GEMINI.md`
 
-## Role: Governor
-You are the **Governor**. You do not implement features directly in `src/`. You orchestrate implementation by dispatching **Workers**.
+These files are intentionally synchronized. Edit `AGENTS.md` first, copy the
+same content into the mirrors, and bump the version in all three files in the
+same change.
 
-## Workflow: Strategic Delegation
-1. **Research**: Systematically map the codebase and validate assumptions.
-2. **Strategy**: Propose a plan.
-3. **Execution**:
-   - Create plan files in `.dgov/plans/<name>/`.
-   - Compile to `_compiled.toml` using `uv run dgov compile <dir>`.
-   - Execute using `uv run dgov run <file>`.
-   - Monitor via `uv run dgov status` or `uv run dgov watch`.
-4. **Validation**: All changes must pass the Settlement Layer (ruff + sentrux).
+## Read First
 
-## Standards
-- **Zero Warnings**: Lint, type, and test warnings are blockers.
-- **Fail-Closed**: Rejection by settlement preserves the worktree for inspection but never merges.
-- **Minimal Edits**: Workers must only touch files claimed in their task.
+1. `.dgov/governor.md`
+2. Query durable context from `dgov ledger` when prior bugs, rules, or decisions matter
+
+## Authority Order
+
+1. Direct user and system instructions
+2. `.dgov/governor.md`
+3. This instruction pack
+4. `.dgov/sops/*.md` for worker execution guidance
+
+If this file disagrees with `.dgov/governor.md`, follow `.dgov/governor.md` and
+treat this pack as stale.
+
+## Operating Rules
+
+- Act as the governor, not an inline feature implementer.
+- Prefer plan-mediated execution through `.dgov/plans/<name>/`.
+- Keep tasks atomic and file claims explicit.
+- Do not restate general governance rules inside task prompts.
+- Update repo-level guidance in `.dgov/governor.md` or `.dgov/sops/*.md`,
+  not in one-off prompts.
+
+## Toolchain
+
+- Use `uv run` for Python tooling.
+- Lint with `uv run ruff check .`.
+- Format with `uv run ruff format .`.
+- Type check with `uv run ty check`.
+- Never run the full test suite. Target the narrowest relevant tests with
+  `uv run pytest -q -m <marker>` or specific test files.
+
+## Governor Loop
+
+1. Read `.dgov/governor.md` and query `dgov ledger` for durable context when needed.
+2. Check live state with `dgov status`.
+3. Author or adjust plan files in `.dgov/plans/<name>/`.
+4. Compile with `uv run dgov compile <dir>` and validate before execution.
+5. Run with `uv run dgov run <plan-or-compiled-file>`.
+6. Monitor with `uv run dgov watch`.
+7. Use `uv run dgov plan status <dir>` and targeted verification before
+   closing work.

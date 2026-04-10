@@ -11,6 +11,7 @@ import click
 
 from dgov import __version__
 from dgov.persistence import all_tasks, cleanup_zombies, prune_history
+from dgov.project_root import resolve_project_root
 from dgov.types import TaskState, Worktree
 from dgov.worktree import remove_worktree
 
@@ -47,17 +48,17 @@ def cli(
 
     \b
     USAGE:
-      dgov                    Show status
-      dgov status             Show status
-      dgov run plan.toml      Run a plan
-      dgov validate plan.toml Validate a plan without running
-      dgov init               Bootstrap .dgov/project.toml
-      dgov watch              Stream events
-      dgov ledger add <cat>   Record bug, rule, or debt
-      dgov compile <dir>      Compile a plan tree to _compiled.toml
-      dgov plan status <dir>  Show pending vs deployed units
-      dgov prune              Prune historical (abandoned/closed) tasks
-      dgov sentrux check      Run Sentrux architectural check
+      dgov                       Show status
+      dgov run <dir>             Run a compiled plan
+      dgov compile <dir>         Compile plan tree to _compiled.toml
+      dgov init                  Bootstrap .dgov/project.toml and governor.md
+      dgov init-plan <name>      Initialize a new plan directory
+      dgov fix <prompt>          Create and run a one-off fix plan
+      dgov watch                 Stream events live
+      dgov recover               Recover from a crashed run
+      dgov archive-plan <name>   Manually archive a plan
+      dgov plan status <dir>     Show pending vs deployed units
+      dgov sentrux check         Run architectural quality check
 
     Tasks run in isolated git worktrees. No tmux required.
     """
@@ -68,57 +69,86 @@ def cli(
         return
 
     # Bare `dgov` → show status
-    _cmd_status(str(Path.cwd()))
+    _cmd_status(str(resolve_project_root()))
 
 
 @cli.command(name="status")
 @click.option(
-    "--all", "show_all", is_flag=True, help="Show all tasks including abandoned/closed history"
+    "--all", "show_all", is_flag=True, help="Show persisted task history, not just live tasks"
 )
 def status_cmd(show_all: bool) -> None:
     """Show governor status — what's running now."""
-    _cmd_status(str(Path.cwd()), show_all=show_all)
+    _cmd_status(str(resolve_project_root()), show_all=show_all)
 
 
-@cli.command(name="cleanup")
-def cleanup_cmd() -> None:
-    """Annihilate zombies — marks ACTIVE tasks as ABANDONED and removes worktrees."""
-    project_root = str(Path.cwd())
+@cli.command(name="recover")
+def recover_cmd() -> None:
+    """Recover from a crashed run — marks ACTIVE tasks ABANDONED and removes orphaned branches."""
+    project_root = str(resolve_project_root())
     try:
         tasks = all_tasks(project_root)
-        active = [t for t in tasks if t.get("state") == TaskState.ACTIVE]
 
-        if not active:
+        # ACTIVE: in-flight tasks from a crashed run
+        # FAILED/ABANDONED: preserved-but-rejected worktrees whose git branches were never deleted
+        needs_wt_cleanup = [
+            t
+            for t in tasks
+            if t.get("state") in (TaskState.ACTIVE, TaskState.FAILED, TaskState.ABANDONED)
+            and t.get("worktree_path")
+            and t.get("branch_name")
+        ]
+
+        if not needs_wt_cleanup:
             click.echo("No active tasks found. Everything is clean.")
             return
 
-        click.echo(f"Cleaning up {len(active)} active tasks...")
+        click.echo(f"Recovering {len(needs_wt_cleanup)} tasks...")
 
-        for t in active:
+        for t in needs_wt_cleanup:
             slug = t.get("slug", "unknown")
             wt_path = t.get("worktree_path")
             branch = t.get("branch_name")
 
-            if wt_path and branch:
-                try:
-                    wt = Worktree(path=Path(wt_path), branch=branch, commit="")
-                    remove_worktree(project_root, wt)
-                    click.echo(f"  [removed worktree] {slug}")
-                except Exception as e:
-                    click.echo(f"  [skip worktree] {slug}: {e}")
+            if not (wt_path and branch):
+                continue
+            try:
+                wt = Worktree(path=Path(wt_path), branch=branch, commit="")
+                remove_worktree(project_root, wt)
+                click.echo(f"  [removed worktree] {slug}")
+            except Exception as e:
+                click.echo(f"  [skip worktree] {slug}: {e}")
 
         count = cleanup_zombies(project_root)
-        click.echo(f"Transitions complete: {count} tasks marked as ABANDONED.")
+        click.echo(f"Recovery complete: {count} tasks marked as ABANDONED.")
 
     except Exception as exc:
-        click.echo(f"Cleanup failed: {exc}", err=True)
+        click.echo(f"Recovery failed: {exc}", err=True)
         raise click.exceptions.Exit(code=1) from exc
+
+
+@cli.command(name="archive-plan")
+@click.argument("name")
+def archive_plan_cmd(name: str) -> None:
+    """Manually archive a plan directory to .dgov/plans/archive/<name>."""
+    from dgov.archive import archive_plan
+
+    project_root = resolve_project_root()
+    plan_dir = project_root / ".dgov" / "plans" / name
+    if not plan_dir.exists():
+        click.echo(f"Error: Plan not found: {plan_dir}", err=True)
+        raise click.exceptions.Exit(code=1)
+    archive_dir = plan_dir.parent / "archive"
+    if (archive_dir / name).exists():
+        click.echo(f"Error: Archive already exists: {archive_dir / name}", err=True)
+        raise click.exceptions.Exit(code=1)
+    dest = archive_plan(plan_dir)
+    click.echo(f"Archived to {dest}")
 
 
 @cli.command(name="prune")
 def prune_cmd() -> None:
     """Prune historical tasks — removes abandoned and closed records."""
-    project_root = str(Path.cwd())
+    project_root = str(resolve_project_root())
     try:
         count = prune_history(project_root)
         if count == 0:
@@ -130,8 +160,16 @@ def prune_cmd() -> None:
         raise click.exceptions.Exit(code=1) from exc
 
 
-# States that represent settled history — not live governor state
-_HISTORICAL_STATES = frozenset({"abandoned", "closed"})
+# States that represent in-flight governor work, not persisted history.
+_LIVE_STATES = frozenset({
+    TaskState.PENDING.value,
+    TaskState.ACTIVE.value,
+    TaskState.DONE.value,
+    TaskState.REVIEWING.value,
+    TaskState.REVIEWED_PASS.value,
+    TaskState.REVIEWED_FAIL.value,
+    TaskState.MERGING.value,
+})
 
 
 def _cmd_status(project_root: str, show_all: bool = False) -> None:
@@ -147,7 +185,7 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
         return
 
     active = [t for t in tasks if t.get("state") == "active"]
-    visible = tasks if show_all else [t for t in tasks if t.get("state") not in _HISTORICAL_STATES]
+    visible = tasks if show_all else [t for t in tasks if t.get("state") in _LIVE_STATES]
 
     if want_json():
         click.echo(
@@ -181,6 +219,7 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
 from dgov.cli import (  # noqa: E402
     clean as clean,
     compile as compile,
+    fix as fix,
     init as init,
     ledger as ledger,
     plan as plan,

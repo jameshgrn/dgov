@@ -13,6 +13,7 @@ import pytest
 
 from dgov.config import ProjectConfig
 from dgov.settlement import (
+    _run_sentrux_gate,
     _sentrux_is_warn_only,
     autofix_sandbox,
     review_sandbox,
@@ -68,6 +69,30 @@ Coupling:     0.02 → 0.04
     def test_complexity_plus_coupling_is_not_warn(self):
         mixed = self._COMPLEXITY_ONLY + "  ✗ Coupling increased: 0.02 → 0.03\n"
         assert _sentrux_is_warn_only(mixed) is False
+
+
+@pytest.mark.unit
+def test_validate_sandbox_surfaces_stderr_from_lint_failures(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    _add_tracked_file(tmp_path, "src.py", "x = 1\n")
+    lint_cmd = (
+        "python -c \"import sys; print('lint missing', file=sys.stderr); raise SystemExit(1)\""
+    )
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd=lint_cmd,
+            format_check_cmd='python -c "raise SystemExit(0)"',
+            test_cmd="",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "lint missing" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -188,6 +213,53 @@ class TestReviewSandbox:
         result = review_sandbox(tmp_path, max_diff_lines=5)
         assert not result.passed
         assert result.verdict == "diff_too_large"
+
+    @pytest.mark.unit
+    def test_unclaimed_dgov_file_fails_scope(self, tmp_path: Path):
+        """Unclaimed changes under .dgov/ fail scope enforcement."""
+        _init_repo(tmp_path)
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "config.toml").write_text("key = 'value'\n")
+        result = review_sandbox(tmp_path, claimed_files=["src.py"])
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert ".dgov/config.toml" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_unclaimed_sentrux_file_fails_scope(self, tmp_path: Path):
+        """Governor-owned sentrux baseline is rejected before scope checks."""
+        _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"quality": 100}')
+        result = review_sandbox(tmp_path, claimed_files=["src.py"])
+        assert not result.passed
+        assert result.verdict == "reserved_path"
+        assert ".sentrux/baseline.json" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_claimed_dgov_file_passes_scope(self, tmp_path: Path):
+        """Explicitly claimed .dgov/ files pass scope enforcement."""
+        _init_repo(tmp_path)
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "config.toml").write_text("key = 'value'\n")
+        result = review_sandbox(tmp_path, claimed_files=[".dgov/config.toml"])
+        assert result.passed
+        assert result.verdict == "ok"
+
+    @pytest.mark.unit
+    def test_claimed_sentrux_file_passes_scope(self, tmp_path: Path):
+        """Governor-owned sentrux baseline stays reserved even when claimed."""
+        _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"quality": 100}')
+        result = review_sandbox(tmp_path, claimed_files=[".sentrux/baseline.json"])
+        assert not result.passed
+        assert result.verdict == "reserved_path"
+        assert ".sentrux/baseline.json" in (result.error or "")
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +478,93 @@ class TestValidateSandbox:
         config = ProjectConfig(type_check_cmd="", test_cmd="")
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
         assert result.passed is True
+
+    @pytest.mark.unit
+    def test_pass_no_tests_collected(self, tmp_path: Path):
+        """pytest exit code 5 (no tests collected) is treated as a pass."""
+        base = _init_repo(tmp_path)
+        (tmp_path / "clean.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add clean.py")
+        # exit 5 = pytest "no tests were collected"
+        config = ProjectConfig(test_cmd="exit 5", type_check_cmd="")
+        result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        assert result.passed is True
+
+    @pytest.mark.unit
+    def test_sentrux_empty_baseline_skipped(self, tmp_path: Path, monkeypatch):
+        """Sentrux gate is skipped when baseline has total_import_edges == 0 (empty project)."""
+        import json
+
+        base = _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text(
+            json.dumps({"quality_signal": 1.0, "total_import_edges": 0})
+        )
+        (tmp_path / "mod.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add mod")
+
+        real_run = subprocess.run
+
+        def _mock_run(args, **kwargs):
+            if args[0] == "sentrux" and args[1] == "gate":
+                return subprocess.CompletedProcess(
+                    args, 1, stdout="Quality signal dropped: 1.00 → 0.82\n", stderr=""
+                )
+            return real_run(args, **kwargs)
+
+        monkeypatch.setattr("subprocess.run", _mock_run)
+        monkeypatch.setattr("dgov.settlement.shutil.which", lambda name: "/usr/bin/sentrux")
+
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert result.passed is True
+
+    @pytest.mark.unit
+    def test_validate_sentrux_missing_is_actionable(self, tmp_path: Path, monkeypatch):
+        """Missing sentrux binary should fail with a clear installation message."""
+        base = _init_repo(tmp_path)
+        sx_dir = tmp_path / ".sentrux"
+        sx_dir.mkdir()
+        (sx_dir / "baseline.json").write_text('{"quality": 100}')
+        (tmp_path / "mod.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add mod")
+
+        monkeypatch.setattr("dgov.settlement.shutil.which", lambda name: None)
+
+        result = validate_sandbox(tmp_path, base, str(tmp_path))
+        assert result.passed is False
+        assert "Sentrux not found in PATH" in (result.error or "")
+
+
+@pytest.mark.unit
+def test_run_sentrux_gate_refreshes_worktree_baseline(tmp_path: Path, monkeypatch) -> None:
+    """Settlement should overwrite any worktree baseline with the repo-owned baseline."""
+    sx_dir = tmp_path / ".sentrux"
+    sx_dir.mkdir()
+    canonical = '{"quality": 100}\n'
+    (sx_dir / "baseline.json").write_text(canonical)
+
+    worktree_path = tmp_path / "wt"
+    (worktree_path / ".sentrux").mkdir(parents=True)
+    (worktree_path / ".sentrux" / "baseline.json").write_text('{"quality": 0}\n')
+
+    def _mock_run(args, **kwargs):
+        assert (worktree_path / ".sentrux" / "baseline.json").read_text() == canonical
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout="✓ No degradation detected\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", _mock_run)
+    monkeypatch.setattr("dgov.settlement.shutil.which", lambda name: "/usr/bin/sentrux")
+
+    result = _run_sentrux_gate(worktree_path, str(tmp_path), timeout=1)
+    assert result.passed is True
 
 
 # ---------------------------------------------------------------------------

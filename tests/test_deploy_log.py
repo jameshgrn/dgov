@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from dgov.deploy_log import DeployRecord, append, is_deployed, read
+from dgov.deploy_log import DeployRecord, append, is_deployed, is_plan_complete, read
 
 pytestmark = pytest.mark.unit
 
@@ -138,3 +138,37 @@ def test_is_deployed_wrong_plan(tmp_path: Path) -> None:
 
 def test_is_deployed_no_file(tmp_path: Path) -> None:
     assert is_deployed(str(tmp_path), "p", "u") is False
+
+
+# -- is_plan_complete --
+
+
+def test_is_plan_complete_all_deployed(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    append(root, "plan", "core/a.init", "sha1")
+    append(root, "plan", "core/b.init", "sha2")
+    assert is_plan_complete(root, "plan", {"core/a.init", "core/b.init"}) is True
+
+
+def test_is_plan_complete_partial(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    append(root, "plan", "core/a.init", "sha1")
+    assert is_plan_complete(root, "plan", {"core/a.init", "core/b.init"}) is False
+
+
+def test_is_plan_complete_none_deployed(tmp_path: Path) -> None:
+    assert is_plan_complete(str(tmp_path), "plan", {"core/a.init"}) is False
+
+
+def test_is_plan_complete_extra_deployed_still_true(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    append(root, "plan", "core/a.init", "sha1")
+    append(root, "plan", "core/b.init", "sha2")
+    append(root, "plan", "core/c.init", "sha3")
+    assert is_plan_complete(root, "plan", {"core/a.init", "core/b.init"}) is True
+
+
+def test_is_plan_complete_wrong_plan(tmp_path: Path) -> None:
+    root = str(tmp_path)
+    append(root, "other-plan", "core/a.init", "sha1")
+    assert is_plan_complete(root, "plan", {"core/a.init"}) is False

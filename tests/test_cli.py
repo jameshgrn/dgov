@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -11,13 +13,14 @@ from click.testing import CliRunner
 from helpers import compile_plan_tree
 
 from dgov.cli import cli
-from dgov.cli.init import _detect_project, _render_project_toml
-from dgov.cli.watch import _format_event
-from dgov.persistence import add_task, all_tasks
+from dgov.cli.init import _detect_project, _render_governor_md, _render_project_toml
+from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
+from dgov.persistence import add_task, all_tasks, emit_event, replace_all_tasks
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
 pytestmark = pytest.mark.unit
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(autouse=True)
@@ -50,12 +53,86 @@ def test_status_subcommand(runner: CliRunner, tmp_path: Path) -> None:
     assert "status" in result.output
 
 
+def test_status_from_inside_dgov_uses_repo_root(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    monkeypatch.chdir(dgov_dir)
+
+    result = runner.invoke(cli, ["status"])
+    assert result.exit_code == 0
+    assert (tmp_path / ".dgov" / "state.db").exists()
+    assert not (tmp_path / ".dgov" / ".dgov" / "state.db").exists()
+
+
 def test_status_json(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(cli, ["--json", "status"])
     assert result.exit_code == 0
     data = json.loads(result.output)
     assert "status" in data
     assert "tasks" in data
+
+
+def test_status_hides_history_by_default(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "merged-task",
+                "prompt": "done",
+                "agent": "qwen",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path / "wt-merged"),
+                "branch_name": "dgov/merged-task",
+                "state": TaskState.MERGED,
+                "task_id": None,
+            },
+            {
+                "slug": "active-task",
+                "prompt": "doing",
+                "agent": "qwen",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path / "wt-active"),
+                "branch_name": "dgov/active-task",
+                "state": TaskState.ACTIVE,
+                "task_id": None,
+            },
+        ],
+    )
+
+    result = runner.invoke(cli, ["status"])
+    assert result.exit_code == 0
+    assert "active-task" in result.output
+    assert "merged-task" not in result.output
+
+
+def test_status_all_shows_history(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "merged-task",
+                "prompt": "done",
+                "agent": "qwen",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path / "wt-merged"),
+                "branch_name": "dgov/merged-task",
+                "state": TaskState.MERGED,
+                "task_id": None,
+            }
+        ],
+    )
+
+    result = runner.invoke(cli, ["status", "--all"])
+    assert result.exit_code == 0
+    assert "merged-task" in result.output
 
 
 # -- validate --
@@ -144,8 +221,11 @@ def test_validate_non_toml_file(runner: CliRunner, tmp_path: Path) -> None:
 # -- init --
 
 
-def test_init_creates_project_toml(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_creates_bootstrap_files(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: False)
         Path(td, "src").mkdir()
         Path(td, "tests").mkdir()
         Path(td, "main.py").touch()
@@ -153,10 +233,74 @@ def test_init_creates_project_toml(runner: CliRunner, tmp_path: Path) -> None:
         assert result.exit_code == 0
         assert "Created" in result.output
         config = Path(td, ".dgov", "project.toml")
+        governor = Path(td, ".dgov", "governor.md")
         assert config.exists()
+        assert governor.exists()
         content = config.read_text()
         assert 'language = "python"' in content
         assert 'src_dir = "src/"' in content
+        assert 'default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"' in content
+        assert 'llm_base_url = "https://api.fireworks.ai/inference/v1"' in content
+        assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
+        assert '# Run "dgov sentrux gate-save" after bootstrap' in content
+        assert 'test_cmd = "uv run pytest {test_dir} -q --tb=short"' in content
+        assert 'lint_cmd = "uv run ruff check {file}"' in content
+        assert "# Governor Charter" in governor.read_text()
+        assert "dgov sentrux gate-save" in governor.read_text()
+        assert "Next:" in result.output
+        assert "dgov sentrux gate-save" in result.output
+
+
+def test_sentrux_check_passes_requested_path_without_chdir(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], str | None]] = []
+
+    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        calls.append((args, cwd))
+        return subprocess.CompletedProcess(
+            ["sentrux", *args], 0, stdout="Quality: 42\n", stderr=""
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+
+    result = runner.invoke(cli, ["sentrux", "check", "src"])
+
+    assert result.exit_code == 0
+    assert calls == [(["check", "src"], None)]
+
+
+def test_sentrux_gate_fail_on_degradation_uses_command_output(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            1,
+            stdout="✗ Degradation detected\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+
+    result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])
+
+    assert result.exit_code == 1
+    assert "Degradation detected" in result.output
 
 
 def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:
@@ -164,19 +308,80 @@ def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:
         dgov_dir = Path(td, ".dgov")
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text("[project]\n")
+        (dgov_dir / "governor.md").write_text("# existing\n")
         result = runner.invoke(cli, ["init"])
         assert result.exit_code != 0
-        assert "Already exists" in result.output
+        assert "Already initialized" in result.output
 
 
-def test_init_force_overwrites(runner: CliRunner, tmp_path: Path) -> None:
+def test_init_creates_missing_governor_without_overwriting_project(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: False)
+        dgov_dir = Path(td, ".dgov")
+        dgov_dir.mkdir()
+        existing = '[project]\nlanguage = "rust"\n'
+        (dgov_dir / "project.toml").write_text(existing)
+        result = runner.invoke(cli, ["init"])
+        assert result.exit_code == 0
+        assert "governor.md" in result.output
+        assert (dgov_dir / "project.toml").read_text() == existing
+        assert (dgov_dir / "governor.md").exists()
+
+
+def test_init_force_overwrites(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: False)
         dgov_dir = Path(td, ".dgov")
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text("[project]\n")
+        (dgov_dir / "governor.md").write_text("# old\n")
         result = runner.invoke(cli, ["init", "--force"])
         assert result.exit_code == 0
+        assert "project.toml" in result.output
+        assert "governor.md" in result.output
+        assert "# Governor Charter" in (dgov_dir / "governor.md").read_text()
+
+
+def test_init_skips_sentrux_baseline_offer_in_headless(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        # CliRunner.stdin.isatty() is False by default
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: True)
+        called = False
+
+        def _mock_save(root: Path) -> tuple[bool, str]:
+            nonlocal called
+            called = True
+            return True, "saved"
+
+        monkeypatch.setattr("dgov.cli.init._save_sentrux_baseline", _mock_save)
+        result = runner.invoke(cli, ["init"])
+
+        assert result.exit_code == 0
+        # Should NOT prompt
+        assert "Run `dgov sentrux gate-save` now to create the repo baseline?" not in result.output
+        # Should show next-step guidance
+        assert "Run `dgov sentrux gate-save` to create the repo baseline" in result.output
+        assert called is False
+
+
+def test_init_offers_and_creates_sentrux_baseline(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: True)
+        monkeypatch.setattr("dgov.cli.init._save_sentrux_baseline", lambda root: (True, "saved"))
+        # Force automation with --yes
+        result = runner.invoke(cli, ["init", "--yes"])
+
+        assert result.exit_code == 0
         assert "Created" in result.output
+        assert ".sentrux/baseline.json" in result.output
 
 
 # -- _detect_project --
@@ -215,7 +420,17 @@ def test_render_project_toml() -> None:
     content = _render_project_toml("python", "src/", "tests/", [".py"])
     assert "[project]" in content
     assert 'language = "python"' in content
+    assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
+    assert 'format_cmd = "uv run ruff format {file}"' in content
     assert "[conventions]" in content
+
+
+def test_render_governor_md() -> None:
+    content = _render_governor_md()
+    assert content.startswith("# Governor Charter")
+    assert "## Planning Rules" in content
+    assert ".dgov/sops/" in content
+    assert ".sentrux/baseline.json" in content
 
 
 # -- help / version --
@@ -234,6 +449,8 @@ def test_version(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["--version"])
     assert result.exit_code == 0
     assert "dgov" in result.output
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    assert pyproject["project"]["version"] in result.output
 
 
 # -- watch --
@@ -243,6 +460,157 @@ def test_watch_subcommand_registered(runner: CliRunner) -> None:
     result = runner.invoke(cli, ["watch", "--help"])
     assert result.exit_code == 0
     assert "Stream" in result.output
+
+
+def test_watch_help_shows_flags(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["watch", "--help"])
+    assert result.exit_code == 0
+    assert "--all" in result.output
+    assert "--plan" in result.output
+
+
+def test_infer_plan_name_no_active_tasks(tmp_path: Path) -> None:
+    replace_all_tasks(str(tmp_path), [])
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
+
+
+def test_infer_plan_name_single_plan(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
+
+
+def test_infer_plan_name_multiple_plans(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-b",
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
+
+
+def test_infer_plan_name_empty_plan_names(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.ACTIVE.value,
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
+
+
+def test_infer_plan_name_mixed_states(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            },
+            {
+                "slug": "fix/b",
+                "prompt": "b",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-b",
+                "state": TaskState.MERGED.value,
+                "plan_name": "plan-b",
+            },
+        ],
+    )
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
+
+
+def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
+    replace_all_tasks(
+        str(tmp_path),
+        [
+            {
+                "slug": "fix/a",
+                "prompt": "a",
+                "agent": "test",
+                "project_root": str(tmp_path),
+                "worktree_path": str(tmp_path),
+                "branch_name": "branch-a",
+                "state": TaskState.ACTIVE.value,
+                "plan_name": "plan-a",
+            }
+        ],
+    )
+    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 0)
+
+
+def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path) -> None:
+    emit_event(str(tmp_path), "task_done", "pane-a", plan_name="old-plan")
+    assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == (None, 1)
 
 
 # -- init-plan --
@@ -332,6 +700,37 @@ class TestInitPlan:
         content = root_toml.read_text()
         assert 'name = "myplan"' in content
 
+    def test_init_plan_from_inside_dgov_uses_repo_root(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        monkeypatch.chdir(dgov_dir)
+
+        result = runner.invoke(cli, ["init-plan", "myplan"])
+        assert result.exit_code == 0
+        assert (tmp_path / ".dgov" / "plans" / "myplan" / "_root.toml").exists()
+        assert not (tmp_path / ".dgov" / ".dgov" / "plans" / "myplan").exists()
+
+    def test_init_plan_example_compiles_without_warnings(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        plans_dir = tmp_path / ".dgov" / "plans"
+        plans_dir.mkdir(parents=True)
+
+        result = runner.invoke(cli, ["init-plan", "myplan"])
+        assert result.exit_code == 0
+
+        example = plans_dir / "myplan" / "tasks" / "_example.toml"
+        main = plans_dir / "myplan" / "tasks" / "main.toml"
+        main.write_text(example.read_text())
+        example.unlink()
+
+        result = runner.invoke(cli, ["compile", str(plans_dir / "myplan"), "--dry-run"])
+        assert result.exit_code == 0
+        assert "WARNING" not in result.output
+
 
 # -- run --
 
@@ -339,6 +738,7 @@ class TestInitPlan:
 def test_format_event_settlement_retry() -> None:
     """Test that _format_event renders settlement_retry events correctly."""
     from rich.console import Console
+
     ev = {
         "event": "settlement_retry",
         "task_slug": "fix-lint",
@@ -359,17 +759,18 @@ def test_format_event_settlement_retry() -> None:
 
 def test_run_only_unknown_slug_exits(runner: CliRunner, tmp_path: Path) -> None:
     """Running with --only nonexistent exits with code 1 and error message."""
-    tasks_toml = """
+    with runner.isolated_filesystem(temp_dir=tmp_path):
+        tasks_toml = """
 [tasks.a]
 summary = "do a"
 prompt = "do a"
 commit_message = "a"
 files = ["a.py"]
 """
-    compiled_path = compile_plan_tree(tmp_path, "unknown-slug-test", tasks_toml)
-    result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
-    assert result.exit_code == 1
-    assert "not found" in result.output.lower() or "nonexistent" in result.output
+        compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
+        result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower() or "nonexistent" in result.output
 
 
 def test_run_only_filters_plan(runner: CliRunner, tmp_path: Path) -> None:
