@@ -34,9 +34,17 @@ from dgov.runner import EventDagRunner
     help="Continue from where you left off, retrying failed tasks",
 )
 @click.option("--only", default=None, help="Run only this task and its deps")
+@click.option(
+    "--yes", "-y", is_flag=True, help="Skip interactive prompts (auto-create bootstrap commits)"
+)
 @click.pass_context
 def run_cmd(
-    ctx: click.Context, plan: Path, restart: bool, continue_failed: bool, only: str | None
+    ctx: click.Context,
+    plan: Path,
+    restart: bool,
+    continue_failed: bool,
+    only: str | None,
+    yes: bool,
 ) -> None:
     """Run a compiled plan (_compiled.toml or plan directory).
 
@@ -64,6 +72,7 @@ def run_cmd(
         continue_failed=continue_failed,
         only=only,
         plan_dir=plan_dir,
+        yes=yes,
     )
 
 
@@ -174,7 +183,7 @@ def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:
     click.echo(f"Created bootstrap commit from current working tree ({len(files)} file(s)).")
 
 
-def _ensure_git_ready(project_root: str) -> None:
+def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
     """Fail fast unless the current directory is a git repo with at least one commit."""
     repo_check = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -207,9 +216,9 @@ def _ensure_git_ready(project_root: str) -> None:
             _create_bootstrap_commit(project_root, files)
             return
 
-        should_prompt = sys.stdin.isatty()
-        if not should_prompt:
-            # Headless: auto-create bootstrap commit if files exist
+        headless = not sys.stdin.isatty()
+        if yes or headless:
+            # Auto-create bootstrap commit if --yes flag or headless mode
             _create_bootstrap_commit(project_root, files)
             return
 
@@ -359,6 +368,7 @@ def _cmd_run_plan(
     continue_failed: bool = False,
     only: str | None = None,
     plan_dir: Path | None = None,
+    yes: bool = False,
 ) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
@@ -403,7 +413,7 @@ def _cmd_run_plan(
             update={"tasks": {k: v for k, v in dag.tasks.items() if k in to_keep}}
         )
 
-    _ensure_git_ready(project_root)
+    _ensure_git_ready(project_root, yes=yes)
 
     baseline_quality = _require_sentrux_baseline(project_root)
 

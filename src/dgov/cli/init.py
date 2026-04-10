@@ -189,6 +189,13 @@ def _render_project_toml(language: str, src_dir: str, test_dir: str, extensions:
         '  # "detect-secrets-hook --baseline .secrets.baseline {file}",  # Example: secrets',
         "]",
         "",
+        "[tool_policy]",
+        "restrict_run_bash = true",
+        'deny_shell_commands = ["pip", "python -m pip", "pip3", "python -m venv", "uv venv"]',
+        "deny_shell_file_mutations = true",
+        f"require_wrapped_verify_tools = {'true' if language == 'python' else 'false'}",
+        f"require_uv_run = {'true' if language == 'python' else 'false'}",
+        "",
         "[conventions]",
         "# Add project-specific rules here for the agent to follow",
         '# style = "Prefer functional over OOP"',
@@ -313,7 +320,8 @@ def init_cmd(force: bool, yes: bool) -> None:
         baseline_path = _sentrux_baseline_path(project_root)
         baseline_created = False
 
-        should_prompt = not yes and not want_json() and sys.stdin.isatty()
+        headless = not sys.stdin.isatty() or want_json()
+        should_prompt = not yes and not headless
 
         if not baseline_path.exists() and _sentrux_available():
             if should_prompt:
@@ -328,8 +336,8 @@ def init_cmd(force: bool, yes: bool) -> None:
                         baseline_created = True
                     else:
                         click.echo(f"Could not create sentrux baseline: {details}", err=True)
-            elif yes:
-                # Automate if --yes is passed
+            else:
+                # Automate if --yes or headless
                 ok, details = _save_sentrux_baseline(project_root)
                 if ok:
                     click.echo(f"Created {baseline_path}")

@@ -346,7 +346,7 @@ def test_init_force_overwrites(
         assert "# Governor Charter" in (dgov_dir / "governor.md").read_text()
 
 
-def test_init_skips_sentrux_baseline_offer_in_headless(
+def test_init_auto_creates_sentrux_baseline_in_headless(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path):
@@ -365,9 +365,10 @@ def test_init_skips_sentrux_baseline_offer_in_headless(
         assert result.exit_code == 0
         # Should NOT prompt
         assert "Run `dgov sentrux gate-save` now to create the repo baseline?" not in result.output
-        # Should show next-step guidance
-        assert "Run `dgov sentrux gate-save` to create the repo baseline" in result.output
-        assert called is False
+        # Should auto-create
+        assert called is True
+        assert "Created" in result.output
+        assert "baseline.json" in result.output
 
 
 def test_init_offers_and_creates_sentrux_baseline(

@@ -419,7 +419,10 @@ class EventDagRunner:
         # tasks honor the most recent recompiled scope.
         claimed_files = self.task_files.get(action.task_slug)
         review_result = review_sandbox(
-            wt.path, claimed_files=claimed_files, project_root=self.session_root
+            wt.path,
+            claimed_files=claimed_files,
+            project_root=self.session_root,
+            task_slug=action.task_slug,
         )
 
         emit_event(

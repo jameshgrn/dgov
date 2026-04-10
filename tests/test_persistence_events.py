@@ -105,6 +105,18 @@ class TestReadEventsFiltering:
         assert len(events) == 1
         assert events[0]["plan_name"] == "plan-b"
 
+    def test_filter_by_task_slug(self, tmp_path):
+        """Filter by task_slug returns only matching events."""
+        session_root = _session(tmp_path)
+
+        emit_event(session_root, event="worker_log", pane="p1", task_slug="task-a")
+        emit_event(session_root, event="worker_log", pane="p2", task_slug="task-b")
+        emit_event(session_root, event="worker_log", pane="p3", task_slug="task-a")
+
+        events = read_events(session_root, task_slug="task-a")
+        assert len(events) == 2
+        assert {ev["pane"] for ev in events} == {"p1", "p3"}
+
     def test_filter_by_after_id(self, tmp_path):
         """Use after_id to get only new events since a known position."""
         session_root = _session(tmp_path)

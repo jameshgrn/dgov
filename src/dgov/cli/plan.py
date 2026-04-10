@@ -9,7 +9,10 @@ import click
 
 from dgov.cli import cli, want_json
 from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
+from dgov.plan_tree import parse_compiled_source_mtime
 from dgov.project_root import resolve_project_root
+
+_MTIME_EPSILON_S = 1e-6
 
 
 def _format_unit_files(unit: PlanUnit) -> str:
@@ -240,14 +243,19 @@ def _cmd_plan_status(plan_root: Path) -> None:
     tasks_raw = raw.get("tasks", {})
 
     stale = False
-    compiled_mtime = compiled_path.stat().st_mtime
+    compiled_source_mtime = plan_section.get("source_mtime_max", "")
     try:
         tree = walk_tree(plan_root)
         current_mtime = max(
-            (p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
-            default=0.0,
+            (plan_root / "_root.toml").stat().st_mtime,
+            *(p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
         )
-        stale = current_mtime > compiled_mtime
+        baseline_mtime = (
+            parse_compiled_source_mtime(compiled_source_mtime)
+            if isinstance(compiled_source_mtime, str) and compiled_source_mtime
+            else compiled_path.stat().st_mtime
+        )
+        stale = current_mtime > (baseline_mtime + _MTIME_EPSILON_S)
     except (FileNotFoundError, ValueError):
         pass
 

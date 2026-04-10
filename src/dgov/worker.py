@@ -29,7 +29,12 @@ if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
 from dgov.tool_policy import parse_tool_policy  # noqa: E402
-from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
+from dgov.workers.atomic import (  # noqa: E402
+    AtomicConfig,
+    AtomicTools,
+    get_allowed_tool_names,
+    get_tool_spec,
+)
 
 
 @dataclass
@@ -142,7 +147,16 @@ def _resolve_llm_runtime_settings(worktree: Path, project_config_json: str) -> t
     return _load_llm_runtime_settings(worktree)
 
 
-def _snapshot_tree(worktree: Path, max_depth: int = 2, max_lines: int = 80) -> str:
+_TREE_SNAPSHOT_MAX_CHARS = 12_000
+_TOOL_RESULT_MAX_CHARS = 12_000
+
+
+def _snapshot_tree(
+    worktree: Path,
+    max_depth: int = 2,
+    max_lines: int = 80,
+    max_chars: int = _TREE_SNAPSHOT_MAX_CHARS,
+) -> str:
     """Generate a compact project tree for the system prompt."""
     lines: list[str] = []
     for root_dir, dirs, files in os.walk(worktree):
@@ -167,8 +181,36 @@ def _snapshot_tree(worktree: Path, max_depth: int = 2, max_lines: int = 80) -> s
                 continue
             lines.append(f"{indent}  {f}")
     if max_lines > 0:
-        return "\n".join(lines[:max_lines])
-    return "\n".join(lines)
+        lines = lines[:max_lines]
+
+    snapshot = "\n".join(lines)
+    if max_chars <= 0 or len(snapshot) <= max_chars:
+        return snapshot
+
+    notice = "\n... [tree truncated for prompt budget]"
+    budget = max_chars - len(notice)
+    if budget <= 0:
+        return notice.lstrip("\n")
+
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        line_len = len(line) + (1 if kept else 0)
+        if used + line_len > budget:
+            break
+        kept.append(line)
+        used += line_len
+    return "\n".join(kept) + notice
+
+
+def _clip_tool_result(result: str, max_chars: int = _TOOL_RESULT_MAX_CHARS) -> str:
+    if max_chars <= 0 or len(result) <= max_chars:
+        return result
+    notice = "\n... [tool output truncated for prompt budget]"
+    budget = max_chars - len(notice)
+    if budget <= 0:
+        return notice.lstrip("\n")
+    return result[:budget] + notice
 
 
 def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
@@ -270,11 +312,27 @@ COMMON FAILURES (learn from these):
     return "".join(sections)
 
 
-def _execute_tool_call(call, actuators: AtomicTools) -> tuple[str, bool]:
+def _execute_tool_call(
+    call,
+    actuators: AtomicTools,
+    allowed_tools: frozenset[str] | None = None,
+) -> tuple[str, bool]:
     """Execute one tool call. Returns (result_text, is_done_signal)."""
     name = call.function.name
     args = json.loads(call.function.arguments)
     WorkerEvent("call", {"tool": name, "args": args}).emit()
+
+    if allowed_tools is not None and name not in allowed_tools:
+        result = f"Error: Tool {name} is not allowed in this worker role."
+        WorkerEvent(
+            "result",
+            {
+                "tool": name,
+                "status": "failed",
+                "activity": [],
+            },
+        ).emit()
+        return result, False
 
     if name == "done":
         WorkerEvent("done", args.get("summary")).emit()
@@ -283,6 +341,7 @@ def _execute_tool_call(call, actuators: AtomicTools) -> tuple[str, bool]:
     func = getattr(actuators, name, None)
     result = func(**args) if func else f"Error: Unknown tool {name}"
     activity = actuators._consume_activity()
+    result = _clip_tool_result(result)
     WorkerEvent(
         "result",
         {
@@ -313,6 +372,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
         {"role": "user", "content": goal},
     ]
     nudged = False
+    allowed_tools = get_allowed_tool_names("worker")
 
     for _ in range(100):  # Pillar #10: Fail-closed via iteration limit
         try:
@@ -353,7 +413,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
             continue
 
         for call in msg.tool_calls:
-            result, is_done = _execute_tool_call(call, actuators)
+            result, is_done = _execute_tool_call(call, actuators, allowed_tools=allowed_tools)
             if is_done:
                 _cleanup()
                 sys.exit(0)

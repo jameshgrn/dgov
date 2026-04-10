@@ -25,7 +25,7 @@ def serialize_compiled_toml(
     plan = br.plan
     meta = plan.root_meta
 
-    ts = datetime.fromtimestamp(source_mtime_max, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    ts = datetime.fromtimestamp(source_mtime_max, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     lines: list[str] = [
         "[plan]",

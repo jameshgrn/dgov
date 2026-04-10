@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dgov.config import ProjectConfig, load_project_config
+from dgov.persistence import read_events
 
 logger = logging.getLogger(__name__)
 
@@ -236,11 +237,52 @@ def _check_scope(
     return None
 
 
+def _check_transient_scope(
+    session_root: str | None,
+    task_slug: str | None,
+    claimed_files: Sequence[str] | None,
+    actual_files: frozenset[str],
+) -> ReviewResult | None:
+    """Reject transient unclaimed writes observed in worker tool activity."""
+    if not session_root or not task_slug or not claimed_files:
+        return None
+
+    claimed = frozenset(claimed_files)
+    transient_paths: set[str] = set()
+    for event in read_events(session_root, task_slug=task_slug):
+        if event.get("event") != "worker_log" or event.get("log_type") != "result":
+            continue
+        content = event.get("content")
+        if not isinstance(content, dict):
+            continue
+        activity = content.get("activity")
+        if not isinstance(activity, list):
+            continue
+        for item in activity:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            if isinstance(path, str):
+                transient_paths.add(path)
+
+    unclaimed = sorted(path for path in transient_paths if path not in claimed)
+    if not unclaimed:
+        return None
+
+    return ReviewResult(
+        passed=False,
+        verdict="scope_violation",
+        actual_files=actual_files,
+        error=(f"Transiently touched unclaimed files via worker tools: {unclaimed}"),
+    )
+
+
 def review_sandbox(
     worktree_path: Path,
     claimed_files: Sequence[str] | None = None,
     max_diff_lines: int = 100,
     project_root: str | None = None,
+    task_slug: str | None = None,
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
 
@@ -274,7 +316,12 @@ def review_sandbox(
         if result is not None:
             return result
 
-        # 5. Review hooks
+        # 5. Transient scope enforcement from worker tool activity
+        result = _check_transient_scope(project_root, task_slug, claimed_files, actual_files)
+        if result is not None:
+            return result
+
+        # 6. Review hooks
         if project_root:
             config = load_project_config(project_root)
             if config.review_hooks:
@@ -496,9 +543,11 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> G
         pass
 
     sx_dst = worktree_path / ".sentrux"
-    if sx_dst.exists():
-        shutil.rmtree(sx_dst)
-    shutil.copytree(baseline.parent, sx_dst)
+    baseline_dir = baseline.parent.resolve()
+    if baseline_dir != sx_dst.resolve():
+        if sx_dst.exists():
+            shutil.rmtree(sx_dst)
+        shutil.copytree(baseline.parent, sx_dst)
 
     try:
         res_sx = subprocess.run(

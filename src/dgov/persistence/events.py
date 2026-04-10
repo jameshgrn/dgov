@@ -50,6 +50,7 @@ def read_events(
     session_root: str,
     slug: str | None = None,
     plan_name: str | None = None,
+    task_slug: str | None = None,
     limit: int | None = None,
     after_id: int = 0,
 ) -> list[dict]:
@@ -68,6 +69,9 @@ def read_events(
     if plan_name is not None:
         conditions.append("plan_name = ?")
         params.append(plan_name)
+    if task_slug is not None:
+        conditions.append("task_slug = ?")
+        params.append(task_slug)
     if after_id > 0:
         conditions.append("id > ?")
         params.append(after_id)

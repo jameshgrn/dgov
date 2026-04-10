@@ -18,6 +18,7 @@ sys.modules["openai"].OpenAI = object  # type: ignore
 from dgov.tool_policy import ToolPolicy  # noqa: E402
 from dgov.worker import (  # noqa: E402
     _build_system_prompt,
+    _clip_tool_result,
     _load_llm_runtime_settings,
     _load_project_config,
     _snapshot_tree,
@@ -277,6 +278,22 @@ def test_snapshot_tree_returns_all_lines_when_unbounded(tmp_path: Path) -> None:
     tree = _snapshot_tree(tmp_path, max_lines=0)
     assert "file_000.txt" in tree
     assert "file_089.txt" in tree
+
+
+def test_snapshot_tree_truncates_for_prompt_budget(tmp_path: Path) -> None:
+    for idx in range(2_000):
+        (tmp_path / f"file_{idx:04}.txt").write_text("x\n")
+    tree = _snapshot_tree(tmp_path, max_lines=0, max_chars=300)
+
+    assert "... [tree truncated for prompt budget]" in tree
+    assert len(tree) <= 300 + len("\n... [tree truncated for prompt budget]")
+
+
+def test_clip_tool_result_truncates_large_payload() -> None:
+    result = _clip_tool_result("x" * 500, max_chars=120)
+
+    assert "... [tool output truncated for prompt budget]" in result
+    assert len(result) <= 120 + len("\n... [tool output truncated for prompt budget]")
 
 
 def test_build_system_prompt_uses_configured_budget_and_tree(tmp_path: Path) -> None:

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from dgov.config import ProjectConfig
+from dgov.persistence import emit_event
 from dgov.settlement import (
     _run_sentrux_gate,
     _sentrux_is_warn_only,
@@ -195,6 +196,68 @@ class TestReviewSandbox:
         _init_repo(tmp_path)
         (tmp_path / "new.py").write_text("x = 1\n")
         result = review_sandbox(tmp_path, claimed_files=["new.py"])
+        assert result.passed
+
+    def test_transient_unclaimed_tool_write_fails_scope(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "write_file",
+                "status": "success",
+                "activity": [{"kind": "write_file", "path": "scratch.py", "mode": "create"}],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "scratch.py" in (result.error or "")
+
+    def test_transient_claimed_tool_write_passes_scope(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "edit_file",
+                "status": "success",
+                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
         assert result.passed
 
     def test_no_scope_check_without_claims(self, tmp_path: Path):

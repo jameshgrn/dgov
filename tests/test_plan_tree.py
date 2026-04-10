@@ -290,6 +290,16 @@ class TestMergerHappyPath:
         expected = (tmp_path / "alpha" / "one.toml").stat().st_mtime
         assert plan.source_mtime_max == expected
 
+    def test_source_mtime_max_includes_root_file(self, tmp_path: Path) -> None:
+        import time
+
+        _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": _TASK_STUB.format(slug="foo")})
+        time.sleep(0.1)
+        root_file = tmp_path / "_root.toml"
+        root_file.write_text(root_file.read_text() + "\n# touched\n")
+        plan = merge_tree(walk_tree(tmp_path))
+        assert plan.source_mtime_max == root_file.stat().st_mtime
+
     def test_root_meta_carried_through(self, tmp_path: Path) -> None:
         _build_tree(tmp_path, ["alpha"], {"alpha/one.toml": _TASK_STUB.format(slug="foo")})
         plan = merge_tree(walk_tree(tmp_path))

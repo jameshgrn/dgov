@@ -195,6 +195,43 @@ def test_status_stale_json(runner: CliRunner, tmp_path: Path) -> None:
     assert data["stale"] is True
 
 
+def test_status_stale_when_root_changes(runner: CliRunner, tmp_path: Path) -> None:
+    import time
+
+    plan_dir = _make_plan_tree(tmp_path)
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        os.chdir(td)
+        _compile_plan(runner, plan_dir)
+        time.sleep(0.1)
+        root_file = plan_dir / "_root.toml"
+        root_file.write_text(root_file.read_text() + "\n# touched\n")
+        result = runner.invoke(cli, ["--json", "plan", "status", str(plan_dir)])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["stale"] is True
+
+
+def test_status_uses_compiled_source_metadata_for_staleness(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    import time
+
+    plan_dir = _make_plan_tree(tmp_path)
+    compiled_path = plan_dir / "_compiled.toml"
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        os.chdir(td)
+        _compile_plan(runner, plan_dir)
+        time.sleep(0.1)
+        source = plan_dir / "core" / "work.toml"
+        source.write_text(source.read_text() + "\n# touched\n")
+        time.sleep(0.1)
+        compiled_path.touch()
+        result = runner.invoke(cli, ["--json", "plan", "status", str(plan_dir)])
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["stale"] is True
+
+
 # -- help --
 
 

@@ -197,7 +197,6 @@ class TestTouchFileClaims:
             runner = _make_runner(dag)
             assert set(runner.task_files["t"]) == {"new.py", "src/a.py"}
 
-
 class TestSingleTaskHappy:
     def test_single_task_merges(self):
         with _io_patches():

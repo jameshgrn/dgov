@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any
@@ -128,7 +129,8 @@ def merge_tree(tree: PlanTree) -> FlatPlan:
     """
     units: dict[str, PlanUnit] = {}
     source_map: dict[str, Path] = {}
-    mtime_max = 0.0
+    root_file = tree.plan_root / "_root.toml"
+    mtime_max = root_file.stat().st_mtime
 
     for section, toml_paths in tree.section_files.items():
         for toml_path in toml_paths:
@@ -154,6 +156,16 @@ def merge_tree(tree: PlanTree) -> FlatPlan:
         source_map=source_map,
         source_mtime_max=mtime_max,
     )
+
+
+def parse_compiled_source_mtime(value: str) -> float:
+    """Parse serialized source_mtime_max metadata back to a timestamp."""
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=UTC).timestamp()
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid source_mtime_max timestamp: {value!r}")
 
 
 def resolve_refs(plan: FlatPlan) -> FlatPlan:

@@ -2,6 +2,8 @@
 
 import pytest
 
+from dgov.tool_policy import ToolPolicy
+
 
 # We import from dgov.workers.atomic (extracted from worker.py).
 @pytest.fixture(scope="module")
@@ -19,8 +21,8 @@ def worker_module():
     # Create a container object to mirror the old combined module
     class WorkerModule:
         @staticmethod
-        def get_tool_spec():
-            return atomic.get_tool_spec()
+        def get_tool_spec(role="worker"):
+            return atomic.get_tool_spec(role)
 
         @staticmethod
         def _load_project_config(path):
@@ -211,6 +213,56 @@ class TestRunTests:
         assert "testing tests/test_foo.py" in result
 
 
+class TestRunBashPolicy:
+    def test_rejects_direct_pytest_when_wrappers_required(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("pytest tests/test_foo.py -q")
+        assert result.startswith("Error:")
+        assert "run_tests()" in result
+
+    def test_rejects_python_without_uv_when_required(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_uv_run=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("python -c 'print(1)'")
+        assert result.startswith("Error:")
+        assert "uv run" in result
+
+    def test_rejects_pip_prefix(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_shell_commands=("pip", "python -m pip"),
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("pip install pytest")
+        assert result.startswith("Error:")
+        assert "Denied shell command prefix" in result
+
+    def test_rejects_shell_file_mutation(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                deny_shell_file_mutations=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("touch scratch.py")
+        assert result.startswith("Error:")
+        assert "file mutation shell command" in result
+
+
 class TestLintCheck:
     def test_uses_project_config(self, worktree, worker_module):
         config = worker_module.AtomicConfig(
@@ -317,3 +369,17 @@ class TestToolSpec:
 
         orphans = spec_names - tool_methods
         assert not orphans, f"Tool specs without AtomicTools methods: {orphans}"
+
+    def test_researcher_spec_excludes_mutating_tools(self, worker_module):
+        spec_names = {t["function"]["name"] for t in worker_module.get_tool_spec("researcher")}
+
+        assert "write_file" not in spec_names
+        assert "edit_file" not in spec_names
+        assert "apply_patch" not in spec_names
+        assert "run_bash" not in spec_names
+        assert "revert_file" not in spec_names
+        assert "lint_fix" not in spec_names
+        assert "format_file" not in spec_names
+        assert "read_file" in spec_names
+        assert "run_tests" in spec_names
+        assert "done" in spec_names

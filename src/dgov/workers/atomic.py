@@ -15,7 +15,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dgov.tool_policy import ToolPolicy
 
@@ -714,8 +714,29 @@ class AtomicTools:
         return self._execute_shell(self.config.type_check_cmd, enforce_policy=False)
 
 
-def get_tool_spec() -> list[Any]:
-    return [
+_RESEARCHER_EXCLUDED_TOOLS = frozenset({
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "run_bash",
+    "revert_file",
+    "lint_fix",
+    "format_file",
+})
+
+
+def _tool_name(spec: dict[str, Any]) -> str:
+    function = spec.get("function")
+    if not isinstance(function, dict):
+        raise ValueError("Malformed tool spec: missing function metadata")
+    name = function.get("name")
+    if not isinstance(name, str):
+        raise ValueError("Malformed tool spec: missing function name")
+    return name
+
+
+def get_tool_spec(role: Literal["worker", "researcher"] = "worker") -> list[Any]:
+    specs = [
         # Core tools
         {
             "type": "function",
@@ -1243,3 +1264,13 @@ def get_tool_spec() -> list[Any]:
             },
         },
     ]
+
+    if role == "worker":
+        return specs
+    if role == "researcher":
+        return [spec for spec in specs if _tool_name(spec) not in _RESEARCHER_EXCLUDED_TOOLS]
+    raise ValueError(f"Unknown tool role: {role}")
+
+
+def get_allowed_tool_names(role: Literal["worker", "researcher"] = "worker") -> frozenset[str]:
+    return frozenset(_tool_name(spec) for spec in get_tool_spec(role))
