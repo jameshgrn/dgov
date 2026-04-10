@@ -2,6 +2,8 @@
 
 Deterministic kernel for multi-agent orchestration via git worktrees.
 
+Docs: https://sandfrom.space/dgov/
+
 ## Requirements
 
 - Python 3.12+
@@ -199,14 +201,6 @@ uv run ty check
 uv run pytest -q -m unit
 uv run pytest -q -m integration
 ```
-
-## Known Limitations
-
-- **No resume/checkpoint**: if a run crashes at task N, all N tasks restart. Use `dgov run --continue` to skip already-merged tasks.
-- **No cost tracking**: token usage and API cost are not recorded.
-- **Parallel contention**: running 6+ tasks in parallel may cause contention in the executor. Keep parallelism ≤5 for now.
-- **Worker iteration cap**: workers are capped at 100 model/tool iterations. Large exploratory tasks should be split into smaller plan units.
-- **OpenAI-compat only**: the worker and SOP bundler require an OpenAI-compatible API. Native Anthropic and other providers are not supported directly.
 
 ## License
 
