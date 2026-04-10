@@ -222,27 +222,37 @@ def plan_cmd() -> None:
 
 @plan_cmd.command(name="status")
 @click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
-def plan_status_cmd(plan_input: Path) -> None:
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show the per-unit list (default: one-line summary)",
+)
+def plan_status_cmd(plan_input: Path, verbose: bool) -> None:
     """Show deployment status of a compiled plan.
 
-    Accepts either a plan directory or a compiled TOML file. Reads
-    `_compiled.toml` and `deployed.jsonl` to show pending vs deployed
-    units, with a staleness warning when source TOMLs have changed
-    (staleness is only checked when a plan directory is provided).
+    Default output is a one-line summary: plan name, N/M deployed, and
+    a staleness warning when the compile is out of date. Pass `--verbose`
+    to see each unit with its deploy sha or blocked-by chain. Use
+    `dgov plan review` for the rich per-unit debrief.
+
+    Accepts either a plan directory or a compiled TOML file.
 
     \b
     Example: dgov plan status .dgov/plans/my-plan/
-    Example: dgov plan status .dgov/plans/my-plan/_compiled.toml
+    Example: dgov plan status .dgov/plans/my-plan/ --verbose
     """
     try:
         compiled_path, plan_root = resolve_plan_input(plan_input)
     except click.ClickException as exc:
         click.echo(f"Error: {exc.message}", err=True)
         raise click.exceptions.Exit(code=1) from None
-    _cmd_plan_status(compiled_path, plan_root)
+    _cmd_plan_status(compiled_path, plan_root, verbose=verbose)
 
 
-def _cmd_plan_status(compiled_path: Path, plan_root: Path | None) -> None:
+def _cmd_plan_status(
+    compiled_path: Path, plan_root: Path | None, *, verbose: bool = False
+) -> None:
     """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
     import tomllib
 
@@ -318,28 +328,31 @@ def _cmd_plan_status(compiled_path: Path, plan_root: Path | None) -> None:
             )
         )
     else:
-        click.echo(f"Plan: {plan_name}")
         total = len(unit_statuses)
-        click.echo(f"Units: {total} total | {deployed_count} deployed | {pending_count} pending")
+        # One-line summary by default. Deep-dive via `dgov plan review`.
+        click.echo(
+            f"Plan: {plan_name}  ({deployed_count}/{total} deployed, {pending_count} pending)"
+        )
         if stale and plan_root is not None:
             click.echo(
                 click.style(
-                    f"  WARNING: compile stale; rerun 'dgov compile {plan_root}'",
+                    f"  stale — rerun 'dgov compile {plan_root}'",
                     fg="yellow",
                 )
             )
-        click.echo("")
-        for u in unit_statuses:
-            if u["status"] == "deployed":
-                line = f"  {click.style('✓', fg='green')} {u['unit']}"
-                line += f"  (deployed {u['ts']}, sha {u['sha'][:7]})"
-            else:
-                line = f"  ○ {u['unit']}"
-                if u.get("blocked_by"):
-                    line += f"  (pending, blocked by: {u['blocked_by']})"
+        if verbose:
+            click.echo("")
+            for u in unit_statuses:
+                if u["status"] == "deployed":
+                    line = f"  {click.style('✓', fg='green')} {u['unit']}"
+                    line += f"  (deployed {u['ts']}, sha {u['sha'][:7]})"
                 else:
-                    line += "  (pending)"
-            click.echo(line)
+                    line = f"  ○ {u['unit']}"
+                    if u.get("blocked_by"):
+                        line += f"  (pending, blocked by: {u['blocked_by']})"
+                    else:
+                        line += "  (pending)"
+                click.echo(line)
 
 
 @plan_cmd.command(name="review")

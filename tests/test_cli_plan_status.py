@@ -80,12 +80,25 @@ def test_status_all_pending(runner: CliRunner, tmp_path: Path) -> None:
         # Need cwd to be the project root for deploy log lookup
         os.chdir(td)
         _compile_plan(runner, plan_dir)
-        result = runner.invoke(cli, ["plan", "status", str(plan_dir)])
+        result = runner.invoke(cli, ["plan", "status", str(plan_dir), "--verbose"])
     assert result.exit_code == 0
-    assert "2 total" in result.output
-    assert "0 deployed" in result.output
+    assert "0/2 deployed" in result.output
     assert "2 pending" in result.output
     assert "○" in result.output
+
+
+def test_status_default_is_one_line_summary(runner: CliRunner, tmp_path: Path) -> None:
+    """Default output is a single-line summary; per-unit list is --verbose only."""
+    plan_dir = _make_plan_tree(tmp_path)
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        os.chdir(td)
+        _compile_plan(runner, plan_dir)
+        result = runner.invoke(cli, ["plan", "status", str(plan_dir)])
+    assert result.exit_code == 0
+    assert "0/2 deployed" in result.output
+    # Per-unit markers should not appear by default
+    assert "○" not in result.output
+    assert "blocked by" not in result.output
 
 
 def test_status_all_pending_json(runner: CliRunner, tmp_path: Path) -> None:
@@ -114,7 +127,7 @@ def test_status_partial_deploy(runner: CliRunner, tmp_path: Path) -> None:
         deploy_append(td, "test-plan", "core/work.alpha", "abc1234", "2026-04-06T12:00:00Z")
         result = runner.invoke(cli, ["plan", "status", str(plan_dir)])
     assert result.exit_code == 0
-    assert "1 deployed" in result.output
+    assert "1/2 deployed" in result.output
     assert "1 pending" in result.output
 
 
@@ -140,7 +153,7 @@ def test_status_blocked_by_shown(runner: CliRunner, tmp_path: Path) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
         os.chdir(td)
         _compile_plan(runner, plan_dir)
-        result = runner.invoke(cli, ["plan", "status", str(plan_dir)])
+        result = runner.invoke(cli, ["plan", "status", str(plan_dir), "--verbose"])
     assert result.exit_code == 0
     # beta depends on alpha; neither deployed → beta blocked by alpha
     assert "blocked by" in result.output
