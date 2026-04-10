@@ -1,8 +1,8 @@
 # dgov Agent Guidance
 
-Instruction Pack Version: `1.0.0`  
-Status: `LOCKED`  
-Canonical Source: `AGENTS.md`  
+Instruction Pack Version: `1.1.0`
+Status: `LOCKED`
+Canonical Source: `AGENTS.md`
 Mirrors: `CLAUDE.md`, `GEMINI.md`
 
 These files are intentionally synchronized. Edit `AGENTS.md` first, copy the
@@ -11,9 +11,8 @@ same change.
 
 ## Read First
 
-1. `HANDOVER.md`
-2. `.napkin.md`
-3. `.dgov/governor.md`
+1. `.dgov/governor.md`
+2. Query durable context from `dgov ledger` when prior bugs, rules, or decisions matter
 
 ## Authority Order
 
@@ -45,7 +44,7 @@ treat this pack as stale.
 
 ## Governor Loop
 
-1. Read `HANDOVER.md`, `.napkin.md`, and `.dgov/governor.md`.
+1. Read `.dgov/governor.md` and query `dgov ledger` for durable context when needed.
 2. Check live state with `dgov status`.
 3. Author or adjust plan files in `.dgov/plans/<name>/`.
 4. Compile with `uv run dgov compile <dir>` and validate before execution.

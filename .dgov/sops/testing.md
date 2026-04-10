@@ -24,9 +24,11 @@ priority: must
 
 ## Verify
 - rerun the exact targeted command that covers the changed behavior
-- report failing tests in unclaimed files instead of editing them
+- report verification failures in unclaimed files instead of editing around them
 - confirm scope violations are avoided before settlement
 
 ## Escalate
 - if the right test file is outside the current claim
+- if any verification command points to an unclaimed file, report the exact
+  command and path instead of widening scope ad hoc
 - if the change needs broader integration coverage than the task currently allows
