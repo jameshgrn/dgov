@@ -1,5 +1,6 @@
 .dgov/*
 !.dgov/project.toml
+!.dgov/governor.md
 !.dgov/plans/
 .dgov/plans/deployed.jsonl
 _compiled.toml
