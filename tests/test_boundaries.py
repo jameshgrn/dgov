@@ -41,21 +41,32 @@ class TestKernelPurity:
 
 
 class TestWorkerIsolation:
-    """worker.py is a subprocess — must only import its own support modules."""
+    """worker.py is a subprocess — must only import its own support modules.
+
+    `dgov.tool_policy` is allowed because it is a pure, dependency-free
+    dataclass module shared between the worker subprocess and the main
+    config loader. It imports nothing from the orchestration tier.
+    """
 
     def test_worker_no_dgov_imports(self):
         imports = _get_imports(_SRC / "worker.py")
-        allowed = {"dgov.workers.atomic", "dgov.worker"}
+        allowed = {"dgov.workers.atomic", "dgov.worker", "dgov.tool_policy"}
         violations = imports - allowed
         assert not violations, f"worker.py imports forbidden modules: {violations}"
 
 
 class TestSettlementPurity:
-    """settlement.py must not import orchestration or persistence modules."""
+    """settlement.py must not import orchestration modules.
+
+    `dgov.persistence` is allowed because the transient-scope check in
+    `_check_transient_scope` needs to read worker_log events to catch
+    unclaimed writes that the final git status no longer reflects. The
+    import is scoped to the read path only (read_events), not writes.
+    """
 
     def test_settlement_imports(self):
         imports = _get_imports(_SRC / "settlement.py")
-        forbidden = {"dgov.persistence", "dgov.runner", "dgov.kernel", "dgov.worker"}
+        forbidden = {"dgov.runner", "dgov.kernel", "dgov.worker"}
         violations = imports & forbidden
         assert not violations, f"settlement.py imports forbidden modules: {violations}"
 
