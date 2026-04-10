@@ -121,6 +121,7 @@ def cli(
       dgov recover               Recover from a crashed run
       dgov archive-plan <name>   Manually archive a plan
       dgov plan status <dir>     Show pending vs deployed units
+      dgov plan review <dir>     Post-hoc debrief of the last run
       dgov sentrux check         Run architectural quality check
 
     Tasks run in isolated git worktrees. No tmux required.

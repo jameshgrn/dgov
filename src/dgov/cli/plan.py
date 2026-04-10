@@ -340,3 +340,302 @@ def _cmd_plan_status(compiled_path: Path, plan_root: Path | None) -> None:
                 else:
                     line += "  (pending)"
             click.echo(line)
+
+
+@plan_cmd.command(name="review")
+@click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
+@click.option("--only", default=None, help="Review only this exact unit id")
+@click.option(
+    "--diff",
+    "diff_unit",
+    default=None,
+    help="Print the full git show diff for this unit (exact match)",
+)
+@click.option(
+    "--events",
+    "events_unit",
+    default=None,
+    help="Print the full worker activity timeline for this unit (exact match)",
+)
+def plan_review_cmd(
+    plan_input: Path,
+    only: str | None,
+    diff_unit: str | None,
+    events_unit: str | None,
+) -> None:
+    """Post-hoc debrief of the last dgov run for a plan.
+
+    Shows what landed, how hard each worker worked to land it, and the
+    reject reason with a hint when settlement failed. Scopes to the last
+    run via the run_start marker.
+
+    \b
+    Example: dgov plan review .dgov/plans/my-plan/
+    Example: dgov plan review my-plan/ --only tasks/main.thing
+    Example: dgov plan review my-plan/ --diff tasks/main.thing --events tasks/main.thing
+    """
+    try:
+        compiled_path, plan_root = resolve_plan_input(plan_input)
+    except click.ClickException as exc:
+        click.echo(f"Error: {exc.message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+    _cmd_plan_review(
+        compiled_path,
+        plan_root,
+        only=only,
+        diff_unit=diff_unit,
+        events_unit=events_unit,
+    )
+
+
+def _cmd_plan_review(
+    compiled_path: Path,
+    plan_root: Path | None,
+    *,
+    only: str | None,
+    diff_unit: str | None,
+    events_unit: str | None,
+) -> None:
+    """Build and render a PlanReview."""
+    from dgov.config import load_project_config
+    from dgov.plan_review import load_review
+
+    if not compiled_path.exists():
+        target = plan_root if plan_root is not None else compiled_path
+        msg = f"Not compiled; run 'dgov compile {target}'"
+        if want_json():
+            click.echo(json.dumps({"status": "not_compiled", "message": msg}, indent=2))
+        else:
+            click.echo(msg)
+        raise click.exceptions.Exit(code=1) from None
+
+    project_root_path = resolve_project_root()
+    project_config = load_project_config(project_root_path)
+    include_full_diff = diff_unit is not None
+
+    review = load_review(
+        project_root=str(project_root_path),
+        compiled_path=compiled_path,
+        plan_dir=plan_root,
+        only=only,
+        include_full_diff=include_full_diff,
+        iteration_budget=project_config.worker_iteration_budget,
+    )
+
+    if only is not None and not review.units:
+        click.echo(
+            click.style(
+                f"Error: no unit matches --only {only}. Use exact unit id from "
+                f"`dgov plan status {plan_root or compiled_path}`.",
+                fg="red",
+            ),
+            err=True,
+        )
+        raise click.exceptions.Exit(code=1) from None
+
+    if want_json():
+        click.echo(_review_to_json(review))
+        return
+
+    _render_review_human(review, diff_unit=diff_unit, events_unit=events_unit)
+
+    if review.failed_count > 0:
+        raise click.exceptions.Exit(code=1)
+
+
+def _fmt_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "(unknown)"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rem = divmod(seconds, 60)
+    return f"{int(minutes)}m {rem:.0f}s"
+
+
+def _render_review_human(review, *, diff_unit: str | None, events_unit: str | None) -> None:
+    """Render a PlanReview for a human. Not pure — writes to stdout via click.echo."""
+    click.echo(f"Plan: {review.plan_name}")
+    if review.source_dir is not None:
+        click.echo(f"  source: {review.source_dir}")
+    if review.last_run_ts:
+        dur_part = ""
+        if review.last_run_duration_s:
+            dur_part = f" ({_fmt_duration(review.last_run_duration_s)})"
+        click.echo(f"  last run: {review.last_run_ts}{dur_part}")
+
+    total = len(review.units)
+    click.echo("")
+    click.echo(
+        f"Units: {review.deployed_count}/{total} deployed"
+        f" | {review.pending_count} pending"
+        f" | {review.failed_count} failed"
+    )
+    click.echo("")
+
+    for unit in review.units:
+        _render_unit(unit)
+        if diff_unit is not None and unit.unit == diff_unit:
+            _render_unit_diff(unit)
+        if events_unit is not None and unit.unit == events_unit:
+            _render_unit_events(unit)
+
+    if diff_unit is not None and not any(u.unit == diff_unit for u in review.units):
+        click.echo(
+            click.style(f"  (no unit matches --diff {diff_unit})", fg="yellow"),
+            err=True,
+        )
+    if events_unit is not None and not any(u.unit == events_unit for u in review.units):
+        click.echo(
+            click.style(f"  (no unit matches --events {events_unit})", fg="yellow"),
+            err=True,
+        )
+
+
+def _render_unit(unit) -> None:
+    """Render a single UnitReview block. Shape depends on status."""
+    if unit.status == "deployed":
+        marker = click.style("✓", fg="green")
+        header = f"  {marker} {unit.unit}"
+        click.echo(header)
+        if unit.commit_sha and unit.commit_message:
+            click.echo(f"    commit       {unit.commit_sha[:8]} — {unit.commit_message}")
+        elif unit.commit_sha:
+            click.echo(f"    commit       {unit.commit_sha[:8]}")
+        if unit.agent:
+            click.echo(f"    agent        {unit.agent}")
+        if unit.diff_stat is not None:
+            click.echo(f"    diff         {unit.diff_stat.summary()}")
+        if unit.duration_s is not None:
+            click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
+        if unit.iterations is not None:
+            plural = "s" if unit.iterations != 1 else ""
+            click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+        if unit.settlement != "n/a":
+            label = {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
+                unit.settlement, unit.settlement
+            )
+            click.echo(f"    settlement   {label}")
+        if unit.done_summary:
+            _render_multiline_field("summary     ", unit.done_summary)
+        click.echo("")
+        return
+
+    if unit.status == "failed":
+        marker = click.style("✗", fg="red")
+        where = unit.reject_verdict or "worker error"
+        click.echo(f"  {marker} {unit.unit}  (failed: {where})")
+        if unit.agent:
+            click.echo(f"    agent        {unit.agent}")
+        if unit.attempts > 1:
+            click.echo(f"    attempts     {unit.attempts}")
+        if unit.duration_s is not None:
+            click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
+        if unit.iterations is not None:
+            plural = "s" if unit.iterations != 1 else ""
+            click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+        if unit.reject_verdict:
+            click.echo(f"    reject       {unit.reject_verdict}")
+        if unit.error:
+            _render_multiline_field("error       ", unit.error)
+        if unit.last_thought:
+            _render_multiline_field("last thought", unit.last_thought, max_lines=2)
+        if unit.hint:
+            click.echo(click.style(f"    hint         {unit.hint}", fg="yellow"))
+        click.echo("")
+        return
+
+    # not_run / pending
+    marker = click.style("○", dim=True)
+    click.echo(f"  {marker} {unit.unit}  (not run in this window)")
+    if unit.summary:
+        click.echo(f"    {click.style(unit.summary, dim=True)}")
+    click.echo("")
+
+
+def _render_multiline_field(label: str, text: str, max_lines: int = 4) -> None:
+    """Render a multi-line field with the label on the first line and continuation indent."""
+    lines = [line.rstrip() for line in text.strip().splitlines() if line.strip()]
+    if not lines:
+        return
+    if len(lines) > max_lines:
+        lines = [*lines[: max_lines - 1], "…"]
+    click.echo(f"    {label} {lines[0]}")
+    for line in lines[1:]:
+        click.echo(f"                 {line}")
+
+
+def _render_unit_diff(unit) -> None:
+    click.echo(click.style(f"    --- diff for {unit.unit} ---", dim=True))
+    if unit.full_diff is None:
+        click.echo(click.style("    (no diff available)", dim=True))
+    else:
+        for line in unit.full_diff.splitlines():
+            click.echo(f"    {line}")
+    click.echo("")
+
+
+def _render_unit_events(unit) -> None:
+    click.echo(click.style(f"    --- activity for {unit.unit} ---", dim=True))
+    if not unit.activity:
+        click.echo(click.style("    (no worker tool calls recorded)", dim=True))
+    else:
+        for call in unit.activity:
+            tool = call.get("tool", "?")
+            args = call.get("args", {})
+            arg_preview = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
+            click.echo(f"    {tool}({arg_preview})")
+    if unit.thoughts:
+        click.echo(click.style("    thoughts:", dim=True))
+        for thought in unit.thoughts:
+            first_line = thought.splitlines()[0] if thought else ""
+            click.echo(f"      · {first_line[:100]}")
+    click.echo("")
+
+
+def _review_to_json(review) -> str:
+    """Serialize a PlanReview to indented JSON."""
+
+    def _unit_dict(u) -> dict:
+        return {
+            "unit": u.unit,
+            "summary": u.summary,
+            "status": u.status,
+            "agent": u.agent,
+            "commit_sha": u.commit_sha,
+            "commit_message": u.commit_message,
+            "commit_ts": u.commit_ts,
+            "diff_stat": {
+                "files_changed": u.diff_stat.files_changed,
+                "insertions": u.diff_stat.insertions,
+                "deletions": u.diff_stat.deletions,
+            }
+            if u.diff_stat is not None
+            else None,
+            "full_diff": u.full_diff,
+            "duration_s": u.duration_s,
+            "iterations": u.iterations,
+            "attempts": u.attempts,
+            "settlement": u.settlement,
+            "done_summary": u.done_summary,
+            "thoughts": list(u.thoughts),
+            "activity": [dict(call) for call in u.activity],
+            "reject_verdict": u.reject_verdict,
+            "error": u.error,
+            "last_thought": u.last_thought,
+            "hint": u.hint,
+        }
+
+    return json.dumps(
+        {
+            "plan": review.plan_name,
+            "source_dir": str(review.source_dir) if review.source_dir else None,
+            "last_run_ts": review.last_run_ts,
+            "last_run_duration_s": review.last_run_duration_s,
+            "deployed": review.deployed_count,
+            "failed": review.failed_count,
+            "pending": review.pending_count,
+            "units": [_unit_dict(u) for u in review.units],
+        },
+        indent=2,
+        default=str,
+    )
