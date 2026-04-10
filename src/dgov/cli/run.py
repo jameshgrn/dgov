@@ -454,6 +454,27 @@ def _cmd_run_plan(
     else:
         run_status = "failed"
 
+    # Detect stale-state run: failed/skipped tasks but nothing was dispatched
+    stale_state = (
+        duration.total_seconds() < 1.0
+        and (failed or skipped)
+        and not succeeded
+        and not task_errors
+    )
+    if stale_state and not want_json():
+        click.echo(
+            "No tasks were dispatched — prior run state is still in the database.",
+            err=True,
+        )
+        click.echo(
+            "  To retry failed tasks:  dgov run --continue <plan>",
+            err=True,
+        )
+        click.echo(
+            "  To start fresh:         dgov run --restart <plan>",
+            err=True,
+        )
+
     if task_errors and not want_json():
         for slug, err in task_errors.items():
             click.echo(f"  {slug}: {err[:200]}")
