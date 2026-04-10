@@ -387,7 +387,9 @@ class TestCompilePlan:
                     prompt="Do it",
                     commit_message="Done",
                     files=PlanUnitFiles(),
-                    role="mystery",
+                    # Intentionally invalid literal to exercise the runtime
+                    # validator in compile_plan.
+                    role="mystery",  # ty: ignore[invalid-argument-type]
                 )
             },
         )

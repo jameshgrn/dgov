@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, cast
 
 
 @dataclass(frozen=True)
@@ -42,19 +42,23 @@ def parse_tool_policy(raw: object) -> ToolPolicy:
     """Parse a TOML/JSON object into ToolPolicy with safe defaults."""
     if not isinstance(raw, dict):
         return ToolPolicy()
+    # isinstance narrows to dict[unknown, unknown], but dict is invariant so
+    # we cast to dict[str, Any] before calling .get() to give ty a concrete
+    # overload to match. At runtime this is a pass-through.
+    data = cast("dict[str, Any]", raw)
 
-    deny_shell_commands = raw.get("deny_shell_commands", ())
-    if isinstance(deny_shell_commands, list | tuple):
-        deny_shell_commands = tuple(
-            str(item) for item in deny_shell_commands if isinstance(item, str)
+    deny_shell_commands_raw = data.get("deny_shell_commands", ())
+    if isinstance(deny_shell_commands_raw, list | tuple):
+        deny_shell_commands: tuple[str, ...] = tuple(
+            str(item) for item in deny_shell_commands_raw if isinstance(item, str)
         )
     else:
         deny_shell_commands = ()
 
     return ToolPolicy(
-        restrict_run_bash=bool(raw.get("restrict_run_bash", False)),
-        require_wrapped_verify_tools=bool(raw.get("require_wrapped_verify_tools", False)),
-        require_uv_run=bool(raw.get("require_uv_run", False)),
-        deny_shell_file_mutations=bool(raw.get("deny_shell_file_mutations", False)),
+        restrict_run_bash=bool(data.get("restrict_run_bash", False)),
+        require_wrapped_verify_tools=bool(data.get("require_wrapped_verify_tools", False)),
+        require_uv_run=bool(data.get("require_uv_run", False)),
+        deny_shell_file_mutations=bool(data.get("deny_shell_file_mutations", False)),
         deny_shell_commands=deny_shell_commands,
     )
