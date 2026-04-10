@@ -101,21 +101,31 @@ _EXAMPLE_UNIT_TOML = '''\
 [tasks.do-thing]
 summary = "One sentence: what does this task accomplish?"
 prompt = """
-Detailed instructions for the worker agent.
+Orient:
+- Read `src/module/file.py` to understand the current structure.
+- This task must NOT change any public interfaces.
 
-Steps:
-1. Read the relevant files first (read_file / file_symbols).
-2. Make targeted edits (edit_file preferred over write_file for existing files).
-3. Run lint_fix, then format_file, then run_tests to verify.
+Edit:
+1. In `src/module/file.py`, add the new function after the existing helpers.
+2. Use edit_file for targeted changes (prefer over write_file for existing files).
+
+Verify:
+- `uv run ruff check src/module/file.py`
+- `uv run ruff format --check src/module/file.py`
+- `uv run pytest -q -m unit tests/test_module.py`
 """
 commit_message = "Imperative mood commit message (≤72 chars)"
 
-# Declare files you will touch, edit, create, or delete.
-# The worker can only modify files listed in files.edit or files.create.
+# Declare file claims — use explicit intent over ambiguous shorthand.
+# files.create = new files this task brings into existence
+# files.edit   = existing files this task modifies
+# files.read   = files needed for context but NOT modified (suppresses warnings)
+# files.delete = files this task removes
 files.edit = ["src/module/file.py"]
+files.read = ["tests/test_module.py"]
 # files.create = ["src/new_file.py"]
+# Add more read-only context files as needed, e.g. ["src/module/types.py"]
 # files.delete = ["src/old_file.py"]
-# files.touch = ["src/read_only.py"]
 
 # depends_on = ["other-section/other-file.other-task"]
 # agent = "accounts/fireworks/routers/kimi-k2p5-turbo"

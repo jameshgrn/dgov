@@ -711,6 +711,25 @@ class TestInitPlan:
         assert (tmp_path / ".dgov" / "plans" / "myplan" / "_root.toml").exists()
         assert not (tmp_path / ".dgov" / ".dgov" / "plans" / "myplan").exists()
 
+    def test_init_plan_example_compiles_without_warnings(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        plans_dir = tmp_path / ".dgov" / "plans"
+        plans_dir.mkdir(parents=True)
+
+        result = runner.invoke(cli, ["init-plan", "myplan"])
+        assert result.exit_code == 0
+
+        example = plans_dir / "myplan" / "tasks" / "_example.toml"
+        main = plans_dir / "myplan" / "tasks" / "main.toml"
+        main.write_text(example.read_text())
+        example.unlink()
+
+        result = runner.invoke(cli, ["compile", str(plans_dir / "myplan"), "--dry-run"])
+        assert result.exit_code == 0
+        assert "WARNING" not in result.output
+
 
 # -- run --
 

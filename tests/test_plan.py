@@ -22,6 +22,9 @@ from dgov.plan import (
     validate_plan,
 )
 
+# A prompt that passes structure validation for tests that don't care about prompt content.
+_VALID_PROMPT = "Orient:\nContext.\n\nEdit:\n1. Change.\n\nVerify:\n- Check."
+
 # =============================================================================
 # _normalize_touch_path tests
 # =============================================================================
@@ -488,7 +491,7 @@ class TestValidatePlan:
                 "task-1": PlanUnit(
                     slug="task-1",
                     summary="Task",
-                    prompt="Do it",
+                    prompt=_VALID_PROMPT,
                     commit_message="Done",
                     files=PlanUnitFiles(),
                 )
@@ -504,14 +507,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
@@ -530,14 +533,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                     depends_on=("a",),
@@ -554,14 +557,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(edit=("src/foo.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(edit=("src/bar.py",)),
                 ),
@@ -577,14 +580,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(edit=("src/utils/helper.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(delete=("src/utils",)),
                 ),
@@ -602,14 +605,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(edit=("src/other.py",)),
                     depends_on=("a",),
@@ -617,7 +620,7 @@ class TestValidatePlan:
                 "c": PlanUnit(
                     slug="c",
                     summary="C",
-                    prompt="Do C",
+                    prompt=_VALID_PROMPT,
                     commit_message="C",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                     depends_on=("b",),
@@ -634,14 +637,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
@@ -659,14 +662,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(touch=("src/main.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(touch=("src/main.py",)),
                 ),
@@ -684,14 +687,14 @@ class TestValidatePlan:
                 "a": PlanUnit(
                     slug="a",
                     summary="A",
-                    prompt="Do A",
+                    prompt=_VALID_PROMPT,
                     commit_message="A",
                     files=PlanUnitFiles(touch=("src/main.py",)),
                 ),
                 "b": PlanUnit(
                     slug="b",
                     summary="B",
-                    prompt="Do B",
+                    prompt=_VALID_PROMPT,
                     commit_message="B",
                     files=PlanUnitFiles(edit=("src/main.py",)),
                 ),
@@ -729,24 +732,27 @@ class TestValidatePlanUnclaimedPromptRefs:
             units={"task": self._unit(prompt, **file_kwargs)},
         )
 
+    def _ref_warnings(self, issues: list) -> list:
+        """Filter to unclaimed-ref warnings only."""
+        return [i for i in issues if "not in the file claim" in i.message]
+
     def test_no_warning_when_no_path_refs(self):
         plan = self._plan("Add the feature to the main module.")
-        assert validate_plan(plan) == []
+        assert self._ref_warnings(validate_plan(plan)) == []
 
     def test_warns_on_unclaimed_test_ref_in_prompt(self):
         plan = self._plan(
             "Run tests/test_foo.py to verify.",
             edit=("src/foo.py",),
         )
-        issues = validate_plan(plan)
-        warnings = [i for i in issues if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert len(warnings) == 1
         assert "tests/test_foo.py" in warnings[0].message
         assert warnings[0].unit == "task"
 
     def test_warns_on_unclaimed_src_ref_in_prompt(self):
         plan = self._plan("Read src/adapters/db.py and fix the bug.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert len(warnings) == 1
         assert "src/adapters/db.py" in warnings[0].message
 
@@ -755,35 +761,35 @@ class TestValidatePlanUnclaimedPromptRefs:
             "Update tests/test_foo.py.",
             touch=("tests/test_foo.py",),
         )
-        assert validate_plan(plan) == []
+        assert self._ref_warnings(validate_plan(plan)) == []
 
     def test_no_warning_when_ref_claimed_via_edit(self):
         plan = self._plan(
             "Update src/foo.py and tests/test_foo.py.",
             edit=("src/foo.py", "tests/test_foo.py"),
         )
-        assert validate_plan(plan) == []
+        assert self._ref_warnings(validate_plan(plan)) == []
 
     def test_no_warning_when_ref_claimed_via_create(self):
         plan = self._plan(
             "Create tests/test_new.py with new tests.",
             create=("tests/test_new.py",),
         )
-        assert validate_plan(plan) == []
+        assert self._ref_warnings(validate_plan(plan)) == []
 
     def test_warns_only_once_for_duplicate_ref(self):
         plan = self._plan("Run tests/test_foo.py. Then check tests/test_foo.py again.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert len(warnings) == 1
 
     def test_warns_for_each_distinct_unclaimed_path(self):
         plan = self._plan("Check tests/test_foo.py and tests/test_bar.py.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert len(warnings) == 2
 
     def test_warning_includes_scope_violation_guidance(self):
         plan = self._plan("Run tests/test_foo.py to verify.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert "scope_violation" in warnings[0].message
 
     def test_warning_includes_unit_slug(self):
@@ -800,29 +806,29 @@ class TestValidatePlanUnclaimedPromptRefs:
                 )
             },
         )
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert warnings[0].unit == "my-slug"
 
     def test_no_warning_for_bare_filename(self):
         """Bare filenames without directories are not flagged."""
         plan = self._plan("Edit foo.py to fix the bug.")
-        assert validate_plan(plan) == []
+        assert self._ref_warnings(validate_plan(plan)) == []
 
     def test_detects_test_prefix_variants(self):
         """Both 'test/' and 'tests/' paths are matched."""
         plan = self._plan("See test/test_foo.py for examples.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert len(warnings) == 1
         assert "test/test_foo.py" in warnings[0].message
 
     def test_detects_toml_path_refs(self):
         plan = self._plan("Read .dgov/project.toml for config.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert any(".dgov/project.toml" in w.message for w in warnings)
 
     def test_detects_json_path_refs(self):
         plan = self._plan("Load examples/vector-inspect.json for validation.")
-        warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
+        warnings = self._ref_warnings(validate_plan(plan))
         assert any("examples/vector-inspect.json" in w.message for w in warnings)
 
     def test_all_claimed_paths_no_warnings(self):
@@ -832,7 +838,7 @@ class TestValidatePlanUnclaimedPromptRefs:
             edit=("src/foo.py", "tests/test_foo.py"),
             touch=("docs/api.md",),
         )
-        assert validate_plan(plan) == []
+        assert self._ref_warnings(validate_plan(plan)) == []
 
 
 # =============================================================================
@@ -897,6 +903,143 @@ class TestValidatePlanVerifyOnlyTasks:
         warnings = [i for i in validate_plan(plan) if i.severity == "warning"]
         verify_warnings = [w for w in warnings if "tempts the worker" in w.message]
         assert len(verify_warnings) == 0
+
+
+# =============================================================================
+# validate_plan — prompt structure warnings
+# =============================================================================
+
+
+class TestValidatePlanPromptStructure:
+    """Prompts missing Orient/Edit/Verify headers get a warning."""
+
+    def _plan(self, prompt: str) -> PlanSpec:
+        return PlanSpec(
+            name="test-plan",
+            goal="Goal",
+            units={
+                "task": PlanUnit(
+                    slug="task",
+                    summary="Task",
+                    prompt=prompt,
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                )
+            },
+        )
+
+    def _structure_warnings(self, issues: list) -> list:
+        return [i for i in issues if "section headers" in i.message]
+
+    def test_no_warning_when_all_phases_present(self):
+        prompt = """
+Orient:
+Read the file first.
+
+Edit:
+1. Change the thing.
+
+Verify:
+- uv run pytest -q
+"""
+        assert self._structure_warnings(validate_plan(self._plan(prompt))) == []
+
+    def test_warns_when_all_phases_missing(self):
+        prompt = "Just do the thing."
+        warnings = self._structure_warnings(validate_plan(self._plan(prompt)))
+        assert len(warnings) == 1
+        assert "Orient" in warnings[0].message
+        assert "Edit" in warnings[0].message
+        assert "Verify" in warnings[0].message
+        assert warnings[0].unit == "task"
+
+    def test_warns_listing_only_missing_phases(self):
+        prompt = """
+Orient:
+Read stuff.
+
+Do the edits now.
+"""
+        warnings = self._structure_warnings(validate_plan(self._plan(prompt)))
+        assert len(warnings) == 1
+        assert "missing section headers: Edit, Verify." in warnings[0].message
+
+    def test_accepts_markdown_header_format(self):
+        prompt = """
+## Orient:
+Read stuff.
+
+## Edit:
+Change stuff.
+
+## Verify:
+Check stuff.
+"""
+        assert self._structure_warnings(validate_plan(self._plan(prompt))) == []
+
+    def test_accepts_markdown_headers_without_colons(self):
+        prompt = """
+## Orient
+Read stuff.
+
+## Edit
+Change stuff.
+
+## Verify
+Check stuff.
+"""
+        assert self._structure_warnings(validate_plan(self._plan(prompt))) == []
+
+    def test_accepts_bold_format(self):
+        prompt = """
+**Orient:**
+Read stuff.
+
+**Edit:**
+Change stuff.
+
+**Verify:**
+Check stuff.
+"""
+        assert self._structure_warnings(validate_plan(self._plan(prompt))) == []
+
+    def test_accepts_bold_headers_without_colons(self):
+        prompt = """
+**Orient**
+Read stuff.
+
+**Edit**
+Change stuff.
+
+**Verify**
+Check stuff.
+"""
+        assert self._structure_warnings(validate_plan(self._plan(prompt))) == []
+
+    def test_case_insensitive(self):
+        prompt = """
+orient:
+read stuff.
+
+edit:
+change stuff.
+
+verify:
+check stuff.
+"""
+        assert self._structure_warnings(validate_plan(self._plan(prompt))) == []
+
+    def test_edit_in_prose_does_not_count(self):
+        """'Edit the file' at line start is not a section header (no colon after 'Edit')."""
+        prompt = "Edit the file to fix the bug."
+        warnings = self._structure_warnings(validate_plan(self._plan(prompt)))
+        assert len(warnings) == 1
+        assert "Edit" in warnings[0].message
+
+    def test_warning_includes_success_rate_guidance(self):
+        prompt = "Do the thing."
+        warnings = self._structure_warnings(validate_plan(self._plan(prompt)))
+        assert "first-attempt success" in warnings[0].message
 
 
 # =============================================================================

@@ -23,6 +23,23 @@ _CROSSCUT_VERBS_RE = re.compile(
     r"\b(fix|stabilize|stabilise|clean\s*up|refactor|migrate)\b", re.IGNORECASE
 )
 
+# Orient/Edit/Verify section headers in prompt text.
+# Matches isolated headings like "Orient:", "## Orient", "**Orient:**", etc.
+_PROMPT_PHASE_RES = {
+    "Orient": re.compile(
+        r"^\s*(?:#{1,6}\s+)?(?:\*\*)?orient(?::)?(?:\*\*)?\s*:?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    "Edit": re.compile(
+        r"^\s*(?:#{1,6}\s+)?(?:\*\*)?edit(?::)?(?:\*\*)?\s*:?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+    "Verify": re.compile(
+        r"^\s*(?:#{1,6}\s+)?(?:\*\*)?verify(?::)?(?:\*\*)?\s*:?\s*$",
+        re.IGNORECASE | re.MULTILINE,
+    ),
+}
+
 
 def _normalize_touch_path(path: str) -> str:
     """Normalize a file path for comparison."""
@@ -226,6 +243,7 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     1. File-claim conflicts between independent tasks
     2. Prompt path references not covered by file claims
     3. Verify-only tasks with .py touch/edit claims (likely over-scoped)
+    4. Prompt structure (Orient/Edit/Verify headers)
     """
     issues: list[PlanIssue] = []
 
@@ -286,6 +304,10 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     for slug, unit in plan.units.items():
         issues.extend(_check_verify_only_task(slug, unit))
 
+    # Prompt structure check: Orient/Edit/Verify headers.
+    for slug, unit in plan.units.items():
+        issues.extend(_check_prompt_structure(slug, unit))
+
     return issues
 
 
@@ -313,6 +335,26 @@ def _check_verify_only_task(slug: str, unit: PlanUnit) -> list[PlanIssue]:
                 f"but also claims .py files via edit/touch: {py_touches}. "
                 "This tempts the worker to modify code, risking scope violations. "
                 "Remove the .py claims or split into separate tasks."
+            ),
+            unit=slug,
+        )
+    ]
+
+
+def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:
+    """Warn when a prompt is missing Orient/Edit/Verify section headers."""
+    missing = [
+        phase for phase, pattern in _PROMPT_PHASE_RES.items() if not pattern.search(unit.prompt)
+    ]
+    if not missing:
+        return []
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                f"Prompt is missing section headers: {', '.join(missing)}. "
+                "Structured prompts (Orient/Edit/Verify) have higher "
+                "first-attempt success rates."
             ),
             unit=slug,
         )
