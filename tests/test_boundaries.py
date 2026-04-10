@@ -49,6 +49,7 @@ class TestWorkerIsolation:
         violations = imports - allowed
         assert not violations, f"worker.py imports forbidden modules: {violations}"
 
+
 class TestSettlementPurity:
     """settlement.py must not import orchestration or persistence modules."""
 
