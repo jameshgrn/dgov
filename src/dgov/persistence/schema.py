@@ -155,6 +155,8 @@ def state_path(session_root: str) -> Path:
 
 # Only events emitted by the Lacustrine kernel + runner
 VALID_EVENTS = frozenset({
+    # Run lifecycle (bounds events for dgov plan review)
+    "run_start",
     # Runner lifecycle
     "task_created",
     "task_done",

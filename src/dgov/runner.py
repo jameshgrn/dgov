@@ -261,6 +261,16 @@ class EventDagRunner:
         self._setup_signal_handlers()
         await self._preflight_check_models()
 
+        # Emit a run-start marker so dgov plan review can scope events to
+        # the current invocation. Events persist across runs unless --restart
+        # is passed, so review needs an explicit lower bound.
+        emit_event(
+            self.session_root,
+            "run_start",
+            f"run-{self.dag.name}",
+            plan_name=self.dag.name,
+        )
+
         try:
             return await self._run_loop()
         finally:

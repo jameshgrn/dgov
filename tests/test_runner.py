@@ -392,6 +392,48 @@ class TestDeployLog:
             mock_append.assert_not_called()
 
 
+class TestRunStartMarker:
+    """dgov plan review needs a lower bound on events per run.
+
+    runner.run() emits a run_start event with plan_name set so review can
+    scope to the latest invocation, regardless of whether --restart reset
+    prior events.
+    """
+
+    def test_run_start_emitted_once_per_run(self):
+        emitted: list[tuple[str, str, dict]] = []
+
+        def _capture(session_root, event, pane, **kwargs):
+            emitted.append((event, pane, kwargs))
+
+        with _io_patches(), patch(_P_EMIT_EVENT, side_effect=_capture):
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+
+        run_starts = [(pane, kw) for ev, pane, kw in emitted if ev == "run_start"]
+        assert len(run_starts) == 1
+        pane, kw = run_starts[0]
+        assert pane == "run-test-dag"
+        assert kw.get("plan_name") == "test-dag"
+
+    def test_run_start_precedes_task_events(self):
+        seen: list[str] = []
+
+        def _capture(session_root, event, pane, **kwargs):
+            seen.append(event)
+
+        with _io_patches(), patch(_P_EMIT_EVENT, side_effect=_capture):
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+
+        assert "run_start" in seen
+        run_start_idx = seen.index("run_start")
+        # Every task-lifecycle event comes after the run_start marker.
+        for i, ev in enumerate(seen):
+            if ev in {"dag_task_dispatched", "merge_completed", "dag_completed"}:
+                assert i > run_start_idx, f"{ev} emitted before run_start"
+
+
 class TestResearcherRole:
     """Regression for ledger bug #27: researcher tasks must not run settlement.
 
