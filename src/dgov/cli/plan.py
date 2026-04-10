@@ -504,65 +504,77 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
         )
 
 
-def _render_unit(unit) -> None:
-    """Render a single UnitReview block. Shape depends on status."""
-    if unit.status == "deployed":
-        marker = click.style("✓", fg="green")
-        header = f"  {marker} {unit.unit}"
-        click.echo(header)
-        if unit.commit_sha and unit.commit_message:
-            click.echo(f"    commit       {unit.commit_sha[:8]} — {unit.commit_message}")
-        elif unit.commit_sha:
-            click.echo(f"    commit       {unit.commit_sha[:8]}")
-        if unit.agent:
-            click.echo(f"    agent        {unit.agent}")
-        if unit.diff_stat is not None:
-            click.echo(f"    diff         {unit.diff_stat.summary()}")
-        if unit.duration_s is not None:
-            click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
-        if unit.iterations is not None:
-            plural = "s" if unit.iterations != 1 else ""
-            click.echo(f"    iterations   {unit.iterations} tool call{plural}")
-        if unit.settlement != "n/a":
-            label = {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
-                unit.settlement, unit.settlement
-            )
-            click.echo(f"    settlement   {label}")
-        if unit.done_summary:
-            _render_multiline_field("summary     ", unit.done_summary)
-        click.echo("")
-        return
+def _render_deployed_unit(unit) -> None:
+    """Render a deployed UnitReview block."""
+    marker = click.style("✓", fg="green")
+    header = f"  {marker} {unit.unit}"
+    click.echo(header)
+    if unit.commit_sha and unit.commit_message:
+        click.echo(f"    commit       {unit.commit_sha[:8]} — {unit.commit_message}")
+    elif unit.commit_sha:
+        click.echo(f"    commit       {unit.commit_sha[:8]}")
+    if unit.agent:
+        click.echo(f"    agent        {unit.agent}")
+    if unit.diff_stat is not None:
+        click.echo(f"    diff         {unit.diff_stat.summary()}")
+    if unit.duration_s is not None:
+        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
+    if unit.iterations is not None:
+        plural = "s" if unit.iterations != 1 else ""
+        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+    if unit.settlement != "n/a":
+        label = {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
+            unit.settlement, unit.settlement
+        )
+        click.echo(f"    settlement   {label}")
+    if unit.done_summary:
+        _render_multiline_field("summary     ", unit.done_summary)
+    click.echo("")
 
-    if unit.status == "failed":
-        marker = click.style("✗", fg="red")
-        where = unit.reject_verdict or "worker error"
-        click.echo(f"  {marker} {unit.unit}  (failed: {where})")
-        if unit.agent:
-            click.echo(f"    agent        {unit.agent}")
-        if unit.attempts > 1:
-            click.echo(f"    attempts     {unit.attempts}")
-        if unit.duration_s is not None:
-            click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
-        if unit.iterations is not None:
-            plural = "s" if unit.iterations != 1 else ""
-            click.echo(f"    iterations   {unit.iterations} tool call{plural}")
-        if unit.reject_verdict:
-            click.echo(f"    reject       {unit.reject_verdict}")
-        if unit.error:
-            _render_multiline_field("error       ", unit.error)
-        if unit.last_thought:
-            _render_multiline_field("last thought", unit.last_thought, max_lines=2)
-        if unit.hint:
-            click.echo(click.style(f"    hint         {unit.hint}", fg="yellow"))
-        click.echo("")
-        return
 
-    # not_run / pending
+def _render_failed_unit(unit) -> None:
+    """Render a failed UnitReview block."""
+    marker = click.style("✗", fg="red")
+    where = unit.reject_verdict or "worker error"
+    click.echo(f"  {marker} {unit.unit}  (failed: {where})")
+    if unit.agent:
+        click.echo(f"    agent        {unit.agent}")
+    if unit.attempts > 1:
+        click.echo(f"    attempts     {unit.attempts}")
+    if unit.duration_s is not None:
+        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
+    if unit.iterations is not None:
+        plural = "s" if unit.iterations != 1 else ""
+        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+    if unit.reject_verdict:
+        click.echo(f"    reject       {unit.reject_verdict}")
+    if unit.error:
+        _render_multiline_field("error       ", unit.error)
+    if unit.last_thought:
+        _render_multiline_field("last thought", unit.last_thought, max_lines=2)
+    if unit.hint:
+        click.echo(click.style(f"    hint         {unit.hint}", fg="yellow"))
+    click.echo("")
+
+
+def _render_pending_unit(unit) -> None:
+    """Render a pending/not_run UnitReview block."""
     marker = click.style("○", dim=True)
     click.echo(f"  {marker} {unit.unit}  (not run in this window)")
     if unit.summary:
         click.echo(f"    {click.style(unit.summary, dim=True)}")
     click.echo("")
+
+
+def _render_unit(unit) -> None:
+    """Render a single UnitReview block. Shape depends on status."""
+    if unit.status == "deployed":
+        _render_deployed_unit(unit)
+        return
+    if unit.status == "failed":
+        _render_failed_unit(unit)
+        return
+    _render_pending_unit(unit)
 
 
 def _render_multiline_field(label: str, text: str, max_lines: int = 4) -> None:
