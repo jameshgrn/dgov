@@ -13,12 +13,12 @@ from dgov.project_root import resolve_project_root
 
 @cli.group(name="ledger")
 def ledger_cmd() -> None:
-    """Operational ledger — record and list bugs, rules, and debt."""
+    """Operational ledger — record and list bugs, rules, notes, and debt."""
     pass
 
 
 @ledger_cmd.command(name="add")
-@click.argument("category", type=click.Choice(["bug", "rule", "debt"]))
+@click.argument("category", type=click.Choice(["bug", "rule", "note", "debt"]))
 @click.argument("content")
 @click.option("--root", "-r", default=".", help="Project root")
 def ledger_add(category: str, content: str, root: str) -> None:
@@ -30,7 +30,10 @@ def ledger_add(category: str, content: str, root: str) -> None:
 
 @ledger_cmd.command(name="list")
 @click.option(
-    "--category", "-c", type=click.Choice(["bug", "rule", "debt"]), help="Filter by category"
+    "--category",
+    "-c",
+    type=click.Choice(["bug", "rule", "note", "debt"]),
+    help="Filter by category",
 )
 @click.option(
     "--status",
@@ -55,8 +58,9 @@ def ledger_list(category: str | None, status: str, query: str | None, root: str)
 
     for entry in entries:
         # category in cyan, id in dim
+        _cat_colors = {"rule": "cyan", "note": "blue", "bug": "yellow", "debt": "magenta"}
         cat_colored = click.style(
-            f"[{entry.category}]", fg="cyan" if entry.category == "rule" else "yellow"
+            f"[{entry.category}]", fg=_cat_colors.get(entry.category, "yellow")
         )
         id_str = click.style(f"#{entry.id}", fg="black", dim=True)
         click.echo(f"{id_str} {cat_colored} {entry.content}")
