@@ -260,7 +260,7 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     for slug, unit in plan.units.items():
         claimed = {
             _normalize_touch_path(p)
-            for p in (*unit.files.create, *unit.files.edit, *unit.files.touch)
+            for p in (*unit.files.create, *unit.files.edit, *unit.files.touch, *unit.files.read)
             if p.strip()
         }
         seen: set[str] = set()
