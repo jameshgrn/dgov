@@ -13,6 +13,10 @@ Complete reference for the `dgov` command-line interface.
 | [`dgov recover`](#dgov-recover) | Recover from a crashed run |
 | [`dgov init`](#dgov-init) | Bootstrap project configuration |
 | [`dgov ledger`](#dgov-ledger) | Record bugs, rules, and technical debt |
+| [`dgov init-plan`](#dgov-init-plan) | Initialize a new plan directory with sections |
+| [`dgov compile`](#dgov-compile) | Compile a plan tree into `_compiled.toml` |
+| [`dgov validate`](#dgov-validate) | Parse and validate a plan without running it |
+| [`dgov plan status`](#dgov-plan-status) | Show pending vs deployed units for a plan |
 
 ---
 
@@ -45,6 +49,62 @@ The `fix` command is a thin wrapper around the standard plan pipeline:
 
 This uses the same compilation, settlement, and quality gates as `dgov run`.
 Transient fix plans are archived under `.dgov/runtime/fix-plans/archive/`.
+
+---
+
+## `dgov init-plan`
+
+Initialize a new plan directory under `.dgov/plans/<name>/` with `_root.toml` and section stubs.
+
+```bash
+dgov init-plan my-plan --sections tasks,docs
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--sections TEXT` | Comma-separated section names to create (default: `tasks`) |
+| `--force` | Overwrite an existing plan directory |
+
+---
+
+## `dgov compile`
+
+Compile a plan tree into a dispatch-ready `_compiled.toml`. Walks the plan tree, merges units, resolves references, validates the DAG, and bundles SOPs.
+
+```bash
+dgov compile .dgov/plans/my-plan/
+dgov compile .dgov/plans/my-plan/ --dry-run
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Use the identity SOP bundler (no LLM call). Use this to validate structure quickly. |
+| `--recompile-sops` | Force SOP re-assignment even if the SOP set hash is unchanged |
+| `--graph` | Print the DAG shape after compiling |
+
+---
+
+## `dgov validate`
+
+Parse and validate a plan file without running it. Checks dependencies, detects file-claim conflicts, and prints a summary of the DAG.
+
+```bash
+dgov validate <plan-dir>/_compiled.toml
+```
+
+---
+
+## `dgov plan status`
+
+Show deployment status for a compiled plan — which units have been deployed via `deployed.jsonl` versus which are still pending. Warns if the compiled plan is stale relative to source TOML files.
+
+```bash
+dgov plan status .dgov/plans/my-plan/
+```
 
 ---
 
