@@ -185,8 +185,9 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
     assert "no sentrux baseline found" in result.output.lower()
 
     # Verify commit exists
-    git_log = subprocess.run(["git", "log", "-n", "1", "--oneline"],
-                             cwd=tmp_path, capture_output=True, text=True).stdout
+    git_log = subprocess.run(
+        ["git", "log", "-n", "1", "--oneline"], cwd=tmp_path, capture_output=True, text=True
+    ).stdout
     assert "chore: bootstrap repo for dgov" in git_log
 
 

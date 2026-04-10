@@ -342,9 +342,7 @@ class TestLLMSopBundler:
         with pytest.raises(ValueError, match="FIREWORKS_API_KEY missing"):
             LLMSopBundler().pick({}, [])
 
-    def test_uses_configured_api_key_env(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_uses_configured_api_key_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(ValueError, match="OPENAI_API_KEY missing"):
             LLMSopBundler(api_key_env="OPENAI_API_KEY").pick({}, [])

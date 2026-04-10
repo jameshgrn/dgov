@@ -261,14 +261,10 @@ class TestWorkerFailure:
 
 
 class TestPreflight:
-    def test_preflight_uses_configured_api_key_env(
-        self, tmp_path: Path, monkeypatch
-    ) -> None:
+    def test_preflight_uses_configured_api_key_env(self, tmp_path: Path, monkeypatch) -> None:
         dgov_dir = tmp_path / ".dgov"
         dgov_dir.mkdir()
-        (dgov_dir / "project.toml").write_text(
-            '[project]\nllm_api_key_env = "OPENAI_API_KEY"\n'
-        )
+        (dgov_dir / "project.toml").write_text('[project]\nllm_api_key_env = "OPENAI_API_KEY"\n')
         dag = DagDefinition(
             name="preflight",
             dag_file="test.toml",

@@ -76,8 +76,7 @@ def test_validate_sandbox_surfaces_stderr_from_lint_failures(tmp_path: Path) -> 
     base = _init_repo(tmp_path)
     _add_tracked_file(tmp_path, "src.py", "x = 1\n")
     lint_cmd = (
-        "python -c \"import sys; print('lint missing', file=sys.stderr);"
-        " raise SystemExit(1)\""
+        "python -c \"import sys; print('lint missing', file=sys.stderr); raise SystemExit(1)\""
     )
     result = validate_sandbox(
         tmp_path,
@@ -86,7 +85,7 @@ def test_validate_sandbox_surfaces_stderr_from_lint_failures(tmp_path: Path) -> 
         ProjectConfig(
             source_extensions=(".py",),
             lint_cmd=lint_cmd,
-            format_check_cmd="python -c \"raise SystemExit(0)\"",
+            format_check_cmd='python -c "raise SystemExit(0)"',
             test_cmd="",
         ),
     )
