@@ -58,13 +58,17 @@ def _mock_create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") 
     return Worktree(path=Path(f"/tmp/wt-{slug}"), branch=f"dgov/{slug}", commit="abc123")
 
 
-def _mock_review_pass(wt_path, claimed_files=None, max_diff_lines=100, project_root=None):
+def _mock_review_pass(
+    wt_path, claimed_files=None, max_diff_lines=100, project_root=None, task_slug=None
+):
     from dgov.settlement import ReviewResult
 
     return ReviewResult(passed=True, verdict="ok", actual_files=frozenset({"test.py"}))
 
 
-def _mock_review_fail(wt_path, claimed_files=None, max_diff_lines=100, project_root=None):
+def _mock_review_fail(
+    wt_path, claimed_files=None, max_diff_lines=100, project_root=None, task_slug=None
+):
     from dgov.settlement import ReviewResult
 
     return ReviewResult(passed=False, verdict="scope_violation", error="touched unclaimed files")
@@ -92,8 +96,7 @@ _P_VALIDATE = "dgov.runner.validate_sandbox"
 _P_ADD_TASK = "dgov.runner.add_task"
 _P_EMIT_EVENT = "dgov.runner.emit_event"
 _P_HEADLESS = "dgov.runner.run_headless_worker"
-# review_sandbox and get_task now imported at top level in runner
-_P_GET_TASK = "dgov.runner.get_task"
+# review_sandbox imported at top level in runner
 _P_REVIEW = "dgov.runner.review_sandbox"
 _P_DEPLOY_APPEND = "dgov.deploy_log.append"
 
@@ -152,7 +155,6 @@ def _io_patches(
             patch(_P_ADD_TASK),
             patch(_P_EMIT_EVENT),
             patch(_P_HEADLESS, side_effect=headless),
-            patch(_P_GET_TASK, return_value={"file_claims": ["test.py"]}),
             patch(_P_REVIEW, side_effect=review),
             patch(_P_DEPLOY_APPEND),
         ):
@@ -196,6 +198,7 @@ class TestTouchFileClaims:
         with _io_patches():
             runner = _make_runner(dag)
             assert set(runner.task_files["t"]) == {"new.py", "src/a.py"}
+
 
 class TestSingleTaskHappy:
     def test_single_task_merges(self):
@@ -387,6 +390,52 @@ class TestDeployLog:
             runner = _make_runner(_single_dag())
             asyncio.run(runner.run())
             mock_append.assert_not_called()
+
+
+class TestResearcherRole:
+    """Regression for ledger bug #27: researcher tasks must not run settlement.
+
+    Researcher tasks are read-only by construction and produce no commit.
+    Without role-aware settlement, commit_in_worktree hits 'nothing to commit'
+    and the task fails despite the researcher calling `done` successfully.
+    """
+
+    @staticmethod
+    def _researcher_dag() -> DagDefinition:
+        task = DagTaskSpec(
+            slug="a",
+            summary="investigate",
+            prompt="Investigate foo and return a summary.",
+            commit_message="unused",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(read=("src/foo.py",)),
+        )
+        return _dag({"a": task})
+
+    def test_researcher_merges_without_commit_or_validate(self):
+        with (
+            _io_patches() as _,
+            patch(_P_COMMIT_WT) as mock_commit,
+            patch(_P_AUTOFIX) as mock_autofix,
+            patch(_P_VALIDATE) as mock_validate,
+            patch(_P_MERGE_WT) as mock_merge,
+        ):
+            runner = _make_runner(self._researcher_dag())
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            mock_commit.assert_not_called()
+            mock_autofix.assert_not_called()
+            mock_validate.assert_not_called()
+            mock_merge.assert_not_called()
+
+    def test_researcher_records_head_sha_to_deploy_log(self):
+        with _io_patches() as _, patch(_P_DEPLOY_APPEND) as mock_append:
+            runner = _make_runner(self._researcher_dag())
+            asyncio.run(runner.run())
+            # Researcher deploy records use the HEAD sha captured at worktree
+            # creation (Worktree.commit == "abc123" per the mock helper).
+            mock_append.assert_called_once_with("/tmp/test-project", "test-dag", "a", "abc123")
 
 
 class TestCleanup:

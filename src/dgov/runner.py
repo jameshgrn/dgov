@@ -652,6 +652,17 @@ class EventDagRunner:
         file_claims = action.file_claims
         pc = self.project_config
 
+        # Researcher tasks are read-only by construction: no edits, no commits,
+        # no settlement gates. The `done` summary is already in the event log.
+        # Record the research against the HEAD sha so plan status can show it
+        # as deployed without inventing a fake commit. See ledger bug #27.
+        if task.role == "researcher":
+            from dgov import deploy_log
+
+            deploy_log.append(self.session_root, self.dag.name, action.task_slug, wt.commit)
+            logger.info("RESEARCHED %s", action.task_slug)
+            return None, False
+
         await loop.run_in_executor(self._executor, autofix_sandbox, wt.path, file_claims, pc)
 
         msg = task.commit_message or f"feat: completed {action.task_slug}"
