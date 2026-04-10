@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -20,6 +23,36 @@ from dgov.deploy_log import is_plan_complete
 from dgov.plan import compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.runner import EventDagRunner
+
+
+@contextlib.contextmanager
+def _clean_head_worktree(project_root: str) -> Iterator[Path]:
+    """Yield a temporary worktree checked out at HEAD for read-only scanning.
+
+    The post-run sentrux gate needs to measure the committed state, not the
+    governor's live working tree. A transient git worktree at HEAD gives us
+    a clean view without disturbing the main checkout. See ledger bug #26.
+    """
+    tmp_root = Path(tempfile.mkdtemp(prefix="dgov-sentrux-"))
+    wt_path = tmp_root / "head"
+    created = False
+    try:
+        subprocess.run(
+            ["git", "worktree", "add", "--detach", str(wt_path), "HEAD"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+        )
+        created = True
+        yield wt_path
+    finally:
+        if created:
+            subprocess.run(
+                ["git", "worktree", "remove", "-f", str(wt_path)],
+                cwd=project_root,
+                capture_output=True,
+            )
+        shutil.rmtree(tmp_root, ignore_errors=True)
 
 
 @cli.command(name="run")
@@ -306,8 +339,20 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
         except Exception:
             pass
 
+    # Scan HEAD via a clean worktree so uncommitted changes in the governor's
+    # workspace are not falsely attributed to the run (ledger bug #26).
     try:
-        result = _run_sentrux(["gate", project_root], timeout=30.0, check=False)
+        with _clean_head_worktree(project_root) as scan_dir:
+            scan_sentrux_dir = scan_dir / ".sentrux"
+            if scan_sentrux_dir.exists():
+                shutil.rmtree(scan_sentrux_dir)
+            shutil.copytree(baseline_path.parent, scan_sentrux_dir)
+            result = _run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
+    except subprocess.CalledProcessError as e:
+        gate_result["error"] = f"Sentrux gate setup failed: {e}"
+        if not want_json():
+            click.echo(f"[sentrux] Gate setup failed: {e}", err=True)
+        return gate_result
     except subprocess.TimeoutExpired as e:
         gate_result["error"] = f"Sentrux gate timed out: {e}"
         if not want_json():

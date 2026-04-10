@@ -268,3 +268,50 @@ def test_run_fails_when_final_sentrux_compare_degrades(
     assert result.exit_code == 1
     assert "status: failed" in result.output
     assert "sentrux: architectural degradation detected." in result.output.lower()
+
+
+def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
+    """_clean_head_worktree yields a checkout at HEAD, ignoring dirty working-tree changes.
+
+    Regression for ledger bug #26: the post-run sentrux gate used to scan the
+    live working tree, so uncommitted changes in the governor's workspace were
+    falsely attributed to the run.
+    """
+    from dgov.cli.run import _clean_head_worktree
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    env = {
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "test@example.com",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "test@example.com",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+    }
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True, env=env)
+    tracked = repo / "tracked.py"
+    tracked.write_text("x = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], cwd=repo, check=True, env=env)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "initial"],
+        cwd=repo,
+        check=True,
+        env=env,
+    )
+
+    # Dirty the working tree after committing.
+    tracked.write_text("x = 2  # uncommitted\n")
+    (repo / "untracked.py").write_text("y = 999\n")
+
+    with _clean_head_worktree(str(repo)) as scan_dir:
+        # The scan dir reflects HEAD, not the live working tree.
+        assert (scan_dir / "tracked.py").read_text() == "x = 1\n"
+        assert not (scan_dir / "untracked.py").exists()
+        snapshot = scan_dir
+
+    # Cleanup removes the temporary worktree after the context exits.
+    assert not snapshot.exists()
+    # The main working tree is untouched.
+    assert tracked.read_text() == "x = 2  # uncommitted\n"
+    assert (repo / "untracked.py").exists()
