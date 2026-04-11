@@ -154,6 +154,22 @@ def _wrapped_verify_tool(tokens: list[str]) -> str | None:
     return None
 
 
+def _tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
+    """Return unique parent directories for the requested executables."""
+    dirs: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        resolved = shutil.which(name)
+        if not resolved:
+            continue
+        parent = str(Path(resolved).resolve().parent)
+        if parent in seen:
+            continue
+        seen.add(parent)
+        dirs.append(parent)
+    return dirs
+
+
 class AtomicTools:
     """The Actuator Layer: Strict, isolated tools."""
 
@@ -163,13 +179,22 @@ class AtomicTools:
         # Resolve python/venv paths once at init, not per-command
         self._python_bin = Path(sys.executable).parent
         self._python = sys.executable
+        self._tool_bin_dirs = _tool_bin_dirs(("uv", "sg"))
         # Sandbox HOME outside worktree — prevents macOS Library/ polluting git status
         self._sandbox_home = Path(tempfile.mkdtemp(prefix="dgov-sandbox-"))
         self._activity_log: list[dict[str, Any]] = []
 
     def _sandbox_env(self) -> dict[str, str]:
+        path_parts = [
+            str(self._python_bin),
+            *self._tool_bin_dirs,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/usr/bin",
+            "/bin",
+        ]
         return {
-            "PATH": f"{self._python_bin}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
+            "PATH": ":".join(dict.fromkeys(path_parts)),
             "HOME": str(self._sandbox_home),
             "LANG": "en_US.UTF-8",
             "PYTHONPATH": str(self.worktree / self.config.src_dir.rstrip("/")),

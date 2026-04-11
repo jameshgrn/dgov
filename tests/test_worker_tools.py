@@ -286,6 +286,19 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert "type_check()" in result
 
+    def test_allows_uv_run_python_when_not_a_verify_command(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+                require_uv_run=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run python -c 'print(1)'")
+        assert "STDOUT:\n1\n" in result
+        assert "EXIT:0" in result
+
     def test_rejects_python_without_uv_when_required(self, worktree, worker_module):
         config = worker_module.AtomicConfig(
             tool_policy=ToolPolicy(
