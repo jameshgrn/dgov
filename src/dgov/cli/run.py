@@ -70,6 +70,17 @@ def _clean_head_worktree(project_root: str) -> Iterator[Path]:
 @click.option(
     "--yes", "-y", is_flag=True, help="Skip interactive prompts (auto-create bootstrap commits)"
 )
+@click.option(
+    "--stream",
+    is_flag=True,
+    help="Stream worker thoughts and tool calls live (like `dgov watch` inline)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Show richer per-task summary at end of run",
+)
 @click.pass_context
 def run_cmd(
     ctx: click.Context,
@@ -78,6 +89,8 @@ def run_cmd(
     continue_failed: bool,
     only: str | None,
     yes: bool,
+    stream: bool,
+    verbose: bool,
 ) -> None:
     """Run a compiled plan (_compiled.toml or plan directory).
 
@@ -106,6 +119,8 @@ def run_cmd(
         only=only,
         plan_dir=plan_dir,
         yes=yes,
+        stream=stream,
+        verbose=verbose,
     )
 
 
@@ -384,15 +399,29 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
     return gate_result
 
 
-def _make_worker_event_callback() -> Callable[[str, str, object], None]:
-    """Build a callback that prints worker activity to stderr (suppressed in JSON mode)."""
+def _make_worker_event_callback(stream: bool = False) -> Callable[[str, str, object], None]:
+    """Build a callback that prints worker activity to stderr.
+
+    In the default (non-stream) mode, only `error` and `done` events are
+    surfaced. Pass `stream=True` to also print the full thought / tool-call
+    firehose — equivalent to the old default behavior, and what `dgov watch`
+    shows in a second pane.
+
+    JSON mode suppresses all event callback output regardless.
+    """
 
     def _on_event(task_slug: str, log_type: str, content: object) -> None:
         if want_json():
             return
         if log_type == "error":
             click.echo(f"  [{task_slug}] ERROR: {content}", err=True)
-        elif log_type == "thought":
+            return
+        if log_type == "done":
+            click.echo(f"  [{task_slug}] done: {content}", err=True)
+            return
+        if not stream:
+            return
+        if log_type == "thought":
             click.echo(f"  [{task_slug}] {str(content)[:120]}", err=True)
         elif log_type == "call" and isinstance(content, dict):
             data = cast("dict[str, object]", content)
@@ -400,8 +429,6 @@ def _make_worker_event_callback() -> Callable[[str, str, object], None]:
             args = cast("dict[str, object]", data.get("args", {}))
             summary = ", ".join(f"{k}={repr(v)[:40]}" for k, v in args.items())
             click.echo(f"  [{task_slug}] {tool}({summary})", err=True)
-        elif log_type == "done":
-            click.echo(f"  [{task_slug}] done: {content}", err=True)
 
     return _on_event
 
@@ -414,6 +441,8 @@ def _cmd_run_plan(
     only: str | None = None,
     plan_dir: Path | None = None,
     yes: bool = False,
+    stream: bool = False,
+    verbose: bool = False,
 ) -> None:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
@@ -465,7 +494,7 @@ def _cmd_run_plan(
     runner = EventDagRunner(
         dag,
         session_root=project_root,
-        on_event=_make_worker_event_callback(),
+        on_event=_make_worker_event_callback(stream=stream),
         restart=restart,
         continue_failed=continue_failed,
     )
@@ -556,6 +585,25 @@ def _cmd_run_plan(
         "sentrux": gate_result,
         "duration_s": round(duration.total_seconds(), 2),
     })
+
+    # Verbose mode: print per-task durations for the merged tasks. Plan 3
+    # extends this with self-correction counts.
+    if verbose and not want_json() and runner._task_durations:
+        click.echo("  per-task:", err=True)
+        for slug in sorted(runner._task_durations):
+            status = results.get(slug, "?")
+            dur = runner._task_durations[slug]
+            click.echo(f"    {slug}  {status}  {dur}s", err=True)
+
+    # Post-run hints: nudge users toward the live stream and debrief surfaces
+    # unless they already opted into streaming (in which case they've seen it
+    # all) or are in JSON mode (where extra stdout would break parsers).
+    if not stream and not want_json():
+        hint_target = str(plan_dir) if plan_dir is not None else plan_file
+        click.echo(
+            f"  Live stream: dgov watch   |   Debrief: dgov plan review {hint_target}",
+            err=True,
+        )
 
     _append_run_log(
         project_root,
