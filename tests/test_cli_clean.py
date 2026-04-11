@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,27 @@ pytestmark = pytest.mark.unit
 @pytest.fixture
 def runner() -> CliRunner:
     return CliRunner()
+
+
+def _init_git_repo(path: Path) -> None:
+    """Initialize a fresh git repo with one empty commit."""
+    env = {
+        "GIT_AUTHOR_NAME": "test",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "test",
+        "GIT_COMMITTER_EMAIL": "t@t",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    subprocess.run(["git", "init", str(path)], env=env, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "init"],
+        cwd=path,
+        env=env,
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_clean_removes_runtime_fix_plan_artifacts_without_touching_authored_plans(
@@ -82,3 +104,53 @@ def test_clean_preserves_active_runtime_fix_plan(
     assert live_plan_dir.exists()
     assert not stale_plan_dir.exists()
     assert "Preserved (active)" in result.output
+
+
+def test_clean_prunes_orphan_worktree_directory(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dgov clean should remove a stale sibling worktree directory."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    _init_git_repo(project_root)
+    monkeypatch.chdir(project_root)
+
+    # Simulate a crashed-session artifact: a sibling worktrees dir with a
+    # stale subdirectory git doesn't track.
+    worktrees_dir = tmp_path / ".dgov-worktrees-proj"
+    worktrees_dir.mkdir()
+    orphan = worktrees_dir / "crashed-task"
+    orphan.mkdir()
+    (orphan / "leftover.txt").write_text("debris\n")
+
+    result = runner.invoke(cli, ["clean"])
+
+    assert result.exit_code == 0, result.output
+    assert not orphan.exists()
+    assert "Pruned 1 orphan worktree" in result.output
+
+
+def test_clean_dry_run_does_not_touch_orphan_worktree(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """dgov clean --dry-run should report but not remove orphan worktrees."""
+    project_root = tmp_path / "proj"
+    project_root.mkdir()
+    _init_git_repo(project_root)
+    monkeypatch.chdir(project_root)
+
+    worktrees_dir = tmp_path / ".dgov-worktrees-proj"
+    worktrees_dir.mkdir()
+    orphan = worktrees_dir / "crashed-task"
+    orphan.mkdir()
+
+    result = runner.invoke(cli, ["clean", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert orphan.exists()
+    assert "Would prune 1 orphan worktree" in result.output
+    assert "Dry run complete" in result.output

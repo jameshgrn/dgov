@@ -7,14 +7,17 @@ from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from dgov.types import Worktree
 from dgov.worktree import (
+    _worktrees_dir,
     commit_in_worktree,
     create_worktree,
     merge_worktree,
+    prune_orphans,
     remove_worktree,
 )
 
@@ -96,9 +99,7 @@ class TestMergeWorktree:
         (wt.path / "hello.py").write_text("print('hi')\n")
         commit_in_worktree(wt, "add hello.py", file_claims=("hello.py",))
         merge_worktree(git_repo, wt)
-        from pathlib import Path as P
-
-        assert (P(git_repo) / "hello.py").exists()
+        assert (Path(git_repo) / "hello.py").exists()
 
     def test_ff_merge_returns_sha(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -125,3 +126,116 @@ class TestRemoveWorktree:
             text=True,
         )
         assert wt.branch not in res.stdout
+
+
+class TestPruneOrphans:
+    def test_noop_on_clean_repo(self, git_repo):
+        """Nothing to clean → counts are zero."""
+        result = prune_orphans(git_repo)
+        assert result == {"worktrees": 0, "branches": 0}
+
+    def test_removes_orphan_directory(self, git_repo):
+        """A dir under the sibling worktrees root with no git entry is removed."""
+        worktrees_dir = _worktrees_dir(git_repo)
+        worktrees_dir.mkdir(parents=True, exist_ok=True)
+        orphan = worktrees_dir / "stale-task"
+        orphan.mkdir()
+        (orphan / "leftover.txt").write_text("debris\n")
+
+        result = prune_orphans(git_repo)
+
+        assert result["worktrees"] == 1
+        assert not orphan.exists()
+
+    def test_leaves_live_worktree_alone(self, git_repo):
+        """A worktree git still tracks is not removed."""
+        wt = create_worktree(git_repo, "live-task")
+        try:
+            result = prune_orphans(git_repo)
+            assert result["worktrees"] == 0
+            assert wt.path.exists()
+        finally:
+            remove_worktree(git_repo, wt)
+
+    def test_deletes_merged_orphan_branch(self, git_repo):
+        """A dgov/* branch with no worktree AND merged into HEAD is deleted."""
+        wt = create_worktree(git_repo, "merge-me")
+        (wt.path / "file.txt").write_text("contents\n")
+        commit_in_worktree(wt, "add file", file_claims=("file.txt",))
+        merge_worktree(git_repo, wt)
+        # Simulate crash: remove worktree dir but leave the branch ref.
+        subprocess.run(
+            ["git", "worktree", "remove", "-f", str(wt.path)],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+
+        result = prune_orphans(git_repo)
+
+        assert result["branches"] == 1
+        branches = subprocess.run(
+            ["git", "branch", "--list", "dgov/*"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert branches.stdout.strip() == ""
+
+    def test_keeps_unmerged_orphan_branch(self, git_repo):
+        """An unmerged dgov/* branch is NOT deleted (safety)."""
+        wt = create_worktree(git_repo, "unmerged")
+        (wt.path / "file.txt").write_text("contents\n")
+        commit_in_worktree(wt, "unmerged change", file_claims=("file.txt",))
+        # Remove the worktree dir WITHOUT merging the branch.
+        subprocess.run(
+            ["git", "worktree", "remove", "-f", str(wt.path)],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+
+        result = prune_orphans(git_repo)
+
+        assert result["branches"] == 0
+        branches = subprocess.run(
+            ["git", "branch", "--list", "dgov/unmerged"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "dgov/unmerged" in branches.stdout
+
+    def test_ignores_non_dgov_branches(self, git_repo):
+        """Branches outside the dgov/* namespace are never touched."""
+        subprocess.run(
+            ["git", "branch", "feature/keep-me"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+
+        prune_orphans(git_repo)
+
+        branches = subprocess.run(
+            ["git", "branch", "--list", "feature/keep-me"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "feature/keep-me" in branches.stdout
+
+    def test_dry_run_reports_without_modifying(self, git_repo):
+        """Dry-run counts orphans but does not remove them."""
+        worktrees_dir = _worktrees_dir(git_repo)
+        worktrees_dir.mkdir(parents=True, exist_ok=True)
+        orphan = worktrees_dir / "stale-task"
+        orphan.mkdir()
+
+        result = prune_orphans(git_repo, dry_run=True)
+
+        assert result["worktrees"] == 1
+        assert orphan.exists()
