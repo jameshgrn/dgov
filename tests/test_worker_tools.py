@@ -236,6 +236,56 @@ class TestRunBashPolicy:
         assert result.startswith("Error:")
         assert "run_tests()" in result
 
+    def test_rejects_uv_run_pytest_when_wrappers_required(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run pytest tests/test_foo.py -q")
+        assert result.startswith("Error:")
+        assert "run_tests()" in result
+
+    def test_rejects_uv_run_python_module_pytest_when_wrappers_required(
+        self, worktree, worker_module
+    ):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run python -m pytest tests/test_foo.py -q")
+        assert result.startswith("Error:")
+        assert "run_tests()" in result
+
+    def test_rejects_ruff_fix_when_wrappers_required(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("uv run ruff check --fix src/foo.py")
+        assert result.startswith("Error:")
+        assert "lint_fix()" in result
+
+    def test_rejects_python_module_ty_when_wrappers_required(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            tool_policy=ToolPolicy(
+                restrict_run_bash=True,
+                require_wrapped_verify_tools=True,
+            )
+        )
+        t = worker_module.AtomicTools(worktree, config)
+        result = t.run_bash("python -m ty check src/foo.py")
+        assert result.startswith("Error:")
+        assert "type_check()" in result
+
     def test_rejects_python_without_uv_when_required(self, worktree, worker_module):
         config = worker_module.AtomicConfig(
             tool_policy=ToolPolicy(

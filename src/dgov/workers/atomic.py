@@ -117,6 +117,43 @@ def shell_quote(s: str) -> str:
     return shlex.quote(s)
 
 
+def _unwrap_shell_command(tokens: list[str]) -> tuple[bool, list[str]]:
+    """Peel off the narrow wrapper forms we intentionally understand."""
+    if len(tokens) >= 2 and tokens[0] == "uv" and tokens[1] == "run":
+        core = tokens[2:]
+        if not core:
+            return True, []
+        return True, core
+    return False, tokens
+
+
+def _wrapped_verify_tool(tokens: list[str]) -> str | None:
+    """Classify only the verification command forms we can identify confidently."""
+    _, core = _unwrap_shell_command(tokens)
+    if not core:
+        return None
+
+    if core[0] == "pytest":
+        return "pytest"
+    if core[:3] in (["python", "-m", "pytest"], ["python3", "-m", "pytest"]):
+        return "pytest"
+    if len(core) >= 2 and core[0] == "ruff" and core[1] == "check":
+        if "--fix" in core:
+            return "ruff_check_fix"
+        return "ruff_check"
+    if len(core) >= 2 and core[0] == "ruff" and core[1] == "format":
+        return "ruff_format"
+    if len(core) >= 2 and core[0] == "ty" and core[1] == "check":
+        return "ty_check"
+    if (
+        core[:3] in (["python", "-m", "ty"], ["python3", "-m", "ty"])
+        and len(core) >= 4
+        and core[3] == "check"
+    ):
+        return "ty_check"
+    return None
+
+
 class AtomicTools:
     """The Actuator Layer: Strict, isolated tools."""
 
@@ -186,27 +223,23 @@ class AtomicTools:
         if not tokens:
             return "Error: Empty shell command."
 
-        uv_wrapped = len(tokens) >= 2 and tokens[0] == "uv" and tokens[1] == "run"
-        core = tokens[2:] if uv_wrapped else tokens
+        uv_wrapped, core = _unwrap_shell_command(tokens)
         if not core:
             return "Error: Invalid 'uv run' command with no subcommand."
 
         tool = core[0]
 
         if policy.require_wrapped_verify_tools:
-            pytest_invocation = tool == "pytest" or core[:3] in (
-                ["python", "-m", "pytest"],
-                ["python3", "-m", "pytest"],
-            )
-            if pytest_invocation:
+            verify_tool = _wrapped_verify_tool(tokens)
+            if verify_tool == "pytest":
                 return "Error: run_bash policy requires run_tests() for pytest invocations."
-            if tool == "ruff" and len(core) >= 2 and core[1] == "check":
-                if "--fix" in core:
-                    return "Error: run_bash policy requires lint_fix() for 'ruff check --fix'."
+            if verify_tool == "ruff_check_fix":
+                return "Error: run_bash policy requires lint_fix() for 'ruff check --fix'."
+            if verify_tool == "ruff_check":
                 return "Error: run_bash policy requires lint_check() for 'ruff check'."
-            if tool == "ruff" and len(core) >= 2 and core[1] == "format":
+            if verify_tool == "ruff_format":
                 return "Error: run_bash policy requires format_file() for 'ruff format'."
-            if tool == "ty" and len(core) >= 2 and core[1] == "check":
+            if verify_tool == "ty_check":
                 return "Error: run_bash policy requires type_check() for 'ty check'."
 
         if (
