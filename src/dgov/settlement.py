@@ -219,14 +219,22 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
 
 
 def _check_scope(
-    actual_files: frozenset[str], claimed_files: Sequence[str] | None
+    actual_files: frozenset[str],
+    claimed_files: Sequence[str] | None,
+    scope_ignore_files: Sequence[str] = (),
 ) -> ReviewResult | None:
-    """Check that changed files are within claimed scope. Returns ReviewResult on failure."""
+    """Check that changed files are within claimed scope. Returns ReviewResult on failure.
+
+    Files listed in `scope_ignore_files` (from `[scope] ignore_files` in
+    project.toml) are treated as tooling side-effects and exempted from the
+    unclaimed check — e.g. uv.lock updated by `uv run`.
+    """
     if not claimed_files:
         return None
 
     claimed = frozenset(claimed_files)
-    unclaimed = actual_files - claimed
+    ignored = frozenset(scope_ignore_files)
+    unclaimed = actual_files - claimed - ignored
     if unclaimed:
         return ReviewResult(
             passed=False,
@@ -242,12 +250,13 @@ def _check_transient_scope(
     task_slug: str | None,
     claimed_files: Sequence[str] | None,
     actual_files: frozenset[str],
+    scope_ignore_files: Sequence[str] = (),
 ) -> ReviewResult | None:
     """Reject transient unclaimed writes observed in worker tool activity."""
     if not session_root or not task_slug or not claimed_files:
         return None
 
-    claimed = frozenset(claimed_files)
+    claimed = frozenset(claimed_files) | frozenset(scope_ignore_files)
     transient_paths: set[str] = set()
     for event in read_events(session_root, task_slug=task_slug):
         if event.get("event") != "worker_log" or event.get("log_type") != "result":
@@ -283,6 +292,7 @@ def review_sandbox(
     max_diff_lines: int = 100,
     project_root: str | None = None,
     task_slug: str | None = None,
+    scope_ignore_files: Sequence[str] = (),
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
 
@@ -291,6 +301,10 @@ def review_sandbox(
     2. Diff size (runaway worker)
     3. Scope enforcement (touched unclaimed files)
     4. Review hooks (user-defined policy via .dgov/project.toml)
+
+    `scope_ignore_files` (from project.toml `[scope] ignore_files`) is a list
+    of paths exempted from scope checks — lockfiles and similar tooling-managed
+    state that workers may incidentally touch via `uv run`, `npm install`, etc.
 
     Uses git status --porcelain to see ALL changes including new files.
     """
@@ -312,12 +326,18 @@ def review_sandbox(
             return result
 
         # 4. Scope enforcement
-        result = _check_scope(actual_files, claimed_files)
+        result = _check_scope(actual_files, claimed_files, scope_ignore_files)
         if result is not None:
             return result
 
         # 5. Transient scope enforcement from worker tool activity
-        result = _check_transient_scope(project_root, task_slug, claimed_files, actual_files)
+        result = _check_transient_scope(
+            project_root,
+            task_slug,
+            claimed_files,
+            actual_files,
+            scope_ignore_files,
+        )
         if result is not None:
             return result
 

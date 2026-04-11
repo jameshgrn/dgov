@@ -208,6 +208,46 @@ deny_shell_commands = ["pip", "python -m pip"]
         assert pc.tool_policy.deny_shell_commands == ("pip", "python -m pip")
 
 
+class TestScopeIgnoreFiles:
+    def test_default_is_empty(self):
+        assert ProjectConfig().scope_ignore_files == ()
+
+    def test_loads_from_scope_section(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            '[project]\n\n[scope]\nignore_files = ["uv.lock", "go.sum"]\n'
+        )
+        pc = load_project_config(tmp_path)
+        assert pc.scope_ignore_files == ("uv.lock", "go.sum")
+
+    def test_worker_payload_round_trip(self):
+        pc = ProjectConfig(scope_ignore_files=("uv.lock",))
+        restored = ProjectConfig.from_worker_payload(pc.to_worker_payload())
+        assert restored.scope_ignore_files == ("uv.lock",)
+
+    def test_rejects_reserved_paths(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            '[project]\n\n[scope]\nignore_files = [".sentrux/baseline.json"]\n'
+        )
+        raised = False
+        try:
+            load_project_config(tmp_path)
+        except ValueError as exc:
+            raised = True
+            assert ".sentrux/baseline.json" in str(exc)
+        assert raised, "expected ValueError on reserved path in scope.ignore_files"
+
+    def test_missing_section_yields_empty(self, tmp_path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text('[project]\nlanguage = "python"\n')
+        pc = load_project_config(tmp_path)
+        assert pc.scope_ignore_files == ()
+
+
 class TestTypeCheckCommand:
     def test_type_check_cmd_default(self):
         assert ProjectConfig().type_check_cmd == ""

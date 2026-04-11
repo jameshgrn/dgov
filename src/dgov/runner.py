@@ -433,6 +433,7 @@ class EventDagRunner:
             claimed_files=claimed_files,
             project_root=self.session_root,
             task_slug=action.task_slug,
+            scope_ignore_files=self.project_config.scope_ignore_files,
         )
 
         emit_event(

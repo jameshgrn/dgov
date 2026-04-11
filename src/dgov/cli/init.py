@@ -66,6 +66,37 @@ def _source_files(root: Path, ext: str) -> list[Path]:
     return results
 
 
+# Known tooling-managed files that workers may incidentally touch via build /
+# test / dep-install commands. Seeded into `[scope] ignore_files` by `dgov init`
+# only when the file is actually present in the repo — so we don't smuggle
+# exemptions into a project that doesn't need them.
+_SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
+    # Python
+    "uv.lock",
+    "poetry.lock",
+    "Pipfile.lock",
+    ".python-version",
+    # JS/TS
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "bun.lockb",
+    # Rust
+    "Cargo.lock",
+    # Go
+    "go.sum",
+    # Ruby
+    "Gemfile.lock",
+    # Elixir
+    "mix.lock",
+)
+
+
+def _detect_scope_ignore_files(root: Path) -> list[str]:
+    """Return the subset of known managed files that actually exist in the repo."""
+    return [name for name in _SCOPE_IGNORE_CANDIDATES if (root / name).is_file()]
+
+
 def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
     """Auto-detect language, src dir, test dir, and extensions."""
     language = "python"
@@ -149,10 +180,17 @@ _LANG_TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 
-def _render_project_toml(language: str, src_dir: str, test_dir: str, extensions: list[str]) -> str:
+def _render_project_toml(
+    language: str,
+    src_dir: str,
+    test_dir: str,
+    extensions: list[str],
+    scope_ignore_files: list[str] | None = None,
+) -> str:
     """Render a project.toml string."""
     cmds = _LANG_TEMPLATES.get(language, _LANG_TEMPLATES["python"])
     ext_str = ", ".join(f'"{e}"' for e in extensions)
+    ignore_files = scope_ignore_files or []
 
     lines = [
         "[project]",
@@ -195,6 +233,13 @@ def _render_project_toml(language: str, src_dir: str, test_dir: str, extensions:
         "deny_shell_file_mutations = true",
         f"require_wrapped_verify_tools = {'true' if language == 'python' else 'false'}",
         f"require_uv_run = {'true' if language == 'python' else 'false'}",
+        "",
+        "[scope]",
+        "# Files exempted from scope-violation checks. Workers may incidentally",
+        "# touch these (e.g. `uv run` refreshing uv.lock) without failing review.",
+        "# Auto-seeded by `dgov init` based on files detected in the repo.",
+        "# Exact paths only — no globs.",
+        f"ignore_files = [{', '.join(f'"{name}"' for name in ignore_files)}]",
         "",
         "[conventions]",
         "# Add project-specific rules here for the agent to follow",
@@ -291,7 +336,10 @@ def init_cmd(force: bool, yes: bool) -> None:
     governor_path = dgov_dir / "governor.md"
 
     language, src_dir, test_dir, extensions = _detect_project(project_root)
-    toml_content = _render_project_toml(language, src_dir, test_dir, extensions)
+    scope_ignore_files = _detect_scope_ignore_files(project_root)
+    toml_content = _render_project_toml(
+        language, src_dir, test_dir, extensions, scope_ignore_files
+    )
     governor_content = _render_governor_md()
 
     dgov_dir.mkdir(parents=True, exist_ok=True)
@@ -317,6 +365,8 @@ def init_cmd(force: bool, yes: bool) -> None:
         click.echo(f"  language: {language}")
         click.echo(f"  src_dir:  {src_dir}")
         click.echo(f"  test_dir: {test_dir}")
+        if scope_ignore_files:
+            click.echo(f"  scope.ignore_files: {', '.join(scope_ignore_files)}")
         baseline_path = _sentrux_baseline_path(project_root)
         baseline_created = False
 

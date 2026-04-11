@@ -200,6 +200,39 @@ class TestReviewSandbox:
         result = review_sandbox(tmp_path, claimed_files=["new.py"])
         assert result.passed
 
+    def test_scope_ignore_files_exempts_lockfile(self, tmp_path: Path):
+        """Files in scope_ignore_files pass through without a claim."""
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "claimed.py", "x = 1\n")
+        _add_tracked_file(tmp_path, "uv.lock", "lock = 1\n")
+        _modify_tracked(tmp_path, "claimed.py", "x = 2\n")
+        _modify_tracked(tmp_path, "uv.lock", "lock = 2\n")
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["claimed.py"],
+            scope_ignore_files=("uv.lock",),
+        )
+        assert result.passed, f"expected pass, got {result.verdict}: {result.error}"
+
+    def test_scope_ignore_does_not_hide_real_violation(self, tmp_path: Path):
+        """Ignoring uv.lock does not hide other unclaimed files."""
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "claimed.py", "x = 1\n")
+        _add_tracked_file(tmp_path, "uv.lock", "lock = 1\n")
+        _add_tracked_file(tmp_path, "other.py", "y = 1\n")
+        _modify_tracked(tmp_path, "claimed.py", "x = 2\n")
+        _modify_tracked(tmp_path, "uv.lock", "lock = 2\n")
+        _modify_tracked(tmp_path, "other.py", "y = 2\n")
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["claimed.py"],
+            scope_ignore_files=("uv.lock",),
+        )
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "other.py" in (result.error or "")
+        assert "uv.lock" not in (result.error or "")
+
     def test_transient_unclaimed_tool_write_fails_scope(self, tmp_path: Path):
         worktree = tmp_path / "worktree"
         worktree.mkdir()

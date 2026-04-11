@@ -50,6 +50,7 @@ class ProjectConfig:
     agents: dict[str, str] = field(default_factory=dict)
     conventions: dict[str, str] = field(default_factory=dict)
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
+    scope_ignore_files: tuple[str, ...] = ()
 
     def resolve_test_cmd(self, file: str = "") -> str:
         """Build the test command with substitutions."""
@@ -99,6 +100,7 @@ class ProjectConfig:
             "test_markers": list(self.test_markers),
             "conventions": dict(self.conventions) if self.conventions else None,
             "tool_policy": self.tool_policy.as_jsonable(),
+            "scope_ignore_files": list(self.scope_ignore_files),
         }
 
     def to_atomic_config(self) -> AtomicConfig:
@@ -119,6 +121,12 @@ class ProjectConfig:
         conventions_raw = raw.get("conventions", {})
         conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else {}
 
+        ignore_raw = raw.get("scope_ignore_files", ())
+        if isinstance(ignore_raw, list):
+            scope_ignore_files = tuple(str(p) for p in ignore_raw)
+        else:
+            scope_ignore_files = tuple(ignore_raw or ())
+
         return cls(
             language=raw.get("language", "python"),
             src_dir=raw.get("src_dir", "src/"),
@@ -137,6 +145,7 @@ class ProjectConfig:
             test_markers=markers,
             conventions=conventions,
             tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
+            scope_ignore_files=scope_ignore_files,
         )
 
     def to_prompt_section(self) -> str:
@@ -187,6 +196,19 @@ def load_project_config(root: str | Path) -> ProjectConfig:
     if isinstance(extensions, list):
         extensions = tuple(extensions)
 
+    scope_section = raw.get("scope", {})
+    ignore_raw = scope_section.get("ignore_files", ()) if isinstance(scope_section, dict) else ()
+    if isinstance(ignore_raw, list):
+        scope_ignore_files = tuple(str(p).strip() for p in ignore_raw if str(p).strip())
+    else:
+        scope_ignore_files = ()
+    # Reserved-path guard: the scope ignore list must not shadow governor-owned
+    # files, otherwise a worker could silently mutate them.
+    _RESERVED_PATHS = frozenset({".sentrux/baseline.json"})
+    bad = sorted(set(scope_ignore_files) & _RESERVED_PATHS)
+    if bad:
+        raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
+
     return ProjectConfig(
         language=proj.get("language", "python"),
         src_dir=proj.get("src_dir", "src/"),
@@ -211,6 +233,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         agents=agents,
         conventions=conventions,
         tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
+        scope_ignore_files=scope_ignore_files,
     )
 
 
