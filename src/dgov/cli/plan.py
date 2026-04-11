@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from dgov.cli import cli, print_dag_graph, resolve_plan_input, want_json
+from dgov.deploy_log import DeployRecord
 from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
 from dgov.plan_tree import parse_compiled_source_mtime
 from dgov.project_root import resolve_project_root
@@ -250,15 +251,8 @@ def plan_status_cmd(plan_input: Path, verbose: bool) -> None:
     _cmd_plan_status(compiled_path, plan_root, verbose=verbose)
 
 
-def _cmd_plan_status(
-    compiled_path: Path, plan_root: Path | None, *, verbose: bool = False
-) -> None:
-    """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
-    import tomllib
-
-    from dgov.deploy_log import read as read_deploy_log
-    from dgov.plan_tree import walk_tree
-
+def _check_compiled_exists(compiled_path: Path, plan_root: Path | None) -> None:
+    """Handle the not-compiled error path. Raises ClickException on failure."""
     if not compiled_path.exists():
         target = plan_root if plan_root is not None else compiled_path
         msg = f"Not compiled; run 'dgov compile {target}'"
@@ -268,33 +262,44 @@ def _cmd_plan_status(
             click.echo(msg)
         raise click.exceptions.Exit(code=1) from None
 
-    raw = tomllib.loads(compiled_path.read_text())
-    plan_section = raw.get("plan", {})
-    plan_name = plan_section.get("name", "unknown")
-    tasks_raw = raw.get("tasks", {})
 
-    stale = False
-    compiled_source_mtime = plan_section.get("source_mtime_max", "")
-    if plan_root is not None:
-        try:
-            tree = walk_tree(plan_root)
-            current_mtime = max(
-                (plan_root / "_root.toml").stat().st_mtime,
-                *(p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
-            )
-            baseline_mtime = (
-                parse_compiled_source_mtime(compiled_source_mtime)
-                if isinstance(compiled_source_mtime, str) and compiled_source_mtime
-                else compiled_path.stat().st_mtime
-            )
-            stale = current_mtime > (baseline_mtime + _MTIME_EPSILON_S)
-        except (FileNotFoundError, ValueError):
-            pass
+def _compute_staleness(
+    compiled_path: Path, plan_root: Path | None, compiled_source_mtime: str
+) -> bool:
+    """Compute staleness by comparing source mtime against compiled baseline."""
+    from dgov.plan_tree import walk_tree
+
+    if plan_root is None:
+        return False
+    try:
+        tree = walk_tree(plan_root)
+        current_mtime = max(
+            (plan_root / "_root.toml").stat().st_mtime,
+            *(p.stat().st_mtime for paths in tree.section_files.values() for p in paths),
+        )
+        baseline_mtime = (
+            parse_compiled_source_mtime(compiled_source_mtime)
+            if isinstance(compiled_source_mtime, str) and compiled_source_mtime
+            else compiled_path.stat().st_mtime
+        )
+        return current_mtime > (baseline_mtime + _MTIME_EPSILON_S)
+    except (FileNotFoundError, ValueError):
+        return False
+
+
+def _load_deployed_units(plan_name: str) -> dict[str, DeployRecord]:
+    """Load deployed units from the deploy log. Returns a dict of unit -> deploy record."""
+    from dgov.deploy_log import read as read_deploy_log
 
     project_root = str(resolve_project_root())
     deployed = read_deploy_log(project_root, plan_name)
-    deployed_units = {r.unit: r for r in deployed}
+    return {r.unit: r for r in deployed}
 
+
+def _build_unit_statuses(
+    tasks_raw: dict, deployed_units: dict[str, DeployRecord]
+) -> list[dict[str, str]]:
+    """Build the list of unit status dicts from tasks and deployed records."""
     unit_statuses: list[dict[str, str]] = []
     for uid in sorted(tasks_raw):
         if uid in deployed_units:
@@ -309,50 +314,95 @@ def _cmd_plan_status(
                 "status": "pending",
                 "blocked_by": ", ".join(blocked_by) if blocked_by else "",
             })
+    return unit_statuses
+
+
+def _render_plan_status_json(
+    plan_name: str,
+    unit_statuses: list[dict[str, str]],
+    deployed_count: int,
+    pending_count: int,
+    stale: bool,
+) -> None:
+    """Render plan status as JSON output."""
+    click.echo(
+        json.dumps(
+            {
+                "plan": plan_name,
+                "units": len(unit_statuses),
+                "deployed": deployed_count,
+                "pending": pending_count,
+                "stale": stale,
+                "unit_statuses": unit_statuses,
+            },
+            indent=2,
+        )
+    )
+
+
+def _render_plan_status_text(
+    plan_name: str,
+    unit_statuses: list[dict[str, str]],
+    deployed_count: int,
+    pending_count: int,
+    stale: bool,
+    plan_root: Path | None,
+    verbose: bool,
+) -> None:
+    """Render plan status as human-readable text output."""
+    total = len(unit_statuses)
+    # One-line summary by default. Deep-dive via `dgov plan review`.
+    click.echo(f"Plan: {plan_name}  ({deployed_count}/{total} deployed, {pending_count} pending)")
+    if stale and plan_root is not None:
+        click.echo(
+            click.style(
+                f"  stale — rerun 'dgov compile {plan_root}'",
+                fg="yellow",
+            )
+        )
+    if verbose:
+        click.echo("")
+        for u in unit_statuses:
+            if u["status"] == "deployed":
+                line = f"  {click.style('✓', fg='green')} {u['unit']}"
+                line += f"  (deployed {u['ts']}, sha {u['sha'][:7]})"
+            else:
+                line = f"  ○ {u['unit']}"
+                if u.get("blocked_by"):
+                    line += f"  (pending, blocked by: {u['blocked_by']})"
+                else:
+                    line += "  (pending)"
+            click.echo(line)
+
+
+def _cmd_plan_status(
+    compiled_path: Path, plan_root: Path | None, *, verbose: bool = False
+) -> None:
+    """Pillar #4: Determinism — staleness detection prevents dispatching stale plans."""
+    import tomllib
+
+    _check_compiled_exists(compiled_path, plan_root)
+
+    raw = tomllib.loads(compiled_path.read_text())
+    plan_section = raw.get("plan", {})
+    plan_name = plan_section.get("name", "unknown")
+    tasks_raw = raw.get("tasks", {})
+
+    compiled_source_mtime = plan_section.get("source_mtime_max", "")
+    stale = _compute_staleness(compiled_path, plan_root, compiled_source_mtime)
+
+    deployed_units = _load_deployed_units(plan_name)
+    unit_statuses = _build_unit_statuses(tasks_raw, deployed_units)
 
     deployed_count = sum(1 for u in unit_statuses if u["status"] == "deployed")
     pending_count = len(unit_statuses) - deployed_count
 
     if want_json():
-        click.echo(
-            json.dumps(
-                {
-                    "plan": plan_name,
-                    "units": len(unit_statuses),
-                    "deployed": deployed_count,
-                    "pending": pending_count,
-                    "stale": stale,
-                    "unit_statuses": unit_statuses,
-                },
-                indent=2,
-            )
-        )
+        _render_plan_status_json(plan_name, unit_statuses, deployed_count, pending_count, stale)
     else:
-        total = len(unit_statuses)
-        # One-line summary by default. Deep-dive via `dgov plan review`.
-        click.echo(
-            f"Plan: {plan_name}  ({deployed_count}/{total} deployed, {pending_count} pending)"
+        _render_plan_status_text(
+            plan_name, unit_statuses, deployed_count, pending_count, stale, plan_root, verbose
         )
-        if stale and plan_root is not None:
-            click.echo(
-                click.style(
-                    f"  stale — rerun 'dgov compile {plan_root}'",
-                    fg="yellow",
-                )
-            )
-        if verbose:
-            click.echo("")
-            for u in unit_statuses:
-                if u["status"] == "deployed":
-                    line = f"  {click.style('✓', fg='green')} {u['unit']}"
-                    line += f"  (deployed {u['ts']}, sha {u['sha'][:7]})"
-                else:
-                    line = f"  ○ {u['unit']}"
-                    if u.get("blocked_by"):
-                        line += f"  (pending, blocked by: {u['blocked_by']})"
-                    else:
-                        line += "  (pending)"
-                click.echo(line)
 
 
 @plan_cmd.command(name="review")
