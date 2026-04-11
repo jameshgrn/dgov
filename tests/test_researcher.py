@@ -26,7 +26,7 @@ from dgov.workers.atomic import (  # noqa: E402
 pytestmark = pytest.mark.unit
 
 
-def test_researcher_prompt_uses_configured_budget_and_tree(tmp_path: Path) -> None:
+def test_researcher_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
 
@@ -41,6 +41,17 @@ def test_researcher_prompt_uses_configured_budget_and_tree(tmp_path: Path) -> No
     assert "past call" in prompt
     assert "60" in prompt
     assert "file_089.txt" in prompt
+
+
+def test_researcher_prompt_uses_repo_map_language(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "mod.py").write_text("def hello():\n    return 1\n")
+
+    prompt = _build_system_prompt(tmp_path, AtomicConfig())
+
+    assert "REPO MAP:" in prompt
+    assert "def hello" in prompt
+    assert "ast_grep" in prompt
 
 
 def test_researcher_prompt_defaults_to_read_first(tmp_path: Path) -> None:

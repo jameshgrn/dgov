@@ -129,7 +129,7 @@ def _make_runner(dag: DagDefinition) -> EventDagRunner:
     async def _noop() -> None:
         pass
 
-    runner._preflight_check_models = _noop  # type: ignore
+    runner._check_model_env = _noop  # type: ignore
     return runner
 
 
@@ -277,7 +277,7 @@ class TestPreflight:
         runner = EventDagRunner(dag, session_root=str(tmp_path))
         monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        asyncio.run(runner._preflight_check_models())
+        asyncio.run(runner._check_model_env())
 
 
 class TestReviewFailure:

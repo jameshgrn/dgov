@@ -112,6 +112,16 @@ class TestFindReferences:
         assert "No matches found" in result
 
 
+class TestAstGrep:
+    def test_finds_structural_matches(self, tools):
+        result = tools.ast_grep("def $A(): $$$", "src")
+        assert "src/foo.py:1:def hello():" in result
+
+    def test_no_matches(self, tools):
+        result = tools.ast_grep("class $A: $$$", "src")
+        assert result == "No matches found."
+
+
 class TestRevertFile:
     def test_reverts_changes(self, tools, worktree):
         # Initial state is committed in the fixture's tmp_path (simulated by git diff empty)

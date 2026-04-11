@@ -49,24 +49,7 @@ async def run_headless_worker(
 
     # Serialize project config to JSON for the subprocess
     pc = load_project_config(project_root)
-    config_json = json.dumps({
-        "language": pc.language,
-        "src_dir": pc.src_dir,
-        "test_dir": pc.test_dir,
-        "llm_base_url": pc.llm_base_url,
-        "llm_api_key_env": pc.llm_api_key_env,
-        "test_cmd": pc.test_cmd,
-        "lint_cmd": pc.lint_cmd,
-        "format_cmd": pc.format_cmd,
-        "lint_fix_cmd": pc.lint_fix_cmd,
-        "type_check_cmd": pc.type_check_cmd,
-        "test_markers": list(pc.test_markers),
-        "worker_iteration_budget": pc.worker_iteration_budget,
-        "worker_iteration_warn_at": pc.worker_iteration_warn_at,
-        "worker_tree_max_lines": pc.worker_tree_max_lines,
-        "conventions": dict(pc.conventions) if pc.conventions else None,
-        "tool_policy": pc.tool_policy.as_jsonable(),
-    })
+    config_json = json.dumps(pc.to_worker_payload())
 
     cmd = [
         sys.executable,

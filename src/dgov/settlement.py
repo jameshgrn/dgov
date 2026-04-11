@@ -409,11 +409,37 @@ def _changed_source_files(
         text=True,
         check=True,
     )
-    return [
-        f
-        for f in diff_res.stdout.strip().split("\n")
-        if any(f.endswith(ext) for ext in extensions)
-    ]
+    return _filter_source_files(diff_res.stdout.strip().split("\n"), extensions)
+
+
+def _filter_source_files(paths: Sequence[str], extensions: tuple[str, ...]) -> list[str]:
+    """Filter an ordered path sequence down to unique source files."""
+    seen: set[str] = set()
+    source_files: list[str] = []
+    for path in paths:
+        if not path or not any(path.endswith(ext) for ext in extensions) or path in seen:
+            continue
+        seen.add(path)
+        source_files.append(path)
+    return source_files
+
+
+def _working_tree_source_files(
+    worktree_path: Path, extensions: tuple[str, ...]
+) -> list[str] | GateResult:
+    """Return source files changed in the working tree, including untracked files."""
+    files_result = _get_all_changes(worktree_path)
+    if isinstance(files_result, ReviewResult):
+        if files_result.verdict == "empty_diff":
+            return []
+        return GateResult(passed=False, error=files_result.error or "git status failed")
+
+    return _filter_source_files(sorted(files_result), extensions)
+
+
+def _existing_files(worktree_path: Path, paths: Sequence[str]) -> list[str]:
+    """Return only changed paths that still exist on disk."""
+    return [f for f in paths if f and (worktree_path / f).exists()]
 
 
 def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: Path) -> list[str]:
@@ -469,6 +495,15 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
         for t in related:
             if t not in targets:
                 targets.append(t)
+        src_root = config.src_dir.rstrip("/")
+        boundary_test = f"{test_dir}/test_boundaries.py"
+        touches_src = any(f == src_root or f.startswith(f"{src_root}/") for f in source_files)
+        if (
+            touches_src
+            and (worktree_path / boundary_test).is_file()
+            and boundary_test not in targets
+        ):
+            targets.append(boundary_test)
 
     if not targets:
         return ""
@@ -577,41 +612,40 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> G
     return GateResult(passed=True)
 
 
-def validate_sandbox(
+def _run_acceptance_gates(
     worktree_path: Path,
-    base_commit: str,
+    changed_files: Sequence[str],
     project_root: str,
-    config: ProjectConfig | None = None,
+    config: ProjectConfig,
 ) -> GateResult:
-    """Read-only validation gate. Called AFTER commit. No mutations."""
-    if config is None:
-        config = load_project_config(project_root)
+    """Run the shared acceptance gates for a resolved changed-file set."""
+    if not changed_files:
+        return GateResult(passed=True)
+
+    existing_changed_files = _existing_files(worktree_path, changed_files)
 
     try:
-        changed_files = _changed_source_files(worktree_path, base_commit, config.source_extensions)
-        if not changed_files:
-            return GateResult(passed=True)
+        if existing_changed_files:
+            res_lint = _run_cmd(
+                config.lint_cmd,
+                existing_changed_files,
+                worktree_path,
+                timeout=config.settlement_timeout,
+            )
+            if res_lint.returncode != 0:
+                output = (res_lint.stdout + res_lint.stderr)[-500:]
+                return GateResult(passed=False, error=f"Lint failure:\n{output}")
 
-        # Lint gate
-        res_lint = _run_cmd(
-            config.lint_cmd, changed_files, worktree_path, timeout=config.settlement_timeout
-        )
-        if res_lint.returncode != 0:
-            output = (res_lint.stdout + res_lint.stderr)[-500:]
-            return GateResult(passed=False, error=f"Lint failure:\n{output}")
+            res_fmt = _run_cmd(
+                config.format_check_cmd,
+                existing_changed_files,
+                worktree_path,
+                timeout=config.settlement_timeout,
+            )
+            if res_fmt.returncode != 0:
+                output = (res_fmt.stdout + res_fmt.stderr)[-500:]
+                return GateResult(passed=False, error=f"Format failure:\n{output}")
 
-        # Format check
-        res_fmt = _run_cmd(
-            config.format_check_cmd,
-            changed_files,
-            worktree_path,
-            timeout=config.settlement_timeout,
-        )
-        if res_fmt.returncode != 0:
-            output = (res_fmt.stdout + res_fmt.stderr)[-500:]
-            return GateResult(passed=False, error=f"Format failure:\n{output}")
-
-        # Type check gate (skipped when type_check_cmd is empty)
         if config.type_check_cmd:
             res_ty = subprocess.run(
                 config.type_check_cmd,
@@ -625,8 +659,7 @@ def validate_sandbox(
                 output = (res_ty.stdout + res_ty.stderr)[-500:]
                 return GateResult(passed=False, error=f"Type check failure:\n{output}")
 
-        # Test gate
-        test_cmd = _build_test_cmd(config, changed_files, worktree_path)
+        test_cmd = _build_test_cmd(config, list(changed_files), worktree_path)
         if test_cmd:
             test_failure = _run_test_gate(
                 test_cmd, worktree_path, timeout=config.settlement_timeout
@@ -634,7 +667,6 @@ def validate_sandbox(
             if test_failure is not None:
                 return test_failure
 
-        # Sentrux gate (semantic/architectural check)
         sx_result = _run_sentrux_gate(worktree_path, project_root, config.settlement_timeout)
         if not sx_result.passed:
             return sx_result
@@ -643,3 +675,32 @@ def validate_sandbox(
 
     except Exception as exc:
         return GateResult(passed=False, error=f"Unexpected validation error: {exc}")
+
+
+def preflight_sandbox(
+    worktree_path: Path,
+    project_root: str,
+    config: ProjectConfig | None = None,
+) -> GateResult:
+    """Run the settlement acceptance gates against local working-tree changes."""
+    if config is None:
+        config = load_project_config(project_root)
+
+    changed_files = _working_tree_source_files(worktree_path, config.source_extensions)
+    if isinstance(changed_files, GateResult):
+        return changed_files
+    return _run_acceptance_gates(worktree_path, changed_files, project_root, config)
+
+
+def validate_sandbox(
+    worktree_path: Path,
+    base_commit: str,
+    project_root: str,
+    config: ProjectConfig | None = None,
+) -> GateResult:
+    """Read-only validation gate. Called AFTER commit. No mutations."""
+    if config is None:
+        config = load_project_config(project_root)
+
+    changed_files = _changed_source_files(worktree_path, base_commit, config.source_extensions)
+    return _run_acceptance_gates(worktree_path, changed_files, project_root, config)

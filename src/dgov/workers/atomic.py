@@ -10,6 +10,7 @@ import ast
 import fnmatch
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from dgov.tool_policy import ToolPolicy
+from dgov.tool_policy import ToolPolicy, parse_tool_policy
+
+_DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"
+_DEFAULT_LLM_API_KEY_ENV = "FIREWORKS_API_KEY"
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,71 @@ class AtomicConfig:
     test_markers: tuple[str, ...] = ()
     conventions: dict[str, str] | None = None
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
+
+
+def _payload_markers(raw: object) -> tuple[str, ...]:
+    if isinstance(raw, list):
+        return tuple(str(item) for item in raw)
+    if isinstance(raw, tuple):
+        return tuple(str(item) for item in raw)
+    return ()
+
+
+def atomic_config_from_payload(raw: dict[str, Any]) -> AtomicConfig:
+    """Deserialize a worker payload into AtomicConfig."""
+    conventions_raw = raw.get("conventions", {})
+    conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else None
+    return AtomicConfig(
+        language=raw.get("language", "python"),
+        src_dir=raw.get("src_dir", "src/"),
+        test_dir=raw.get("test_dir", "tests/"),
+        test_cmd=raw.get("test_cmd", AtomicConfig.test_cmd),
+        lint_cmd=raw.get("lint_cmd", AtomicConfig.lint_cmd),
+        format_cmd=raw.get("format_cmd", AtomicConfig.format_cmd),
+        lint_fix_cmd=raw.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
+        type_check_cmd=raw.get("type_check_cmd", ""),
+        worker_iteration_budget=raw.get("worker_iteration_budget", 50),
+        worker_iteration_warn_at=raw.get("worker_iteration_warn_at", 40),
+        worker_tree_max_lines=raw.get("worker_tree_max_lines", 80),
+        line_length=raw.get("line_length", 99),
+        test_markers=_payload_markers(raw.get("test_markers", ())),
+        conventions=conventions,
+        tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
+    )
+
+
+def llm_runtime_settings_from_payload(raw: dict[str, Any]) -> tuple[str, str]:
+    """Extract LLM runtime settings from a worker payload."""
+    return (
+        raw.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
+        raw.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
+    )
+
+
+def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
+    """Normalize raw project.toml data into the worker payload shape."""
+    proj = raw.get("project", {})
+    conventions_raw = raw.get("conventions", {})
+    conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else None
+    return {
+        "language": proj.get("language", "python"),
+        "src_dir": proj.get("src_dir", "src/"),
+        "test_dir": proj.get("test_dir", "tests/"),
+        "llm_base_url": proj.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
+        "llm_api_key_env": proj.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
+        "test_cmd": proj.get("test_cmd", AtomicConfig.test_cmd),
+        "lint_cmd": proj.get("lint_cmd", AtomicConfig.lint_cmd),
+        "format_cmd": proj.get("format_cmd", AtomicConfig.format_cmd),
+        "lint_fix_cmd": proj.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
+        "type_check_cmd": proj.get("type_check_cmd", ""),
+        "worker_iteration_budget": proj.get("worker_iteration_budget", 50),
+        "worker_iteration_warn_at": proj.get("worker_iteration_warn_at", 40),
+        "worker_tree_max_lines": proj.get("worker_tree_max_lines", 80),
+        "line_length": proj.get("line_length", 99),
+        "test_markers": list(_payload_markers(proj.get("test_markers", ()))),
+        "conventions": conventions,
+        "tool_policy": parse_tool_policy(raw.get("tool_policy", {})).as_jsonable(),
+    }
 
 
 def shell_quote(s: str) -> str:
@@ -428,7 +497,7 @@ class AtomicTools:
     # -- Code intelligence tools --
 
     def find_references(self, symbol: str, exclude_tests: bool = False) -> str:
-        """Find all occurrences of a symbol across the codebase (excluding binary/hidden files)."""
+        """Find lexical occurrences of a symbol across the codebase."""
         flags = "-w"  # word boundary
         if exclude_tests:
             # Escape ! for shell if needed, but ripgrep handles it in quotes
@@ -446,6 +515,43 @@ class AtomicTools:
         if "EXIT:1" in result:
             return f"No matches found for '{symbol}'."
         return result
+
+    def ast_grep(self, pattern: str, path: str = ".", lang: str = "") -> str:
+        """Search code structurally using ast-grep."""
+        target = self._check_path(path)
+        if isinstance(target, str):
+            return target
+        if shutil.which("sg") is None:
+            return "Error: ast-grep ('sg') not found in PATH."
+
+        rel = str(target.relative_to(self.worktree))
+        cmd = ["sg", "run", "--color", "never", "--heading", "never", "--pattern", pattern]
+        if lang:
+            cmd.extend(["--lang", lang])
+        cmd.append(rel)
+
+        try:
+            res = subprocess.run(
+                cmd,
+                cwd=self.worktree,
+                env=self._sandbox_env(),
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return "Error: ast-grep timed out after 30s."
+
+        output = (res.stdout or "") + (res.stderr or "")
+        if res.returncode == 0:
+            stripped = output.strip()
+            if len(stripped) > 5000:
+                return stripped[:5000] + "\n... (truncated at 5000 chars)"
+            return stripped or "No matches found."
+        if res.returncode == 1:
+            return "No matches found."
+        return f"Error: ast-grep failed:\n{output.strip()}"
 
     def file_symbols(self, path: str) -> str:
         """List functions, classes, and top-level assignments with line numbers."""
@@ -494,7 +600,7 @@ class AtomicTools:
             return f"SyntaxError in {path} line {e.lineno}: {e.msg}"
 
     def related_files(self, path: str) -> str:
-        """Show files that import from this file AND files this file imports from."""
+        """Heuristic import neighborhood for a Python file."""
         target = self._check_path(path)
         if isinstance(target, str):
             return target
@@ -956,8 +1062,8 @@ def get_tool_spec(role: Literal["worker", "researcher"] = "worker") -> list[Any]
             "function": {
                 "name": "find_references",
                 "description": (
-                    "Search for all occurrences of a symbol across the entire codebase. "
-                    "Use this to find usages, calls, and dependencies of a function or class."
+                    "Find lexical occurrences of a symbol across the codebase. "
+                    "Use this for quick name hits. Prefer ast_grep for structural search."
                 ),
                 "parameters": {
                     "type": "object",
@@ -970,6 +1076,36 @@ def get_tool_spec(role: Literal["worker", "researcher"] = "worker") -> list[Any]
                         },
                     },
                     "required": ["symbol"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "ast_grep",
+                "description": (
+                    "Structural code search via ast-grep. Use this for syntax-aware matches "
+                    "like function defs, imports, calls, or class declarations."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "ast-grep pattern such as 'def $A(): $$$'",
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "File or dir to search (default: '.')",
+                            "default": ".",
+                        },
+                        "lang": {
+                            "type": "string",
+                            "description": "Optional ast-grep language override, e.g. 'python'",
+                            "default": "",
+                        },
+                    },
+                    "required": ["pattern"],
                 },
             },
         },
@@ -1009,9 +1145,8 @@ def get_tool_spec(role: Literal["worker", "researcher"] = "worker") -> list[Any]
             "function": {
                 "name": "related_files",
                 "description": (
-                    "Show the import neighborhood of a file: what it imports from "
-                    "AND what other files import from it. Use before editing to "
-                    "understand who depends on the code you're changing."
+                    "Heuristic import neighborhood for a Python file: what it imports "
+                    "from and what imports it. Use as a fallback, not as a semantic truth source."
                 ),
                 "parameters": {
                     "type": "object",

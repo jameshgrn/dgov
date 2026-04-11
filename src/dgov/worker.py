@@ -13,6 +13,7 @@ Pillar #6: Event-Sourced - Every thought and tool call is emitted as a JSON line
 """
 
 import argparse
+import ast
 import json
 import os
 import shutil
@@ -28,12 +29,14 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
-from dgov.tool_policy import parse_tool_policy  # noqa: E402
 from dgov.workers.atomic import (  # noqa: E402
     AtomicConfig,
     AtomicTools,
+    atomic_config_from_payload,
     get_allowed_tool_names,
     get_tool_spec,
+    llm_runtime_settings_from_payload,
+    worker_payload_from_project_toml,
 )
 
 
@@ -47,87 +50,35 @@ class WorkerEvent:
         print(json.dumps({"worker_event": self.__dict__}), flush=True)
 
 
-def _load_llm_runtime_settings(worktree: Path) -> tuple[str, str]:
-    """Load OpenAI-compatible endpoint settings from .dgov/project.toml."""
+def _load_project_payload(worktree: Path) -> dict[str, object]:
+    """Load .dgov/project.toml and normalize it to the worker payload shape."""
     path = worktree / ".dgov" / "project.toml"
-    default_base_url = "https://api.fireworks.ai/inference/v1"
-    default_api_key_env = "FIREWORKS_API_KEY"
     if not path.exists():
-        return default_base_url, default_api_key_env
+        return worker_payload_from_project_toml({})
     try:
         import tomllib
 
         raw = tomllib.loads(path.read_text())
     except Exception:
-        return default_base_url, default_api_key_env
+        return worker_payload_from_project_toml({})
+    return worker_payload_from_project_toml(raw)
 
-    proj = raw.get("project", {})
-    return (
-        proj.get("llm_base_url", default_base_url),
-        proj.get("llm_api_key_env", default_api_key_env),
-    )
+
+def _load_llm_runtime_settings(worktree: Path) -> tuple[str, str]:
+    """Load OpenAI-compatible endpoint settings from .dgov/project.toml."""
+    return llm_runtime_settings_from_payload(_load_project_payload(worktree))
 
 
 def _load_project_config(worktree: Path) -> AtomicConfig:
     """Load .dgov/project.toml from worktree. Returns defaults if missing."""
-    path = worktree / ".dgov" / "project.toml"
-    if not path.exists():
-        return AtomicConfig()
-    try:
-        import tomllib
-
-        raw = tomllib.loads(path.read_text())
-    except Exception:
-        return AtomicConfig()
-
-    proj = raw.get("project", {})
-    conventions = raw.get("conventions", {})
-    markers = proj.get("test_markers", ())
-    if isinstance(markers, list):
-        markers = tuple(markers)
-
-    return AtomicConfig(
-        language=proj.get("language", "python"),
-        src_dir=proj.get("src_dir", "src/"),
-        test_dir=proj.get("test_dir", "tests/"),
-        test_cmd=proj.get("test_cmd", AtomicConfig.test_cmd),
-        lint_cmd=proj.get("lint_cmd", AtomicConfig.lint_cmd),
-        format_cmd=proj.get("format_cmd", AtomicConfig.format_cmd),
-        lint_fix_cmd=proj.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
-        worker_iteration_budget=proj.get("worker_iteration_budget", 50),
-        worker_iteration_warn_at=proj.get("worker_iteration_warn_at", 40),
-        worker_tree_max_lines=proj.get("worker_tree_max_lines", 80),
-        line_length=proj.get("line_length", 99),
-        test_markers=markers,
-        conventions=conventions or None,
-        tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
-    )
+    return atomic_config_from_payload(_load_project_payload(worktree))
 
 
 def _resolve_config(worktree: Path, project_config_json: str) -> AtomicConfig:
     """Load config from the JSON arg (passed by headless.py) or fall back to worktree TOML."""
     if project_config_json:
         try:
-            raw = json.loads(project_config_json)
-            raw.pop("llm_base_url", None)
-            raw.pop("llm_api_key_env", None)
-            return AtomicConfig(
-                language=raw.get("language", "python"),
-                src_dir=raw.get("src_dir", "src/"),
-                test_dir=raw.get("test_dir", "tests/"),
-                test_cmd=raw.get("test_cmd", AtomicConfig.test_cmd),
-                lint_cmd=raw.get("lint_cmd", AtomicConfig.lint_cmd),
-                format_cmd=raw.get("format_cmd", AtomicConfig.format_cmd),
-                lint_fix_cmd=raw.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
-                type_check_cmd=raw.get("type_check_cmd", ""),
-                worker_iteration_budget=raw.get("worker_iteration_budget", 50),
-                worker_iteration_warn_at=raw.get("worker_iteration_warn_at", 40),
-                worker_tree_max_lines=raw.get("worker_tree_max_lines", 80),
-                line_length=raw.get("line_length", 99),
-                test_markers=tuple(raw.get("test_markers", ()) or ()),
-                conventions=raw.get("conventions") or None,
-                tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
-            )
+            return atomic_config_from_payload(json.loads(project_config_json))
         except Exception:
             pass
     return _load_project_config(worktree)
@@ -137,60 +88,94 @@ def _resolve_llm_runtime_settings(worktree: Path, project_config_json: str) -> t
     """Load LLM endpoint settings from JSON or fall back to worktree TOML."""
     if project_config_json:
         try:
-            raw = json.loads(project_config_json)
-            return (
-                raw.get("llm_base_url", "https://api.fireworks.ai/inference/v1"),
-                raw.get("llm_api_key_env", "FIREWORKS_API_KEY"),
-            )
+            return llm_runtime_settings_from_payload(json.loads(project_config_json))
         except Exception:
             pass
     return _load_llm_runtime_settings(worktree)
 
 
-_TREE_SNAPSHOT_MAX_CHARS = 12_000
+_PROMPT_CONTEXT_MAX_CHARS = 12_000
 _TOOL_RESULT_MAX_CHARS = 12_000
+_REPO_MAP_TRUNCATION_NOTICE = "\n... [repo map truncated for prompt budget]"
 
 
-def _snapshot_tree(
-    worktree: Path,
-    max_depth: int = 2,
-    max_lines: int = 80,
-    max_chars: int = _TREE_SNAPSHOT_MAX_CHARS,
-) -> str:
-    """Generate a compact project tree for the system prompt."""
-    lines: list[str] = []
-    for root_dir, dirs, files in os.walk(worktree):
-        depth = Path(root_dir).relative_to(worktree).parts
-        if len(depth) >= max_depth:
-            dirs.clear()
+def _iter_repo_map_files(worktree: Path, config: AtomicConfig) -> list[Path]:
+    files: list[Path] = []
+    for path in sorted(worktree.rglob("*")):
+        if not path.is_file():
             continue
-        # Skip hidden dirs, __pycache__, node_modules, .venv
-        dirs[:] = sorted(
-            d
-            for d in dirs
-            if not d.startswith(".") and d not in ("__pycache__", "node_modules", ".venv")
-        )
-        indent = "  " * len(depth)
-        rel = str(Path(root_dir).relative_to(worktree))
-        if rel == ".":
-            rel = ""
-        else:
-            lines.append(f"{indent}{Path(root_dir).name}/")
-        for f in sorted(files):
-            if f.startswith("."):
-                continue
-            lines.append(f"{indent}  {f}")
+        rel_parts = path.relative_to(worktree).parts
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        if any(part in {"__pycache__", "node_modules", ".venv"} for part in rel_parts):
+            continue
+        files.append(path)
+
+    def _priority(path: Path) -> tuple[int, str]:
+        rel = str(path.relative_to(worktree))
+        src_root = config.src_dir.rstrip("/")
+        test_root = config.test_dir.rstrip("/")
+        if src_root and rel.startswith(f"{src_root}/"):
+            return (0, rel)
+        if test_root and rel.startswith(f"{test_root}/"):
+            return (1, rel)
+        if path.suffix == ".py":
+            return (2, rel)
+        return (3, rel)
+
+    return sorted(files, key=_priority)
+
+
+def _python_symbol_lines(path: Path) -> list[str]:
+    if path.suffix != ".py":
+        return []
+    try:
+        tree = ast.parse(path.read_text())
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return []
+
+    lines: list[str] = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef):
+            lines.append(f"class {node.name}")
+            method_count = 0
+            for item in ast.iter_child_nodes(node):
+                if isinstance(item, ast.FunctionDef | ast.AsyncFunctionDef):
+                    lines.append(f"  def {node.name}.{item.name}")
+                    method_count += 1
+                    if method_count >= 5:
+                        break
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            lines.append(f"def {node.name}")
+        if len(lines) >= 8:
+            break
+    return lines
+
+
+def _repo_map_snapshot(
+    worktree: Path,
+    config: AtomicConfig,
+    max_lines: int = 80,
+    max_chars: int = _PROMPT_CONTEXT_MAX_CHARS,
+) -> str:
+    """Generate a compact symbol-oriented repo map for prompt context."""
+    lines: list[str] = []
+    for path in _iter_repo_map_files(worktree, config):
+        rel = str(path.relative_to(worktree))
+        lines.append(rel)
+        for symbol in _python_symbol_lines(path):
+            lines.append(f"  {symbol}")
+
     if max_lines > 0:
         lines = lines[:max_lines]
 
-    snapshot = "\n".join(lines)
-    if max_chars <= 0 or len(snapshot) <= max_chars:
-        return snapshot
+    repo_map = "\n".join(lines)
+    if max_chars <= 0 or len(repo_map) <= max_chars:
+        return repo_map
 
-    notice = "\n... [tree truncated for prompt budget]"
-    budget = max_chars - len(notice)
+    budget = max_chars - len(_REPO_MAP_TRUNCATION_NOTICE)
     if budget <= 0:
-        return notice.lstrip("\n")
+        return _REPO_MAP_TRUNCATION_NOTICE.lstrip("\n")
 
     kept: list[str] = []
     used = 0
@@ -200,7 +185,7 @@ def _snapshot_tree(
             break
         kept.append(line)
         used += line_len
-    return "\n".join(kept) + notice
+    return "\n".join(kept) + _REPO_MAP_TRUNCATION_NOTICE
 
 
 def _clip_tool_result(result: str, max_chars: int = _TOOL_RESULT_MAX_CHARS) -> str:
@@ -220,7 +205,7 @@ def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
     if rules_path.exists():
         rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
 
-    project_tree = _snapshot_tree(worktree, max_lines=config.worker_tree_max_lines)
+    repo_map = _repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
 
     project_section = (
         f"\n\nPROJECT:\n"
@@ -240,7 +225,7 @@ def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
             project_section += f"- {line}\n"
 
     sections = [
-        f"""[DGOV_WORKER_PROMPT_V1.1.0]
+        f"""[DGOV_WORKER_PROMPT_V1.2.0]
 
 Greetings, Actuator.
 
@@ -255,11 +240,11 @@ THE DGOV WAY:
 """,
         rules_context,
         project_section,
-        f"\nPROJECT TREE:\n{project_tree}",
+        f"\nREPO MAP:\n{repo_map}",
         f"""
 ENVIRONMENT:
 - Python: {sys.executable}
-- Available: rg, jq, tree, git, python, pytest, ruff (all pre-installed)
+- Available: rg, sg (ast-grep), jq, tree, git, python, pytest, ruff (all pre-installed)
 - Everything is pre-installed. Do NOT install packages, create venvs, or pip install.
 - Use relative paths for all file tools (e.g. 'src/dgov/foo.py' not absolute).
 
@@ -270,10 +255,12 @@ SETTLEMENT LAYER (THE AUDITOR):
 - If you find a bug, record it in 'dgov ledger' but do not fix it unless tasked.
 
 WORKFLOW — follow this order:
-1. ORIENT: Use tree to see structure. Use ripgrep or grep for wide searches.
-   Use find_references(symbol) to find all usages of a function/class.
+1. ORIENT: Start with the repo map for structure and likely hotspots.
+   Use tree for raw filesystem shape. Use ast_grep for structural search.
+   Use ripgrep or grep for lexical search. Use find_references(symbol)
+   for quick name hits, not semantic truth.
    Use file_symbols, head, or read_file to understand specific files.
-   Use related_files to see what imports from the file you're editing.
+   Use related_files only as a heuristic import neighborhood fallback.
    Use word_count and jq (for JSON) to gauge data/size before reading.
 2. EDIT: Use edit_file for existing files (NEVER write_file to modify).
    Use write_file only for new files. Use apply_patch for multi-hunk edits.

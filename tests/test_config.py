@@ -2,6 +2,7 @@
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.tool_policy import ToolPolicy
+from dgov.workers.atomic import AtomicConfig
 
 
 class TestProjectConfigDefaults:
@@ -82,6 +83,43 @@ class TestPromptSection:
         section = pc.to_prompt_section()
         assert "run_bash is restricted" in section
         assert "must use 'uv run'" in section
+
+
+class TestWorkerPayload:
+    def test_worker_payload_round_trip_preserves_worker_fields(self):
+        pc = ProjectConfig(
+            llm_base_url="https://api.openai.com/v1",
+            llm_api_key_env="OPENAI_API_KEY",
+            type_check_cmd="uv run ty check",
+            worker_iteration_budget=75,
+            worker_iteration_warn_at=60,
+            worker_tree_max_lines=0,
+            line_length=120,
+            test_markers=("unit",),
+            conventions={"imports": "absolute"},
+            tool_policy=ToolPolicy(require_uv_run=True),
+        )
+
+        round_tripped = ProjectConfig.from_worker_payload(pc.to_worker_payload())
+
+        assert round_tripped.llm_runtime_settings() == (
+            "https://api.openai.com/v1",
+            "OPENAI_API_KEY",
+        )
+        assert round_tripped.type_check_cmd == "uv run ty check"
+        assert round_tripped.line_length == 120
+        assert round_tripped.test_markers == ("unit",)
+        assert round_tripped.conventions == {"imports": "absolute"}
+        assert round_tripped.tool_policy.require_uv_run is True
+
+    def test_to_atomic_config_preserves_type_check_and_line_length(self):
+        pc = ProjectConfig(type_check_cmd="uv run ty check", line_length=120)
+
+        atomic = pc.to_atomic_config()
+
+        assert isinstance(atomic, AtomicConfig)
+        assert atomic.type_check_cmd == "uv run ty check"
+        assert atomic.line_length == 120
 
 
 class TestLoadProjectConfig:

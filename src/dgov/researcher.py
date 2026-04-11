@@ -27,9 +27,9 @@ if str(_project_root / "src") not in sys.path:
 from dgov.worker import (  # noqa: E402
     WorkerEvent,
     _execute_tool_call,
+    _repo_map_snapshot,
     _resolve_config,
     _resolve_llm_runtime_settings,
-    _snapshot_tree,
 )
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
 
@@ -41,7 +41,7 @@ def _build_system_prompt(worktree: Path, config: Any) -> str:
     if rules_path.exists():
         rules_context = f"\nLEARNED RULES:\n{rules_path.read_text()}"
 
-    project_tree = _snapshot_tree(worktree, max_lines=config.worker_tree_max_lines)
+    repo_map = _repo_map_snapshot(worktree, config, max_lines=config.worker_tree_max_lines)
 
     project_section = (
         f"\n\nPROJECT:\n"
@@ -61,7 +61,7 @@ def _build_system_prompt(worktree: Path, config: Any) -> str:
             project_section += f"- {line}\n"
 
     sections = [
-        f"""[DGOV_RESEARCHER_PROMPT_V1.3.0]
+        f"""[DGOV_RESEARCHER_PROMPT_V1.4.0]
 
 Greetings, Researcher.
 
@@ -77,17 +77,18 @@ THE DGOV WAY:
 """,
         rules_context,
         project_section,
-        f"\nPROJECT TREE:\n{project_tree}",
+        f"\nREPO MAP:\n{repo_map}",
         f"""
 ENVIRONMENT:
 - Python: {sys.executable}
-- Available: rg, jq, tree, git, python, pytest, ruff (all pre-installed)
+- Available: rg, sg (ast-grep), jq, tree, git, python, pytest, ruff (all pre-installed)
 - Everything is pre-installed. Do NOT install packages, create venvs, or pip install.
 - Use relative paths for all file tools.
 
 RESEARCH CONTRACT:
-- Start by reading and tracing. Use grep, find_references, related_files, file_symbols,
-  head, tail, and read_file before reaching for edits.
+- Start with the repo map, then read and trace. Use ast_grep for structural search,
+  ripgrep/grep for lexical search, and treat find_references/related_files as heuristics.
+  Use file_symbols, head, tail, and read_file before reaching for edits.
 - Prefer producing a concise factual summary via `done`.
 - This role is read-only by construction. Editing tools are intentionally unavailable.
 - If the task requires code changes or a written artifact, stop at findings and hand the

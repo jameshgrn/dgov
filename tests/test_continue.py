@@ -80,7 +80,7 @@ def test_continue_retries_failed_tasks(git_repo, monkeypatch):
     async def _noop(self):
         pass
 
-    monkeypatch.setattr("dgov.runner.EventDagRunner._preflight_check_models", _noop)
+    monkeypatch.setattr("dgov.runner.EventDagRunner._check_model_env", _noop)
 
     dag = _dag({"t1": _task("t1")})
     session_root = str(git_repo)
@@ -116,7 +116,7 @@ def test_continue_retries_abandoned_tasks(git_repo, monkeypatch):
     async def _noop(self):
         pass
 
-    monkeypatch.setattr("dgov.runner.EventDagRunner._preflight_check_models", _noop)
+    monkeypatch.setattr("dgov.runner.EventDagRunner._check_model_env", _noop)
 
     dag = _dag({"t1": _task("t1")}, name="test-abandoned")
     session_root = str(git_repo)

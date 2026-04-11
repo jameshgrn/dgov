@@ -14,9 +14,11 @@ import pytest
 from dgov.config import ProjectConfig
 from dgov.persistence import emit_event
 from dgov.settlement import (
+    _build_test_cmd,
     _run_sentrux_gate,
     _sentrux_is_warn_only,
     autofix_sandbox,
+    preflight_sandbox,
     review_sandbox,
     validate_sandbox,
 )
@@ -381,6 +383,36 @@ class TestAutofixSandbox:
 
 
 class TestValidateSandbox:
+    @pytest.mark.unit
+    def test_preflight_passes_with_no_source_changes(self, tmp_path: Path):
+        base = _init_repo(tmp_path)
+        (tmp_path / "notes.txt").write_text("hello\n")
+        result = preflight_sandbox(tmp_path, str(tmp_path))
+        assert result.passed
+        assert validate_sandbox(tmp_path, base, str(tmp_path)).passed
+
+    @pytest.mark.unit
+    def test_preflight_runs_same_lint_gate_on_uncommitted_changes(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        (tmp_path / "bad.py").write_text("print(undefined_var)\n")
+        result = preflight_sandbox(tmp_path, str(tmp_path))
+        assert result.passed is False
+        assert "Lint failure" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_build_test_cmd_adds_boundary_test_for_src_changes(self, tmp_path: Path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_boundaries.py").write_text("def test_boundaries():\n    assert True\n")
+
+        cmd = _build_test_cmd(
+            ProjectConfig(test_cmd="uv run pytest {test_dir} -q"),
+            ["src/dgov/example.py"],
+            tmp_path,
+        )
+
+        assert "tests/test_boundaries.py" in cmd
+
     def test_pass_clean_python(self, tmp_path: Path):
         base = _init_repo(tmp_path)
         (tmp_path / "clean.py").write_text("x = 1\n")

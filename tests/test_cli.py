@@ -303,6 +303,41 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
     assert "Degradation detected" in result.output
 
 
+def test_preflight_command_reports_pass(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.settlement import GateResult
+
+    monkeypatch.setattr("dgov.cli.preflight.resolve_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "dgov.cli.preflight.preflight_sandbox",
+        lambda worktree_path, project_root: GateResult(passed=True),
+    )
+
+    result = runner.invoke(cli, ["preflight"])
+
+    assert result.exit_code == 0
+    assert "Preflight passed." in result.output
+
+
+def test_preflight_command_reports_failure(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.settlement import GateResult
+
+    monkeypatch.setattr("dgov.cli.preflight.resolve_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "dgov.cli.preflight.preflight_sandbox",
+        lambda worktree_path, project_root: GateResult(passed=False, error="Lint failure:\nboom"),
+    )
+
+    result = runner.invoke(cli, ["preflight"])
+
+    assert result.exit_code == 1
+    assert "Preflight failed:" in result.output
+    assert "Lint failure" in result.output
+
+
 def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
         dgov_dir = Path(td, ".dgov")

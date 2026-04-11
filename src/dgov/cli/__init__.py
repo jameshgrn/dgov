@@ -112,6 +112,7 @@ def cli(
     \b
     USAGE:
       dgov                       Show status
+      dgov preflight             Run settlement gates on local changes
       dgov run <dir>             Run a compiled plan
       dgov compile <dir>         Compile plan tree to _compiled.toml
       dgov init                  Bootstrap .dgov/project.toml and governor.md
@@ -287,6 +288,7 @@ from dgov.cli import (  # noqa: E402
     init as init,
     ledger as ledger,
     plan as plan,
+    preflight as preflight,
     run as run,
     sentrux as sentrux,
     watch as watch,

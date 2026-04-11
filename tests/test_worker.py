@@ -21,7 +21,7 @@ from dgov.worker import (  # noqa: E402
     _clip_tool_result,
     _load_llm_runtime_settings,
     _load_project_config,
-    _snapshot_tree,
+    _repo_map_snapshot,
 )
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
@@ -220,6 +220,19 @@ def test_load_project_config_from_toml(tmp_path: Path) -> None:
     assert config.worker_tree_max_lines == 0
 
 
+def test_load_project_config_preserves_type_check_and_line_length(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text(
+        '[project]\ntype_check_cmd = "uv run ty check"\nline_length = 120\n'
+    )
+
+    config = _load_project_config(tmp_path)
+
+    assert config.type_check_cmd == "uv run ty check"
+    assert config.line_length == 120
+
+
 def test_load_project_config_tool_policy(tmp_path: Path) -> None:
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
@@ -272,21 +285,21 @@ def test_get_tool_spec_returns_list() -> None:
     assert "edit_file" in names
 
 
-def test_snapshot_tree_returns_all_lines_when_unbounded(tmp_path: Path) -> None:
+def test_repo_map_snapshot_returns_all_lines_when_unbounded(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
-    tree = _snapshot_tree(tmp_path, max_lines=0)
-    assert "file_000.txt" in tree
-    assert "file_089.txt" in tree
+    repo_map = _repo_map_snapshot(tmp_path, AtomicConfig(), max_lines=0)
+    assert "file_000.txt" in repo_map
+    assert "file_089.txt" in repo_map
 
 
-def test_snapshot_tree_truncates_for_prompt_budget(tmp_path: Path) -> None:
+def test_repo_map_snapshot_truncates_for_prompt_budget(tmp_path: Path) -> None:
     for idx in range(2_000):
         (tmp_path / f"file_{idx:04}.txt").write_text("x\n")
-    tree = _snapshot_tree(tmp_path, max_lines=0, max_chars=300)
+    repo_map = _repo_map_snapshot(tmp_path, AtomicConfig(), max_lines=0, max_chars=300)
 
-    assert "... [tree truncated for prompt budget]" in tree
-    assert len(tree) <= 300 + len("\n... [tree truncated for prompt budget]")
+    assert "... [repo map truncated for prompt budget]" in repo_map
+    assert len(repo_map) <= 300 + len("\n... [repo map truncated for prompt budget]")
 
 
 def test_clip_tool_result_truncates_large_payload() -> None:
@@ -296,7 +309,7 @@ def test_clip_tool_result_truncates_large_payload() -> None:
     assert len(result) <= 120 + len("\n... [tool output truncated for prompt budget]")
 
 
-def test_build_system_prompt_uses_configured_budget_and_tree(tmp_path: Path) -> None:
+def test_build_system_prompt_uses_configured_budget_and_repo_map(tmp_path: Path) -> None:
     for idx in range(90):
         (tmp_path / f"file_{idx:03}.txt").write_text("x\n")
     config = AtomicConfig(
@@ -308,3 +321,14 @@ def test_build_system_prompt_uses_configured_budget_and_tree(tmp_path: Path) -> 
     assert "75 tool calls" in prompt
     assert "past call 60" in prompt
     assert "file_089.txt" in prompt
+
+
+def test_build_system_prompt_uses_repo_map_language(tmp_path: Path) -> None:
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "mod.py").write_text("def hello():\n    return 1\n")
+
+    prompt = _build_system_prompt(tmp_path, AtomicConfig())
+
+    assert "REPO MAP:" in prompt
+    assert "def hello" in prompt
+    assert "ast_grep" in prompt

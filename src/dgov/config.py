@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from dgov.tool_policy import ToolPolicy, parse_tool_policy
+
+if TYPE_CHECKING:
+    from dgov.workers.atomic import AtomicConfig
 
 # -- Project config: per-repo conventions for workers --
 
@@ -69,6 +74,70 @@ class ProjectConfig:
 
     def resolve_type_check_cmd(self) -> str:
         return self.type_check_cmd
+
+    def llm_runtime_settings(self) -> tuple[str, str]:
+        """Return the configured OpenAI-compatible runtime endpoint settings."""
+        return self.llm_base_url, self.llm_api_key_env
+
+    def to_worker_payload(self) -> dict[str, object]:
+        """Serialize the config fields needed by worker subprocesses."""
+        return {
+            "language": self.language,
+            "src_dir": self.src_dir,
+            "test_dir": self.test_dir,
+            "llm_base_url": self.llm_base_url,
+            "llm_api_key_env": self.llm_api_key_env,
+            "test_cmd": self.test_cmd,
+            "lint_cmd": self.lint_cmd,
+            "format_cmd": self.format_cmd,
+            "lint_fix_cmd": self.lint_fix_cmd,
+            "type_check_cmd": self.type_check_cmd,
+            "worker_iteration_budget": self.worker_iteration_budget,
+            "worker_iteration_warn_at": self.worker_iteration_warn_at,
+            "worker_tree_max_lines": self.worker_tree_max_lines,
+            "line_length": self.line_length,
+            "test_markers": list(self.test_markers),
+            "conventions": dict(self.conventions) if self.conventions else None,
+            "tool_policy": self.tool_policy.as_jsonable(),
+        }
+
+    def to_atomic_config(self) -> AtomicConfig:
+        """ProjectConfig -> AtomicConfig without re-parsing project.toml."""
+        from dgov.workers.atomic import atomic_config_from_payload
+
+        return atomic_config_from_payload(self.to_worker_payload())
+
+    @classmethod
+    def from_worker_payload(cls, raw: Mapping[str, Any]) -> ProjectConfig:
+        """Deserialize the worker payload back into ProjectConfig."""
+        markers = raw.get("test_markers", ())
+        if isinstance(markers, list):
+            markers = tuple(markers)
+        elif not isinstance(markers, tuple):
+            markers = tuple(markers or ())
+
+        conventions_raw = raw.get("conventions", {})
+        conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else {}
+
+        return cls(
+            language=raw.get("language", "python"),
+            src_dir=raw.get("src_dir", "src/"),
+            test_dir=raw.get("test_dir", "tests/"),
+            llm_base_url=raw.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
+            llm_api_key_env=raw.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
+            test_cmd=raw.get("test_cmd", cls.test_cmd),
+            lint_cmd=raw.get("lint_cmd", cls.lint_cmd),
+            format_cmd=raw.get("format_cmd", cls.format_cmd),
+            lint_fix_cmd=raw.get("lint_fix_cmd", cls.lint_fix_cmd),
+            type_check_cmd=raw.get("type_check_cmd", ""),
+            worker_iteration_budget=raw.get("worker_iteration_budget", 50),
+            worker_iteration_warn_at=raw.get("worker_iteration_warn_at", 40),
+            worker_tree_max_lines=raw.get("worker_tree_max_lines", 80),
+            line_length=raw.get("line_length", 99),
+            test_markers=markers,
+            conventions=conventions,
+            tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
+        )
 
     def to_prompt_section(self) -> str:
         """Render as text for injection into worker system prompt."""

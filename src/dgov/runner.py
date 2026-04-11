@@ -259,7 +259,7 @@ class EventDagRunner:
     async def run(self) -> dict[str, str]:
         """Execute DAG with high-performance async loop."""
         self._setup_signal_handlers()
-        await self._preflight_check_models()
+        await self._check_model_env()
 
         # Emit a run-start marker so dgov plan review can scope events to
         # the current invocation. Events persist across runs unless --restart
@@ -276,7 +276,7 @@ class EventDagRunner:
         finally:
             await self._cleanup()
 
-    async def _preflight_check_models(self) -> None:
+    async def _check_model_env(self) -> None:
         """Check configured OpenAI-compatible API key is set before dispatch."""
         import os
 
