@@ -198,6 +198,12 @@ def _clip_tool_result(result: str, max_chars: int = _TOOL_RESULT_MAX_CHARS) -> s
     return result[:budget] + notice
 
 
+def _iteration_budget(config: AtomicConfig) -> int:
+    """Normalize iteration budget to a fail-closed positive integer."""
+    budget = config.worker_iteration_budget
+    return budget if budget > 0 else 1
+
+
 def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
     """Construct the worker's system prompt with rules, conventions, and env info."""
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
@@ -360,8 +366,9 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
     ]
     nudged = False
     allowed_tools = get_allowed_tool_names("worker")
+    budget = _iteration_budget(config)
 
-    for _ in range(100):  # Pillar #10: Fail-closed via iteration limit
+    for _ in range(budget):  # Pillar #10: Fail-closed via iteration limit
         try:
             resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
                 model=model,
@@ -411,7 +418,7 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
                 "content": result,
             })
 
-    WorkerEvent("error", "Exceeded max iterations (60)").emit()
+    WorkerEvent("error", f"Exceeded max iterations ({budget})").emit()
     _cleanup()
     sys.exit(1)
 

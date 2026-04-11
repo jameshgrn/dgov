@@ -6,8 +6,10 @@ the AtomicTools class against real temp directories. No network calls.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,9 +21,11 @@ from dgov.tool_policy import ToolPolicy  # noqa: E402
 from dgov.worker import (  # noqa: E402
     _build_system_prompt,
     _clip_tool_result,
+    _iteration_budget,
     _load_llm_runtime_settings,
     _load_project_config,
     _repo_map_snapshot,
+    run_worker,
 )
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
 
@@ -332,3 +336,54 @@ def test_build_system_prompt_uses_repo_map_language(tmp_path: Path) -> None:
     assert "REPO MAP:" in prompt
     assert "def hello" in prompt
     assert "ast_grep" in prompt
+
+
+def test_iteration_budget_clamps_nonpositive_values() -> None:
+    assert _iteration_budget(AtomicConfig(worker_iteration_budget=0)) == 1
+
+
+def test_run_worker_uses_configured_iteration_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    events: list[tuple[str, object]] = []
+    call_count = 0
+
+    class _FakeMessage:
+        content = None
+
+        def __init__(self) -> None:
+            self.tool_calls = []
+
+        def model_dump(self, exclude_none: bool = True):
+            return {"role": "assistant"}
+
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            completions = SimpleNamespace(create=self._create)
+            self.chat = SimpleNamespace(completions=completions)
+
+        def _create(self, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=_FakeMessage(), finish_reason="length")]
+            )
+
+    monkeypatch.setattr("dgov.worker.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(
+        "dgov.worker.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_worker(
+            "do it",
+            tmp_path,
+            "test-model",
+            json.dumps({"worker_iteration_budget": 2}),
+        )
+
+    assert excinfo.value.code == 1
+    assert call_count == 2
+    assert events[-1] == ("error", "Exceeded max iterations (2)")

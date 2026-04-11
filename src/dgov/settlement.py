@@ -248,6 +248,7 @@ def _check_scope(
 def _check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
+    pane_slug: str | None,
     claimed_files: Sequence[str] | None,
     actual_files: frozenset[str],
     scope_ignore_files: Sequence[str] = (),
@@ -258,7 +259,12 @@ def _check_transient_scope(
 
     claimed = frozenset(claimed_files) | frozenset(scope_ignore_files)
     transient_paths: set[str] = set()
-    for event in read_events(session_root, task_slug=task_slug):
+    if pane_slug:
+        events = read_events(session_root, slug=pane_slug, task_slug=task_slug)
+    else:
+        events = read_events(session_root, task_slug=task_slug)
+
+    for event in events:
         if event.get("event") != "worker_log" or event.get("log_type") != "result":
             continue
         content = event.get("content")
@@ -292,6 +298,7 @@ def review_sandbox(
     max_diff_lines: int = 100,
     project_root: str | None = None,
     task_slug: str | None = None,
+    pane_slug: str | None = None,
     scope_ignore_files: Sequence[str] = (),
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
@@ -334,6 +341,7 @@ def review_sandbox(
         result = _check_transient_scope(
             project_root,
             task_slug,
+            pane_slug,
             claimed_files,
             actual_files,
             scope_ignore_files,

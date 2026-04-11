@@ -43,16 +43,21 @@ def _worker_log(
     log_type: str,
     content,
     ts: str = "2026-04-10T12:00:00+00:00",
+    plan_name: str | None = None,
+    pane: str | None = None,
 ) -> dict:
-    return {
+    event = {
         "id": event_id,
         "ts": ts,
         "event": "worker_log",
-        "pane": f"pane-{task_slug}",
+        "pane": pane or f"pane-{task_slug}",
         "task_slug": task_slug,
         "log_type": log_type,
         "content": content,
     }
+    if plan_name is not None:
+        event["plan_name"] = plan_name
+    return event
 
 
 def _lifecycle(
@@ -297,6 +302,10 @@ class TestBuildUnitReview:
                 "dgov.plan_review._git_show_stat",
                 return_value=DiffStat(files_changed=2, insertions=40, deletions=5),
             ),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/example.py", "tests/test_example.py"),
+            ),
         ):
             review = _build_unit_review(
                 unit_id="t",
@@ -312,6 +321,7 @@ class TestBuildUnitReview:
         assert review.commit_message == "feat: did it"
         assert review.diff_stat is not None
         assert review.diff_stat.summary() == "2 files, +40 -5"
+        assert review.landed_files == ("src/dgov/example.py", "tests/test_example.py")
         assert review.settlement == "ok"
         assert review.attempts == 1
         assert review.iterations == 1
@@ -330,6 +340,7 @@ class TestBuildUnitReview:
         with (
             patch("dgov.plan_review._git_show_message", return_value="feat: x"),
             patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("src/dgov/example.py",)),
         ):
             review = _build_unit_review(
                 unit_id="t",
@@ -342,6 +353,28 @@ class TestBuildUnitReview:
             )
         assert review.settlement == "ok_retried"
         assert review.attempts == 2
+
+    def test_deployed_unit_flags_worker_note_paths_missing_from_landed_diff(self, tmp_path: Path):
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(10, "t", "done", "Added tests/conftest.py and updated tests/test_a.py."),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: tests"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("tests/test_a.py",)),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.worker_note_mismatches == ("tests/conftest.py",)
 
     def test_failed_unit_synthesizes_hint(self, tmp_path: Path):
         events = [
@@ -470,6 +503,7 @@ class TestBuildUnitReview:
         with (
             patch("dgov.plan_review._git_show_message", return_value="feat: retry"),
             patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("src/dgov/example.py",)),
         ):
             review = _build_unit_review(
                 unit_id="t",
@@ -575,6 +609,78 @@ class TestLoadReview:
             )
         assert len(review.units) == 1
         assert review.units[0].unit == "tasks/main.b"
+
+    def test_ignores_worker_logs_from_other_plan_with_same_task_slug(self, tmp_path: Path):
+        compiled = _make_compiled(
+            tmp_path,
+            name="p",
+            tasks={"tasks/main.a": {"summary": "do a"}},
+        )
+
+        all_events = [
+            _lifecycle(100, "run_start", "_", "p"),
+            _lifecycle(101, "dag_task_dispatched", "tasks/main.a", "p", pane="pane-p"),
+            _worker_log(
+                102, "tasks/main.a", "thought", "CURRENT thought", plan_name="p", pane="pane-p"
+            ),
+            _worker_log(
+                103, "tasks/main.a", "done", "CURRENT summary", plan_name="p", pane="pane-p"
+            ),
+            _lifecycle(
+                104, "merge_completed", "tasks/main.a", "p", merge_sha="abc1234", pane="pane-p"
+            ),
+            _worker_log(
+                105,
+                "tasks/main.a",
+                "thought",
+                "OTHER thought",
+                plan_name="other",
+                pane="pane-other",
+            ),
+            _worker_log(
+                106,
+                "tasks/main.a",
+                "call",
+                {"tool": "edit_file"},
+                plan_name="other",
+                pane="pane-other",
+            ),
+        ]
+
+        def _fake_read_events(session_root, **kwargs):
+            plan_name = kwargs.get("plan_name")
+            task_slug = kwargs.get("task_slug")
+            pane = kwargs.get("slug")
+            after_id = kwargs.get("after_id", 0)
+            filtered = all_events
+            if plan_name is not None:
+                filtered = [ev for ev in filtered if ev.get("plan_name") == plan_name]
+            if task_slug is not None:
+                filtered = [ev for ev in filtered if ev.get("task_slug") == task_slug]
+            if pane is not None:
+                filtered = [ev for ev in filtered if ev.get("pane") == pane]
+            return [ev for ev in filtered if ev.get("id", 0) > after_id]
+
+        deploy = _FakeDeploy(
+            plan="p", unit="tasks/main.a", sha="abc1234", ts="2026-04-10T12:05:00Z"
+        )
+
+        with (
+            patch("dgov.plan_review.read_events", side_effect=_fake_read_events),
+            patch("dgov.plan_review.read_deploy_log", return_value=[deploy]),
+            patch("dgov.plan_review._git_show_message", return_value="feat: did a"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+        ):
+            review = load_review(
+                project_root=str(tmp_path),
+                compiled_path=compiled,
+                iteration_budget=30,
+            )
+
+        unit = review.units[0]
+        assert unit.status == "deployed"
+        assert unit.thoughts == ("CURRENT thought",)
+        assert unit.done_summary == "CURRENT summary"
 
     def test_missing_compiled_returns_unknown(self, tmp_path: Path):
         review = load_review(

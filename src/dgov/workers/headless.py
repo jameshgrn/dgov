@@ -37,6 +37,7 @@ def _script_for_role(role: str) -> Path:
 
 async def run_headless_worker(
     project_root: str,
+    plan_name: str,
     task_slug: str,
     pane_slug: str,
     worktree_path: Path,
@@ -92,6 +93,7 @@ async def run_headless_worker(
                         project_root,
                         "worker_log",
                         pane_slug,
+                        plan_name=plan_name,
                         task_slug=task_slug,
                         log_type=log_type,
                         content=content,

@@ -595,6 +595,8 @@ def _render_deployed_unit(unit) -> None:
     marker = click.style("✓", fg="green")
     header = f"  {marker} {unit.unit}"
     click.echo(header)
+    if unit.summary:
+        click.echo(f"    task         {unit.summary}")
     if unit.commit_sha and unit.commit_message:
         click.echo(f"    commit       {unit.commit_sha[:8]} — {unit.commit_message}")
     elif unit.commit_sha:
@@ -603,6 +605,8 @@ def _render_deployed_unit(unit) -> None:
         click.echo(f"    agent        {unit.agent}")
     if unit.diff_stat is not None:
         click.echo(f"    diff         {unit.diff_stat.summary()}")
+    if unit.landed_files:
+        _render_path_list("files       ", unit.landed_files)
     if unit.duration_s is not None:
         click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
     if unit.iterations is not None:
@@ -618,7 +622,15 @@ def _render_deployed_unit(unit) -> None:
         )
         click.echo(f"    settlement   {label}")
     if unit.done_summary:
-        _render_multiline_field("summary     ", unit.done_summary)
+        _render_multiline_field("worker note ", unit.done_summary)
+    if unit.worker_note_mismatches:
+        mismatch_list = ", ".join(unit.worker_note_mismatches)
+        click.echo(
+            click.style(
+                f"    warning      worker note mentions files not in landed diff: {mismatch_list}",
+                fg="yellow",
+            )
+        )
     click.echo("")
 
 
@@ -679,6 +691,19 @@ def _render_multiline_field(label: str, text: str, max_lines: int = 4) -> None:
         click.echo(f"                 {line}")
 
 
+def _render_path_list(label: str, paths: tuple[str, ...], max_items: int = 5) -> None:
+    """Render an ordered path list with truncation."""
+    items = [path for path in paths if path]
+    if not items:
+        return
+    display = items[:max_items]
+    if len(items) > max_items:
+        display.append(f"... +{len(items) - max_items} more")
+    click.echo(f"    {label} {display[0]}")
+    for path in display[1:]:
+        click.echo(f"                 {path}")
+
+
 def _render_unit_diff(unit) -> None:
     click.echo(click.style(f"    --- diff for {unit.unit} ---", dim=True))
     if unit.full_diff is None:
@@ -726,6 +751,7 @@ def _review_to_json(review) -> str:
             }
             if u.diff_stat is not None
             else None,
+            "landed_files": list(u.landed_files),
             "full_diff": u.full_diff,
             "duration_s": u.duration_s,
             "iterations": u.iterations,
@@ -733,6 +759,7 @@ def _review_to_json(review) -> str:
             "attempts": u.attempts,
             "settlement": u.settlement,
             "done_summary": u.done_summary,
+            "worker_note_mismatches": list(u.worker_note_mismatches),
             "thoughts": list(u.thoughts),
             "activity": [dict(call) for call in u.activity],
             "reject_verdict": u.reject_verdict,

@@ -12,6 +12,7 @@ was introduced), the whole event log for that plan is considered.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import tomllib
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ class UnitReview:
     commit_message: str | None = None
     commit_ts: str | None = None
     diff_stat: DiffStat | None = None
+    landed_files: tuple[str, ...] = ()
     full_diff: str | None = None  # Populated only when caller asks for it
     # Execution info (populated for any unit that actually ran)
     duration_s: float | None = None
@@ -58,6 +60,7 @@ class UnitReview:
     attempts: int = 0
     settlement: SettlementResult = "n/a"
     done_summary: str | None = None
+    worker_note_mismatches: tuple[str, ...] = ()
     thoughts: tuple[str, ...] = ()  # All worker thoughts in order
     activity: tuple[dict, ...] = ()  # All tool calls in order
     # Count of tool result events with status="failed" that the worker
@@ -218,6 +221,37 @@ def _git_show_stat(project_root: str, sha: str) -> DiffStat | None:
     return DiffStat(files_changed=files, insertions=ins, deletions=dels)
 
 
+def _git_show_paths(project_root: str, sha: str) -> tuple[str, ...] | None:
+    """Return changed paths for a commit in display order."""
+    try:
+        result = subprocess.run(
+            ["git", "show", "--numstat", "--format=", sha],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5.0,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        path = parts[2]
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return tuple(paths)
+
+
 def _git_show_message(project_root: str, sha: str) -> str | None:
     """Return the subject line of a commit message."""
     try:
@@ -248,6 +282,49 @@ def _git_show_full_diff(project_root: str, sha: str) -> str | None:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
         return None
     return result.stdout or None
+
+
+_PATH_TOKEN_SPLIT_RE = re.compile(r"""[\s'",:;!?()[\]{}`]+""")
+_ROOT_FILE_SUFFIXES = {
+    "csv",
+    "json",
+    "md",
+    "py",
+    "pyi",
+    "sh",
+    "toml",
+    "txt",
+    "yaml",
+    "yml",
+}
+
+
+def _extract_path_mentions(text: str) -> tuple[str, ...]:
+    """Return ordered unique file-like path mentions from free text."""
+    seen: set[str] = set()
+    paths: list[str] = []
+    for raw in _PATH_TOKEN_SPLIT_RE.split(text):
+        path = raw.strip().strip(".")
+        if not path or "." not in path:
+            continue
+        suffix = path.rsplit(".", 1)[1].lower()
+        if "/" not in path and suffix not in _ROOT_FILE_SUFFIXES:
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        paths.append(path)
+    return tuple(paths)
+
+
+def _worker_note_mismatches(
+    done_summary: str | None, landed_files: tuple[str, ...]
+) -> tuple[str, ...]:
+    """Return file-like mentions in a worker note that are absent from the landed diff."""
+    if not done_summary or not landed_files:
+        return ()
+    landed = set(landed_files)
+    return tuple(path for path in _extract_path_mentions(done_summary) if path not in landed)
 
 
 # ---------------------------------------------------------------------------
@@ -435,13 +512,17 @@ def _build_unit_review(
     commit_message: str | None = None
     commit_ts: str | None = None
     diff_stat: DiffStat | None = None
+    landed_files: tuple[str, ...] = ()
     full_diff: str | None = None
+    worker_note_mismatches: tuple[str, ...] = ()
 
     if status == "deployed" and deploy_record is not None:
         commit_sha = deploy_record.sha
         commit_ts = deploy_record.ts
         commit_message = _git_show_message(project_root, commit_sha)
         diff_stat = _git_show_stat(project_root, commit_sha)
+        landed_files = _git_show_paths(project_root, commit_sha) or ()
+        worker_note_mismatches = _worker_note_mismatches(rollup["done_summary"], landed_files)
         if include_full_diff:
             full_diff = _git_show_full_diff(project_root, commit_sha)
 
@@ -471,12 +552,14 @@ def _build_unit_review(
         commit_message=commit_message,
         commit_ts=commit_ts,
         diff_stat=diff_stat,
+        landed_files=landed_files,
         full_diff=full_diff,
         duration_s=rollup["duration_s"],
         iterations=rollup["iterations"],
         attempts=attempts,
         settlement=settlement,
         done_summary=rollup["done_summary"],
+        worker_note_mismatches=worker_note_mismatches,
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
         self_corrections=self_corrections,
@@ -525,9 +608,34 @@ def load_review(
 
     # Per-unit worker_log events — scoped by task_slug + run_start_id.
     def _events_for_unit(uid: str) -> list[dict]:
-        worker_events = read_events(project_root, task_slug=uid, after_id=run_start_id)
+        lifecycle = [
+            ev
+            for ev in scoped_plan_events
+            if ev.get("task_slug") == uid and ev.get("event") != "worker_log"
+        ]
+        worker_events = [
+            ev
+            for ev in read_events(
+                project_root,
+                plan_name=plan_name,
+                task_slug=uid,
+                after_id=run_start_id,
+            )
+            if ev.get("event") == "worker_log"
+        ]
+        if not worker_events:
+            fallback_events = [
+                ev
+                for ev in read_events(project_root, task_slug=uid, after_id=run_start_id)
+                if ev.get("event") == "worker_log"
+            ]
+            allowed_panes = {
+                pane for pane in (ev.get("pane") for ev in lifecycle) if isinstance(pane, str)
+            }
+            if allowed_panes:
+                fallback_events = [ev for ev in fallback_events if ev.get("pane") in allowed_panes]
+            worker_events = fallback_events
         # Interleave lifecycle (from plan-scoped fetch) and worker logs chronologically by id.
-        lifecycle = [ev for ev in scoped_plan_events if ev.get("task_slug") == uid]
         combined = worker_events + lifecycle
         combined.sort(key=lambda e: e.get("id", 0))
         return combined

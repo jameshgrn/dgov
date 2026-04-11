@@ -27,6 +27,7 @@ if str(_project_root / "src") not in sys.path:
 from dgov.worker import (  # noqa: E402
     WorkerEvent,
     _execute_tool_call,
+    _iteration_budget,
     _repo_map_snapshot,
     _resolve_config,
     _resolve_llm_runtime_settings,
@@ -160,8 +161,9 @@ def run_researcher(goal: str, worktree: Path, model: str, project_config_json: s
     ]
     nudged = False
     allowed_tools = get_allowed_tool_names("researcher")
+    budget = _iteration_budget(config)
 
-    for _ in range(100):
+    for _ in range(budget):
         try:
             resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
                 model=model,
@@ -211,7 +213,7 @@ def run_researcher(goal: str, worktree: Path, model: str, project_config_json: s
                 "content": result,
             })
 
-    WorkerEvent("error", "Exceeded max iterations (100)").emit()
+    WorkerEvent("error", f"Exceeded max iterations ({budget})").emit()
     _cleanup()
     sys.exit(1)
 

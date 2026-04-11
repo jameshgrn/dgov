@@ -433,6 +433,7 @@ class EventDagRunner:
             claimed_files=claimed_files,
             project_root=self.session_root,
             task_slug=action.task_slug,
+            pane_slug=action.pane_slug,
             scope_ignore_files=self.project_config.scope_ignore_files,
         )
 
@@ -521,6 +522,7 @@ class EventDagRunner:
             await asyncio.wait_for(
                 run_headless_worker(
                     self.session_root,
+                    self.dag.name,
                     task_slug,
                     pane_slug,
                     worktree_path,
@@ -739,6 +741,7 @@ class EventDagRunner:
 
         await run_headless_worker(
             self.session_root,
+            self.dag.name,
             action.task_slug,
             pane_slug,
             wt.path,

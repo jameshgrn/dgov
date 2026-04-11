@@ -295,6 +295,50 @@ class TestReviewSandbox:
         )
         assert result.passed
 
+    def test_transient_scope_ignores_other_panes_when_current_pane_given(self, tmp_path: Path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-old",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "write_file",
+                "status": "success",
+                "activity": [{"kind": "write_file", "path": "scratch.py", "mode": "create"}],
+            },
+        )
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-current",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "edit_file",
+                "status": "success",
+                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+            pane_slug="pane-current",
+        )
+        assert result.passed
+
     def test_no_scope_check_without_claims(self, tmp_path: Path):
         _init_repo(tmp_path)
         _add_tracked_file(tmp_path, "anything.py", "x = 1\n")

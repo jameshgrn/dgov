@@ -69,6 +69,7 @@ def test_run_headless_worker_uses_project_config_payload(
     asyncio.run(
         run_headless_worker(
             project_root=str(tmp_path),
+            plan_name="plan-1",
             task_slug="t1",
             pane_slug="pane-1",
             worktree_path=tmp_path,
@@ -85,3 +86,67 @@ def test_run_headless_worker_uses_project_config_payload(
     assert payload["type_check_cmd"] == "uv run ty check"
     assert payload["line_length"] == 120
     assert exits == [(0, "")]
+
+
+def test_run_headless_worker_emits_plan_name_on_worker_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task = DagTaskSpec(
+        slug="t1",
+        summary="test",
+        prompt="do it",
+        commit_message="test: task",
+        agent="test-agent",
+        files=DagFileSpec(create=("x.py",)),
+    )
+    emitted: list[tuple[str, str, dict[str, object]]] = []
+
+    class _Stdout:
+        def __init__(self) -> None:
+            self._lines = [
+                b'{"worker_event":{"type":"thought","content":"hi"}}\n',
+                b"",
+            ]
+
+        async def readline(self) -> bytes:
+            return self._lines.pop(0)
+
+    class _Process:
+        stdout = _Stdout()
+
+        async def wait(self) -> int:
+            return 0
+
+    async def _mock_create_subprocess_exec(*args, **kwargs):
+        return _Process()
+
+    def _capture_emit(session_root: str, event: str, pane: str, **kwargs) -> None:
+        emitted.append((event, pane, kwargs))
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _mock_create_subprocess_exec)
+    monkeypatch.setattr("dgov.workers.headless.emit_event", _capture_emit)
+
+    asyncio.run(
+        run_headless_worker(
+            project_root=str(tmp_path),
+            plan_name="plan-1",
+            task_slug="t1",
+            pane_slug="pane-1",
+            worktree_path=tmp_path,
+            task=task,
+            on_exit=lambda *_args: None,
+        )
+    )
+
+    assert emitted == [
+        (
+            "worker_log",
+            "pane-1",
+            {
+                "plan_name": "plan-1",
+                "task_slug": "t1",
+                "log_type": "thought",
+                "content": "hi",
+            },
+        )
+    ]

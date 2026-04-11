@@ -14,7 +14,10 @@ import pytest
 sys.modules.setdefault("openai", type(sys)("openai"))
 sys.modules["openai"].OpenAI = object  # type: ignore
 
-from dgov.researcher import _build_system_prompt  # noqa: E402
+from dgov.researcher import (  # noqa: E402
+    _build_system_prompt,
+    run_researcher,
+)
 from dgov.worker import _execute_tool_call  # noqa: E402
 from dgov.workers.atomic import (  # noqa: E402
     AtomicConfig,
@@ -127,3 +130,50 @@ def test_researcher_execution_rejects_disallowed_tool(tmp_path: Path) -> None:
     assert result == "Error: Tool edit_file is not allowed in this worker role."
     assert is_done is False
     assert (tmp_path / "hello.py").read_text() == "x = 1\n"
+
+
+def test_run_researcher_uses_configured_iteration_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    events: list[tuple[str, object]] = []
+    call_count = 0
+
+    class _FakeMessage:
+        content = None
+
+        def __init__(self) -> None:
+            self.tool_calls = []
+
+        def model_dump(self, exclude_none: bool = True):
+            return {"role": "assistant"}
+
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            completions = SimpleNamespace(create=self._create)
+            self.chat = SimpleNamespace(completions=completions)
+
+        def _create(self, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=_FakeMessage(), finish_reason="length")]
+            )
+
+    monkeypatch.setattr("dgov.researcher.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(
+        "dgov.researcher.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_researcher(
+            "investigate",
+            tmp_path,
+            "test-model",
+            json.dumps({"worker_iteration_budget": 2}),
+        )
+
+    assert excinfo.value.code == 1
+    assert call_count == 2
+    assert events[-1] == ("error", "Exceeded max iterations (2)")
