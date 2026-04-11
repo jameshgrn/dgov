@@ -381,3 +381,105 @@ def test_review_not_compiled_exits_nonzero(runner: CliRunner, tmp_path: Path) ->
     result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
     assert result.exit_code != 0
     assert "Not compiled" in result.output
+
+
+# -- Archive fallback + self_corrections --
+
+
+def test_review_resolves_archived_plan_and_emits_note(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A path that was auto-archived after success should redirect with a note."""
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "do a"})
+    archive_root = plan_dir.parent / "archive"
+    archive_root.mkdir()
+    archived_dir = archive_root / plan_dir.name
+    plan_dir.rename(archived_dir)
+
+    _patched_load_review(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "resolved to archived plan" in result.output
+    assert str(archived_dir) in result.output
+    assert "tasks/main.a" in result.output
+
+
+def test_review_missing_plan_reports_error(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No live path, no archive → non-zero exit with a helpful error."""
+    _patched_load_review(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    ghost = tmp_path / ".dgov" / "plans" / "ghost"
+
+    result = runner.invoke(cli, ["plan", "review", str(ghost)])
+
+    assert result.exit_code != 0
+    assert "plan path not found" in result.output
+
+
+def test_review_renders_self_corrections_for_deployed_unit(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        commit_sha="abcd1234",
+        commit_message="feat: did a",
+        diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+        iterations=7,
+        self_corrections=2,
+        attempts=1,
+        settlement="ok",
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "self-correct" in result.output
+    assert "2 failed tool call" in result.output
+
+
+def test_review_json_includes_self_corrections(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import PlanReview, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        self_corrections=3,
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["units"][0]["self_corrections"] == 3

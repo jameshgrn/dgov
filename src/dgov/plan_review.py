@@ -60,6 +60,10 @@ class UnitReview:
     done_summary: str | None = None
     thoughts: tuple[str, ...] = ()  # All worker thoughts in order
     activity: tuple[dict, ...] = ()  # All tool calls in order
+    # Count of tool result events with status="failed" that the worker
+    # recovered from en route to a deployed commit. Zero for failed units
+    # (no recovery occurred) and for units with no tool activity at all.
+    self_corrections: int = 0
     # Failure info (populated for status == "failed")
     reject_verdict: str | None = None
     error: str | None = None
@@ -308,7 +312,7 @@ def _apply_lifecycle_event(ev: dict, state: dict) -> None:
 
 
 def _apply_worker_log_event(ev: dict, state: dict) -> None:
-    """Handle worker_log events: thoughts, calls, done, error."""
+    """Handle worker_log events: thoughts, calls, results, done, error."""
     log_type = ev.get("log_type")
     content = ev.get("content")
     if log_type == "thought" and isinstance(content, str):
@@ -316,6 +320,9 @@ def _apply_worker_log_event(ev: dict, state: dict) -> None:
     elif log_type == "call" and isinstance(content, dict):
         state["iterations"] = state["iterations"] + 1
         state["activity"].append(content)
+    elif log_type == "result" and isinstance(content, dict):
+        if content.get("status") == "failed":
+            state["failed_tool_calls"] = state["failed_tool_calls"] + 1
     elif log_type == "done" and isinstance(content, str):
         state["done_summary"] = content
     elif log_type == "error" and isinstance(content, str) and state["error"] is None:
@@ -328,6 +335,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "thoughts": [],
         "activity": [],
         "iterations": 0,
+        "failed_tool_calls": 0,
         "done_summary": None,
         "error": None,
         "reject_verdict": None,
@@ -365,6 +373,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "thoughts": state["thoughts"],
         "activity": state["activity"],
         "iterations": iterations if iterations > 0 else None,
+        "failed_tool_calls": state["failed_tool_calls"],
         "done_summary": state["done_summary"],
         "error": state["error"],
         "reject_verdict": state["reject_verdict"],
@@ -449,6 +458,10 @@ def _build_unit_review(
             iteration_budget,
         )
 
+    # Only count self-corrections on units that made it to deployed — a
+    # failed unit's failed tool calls were not recovered from.
+    self_corrections = rollup["failed_tool_calls"] if status == "deployed" else 0
+
     return UnitReview(
         unit=unit_id,
         summary=task_data.get("summary", ""),
@@ -466,6 +479,7 @@ def _build_unit_review(
         done_summary=rollup["done_summary"],
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
+        self_corrections=self_corrections,
         reject_verdict=rollup["reject_verdict"],
         error=rollup["error"],
         last_thought=last_thought if status == "failed" else None,

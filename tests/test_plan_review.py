@@ -228,6 +228,27 @@ class TestRollupUnitEvents:
         assert rollup["iterations"] is None
         assert rollup["thoughts"] == []
         assert rollup["duration_s"] is None
+        assert rollup["failed_tool_calls"] == 0
+
+    def test_counts_failed_tool_results(self):
+        events = [
+            _worker_log(1, "t", "call", {"tool": "run_tests", "args": {}}),
+            _worker_log(2, "t", "result", {"tool": "run_tests", "status": "failed"}),
+            _worker_log(3, "t", "call", {"tool": "edit_file", "args": {}}),
+            _worker_log(4, "t", "result", {"tool": "edit_file", "status": "success"}),
+            _worker_log(5, "t", "call", {"tool": "run_tests", "args": {}}),
+            _worker_log(6, "t", "result", {"tool": "run_tests", "status": "success"}),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["failed_tool_calls"] == 1
+
+    def test_ignores_non_dict_result_content(self):
+        events = [
+            _worker_log(1, "t", "result", "not a dict"),
+            _worker_log(2, "t", "result", {"tool": "x", "status": "success"}),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["failed_tool_calls"] == 0
 
 
 # ---------------------------------------------------------------------------

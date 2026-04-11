@@ -405,8 +405,36 @@ def _cmd_plan_status(
         )
 
 
+def _resolve_archived_plan_path(plan_input: Path) -> Path:
+    """If plan_input does not exist, look for it under a sibling archive/ dir.
+
+    Auto-archive (after a fully-deployed run) moves a plan from
+    `.dgov/plans/<name>/` to `.dgov/plans/archive/<name>/`. Point a user who
+    passes the original path at the archived copy, with a note on stderr so
+    the redirect is visible.
+
+    Returns the resolved path, or the original `plan_input` if no archive
+    candidate is found (callers still have to check `exists()` themselves).
+    """
+    if plan_input.exists():
+        return plan_input
+    # Candidate: `<parent>/archive/<name>` for a directory input, or
+    # `<parent-parent>/archive/<parent-name>/<file>` for a file input.
+    if plan_input.suffix == "":
+        candidate = plan_input.parent / "archive" / plan_input.name
+    else:
+        candidate = plan_input.parent.parent / "archive" / plan_input.parent.name / plan_input.name
+    if candidate.exists():
+        click.echo(
+            f"note: '{plan_input}' not found — resolved to archived plan at {candidate}",
+            err=True,
+        )
+        return candidate
+    return plan_input
+
+
 @plan_cmd.command(name="review")
-@click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
+@click.argument("plan_input", type=click.Path(path_type=Path))
 @click.option("--only", default=None, help="Review only this exact unit id")
 @click.option(
     "--diff",
@@ -432,11 +460,19 @@ def plan_review_cmd(
     reject reason with a hint when settlement failed. Scopes to the last
     run via the run_start marker.
 
+    Accepts either a live plan directory or an archived one. If the live
+    path does not exist but an archive copy is found, the debrief resolves
+    to the archive automatically and prints a note to stderr.
+
     \b
     Example: dgov plan review .dgov/plans/my-plan/
     Example: dgov plan review my-plan/ --only tasks/main.thing
     Example: dgov plan review my-plan/ --diff tasks/main.thing --events tasks/main.thing
     """
+    plan_input = _resolve_archived_plan_path(plan_input)
+    if not plan_input.exists():
+        click.echo(f"Error: plan path not found: {plan_input}", err=True)
+        raise click.exceptions.Exit(code=1) from None
     try:
         compiled_path, plan_root = resolve_plan_input(plan_input)
     except click.ClickException as exc:
@@ -572,6 +608,10 @@ def _render_deployed_unit(unit) -> None:
     if unit.iterations is not None:
         plural = "s" if unit.iterations != 1 else ""
         click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+    if unit.self_corrections > 0:
+        click.echo(
+            f"    self-correct {unit.self_corrections} failed tool call(s) recovered before done"
+        )
     if unit.settlement != "n/a":
         label = {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
             unit.settlement, unit.settlement
@@ -689,6 +729,7 @@ def _review_to_json(review) -> str:
             "full_diff": u.full_diff,
             "duration_s": u.duration_s,
             "iterations": u.iterations,
+            "self_corrections": u.self_corrections,
             "attempts": u.attempts,
             "settlement": u.settlement,
             "done_summary": u.done_summary,
