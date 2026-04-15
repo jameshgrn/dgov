@@ -18,10 +18,10 @@ from dgov.types import Worktree
 from dgov.worktree import remove_worktree
 
 _RETRYABLE_STATES = frozenset({
-    TaskState.FAILED.value,
-    TaskState.ABANDONED.value,
-    TaskState.TIMED_OUT.value,
-    TaskState.SKIPPED.value,
+    TaskState.FAILED,
+    TaskState.ABANDONED,
+    TaskState.TIMED_OUT,
+    TaskState.SKIPPED,
 })
 
 
@@ -83,10 +83,13 @@ def _cleanup_task_worktree(project_root: Path, task: dict) -> None:
     branch_name = task.get("branch_name")
     if not worktree_path or not branch_name:
         return
-    remove_worktree(
-        str(project_root),
-        Worktree(path=Path(str(worktree_path)), branch=str(branch_name), commit=""),
-    )
+    try:
+        remove_worktree(
+            str(project_root),
+            Worktree(path=Path(str(worktree_path)), branch=str(branch_name), commit=""),
+        )
+    except Exception:
+        click.echo(f"Warning: could not remove worktree {worktree_path}", err=True)
 
 
 @cli.command(name="retry")
@@ -100,11 +103,11 @@ def retry_cmd(slug: str) -> None:
             f"Task '{slug}' not found in state.db. If state was lost, "
             f"use `dgov mark-done {slug}` or rerun the plan."
         )
-    state = str(task.get("state", ""))
+    state = task.get("state", "")
     if state not in _RETRYABLE_STATES:
         raise click.ClickException(
             f"Task '{slug}' is in state '{state}', not retryable. "
-            f"Expected one of: {sorted(_RETRYABLE_STATES)}."
+            f"Expected one of: {sorted(s.value for s in _RETRYABLE_STATES)}."
         )
 
     plan_name = str(task.get("plan_name") or "")

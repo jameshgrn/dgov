@@ -165,7 +165,7 @@ def run_researcher(
     actuators = AtomicTools(worktree, config)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None
-    except Exception:
+    except json.JSONDecodeError:
         task_scope = None
 
     def _cleanup() -> None:
