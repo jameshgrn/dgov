@@ -581,12 +581,14 @@ class EventDagRunner:
             "missing edge cases, and whether the code matches its stated intent.\n"
         )
 
+        records = deploy_log.read(self.session_root, self.dag.name)
+        sha_by_unit = {r.unit: r.sha for r in records}
+
         for dep_slug in task.depends_on:
             dep_task = self.dag.tasks.get(dep_slug)
             if not dep_task:
                 continue
-            records = deploy_log.read(self.session_root, self.dag.name)
-            sha = next((r.sha for r in records if r.unit == dep_slug), None)
+            sha = sha_by_unit.get(dep_slug)
             if not sha:
                 sections.append(f"## {dep_slug}\nNo deploy record found (not yet merged).\n")
                 continue
@@ -627,20 +629,22 @@ class EventDagRunner:
         output_dir.mkdir(parents=True, exist_ok=True)
         loop = asyncio.get_running_loop()
 
+        # Reviewer: build prompt from dependency diffs (before retry enrichment
+        # so that retry context wraps the generated prompt, not replaces it)
+        if task.role == "reviewer":
+            prompt = self._build_reviewer_prompt(action.task_slug, task)
+        else:
+            prompt = task.prompt
+
         # Enrich prompt with prior failure context on retry
-        prompt = task.prompt
         prior_error = self._task_errors.get(action.task_slug)
         if prior_error:
             attempt = self.kernel.attempts.get(action.task_slug, 0)
             prompt = (
                 f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
                 f"Fix the issue described above, then complete the original task.\n\n"
-                f"ORIGINAL TASK:\n{task.prompt}"
+                f"ORIGINAL TASK:\n{prompt}"
             )
-
-        # Reviewer: inject dependency diffs into prompt
-        if task.role == "reviewer":
-            prompt = self._build_reviewer_prompt(action.task_slug, task)
 
         # Pillar #3: Snapshot Isolation
         wt = await loop.run_in_executor(
