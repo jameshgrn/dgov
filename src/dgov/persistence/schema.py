@@ -173,6 +173,7 @@ VALID_EVENTS = frozenset({
     # Review
     "review_pass",
     "review_fail",
+    "reviewer_verdict",
     # Merge
     "merge_completed",
     "task_merge_failed",

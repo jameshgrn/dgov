@@ -12,7 +12,7 @@ from typing import Literal
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
 
-_TASK_ROLES = frozenset({"worker", "researcher"})
+_TASK_ROLES = frozenset({"worker", "researcher", "reviewer"})
 
 # Matches file paths embedded in prompt text: any word/path ending in a known
 # extension (.py, .toml, .json, .yaml, .yml, .md, .txt, .cfg, .ini, .sh)
@@ -84,7 +84,7 @@ class PlanUnit:
     files: PlanUnitFiles
     depends_on: tuple[str, ...] = ()
     agent: str = ""
-    role: Literal["worker", "researcher"] = "worker"
+    role: Literal["worker", "researcher", "reviewer"] = "worker"
     timeout_s: int = 0
     test_cmd: str = ""
 
@@ -313,9 +313,10 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     for slug, unit in plan.units.items():
         issues.extend(_check_verify_only_task(slug, unit))
 
-    # Empty prompt check — catch at compile time, not at dispatch time
+    # Empty prompt check — catch at compile time, not at dispatch time.
+    # Reviewers are exempt: they get auto-generated prompts from dependency diffs.
     for slug, unit in plan.units.items():
-        if not unit.prompt.strip():
+        if not unit.prompt.strip() and unit.role != "reviewer":
             issues.append(
                 PlanIssue(
                     severity="error",

@@ -414,6 +414,27 @@ class EventDagRunner:
 
     def _run_review(self, action: ReviewTask) -> list[DagAction]:
         """Execute fast review gate — git sanity checks (microseconds)."""
+        task = self.dag.tasks[action.task_slug]
+
+        # Read-only roles (researcher, reviewer) produce no code changes.
+        # Auto-pass review — their output is in the event log, not the worktree.
+        if task.role in ("researcher", "reviewer"):
+            emit_event(
+                self.session_root,
+                "review_pass",
+                action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                verdict="read_only",
+            )
+            return self.kernel.handle(
+                TaskReviewDone(
+                    action.task_slug,
+                    passed=True,
+                    verdict="read_only",
+                    commit_count=0,
+                )
+            )
 
         wt = self._worktrees.get(action.task_slug)
         if not wt:
@@ -547,6 +568,56 @@ class EventDagRunner:
             )
             on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s")
 
+    def _build_reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
+        """Build a reviewer prompt with dependency diffs auto-injected."""
+        import subprocess as sp
+
+        from dgov import deploy_log
+
+        sections: list[str] = []
+        sections.append(
+            "Review the following changes for semantic correctness.\n"
+            "Focus on: logic errors, no-ops, silently wrong behavior, "
+            "missing edge cases, and whether the code matches its stated intent.\n"
+        )
+
+        for dep_slug in task.depends_on:
+            dep_task = self.dag.tasks.get(dep_slug)
+            if not dep_task:
+                continue
+            records = deploy_log.read(self.session_root, self.dag.name)
+            sha = next((r.sha for r in records if r.unit == dep_slug), None)
+            if not sha:
+                sections.append(f"## {dep_slug}\nNo deploy record found (not yet merged).\n")
+                continue
+
+            diff_result = sp.run(
+                ["git", "show", "--stat", "--patch", sha],
+                cwd=self.session_root,
+                capture_output=True,
+                text=True,
+            )
+            diff_text = diff_result.stdout if diff_result.returncode == 0 else "(diff unavailable)"
+
+            sections.append(
+                f"## Task: {dep_slug}\n"
+                f"Summary: {dep_task.summary}\n"
+                f"Commit: {dep_task.commit_message}\n\n"
+                f"```diff\n{diff_text}\n```\n"
+            )
+
+        # Append user-provided prompt guidance if any
+        if task.prompt.strip():
+            sections.append(f"## Additional review guidance\n{task.prompt}\n")
+
+        sections.append(
+            "Respond via the `done` tool with your verdict as a JSON object:\n"
+            '{"approved": true/false, "issues": ["issue 1", ...]}\n'
+            'If approved with no issues, use: {"approved": true, "issues": []}'
+        )
+
+        return "\n".join(sections)
+
     async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         import uuid
@@ -566,6 +637,10 @@ class EventDagRunner:
                 f"Fix the issue described above, then complete the original task.\n\n"
                 f"ORIGINAL TASK:\n{task.prompt}"
             )
+
+        # Reviewer: inject dependency diffs into prompt
+        if task.role == "reviewer":
+            prompt = self._build_reviewer_prompt(action.task_slug, task)
 
         # Pillar #3: Snapshot Isolation
         wt = await loop.run_in_executor(
@@ -682,11 +757,21 @@ class EventDagRunner:
         # no settlement gates. The `done` summary is already in the event log.
         # Record the research against the HEAD sha so plan status can show it
         # as deployed without inventing a fake commit. See ledger bug #27.
-        if task.role == "researcher":
+        if task.role in ("researcher", "reviewer"):
             from dgov import deploy_log
 
             deploy_log.append(self.session_root, self.dag.name, action.task_slug, wt.commit)
-            logger.info("RESEARCHED %s", action.task_slug)
+            if task.role == "reviewer":
+                emit_event(
+                    self.session_root,
+                    "reviewer_verdict",
+                    action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                )
+                logger.info("REVIEWED %s", action.task_slug)
+            else:
+                logger.info("RESEARCHED %s", action.task_slug)
             return None, False
 
         await loop.run_in_executor(

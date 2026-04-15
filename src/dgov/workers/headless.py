@@ -30,7 +30,7 @@ def _script_for_role(role: str) -> Path:
     """Resolve the worker entrypoint script for a task role."""
     if role == "worker":
         return _WORKER_SCRIPT
-    if role == "researcher":
+    if role in ("researcher", "reviewer"):
         return _RESEARCHER_SCRIPT
     raise ValueError(f"Unknown task role: {role}")
 

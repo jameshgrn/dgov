@@ -30,10 +30,10 @@ class DagTaskSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     slug: str
     summary: str
-    prompt: str
-    commit_message: str
+    prompt: str = ""
+    commit_message: str = ""
     agent: str = ""
-    role: Literal["worker", "researcher"] = "worker"
+    role: Literal["worker", "researcher", "reviewer"] = "worker"
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
