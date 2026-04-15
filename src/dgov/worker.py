@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -204,7 +205,47 @@ def _iteration_budget(config: AtomicConfig) -> int:
     return budget if budget > 0 else 1
 
 
-def _build_system_prompt(worktree: Path, config: AtomicConfig) -> str:
+def _task_scope_section(task_scope: Mapping[str, object] | None) -> str:
+    """Render task file claims as hard scope constraints for the system prompt."""
+    if not task_scope:
+        return ""
+
+    def _paths(name: str) -> list[str]:
+        raw = task_scope.get(name, [])
+        if isinstance(raw, list):
+            return [str(item) for item in raw if str(item).strip()]
+        return []
+
+    task_slug = str(task_scope.get("task_slug", "")).strip()
+    writable = list(
+        dict.fromkeys([
+            *_paths("create"),
+            *_paths("edit"),
+            *_paths("delete"),
+            *_paths("touch"),
+        ])
+    )
+    read_only = _paths("read")
+    lines = ["\nTASK SCOPE:"]
+    if task_slug:
+        lines.append(f"- Task: {task_slug}")
+    lines.append(
+        f"- Writable paths: {', '.join(writable) if writable else '(none; read-only task)'}"
+    )
+    if read_only:
+        lines.append(f"- Read-only context: {', '.join(read_only)}")
+    lines.extend([
+        "- Every other path is out of scope, even if it looks related.",
+        "- If a path claimed under files.create already exists in this worktree, treat it as"
+        " an in-scope existing file and edit it in place rather than widening scope.",
+        "- Before finishing, verify that unclaimed files stayed unchanged.",
+    ])
+    return "\n".join(lines)
+
+
+def _build_system_prompt(
+    worktree: Path, config: AtomicConfig, task_scope: Mapping[str, object] | None = None
+) -> str:
     """Construct the worker's system prompt with rules, conventions, and env info."""
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
     rules_context = ""
@@ -246,6 +287,7 @@ THE DGOV WAY:
 """,
         rules_context,
         project_section,
+        _task_scope_section(task_scope),
         f"\nREPO MAP:\n{repo_map}",
         f"""
 ENVIRONMENT:
@@ -346,7 +388,13 @@ def _execute_tool_call(
     return result, False
 
 
-def run_worker(goal: str, worktree: Path, model: str, project_config_json: str = "") -> None:
+def run_worker(
+    goal: str,
+    worktree: Path,
+    model: str,
+    project_config_json: str = "",
+    task_scope_json: str = "",
+) -> None:
     base_url, api_key_env = _resolve_llm_runtime_settings(worktree, project_config_json)
     api_key = os.environ.get(api_key_env)
     if not api_key:
@@ -356,12 +404,16 @@ def run_worker(goal: str, worktree: Path, model: str, project_config_json: str =
     config = _resolve_config(worktree, project_config_json)
     client = OpenAI(base_url=base_url, api_key=api_key)
     actuators = AtomicTools(worktree, config)
+    try:
+        task_scope = json.loads(task_scope_json) if task_scope_json else None
+    except json.JSONDecodeError:
+        task_scope = None
 
     def _cleanup() -> None:
         shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
 
     messages: list[Any] = [
-        {"role": "system", "content": _build_system_prompt(worktree, config)},
+        {"role": "system", "content": _build_system_prompt(worktree, config, task_scope)},
         {"role": "user", "content": goal},
     ]
     nudged = False
@@ -429,5 +481,6 @@ if __name__ == "__main__":
     p.add_argument("--worktree", required=True)
     p.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p5-turbo")
     p.add_argument("--project-config", default="", help="JSON-encoded project config")
+    p.add_argument("--task-scope", default="", help="JSON-encoded task file-claim scope")
     args = p.parse_args()
-    run_worker(args.goal, Path(args.worktree), args.model, args.project_config)
+    run_worker(args.goal, Path(args.worktree), args.model, args.project_config, args.task_scope)

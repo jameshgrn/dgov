@@ -68,8 +68,8 @@ def _source_files(root: Path, ext: str) -> list[Path]:
 
 # Known tooling-managed files that workers may incidentally touch via build /
 # test / dep-install commands. Seeded into `[scope] ignore_files` by `dgov init`
-# only when the file is actually present in the repo — so we don't smuggle
-# exemptions into a project that doesn't need them.
+# when detected, with Python's `uv.lock` included by default because `uv run`
+# can create or refresh it mid-task even before it exists in git.
 _SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
     # Python
     "uv.lock",
@@ -92,9 +92,12 @@ _SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
 )
 
 
-def _detect_scope_ignore_files(root: Path) -> list[str]:
-    """Return the subset of known managed files that actually exist in the repo."""
-    return [name for name in _SCOPE_IGNORE_CANDIDATES if (root / name).is_file()]
+def _detect_scope_ignore_files(root: Path, language: str) -> list[str]:
+    """Return known managed files plus Python's uv.lock default."""
+    detected = [name for name in _SCOPE_IGNORE_CANDIDATES if (root / name).is_file()]
+    if language == "python" and "uv.lock" not in detected:
+        detected.append("uv.lock")
+    return detected
 
 
 def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
@@ -237,7 +240,7 @@ def _render_project_toml(
         "[scope]",
         "# Files exempted from scope-violation checks. Workers may incidentally",
         "# touch these (e.g. `uv run` refreshing uv.lock) without failing review.",
-        "# Auto-seeded by `dgov init` based on files detected in the repo.",
+        "# Auto-seeded by `dgov init` from detected managed files plus Python's uv.lock default.",
         "# Exact paths only — no globs.",
         f"ignore_files = [{', '.join(f'"{name}"' for name in ignore_files)}]",
         "",
@@ -336,7 +339,7 @@ def init_cmd(force: bool, yes: bool) -> None:
     governor_path = dgov_dir / "governor.md"
 
     language, src_dir, test_dir, extensions = _detect_project(project_root)
-    scope_ignore_files = _detect_scope_ignore_files(project_root)
+    scope_ignore_files = _detect_scope_ignore_files(project_root, language)
     toml_content = _render_project_toml(
         language, src_dir, test_dir, extensions, scope_ignore_files
     )

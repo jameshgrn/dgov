@@ -89,7 +89,15 @@ def _task(
 
 
 async def _mock_worker_ok(
-    project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    worktree_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     """Mock worker: write a file to worktree and exit 0."""
     out = worktree_path / f"{task_slug}.txt"
@@ -98,7 +106,15 @@ async def _mock_worker_ok(
 
 
 async def _mock_worker_fail(
-    project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    worktree_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     """Mock worker: exit 1 immediately."""
     on_exit(task_slug, pane_slug, 1, "mock failure")
@@ -245,7 +261,15 @@ class TestSettlementRetry:
         call_count = {"initial": 0, "retry": 0}
 
         async def _retry_worker(
-            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             # Track which call this is by checking pane_slug suffix
             is_retry = pane_slug.endswith("-retry")
@@ -290,7 +314,15 @@ class TestSettlementRetry:
         call_count = {"initial": 0, "retry": 0}
 
         async def _failing_retry_worker(
-            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             is_retry = pane_slug.endswith("-retry")
             # F821: Undefined name - ruff check --fix cannot fix this
@@ -326,7 +358,15 @@ class TestSettlementRetry:
         worktree_paths = []
 
         async def _always_fail_worker(
-            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             is_retry = pane_slug.endswith("-retry")
             if is_retry:
@@ -358,7 +398,15 @@ class TestSettlementRetry:
         events = []
 
         async def _event_tracking_worker(
-            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             is_retry = pane_slug.endswith("-retry")
             # F821: Undefined name - ruff check --fix cannot fix this
@@ -461,7 +509,15 @@ class TestParallel:
         """alpha fails, beta still merges (scan-based merge fix)."""
 
         async def _selective_worker(
-            project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             if task_slug == "alpha":
                 on_exit(task_slug, pane_slug, 1, "")

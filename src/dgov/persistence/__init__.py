@@ -14,6 +14,7 @@ from dgov.persistence.events import (
     latest_event_id,
     read_events,
     reset_plan_state,
+    reset_task_state,
 )
 from dgov.persistence.ledger import (
     add_ledger_entry,
@@ -63,6 +64,7 @@ __all__ = [
     "remove_task",
     "replace_all_tasks",
     "reset_plan_state",
+    "reset_task_state",
     "resolve_ledger_entry",
     "set_task_metadata",
     "state_path",

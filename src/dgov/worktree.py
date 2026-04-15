@@ -73,6 +73,7 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
         capture_output=True,
         env=git_env,
     )
+    _link_shared_venv(root, wt_path)
 
     # Capture Snapshot SHA
     res = subprocess.run(
@@ -87,6 +88,18 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
 
     logger.debug("Created isolated worktree at %s", wt_path)
     return Worktree(path=wt_path, branch=branch_name, commit=commit)
+
+
+def _link_shared_venv(project_root: Path, worktree_path: Path) -> None:
+    """Reuse the repo venv in worktrees so uv/ty resolve third-party imports."""
+    source = project_root / ".venv"
+    target = worktree_path / ".venv"
+    if not source.exists() or target.exists():
+        return
+    try:
+        target.symlink_to(source, target_is_directory=True)
+    except OSError as exc:
+        logger.warning("Could not link shared .venv into %s: %s", worktree_path, exc)
 
 
 def merge_worktree(project_root: str, wt: Worktree) -> str:

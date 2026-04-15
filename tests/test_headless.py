@@ -74,17 +74,21 @@ def test_run_headless_worker_uses_project_config_payload(
             pane_slug="pane-1",
             worktree_path=tmp_path,
             task=task,
+            task_scope={"task_slug": "t1", "create": ["x.py"]},
             on_exit=_on_exit,
         )
     )
 
     args = captured.get("args")
     assert isinstance(args, tuple)
-    config_json = args[-1]
+    config_json = args[-3]
     assert isinstance(config_json, str)
     payload = json.loads(config_json)
     assert payload["type_check_cmd"] == "uv run ty check"
     assert payload["line_length"] == 120
+    task_scope_json = args[-1]
+    assert isinstance(task_scope_json, str)
+    assert json.loads(task_scope_json)["create"] == ["x.py"]
     assert exits == [(0, "")]
 
 
@@ -134,6 +138,7 @@ def test_run_headless_worker_emits_plan_name_on_worker_logs(
             pane_slug="pane-1",
             worktree_path=tmp_path,
             task=task,
+            task_scope={"task_slug": "t1", "create": ["x.py"]},
             on_exit=lambda *_args: None,
         )
     )

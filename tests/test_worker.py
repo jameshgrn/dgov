@@ -338,6 +338,25 @@ def test_build_system_prompt_uses_repo_map_language(tmp_path: Path) -> None:
     assert "ast_grep" in prompt
 
 
+def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
+    prompt = _build_system_prompt(
+        tmp_path,
+        AtomicConfig(),
+        {
+            "task_slug": "core/main.fix",
+            "create": ["src/new.py"],
+            "edit": ["src/existing.py"],
+            "read": ["tests/test_existing.py"],
+        },
+    )
+
+    assert "TASK SCOPE:" in prompt
+    assert "src/new.py" in prompt
+    assert "src/existing.py" in prompt
+    assert "tests/test_existing.py" in prompt
+    assert "files.create already exists" in prompt
+
+
 def test_iteration_budget_clamps_nonpositive_values() -> None:
     assert _iteration_budget(AtomicConfig(worker_iteration_budget=0)) == 1
 

@@ -76,6 +76,15 @@ class TestCreateWorktree:
         assert wt2.path == first_path
         assert not (wt2.path / "marker.txt").exists()
 
+    def test_links_root_venv_into_worktree(self, git_repo):
+        repo = Path(git_repo)
+        (repo / ".venv").mkdir()
+
+        wt = create_worktree(git_repo, "task-a")
+
+        assert (wt.path / ".venv").is_symlink()
+        assert (wt.path / ".venv").resolve() == (repo / ".venv").resolve()
+
 
 class TestCommitInWorktree:
     def test_commit_with_file_claims(self, git_repo):

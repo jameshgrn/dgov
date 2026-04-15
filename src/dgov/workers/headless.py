@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -42,6 +42,7 @@ async def run_headless_worker(
     pane_slug: str,
     worktree_path: Path,
     task: DagTaskSpec,
+    task_scope: Mapping[str, object],
     on_exit: Callable[[str, str, int, str], None],
     on_event: Callable[[str, str, object], None] | None = None,
 ) -> None:
@@ -64,6 +65,8 @@ async def run_headless_worker(
         task.agent,
         "--project-config",
         config_json,
+        "--task-scope",
+        json.dumps(task_scope),
     ]
 
     last_error = ""

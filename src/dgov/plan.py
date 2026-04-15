@@ -86,6 +86,7 @@ class PlanUnit:
     agent: str = ""
     role: Literal["worker", "researcher"] = "worker"
     timeout_s: int = 0
+    test_cmd: str = ""
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,7 @@ def parse_plan_file(path: str) -> PlanSpec:
             role=task.role,
             depends_on=task.depends_on,
             timeout_s=task.timeout_s,
+            test_cmd=task.test_cmd,
             files=PlanUnitFiles(
                 create=task.files.create,
                 edit=task.files.edit,
@@ -203,6 +205,7 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
             depends_on=unit.depends_on,
             files=dag_files,
             timeout_s=timeout_s,
+            test_cmd=unit.test_cmd,
         )
 
     return DagDefinition(

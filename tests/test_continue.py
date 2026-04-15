@@ -61,7 +61,15 @@ def _task(slug: str) -> DagTaskSpec:
 
 
 async def _mock_worker_ok(
-    project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    worktree_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     out = worktree_path / f"{task_slug}.txt"
     out.write_text(f"output from {task_slug}\n")
@@ -69,7 +77,15 @@ async def _mock_worker_ok(
 
 
 async def _mock_worker_fail(
-    project_root, task_slug, pane_slug, worktree_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    worktree_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     on_exit(task_slug, pane_slug, 1, "mock failure")
 
