@@ -513,6 +513,8 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
     Changed test files run directly. Changed source files trigger only
     tests that import from the changed modules — never the full suite.
     """
+    if "{test_dir}" not in config.test_cmd:
+        return config.test_cmd
     test_dir = config.test_dir.rstrip("/")
     test_files = [f for f in changed_files if f.startswith(test_dir)]
     source_files = [f for f in changed_files if not f.startswith(test_dir)]

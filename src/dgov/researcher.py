@@ -11,9 +11,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -31,11 +33,14 @@ from dgov.worker import (  # noqa: E402
     _repo_map_snapshot,
     _resolve_config,
     _resolve_llm_runtime_settings,
+    _task_scope_section,
 )
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
 
 
-def _build_system_prompt(worktree: Path, config: Any) -> str:
+def _build_system_prompt(
+    worktree: Path, config: Any, task_scope: Mapping[str, object] | None = None
+) -> str:
     """Construct the research worker's system prompt."""
     rules_path = worktree / ".dgov" / "rules" / "learned.json"
     rules_context = ""
@@ -78,6 +83,7 @@ THE DGOV WAY:
 """,
         rules_context,
         project_section,
+        _task_scope_section(task_scope),
         f"\nREPO MAP:\n{repo_map}",
         f"""
 ENVIRONMENT:
@@ -140,7 +146,13 @@ DO NOT:
     return "".join(sections)
 
 
-def run_researcher(goal: str, worktree: Path, model: str, project_config_json: str = "") -> None:
+def run_researcher(
+    goal: str,
+    worktree: Path,
+    model: str,
+    project_config_json: str = "",
+    task_scope_json: str = "",
+) -> None:
     """Run the research worker loop."""
     base_url, api_key_env = _resolve_llm_runtime_settings(worktree, project_config_json)
     api_key = os.environ.get(api_key_env)
@@ -151,12 +163,16 @@ def run_researcher(goal: str, worktree: Path, model: str, project_config_json: s
     config = _resolve_config(worktree, project_config_json)
     client = OpenAI(base_url=base_url, api_key=api_key)
     actuators = AtomicTools(worktree, config)
+    try:
+        task_scope = json.loads(task_scope_json) if task_scope_json else None
+    except json.JSONDecodeError:
+        task_scope = None
 
     def _cleanup() -> None:
         shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
 
     messages: list[Any] = [
-        {"role": "system", "content": _build_system_prompt(worktree, config)},
+        {"role": "system", "content": _build_system_prompt(worktree, config, task_scope)},
         {"role": "user", "content": goal},
     ]
     nudged = False
@@ -224,5 +240,12 @@ if __name__ == "__main__":
     parser.add_argument("--worktree", required=True)
     parser.add_argument("--model", default="accounts/fireworks/routers/kimi-k2p5-turbo")
     parser.add_argument("--project-config", default="", help="JSON-encoded project config")
+    parser.add_argument("--task-scope", default="", help="JSON-encoded task file-claim scope")
     args = parser.parse_args()
-    run_researcher(args.goal, Path(args.worktree), args.model, args.project_config)
+    run_researcher(
+        args.goal,
+        Path(args.worktree),
+        args.model,
+        args.project_config,
+        args.task_scope,
+    )

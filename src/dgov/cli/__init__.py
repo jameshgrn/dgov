@@ -120,6 +120,8 @@ def cli(
       dgov fix <prompt>          Create and run a one-off fix plan
       dgov watch                 Stream events live
       dgov recover               Recover from a crashed run
+      dgov retry <slug>          Reset one failed task and rerun it
+      dgov mark-done <slug>      Record an already-landed task as merged
       dgov archive-plan <name>   Manually archive a plan
       dgov plan status <dir>     Show pending vs deployed units
       dgov plan review <dir>     Post-hoc debrief of the last run
@@ -291,5 +293,6 @@ from dgov.cli import (  # noqa: E402
     preflight as preflight,
     run as run,
     sentrux as sentrux,
+    state as state,
     watch as watch,
 )

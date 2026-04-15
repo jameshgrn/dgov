@@ -59,7 +59,13 @@ def _mock_create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") 
 
 
 def _mock_review_pass(
-    wt_path, claimed_files=None, max_diff_lines=100, project_root=None, task_slug=None
+    wt_path,
+    claimed_files=None,
+    max_diff_lines=100,
+    project_root=None,
+    task_slug=None,
+    pane_slug=None,
+    scope_ignore_files=(),
 ):
     from dgov.settlement import ReviewResult
 
@@ -67,7 +73,13 @@ def _mock_review_pass(
 
 
 def _mock_review_fail(
-    wt_path, claimed_files=None, max_diff_lines=100, project_root=None, task_slug=None
+    wt_path,
+    claimed_files=None,
+    max_diff_lines=100,
+    project_root=None,
+    task_slug=None,
+    pane_slug=None,
+    scope_ignore_files=(),
 ):
     from dgov.settlement import ReviewResult
 
@@ -102,21 +114,45 @@ _P_DEPLOY_APPEND = "dgov.deploy_log.append"
 
 
 async def _fake_worker_success(
-    project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    wt_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     await asyncio.sleep(0.01)
     on_exit(task_slug, pane_slug, 0, "")
 
 
 async def _fake_worker_fail(
-    project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    wt_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     await asyncio.sleep(0.01)
     on_exit(task_slug, pane_slug, 1, "test failure")
 
 
 async def _fake_worker_slow(
-    project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+    project_root,
+    plan_name,
+    task_slug,
+    pane_slug,
+    wt_path,
+    task,
+    task_scope,
+    on_exit,
+    on_event=None,
 ):
     await asyncio.sleep(0.5)
     on_exit(task_slug, pane_slug, 0, "")
@@ -218,6 +254,25 @@ class TestSingleTaskHappy:
             runner = _make_runner(_single_dag())
             asyncio.run(runner.run())
             assert len(runner._worktrees) == 0
+
+    def test_task_test_cmd_override_reaches_settlement(self):
+        captured: dict[str, object] = {}
+
+        def _capture_validate(wt_path, base_commit, project_root, config=None):
+            from dgov.settlement import GateResult
+
+            captured["test_cmd"] = getattr(config, "test_cmd", "")
+            return GateResult(passed=True)
+
+        task = _task("a").model_copy(
+            update={"test_cmd": "./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py"}
+        )
+        with _io_patches(validate=_capture_validate):
+            runner = _make_runner(_dag({"a": task}))
+            results = asyncio.run(runner.run())
+
+        assert results["a"] == "merged"
+        assert captured["test_cmd"] == "./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py"
 
 
 class TestChain:
@@ -323,7 +378,15 @@ class TestDispatchFailure:
 class TestPartialDAG:
     def test_partial_success(self):
         async def _alternating_worker(
-            project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             await asyncio.sleep(0.01)
             on_exit(task_slug, pane_slug, 0 if task_slug == "a" else 1, "")
@@ -341,7 +404,15 @@ class TestTimeout:
         """Task with short timeout_s should fail when worker exceeds it."""
 
         async def _forever_worker(
-            project_root, task_slug, pane_slug, wt_path, task, on_exit, on_event=None
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
         ):
             await asyncio.sleep(999)  # will be cancelled by timeout
             on_exit(task_slug, pane_slug, 0, "")

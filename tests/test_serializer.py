@@ -280,6 +280,34 @@ class TestSerializeCompiledToml:
         assert 'files.edit = ["src/main.py"]' in result
         assert 'files.create = ["src/new.py"]' in result
 
+    def test_contains_task_test_cmd(self, tmp_path):
+        """Output should include task-level test_cmd overrides when present."""
+        flat_plan = _create_flat_plan(tmp_path)
+        unit_a = flat_plan.units["section1/file1.unit_a"]
+        flat_plan = FlatPlan(
+            plan_root=flat_plan.plan_root,
+            root_meta=flat_plan.root_meta,
+            units={
+                **flat_plan.units,
+                "section1/file1.unit_a": PlanUnit(
+                    slug=unit_a.slug,
+                    summary=unit_a.summary,
+                    prompt=unit_a.prompt,
+                    commit_message=unit_a.commit_message,
+                    files=unit_a.files,
+                    depends_on=unit_a.depends_on,
+                    test_cmd="./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py",
+                ),
+            },
+            source_map=flat_plan.source_map,
+            source_mtime_max=flat_plan.source_mtime_max,
+        )
+        bundle = _create_bundle_result(flat_plan)
+
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        assert 'test_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_a.py"' in result
+
     def test_contains_files_delete(self, tmp_path):
         """Output should include files.delete where present."""
         flat_plan = _create_flat_plan(tmp_path)

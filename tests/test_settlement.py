@@ -490,6 +490,17 @@ class TestValidateSandbox:
 
         assert "tests/test_boundaries.py" in cmd
 
+    @pytest.mark.unit
+    def test_build_test_cmd_literal_no_placeholder_returns_unchanged(self, tmp_path: Path):
+        """Literal test_cmd (no {test_dir} placeholder) returns unchanged even with no targets."""
+        literal_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
+        cmd = _build_test_cmd(
+            ProjectConfig(test_cmd=literal_cmd),
+            [],  # No changed files
+            tmp_path,
+        )
+        assert cmd == literal_cmd
+
     def test_pass_clean_python(self, tmp_path: Path):
         base = _init_repo(tmp_path)
         (tmp_path / "clean.py").write_text("x = 1\n")

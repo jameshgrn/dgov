@@ -210,6 +210,28 @@ timeout_s = 1200
         assert unit.agent == "claude-3"
         assert unit.timeout_s == 1200
 
+    def test_parses_plan_with_task_test_override(self, tmp_path):
+        plan_file = tmp_path / "plan.toml"
+        plan_file.write_text(
+            """
+[plan]
+name = "test-override-plan"
+
+[tasks.custom-tests]
+summary = "Override tests"
+prompt = "Do it"
+commit_message = "Done"
+test_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
+"""
+        )
+
+        result = parse_plan_file(str(plan_file))
+
+        assert (
+            result.units["custom-tests"].test_cmd
+            == "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
+        )
+
     def test_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             parse_plan_file(str(tmp_path / "does_not_exist.toml"))

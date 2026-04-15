@@ -13,7 +13,12 @@ from click.testing import CliRunner
 from helpers import compile_plan_tree
 
 from dgov.cli import cli
-from dgov.cli.init import _detect_project, _render_governor_md, _render_project_toml
+from dgov.cli.init import (
+    _detect_project,
+    _detect_scope_ignore_files,
+    _render_governor_md,
+    _render_project_toml,
+)
 from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
 from dgov.persistence import add_task, all_tasks, emit_event, replace_all_tasks
 from dgov.persistence.schema import WorkerTask
@@ -453,12 +458,17 @@ def test_detect_fallback_to_python(tmp_path: Path) -> None:
 
 
 def test_render_project_toml() -> None:
-    content = _render_project_toml("python", "src/", "tests/", [".py"])
+    content = _render_project_toml("python", "src/", "tests/", [".py"], ["uv.lock"])
     assert "[project]" in content
     assert 'language = "python"' in content
     assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
     assert 'format_cmd = "uv run ruff format {file}"' in content
+    assert 'ignore_files = ["uv.lock"]' in content
     assert "[conventions]" in content
+
+
+def test_detect_scope_ignore_files_adds_uv_lock_for_python(tmp_path: Path) -> None:
+    assert _detect_scope_ignore_files(tmp_path, "python") == ["uv.lock"]
 
 
 def test_render_governor_md() -> None:

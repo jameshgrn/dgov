@@ -12,8 +12,9 @@ import asyncio
 import logging
 import signal
 import time
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -514,6 +515,7 @@ class EventDagRunner:
         pane_slug: str,
         worktree_path: Path,
         task: DagTaskSpec,
+        task_scope: Mapping[str, object],
         on_exit: Callable[[str, str, int, str], None],
         timeout_s: int,
     ) -> None:
@@ -527,6 +529,7 @@ class EventDagRunner:
                     pane_slug,
                     worktree_path,
                     task,
+                    task_scope,
                     on_exit,
                     on_event=self.on_event,
                 ),
@@ -579,6 +582,14 @@ class EventDagRunner:
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
             self._pending_dispatches.add(action.task_slug)
             self._task_start_times[action.task_slug] = time.time()
+            task_scope = {
+                "task_slug": action.task_slug,
+                "create": list(task.files.create),
+                "edit": list(task.files.edit),
+                "delete": list(task.files.delete),
+                "touch": list(task.files.touch),
+                "read": list(task.files.read),
+            }
 
             # Create task record with file claims for scope enforcement
             file_claims = tuple(
@@ -634,6 +645,7 @@ class EventDagRunner:
                     pane_slug,
                     wt.path,
                     dispatch_task,
+                    task_scope,
                     _on_worker_exit,
                     timeout_s,
                 )
@@ -664,6 +676,7 @@ class EventDagRunner:
         task = self.dag.tasks[action.task_slug]
         file_claims = action.file_claims
         pc = self.project_config
+        task_config = replace(pc, test_cmd=task.test_cmd) if task.test_cmd else pc
 
         # Researcher tasks are read-only by construction: no edits, no commits,
         # no settlement gates. The `done` summary is already in the event log.
@@ -676,13 +689,15 @@ class EventDagRunner:
             logger.info("RESEARCHED %s", action.task_slug)
             return None, False
 
-        await loop.run_in_executor(self._executor, autofix_sandbox, wt.path, file_claims, pc)
+        await loop.run_in_executor(
+            self._executor, autofix_sandbox, wt.path, file_claims, task_config
+        )
 
         msg = task.commit_message or f"feat: completed {action.task_slug}"
         await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg, file_claims)
 
         gate_result = await loop.run_in_executor(
-            self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, pc
+            self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, task_config
         )
 
         if not gate_result.passed:
@@ -731,7 +746,16 @@ class EventDagRunner:
             files=task.files,
             agent=task.agent,
             timeout_s=task.timeout_s,
+            test_cmd=task.test_cmd,
         )
+        retry_scope = {
+            "task_slug": action.task_slug,
+            "create": list(task.files.create),
+            "edit": list(task.files.edit),
+            "delete": list(task.files.delete),
+            "touch": list(task.files.touch),
+            "read": list(task.files.read),
+        }
 
         pane_slug = action.pane_slug + "-retry"
 
@@ -746,6 +770,7 @@ class EventDagRunner:
             pane_slug,
             wt.path,
             retry_task,
+            retry_scope,
             _noop_exit,
             on_event=self.on_event,
         )

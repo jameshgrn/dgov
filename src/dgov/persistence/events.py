@@ -121,9 +121,25 @@ def reset_plan_state(session_root: str, plan_name: str) -> None:
     conn.commit()
 
 
+def reset_task_state(session_root: str, slug: str, plan_name: str | None = None) -> None:
+    """Clear task row plus task-scoped events so a rerun can rehydrate cleanly."""
+    conn = _get_db(session_root)
+    if plan_name:
+        conn.execute(
+            "DELETE FROM events WHERE task_slug = ? AND plan_name = ?",
+            (slug, plan_name),
+        )
+        conn.execute("DELETE FROM tasks WHERE slug = ? AND plan_name = ?", (slug, plan_name))
+    else:
+        conn.execute("DELETE FROM events WHERE task_slug = ?", (slug,))
+        conn.execute("DELETE FROM tasks WHERE slug = ?", (slug,))
+    conn.commit()
+
+
 __all__ = [
     "emit_event",
     "latest_event_id",
     "read_events",
     "reset_plan_state",
+    "reset_task_state",
 ]
