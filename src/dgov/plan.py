@@ -313,6 +313,17 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     for slug, unit in plan.units.items():
         issues.extend(_check_verify_only_task(slug, unit))
 
+    # Empty prompt check — catch at compile time, not at dispatch time
+    for slug, unit in plan.units.items():
+        if not unit.prompt.strip():
+            issues.append(
+                PlanIssue(
+                    severity="error",
+                    message=f"Task '{slug}' has an empty prompt.",
+                    unit=slug,
+                )
+            )
+
     # Task role check
     for slug, unit in plan.units.items():
         if unit.role not in _TASK_ROLES:

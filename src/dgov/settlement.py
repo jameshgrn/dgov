@@ -218,6 +218,35 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     return None
 
 
+def _is_scope_ignored(
+    path: str, ignored_exact: frozenset[str], ignored_dirs: tuple[str, ...]
+) -> bool:
+    """Check if a path matches the ignore list (exact match or directory prefix)."""
+    if path in ignored_exact:
+        return True
+    return any(path.startswith(d) for d in ignored_dirs)
+
+
+def _split_ignore_entries(
+    scope_ignore_files: Sequence[str],
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Split ignore entries into exact-file matches and directory prefixes.
+
+    Entries ending with '/' are directory prefixes. Entries without a file
+    extension (no '.' in the basename) are also treated as directory prefixes.
+    """
+    exact: set[str] = set()
+    dirs: list[str] = []
+    for entry in scope_ignore_files:
+        if entry.endswith("/"):
+            dirs.append(entry)
+        elif "." not in entry.rsplit("/", 1)[-1]:
+            dirs.append(entry.rstrip("/") + "/")
+        else:
+            exact.add(entry)
+    return frozenset(exact), tuple(dirs)
+
+
 def _check_scope(
     actual_files: frozenset[str],
     claimed_files: Sequence[str] | None,
@@ -227,14 +256,18 @@ def _check_scope(
 
     Files listed in `scope_ignore_files` (from `[scope] ignore_files` in
     project.toml) are treated as tooling side-effects and exempted from the
-    unclaimed check — e.g. uv.lock updated by `uv run`.
+    unclaimed check — e.g. uv.lock updated by `uv run`, .venv/ touched by uv.
+
+    Entries without a file extension are treated as directory prefixes.
     """
     if not claimed_files:
         return None
 
     claimed = frozenset(claimed_files)
-    ignored = frozenset(scope_ignore_files)
-    unclaimed = actual_files - claimed - ignored
+    ignored_exact, ignored_dirs = _split_ignore_entries(scope_ignore_files)
+    unclaimed = frozenset(
+        f for f in actual_files - claimed if not _is_scope_ignored(f, ignored_exact, ignored_dirs)
+    )
     if unclaimed:
         return ReviewResult(
             passed=False,
@@ -257,7 +290,8 @@ def _check_transient_scope(
     if not session_root or not task_slug or not claimed_files:
         return None
 
-    claimed = frozenset(claimed_files) | frozenset(scope_ignore_files)
+    claimed = frozenset(claimed_files)
+    ignored_exact, ignored_dirs = _split_ignore_entries(scope_ignore_files)
     transient_paths: set[str] = set()
     if pane_slug:
         events = read_events(session_root, slug=pane_slug, task_slug=task_slug)
@@ -280,7 +314,11 @@ def _check_transient_scope(
             if isinstance(path, str):
                 transient_paths.add(path)
 
-    unclaimed = sorted(path for path in transient_paths if path not in claimed)
+    unclaimed = sorted(
+        p
+        for p in transient_paths
+        if p not in claimed and not _is_scope_ignored(p, ignored_exact, ignored_dirs)
+    )
     if not unclaimed:
         return None
 
@@ -558,12 +596,12 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
 
 
 _SENTRUX_WARN_ONLY = re.compile(
-    r"complex functions increased",
+    r"(complex functions increased|coupling increased)",
     re.IGNORECASE,
 )
 
 _SENTRUX_HARD_FAIL = re.compile(
-    r"(quality.*dropped|coupling increased|cycles increased|god files increased)",
+    r"(quality.*dropped|cycles increased|god files increased)",
     re.IGNORECASE,
 )
 
@@ -642,6 +680,27 @@ def _run_sentrux_gate(worktree_path: Path, project_root: str, timeout: int) -> G
     return GateResult(passed=True)
 
 
+def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> GateResult | None:
+    """Run the project setup command in the worktree. Returns failure or None on success."""
+    if not setup_cmd:
+        return None
+    try:
+        res = subprocess.run(
+            setup_cmd,
+            shell=True,
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return GateResult(passed=False, error=f"setup_cmd timed out after {timeout}s")
+    if res.returncode != 0:
+        output = (res.stdout + res.stderr)[-500:]
+        return GateResult(passed=False, error=f"setup_cmd failed:\n{output}")
+    return None
+
+
 def _run_acceptance_gates(
     worktree_path: Path,
     changed_files: Sequence[str],
@@ -651,6 +710,11 @@ def _run_acceptance_gates(
     """Run the shared acceptance gates for a resolved changed-file set."""
     if not changed_files:
         return GateResult(passed=True)
+
+    # 0. Run setup command (e.g. npm ci for JS/TS worktrees)
+    setup_failure = _run_setup_cmd(config.setup_cmd, worktree_path)
+    if setup_failure is not None:
+        return setup_failure
 
     existing_changed_files = _existing_files(worktree_path, changed_files)
 

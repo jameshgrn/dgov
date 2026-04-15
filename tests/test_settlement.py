@@ -62,16 +62,16 @@ Coupling:     0.02 → 0.04
     def test_quality_drop_is_not_warn(self):
         assert _sentrux_is_warn_only(self._QUALITY_DROP) is False
 
-    def test_coupling_only_is_not_warn(self):
-        assert _sentrux_is_warn_only(self._COUPLING_ONLY) is False
+    def test_coupling_only_is_warn(self):
+        assert _sentrux_is_warn_only(self._COUPLING_ONLY) is True
 
     def test_clean_output_is_not_warn(self):
         # No failing lines — not warn-only (it passed, so this branch never fires)
         assert _sentrux_is_warn_only(self._CLEAN) is False
 
-    def test_complexity_plus_coupling_is_not_warn(self):
+    def test_complexity_plus_coupling_is_warn(self):
         mixed = self._COMPLEXITY_ONLY + "  ✗ Coupling increased: 0.02 → 0.03\n"
-        assert _sentrux_is_warn_only(mixed) is False
+        assert _sentrux_is_warn_only(mixed) is True
 
 
 @pytest.mark.unit

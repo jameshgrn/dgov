@@ -51,6 +51,7 @@ class ProjectConfig:
     conventions: dict[str, str] = field(default_factory=dict)
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
     scope_ignore_files: tuple[str, ...] = ()
+    setup_cmd: str = ""
 
     def resolve_test_cmd(self, file: str = "") -> str:
         """Build the test command with substitutions."""
@@ -101,6 +102,7 @@ class ProjectConfig:
             "conventions": dict(self.conventions) if self.conventions else None,
             "tool_policy": self.tool_policy.as_jsonable(),
             "scope_ignore_files": list(self.scope_ignore_files),
+            "setup_cmd": self.setup_cmd,
         }
 
     def to_atomic_config(self) -> AtomicConfig:
@@ -146,6 +148,7 @@ class ProjectConfig:
             conventions=conventions,
             tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
             scope_ignore_files=scope_ignore_files,
+            setup_cmd=raw.get("setup_cmd", ""),
         )
 
     def to_prompt_section(self) -> str:
@@ -234,6 +237,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         conventions=conventions,
         tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
         scope_ignore_files=scope_ignore_files,
+        setup_cmd=proj.get("setup_cmd", ""),
     )
 
 

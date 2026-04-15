@@ -71,12 +71,14 @@ def _source_files(root: Path, ext: str) -> list[Path]:
 # when detected, with Python's `uv.lock` included by default because `uv run`
 # can create or refresh it mid-task even before it exists in git.
 _SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
-    # Python
+    # Python — .venv has no extension so scope check treats it as a dir prefix
+    ".venv",
     "uv.lock",
     "poetry.lock",
     "Pipfile.lock",
     ".python-version",
     # JS/TS
+    "node_modules",
     "package-lock.json",
     "pnpm-lock.yaml",
     "yarn.lock",
@@ -98,6 +100,117 @@ def _detect_scope_ignore_files(root: Path, language: str) -> list[str]:
     if language == "python" and "uv.lock" not in detected:
         detected.append("uv.lock")
     return detected
+
+
+def _detect_js_tooling(root: Path) -> dict[str, str]:
+    """Detect JavaScript/TypeScript tooling from config files.
+
+    Returns a dict with keys: test_cmd, lint_cmd, format_cmd, lint_fix_cmd,
+    format_check_cmd, type_check_cmd. Empty string means not detected.
+    """
+    result: dict[str, str] = {
+        "test_cmd": "",
+        "lint_cmd": "",
+        "format_cmd": "",
+        "lint_fix_cmd": "",
+        "format_check_cmd": "",
+        "type_check_cmd": "",
+    }
+
+    # Check for eslint config files
+    eslint_configs = [
+        "eslint.config.js",
+        "eslint.config.mjs",
+        "eslint.config.cjs",
+        "eslint.config.ts",
+        ".eslintrc.js",
+        ".eslintrc.cjs",
+        ".eslintrc.yaml",
+        ".eslintrc.yml",
+        ".eslintrc.json",
+        ".eslintrc",
+    ]
+    has_eslint = any((root / cfg).is_file() for cfg in eslint_configs)
+
+    # Check for biome config
+    has_biome = any((root / cfg).is_file() for cfg in ["biome.json", "biome.jsonc"])
+
+    # Check for prettier config
+    prettier_configs = [
+        ".prettierrc",
+        ".prettierrc.json",
+        ".prettierrc.yaml",
+        ".prettierrc.yml",
+        ".prettierrc.js",
+        ".prettierrc.cjs",
+        ".prettierrc.mjs",
+        "prettier.config.js",
+        "prettier.config.cjs",
+        "prettier.config.mjs",
+    ]
+    has_prettier = any((root / cfg).is_file() for cfg in prettier_configs)
+
+    # Check for test runners
+    has_vitest = any(
+        (root / cfg).is_file()
+        for cfg in [
+            "vitest.config.js",
+            "vitest.config.mjs",
+            "vitest.config.ts",
+            "vitest.config.mts",
+        ]
+    )
+    has_jest = any(
+        (root / cfg).is_file()
+        for cfg in ["jest.config.js", "jest.config.ts", "jest.config.mjs", "jest.config.cjs"]
+    )
+
+    # Check package.json for test script
+    has_npm_test = False
+    package_json = root / "package.json"
+    if package_json.is_file():
+        try:
+            import json
+
+            with package_json.open(encoding="utf-8") as f:
+                pkg = json.load(f)
+            scripts = pkg.get("scripts", {})
+            has_npm_test = "test" in scripts
+        except Exception:
+            pass
+
+    # Check for tsconfig.json
+    has_tsconfig = (root / "tsconfig.json").is_file()
+
+    # Set lint commands
+    if has_eslint:
+        result["lint_cmd"] = "npx eslint {file}"
+        result["lint_fix_cmd"] = "npx eslint --fix {file}"
+    elif has_biome:
+        result["lint_cmd"] = "npx biome check {file}"
+        result["lint_fix_cmd"] = "npx biome check --write {file}"
+
+    # Set format commands
+    if has_prettier:
+        result["format_cmd"] = "npx prettier --write {file}"
+        result["format_check_cmd"] = "npx prettier --check {file}"
+    elif has_biome:
+        result["format_cmd"] = "npx biome format --write {file}"
+        result["format_check_cmd"] = "npx biome format {file}"
+
+    # Set test command
+    if has_vitest:
+        result["test_cmd"] = "npx vitest run {test_dir}"
+    elif has_jest:
+        result["test_cmd"] = "npx jest"
+    elif has_npm_test:
+        result["test_cmd"] = "npm test"
+
+    # Set type check command
+    if has_tsconfig:
+        result["type_check_cmd"] = "npx tsc --noEmit"
+
+    return result
 
 
 def _detect_project(root: Path) -> tuple[str, str, str, list[str]]:
@@ -189,11 +302,33 @@ def _render_project_toml(
     test_dir: str,
     extensions: list[str],
     scope_ignore_files: list[str] | None = None,
+    project_root: Path | None = None,
 ) -> str:
     """Render a project.toml string."""
     cmds = _LANG_TEMPLATES.get(language, _LANG_TEMPLATES["python"])
+
+    # For JavaScript, detect actual tooling and override defaults
+    if language == "javascript" and project_root is not None:
+        detected = _detect_js_tooling(project_root)
+        cmds = {**cmds, **detected}
+
     ext_str = ", ".join(f'"{e}"' for e in extensions)
     ignore_files = scope_ignore_files or []
+
+    def render_cmd(key: str, hint: str) -> str:
+        """Render a command line, showing empty strings as commented hints."""
+        value = cmds.get(key, "")
+        if value:
+            return f'{key} = "{value}"'
+        return f'{key} = ""  # {hint}'
+
+    # Hints shown as comments when a tool isn't detected
+    test_hint = "Not detected. Try: 'npx vitest run {test_dir}'"
+    lint_hint = "Not detected. Try: 'npx eslint {file}'"
+    format_hint = "Not detected. Try: 'npx prettier --write {file}'"
+    lint_fix_hint = "Not detected. Try: 'npx eslint --fix {file}'"
+    format_check_hint = "Not detected. Try: 'npx prettier --check {file}'"
+    type_check_hint = "Not detected. Try: 'npx tsc --noEmit'"
 
     lines = [
         "[project]",
@@ -211,12 +346,29 @@ def _render_project_toml(
         '# Run "dgov sentrux gate-save" after bootstrap and whenever you intentionally',
         "# refresh the architectural baseline for this repo.",
         "",
-        f'test_cmd = "{cmds["test_cmd"]}"',
-        f'lint_cmd = "{cmds["lint_cmd"]}"',
-        f'format_cmd = "{cmds["format_cmd"]}"',
-        f'lint_fix_cmd = "{cmds["lint_fix_cmd"]}"',
-        f'format_check_cmd = "{cmds["format_check_cmd"]}"',
-        "# type_check_cmd = \"\"  # Optional: e.g. 'uv run ty check' for Python",
+        render_cmd("test_cmd", test_hint),
+        render_cmd("lint_cmd", lint_hint),
+        render_cmd("format_cmd", format_hint),
+        render_cmd("lint_fix_cmd", lint_fix_hint),
+        render_cmd("format_check_cmd", format_check_hint),
+    ]
+
+    # Add type_check_cmd for JavaScript or as commented example for others
+    if language == "javascript":
+        lines.append(render_cmd("type_check_cmd", type_check_hint))
+    else:
+        lines.append("# type_check_cmd = \"\"  # Optional: e.g. 'uv run ty check' for Python")
+
+    # setup_cmd: runs in worktree before lint/test/format gates
+    if language == "javascript":
+        lines.append(
+            'setup_cmd = "npm ci --ignore-scripts 2>/dev/null'
+            ' || npm install --ignore-scripts 2>/dev/null"'
+        )
+    else:
+        lines.append('# setup_cmd = ""  # Runs in worktree before gates')
+
+    lines.extend([
         "",
         "# Settlement timeout in seconds",
         "settlement_timeout = 120",
@@ -247,7 +399,7 @@ def _render_project_toml(
         "[conventions]",
         "# Add project-specific rules here for the agent to follow",
         '# style = "Prefer functional over OOP"',
-    ]
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -341,7 +493,7 @@ def init_cmd(force: bool, yes: bool) -> None:
     language, src_dir, test_dir, extensions = _detect_project(project_root)
     scope_ignore_files = _detect_scope_ignore_files(project_root, language)
     toml_content = _render_project_toml(
-        language, src_dir, test_dir, extensions, scope_ignore_files
+        language, src_dir, test_dir, extensions, scope_ignore_files, project_root
     )
     governor_content = _render_governor_md()
 
