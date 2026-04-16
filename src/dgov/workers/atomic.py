@@ -14,23 +14,27 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
 from dgov.tool_policy import ToolPolicy, parse_tool_policy
 
-_DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"
-_DEFAULT_LLM_API_KEY_ENV = "FIREWORKS_API_KEY"
-
 
 @dataclass(frozen=True)
 class AtomicConfig:
-    """Minimal project config for worker — no dgov imports."""
+    """Worker-facing project config. Single source of truth for every field
+    the worker subprocess consumes. ProjectConfig inherits from this and adds
+    governor-only fields. The worker subprocess never imports ProjectConfig,
+    preserving subprocess isolation (Pillar #7).
+    """
 
     language: str = "python"
     src_dir: str = "src/"
     test_dir: str = "tests/"
+    llm_base_url: str = "https://api.fireworks.ai/inference/v1"
+    llm_api_key_env: str = "FIREWORKS_API_KEY"
     test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
@@ -41,73 +45,75 @@ class AtomicConfig:
     worker_tree_max_lines: int = 80
     line_length: int = 99
     test_markers: tuple[str, ...] = ()
-    conventions: dict[str, str] | None = None
+    conventions: dict[str, str] = field(default_factory=dict)
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
 
 
-def _payload_markers(raw: object) -> tuple[str, ...]:
-    if isinstance(raw, list):
-        return tuple(str(item) for item in raw)
-    if isinstance(raw, tuple):
-        return tuple(str(item) for item in raw)
+def _coerce_markers(v: object) -> tuple[str, ...]:
+    if isinstance(v, (list, tuple)):
+        return tuple(str(item) for item in v)
     return ()
 
 
-def atomic_config_from_payload(raw: dict[str, Any]) -> AtomicConfig:
-    """Deserialize a worker payload into AtomicConfig."""
-    conventions_raw = raw.get("conventions", {})
-    conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else None
-    return AtomicConfig(
-        language=raw.get("language", "python"),
-        src_dir=raw.get("src_dir", "src/"),
-        test_dir=raw.get("test_dir", "tests/"),
-        test_cmd=raw.get("test_cmd", AtomicConfig.test_cmd),
-        lint_cmd=raw.get("lint_cmd", AtomicConfig.lint_cmd),
-        format_cmd=raw.get("format_cmd", AtomicConfig.format_cmd),
-        lint_fix_cmd=raw.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
-        type_check_cmd=raw.get("type_check_cmd", ""),
-        worker_iteration_budget=raw.get("worker_iteration_budget", 50),
-        worker_iteration_warn_at=raw.get("worker_iteration_warn_at", 40),
-        worker_tree_max_lines=raw.get("worker_tree_max_lines", 80),
-        line_length=raw.get("line_length", 99),
-        test_markers=_payload_markers(raw.get("test_markers", ())),
-        conventions=conventions,
-        tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
-    )
+def _coerce_conventions(v: object) -> dict[str, str]:
+    return dict(v) if isinstance(v, dict) else {}
 
 
-def llm_runtime_settings_from_payload(raw: dict[str, Any]) -> tuple[str, str]:
-    """Extract LLM runtime settings from a worker payload."""
-    return (
-        raw.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
-        raw.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
-    )
+def _coerce_tool_policy(v: object) -> ToolPolicy:
+    return parse_tool_policy(v if isinstance(v, dict) else {})
+
+
+# Per-field payload → AtomicConfig coercion. Fields omitted from this map
+# are assigned directly (str/int/bool). One entry per non-trivial type.
+_PAYLOAD_COERCERS: dict[str, Callable[[object], object]] = {
+    "test_markers": _coerce_markers,
+    "conventions": _coerce_conventions,
+    "tool_policy": _coerce_tool_policy,
+}
+
+# Per-field AtomicConfig → JSON-serializable coercion. Must be idempotent
+# with _PAYLOAD_COERCERS so payload → config → payload round-trips.
+_PAYLOAD_SERIALIZERS: dict[str, Callable[[object], object]] = {
+    "test_markers": lambda v: list(v) if v else [],
+    "conventions": lambda v: dict(v) if v else {},
+    "tool_policy": lambda v: v.as_jsonable() if isinstance(v, ToolPolicy) else {},
+}
+
+
+def atomic_config_from_payload(raw: Mapping[str, Any]) -> AtomicConfig:
+    """Deserialize a worker payload into AtomicConfig. Unknown keys ignored;
+    missing keys fall back to AtomicConfig field defaults."""
+    values: dict[str, Any] = {}
+    for f in fields(AtomicConfig):
+        if f.name not in raw:
+            continue
+        coercer = _PAYLOAD_COERCERS.get(f.name)
+        values[f.name] = coercer(raw[f.name]) if coercer else raw[f.name]
+    return AtomicConfig(**values)
+
+
+def atomic_config_to_payload(config: AtomicConfig) -> dict[str, object]:
+    """Serialize AtomicConfig into a JSON-safe worker payload."""
+    payload: dict[str, object] = {}
+    for f in fields(AtomicConfig):
+        value = getattr(config, f.name)
+        serializer = _PAYLOAD_SERIALIZERS.get(f.name)
+        payload[f.name] = serializer(value) if serializer else value
+    return payload
 
 
 def worker_payload_from_project_toml(raw: dict[str, Any]) -> dict[str, object]:
-    """Normalize raw project.toml data into the worker payload shape."""
+    """Normalize raw project.toml data into the worker payload shape.
+
+    TOML has `[project]` plus top-level `[conventions]` and `[tool_policy]`
+    sections. Flattens all three through AtomicConfig so payload shape stays
+    in sync with field defs.
+    """
     proj = raw.get("project", {})
-    conventions_raw = raw.get("conventions", {})
-    conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else None
-    return {
-        "language": proj.get("language", "python"),
-        "src_dir": proj.get("src_dir", "src/"),
-        "test_dir": proj.get("test_dir", "tests/"),
-        "llm_base_url": proj.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
-        "llm_api_key_env": proj.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
-        "test_cmd": proj.get("test_cmd", AtomicConfig.test_cmd),
-        "lint_cmd": proj.get("lint_cmd", AtomicConfig.lint_cmd),
-        "format_cmd": proj.get("format_cmd", AtomicConfig.format_cmd),
-        "lint_fix_cmd": proj.get("lint_fix_cmd", AtomicConfig.lint_fix_cmd),
-        "type_check_cmd": proj.get("type_check_cmd", ""),
-        "worker_iteration_budget": proj.get("worker_iteration_budget", 50),
-        "worker_iteration_warn_at": proj.get("worker_iteration_warn_at", 40),
-        "worker_tree_max_lines": proj.get("worker_tree_max_lines", 80),
-        "line_length": proj.get("line_length", 99),
-        "test_markers": list(_payload_markers(proj.get("test_markers", ()))),
-        "conventions": conventions,
-        "tool_policy": parse_tool_policy(raw.get("tool_policy", {})).as_jsonable(),
-    }
+    flat: dict[str, Any] = dict(proj)
+    flat["conventions"] = raw.get("conventions", {})
+    flat["tool_policy"] = raw.get("tool_policy", {})
+    return atomic_config_to_payload(atomic_config_from_payload(flat))
 
 
 def shell_quote(s: str) -> str:

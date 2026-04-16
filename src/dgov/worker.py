@@ -36,7 +36,6 @@ from dgov.workers.atomic import (  # noqa: E402
     atomic_config_from_payload,
     get_allowed_tool_names,
     get_tool_spec,
-    llm_runtime_settings_from_payload,
     worker_payload_from_project_toml,
 )
 
@@ -65,11 +64,6 @@ def _load_project_payload(worktree: Path) -> dict[str, object]:
     return worker_payload_from_project_toml(raw)
 
 
-def _load_llm_runtime_settings(worktree: Path) -> tuple[str, str]:
-    """Load OpenAI-compatible endpoint settings from .dgov/project.toml."""
-    return llm_runtime_settings_from_payload(_load_project_payload(worktree))
-
-
 def _load_project_config(worktree: Path) -> AtomicConfig:
     """Load .dgov/project.toml from worktree. Returns defaults if missing."""
     return atomic_config_from_payload(_load_project_payload(worktree))
@@ -83,16 +77,6 @@ def _resolve_config(worktree: Path, project_config_json: str) -> AtomicConfig:
         except Exception:
             pass
     return _load_project_config(worktree)
-
-
-def _resolve_llm_runtime_settings(worktree: Path, project_config_json: str) -> tuple[str, str]:
-    """Load LLM endpoint settings from JSON or fall back to worktree TOML."""
-    if project_config_json:
-        try:
-            return llm_runtime_settings_from_payload(json.loads(project_config_json))
-        except Exception:
-            pass
-    return _load_llm_runtime_settings(worktree)
 
 
 _PROMPT_CONTEXT_MAX_CHARS = 12_000
@@ -395,14 +379,13 @@ def run_worker(
     project_config_json: str = "",
     task_scope_json: str = "",
 ) -> None:
-    base_url, api_key_env = _resolve_llm_runtime_settings(worktree, project_config_json)
-    api_key = os.environ.get(api_key_env)
+    config = _resolve_config(worktree, project_config_json)
+    api_key = os.environ.get(config.llm_api_key_env)
     if not api_key:
-        WorkerEvent("error", f"{api_key_env} missing").emit()
+        WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    config = _resolve_config(worktree, project_config_json)
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
     actuators = AtomicTools(worktree, config)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None

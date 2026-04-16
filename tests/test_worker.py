@@ -22,7 +22,6 @@ from dgov.worker import (  # noqa: E402
     _build_system_prompt,
     _clip_tool_result,
     _iteration_budget,
-    _load_llm_runtime_settings,
     _load_project_config,
     _repo_map_snapshot,
     run_worker,
@@ -258,22 +257,22 @@ require_uv_run = true
     )
 
 
-def test_load_llm_runtime_settings_defaults(tmp_path: Path) -> None:
-    base_url, api_key_env = _load_llm_runtime_settings(tmp_path)
-    assert base_url == "https://api.fireworks.ai/inference/v1"
-    assert api_key_env == "FIREWORKS_API_KEY"
+def test_load_project_config_llm_defaults(tmp_path: Path) -> None:
+    config = _load_project_config(tmp_path)
+    assert config.llm_base_url == "https://api.fireworks.ai/inference/v1"
+    assert config.llm_api_key_env == "FIREWORKS_API_KEY"
 
 
-def test_load_llm_runtime_settings_from_toml(tmp_path: Path) -> None:
+def test_load_project_config_llm_from_toml(tmp_path: Path) -> None:
     dgov_dir = tmp_path / ".dgov"
     dgov_dir.mkdir()
     (dgov_dir / "project.toml").write_text(
         '[project]\nllm_base_url = "https://api.openai.com/v1"\n'
         'llm_api_key_env = "OPENAI_API_KEY"\n'
     )
-    base_url, api_key_env = _load_llm_runtime_settings(tmp_path)
-    assert base_url == "https://api.openai.com/v1"
-    assert api_key_env == "OPENAI_API_KEY"
+    config = _load_project_config(tmp_path)
+    assert config.llm_base_url == "https://api.openai.com/v1"
+    assert config.llm_api_key_env == "OPENAI_API_KEY"
 
 
 # -- get_tool_spec --

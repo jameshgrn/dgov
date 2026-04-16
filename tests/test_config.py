@@ -221,10 +221,15 @@ class TestScopeIgnoreFiles:
         pc = load_project_config(tmp_path)
         assert pc.scope_ignore_files == ("uv.lock", "go.sum")
 
-    def test_worker_payload_round_trip(self):
+    def test_scope_ignore_files_is_governor_only(self):
+        """scope_ignore_files is consumed by settlement, not the worker, so it
+        must not appear in the worker payload. Keeps AtomicConfig minimal."""
         pc = ProjectConfig(scope_ignore_files=("uv.lock",))
-        restored = ProjectConfig.from_worker_payload(pc.to_worker_payload())
-        assert restored.scope_ignore_files == ("uv.lock",)
+        payload = pc.to_worker_payload()
+        assert "scope_ignore_files" not in payload
+        # After round-trip, scope_ignore_files falls back to default ().
+        restored = ProjectConfig.from_worker_payload(payload)
+        assert restored.scope_ignore_files == ()
 
     def test_rejects_reserved_paths(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"

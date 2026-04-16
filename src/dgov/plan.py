@@ -381,6 +381,12 @@ def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:
     missing = [
         phase for phase, pattern in _PROMPT_PHASE_RES.items() if not pattern.search(unit.prompt)
     ]
+    # Read-only roles don't edit or verify — only Orient matters.
+    if unit.role in ("researcher", "reviewer"):
+        missing = [p for p in missing if p == "Orient"]
+    # test_cmd means settlement runs verification automatically.
+    elif unit.test_cmd and "Verify" in missing:
+        missing.remove("Verify")
     if not missing:
         return []
     return [

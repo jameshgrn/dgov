@@ -32,7 +32,6 @@ from dgov.worker import (  # noqa: E402
     _iteration_budget,
     _repo_map_snapshot,
     _resolve_config,
-    _resolve_llm_runtime_settings,
     _task_scope_section,
 )
 from dgov.workers.atomic import AtomicTools, get_allowed_tool_names, get_tool_spec  # noqa: E402
@@ -154,14 +153,13 @@ def run_researcher(
     task_scope_json: str = "",
 ) -> None:
     """Run the research worker loop."""
-    base_url, api_key_env = _resolve_llm_runtime_settings(worktree, project_config_json)
-    api_key = os.environ.get(api_key_env)
+    config = _resolve_config(worktree, project_config_json)
+    api_key = os.environ.get(config.llm_api_key_env)
     if not api_key:
-        WorkerEvent("error", f"{api_key_env} missing").emit()
+        WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    config = _resolve_config(worktree, project_config_json)
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
     actuators = AtomicTools(worktree, config)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None

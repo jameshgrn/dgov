@@ -4,52 +4,39 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from dgov.tool_policy import ToolPolicy, parse_tool_policy
-
-if TYPE_CHECKING:
-    from dgov.workers.atomic import AtomicConfig
+from dgov.tool_policy import parse_tool_policy
+from dgov.workers.atomic import (
+    AtomicConfig,
+    atomic_config_from_payload,
+    atomic_config_to_payload,
+)
 
 # -- Project config: per-repo conventions for workers --
 
 
 _DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p5-turbo"
-_DEFAULT_LLM_BASE_URL = "https://api.fireworks.ai/inference/v1"
-_DEFAULT_LLM_API_KEY_ENV = "FIREWORKS_API_KEY"
 
 
 @dataclass(frozen=True)
-class ProjectConfig:
-    """Per-project conventions. Loaded from .dgov/project.toml."""
+class ProjectConfig(AtomicConfig):
+    """Per-project conventions. Loaded from .dgov/project.toml.
 
-    language: str = "python"
-    src_dir: str = "src/"
-    test_dir: str = "tests/"
+    Inherits every worker-facing field from AtomicConfig; adds governor-only
+    fields (settlement, review, agent routing). Never duplicate a worker field
+    here — put it on AtomicConfig so the worker subprocess sees it too.
+    """
+
+    # Governor-only fields below. The worker subprocess never consumes these.
     source_extensions: tuple[str, ...] = (".py",)
     default_agent: str = _DEFAULT_AGENT
-    llm_base_url: str = _DEFAULT_LLM_BASE_URL
-    llm_api_key_env: str = _DEFAULT_LLM_API_KEY_ENV
-    # Worker SOP + settlement validate
-    test_cmd: str = "python -m pytest {test_dir} -q --tb=short"
-    lint_cmd: str = "python -m ruff check {file}"
-    format_cmd: str = "python -m ruff format {file}"
-    # Settlement-specific (autofix + validate)
-    lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes --show-fixes {file}"
     format_check_cmd: str = "python -m ruff format --check {file}"
-    type_check_cmd: str = ""
-    test_markers: tuple[str, ...] = ()
-    worker_iteration_budget: int = 50
-    worker_iteration_warn_at: int = 40
-    worker_tree_max_lines: int = 80
     settlement_timeout: int = 120
-    line_length: int = 99
     review_hooks: tuple[str, ...] = ()
     agents: dict[str, str] = field(default_factory=dict)
-    conventions: dict[str, str] = field(default_factory=dict)
-    tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
     scope_ignore_files: tuple[str, ...] = ()
     setup_cmd: str = ""
 
@@ -82,74 +69,25 @@ class ProjectConfig:
         return self.llm_base_url, self.llm_api_key_env
 
     def to_worker_payload(self) -> dict[str, object]:
-        """Serialize the config fields needed by worker subprocesses."""
-        return {
-            "language": self.language,
-            "src_dir": self.src_dir,
-            "test_dir": self.test_dir,
-            "llm_base_url": self.llm_base_url,
-            "llm_api_key_env": self.llm_api_key_env,
-            "test_cmd": self.test_cmd,
-            "lint_cmd": self.lint_cmd,
-            "format_cmd": self.format_cmd,
-            "lint_fix_cmd": self.lint_fix_cmd,
-            "type_check_cmd": self.type_check_cmd,
-            "worker_iteration_budget": self.worker_iteration_budget,
-            "worker_iteration_warn_at": self.worker_iteration_warn_at,
-            "worker_tree_max_lines": self.worker_tree_max_lines,
-            "line_length": self.line_length,
-            "test_markers": list(self.test_markers),
-            "conventions": dict(self.conventions) if self.conventions else None,
-            "tool_policy": self.tool_policy.as_jsonable(),
-            "scope_ignore_files": list(self.scope_ignore_files),
-            "setup_cmd": self.setup_cmd,
-        }
+        """Serialize the worker-facing config fields for subprocess dispatch."""
+        return atomic_config_to_payload(self.to_atomic_config())
 
     def to_atomic_config(self) -> AtomicConfig:
-        """ProjectConfig -> AtomicConfig without re-parsing project.toml."""
-        from dgov.workers.atomic import atomic_config_from_payload
-
-        return atomic_config_from_payload(self.to_worker_payload())
+        """Project-facing subset needed by the worker. Drops governor-only fields."""
+        atomic_values = {f.name: getattr(self, f.name) for f in fields(AtomicConfig)}
+        return AtomicConfig(**atomic_values)
 
     @classmethod
     def from_worker_payload(cls, raw: Mapping[str, Any]) -> ProjectConfig:
-        """Deserialize the worker payload back into ProjectConfig."""
-        markers = raw.get("test_markers", ())
-        if isinstance(markers, list):
-            markers = tuple(markers)
-        elif not isinstance(markers, tuple):
-            markers = tuple(markers or ())
+        """Round-trip a worker payload back into ProjectConfig.
 
-        conventions_raw = raw.get("conventions", {})
-        conventions = dict(conventions_raw) if isinstance(conventions_raw, dict) else {}
-
-        ignore_raw = raw.get("scope_ignore_files", ())
-        if isinstance(ignore_raw, list):
-            scope_ignore_files = tuple(str(p) for p in ignore_raw)
-        else:
-            scope_ignore_files = tuple(ignore_raw or ())
-
-        return cls(
-            language=raw.get("language", "python"),
-            src_dir=raw.get("src_dir", "src/"),
-            test_dir=raw.get("test_dir", "tests/"),
-            llm_base_url=raw.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
-            llm_api_key_env=raw.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
-            test_cmd=raw.get("test_cmd", cls.test_cmd),
-            lint_cmd=raw.get("lint_cmd", cls.lint_cmd),
-            format_cmd=raw.get("format_cmd", cls.format_cmd),
-            lint_fix_cmd=raw.get("lint_fix_cmd", cls.lint_fix_cmd),
-            type_check_cmd=raw.get("type_check_cmd", ""),
-            worker_iteration_budget=raw.get("worker_iteration_budget", 50),
-            worker_iteration_warn_at=raw.get("worker_iteration_warn_at", 40),
-            worker_tree_max_lines=raw.get("worker_tree_max_lines", 80),
-            line_length=raw.get("line_length", 99),
-            test_markers=markers,
-            conventions=conventions,
-            tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
-            scope_ignore_files=scope_ignore_files,
-            setup_cmd=raw.get("setup_cmd", ""),
-        )
+        Governor-only fields are absent from the payload, so they fall back to
+        their class defaults. This mirror is used by tests that verify
+        worker-bound fields survive serialization.
+        """
+        atomic = atomic_config_from_payload(raw)
+        atomic_values = {f.name: getattr(atomic, f.name) for f in fields(AtomicConfig)}
+        return cls(**atomic_values)
 
     def to_prompt_section(self) -> str:
         """Render as text for injection into worker system prompt."""
@@ -213,13 +151,13 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
 
     return ProjectConfig(
-        language=proj.get("language", "python"),
-        src_dir=proj.get("src_dir", "src/"),
-        test_dir=proj.get("test_dir", "tests/"),
+        language=proj.get("language", ProjectConfig.language),
+        src_dir=proj.get("src_dir", ProjectConfig.src_dir),
+        test_dir=proj.get("test_dir", ProjectConfig.test_dir),
         source_extensions=extensions,
         default_agent=proj.get("default_agent", _DEFAULT_AGENT),
-        llm_base_url=proj.get("llm_base_url", _DEFAULT_LLM_BASE_URL),
-        llm_api_key_env=proj.get("llm_api_key_env", _DEFAULT_LLM_API_KEY_ENV),
+        llm_base_url=proj.get("llm_base_url", ProjectConfig.llm_base_url),
+        llm_api_key_env=proj.get("llm_api_key_env", ProjectConfig.llm_api_key_env),
         test_cmd=proj.get("test_cmd", ProjectConfig.test_cmd),
         lint_cmd=proj.get("lint_cmd", ProjectConfig.lint_cmd),
         format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),

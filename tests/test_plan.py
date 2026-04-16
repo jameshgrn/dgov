@@ -1104,6 +1104,59 @@ check stuff.
         warnings = self._structure_warnings(validate_plan(self._plan(prompt)))
         assert "first-attempt success" in warnings[0].message
 
+    def _plan_with(self, prompt: str, **kwargs) -> PlanSpec:
+        return PlanSpec(
+            name="test-plan",
+            goal="Goal",
+            units={
+                "task": PlanUnit(
+                    slug="task",
+                    summary="Task",
+                    prompt=prompt,
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                    **kwargs,
+                )
+            },
+        )
+
+    def test_test_cmd_suppresses_verify_warning(self):
+        prompt = """
+Orient:
+Read stuff.
+
+Edit:
+Change stuff.
+"""
+        plan = self._plan_with(prompt, test_cmd="uv run pytest -q")
+        assert self._structure_warnings(validate_plan(plan)) == []
+
+    def test_test_cmd_does_not_suppress_orient_or_edit(self):
+        prompt = "Just do the thing."
+        plan = self._plan_with(prompt, test_cmd="uv run pytest -q")
+        warnings = self._structure_warnings(validate_plan(plan))
+        assert len(warnings) == 1
+        assert "missing section headers: Orient, Edit." in warnings[0].message
+
+    def test_researcher_only_warns_orient(self):
+        prompt = "Just do the thing."
+        plan = self._plan_with(prompt, role="researcher")
+        warnings = self._structure_warnings(validate_plan(plan))
+        assert len(warnings) == 1
+        assert warnings[0].message == (
+            "Prompt is missing section headers: Orient. "
+            "Structured prompts (Orient/Edit/Verify) have higher "
+            "first-attempt success rates."
+        )
+
+    def test_reviewer_no_warning_with_orient(self):
+        prompt = """
+Orient:
+Read the dependency diffs.
+"""
+        plan = self._plan_with(prompt, role="reviewer")
+        assert self._structure_warnings(validate_plan(plan)) == []
+
 
 # =============================================================================
 # Integration tests
