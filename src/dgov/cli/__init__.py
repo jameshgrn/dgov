@@ -10,7 +10,7 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, prune_history
+from dgov.persistence import prune_history, read_events
 from dgov.project_root import resolve_project_root
 from dgov.types import TaskState
 
@@ -137,7 +137,7 @@ def cli(
 
 @cli.command(name="status")
 @click.option(
-    "--all", "show_all", is_flag=True, help="Show persisted task history, not just live tasks"
+    "--all", "show_all", is_flag=True, help="Show event-derived history, not just live tasks"
 )
 def status_cmd(show_all: bool) -> None:
     """Show governor status — what's running now."""
@@ -190,38 +190,126 @@ _LIVE_STATES = frozenset({
 })
 
 
+def _status_state_from_event(event: dict) -> str | None:
+    """Map a lifecycle event to the task state it establishes."""
+    event_name = event.get("event")
+    if event_name == "dag_task_dispatched":
+        return TaskState.ACTIVE.value
+    if event_name == "task_done":
+        return TaskState.DONE.value
+    if event_name == "task_abandoned":
+        return TaskState.ABANDONED.value
+    if event_name == "task_timed_out":
+        return TaskState.TIMED_OUT.value
+    if event_name == "task_failed":
+        error = str(event.get("error", "")).lower()
+        if "timeout" in error:
+            return TaskState.TIMED_OUT.value
+        return TaskState.FAILED.value
+    if event_name == "review_pass":
+        return TaskState.REVIEWED_PASS.value
+    if event_name == "review_fail":
+        return TaskState.REVIEWED_FAIL.value
+    if event_name == "merge_completed":
+        return TaskState.MERGED.value
+    if event_name == "task_merge_failed":
+        return TaskState.FAILED.value
+    if event_name == "task_closed":
+        return TaskState.CLOSED.value
+    if event_name == "dag_task_governor_resumed":
+        action = event.get("action")
+        if action == "retry":
+            return TaskState.PENDING.value
+        if action == "skip":
+            return TaskState.SKIPPED.value
+        if action == "fail":
+            return TaskState.FAILED.value
+    return None
+
+
+def _latest_run_start_ids(events: list[dict]) -> dict[str, int]:
+    """Return the latest run_start id for each plan present in the event log."""
+    latest: dict[str, int] = {}
+    for event in events:
+        if event.get("event") != "run_start":
+            continue
+        plan_name = event.get("plan_name")
+        if not plan_name:
+            continue
+        latest[plan_name] = max(latest.get(plan_name, 0), int(event.get("id", 0)))
+    return latest
+
+
+def _status_tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[str, str]]:
+    """Build task snapshots from lifecycle events instead of mutable task rows."""
+    events = read_events(project_root)
+    if not events:
+        return []
+
+    latest_run_ids = _latest_run_start_ids(events) if latest_run_only else {}
+    task_statuses: dict[tuple[str, str], dict[str, str]] = {}
+
+    for event in events:
+        task_slug = event.get("task_slug")
+        if not task_slug:
+            continue
+        plan_name = str(event.get("plan_name") or "")
+        if latest_run_only and int(event.get("id", 0)) <= latest_run_ids.get(plan_name, 0):
+            continue
+        state = _status_state_from_event(event)
+        if state is None:
+            continue
+        task_statuses[(plan_name, str(task_slug))] = {
+            "slug": str(task_slug),
+            "state": state,
+            "plan_name": plan_name,
+        }
+
+    return sorted(
+        task_statuses.values(),
+        key=lambda task: (task.get("plan_name", ""), task["slug"]),
+    )
+
+
 def _cmd_status(project_root: str, show_all: bool = False) -> None:
     """Show governor status — what's running now."""
     try:
-        tasks = all_tasks(project_root)
+        all_history = _status_tasks_from_events(project_root, latest_run_only=False)
+        live_history = _status_tasks_from_events(project_root, latest_run_only=True)
     except Exception as exc:
         _output({"status": "error", "message": str(exc)})
         return
 
-    if not tasks:
+    if not all_history:
         _output({"status": "idle", "tasks": 0})
         return
 
-    active = [t for t in tasks if t.get("state") == "active"]
-    visible = tasks if show_all else [t for t in tasks if t.get("state") in _LIVE_STATES]
+    live = [t for t in live_history if t.get("state") in _LIVE_STATES]
+    active = [t for t in live if t.get("state") == TaskState.ACTIVE.value]
+    visible = all_history if show_all else live
 
     if want_json():
         click.echo(
             json.dumps(
                 {
-                    "status": "active" if active else "idle",
-                    "tasks": len(tasks),
+                    "status": "active" if live else "idle",
+                    "tasks": len(all_history),
                     "active": len(active),
                     "task_list": [
-                        {"slug": t.get("slug"), "state": t.get("state")} for t in visible
+                        {
+                            "slug": t.get("slug"),
+                            "state": t.get("state"),
+                            "plan_name": t.get("plan_name"),
+                        }
+                        for t in visible
                     ],
                 },
                 indent=2,
             )
         )
     else:
-        click.echo(f"status: {'active' if active else 'idle'}")
-        click.echo(f"tasks: {len(tasks)} total")
+        click.echo(f"status: {'active' if live else 'idle'}")
+        click.echo(f"tasks: {len(all_history)} total")
         click.echo(f"active: {len(active)}")
         if visible:
             click.echo("tasks:")

@@ -83,30 +83,38 @@ def test_status_hides_history_by_default(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "merged-task",
-                "prompt": "done",
-                "agent": "qwen",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path / "wt-merged"),
-                "branch_name": "dgov/merged-task",
-                "state": TaskState.MERGED,
-                "task_id": None,
-            },
-            {
-                "slug": "active-task",
-                "prompt": "doing",
-                "agent": "qwen",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path / "wt-active"),
-                "branch_name": "dgov/active-task",
-                "state": TaskState.ACTIVE,
-                "task_id": None,
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path), "task_done", "pane-merged", plan_name="plan-a", task_slug="merged-task"
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "merge_completed",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-b", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-active",
+        plan_name="plan-b",
+        task_slug="active-task",
     )
 
     result = runner.invoke(cli, ["status"])
@@ -119,25 +127,56 @@ def test_status_all_shows_history(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "merged-task",
-                "prompt": "done",
-                "agent": "qwen",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path / "wt-merged"),
-                "branch_name": "dgov/merged-task",
-                "state": TaskState.MERGED,
-                "task_id": None,
-            }
-        ],
+        "dag_task_dispatched",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path), "task_done", "pane-merged", plan_name="plan-a", task_slug="merged-task"
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "merge_completed",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
     )
 
     result = runner.invoke(cli, ["status", "--all"])
     assert result.exit_code == 0
     assert "merged-task" in result.output
+
+
+def test_status_scopes_live_view_to_latest_run_start(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-stale",
+        plan_name="plan-a",
+        task_slug="stale-task",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "stale-task" not in result.output
 
 
 # -- validate --
