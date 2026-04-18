@@ -1,6 +1,8 @@
-"""Task state operations.
+"""Runtime artifact record operations.
 
-CRUD operations for task records and state transitions.
+This layer stores best-effort execution metadata such as worktree paths,
+branch names, and a cached per-task artifact state. Lifecycle truth lives in
+the event log; these rows exist only for operational bookkeeping.
 """
 
 from __future__ import annotations
@@ -27,8 +29,8 @@ from dgov.persistence.schema import (
 logger = logging.getLogger(__name__)
 
 
-def add_task(session_root: str, task: WorkerTask) -> None:
-    """Add a new task to the database."""
+def record_runtime_artifact(session_root: str, task: WorkerTask) -> None:
+    """Insert or replace a runtime artifact row."""
 
     def _do() -> None:
         conn = _get_db(session_root)
@@ -38,8 +40,8 @@ def add_task(session_root: str, task: WorkerTask) -> None:
     _retry_on_lock(_do)
 
 
-def remove_task(session_root: str, slug: str) -> None:
-    """Remove a task from the database, recording slug in history."""
+def remove_runtime_artifact(session_root: str, slug: str) -> None:
+    """Remove a runtime artifact row, recording slug in history."""
 
     def _do() -> None:
         conn = _get_db(session_root)
@@ -62,16 +64,18 @@ def get_slug_history(session_root: str) -> set[str]:
     return {row[0] for row in rows}
 
 
-def get_task(session_root: str, slug: str) -> dict | None:
-    """Get a single task by slug."""
+def get_runtime_artifact(session_root: str, slug: str) -> dict | None:
+    """Get a single runtime artifact row by slug."""
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM tasks WHERE slug = ?", (slug,)).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def get_tasks(session_root: str, slugs: set[str] | list[str] | tuple[str, ...]) -> list[dict]:
-    """Return task rows for the provided slugs."""
+def get_runtime_artifacts(
+    session_root: str, slugs: set[str] | list[str] | tuple[str, ...]
+) -> list[dict]:
+    """Return runtime artifact rows for the provided slugs."""
     ordered_slugs = [slug for slug in slugs if slug]
     if not ordered_slugs:
         return []
@@ -86,16 +90,18 @@ def get_tasks(session_root: str, slugs: set[str] | list[str] | tuple[str, ...]) 
     return [by_slug[slug] for slug in ordered_slugs if slug in by_slug]
 
 
-def all_tasks(session_root: str) -> list[dict]:
-    """Return all tasks."""
+def list_runtime_artifacts(session_root: str) -> list[dict]:
+    """Return all runtime artifact rows."""
     conn = _get_db(session_root)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM tasks").fetchall()
     return [_row_to_dict(row) for row in rows]
 
 
-def update_task_state(session_root: str, slug: str, new_state: str, force: bool = False) -> None:
-    """Update the state field of a task record.
+def update_runtime_artifact_state(
+    session_root: str, slug: str, new_state: str, force: bool = False
+) -> None:
+    """Update the cached state field of a runtime artifact row.
 
     Enforces VALID_TRANSITIONS unless *force* is True.
     Same-state transitions are no-ops.
@@ -118,7 +124,10 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
                 st for st, targets in VALID_TRANSITIONS.items() if new_state in targets
             ]
             if not allowed_from:
-                row = conn.execute("SELECT state FROM tasks WHERE slug = ?", (slug,)).fetchone()
+                row = conn.execute(
+                    "SELECT state FROM tasks WHERE slug = ?",
+                    (slug,),
+                ).fetchone()
                 if row is not None and row["state"] != new_state:
                     raise IllegalTransitionError(row["state"], new_state, slug)
                 return False
@@ -130,7 +139,10 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
             )
 
             if cur.rowcount == 0:
-                row = conn.execute("SELECT state FROM tasks WHERE slug = ?", (slug,)).fetchone()
+                row = conn.execute(
+                    "SELECT state FROM tasks WHERE slug = ?",
+                    (slug,),
+                ).fetchone()
                 if row is not None and row["state"] != new_state:
                     raise IllegalTransitionError(row["state"], new_state, slug)
                 return False
@@ -141,43 +153,8 @@ def update_task_state(session_root: str, slug: str, new_state: str, force: bool 
     _retry_on_lock(_do)
 
 
-def cleanup_zombies(session_root: str) -> int:
-    """Transition all ACTIVE tasks to ABANDONED and emit events. Returns count."""
-    from dgov.persistence.events import emit_event
-
-    def _do() -> int:
-        conn = _get_db(session_root)
-        conn.row_factory = sqlite3.Row
-        # Get slugs before updating so we can emit events
-        rows = conn.execute(
-            "SELECT slug, plan_name FROM tasks WHERE state = ?",
-            (TaskState.ACTIVE.value,),
-        ).fetchall()
-        if not rows:
-            return 0
-
-        cur = conn.execute(
-            "UPDATE tasks SET state = ? WHERE state = ?",
-            (TaskState.ABANDONED.value, TaskState.ACTIVE.value),
-        )
-
-        for row in rows:
-            emit_event(
-                session_root,
-                "task_abandoned",
-                "cleanup",
-                plan_name=row["plan_name"],
-                task_slug=row["slug"],
-            )
-
-        conn.commit()
-        return cur.rowcount
-
-    return _retry_on_lock(_do)
-
-
-def prune_history(session_root: str) -> int:
-    """Delete all abandoned and closed tasks. Returns count removed."""
+def prune_runtime_artifact_history(session_root: str) -> int:
+    """Delete abandoned and closed runtime artifact rows. Returns count removed."""
     _HISTORICAL = (TaskState.ABANDONED.value, TaskState.CLOSED.value)
 
     def _do() -> int:
@@ -193,8 +170,8 @@ def prune_history(session_root: str) -> int:
     return _retry_on_lock(_do)
 
 
-def replace_all_tasks(session_root: str, tasks_list: list[dict] | dict) -> None:
-    """Replace all tasks in the database with the given list.
+def replace_runtime_artifacts(session_root: str, tasks_list: list[dict] | dict) -> None:
+    """Replace all runtime artifact rows in the database with the given list.
 
     Intended for test setup where you need to establish a known state.
     """
@@ -211,8 +188,8 @@ def replace_all_tasks(session_root: str, tasks_list: list[dict] | dict) -> None:
     _retry_on_lock(_do)
 
 
-def set_task_metadata(session_root: str, slug: str, **kwargs: object) -> None:
-    """Update typed metadata fields on a specific task."""
+def set_runtime_artifact_metadata(session_root: str, slug: str, **kwargs: object) -> None:
+    """Update typed metadata fields on a specific runtime artifact row."""
     if not kwargs:
         return
 
@@ -231,7 +208,7 @@ def set_task_metadata(session_root: str, slug: str, **kwargs: object) -> None:
                     typed_vals.append(v)
             else:
                 raise ValueError(
-                    f"set_task_metadata: unknown key {k!r} for slug={slug}. "
+                    f"set_runtime_artifact_metadata: unknown key {k!r} for slug={slug}. "
                     f"Allowed: {sorted(_TASK_TYPED_COLS)}"
                 )
 

@@ -1,13 +1,13 @@
-"""Tests for task persistence."""
+"""Tests for runtime artifact persistence."""
 
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from dgov.persistence import tasks
+from dgov.persistence import runtime_artifacts
+from dgov.persistence.runtime_artifacts import IllegalTransitionError
 from dgov.persistence.schema import TaskState, WorkerTask
-from dgov.persistence.tasks import IllegalTransitionError
 
 
 @pytest.fixture
@@ -33,39 +33,41 @@ def sample_task(tmp_project):
     )
 
 
-def test_add_and_get_task(tmp_project, sample_task):
-    """Can add a task and retrieve it."""
-    tasks.add_task(tmp_project, sample_task)
+def test_record_and_get_runtime_artifact(tmp_project, sample_task):
+    """Can write a runtime artifact row and retrieve it."""
+    runtime_artifacts.record_runtime_artifact(tmp_project, sample_task)
 
-    retrieved = tasks.get_task(tmp_project, "test-task-001")
+    retrieved = runtime_artifacts.get_runtime_artifact(tmp_project, "test-task-001")
     assert retrieved is not None
     assert retrieved["slug"] == "test-task-001"
     assert retrieved["state"] == "active"
     assert retrieved.get("task_id") is None
 
 
-def test_update_task_state(tmp_project, sample_task):
-    """Can update task state with valid transitions."""
-    tasks.add_task(tmp_project, sample_task)
+def test_update_runtime_artifact_state(tmp_project, sample_task):
+    """Can update cached artifact state with valid transitions."""
+    runtime_artifacts.record_runtime_artifact(tmp_project, sample_task)
 
     # ACTIVE -> DONE is valid
-    tasks.update_task_state(tmp_project, "test-task-001", TaskState.DONE)
-    retrieved = tasks.get_task(tmp_project, "test-task-001")
+    runtime_artifacts.update_runtime_artifact_state(tmp_project, "test-task-001", TaskState.DONE)
+    retrieved = runtime_artifacts.get_runtime_artifact(tmp_project, "test-task-001")
     assert retrieved is not None
     assert retrieved["state"] == "done"
 
 
 def test_illegal_transition(tmp_project, sample_task):
     """Illegal transitions raise an error."""
-    tasks.add_task(tmp_project, sample_task)
+    runtime_artifacts.record_runtime_artifact(tmp_project, sample_task)
 
     # ACTIVE -> MERGED is not allowed (must go through DONE and REVIEWED_PASS)
     with pytest.raises(IllegalTransitionError):
-        tasks.update_task_state(tmp_project, "test-task-001", TaskState.MERGED)
+        runtime_artifacts.update_runtime_artifact_state(
+            tmp_project, "test-task-001", TaskState.MERGED
+        )
 
 
-def test_get_multiple_tasks(tmp_project):
-    """Can retrieve multiple tasks by slug."""
+def test_get_multiple_runtime_artifacts(tmp_project):
+    """Can retrieve multiple runtime artifact rows by slug."""
     for i in range(3):
         task = WorkerTask(
             slug=f"task-{i:03d}",
@@ -76,25 +78,25 @@ def test_get_multiple_tasks(tmp_project):
             branch_name=f"task/task-{i:03d}",
             state=TaskState.ACTIVE,
         )
-        tasks.add_task(tmp_project, task)
+        runtime_artifacts.record_runtime_artifact(tmp_project, task)
 
-    results = tasks.get_tasks(tmp_project, ["task-001", "task-002"])
+    results = runtime_artifacts.get_runtime_artifacts(tmp_project, ["task-001", "task-002"])
     assert len(results) == 2
     slugs = {r["slug"] for r in results}
     assert slugs == {"task-001", "task-002"}
 
 
-def test_remove_task(tmp_project, sample_task):
-    """Can remove a task and it records slug history."""
-    tasks.add_task(tmp_project, sample_task)
-    tasks.remove_task(tmp_project, "test-task-001")
+def test_remove_runtime_artifact(tmp_project, sample_task):
+    """Can remove a runtime artifact row and it records slug history."""
+    runtime_artifacts.record_runtime_artifact(tmp_project, sample_task)
+    runtime_artifacts.remove_runtime_artifact(tmp_project, "test-task-001")
 
-    assert tasks.get_task(tmp_project, "test-task-001") is None
-    assert "test-task-001" in tasks.get_slug_history(tmp_project)
+    assert runtime_artifacts.get_runtime_artifact(tmp_project, "test-task-001") is None
+    assert "test-task-001" in runtime_artifacts.get_slug_history(tmp_project)
 
 
-def test_replace_all_tasks(tmp_project):
-    """Can replace all tasks at once."""
+def test_replace_runtime_artifacts(tmp_project):
+    """Can replace all runtime artifact rows at once."""
     # Add initial task
     task = WorkerTask(
         slug="original",
@@ -105,7 +107,7 @@ def test_replace_all_tasks(tmp_project):
         branch_name="task/original",
         state=TaskState.ACTIVE,
     )
-    tasks.add_task(tmp_project, task)
+    runtime_artifacts.record_runtime_artifact(tmp_project, task)
 
     # Replace with new set
     new_tasks = [
@@ -130,21 +132,25 @@ def test_replace_all_tasks(tmp_project):
             "task_id": None,
         },
     ]
-    tasks.replace_all_tasks(tmp_project, new_tasks)
+    runtime_artifacts.replace_runtime_artifacts(tmp_project, new_tasks)
 
-    all_tasks = tasks.all_tasks(tmp_project)
-    assert len(all_tasks) == 2
-    slugs = {t["slug"] for t in all_tasks}
+    artifacts = runtime_artifacts.list_runtime_artifacts(tmp_project)
+    assert len(artifacts) == 2
+    slugs = {t["slug"] for t in artifacts}
     assert slugs == {"replaced-1", "replaced-2"}
 
 
-def test_set_task_metadata_plan_name_only(tmp_project, sample_task):
-    """Task metadata persistence is limited to execution facts like plan identity."""
-    tasks.add_task(tmp_project, sample_task)
+def test_set_runtime_artifact_metadata_plan_name_only(tmp_project, sample_task):
+    """Runtime artifact metadata persistence is limited to execution facts like plan identity."""
+    runtime_artifacts.record_runtime_artifact(tmp_project, sample_task)
 
-    tasks.set_task_metadata(tmp_project, "test-task-001", plan_name="repair-plan")
+    runtime_artifacts.set_runtime_artifact_metadata(
+        tmp_project,
+        "test-task-001",
+        plan_name="repair-plan",
+    )
 
-    retrieved = tasks.get_task(tmp_project, "test-task-001")
+    retrieved = runtime_artifacts.get_runtime_artifact(tmp_project, "test-task-001")
     assert retrieved is not None
     assert retrieved["plan_name"] == "repair-plan"
 

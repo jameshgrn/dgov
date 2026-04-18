@@ -1,6 +1,7 @@
 """Persistence layer for dgov.
 
-State file management for task records and event log via SQLite.
+Event log data is the authority for lifecycle state. Runtime artifact rows are
+best-effort bookkeeping for worktrees, branches, and related execution crumbs.
 """
 
 from __future__ import annotations
@@ -21,52 +22,46 @@ from dgov.persistence.ledger import (
     list_ledger_entries,
     resolve_ledger_entry,
 )
+from dgov.persistence.runtime_artifacts import (
+    get_runtime_artifact,
+    get_runtime_artifacts,
+    get_slug_history,
+    list_runtime_artifacts,
+    prune_runtime_artifact_history,
+    record_runtime_artifact,
+    remove_runtime_artifact,
+    replace_runtime_artifacts,
+    set_runtime_artifact_metadata,
+    update_runtime_artifact_state,
+)
 from dgov.persistence.schema import (
     TaskState,
     WorkerTask,
     state_path,
 )
-from dgov.persistence.tasks import (
-    add_task,
-    all_tasks,
-    cleanup_zombies,
-    get_slug_history,
-    get_task,
-    get_tasks,
-    prune_history,
-    remove_task,
-    replace_all_tasks,
-    set_task_metadata,
-    update_task_state,
-)
 
 __all__ = [
-    # Types
     "TaskState",
     "WorkerTask",
-    # Utilities
     "_get_db",
-    # Ledger
     "add_ledger_entry",
-    # Task operations
-    "add_task",
-    "all_tasks",
-    "cleanup_zombies",
     "clear_connection_cache",
     "emit_event",
+    "get_runtime_artifact",
+    "get_runtime_artifacts",
     "get_slug_history",
-    "get_task",
-    "get_tasks",
     "latest_event_id",
     "list_ledger_entries",
-    "prune_history",
+    "list_runtime_artifacts",
+    "prune_runtime_artifact_history",
     "read_events",
-    "remove_task",
-    "replace_all_tasks",
+    "record_runtime_artifact",
+    "remove_runtime_artifact",
+    "replace_runtime_artifacts",
     "reset_plan_state",
     "reset_task_state",
     "resolve_ledger_entry",
-    "set_task_metadata",
+    "set_runtime_artifact_metadata",
     "state_path",
-    "update_task_state",
+    "update_runtime_artifact_state",
 ]

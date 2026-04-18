@@ -11,7 +11,7 @@ import click
 
 from dgov import __version__
 from dgov.live_state import LIVE_STATES as _LIVE_STATES, tasks_from_events
-from dgov.persistence import prune_history
+from dgov.persistence import prune_runtime_artifact_history
 from dgov.project_root import resolve_project_root
 
 logging.basicConfig(
@@ -165,10 +165,10 @@ def archive_plan_cmd(name: str) -> None:
 
 @cli.command(name="prune")
 def prune_cmd() -> None:
-    """Prune historical tasks — removes abandoned and closed records."""
+    """Prune historical runtime artifact rows — removes abandoned and closed records."""
     project_root = str(resolve_project_root())
     try:
-        count = prune_history(project_root)
+        count = prune_runtime_artifact_history(project_root)
         if count == 0:
             click.echo("Nothing to prune.")
         else:

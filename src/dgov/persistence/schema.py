@@ -77,7 +77,11 @@ class IllegalTransitionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class WorkerTask:
-    """Represents a worker task record — immutable, strictly validated."""
+    """Runtime artifact row for a worker attempt.
+
+    This row tracks operational metadata like worktree and branch identity.
+    Lifecycle truth comes from events, not from this cached snapshot.
+    """
 
     slug: str
     agent: str

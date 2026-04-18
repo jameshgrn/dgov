@@ -20,7 +20,7 @@ from dgov.cli.init import (
     _render_project_toml,
 )
 from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
-from dgov.persistence import add_task, all_tasks, emit_event
+from dgov.persistence import emit_event, list_runtime_artifacts, record_runtime_artifact
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
@@ -962,13 +962,13 @@ def test_prune_removes_historical_tasks(runner: CliRunner, tmp_path: Path) -> No
             ),
         ]
         for task in tasks:
-            add_task(td, task)
+            record_runtime_artifact(td, task)
 
         result = runner.invoke(cli, ["prune"])
         assert result.exit_code == 0
         assert "Pruned 2 historical task(s)" in result.output
 
-        remaining = all_tasks(td)
+        remaining = list_runtime_artifacts(td)
         remaining_slugs = {t["slug"] for t in remaining}
         assert remaining_slugs == {"pending-task", "merged-task"}
 
@@ -986,7 +986,7 @@ def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
             branch_name="test",
             state=TaskState.ABANDONED,
         )
-        add_task(td, task)
+        record_runtime_artifact(td, task)
 
         # First prune removes the task
         result1 = runner.invoke(cli, ["prune"])

@@ -36,7 +36,11 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.kernel import DagKernel
-from dgov.persistence import add_task, emit_event, update_task_state
+from dgov.persistence import (
+    emit_event,
+    record_runtime_artifact,
+    update_runtime_artifact_state,
+)
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.settlement import (
     autofix_sandbox,
@@ -121,7 +125,12 @@ class EventDagRunner:
                     "Orphaned ACTIVE task after rehydration: %s — marking ABANDONED", slug
                 )
                 self.kernel.handle(TaskWaitDone(slug, "cleanup", TaskState.ABANDONED))
-                update_task_state(self.session_root, slug, TaskState.ABANDONED.value, force=True)
+                update_runtime_artifact_state(
+                    self.session_root,
+                    slug,
+                    TaskState.ABANDONED.value,
+                    force=True,
+                )
                 emit_event(
                     self.session_root,
                     "task_abandoned",
@@ -351,7 +360,7 @@ class EventDagRunner:
             TaskState.SKIPPED,
         ):
             try:
-                update_task_state(
+                update_runtime_artifact_state(
                     self.session_root, action.task_slug, kernel_state.value, force=True
                 )
             except Exception as exc:
@@ -718,7 +727,7 @@ class EventDagRunner:
                 "read": list(task.files.read),
             }
 
-            # Create task record with file claims for scope enforcement
+            # Record runtime artifact metadata for cleanup and debugging only.
             file_claims = tuple(
                 dict.fromkeys(
                     task.files.create + task.files.edit + task.files.delete + task.files.touch
@@ -736,7 +745,7 @@ class EventDagRunner:
                 plan_name=self.dag.name,
                 file_claims=file_claims,
             )
-            add_task(self.session_root, task_record)
+            record_runtime_artifact(self.session_root, task_record)
 
             # Atomic transition to WAITING
             kernel_actions = self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
@@ -972,10 +981,15 @@ class EventDagRunner:
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
-        # Sync terminal state to DB so dgov status reflects reality
+        # Sync terminal artifact snapshot for debugging and cleanup surfaces.
         db_state = TaskState.MERGED if not error else TaskState.FAILED
         try:
-            update_task_state(self.session_root, action.task_slug, db_state.value, force=True)
+            update_runtime_artifact_state(
+                self.session_root,
+                action.task_slug,
+                db_state.value,
+                force=True,
+            )
         except Exception as exc:
             logger.warning("DB state sync failed for %s: %s", action.task_slug, exc)
 

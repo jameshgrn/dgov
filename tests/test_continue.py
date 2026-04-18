@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
-from dgov.persistence import add_task, clear_connection_cache, emit_event
+from dgov.persistence import clear_connection_cache, emit_event, record_runtime_artifact
 from dgov.persistence.connection import _get_db
 from dgov.persistence.schema import WorkerTask
 from dgov.runner import EventDagRunner
@@ -211,7 +211,7 @@ def test_continue_uses_current_dag_claims_not_stale_task_rows(git_repo, monkeypa
     session_root = str(git_repo)
     clear_connection_cache()
 
-    add_task(
+    record_runtime_artifact(
         session_root,
         WorkerTask(
             slug="t1",

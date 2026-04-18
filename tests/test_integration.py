@@ -588,7 +588,7 @@ class TestDbStateSync:
 
     def test_failed_task_state_in_db(self, git_repo, monkeypatch):
         """Worker exits 1 → DB record shows 'failed' immediately after run."""
-        from dgov.persistence import get_task
+        from dgov.persistence import get_runtime_artifact
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_fail)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
@@ -598,13 +598,13 @@ class TestDbStateSync:
         results = asyncio.run(runner.run())
 
         assert results["db-fail"] == "failed"
-        record = get_task(str(git_repo), "db-fail")
+        record = get_runtime_artifact(str(git_repo), "db-fail")
         assert record is not None, "Task record missing from DB after run"
         assert record["state"] == "failed", f"Expected 'failed', got {record['state']!r}"
 
     def test_merged_task_state_in_db(self, git_repo, monkeypatch):
         """Worker exits 0 + settlement passes → DB record shows 'merged'."""
-        from dgov.persistence import get_task
+        from dgov.persistence import get_runtime_artifact
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
         monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
@@ -614,7 +614,7 @@ class TestDbStateSync:
         results = asyncio.run(runner.run())
 
         assert results["db-ok"] == "merged"
-        record = get_task(str(git_repo), "db-ok")
+        record = get_runtime_artifact(str(git_repo), "db-ok")
         assert record is not None, "Task record missing from DB after run"
         assert record["state"] == "merged", f"Expected 'merged', got {record['state']!r}"
 
@@ -644,7 +644,12 @@ class TestOrphanAbandon:
 
     def test_orphaned_task_becomes_abandoned_on_rerun(self, git_repo, monkeypatch):
         """After a crash, a bare re-run abandons orphaned tasks."""
-        from dgov.persistence import WorkerTask, add_task, clear_connection_cache, emit_event
+        from dgov.persistence import (
+            WorkerTask,
+            clear_connection_cache,
+            emit_event,
+            record_runtime_artifact,
+        )
         from dgov.types import TaskState
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
@@ -665,7 +670,7 @@ class TestOrphanAbandon:
             state=TaskState.ACTIVE,
             plan_name=dag.name,
         )
-        add_task(session_root, record)
+        record_runtime_artifact(session_root, record)
         emit_event(
             session_root,
             "dag_task_dispatched",
@@ -687,7 +692,12 @@ class TestOrphanAbandon:
     def test_orphan_rerun_kernel_status_is_not_completed(self, git_repo, monkeypatch):
         """kernel.status must be FAILED (not COMPLETED) when all tasks are abandoned."""
         from dgov.kernel import DagState
-        from dgov.persistence import WorkerTask, add_task, clear_connection_cache, emit_event
+        from dgov.persistence import (
+            WorkerTask,
+            clear_connection_cache,
+            emit_event,
+            record_runtime_artifact,
+        )
         from dgov.types import TaskState
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
@@ -707,7 +717,7 @@ class TestOrphanAbandon:
             state=TaskState.ACTIVE,
             plan_name=dag.name,
         )
-        add_task(session_root, record)
+        record_runtime_artifact(session_root, record)
         emit_event(
             session_root,
             "dag_task_dispatched",
