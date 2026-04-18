@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 from dgov.cli import cli
-from dgov.persistence import all_tasks
+from dgov.live_state import live_plan_names
 from dgov.project_root import resolve_project_root
 from dgov.worktree import prune_orphans
 
@@ -45,17 +45,11 @@ def clean_cmd(dry_run: bool) -> None:
     out_dir = dgov_dir / "out"
     runtime_fix_plans_dir = dgov_dir / "runtime" / "fix-plans"
 
-    # Collect active plan names from the database (for runtime fix-plan cleanup).
-    active_plan_names: set[str] = set()
+    # Collect active plan names from the event log (for runtime fix-plan cleanup).
     try:
-        tasks = all_tasks(str(project_root))
-        for task in tasks:
-            if task.get("state") == "active":
-                plan_name = task.get("plan_name")
-                if plan_name:
-                    active_plan_names.add(str(plan_name))
+        active_plan_names = live_plan_names(str(project_root))
     except Exception as exc:
-        click.echo(f"Error reading active tasks: {exc}", err=True)
+        click.echo(f"Error reading live plan state: {exc}", err=True)
         raise click.exceptions.Exit(code=1) from exc
 
     deleted_count = 0

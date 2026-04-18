@@ -9,9 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 from dgov.cli import cli
-from dgov.persistence import add_task
-from dgov.persistence.schema import WorkerTask
-from dgov.types import TaskState
+from dgov.persistence import emit_event
 
 pytestmark = pytest.mark.unit
 
@@ -84,18 +82,13 @@ def test_clean_preserves_active_runtime_fix_plan(
     stale_plan_dir.mkdir(parents=True)
     (stale_plan_dir / "_root.toml").write_text('[plan]\nname = "fix-stale"\n')
 
-    add_task(
+    emit_event(str(tmp_path), "run_start", "run-fix-live", plan_name="fix-live")
+    emit_event(
         str(tmp_path),
-        WorkerTask(
-            slug="fix/main.apply",
-            prompt="test",
-            agent="test",
-            project_root=str(tmp_path),
-            worktree_path=str(tmp_path / ".dgov" / "worktrees" / "fix-live"),
-            branch_name="fix-live-branch",
-            state=TaskState.ACTIVE,
-            plan_name="fix-live",
-        ),
+        "dag_task_dispatched",
+        "pane-fix-live",
+        plan_name="fix-live",
+        task_slug="fix/main.apply",
     )
 
     result = runner.invoke(cli, ["clean"])
@@ -104,6 +97,33 @@ def test_clean_preserves_active_runtime_fix_plan(
     assert live_plan_dir.exists()
     assert not stale_plan_dir.exists()
     assert "Preserved (active)" in result.output
+
+
+def test_clean_ignores_stale_prior_run_when_preserving_fix_plan(
+    runner: CliRunner,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    stale_live_plan_dir = tmp_path / ".dgov" / "runtime" / "fix-plans" / "fix-live"
+    stale_live_plan_dir.mkdir(parents=True)
+    (stale_live_plan_dir / "_root.toml").write_text('[plan]\nname = "fix-live"\n')
+
+    emit_event(str(tmp_path), "run_start", "run-fix-live", plan_name="fix-live")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-fix-live",
+        plan_name="fix-live",
+        task_slug="fix/main.apply",
+    )
+    emit_event(str(tmp_path), "run_start", "run-fix-live", plan_name="fix-live")
+
+    result = runner.invoke(cli, ["clean"])
+
+    assert result.exit_code == 0, result.output
+    assert not stale_live_plan_dir.exists()
 
 
 def test_clean_prunes_orphan_worktree_directory(
