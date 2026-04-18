@@ -6,11 +6,10 @@ Complete reference for the `dgov` command-line interface.
 
 | Command | Description |
 |---------|-------------|
-| [`dgov run`](#dgov-run) | Execute a compiled plan with quality gates |
+| [`dgov run`](#dgov-run) | Compile and run a plan directory with quality gates |
 | [`dgov fix`](#dgov-fix) | Create and run a single-task fix plan |
-| [`dgov status`](#dgov-status) | Show current task state |
+| [`dgov status`](#dgov-status) | Show event-derived governor state |
 | [`dgov clean`](#dgov-clean) | Clean stale worktrees and output directories |
-| [`dgov recover`](#dgov-recover) | Recover from a crashed run |
 | [`dgov init`](#dgov-init) | Bootstrap project configuration |
 | [`dgov ledger`](#dgov-ledger) | Record bugs, rules, and technical debt |
 | [`dgov init-plan`](#dgov-init-plan) | Initialize a new plan directory with sections |
@@ -110,14 +109,13 @@ dgov plan status .dgov/plans/my-plan/
 
 ## `dgov run`
 
-Execute a compiled plan directory or `_compiled.toml` file with isolated worktrees and Sentrux quality gates.
+Compile and run a plan directory with isolated worktrees and Sentrux quality gates.
 
 ```bash
 dgov run .dgov/plans/feature-plan/
 dgov run .dgov/plans/feature-plan/ --restart
 dgov run .dgov/plans/feature-plan/ --continue
 dgov run .dgov/plans/feature-plan/ --only=tasks/main.add-feature
-dgov run .dgov/plans/feature-plan/_compiled.toml
 ```
 
 If the repo has no commits yet and only `.dgov` bootstrap files exist, `dgov run`
@@ -135,6 +133,9 @@ does not auto-save a new baseline.
 | `--restart` | Restart the plan from the beginning, clearing prior state |
 | `--continue` | Continue from where you left off, retrying failed tasks |
 | `--only <task>` | Run only the specified task and its dependencies |
+| `-y, --yes` | Skip interactive prompts such as bootstrap-commit confirmation |
+| `--stream` | Stream worker thoughts and tool calls inline during the run |
+| `-v, --verbose` | Show a richer per-task summary when the run finishes |
 
 ### Examples
 
@@ -178,7 +179,7 @@ nonzero even if all tasks merged.
 
 ## `dgov status`
 
-Show the current governor state. By default this surfaces only live task state; use `--all` to include persisted history.
+Show the current governor state. By default this surfaces only live state derived from the latest run window for each plan; use `--all` to include event-derived history.
 
 ```bash
 dgov status
@@ -238,9 +239,9 @@ dgov clean --dry-run
 ### Behavior
 
 1. Deletes all directories from `.dgov/out/`
-2. Removes worktrees from `.dgov/worktrees/` that are not associated with active tasks
-3. Removes transient fix plans from `.dgov/runtime/fix-plans/` unless they belong to an ACTIVE task
-4. Preserves worktrees and runtime fix plans for tasks in ACTIVE state
+2. Removes orphan worktrees and merged `dgov/*` branches that git no longer tracks as live
+3. Removes transient fix plans from `.dgov/runtime/fix-plans/` unless they belong to a live plan in the latest event window
+4. Preserves git-tracked inspection worktrees and runtime fix plans for currently live plans
 
 ### Examples
 
@@ -254,35 +255,11 @@ Clean complete. Deleted 2 directories.
 
 ---
 
-## `dgov recover`
+There is no separate `dgov recover` command. Recovery flows through `dgov run`:
 
-Recover from a crashed run — marks ACTIVE tasks as ABANDONED and removes orphaned worktrees and branches.
-
-Use this when:
-- A task crashed without proper cleaning
-- You killed a run with Ctrl+C and need to recover
-- Worktrees are left in a broken state
-
-```bash
-dgov recover
-```
-
-### Behavior
-
-1. Finds all tasks in ACTIVE, FAILED, or ABANDONED state
-2. Removes their git worktrees
-3. Marks ACTIVE tasks as ABANDONED in the persistence layer
-
-### Examples
-
-```bash
-$ dgov recover
-Recovering 3 tasks...
-  [removed worktree] add-feature
-  [removed worktree] add-tests
-  [skip worktree] fix-bug: worktree not found
-Recovery complete: 2 tasks marked as ABANDONED.
-```
+- bare `dgov run <plan-dir>` surfaces abandoned work from a crashed prior run
+- `dgov run <plan-dir> --continue` retries failed or abandoned tasks
+- `dgov run <plan-dir> --restart` clears prior run state and starts fresh
 
 ---
 
