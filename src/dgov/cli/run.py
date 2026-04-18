@@ -92,25 +92,21 @@ def run_cmd(
     stream: bool,
     verbose: bool,
 ) -> None:
-    """Run a compiled plan (_compiled.toml or plan directory).
+    """Compile and run a plan directory.
 
     Example: dgov run .dgov/plans/my-plan/
     """
-    plan_file = plan
-    plan_dir: Path | None = None
-    if plan.is_dir():
-        plan_file = plan / "_compiled.toml"
-        if not plan_file.exists():
-            click.echo(f"Error: No _compiled.toml found in {plan}", err=True)
-            click.echo("Run 'dgov compile <dir>' first.", err=True)
-            raise SystemExit(1)
-        plan_dir = plan
-
-    if plan_file.suffix != ".toml":
-        click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
+    if not plan.is_dir():
+        click.echo("Error: dgov run requires a plan directory, not a file path.", err=True)
+        click.echo(
+            "Fix: run `dgov run <plan-dir>` so dgov compiles the current source first.", err=True
+        )
         raise SystemExit(1)
 
     project_root = str(resolve_project_root())
+    plan_dir = plan
+    _compile_plan_for_run(plan_dir)
+    plan_file = plan_dir / "_compiled.toml"
     _cmd_run_plan(
         str(plan_file),
         project_root,
@@ -122,6 +118,13 @@ def run_cmd(
         stream=stream,
         verbose=verbose,
     )
+
+
+def _compile_plan_for_run(plan_dir: Path) -> None:
+    """Compile the current plan tree before every public run."""
+    from dgov.cli.compile import _cmd_compile
+
+    _cmd_compile(plan_dir, dry_run=False, recompile_sops=False, graph=False)
 
 
 def _parse_quality(line: str) -> int | None:
@@ -458,7 +461,7 @@ def _cmd_run_plan(
         click.echo("To fix this:", err=True)
         click.echo("1. Ensure your plan is in a directory with a _root.toml.", err=True)
         click.echo("2. Run: dgov compile <dir>", err=True)
-        click.echo("3. Run: dgov run <dir>/_compiled.toml", err=True)
+        click.echo("3. Run: dgov run <dir>", err=True)
         raise click.exceptions.Exit(code=1)
 
     pc = load_project_config(project_root)

@@ -491,6 +491,8 @@ def test_help(runner: CliRunner) -> None:
     assert "status" in result.output
     assert "validate" in result.output
     assert "init" in result.output
+    assert "retry" not in result.output
+    assert "mark-done" not in result.output
 
 
 def test_version(runner: CliRunner) -> None:
@@ -817,7 +819,7 @@ commit_message = "a"
 files = ["a.py"]
 """
         compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
-        result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
+        result = runner.invoke(cli, ["run", str(compiled_path.parent), "--only", "nonexistent"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "nonexistent" in result.output
 
@@ -848,18 +850,45 @@ depends_on = ["b"]
 files = ["c.py"]
 """
         # IDs are qualified by section/file
-        compiled_path = compile_plan_tree(tmp_path, "filter-test", tasks_toml)
+        compiled_path = compile_plan_tree(Path.cwd(), "filter-test", tasks_toml)
+        plan_dir = compiled_path.parent
 
-        # dgov run --only tasks/main.b should accept the slug
-        target = "tasks/main.b"
-        result = runner.invoke(cli, ["run", str(compiled_path), "--only", target])
-        assert "not found" not in result.output.lower()
-        # Verify the task was accepted (run may fail for other reasons, but slug is valid)
-        assert "invalid" not in result.output.lower() or result.exit_code in (0, 1)
+        class _Runner:
+            def __init__(self, dag, **kwargs) -> None:
+                self.dag = dag
+                self._task_errors = {}
+                self._task_durations = {slug: 0.1 for slug in dag.tasks}
+
+            async def run(self) -> dict[str, str]:
+                return {slug: "merged" for slug in self.dag.tasks}
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("dgov.cli.run._ensure_git_ready", lambda *args, **kwargs: None)
+        monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda *_: 100)
+        monkeypatch.setattr(
+            "dgov.cli.run._sentrux_compare",
+            lambda *_args, **_kwargs: {
+                "degradation": False,
+                "quality_before": 100,
+                "quality_after": 100,
+            },
+        )
+        monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+        monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+
+        try:
+            # dgov run --only tasks/main.b should accept the slug
+            target = "tasks/main.b"
+            result = runner.invoke(cli, ["run", str(plan_dir), "--only", target])
+            assert result.exit_code == 0
+            assert "not found" not in result.output.lower()
+            assert "status: complete" in result.output.lower()
+        finally:
+            monkeypatch.undo()
 
 
 def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
-    """Running with uncompiled plan.toml should fail with error message."""
+    """Running with a single plan TOML file should fail with directory guidance."""
     plan = tmp_path / "plan.toml"
     plan.write_text(
         '[plan]\nname = "test"\n\n'
@@ -870,7 +899,8 @@ def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
     )
     result = runner.invoke(cli, ["run", str(plan)])
     assert result.exit_code == 1
-    assert "not compiled" in result.output.lower() or "must be compiled" in result.output.lower()
+    assert "requires a plan directory" in result.output.lower()
+    assert "dgov run <plan-dir>" in result.output
 
 
 # -- prune --

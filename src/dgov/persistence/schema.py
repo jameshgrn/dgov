@@ -80,11 +80,11 @@ class WorkerTask:
     """Represents a worker task record — immutable, strictly validated."""
 
     slug: str
-    prompt: str
     agent: str
     project_root: str
     worktree_path: str
     branch_name: str
+    prompt: str = ""
     task_id: str | None = None  # worker instance ID; None for headless
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
@@ -102,8 +102,6 @@ class WorkerTask:
             )
         if not self.slug:
             raise ValueError("slug must be non-empty")
-        if not self.prompt:
-            raise ValueError("prompt must be non-empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +118,6 @@ class LedgerEntry:
 
 _TASK_COLUMNS = frozenset({
     "slug",
-    "prompt",
     "task_id",
     "agent",
     "project_root",
@@ -136,8 +133,6 @@ _TASK_COLUMNS = frozenset({
 
 _TASK_TYPED_COLS = frozenset({
     "plan_name",
-    "file_claims",
-    "commit_message",
 })
 
 # -- Path Helpers --

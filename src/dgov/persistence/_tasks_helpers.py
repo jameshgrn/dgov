@@ -14,6 +14,8 @@ from dgov.persistence.schema import (
 
 logger = logging.getLogger(__name__)
 
+_NON_PERSISTED_TASK_FIELDS = frozenset({"prompt", "file_claims", "commit_message"})
+
 
 def _validate_state(state: str) -> str:
     """Validate and return a canonical task state. Raises ValueError for unknown states."""
@@ -27,24 +29,20 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     if d.get("owns_worktree") is not None:
         d["owns_worktree"] = bool(d["owns_worktree"])
-    fc = d.get("file_claims")
-    if isinstance(fc, str):
-        try:
-            d["file_claims"] = json.loads(fc)
-        except (json.JSONDecodeError, TypeError):
-            d["file_claims"] = []
     # Legacy metadata JSON — merge for backward compat, but typed columns win
     metadata = d.pop("metadata", None)
     if metadata:
         try:
             legacy = json.loads(str(metadata))
             for k, v in legacy.items():
-                if k not in d:
+                if k not in d and k not in _NON_PERSISTED_TASK_FIELDS:
                     d[k] = v
         except (json.JSONDecodeError, TypeError):
             logger.warning(
                 "Corrupt task metadata for slug=%s: %.100s", d.get("slug", "?"), metadata
             )
+    for field in _NON_PERSISTED_TASK_FIELDS:
+        d.pop(field, None)
     return d
 
 
@@ -53,6 +51,8 @@ def _insert_task_dict(conn: sqlite3.Connection, task_dict: dict) -> None:
     values: dict = {}
     extras: dict = {}
     for k, v in task_dict.items():
+        if k in _NON_PERSISTED_TASK_FIELDS:
+            continue
         if k in _TASK_COLUMNS:
             # Serialize complex types to JSON for DB columns that expect TEXT
             if isinstance(v, (dict, list, tuple)):

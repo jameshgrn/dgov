@@ -40,7 +40,6 @@ def test_add_and_get_task(tmp_project, sample_task):
     retrieved = tasks.get_task(tmp_project, "test-task-001")
     assert retrieved is not None
     assert retrieved["slug"] == "test-task-001"
-    assert retrieved["prompt"] == "Fix the bug in src/foo.py"
     assert retrieved["state"] == "active"
     assert retrieved.get("task_id") is None
 
@@ -139,18 +138,15 @@ def test_replace_all_tasks(tmp_project):
     assert slugs == {"replaced-1", "replaced-2"}
 
 
-def test_set_task_metadata(tmp_project, sample_task):
-    """Can set typed metadata on a task."""
+def test_set_task_metadata_plan_name_only(tmp_project, sample_task):
+    """Task metadata persistence is limited to execution facts like plan identity."""
     tasks.add_task(tmp_project, sample_task)
 
-    tasks.set_task_metadata(
-        tmp_project, "test-task-001", file_claims=["src/foo.py"], commit_message="Fix foo"
-    )
+    tasks.set_task_metadata(tmp_project, "test-task-001", plan_name="repair-plan")
 
     retrieved = tasks.get_task(tmp_project, "test-task-001")
     assert retrieved is not None
-    assert retrieved["file_claims"] == ["src/foo.py"]
-    assert retrieved["commit_message"] == "Fix foo"
+    assert retrieved["plan_name"] == "repair-plan"
 
 
 def test_emit_event_none_kwargs_excluded(tmp_path, monkeypatch):
