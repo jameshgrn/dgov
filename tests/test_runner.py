@@ -107,7 +107,7 @@ _P_COMMIT_WT = "dgov.runner.commit_in_worktree"
 _P_AUTOFIX = "dgov.runner.autofix_sandbox"
 _P_VALIDATE = "dgov.runner.validate_sandbox"
 _P_PREPARE_WT = "dgov.runner.prepare_worktree"
-_P_ADD_TASK = "dgov.runner.add_task"
+_P_RECORD_ARTIFACT = "dgov.runner.record_runtime_artifact"
 _P_EMIT_EVENT = "dgov.runner.emit_event"
 _P_HEADLESS = "dgov.runner.run_headless_worker"
 # review_sandbox imported at top level in runner
@@ -191,11 +191,10 @@ def _io_patches(
             patch(_P_AUTOFIX),
             patch(_P_VALIDATE, side_effect=validate),
             patch(_P_PREPARE_WT),
-            patch(_P_ADD_TASK),
+            patch(_P_RECORD_ARTIFACT),
             patch(_P_EMIT_EVENT),
             patch(_P_HEADLESS, side_effect=headless),
             patch(_P_REVIEW, side_effect=review),
-            patch(_P_DEPLOY_APPEND),
         ):
             yield
 
