@@ -131,15 +131,13 @@ dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
 dgov init-plan <name>    # Initialize a new plan directory
 dgov fix <prompt>        # Create and run a single-task fix plan
 dgov compile <dir>       # Compile a plan tree to _compiled.toml
-dgov run <dir>           # Execute a compiled plan directory
-dgov run _compiled.toml  # Execute a compiled plan file directly
+dgov run <dir>           # Compile and run a plan directory
 dgov validate plan.toml  # Validate a plan without running
 dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units
 dgov archive-plan <name> # Manually archive a plan to .dgov/plans/archive/
 dgov ledger add <cat>    # Record bug, rule, or debt
 dgov clean               # Clean stale worktrees and output directories
-dgov recover             # Recover from a crashed run (mark orphaned tasks abandoned)
 dgov prune               # Remove historical task records
 dgov sentrux check       # Run architectural quality check
 dgov sentrux gate-save   # Create or refresh the explicit baseline

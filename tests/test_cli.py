@@ -493,6 +493,7 @@ def test_help(runner: CliRunner) -> None:
     assert "init" in result.output
     assert "retry" not in result.output
     assert "mark-done" not in result.output
+    assert "recover" not in result.output
 
 
 def test_version(runner: CliRunner) -> None:

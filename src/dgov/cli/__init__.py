@@ -10,10 +10,9 @@ from pathlib import Path
 import click
 
 from dgov import __version__
-from dgov.persistence import all_tasks, cleanup_zombies, prune_history
+from dgov.persistence import all_tasks, prune_history
 from dgov.project_root import resolve_project_root
-from dgov.types import TaskState, Worktree
-from dgov.worktree import remove_worktree
+from dgov.types import TaskState
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -119,7 +118,6 @@ def cli(
       dgov init-plan <name>      Initialize a new plan directory
       dgov fix <prompt>          Create and run a one-off fix plan
       dgov watch                 Stream events live
-      dgov recover               Recover from a crashed run
       dgov archive-plan <name>   Manually archive a plan
       dgov plan status <dir>     Show pending vs deployed units
       dgov plan review <dir>     Post-hoc debrief of the last run
@@ -144,51 +142,6 @@ def cli(
 def status_cmd(show_all: bool) -> None:
     """Show governor status — what's running now."""
     _cmd_status(str(resolve_project_root()), show_all=show_all)
-
-
-@cli.command(name="recover")
-def recover_cmd() -> None:
-    """Recover from a crashed run — marks ACTIVE tasks ABANDONED and removes orphaned branches."""
-    project_root = str(resolve_project_root())
-    try:
-        tasks = all_tasks(project_root)
-
-        # ACTIVE: in-flight tasks from a crashed run
-        # FAILED/ABANDONED: preserved-but-rejected worktrees whose git branches were never deleted
-        needs_wt_cleanup = [
-            t
-            for t in tasks
-            if t.get("state") in (TaskState.ACTIVE, TaskState.FAILED, TaskState.ABANDONED)
-            and t.get("worktree_path")
-            and t.get("branch_name")
-        ]
-
-        if not needs_wt_cleanup:
-            click.echo("No active tasks found. Everything is clean.")
-            return
-
-        click.echo(f"Recovering {len(needs_wt_cleanup)} tasks...")
-
-        for t in needs_wt_cleanup:
-            slug = t.get("slug", "unknown")
-            wt_path = t.get("worktree_path")
-            branch = t.get("branch_name")
-
-            if not (wt_path and branch):
-                continue
-            try:
-                wt = Worktree(path=Path(wt_path), branch=branch, commit="")
-                remove_worktree(project_root, wt)
-                click.echo(f"  [removed worktree] {slug}")
-            except Exception as e:
-                click.echo(f"  [skip worktree] {slug}: {e}")
-
-        count = cleanup_zombies(project_root)
-        click.echo(f"Recovery complete: {count} tasks marked as ABANDONED.")
-
-    except Exception as exc:
-        click.echo(f"Recovery failed: {exc}", err=True)
-        raise click.exceptions.Exit(code=1) from exc
 
 
 @cli.command(name="archive-plan")

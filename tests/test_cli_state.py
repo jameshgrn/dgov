@@ -27,3 +27,10 @@ def test_mark_done_command_removed(runner: CliRunner) -> None:
 
     assert result.exit_code != 0
     assert "No such command 'mark-done'" in result.output
+
+
+def test_recover_command_removed(runner: CliRunner) -> None:
+    result = runner.invoke(cli, ["recover"])
+
+    assert result.exit_code != 0
+    assert "No such command 'recover'" in result.output

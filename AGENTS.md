@@ -1,6 +1,6 @@
 # dgov Agent Guidance
 
-Instruction Pack Version: `1.1.0`
+Instruction Pack Version: `1.1.1`
 Status: `LOCKED`
 Canonical Source: `AGENTS.md`
 Mirrors: `CLAUDE.md`, `GEMINI.md`
@@ -48,7 +48,7 @@ treat this pack as stale.
 2. Check live state with `dgov status`.
 3. Author or adjust plan files in `.dgov/plans/<name>/`.
 4. Compile with `uv run dgov compile <dir>` and validate before execution.
-5. Run with `uv run dgov run <plan-or-compiled-file>`.
+5. Run with `uv run dgov run <plan-dir>`.
 6. Monitor with `uv run dgov watch`.
 7. Use `uv run dgov plan status <dir>` and targeted verification before
    closing work.
