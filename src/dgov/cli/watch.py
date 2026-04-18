@@ -13,9 +13,8 @@ from rich.table import Table
 from rich.text import Text
 
 from dgov.cli import cli
-from dgov.persistence import all_tasks, latest_event_id, read_events
+from dgov.persistence import latest_event_id, read_events
 from dgov.project_root import resolve_project_root
-from dgov.types import TaskState
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -34,6 +33,16 @@ _PALETTE = [
     "bright_blue",
 ]
 
+_WATCH_LIVE_STATES = frozenset({
+    "pending",
+    "active",
+    "done",
+    "reviewing",
+    "reviewed_pass",
+    "reviewed_fail",
+    "merging",
+})
+
 
 def _get_task_color(slug: str) -> str:
     """Assign a stable color to a task slug for the duration of the watch."""
@@ -42,16 +51,84 @@ def _get_task_color(slug: str) -> str:
     return _TASK_COLORS[slug]
 
 
+def _watch_state_from_event(event: dict) -> str | None:
+    """Map an event to the task state relevant for live watch inference."""
+    event_name = event.get("event")
+    if event_name == "dag_task_dispatched":
+        return "active"
+    if event_name == "task_done":
+        return "done"
+    if event_name == "task_abandoned":
+        return "abandoned"
+    if event_name == "task_timed_out":
+        return "timed_out"
+    if event_name == "task_failed":
+        error = str(event.get("error", "")).lower()
+        if "timeout" in error:
+            return "timed_out"
+        return "failed"
+    if event_name == "review_pass":
+        return "reviewed_pass"
+    if event_name == "review_fail":
+        return "reviewed_fail"
+    if event_name == "merge_completed":
+        return "merged"
+    if event_name == "task_merge_failed":
+        return "failed"
+    if event_name == "task_closed":
+        return "closed"
+    if event_name == "dag_task_governor_resumed":
+        action = event.get("action")
+        if action == "retry":
+            return "pending"
+        if action == "skip":
+            return "skipped"
+        if action == "fail":
+            return "failed"
+    return None
+
+
+def _latest_run_start_ids(events: list[dict]) -> dict[str, int]:
+    """Return the latest run_start id for each plan in the event log."""
+    latest: dict[str, int] = {}
+    for event in events:
+        if event.get("event") != "run_start":
+            continue
+        plan_name = event.get("plan_name")
+        if not plan_name:
+            continue
+        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), int(event.get("id", 0)))
+    return latest
+
+
 def _infer_plan_name_from_active_tasks(project_root: str) -> str | None:
-    """Return the shared active plan name, if there is exactly one."""
-    active_plan_names = {
-        str(task["plan_name"])
-        for task in all_tasks(project_root)
-        if task.get("state") == TaskState.ACTIVE.value and task.get("plan_name")
-    }
-    if len(active_plan_names) != 1:
+    """Return the shared live plan name from the latest run-scoped event view."""
+    events = read_events(project_root)
+    if not events:
         return None
-    return next(iter(active_plan_names))
+
+    latest_run_ids = _latest_run_start_ids(events)
+    task_states: dict[tuple[str, str], str] = {}
+    for event in events:
+        task_slug = event.get("task_slug")
+        plan_name = event.get("plan_name")
+        if not task_slug or not plan_name:
+            continue
+        if int(event.get("id", 0)) <= latest_run_ids.get(str(plan_name), 0):
+            continue
+        state = _watch_state_from_event(event)
+        if state is None:
+            continue
+        task_states[(str(plan_name), str(task_slug))] = state
+
+    live_plan_names = {
+        plan_name
+        for (plan_name, _task_slug), state in task_states.items()
+        if state in _WATCH_LIVE_STATES
+    }
+    if len(live_plan_names) != 1:
+        return None
+    return next(iter(live_plan_names))
 
 
 def _default_watch_state(

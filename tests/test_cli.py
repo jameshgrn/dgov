@@ -20,7 +20,7 @@ from dgov.cli.init import (
     _render_project_toml,
 )
 from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
-from dgov.persistence import add_task, all_tasks, emit_event, replace_all_tasks
+from dgov.persistence import add_task, all_tasks, emit_event
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
@@ -560,140 +560,91 @@ def test_watch_help_shows_flags(runner: CliRunner) -> None:
 
 
 def test_infer_plan_name_no_active_tasks(tmp_path: Path) -> None:
-    replace_all_tasks(str(tmp_path), [])
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 def test_infer_plan_name_single_plan(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-a",
+        task_slug="fix/b",
     )
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
 
 
 def test_infer_plan_name_multiple_plans(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-b",
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-b", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="fix/b",
     )
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 def test_infer_plan_name_empty_plan_names(tmp_path: Path) -> None:
-    replace_all_tasks(
-        str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.ACTIVE.value,
-            },
-        ],
-    )
+    emit_event(str(tmp_path), "dag_task_dispatched", "pane-a", task_slug="fix/a")
+    emit_event(str(tmp_path), "dag_task_dispatched", "pane-b", plan_name="", task_slug="fix/b")
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 def test_infer_plan_name_mixed_states(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.MERGED.value,
-                "plan_name": "plan-b",
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-b", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="fix/b",
+    )
+    emit_event(str(tmp_path), "task_done", "pane-b", plan_name="plan-b", task_slug="fix/b")
+    emit_event(str(tmp_path), "review_pass", "pane-b", plan_name="plan-b", task_slug="fix/b")
+    emit_event(
+        str(tmp_path),
+        "merge_completed",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="fix/b",
     )
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
 
 
 def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            }
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
     )
     assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 0)
 
@@ -701,6 +652,20 @@ def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
 def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "task_done", "pane-a", plan_name="old-plan")
     assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == (None, 1)
+
+
+def test_infer_plan_name_ignores_stale_prior_run(tmp_path: Path) -> None:
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 # -- init-plan --
