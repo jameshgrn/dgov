@@ -1,0 +1,20 @@
+[tasks.cover-scale-repair]
+summary = "Add focused coverage for scale repair behavior."
+prompt = """
+Orient:
+- Read the runtime and schema changes made by the scale-repair tasks.
+- Extend existing tests; do not create a new test topology.
+- Keep assertions centered on observable behavior.
+
+Edit:
+1. Add dispatch/runtime tests for read-only-role bootstrap skipping and the separate bootstrap timeout setting.
+2. Add parser/compiler/serializer tests for the new task-level iteration budget field.
+3. Add worker/headless/plan-review/CLI tests that prove the override is carried through and reported correctly, including the init-plan output nudge.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_runner.py tests/test_worktree.py tests/test_config.py tests/test_cli.py tests/test_dag_parser.py tests/test_plan.py tests/test_plan_tree.py tests/test_serializer.py tests/test_headless.py tests/test_worker.py tests/test_researcher.py tests/test_plan_review.py tests/test_cli_plan_review.py`
+"""
+commit_message = "Cover scale repair behavior"
+depends_on = ["runtime/dispatch.scale-dispatch", "plans/schema.add-task-iteration-budget"]
+files.edit = ["tests/test_runner.py", "tests/test_worktree.py", "tests/test_config.py", "tests/test_cli.py", "tests/test_dag_parser.py", "tests/test_plan.py", "tests/test_plan_tree.py", "tests/test_serializer.py", "tests/test_headless.py", "tests/test_worker.py", "tests/test_researcher.py", "tests/test_plan_review.py", "tests/test_cli_plan_review.py"]
+files.read = ["src/dgov/runner.py", "src/dgov/config.py", "src/dgov/cli/init.py", "src/dgov/dag_parser.py", "src/dgov/plan.py", "src/dgov/plan_tree.py", "src/dgov/serializer.py", "src/dgov/workers/headless.py", "src/dgov/worker.py", "src/dgov/researcher.py", "src/dgov/plan_review.py", "src/dgov/cli/plan.py"]

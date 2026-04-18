@@ -1,0 +1,20 @@
+[tasks.add-task-iteration-budget]
+summary = "Add task-level iteration budget support and clarify init-plan scaffold output."
+prompt = """
+Orient:
+- Read `src/dgov/dag_parser.py`, `src/dgov/plan.py`, `src/dgov/plan_tree.py`, `src/dgov/serializer.py`, `src/dgov/workers/headless.py`, `src/dgov/worker.py`, `src/dgov/researcher.py`, `src/dgov/plan_review.py`, and `src/dgov/cli/plan.py`.
+- Read the existing schema/parser/review tests before editing.
+- Keep this explicit: one new task field for iteration budget, no heuristic auto-scaling.
+
+Edit:
+1. Add task-level `iteration_budget` to the plan/task schema, tree compiler, and serializer.
+2. Ensure worker dispatch uses the task override when present for both worker and researcher roles without mutating repo config on disk.
+3. Update plan review so failure hints use the per-task budget when available instead of the project default.
+4. Tighten `init-plan` UX so the scaffold output clearly tells users the `_example.toml` file must be copied or renamed before compile.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_dag_parser.py tests/test_plan.py tests/test_plan_tree.py tests/test_serializer.py tests/test_headless.py tests/test_worker.py tests/test_researcher.py tests/test_plan_review.py tests/test_cli.py tests/test_cli_plan_review.py`
+"""
+commit_message = "Add task-level iteration budgets"
+files.edit = ["src/dgov/dag_parser.py", "src/dgov/plan.py", "src/dgov/plan_tree.py", "src/dgov/serializer.py", "src/dgov/workers/headless.py", "src/dgov/worker.py", "src/dgov/researcher.py", "src/dgov/plan_review.py", "src/dgov/cli/plan.py"]
+files.read = ["tests/test_dag_parser.py", "tests/test_plan.py", "tests/test_plan_tree.py", "tests/test_serializer.py", "tests/test_headless.py", "tests/test_worker.py", "tests/test_researcher.py", "tests/test_plan_review.py", "tests/test_cli.py", "tests/test_cli_plan_review.py"]

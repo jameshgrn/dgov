@@ -1,0 +1,4 @@
+[plan]
+name = "recovery-hardening"
+summary = "Force recovery through current plan source and remove DB-side contract escape hatches."
+sections = ["runtime", "tests"]

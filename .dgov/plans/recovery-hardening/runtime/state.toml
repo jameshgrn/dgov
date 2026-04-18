@@ -1,0 +1,21 @@
+[tasks.trim-persisted-contract]
+summary = "Stop persisting plan-derived task contract fields in state.db."
+prompt = """
+Orient:
+- Read `src/dgov/persistence/schema.py`, `src/dgov/persistence/sql.py`, `src/dgov/persistence/_tasks_helpers.py`, `src/dgov/persistence/tasks.py`, and `tests/test_tasks.py`.
+- We want runtime persistence to describe execution facts, not store plan contract authority like file claims or commit messages.
+- Favor a compatibility-safe change: existing rows may still have legacy columns, but new writes should not depend on them.
+
+Edit:
+1. Remove `file_claims` and `commit_message` from the persisted task metadata contract. Do not use `state.db` as the source of truth for those fields.
+2. If `prompt` is still persisted, make it non-authoritative and stop requiring it for task persistence validity.
+3. Update helper code and tests so task persistence only covers execution state and plan identity, not plan-derived scope or commit contract.
+4. Keep current runner behavior correct by continuing to derive merge/review scope from the active plan, not persisted task rows.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_tasks.py tests/test_runner.py tests/test_continue.py`
+- `uv run ruff check src/dgov/persistence/schema.py src/dgov/persistence/sql.py src/dgov/persistence/_tasks_helpers.py src/dgov/persistence/tasks.py tests/test_tasks.py`
+"""
+commit_message = "Trim plan-derived task state from persistence"
+files.edit = ["src/dgov/persistence/schema.py", "src/dgov/persistence/sql.py", "src/dgov/persistence/_tasks_helpers.py", "src/dgov/persistence/tasks.py", "tests/test_tasks.py", "tests/test_runner.py", "tests/test_continue.py"]
+files.read = ["src/dgov/runner.py", "src/dgov/kernel.py"]
