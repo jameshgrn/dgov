@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ from dgov.worktree import (
     commit_in_worktree,
     create_worktree,
     merge_worktree,
+    prepare_worktree,
     remove_worktree,
 )
 
@@ -620,6 +622,40 @@ class EventDagRunner:
 
         return "\n".join(sections)
 
+    def _upstream_units(self, task_slug: str) -> tuple[str, ...]:
+        """Return the transitive dependency closure for a task."""
+        seen: set[str] = set()
+        stack = list(self.dag.tasks[task_slug].depends_on)
+        while stack:
+            dep = stack.pop()
+            if dep in seen:
+                continue
+            seen.add(dep)
+            stack.extend(self.dag.tasks[dep].depends_on)
+        return tuple(seen)
+
+    def _base_ref_for_task(self, task_slug: str) -> str:
+        """Choose the git base for a task's worktree."""
+        task = self.dag.tasks[task_slug]
+        if not task.depends_on:
+            return "HEAD"
+
+        from dgov import deploy_log
+
+        records = {
+            record.unit: record for record in deploy_log.read(self.session_root, self.dag.name)
+        }
+        upstream = self._upstream_units(task_slug)
+        missing = sorted(dep for dep in upstream if dep not in records)
+        if missing:
+            raise RuntimeError(
+                f"Cannot create worktree for '{task_slug}' because upstream deploy records are "
+                f"missing for: {missing}. Fix: rerun or repair the plan state before continuing."
+            )
+
+        latest = max((records[dep] for dep in upstream), key=lambda record: record.ts)
+        return latest.sha
+
     async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         import uuid
@@ -647,8 +683,9 @@ class EventDagRunner:
             )
 
         # Pillar #3: Snapshot Isolation
+        base_ref = self._base_ref_for_task(action.task_slug)
         wt = await loop.run_in_executor(
-            self._executor, create_worktree, self.session_root, action.task_slug
+            self._executor, create_worktree, self.session_root, action.task_slug, base_ref
         )
         self._worktrees[action.task_slug] = wt
 
@@ -658,6 +695,17 @@ class EventDagRunner:
             agent = self.project_config.agents[agent]
 
         try:
+            if task.role not in ("researcher", "reviewer"):
+                await loop.run_in_executor(
+                    self._executor,
+                    partial(
+                        prepare_worktree,
+                        wt,
+                        language=self.project_config.language,
+                        setup_cmd=self.project_config.setup_cmd,
+                        timeout_s=self.project_config.bootstrap_timeout,
+                    ),
+                )
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
             self._pending_dispatches.add(action.task_slug)
             self._task_start_times[action.task_slug] = time.time()
@@ -737,6 +785,7 @@ class EventDagRunner:
             logger.error(
                 "Dispatch failed for %s after worktree creation: %s", action.task_slug, exc
             )
+            self._task_errors[action.task_slug] = str(exc)
             self._pending_dispatches.discard(action.task_slug)
             try:
                 await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)

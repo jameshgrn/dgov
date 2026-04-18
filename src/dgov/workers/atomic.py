@@ -56,7 +56,9 @@ def _coerce_markers(v: object) -> tuple[str, ...]:
 
 
 def _coerce_conventions(v: object) -> dict[str, str]:
-    return dict(v) if isinstance(v, dict) else {}
+    if not isinstance(v, dict):
+        return {}
+    return {str(key): str(value) for key, value in v.items()}
 
 
 def _coerce_tool_policy(v: object) -> ToolPolicy:

@@ -71,7 +71,7 @@ def _source_files(root: Path, ext: str) -> list[Path]:
 # when detected, with Python's `uv.lock` included by default because `uv run`
 # can create or refresh it mid-task even before it exists in git.
 _SCOPE_IGNORE_CANDIDATES: tuple[str, ...] = (
-    # Python — .venv has no extension so scope check treats it as a dir prefix
+    # Python
     ".venv",
     "uv.lock",
     "poetry.lock",
@@ -370,6 +370,9 @@ def _render_project_toml(
 
     lines.extend([
         "",
+        "# Worktree bootstrap timeout in seconds",
+        "bootstrap_timeout = 300",
+        "",
         "# Settlement timeout in seconds",
         "settlement_timeout = 120",
         "",
@@ -390,10 +393,10 @@ def _render_project_toml(
         f"require_uv_run = {'true' if language == 'python' else 'false'}",
         "",
         "[scope]",
-        "# Files exempted from scope-violation checks. Workers may incidentally",
-        "# touch these (e.g. `uv run` refreshing uv.lock) without failing review.",
-        "# Auto-seeded by `dgov init` from detected managed files plus Python's uv.lock default.",
-        "# Exact paths only — no globs.",
+        "# Files exempted from scope-violation checks in addition to dgov's built-in",
+        "# Python defaults: .venv, uv.lock, __pycache__, and *.pyc.",
+        "# Add repo-specific managed files here when workers may touch them incidentally.",
+        "# Exact paths, directory names, and constrained globs like *.pyc are supported.",
         f"ignore_files = [{', '.join(f'"{name}"' for name in ignore_files)}]",
         "",
         "[conventions]",

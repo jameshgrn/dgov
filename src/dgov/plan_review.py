@@ -532,11 +532,12 @@ def _build_unit_review(
     last_thought = rollup["thoughts"][-1] if rollup["thoughts"] else None
     hint = None
     if status == "failed":
+        unit_iteration_budget = task_data.get("iteration_budget", iteration_budget)
         hint = synthesize_hint(
             rollup["reject_verdict"],
             rollup["error"],
             rollup["iterations"],
-            iteration_budget,
+            unit_iteration_budget,
         )
 
     # Only count self-corrections on units that made it to deployed — a

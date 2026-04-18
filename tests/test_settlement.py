@@ -233,6 +233,32 @@ class TestReviewSandbox:
         assert "other.py" in (result.error or "")
         assert "uv.lock" not in (result.error or "")
 
+    def test_scope_ignore_named_dir_matches_nested_pycache(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "claimed.py", "x = 1\n")
+        cache_dir = tmp_path / "pkg" / "__pycache__"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "claimed.cpython-312.pyc").write_bytes(b"abc")
+        _modify_tracked(tmp_path, "claimed.py", "x = 2\n")
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["claimed.py"],
+            scope_ignore_files=("__pycache__",),
+        )
+        assert result.passed
+
+    def test_scope_ignore_glob_matches_pyc(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        _add_tracked_file(tmp_path, "claimed.py", "x = 1\n")
+        (tmp_path / "scratch.pyc").write_bytes(b"abc")
+        _modify_tracked(tmp_path, "claimed.py", "x = 2\n")
+        result = review_sandbox(
+            tmp_path,
+            claimed_files=["claimed.py"],
+            scope_ignore_files=("*.pyc",),
+        )
+        assert result.passed
+
     def test_transient_unclaimed_tool_write_fails_scope(self, tmp_path: Path):
         worktree = tmp_path / "worktree"
         worktree.mkdir()

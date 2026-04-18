@@ -464,6 +464,8 @@ def test_render_project_toml() -> None:
     assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
     assert 'format_cmd = "uv run ruff format {file}"' in content
     assert 'ignore_files = ["uv.lock"]' in content
+    assert "built-in" in content
+    assert "bootstrap_timeout = 300" in content
     assert "[conventions]" in content
 
 
@@ -690,6 +692,7 @@ class TestInitPlan:
         content = root_toml.read_text()
         assert 'name = "myplan"' in content
         assert 'sections = ["tasks"]' in content
+        assert "copy or rename each _example.toml" in result.output
 
     def test_init_plan_custom_sections(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

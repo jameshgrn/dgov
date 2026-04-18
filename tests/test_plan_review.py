@@ -161,6 +161,29 @@ class TestSynthesizeHint:
         assert synthesize_hint(None, None, 10, 30) is None
 
 
+def test_build_unit_review_prefers_task_iteration_budget_override() -> None:
+    unit = _build_unit_review(
+        unit_id="tasks/main.a",
+        task_data={"summary": "do a", "iteration_budget": 5},
+        deploy_record=None,
+        unit_events=[
+            _lifecycle(1, "dag_task_dispatched", "tasks/main.a", "plan"),
+            _worker_log(2, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(3, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(4, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(5, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(6, "tasks/main.a", "call", {"tool": "read_file"}),
+            _lifecycle(7, "task_merge_failed", "tasks/main.a", "plan"),
+        ],
+        project_root=".",
+        include_full_diff=False,
+        iteration_budget=30,
+    )
+
+    assert unit.hint is not None
+    assert "5-iteration budget" in unit.hint
+
+
 # ---------------------------------------------------------------------------
 # _rollup_unit_events
 # ---------------------------------------------------------------------------

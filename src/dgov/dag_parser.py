@@ -37,6 +37,7 @@ class DagTaskSpec(BaseModel):
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
+    iteration_budget: int | None = None
     test_cmd: str = ""
     sop_mapping: tuple[str, ...] = ()
 

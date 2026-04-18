@@ -17,6 +17,7 @@ from dgov.worktree import (
     commit_in_worktree,
     create_worktree,
     merge_worktree,
+    prepare_worktree,
     prune_orphans,
     remove_worktree,
 )
@@ -84,6 +85,72 @@ class TestCreateWorktree:
 
         assert (wt.path / ".venv").is_symlink()
         assert (wt.path / ".venv").resolve() == (repo / ".venv").resolve()
+
+    def test_skips_shared_venv_link_for_pyproject_repo(self, git_repo):
+        repo = Path(git_repo)
+        (repo / ".venv").mkdir()
+        (repo / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.1.0'\n")
+
+        wt = create_worktree(git_repo, "task-a")
+
+        assert not (wt.path / ".venv").exists()
+
+
+class TestPrepareWorktree:
+    def test_python_pyproject_runs_uv_sync_locked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wt_path = tmp_path / "wt"
+        wt_path.mkdir()
+        (wt_path / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.1.0'\n")
+        (wt_path / "uv.lock").write_text("lock = 1\n")
+        wt = Worktree(path=wt_path, branch="dgov/task-a", commit="abc123")
+        calls: list[tuple[object, ...]] = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(tuple(cmd) if isinstance(cmd, list) else (cmd,))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr("dgov.worktree.subprocess.run", _fake_run)
+
+        prepare_worktree(wt, language="python")
+
+        assert calls == [("uv", "sync", "--locked")]
+
+    def test_setup_cmd_takes_precedence_over_uv_sync(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wt_path = tmp_path / "wt"
+        wt_path.mkdir()
+        (wt_path / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.1.0'\n")
+        wt = Worktree(path=wt_path, branch="dgov/task-a", commit="abc123")
+        calls: list[str] = []
+
+        def _fake_run(cmd, **kwargs):
+            calls.append(cmd if isinstance(cmd, str) else " ".join(cmd))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr("dgov.worktree.subprocess.run", _fake_run)
+
+        prepare_worktree(wt, language="python", setup_cmd="echo prepare")
+
+        assert calls == ["echo prepare"]
+
+    def test_prepare_worktree_surfaces_actionable_uv_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        wt_path = tmp_path / "wt"
+        wt_path.mkdir()
+        (wt_path / "pyproject.toml").write_text("[project]\nname = 'demo'\nversion = '0.1.0'\n")
+        wt = Worktree(path=wt_path, branch="dgov/task-a", commit="abc123")
+
+        def _missing_uv(cmd, **kwargs):
+            raise FileNotFoundError(cmd[0])
+
+        monkeypatch.setattr("dgov.worktree.subprocess.run", _missing_uv)
+
+        with pytest.raises(RuntimeError, match="install uv"):
+            prepare_worktree(wt, language="python")
 
 
 class TestCommitInWorktree:

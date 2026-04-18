@@ -457,6 +457,43 @@ class TestChain:
         assert (git_repo / "step-a.txt").exists()
         assert (git_repo / "step-b.txt").exists()
 
+    def test_downstream_worktree_sees_upstream_output(self, git_repo, monkeypatch):
+        """A dependent task starts from a snapshot that includes upstream output."""
+
+        async def _worker_with_dependency_visibility(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            if task_slug == "step-a":
+                (worktree_path / "upstream.txt").write_text("from upstream\n")
+            else:
+                assert (worktree_path / "upstream.txt").exists()
+                (worktree_path / "step-b.txt").write_text(
+                    (worktree_path / "upstream.txt").read_text()
+                )
+            on_exit(task_slug, pane_slug, 0, "")
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_dependency_visibility)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        dag = _dag({
+            "step-a": _task("step-a"),
+            "step-b": _task("step-b", depends_on=("step-a",)),
+        })
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        assert results["step-a"] == "merged"
+        assert results["step-b"] == "merged"
+        assert (git_repo / "step-b.txt").read_text() == "from upstream\n"
+
     def test_merge_order_respects_deps(self, git_repo, monkeypatch):
         """a's commit appears before b's in git log."""
         monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)

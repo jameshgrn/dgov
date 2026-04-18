@@ -10,6 +10,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.kernel import DagState
 from dgov.runner import EventDagRunner
@@ -105,6 +106,7 @@ _P_REMOVE_WT = "dgov.runner.remove_worktree"
 _P_COMMIT_WT = "dgov.runner.commit_in_worktree"
 _P_AUTOFIX = "dgov.runner.autofix_sandbox"
 _P_VALIDATE = "dgov.runner.validate_sandbox"
+_P_PREPARE_WT = "dgov.runner.prepare_worktree"
 _P_ADD_TASK = "dgov.runner.add_task"
 _P_EMIT_EVENT = "dgov.runner.emit_event"
 _P_HEADLESS = "dgov.runner.run_headless_worker"
@@ -188,6 +190,7 @@ def _io_patches(
             patch(_P_COMMIT_WT, return_value="deadbeef"),
             patch(_P_AUTOFIX),
             patch(_P_VALIDATE, side_effect=validate),
+            patch(_P_PREPARE_WT),
             patch(_P_ADD_TASK),
             patch(_P_EMIT_EVENT),
             patch(_P_HEADLESS, side_effect=headless),
@@ -283,6 +286,27 @@ class TestChain:
             assert results["a"] == "merged"
             assert results["b"] == "merged"
 
+    def test_dependent_dispatch_uses_latest_upstream_sha(self):
+        captured: list[str] = []
+
+        def _capture_create(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
+            captured.append(f"{slug}:{base_ref}")
+            return _mock_create_worktree(project_root, slug, base_ref)
+
+        with (
+            _io_patches(create_wt=_capture_create),
+            patch(
+                "dgov.deploy_log.read",
+                return_value=[
+                    MagicMock(unit="a", sha="dep-sha", ts="2026-04-18T12:00:00Z"),
+                ],
+            ),
+        ):
+            runner = _make_runner(_chain_dag())
+            asyncio.run(runner._dispatch(MagicMock(task_slug="b")))
+
+        assert captured == ["b:dep-sha"]
+
 
 class TestParallel:
     def test_parallel_both_merge(self):
@@ -373,6 +397,16 @@ class TestDispatchFailure:
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
             assert results["b"] == "merged"
+
+    def test_worktree_prepare_failure_sets_task_error(self):
+        with (
+            _io_patches(),
+            patch(_P_PREPARE_WT, side_effect=RuntimeError("prepare failed")),
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+            assert runner._task_errors["a"] == "prepare failed"
 
 
 class TestPartialDAG:
@@ -533,10 +567,12 @@ class TestResearcherRole:
             patch(_P_AUTOFIX) as mock_autofix,
             patch(_P_VALIDATE) as mock_validate,
             patch(_P_MERGE_WT) as mock_merge,
+            patch(_P_PREPARE_WT) as mock_prepare,
         ):
             runner = _make_runner(self._researcher_dag())
             results = asyncio.run(runner.run())
             assert results["a"] == "merged"
+            mock_prepare.assert_not_called()
             mock_commit.assert_not_called()
             mock_autofix.assert_not_called()
             mock_validate.assert_not_called()
@@ -549,6 +585,17 @@ class TestResearcherRole:
             # Researcher deploy records use the HEAD sha captured at worktree
             # creation (Worktree.commit == "abc123" per the mock helper).
             mock_append.assert_called_once_with("/tmp/test-project", "test-dag", "a", "abc123")
+
+
+class TestBootstrapPreparation:
+    def test_worker_dispatch_uses_bootstrap_timeout(self):
+        with _io_patches(), patch(_P_PREPARE_WT) as mock_prepare:
+            runner = _make_runner(_single_dag())
+            runner.project_config = ProjectConfig(bootstrap_timeout=17)
+            asyncio.run(runner._dispatch(MagicMock(task_slug="a")))
+
+        mock_prepare.assert_called_once()
+        assert mock_prepare.call_args.kwargs["timeout_s"] == 17
 
 
 class TestCleanup:

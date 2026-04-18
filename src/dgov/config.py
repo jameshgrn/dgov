@@ -19,6 +19,7 @@ from dgov.workers.atomic import (
 
 
 _DEFAULT_AGENT = "accounts/fireworks/routers/kimi-k2p5-turbo"
+_DEFAULT_SCOPE_IGNORE_FILES = (".venv", "uv.lock", "__pycache__", "*.pyc")
 
 
 @dataclass(frozen=True)
@@ -34,10 +35,11 @@ class ProjectConfig(AtomicConfig):
     source_extensions: tuple[str, ...] = (".py",)
     default_agent: str = _DEFAULT_AGENT
     format_check_cmd: str = "python -m ruff format --check {file}"
+    bootstrap_timeout: int = 300
     settlement_timeout: int = 120
     review_hooks: tuple[str, ...] = ()
     agents: dict[str, str] = field(default_factory=dict)
-    scope_ignore_files: tuple[str, ...] = ()
+    scope_ignore_files: tuple[str, ...] = _DEFAULT_SCOPE_IGNORE_FILES
     setup_cmd: str = ""
 
     def resolve_test_cmd(self, file: str = "") -> str:
@@ -140,15 +142,18 @@ def load_project_config(root: str | Path) -> ProjectConfig:
     scope_section = raw.get("scope", {})
     ignore_raw = scope_section.get("ignore_files", ()) if isinstance(scope_section, dict) else ()
     if isinstance(ignore_raw, list):
-        scope_ignore_files = tuple(str(p).strip() for p in ignore_raw if str(p).strip())
+        configured_scope_ignores = tuple(str(p).strip() for p in ignore_raw if str(p).strip())
     else:
-        scope_ignore_files = ()
+        configured_scope_ignores = ()
     # Reserved-path guard: the scope ignore list must not shadow governor-owned
     # files, otherwise a worker could silently mutate them.
     _RESERVED_PATHS = frozenset({".sentrux/baseline.json"})
-    bad = sorted(set(scope_ignore_files) & _RESERVED_PATHS)
+    bad = sorted(set(configured_scope_ignores) & _RESERVED_PATHS)
     if bad:
         raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
+    scope_ignore_files = tuple(
+        dict.fromkeys((*ProjectConfig.scope_ignore_files, *configured_scope_ignores))
+    )
 
     return ProjectConfig(
         language=proj.get("language", ProjectConfig.language),
@@ -168,6 +173,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         worker_iteration_budget=proj.get("worker_iteration_budget", 50),
         worker_iteration_warn_at=proj.get("worker_iteration_warn_at", 40),
         worker_tree_max_lines=proj.get("worker_tree_max_lines", 80),
+        bootstrap_timeout=proj.get("bootstrap_timeout", 300),
         settlement_timeout=proj.get("settlement_timeout", 120),
         line_length=proj.get("line_length", 99),
         review_hooks=hooks,

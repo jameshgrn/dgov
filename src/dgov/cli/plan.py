@@ -163,6 +163,7 @@ def init_plan_cmd(name: str, sections: str, force: bool) -> None:
 
     Creates .dgov/plans/<name>/ with _root.toml and section directories.
     Each section gets a _example.toml showing the unit format.
+    Copy or rename it before compile; underscore-prefixed files are ignored.
 
     \b
     Example: dgov init-plan my-plan --sections tasks,docs
@@ -213,6 +214,10 @@ sections = [{sections_toml}]
         click.echo(f"Initialized plan '{name}':")
         for path in created:
             click.echo(f"  {path}")
+        click.echo(
+            "Next: copy or rename each _example.toml to a non-underscore filename before "
+            "running compile."
+        )
 
 
 @cli.group(name="plan")

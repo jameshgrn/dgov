@@ -35,6 +35,16 @@ def _script_for_role(role: str) -> Path:
     raise ValueError(f"Unknown task role: {role}")
 
 
+def _config_json_for_task(project_root: str, task: DagTaskSpec) -> str:
+    """Serialize worker config, applying task-local overrides in memory only."""
+    from dgov.config import load_project_config
+
+    payload = load_project_config(project_root).to_worker_payload()
+    if task.iteration_budget is not None:
+        payload["worker_iteration_budget"] = task.iteration_budget
+    return json.dumps(payload)
+
+
 async def run_headless_worker(
     project_root: str,
     plan_name: str,
@@ -47,11 +57,7 @@ async def run_headless_worker(
     on_event: Callable[[str, str, object], None] | None = None,
 ) -> None:
     """Execute the headless worker lifecycle."""
-    from dgov.config import load_project_config
-
-    # Serialize project config to JSON for the subprocess
-    pc = load_project_config(project_root)
-    config_json = json.dumps(pc.to_worker_payload())
+    config_json = _config_json_for_task(project_root, task)
 
     cmd = [
         sys.executable,

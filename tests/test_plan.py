@@ -232,6 +232,25 @@ test_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
             == "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
         )
 
+    def test_parses_plan_with_task_iteration_budget(self, tmp_path):
+        plan_file = tmp_path / "plan.toml"
+        plan_file.write_text(
+            """
+[plan]
+name = "iteration-budget-plan"
+
+[tasks.focused]
+summary = "Stay focused"
+prompt = "Do it"
+commit_message = "Done"
+iteration_budget = 12
+"""
+        )
+
+        result = parse_plan_file(str(plan_file))
+
+        assert result.units["focused"].iteration_budget == 12
+
     def test_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             parse_plan_file(str(tmp_path / "does_not_exist.toml"))
@@ -356,6 +375,26 @@ class TestCompilePlan:
         result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].role == "researcher"
+
+    def test_preserves_unit_iteration_budget_when_specified(self):
+        plan = PlanSpec(
+            name="iteration-budget-plan",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                    iteration_budget=12,
+                )
+            },
+        )
+
+        result = compile_plan(plan, project_agent="test-agent")
+
+        assert result.tasks["task-1"].iteration_budget == 12
 
     def test_uses_default_timeout_when_unit_has_none(self):
         plan = PlanSpec(

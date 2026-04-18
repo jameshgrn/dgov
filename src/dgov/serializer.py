@@ -51,6 +51,8 @@ def serialize_compiled_toml(
             lines.append(f"depends_on = [{deps}]")
         if unit.timeout_s:
             lines.append(f"timeout_s = {unit.timeout_s}")
+        if unit.iteration_budget is not None:
+            lines.append(f"iteration_budget = {unit.iteration_budget}")
         if unit.test_cmd:
             lines.append(f"test_cmd = {_toml_str(unit.test_cmd)}")
         if mapping:
