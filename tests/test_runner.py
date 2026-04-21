@@ -1331,3 +1331,201 @@ class TestRecoveryPipeline:
             runner._phase_resume_failed()
 
             assert sorted(resumed) == ["abandoned", "failed", "skipped", "timedout"]
+
+
+class TestSettlementPhaseBoundaries:
+    """Tests for settlement phase split — verify each phase boundary independently."""
+
+    def test_prepare_and_commit_returns_true_for_edit_tasks(self):
+        """_prepare_and_commit returns was_settlement=True for normal edit tasks."""
+        from unittest.mock import MagicMock
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", file_claims=("a.py",), pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._prepare_and_commit(action, wt, loop)
+                assert error is None
+                assert was_settlement is True  # Indicates settlement should continue
+
+            asyncio.run(_test())
+
+    def test_prepare_and_commit_returns_false_for_researcher(self):
+        """_prepare_and_commit returns was_settlement=False for researcher role."""
+        from unittest.mock import MagicMock
+
+        from dgov.dag_parser import DagFileSpec, DagTaskSpec
+
+        researcher_task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Investigate something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(read=("src/foo.py",)),
+        )
+        dag = _dag({"research": researcher_task})
+
+        with _io_patches():
+            runner = _make_runner(dag)
+            action = MagicMock(task_slug="research", file_claims=(), pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "research")
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._prepare_and_commit(action, wt, loop)
+                assert error is None
+                assert was_settlement is False  # Indicates settlement should skip
+
+            asyncio.run(_test())
+
+    def test_cleanup_rejected_candidate_removes_and_emits(self):
+        """_cleanup_rejected_candidate removes candidate and emits failure event."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from dgov.semantic_settlement import FailureClass, IntegrationCandidateVerdict
+        from dgov.worktree import IntegrationCandidateResult
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            candidate_result = IntegrationCandidateResult(
+                passed=True,
+                candidate_path=Path("/tmp/test-candidate"),
+                candidate_sha="abc123",
+            )
+            verdict = IntegrationCandidateVerdict(
+                task_slug="a",
+                candidate_sha="abc123",
+                target_head_sha="",
+                passed=False,
+                failure_class=FailureClass.BEHAVIORAL_MISMATCH,
+                error_message="validation failed",
+                validated_at=0.0,
+            )
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                with (
+                    patch("dgov.runner.remove_integration_candidate") as mock_remove,
+                    patch("dgov.runner.emit_integration_candidate_failed") as mock_emit,
+                ):
+                    await runner._cleanup_rejected_candidate(
+                        action, candidate_result, verdict, loop
+                    )
+
+                    mock_remove.assert_called_once()
+                    mock_emit.assert_called_once()
+
+            asyncio.run(_test())
+
+    def test_cleanup_passed_candidate_removes_and_emits(self):
+        """_cleanup_passed_candidate removes candidate and emits success event."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from dgov.worktree import IntegrationCandidateResult
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            candidate_result = IntegrationCandidateResult(
+                passed=True,
+                candidate_path=Path("/tmp/test-candidate"),
+                candidate_sha="abc123",
+            )
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                with (
+                    patch("dgov.runner.remove_integration_candidate") as mock_remove,
+                    patch("dgov.runner.emit_integration_candidate_passed") as mock_emit,
+                ):
+                    await runner._cleanup_passed_candidate(action, candidate_result, loop)
+
+                    mock_remove.assert_called_once()
+                    mock_emit.assert_called_once()
+                    # Verify pass verdict contains expected fields
+                    call_args = mock_emit.call_args
+                    assert call_args[0][3].task_slug == "a"
+                    assert call_args[0][3].passed is True
+
+            asyncio.run(_test())
+
+    def test_settle_and_merge_early_return_on_prepare_error(self):
+        """_settle_and_merge returns early when _prepare_and_commit returns error."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            # Mock prepare_and_commit to return an error
+            runner._prepare_and_commit = AsyncMock(return_value=("prepare failed", True))  # type: ignore
+            runner._run_isolated_validation = AsyncMock()  # type: ignore
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                assert error == "prepare failed"
+                assert was_settlement is True
+                runner._run_isolated_validation.assert_not_called()  # type: ignore
+
+            asyncio.run(_test())
+
+    def test_settle_and_merge_early_return_on_validation_error(self):
+        """_settle_and_merge returns early when _run_isolated_validation returns error."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            runner._prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
+            runner._run_isolated_validation = AsyncMock(return_value=("validation failed", None))  # type: ignore
+            runner._create_integration_candidate_with_emit = AsyncMock()  # type: ignore
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                assert error == "validation failed"
+                assert was_settlement is True
+                runner._create_integration_candidate_with_emit.assert_not_called()  # type: ignore
+
+            asyncio.run(_test())
+
+    def test_settle_and_merge_early_return_on_candidate_fail(self):
+        """_settle_and_merge returns early when candidate creation fails."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from dgov.worktree import IntegrationCandidateResult
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            runner._prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
+            runner._run_isolated_validation = AsyncMock(return_value=(None, MagicMock()))  # type: ignore
+            runner._create_integration_candidate_with_emit = AsyncMock(  # type: ignore
+                return_value=IntegrationCandidateResult(
+                    passed=False, error="candidate creation failed"
+                )
+            )
+            runner._run_semantic_gate_on_candidate = AsyncMock()  # type: ignore
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                assert error and "candidate creation failed" in error
+                assert was_settlement is True
+                runner._run_semantic_gate_on_candidate.assert_not_called()  # type: ignore
+
+            asyncio.run(_test())

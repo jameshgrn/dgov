@@ -1084,7 +1084,7 @@ class EventDagRunner:
 
         msg = task.commit_message or f"feat: completed {action.task_slug}"
         await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg, file_claims)
-        return None, False
+        return None, True
 
     async def _run_isolated_validation(
         self,
@@ -1190,11 +1190,15 @@ class EventDagRunner:
         task_config: ProjectConfig,
         loop: asyncio.AbstractEventLoop,
     ) -> str | None:
-        """Validate the integrated candidate using same gates as isolated validation."""
+        """Validate candidate with same gates as isolated validation.
+
+        Phase boundary: candidate gate validation → cleanup → emit result.
+        Returns error string if validation fails, None on success.
+        """
         if candidate_result.candidate_path is None:
             return None
 
-        candidate_gate_result = await loop.run_in_executor(
+        gate_result = await loop.run_in_executor(
             self._executor,
             validate_sandbox,
             candidate_result.candidate_path,
@@ -1203,55 +1207,20 @@ class EventDagRunner:
             task_config,
         )
 
-        if not candidate_gate_result.passed:
-            # Candidate validation failed - clean up candidate, emit event, reject task
-            if candidate_result.candidate_path is not None:
-                await loop.run_in_executor(
-                    self._executor,
-                    remove_integration_candidate,
-                    self.session_root,
-                    candidate_result.candidate_path,
-                )
+        if not gate_result.passed:
             verdict = IntegrationCandidateVerdict(
                 task_slug=action.task_slug,
                 candidate_sha=candidate_result.candidate_sha,
                 target_head_sha="",
                 passed=False,
                 failure_class=FailureClass.BEHAVIORAL_MISMATCH,
-                error_message=candidate_gate_result.error
-                or "Integrated candidate failed validation gates",
+                error_message=gate_result.error or "Integrated candidate failed validation gates",
                 validated_at=time.time(),
             )
-            emit_integration_candidate_failed(
-                emit_event,
-                self.session_root,
-                self.dag.name,
-                verdict,
-                pane=action.pane_slug,
-            )
-            return candidate_gate_result.error or "Integrated candidate validation failed"
+            await self._cleanup_rejected_candidate(action, candidate_result, verdict, loop)
+            return gate_result.error or "Integrated candidate validation failed"
 
-        # Candidate passed - clean up and emit success event
-        await loop.run_in_executor(
-            self._executor,
-            remove_integration_candidate,
-            self.session_root,
-            candidate_result.candidate_path,
-        )
-        pass_verdict = IntegrationCandidateVerdict(
-            task_slug=action.task_slug,
-            candidate_sha=candidate_result.candidate_sha,
-            target_head_sha="",
-            passed=True,
-            validated_at=time.time(),
-        )
-        emit_integration_candidate_passed(
-            emit_event,
-            self.session_root,
-            self.dag.name,
-            pass_verdict,
-            pane=action.pane_slug,
-        )
+        await self._cleanup_passed_candidate(action, candidate_result, loop)
         return None
 
     async def _create_integration_candidate_with_emit(
@@ -1308,20 +1277,82 @@ class EventDagRunner:
 
         deploy_log.append(self.session_root, self.dag.name, action.task_slug, merge_sha)
 
+    async def _cleanup_rejected_candidate(
+        self,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        verdict: IntegrationCandidateVerdict,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Clean up rejected candidate and emit failure event.
+
+        Fail-closed: always remove candidate, emit event with full context.
+        """
+        if candidate_result.candidate_path is not None:
+            await loop.run_in_executor(
+                self._executor,
+                remove_integration_candidate,
+                self.session_root,
+                candidate_result.candidate_path,
+            )
+        emit_integration_candidate_failed(
+            emit_event,
+            self.session_root,
+            self.dag.name,
+            verdict,
+            pane=action.pane_slug,
+        )
+
+    async def _cleanup_passed_candidate(
+        self,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Clean up passed candidate and emit success event.
+
+        Phase boundary for successful candidate finalization.
+        """
+        if candidate_result.candidate_path is not None:
+            await loop.run_in_executor(
+                self._executor,
+                remove_integration_candidate,
+                self.session_root,
+                candidate_result.candidate_path,
+            )
+        pass_verdict = IntegrationCandidateVerdict(
+            task_slug=action.task_slug,
+            candidate_sha=candidate_result.candidate_sha or "",
+            target_head_sha="",
+            passed=True,
+            validated_at=time.time(),
+        )
+        emit_integration_candidate_passed(
+            emit_event,
+            self.session_root,
+            self.dag.name,
+            pass_verdict,
+            pane=action.pane_slug,
+        )
+
     async def _settle_and_merge(
         self,
         action: MergeTask,
         wt: Worktree,
         loop: asyncio.AbstractEventLoop,
     ) -> tuple[str | None, bool]:
-        """Run autofix → commit → validate → merge. Returns (error, was_settlement)."""
+        """Run settlement phases: prepare → validate → candidate → merge.
+
+        Phase-split for testability: each phase can fail independently.
+        Returns (error, was_settlement) tuple.
+        """
         task = self.dag.tasks[action.task_slug]
         pc = self.project_config
         task_config = replace(pc, test_cmd=task.test_cmd) if task.test_cmd else pc
 
         # Phase 1: Prepare and commit (or handle read-only roles)
         error, was_settlement = await self._prepare_and_commit(action, wt, loop)
-        if error or (was_settlement is False and task.role in ("researcher", "reviewer")):
+        if error or was_settlement is False:
             return error, was_settlement
 
         # Phase 2: Isolated validation (compute risk + run gate)
@@ -1334,21 +1365,21 @@ class EventDagRunner:
         if not candidate_result.passed:
             return candidate_result.error or "Integration candidate replay failed", True
 
-        # Phase 4: Python semantic gate on integrated candidate
+        # Phase 4: Run semantic gate on candidate
         error = await self._run_semantic_gate_on_candidate(
             action, wt, candidate_result, risk_record, loop
         )
         if error:
             return error, True
 
-        # Phase 5: Validate integrated candidate with same gates as isolated
+        # Phase 5: Validate candidate with same gates as isolated validation
         error = await self._validate_and_finalize_candidate(
             action, candidate_result, task_config, loop
         )
         if error:
             return error, True
 
-        # Phase 6: Final merge
+        # Phase 6: Final merge and deploy
         await self._finalize_merge(action, wt, loop)
         return None, False
 
