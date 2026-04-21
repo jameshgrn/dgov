@@ -420,6 +420,63 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
     assert "Degradation detected" in result.output
 
 
+def test_sentrux_gate_prints_structural_offender_report_on_degradation(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            1,
+            stdout="✗ Degradation detected\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr(
+        "dgov.cli.sentrux._structural_offender_report",
+        lambda target: "Likely structural offenders:\n- Complex functions:",
+    )
+
+    result = runner.invoke(cli, ["sentrux", "gate"])
+
+    assert result.exit_code == 0
+    assert "Likely structural offenders:" in result.output
+
+
+def test_sentrux_gate_treats_degraded_output_as_degradation(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            1,
+            stdout="✗ DEGRADED\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux._structural_offender_report", lambda target: None)
+
+    result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])
+
+    assert result.exit_code == 1
+    assert "Degradation detected" in result.output
+
+
 def test_preflight_command_reports_pass(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

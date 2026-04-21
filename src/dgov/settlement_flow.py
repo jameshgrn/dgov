@@ -81,6 +81,50 @@ print(
 """
 
 
+def _semantic_gate_payload(
+    *,
+    candidate_path: Path,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    touched_files: tuple[str, ...],
+    task_slug: str,
+) -> dict[str, object]:
+    return {
+        "candidate_path": str(candidate_path),
+        "project_root": project_root,
+        "task_base_sha": task_base_sha,
+        "task_commit_sha": task_commit_sha,
+        "target_head_sha": target_head_sha,
+        "touched_files": list(touched_files),
+        "task_slug": task_slug,
+    }
+
+
+def _semantic_gate_env(candidate_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    candidate_src = candidate_path / "src"
+    pythonpath_root = candidate_src if candidate_src.exists() else candidate_path
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(pythonpath_root)
+        if not existing_pythonpath
+        else f"{pythonpath_root}{os.pathsep}{existing_pythonpath}"
+    )
+    return env
+
+
+def _semantic_gate_failure(task_slug: str, message: str) -> SemanticGateVerdict:
+    return SemanticGateVerdict(
+        task_slug=task_slug,
+        gate_name="python_semantic_subprocess",
+        passed=False,
+        error_message=message,
+        checked_at=0.0,
+    )
+
+
 def run_python_semantic_gate_in_subprocess(
     *,
     candidate_path: Path,
@@ -92,53 +136,36 @@ def run_python_semantic_gate_in_subprocess(
     task_slug: str,
 ) -> SemanticGateVerdict:
     """Run the semantic gate from the candidate snapshot, not the live governor process."""
-    payload = {
-        "candidate_path": str(candidate_path),
-        "project_root": project_root,
-        "task_base_sha": task_base_sha,
-        "task_commit_sha": task_commit_sha,
-        "target_head_sha": target_head_sha,
-        "touched_files": list(touched_files),
-        "task_slug": task_slug,
-    }
-    env = os.environ.copy()
-    candidate_src = candidate_path / "src"
-    pythonpath_root = candidate_src if candidate_src.exists() else candidate_path
-    existing_pythonpath = env.get("PYTHONPATH")
-    env["PYTHONPATH"] = (
-        str(pythonpath_root)
-        if not existing_pythonpath
-        else f"{pythonpath_root}{os.pathsep}{existing_pythonpath}"
+    payload = _semantic_gate_payload(
+        candidate_path=candidate_path,
+        project_root=project_root,
+        task_base_sha=task_base_sha,
+        task_commit_sha=task_commit_sha,
+        target_head_sha=target_head_sha,
+        touched_files=touched_files,
+        task_slug=task_slug,
     )
     result = subprocess.run(
         [sys.executable, "-c", _SEMANTIC_GATE_SUBPROCESS, json.dumps(payload)],
         cwd=candidate_path,
         capture_output=True,
         text=True,
-        env=env,
+        env=_semantic_gate_env(candidate_path),
         check=False,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="python_semantic_subprocess",
-            passed=False,
-            error_message=f"Failed to execute semantic gate in candidate subprocess: {detail}",
-            checked_at=0.0,
+        return _semantic_gate_failure(
+            task_slug,
+            f"Failed to execute semantic gate in candidate subprocess: {detail}",
         )
     try:
         return parse_semantic_gate_verdict(json.loads(result.stdout))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
         detail = result.stdout.strip() or result.stderr.strip() or "empty output"
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="python_semantic_subprocess",
-            passed=False,
-            error_message=(
-                f"Failed to parse semantic gate verdict from candidate subprocess: {exc}: {detail}"
-            ),
-            checked_at=0.0,
+        return _semantic_gate_failure(
+            task_slug,
+            f"Failed to parse semantic gate verdict from candidate subprocess: {exc}: {detail}",
         )
 
 
@@ -163,6 +190,44 @@ class SettlementFlow:
             return self.project_config
         return replace(self.project_config, test_cmd=task.test_cmd)
 
+    def _git_rev_parse(self, ref: str) -> str | None:
+        result = subprocess.run(
+            ["git", "rev-parse", ref],
+            cwd=self.session_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    def _changed_files_between(self, base_ref: str, head_ref: str) -> tuple[str, ...]:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", base_ref, head_ref],
+            cwd=self.session_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return ()
+        return tuple(path for path in result.stdout.strip().split("\n") if path)
+
+    def _python_overlap_risk(
+        self,
+        changed_files: tuple[str, ...],
+        file_claims: tuple[str, ...],
+    ) -> tuple[RiskLevel, bool]:
+        py_changed = [path for path in changed_files if path.endswith(".py")]
+        if not py_changed:
+            return RiskLevel.NONE, False
+
+        claimed_set = set(file_claims)
+        if all(path in claimed_set for path in py_changed):
+            return RiskLevel.NONE, False
+        return RiskLevel.MEDIUM, True
+
     def compute_semantic_risk(
         self,
         *,
@@ -171,39 +236,10 @@ class SettlementFlow:
         file_claims: tuple[str, ...],
     ) -> IntegrationRiskRecord:
         """Compute a telemetry-only integration risk record for the task commit."""
-        head_res = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=self.session_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        target_head = head_res.stdout.strip() if head_res.returncode == 0 else ""
-
-        diff_res = subprocess.run(
-            ["git", "diff", "--name-only", wt.commit, wt.branch],
-            cwd=self.session_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        changed_files = (
-            tuple(path for path in diff_res.stdout.strip().split("\n") if path)
-            if diff_res.returncode == 0
-            else ()
-        )
-
-        risk_level = RiskLevel.NONE
+        target_head = self._git_rev_parse("HEAD") or ""
+        changed_files = self._changed_files_between(wt.commit, wt.branch)
+        risk_level, python_overlap = self._python_overlap_risk(changed_files, file_claims)
         overlap_evidence: list[SymbolOverlap] = []
-        python_overlap = False
-
-        py_changed = [path for path in changed_files if path.endswith(".py")]
-        if py_changed:
-            claimed_set = set(file_claims)
-            unclaimed_py = [path for path in py_changed if path not in claimed_set]
-            if unclaimed_py:
-                python_overlap = True
-                risk_level = RiskLevel.MEDIUM
 
         return IntegrationRiskRecord(
             task_slug=action.task_slug,
@@ -241,6 +277,29 @@ class SettlementFlow:
                 evidence,
             )
 
+    async def _handle_read_only_role(
+        self,
+        *,
+        task: DagTaskSpec,
+        action: MergeTask,
+        wt: Worktree,
+        emit_event_fn: Any,
+        deploy_append_fn: Any,
+    ) -> tuple[str | None, bool]:
+        deploy_append_fn(self.session_root, self.plan_name, action.task_slug, wt.commit)
+        if task.role == "reviewer":
+            emit_event_fn(
+                self.session_root,
+                "reviewer_verdict",
+                action.pane_slug,
+                plan_name=self.plan_name,
+                task_slug=action.task_slug,
+            )
+            logger.info("REVIEWED %s", action.task_slug)
+        else:
+            logger.info("RESEARCHED %s", action.task_slug)
+        return None, False
+
     async def prepare_and_commit(
         self,
         *,
@@ -261,24 +320,17 @@ class SettlementFlow:
         if deploy_append_fn is None:
             deploy_append_fn = deploy_log.append
 
+        if task.role in ("researcher", "reviewer"):
+            return await self._handle_read_only_role(
+                task=task,
+                action=action,
+                wt=wt,
+                emit_event_fn=emit_event_fn,
+                deploy_append_fn=deploy_append_fn,
+            )
+
         file_claims = action.file_claims
         task_config = self._task_config(task)
-
-        if task.role in ("researcher", "reviewer"):
-            deploy_append_fn(self.session_root, self.plan_name, action.task_slug, wt.commit)
-            if task.role == "reviewer":
-                emit_event_fn(
-                    self.session_root,
-                    "reviewer_verdict",
-                    action.pane_slug,
-                    plan_name=self.plan_name,
-                    task_slug=action.task_slug,
-                )
-                logger.info("REVIEWED %s", action.task_slug)
-            else:
-                logger.info("RESEARCHED %s", action.task_slug)
-            return None, False
-
         await loop.run_in_executor(self.executor, autofix_fn, wt.path, file_claims, task_config)
         msg = task.commit_message or f"feat: completed {action.task_slug}"
         await loop.run_in_executor(self.executor, commit_fn, wt, msg, file_claims)
@@ -323,14 +375,91 @@ class SettlementFlow:
         return None, risk_record
 
     def _get_task_commit_sha(self, wt: Worktree) -> str | None:
-        task_commit_res = subprocess.run(
-            ["git", "rev-parse", wt.branch],
-            cwd=self.session_root,
-            capture_output=True,
-            text=True,
-            check=False,
+        return self._git_rev_parse(wt.branch)
+
+    async def _remove_candidate(
+        self,
+        *,
+        candidate_path: Path | None,
+        loop: asyncio.AbstractEventLoop,
+        remove_candidate_fn: Any,
+    ) -> None:
+        if candidate_path is None:
+            return
+        await loop.run_in_executor(
+            self.executor,
+            remove_candidate_fn,
+            self.session_root,
+            candidate_path,
         )
-        return task_commit_res.stdout.strip() if task_commit_res.returncode == 0 else None
+
+    def _failed_candidate_verdict(
+        self,
+        *,
+        action: MergeTask,
+        candidate_sha: str,
+        error_message: str,
+        failure_class: FailureClass,
+    ) -> IntegrationCandidateVerdict:
+        return IntegrationCandidateVerdict(
+            task_slug=action.task_slug,
+            candidate_sha=candidate_sha,
+            target_head_sha="",
+            passed=False,
+            failure_class=failure_class,
+            error_message=error_message,
+            validated_at=time.time(),
+        )
+
+    def _passed_candidate_verdict(
+        self,
+        *,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+    ) -> IntegrationCandidateVerdict:
+        return IntegrationCandidateVerdict(
+            task_slug=action.task_slug,
+            candidate_sha=candidate_result.candidate_sha or "",
+            target_head_sha="",
+            passed=True,
+            validated_at=time.time(),
+        )
+
+    async def _reject_semantic_gate_candidate(
+        self,
+        *,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        semantic_verdict: SemanticGateVerdict,
+        loop: asyncio.AbstractEventLoop,
+        emit_event_fn: Any,
+        remove_candidate_fn: Any,
+        rejected_emit_fn: Any,
+    ) -> str:
+        await self._remove_candidate(
+            candidate_path=candidate_result.candidate_path,
+            loop=loop,
+            remove_candidate_fn=remove_candidate_fn,
+        )
+        verdict = SemanticGateVerdict(
+            task_slug=semantic_verdict.task_slug,
+            gate_name=semantic_verdict.gate_name,
+            passed=False,
+            failure_class=semantic_verdict.failure_class,
+            evidence=semantic_verdict.evidence,
+            error_message=semantic_verdict.error_message,
+            checked_at=time.time(),
+        )
+        rejected_emit_fn(
+            emit_event_fn,
+            self.session_root,
+            self.plan_name,
+            verdict,
+            pane=action.pane_slug,
+        )
+        return semantic_verdict.error_message or (
+            f"Semantic gate '{semantic_verdict.gate_name}' rejected"
+        )
 
     async def run_semantic_gate_on_candidate(
         self,
@@ -353,12 +482,11 @@ class SettlementFlow:
         if candidate_result.candidate_path is None:
             return None
 
-        task_commit_sha = self._get_task_commit_sha(wt)
         semantic_verdict = semantic_gate_fn(
             candidate_path=candidate_result.candidate_path,
             project_root=self.session_root,
             task_base_sha=wt.commit,
-            task_commit_sha=task_commit_sha,
+            task_commit_sha=self._get_task_commit_sha(wt),
             target_head_sha=risk_record.target_head_sha,
             touched_files=action.file_claims,
             task_slug=action.task_slug,
@@ -366,30 +494,14 @@ class SettlementFlow:
         if semantic_verdict.passed:
             return None
 
-        await loop.run_in_executor(
-            self.executor,
-            remove_candidate_fn,
-            self.session_root,
-            candidate_result.candidate_path,
-        )
-        verdict = SemanticGateVerdict(
-            task_slug=semantic_verdict.task_slug,
-            gate_name=semantic_verdict.gate_name,
-            passed=False,
-            failure_class=semantic_verdict.failure_class,
-            evidence=semantic_verdict.evidence,
-            error_message=semantic_verdict.error_message,
-            checked_at=time.time(),
-        )
-        rejected_emit_fn(
-            emit_event_fn,
-            self.session_root,
-            self.plan_name,
-            verdict,
-            pane=action.pane_slug,
-        )
-        return semantic_verdict.error_message or (
-            f"Semantic gate '{semantic_verdict.gate_name}' rejected"
+        return await self._reject_semantic_gate_candidate(
+            action=action,
+            candidate_result=candidate_result,
+            semantic_verdict=semantic_verdict,
+            loop=loop,
+            emit_event_fn=emit_event_fn,
+            remove_candidate_fn=remove_candidate_fn,
+            rejected_emit_fn=rejected_emit_fn,
         )
 
     async def cleanup_rejected_candidate(
@@ -406,13 +518,11 @@ class SettlementFlow:
         """Remove a rejected candidate and emit the failure event."""
         if remove_candidate_fn is None:
             remove_candidate_fn = remove_integration_candidate
-        if candidate_result.candidate_path is not None:
-            await loop.run_in_executor(
-                self.executor,
-                remove_candidate_fn,
-                self.session_root,
-                candidate_result.candidate_path,
-            )
+        await self._remove_candidate(
+            candidate_path=candidate_result.candidate_path,
+            loop=loop,
+            remove_candidate_fn=remove_candidate_fn,
+        )
         failed_emit_fn(
             emit_event_fn,
             self.session_root,
@@ -434,25 +544,16 @@ class SettlementFlow:
         """Remove a passed candidate and emit the success event."""
         if remove_candidate_fn is None:
             remove_candidate_fn = remove_integration_candidate
-        if candidate_result.candidate_path is not None:
-            await loop.run_in_executor(
-                self.executor,
-                remove_candidate_fn,
-                self.session_root,
-                candidate_result.candidate_path,
-            )
-        verdict = IntegrationCandidateVerdict(
-            task_slug=action.task_slug,
-            candidate_sha=candidate_result.candidate_sha or "",
-            target_head_sha="",
-            passed=True,
-            validated_at=time.time(),
+        await self._remove_candidate(
+            candidate_path=candidate_result.candidate_path,
+            loop=loop,
+            remove_candidate_fn=remove_candidate_fn,
         )
         passed_emit_fn(
             emit_event_fn,
             self.session_root,
             self.plan_name,
-            verdict,
+            self._passed_candidate_verdict(action=action, candidate_result=candidate_result),
             pane=action.pane_slug,
         )
 
@@ -494,14 +595,32 @@ class SettlementFlow:
             )
             return None
 
-        verdict = IntegrationCandidateVerdict(
-            task_slug=action.task_slug,
+        return await self._reject_failed_candidate_validation(
+            action=action,
+            candidate_result=candidate_result,
+            gate_error=gate_result.error,
+            loop=loop,
+            emit_event_fn=emit_event_fn,
+            remove_candidate_fn=remove_candidate_fn,
+            failed_emit_fn=failed_emit_fn,
+        )
+
+    async def _reject_failed_candidate_validation(
+        self,
+        *,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        gate_error: str | None,
+        loop: asyncio.AbstractEventLoop,
+        emit_event_fn: Any,
+        remove_candidate_fn: Any,
+        failed_emit_fn: Any,
+    ) -> str:
+        verdict = self._failed_candidate_verdict(
+            action=action,
             candidate_sha=candidate_result.candidate_sha,
-            target_head_sha="",
-            passed=False,
+            error_message=gate_error or "Integrated candidate failed validation gates",
             failure_class=FailureClass.BEHAVIORAL_MISMATCH,
-            error_message=gate_result.error or "Integrated candidate failed validation gates",
-            validated_at=time.time(),
         )
         await self.cleanup_rejected_candidate(
             action=action,
@@ -512,7 +631,7 @@ class SettlementFlow:
             remove_candidate_fn=remove_candidate_fn,
             failed_emit_fn=failed_emit_fn,
         )
-        return gate_result.error or "Integrated candidate validation failed"
+        return gate_error or "Integrated candidate validation failed"
 
     async def create_integration_candidate_with_emit(
         self,
@@ -536,14 +655,11 @@ class SettlementFlow:
         if candidate_result.passed:
             return candidate_result
 
-        verdict = IntegrationCandidateVerdict(
-            task_slug=action.task_slug,
+        verdict = self._failed_candidate_verdict(
+            action=action,
             candidate_sha="",
-            target_head_sha="",
-            passed=False,
-            failure_class=FailureClass.TEXT_CONFLICT,
             error_message=candidate_result.error or "Failed to create integration candidate",
-            validated_at=time.time(),
+            failure_class=FailureClass.TEXT_CONFLICT,
         )
         failed_emit_fn(
             emit_event_fn,

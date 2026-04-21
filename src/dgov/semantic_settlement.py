@@ -570,69 +570,55 @@ def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
     return _extract_module_symbols(tree, str(file_path))
 
 
+def _changed_symbols_since_base(
+    base_symbols: dict[str, _SymbolInfo],
+    derived_symbols: dict[str, _SymbolInfo],
+) -> dict[str, _SymbolInfo]:
+    changed: dict[str, _SymbolInfo] = {}
+    for name, derived_sym in derived_symbols.items():
+        base_sym = base_symbols.get(name)
+        if base_sym is None:
+            changed[name] = derived_sym
+            continue
+        if (
+            base_sym.line_start != derived_sym.line_start
+            or base_sym.line_end != derived_sym.line_end
+            or base_sym.signature != derived_sym.signature
+        ):
+            changed[name] = derived_sym
+    return changed
+
+
+def _symbol_in_touched_files(symbol: _SymbolInfo, touched_files: set[str]) -> bool:
+    rel_path = Path(symbol.file_path).name
+    return rel_path in touched_files or symbol.file_path in touched_files
+
+
 def _check_same_symbol_edit(
     task_base_symbols: dict[str, _SymbolInfo],
     task_commit_symbols: dict[str, _SymbolInfo],
     target_head_symbols: dict[str, _SymbolInfo],
     touched_files: set[str],
 ) -> list[SymbolOverlap]:
-    """Detect when both task and target changed the same symbol.
-
-    Compares actual changes: symbols that changed in the task (relative to base)
-    AND symbols that changed in the target (relative to task base). Only reports
-    overlap when BOTH sides modified the same symbol.
-
-    Only checks symbols in touched files.
-    """
+    """Detect when both task and target changed the same symbol."""
     overlaps: list[SymbolOverlap] = []
-
-    # Compute what actually changed on each side relative to task base
-    task_changed: dict[str, _SymbolInfo] = {}
-    for name, commit_sym in task_commit_symbols.items():
-        base_sym = task_base_symbols.get(name)
-        if base_sym is None:
-            # New symbol added by task
-            task_changed[name] = commit_sym
-        elif (
-            base_sym.line_start != commit_sym.line_start
-            or base_sym.line_end != commit_sym.line_end
-            or base_sym.signature != commit_sym.signature
-        ):
-            # Symbol modified by task (line range or signature changed)
-            task_changed[name] = commit_sym
-
-    target_changed: dict[str, _SymbolInfo] = {}
-    for name, target_sym in target_head_symbols.items():
-        base_sym = task_base_symbols.get(name)
-        if base_sym is None:
-            # New symbol added by target
-            target_changed[name] = target_sym
-        elif (
-            base_sym.line_start != target_sym.line_start
-            or base_sym.line_end != target_sym.line_end
-            or base_sym.signature != target_sym.signature
-        ):
-            # Symbol modified by target (line range or signature changed)
-            target_changed[name] = target_sym
-
-    # Find symbols that changed on BOTH sides (concurrent modification)
+    task_changed = _changed_symbols_since_base(task_base_symbols, task_commit_symbols)
+    target_changed = _changed_symbols_since_base(task_base_symbols, target_head_symbols)
     for name, task_sym in task_changed.items():
-        # Only check if this file was touched
-        rel_path = Path(task_sym.file_path).name
-        if rel_path not in touched_files and task_sym.file_path not in touched_files:
+        if not _symbol_in_touched_files(task_sym, touched_files):
             continue
-
-        if name in target_changed:
-            target_sym = target_changed[name]
-            overlaps.append(
-                SymbolOverlap(
-                    symbol_name=name,
-                    symbol_type=task_sym.symbol_type,
-                    file_path=task_sym.file_path,
-                    task_line_range=(task_sym.line_start, task_sym.line_end),
-                    target_line_range=(target_sym.line_start, target_sym.line_end),
-                )
+        target_sym = target_changed.get(name)
+        if target_sym is None:
+            continue
+        overlaps.append(
+            SymbolOverlap(
+                symbol_name=name,
+                symbol_type=task_sym.symbol_type,
+                file_path=task_sym.file_path,
+                task_line_range=(task_sym.line_start, task_sym.line_end),
+                target_line_range=(target_sym.line_start, target_sym.line_end),
             )
+        )
 
     return overlaps
 
@@ -654,82 +640,70 @@ def _is_test_file(file_path: str) -> bool:
     return in_tests_dir or is_test_name
 
 
+def _record_file_symbols(
+    file_path: Path,
+    all_symbols: dict[str, list[_SymbolInfo]],
+    file_is_test: dict[str, bool],
+) -> None:
+    if file_path.suffix != ".py":
+        return
+    file_path_str = str(file_path)
+    is_test = _is_test_file(file_path_str)
+    file_is_test[file_path_str] = is_test
+    file_is_test[str(file_path.resolve())] = is_test
+    for name, info in _analyze_python_file_symbols(file_path).items():
+        all_symbols.setdefault(name, []).append(info)
+
+
+def _is_duplicate_test_only(
+    infos: list[_SymbolInfo],
+    file_is_test: dict[str, bool],
+) -> bool:
+    for info in infos:
+        fp = info.file_path
+        is_test = file_is_test.get(fp, False)
+        if not is_test:
+            try:
+                is_test = file_is_test.get(str(Path(fp).resolve()), False)
+            except (OSError, ValueError):
+                is_test = False
+        if not is_test and not _is_test_file(fp):
+            return False
+    return True
+
+
+def _should_skip_duplicate_name(name: str) -> bool:
+    return name.startswith("test_") or name in ("setup", "teardown", "fixture")
+
+
+def _duplicate_definition_record(name: str, infos: list[_SymbolInfo]) -> DuplicateDefinition:
+    return DuplicateDefinition(
+        symbol_name=name,
+        symbol_type=infos[0].symbol_type,
+        file_paths=tuple(info.file_path for info in infos),
+        line_numbers=tuple((info.line_start, info.line_end) for info in infos),
+    )
+
+
 def _check_duplicate_definitions(
     integrated_files: list[Path],
 ) -> list[DuplicateDefinition]:
-    """Detect when the same symbol is defined multiple times across files.
-
-    Excludes test files from duplicate detection since test modules legitimately
-    have repeated helper functions and test names. Only flags duplicates in
-    production code or duplicates between production and test code.
-    """
+    """Detect when the same symbol is defined multiple times across files."""
     all_symbols: dict[str, list[_SymbolInfo]] = {}
     file_is_test: dict[str, bool] = {}
     duplicates: list[DuplicateDefinition] = []
 
     for file_path in integrated_files:
-        if file_path.suffix != ".py":
-            continue
-
-        file_path_str = str(file_path)
-        abs_path_str = str(file_path.resolve())
-        is_test = _is_test_file(file_path_str)
-        file_is_test[file_path_str] = is_test
-        file_is_test[abs_path_str] = is_test
-
-        symbols = _analyze_python_file_symbols(file_path)
-        for name, info in symbols.items():
-            if name not in all_symbols:
-                all_symbols[name] = []
-            all_symbols[name].append(info)
+        _record_file_symbols(file_path, all_symbols, file_is_test)
 
     for name, infos in all_symbols.items():
         if len(infos) <= 1:
             continue
-
-        # Check if all occurrences are in test files
-        all_in_test_files = True
-        file_paths_list: list[str] = []
-
-        for info in infos:
-            fp = info.file_path
-            file_paths_list.append(fp)
-            # Check multiple ways: direct lookup, absolute path, or re-check
-            is_test = file_is_test.get(fp, False)
-            if not is_test:
-                # Try with absolute path
-                try:
-                    abs_fp = str(Path(fp).resolve())
-                    is_test = file_is_test.get(abs_fp, False)
-                except (OSError, ValueError):
-                    pass
-            if not is_test:
-                # Fallback: re-check the path directly
-                is_test = _is_test_file(fp)
-            if not is_test:
-                all_in_test_files = False
-
-        # Skip if ALL occurrences are in test files (legitimate test duplicates)
-        if all_in_test_files:
+        if _is_duplicate_test_only(infos, file_is_test):
             continue
-
-        # Skip common test helper patterns even in production context
-        # These are standard pytest patterns that may appear in both test and src
-        if name.startswith("test_") or name in ("setup", "teardown", "fixture"):
+        if _should_skip_duplicate_name(name):
             continue
-
-        file_paths = tuple(file_paths_list)
-        line_numbers = tuple((i.line_start, i.line_end) for i in infos)
-        # Determine type from first occurrence
-        symbol_type = infos[0].symbol_type
-        duplicates.append(
-            DuplicateDefinition(
-                symbol_name=name,
-                symbol_type=symbol_type,
-                file_paths=file_paths,
-                line_numbers=line_numbers,
-            )
-        )
+        duplicates.append(_duplicate_definition_record(name, infos))
 
     return duplicates
 
@@ -890,6 +864,128 @@ def _check_signature_drifts(
     return list(all_drifts.values())
 
 
+def _semantic_gate_pass(task_slug: str, gate_name: str = "python_semantic") -> SemanticGateVerdict:
+    return SemanticGateVerdict(
+        task_slug=task_slug,
+        gate_name=gate_name,
+        passed=True,
+        checked_at=0.0,
+    )
+
+
+def _semantic_gate_fail(
+    *,
+    task_slug: str,
+    gate_name: str,
+    failure_class: FailureClass,
+    evidence: tuple[OverlapEvidence, ...],
+    error_message: str,
+) -> SemanticGateVerdict:
+    return SemanticGateVerdict(
+        task_slug=task_slug,
+        gate_name=gate_name,
+        passed=False,
+        failure_class=failure_class,
+        evidence=evidence,
+        error_message=error_message,
+        checked_at=0.0,
+    )
+
+
+def _syntax_conflict_verdict(
+    task_slug: str,
+    syntax_conflict: SyntaxConflict,
+) -> SemanticGateVerdict:
+    return _semantic_gate_fail(
+        task_slug=task_slug,
+        gate_name="syntax_check",
+        failure_class=FailureClass.SYNTAX_CONFLICT,
+        evidence=(syntax_conflict,),
+        error_message=(
+            f"Syntax error in {syntax_conflict.file_path}: {syntax_conflict.error_message}"
+        ),
+    )
+
+
+def _duplicate_definition_verdict(
+    task_slug: str,
+    duplicates: list[DuplicateDefinition],
+) -> SemanticGateVerdict:
+    return _semantic_gate_fail(
+        task_slug=task_slug,
+        gate_name="duplicate_definition",
+        failure_class=FailureClass.DUPLICATE_DEFINITION,
+        evidence=tuple(duplicates),
+        error_message=f"Duplicate definitions found: {[item.symbol_name for item in duplicates]}",
+    )
+
+
+def _same_symbol_edit_verdict(
+    task_slug: str,
+    same_symbol_edits: list[SymbolOverlap],
+) -> SemanticGateVerdict:
+    return _semantic_gate_fail(
+        task_slug=task_slug,
+        gate_name="same_symbol_edit",
+        failure_class=FailureClass.SAME_SYMBOL_EDIT,
+        evidence=tuple(same_symbol_edits),
+        error_message=f"Concurrent edits: {[item.symbol_name for item in same_symbol_edits]}",
+    )
+
+
+def _signature_drift_verdict(
+    task_slug: str,
+    drifts: list[SignatureDrift],
+) -> SemanticGateVerdict:
+    return _semantic_gate_fail(
+        task_slug=task_slug,
+        gate_name="signature_drift",
+        failure_class=FailureClass.SIGNATURE_DRIFT,
+        evidence=tuple(drifts),
+        error_message=f"Signature drift detected: {[item.symbol_name for item in drifts]}",
+    )
+
+
+def _load_candidate_python_files(
+    candidate_path: Path,
+    touched_files: tuple[str, ...],
+    task_slug: str,
+) -> tuple[list[Path] | None, SemanticGateVerdict | None]:
+    py_files = _filter_python_files(touched_files)
+    if not py_files:
+        return None, _semantic_gate_pass(task_slug)
+
+    candidate_files, syntax_conflict = _validate_candidate_syntax(candidate_path, py_files)
+    if syntax_conflict:
+        return None, _syntax_conflict_verdict(task_slug, syntax_conflict)
+    if not candidate_files:
+        return None, _semantic_gate_pass(task_slug)
+    return candidate_files, None
+
+
+def _concurrent_symbol_verdict(
+    *,
+    task_slug: str,
+    task_base_symbols: dict[str, _SymbolInfo],
+    task_commit_symbols: dict[str, _SymbolInfo],
+    target_head_symbols: dict[str, _SymbolInfo],
+    candidate_symbols: dict[str, _SymbolInfo],
+    touched_set: set[str],
+) -> SemanticGateVerdict | None:
+    same_symbol_edits = _check_same_symbol_edit(
+        task_base_symbols, task_commit_symbols, target_head_symbols, touched_set
+    )
+    if same_symbol_edits:
+        return _same_symbol_edit_verdict(task_slug, same_symbol_edits)
+
+    drifts = _check_signature_drifts(
+        task_base_symbols, target_head_symbols, candidate_symbols, touched_set
+    )
+    if drifts:
+        return _signature_drift_verdict(task_slug, drifts)
+    return None
+
+
 def run_python_semantic_gate(
     candidate_path: Path,
     project_root: str,
@@ -899,116 +995,42 @@ def run_python_semantic_gate(
     touched_files: tuple[str, ...],
     task_slug: str,
 ) -> SemanticGateVerdict:
-    """Run deterministic Python semantic gates on an integration candidate.
+    """Run deterministic Python semantic checks on an integration candidate."""
+    candidate_files, early_verdict = _load_candidate_python_files(
+        candidate_path,
+        touched_files,
+        task_slug,
+    )
+    if early_verdict is not None:
+        return early_verdict
 
-    Checks for:
-    - same_symbol_edit: Both sides changed the same Python symbol
-    - duplicate_definition: Integrated code defines same symbol twice
-    - signature_drift: Public callable changed shape
-
-    Returns a SemanticGateVerdict with findings.
-    """
-    # Phase 1: Filter to Python files
     py_files = _filter_python_files(touched_files)
-    if not py_files:
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="python_semantic",
-            passed=True,
-            checked_at=0.0,
-        )
+    assert candidate_files is not None
 
-    # Phase 2: Validate syntax (fail closed if we can't parse)
-    candidate_files, syntax_conflict = _validate_candidate_syntax(candidate_path, py_files)
-    if syntax_conflict:
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="syntax_check",
-            passed=False,
-            failure_class=FailureClass.SYNTAX_CONFLICT,
-            evidence=(syntax_conflict,),
-            error_message=(
-                f"Syntax error in {syntax_conflict.file_path}: {syntax_conflict.error_message}"
-            ),
-            checked_at=0.0,
-        )
-
-    if not candidate_files:
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="python_semantic",
-            passed=True,
-            checked_at=0.0,
-        )
-
-    # Phase 3: Extract symbols from candidate
     candidate_symbols = _extract_candidate_symbols(candidate_files)
-
-    # Phase 4: Check for duplicate definitions
     duplicates = _check_duplicate_definitions(candidate_files)
     if duplicates:
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="duplicate_definition",
-            passed=False,
-            failure_class=FailureClass.DUPLICATE_DEFINITION,
-            evidence=tuple(duplicates),
-            error_message=f"Duplicate definitions found: {[d.symbol_name for d in duplicates]}",
-            checked_at=0.0,
-        )
+        return _duplicate_definition_verdict(task_slug, duplicates)
 
-    # Phase 5: Load symbols from git commits for comparison
     comparison = _load_comparison_symbols(
         project_root, task_base_sha, task_commit_sha, target_head_sha, py_files, candidate_symbols
     )
     if comparison is None:
-        # Fail open on git errors - we still did our best analysis
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="python_semantic",
-            passed=True,
-            checked_at=0.0,
-        )
+        return _semantic_gate_pass(task_slug)
     task_base_symbols, task_commit_symbols, target_head_symbols = comparison
 
-    # Phase 6: Check for same-symbol edits (concurrent modification)
-    touched_set = set(touched_files)
-    same_symbol_edits = _check_same_symbol_edit(
-        task_base_symbols, task_commit_symbols, target_head_symbols, touched_set
-    )
-    if same_symbol_edits:
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="same_symbol_edit",
-            passed=False,
-            failure_class=FailureClass.SAME_SYMBOL_EDIT,
-            evidence=tuple(same_symbol_edits),
-            error_message=f"Concurrent edits: {[s.symbol_name for s in same_symbol_edits]}",
-            checked_at=0.0,
-        )
-
-    # Phase 7: Check for signature drift
-    drifts = _check_signature_drifts(
-        task_base_symbols, target_head_symbols, candidate_symbols, touched_set
-    )
-    if drifts:
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="signature_drift",
-            passed=False,
-            failure_class=FailureClass.SIGNATURE_DRIFT,
-            evidence=tuple(drifts),
-            error_message=f"Signature drift detected: {[d.symbol_name for d in drifts]}",
-            checked_at=0.0,
-        )
-
-    # All gates passed
-    return SemanticGateVerdict(
+    verdict = _concurrent_symbol_verdict(
         task_slug=task_slug,
-        gate_name="python_semantic",
-        passed=True,
-        checked_at=0.0,
+        task_base_symbols=task_base_symbols,
+        task_commit_symbols=task_commit_symbols,
+        target_head_symbols=target_head_symbols,
+        candidate_symbols=candidate_symbols,
+        touched_set=set(touched_files),
     )
+    if verdict is not None:
+        return verdict
+
+    return _semantic_gate_pass(task_slug)
 
 
 # -----------------------------------------------------------------------------

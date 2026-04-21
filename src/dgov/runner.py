@@ -1068,7 +1068,31 @@ class EventDagRunner:
         sp.run(["git", "reset", "HEAD~1"], cwd=wt.path, capture_output=True)
 
         task = self.dag.tasks[action.task_slug]
-        feedback_prompt = (
+        retry_task = DagTaskSpec(
+            slug=action.task_slug,
+            summary=f"[retry] {task.summary}",
+            prompt=self._settlement_retry_prompt(task, settlement_error),
+            commit_message=task.commit_message,
+            depends_on=task.depends_on,
+            files=task.files,
+            agent=task.agent,
+            timeout_s=task.timeout_s,
+            test_cmd=task.test_cmd,
+        )
+        await run_headless_worker(
+            self.session_root,
+            self.dag.name,
+            action.task_slug,
+            f"{action.pane_slug}-retry",
+            wt.path,
+            retry_task,
+            self._retry_scope(action.task_slug, task),
+            self._noop_retry_exit,
+            on_event=self.on_event,
+        )
+
+    def _settlement_retry_prompt(self, task: DagTaskSpec, settlement_error: str) -> str:
+        return (
             "Your previous attempt was REJECTED by settlement. "
             "Fix the issue and call done.\n\n"
             f"SETTLEMENT ERROR:\n{settlement_error}\n\n"
@@ -1077,21 +1101,9 @@ class EventDagRunner:
             "Use git_diff to see them, fix the problem, then call done."
         )
 
-        from dgov.dag_parser import DagTaskSpec
-
-        retry_task = DagTaskSpec(
-            slug=action.task_slug,
-            summary=f"[retry] {task.summary}",
-            prompt=feedback_prompt,
-            commit_message=task.commit_message,
-            depends_on=task.depends_on,
-            files=task.files,
-            agent=task.agent,
-            timeout_s=task.timeout_s,
-            test_cmd=task.test_cmd,
-        )
-        retry_scope = {
-            "task_slug": action.task_slug,
+    def _retry_scope(self, task_slug: str, task: DagTaskSpec) -> dict[str, object]:
+        return {
+            "task_slug": task_slug,
             "create": list(task.files.create),
             "edit": list(task.files.edit),
             "delete": list(task.files.delete),
@@ -1099,22 +1111,72 @@ class EventDagRunner:
             "read": list(task.files.read),
         }
 
-        pane_slug = action.pane_slug + "-retry"
+    def _noop_retry_exit(self, slug: str, pane: str, code: int, err: str = "") -> None:
+        if code != 0:
+            logger.warning("Settlement retry worker exited %d for %s: %s", code, slug, err)
 
-        def _noop_exit(slug: str, pane: str, code: int, err: str = "") -> None:
-            if code != 0:
-                logger.warning("Settlement retry worker exited %d for %s: %s", code, slug, err)
-
-        await run_headless_worker(
+    async def _retry_after_settlement_rejection(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        loop: asyncio.AbstractEventLoop,
+        error: str,
+    ) -> tuple[str | None, bool]:
+        logger.info("SETTLEMENT RETRY %s — feeding error back to worker", action.task_slug)
+        emit_event(
             self.session_root,
-            self.dag.name,
-            action.task_slug,
-            pane_slug,
-            wt.path,
-            retry_task,
-            retry_scope,
-            _noop_exit,
-            on_event=self.on_event,
+            "settlement_retry",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            error=error,
+        )
+        await self._settlement_retry(action, wt, error)
+        retry_error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
+        if settlement_rejected:
+            logger.warning("REJECTED %s after retry: %s", action.task_slug, retry_error)
+        return retry_error, settlement_rejected
+
+    async def _cleanup_merged_worktree(
+        self,
+        *,
+        action: MergeTask,
+        wt: Worktree,
+        settlement_rejected: bool,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        if settlement_rejected:
+            logger.info("Worktree preserved for inspection: %s (%s)", action.task_slug, wt.path)
+            self._worktrees.pop(action.task_slug, None)
+            self._rejected_worktrees[action.task_slug] = wt
+            return
+
+        try:
+            await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+        except Exception as exc:
+            logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
+        self._worktrees.pop(action.task_slug, None)
+
+    def _sync_merge_artifact_state(self, task_slug: str, error: str | None) -> None:
+        db_state = TaskState.MERGED if not error else TaskState.FAILED
+        try:
+            update_runtime_artifact_state(
+                self.session_root,
+                task_slug,
+                db_state.value,
+                force=True,
+            )
+        except Exception as exc:
+            logger.warning("DB state sync failed for %s: %s", task_slug, exc)
+
+    def _emit_merge_completion(self, action: MergeTask, error: str | None) -> None:
+        emit_event(
+            self.session_root,
+            "merge_completed" if not error else "task_merge_failed",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            error=error,
         )
 
     async def _merge(self, action: MergeTask) -> list[DagAction]:
@@ -1130,70 +1192,26 @@ class EventDagRunner:
         try:
             error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
 
-            # Settlement retry: give worker one chance to fix
             if settlement_rejected and error:
-                logger.info(
-                    "SETTLEMENT RETRY %s — feeding error back to worker",
-                    action.task_slug,
+                error, settlement_rejected = await self._retry_after_settlement_rejection(
+                    action, wt, loop, error
                 )
-                emit_event(
-                    self.session_root,
-                    "settlement_retry",
-                    action.pane_slug,
-                    plan_name=self.dag.name,
-                    task_slug=action.task_slug,
-                    error=error,
-                )
-                await self._settlement_retry(action, wt, error)
-                error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
-                if settlement_rejected:
-                    logger.warning("REJECTED %s after retry: %s", action.task_slug, error)
-
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
             error = str(exc)
 
-        # Cleanup — keep worktree on settlement rejection so governor can inspect
-        if not settlement_rejected:
-            try:
-                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
-            except Exception as exc:
-                logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
-            self._worktrees.pop(action.task_slug, None)
-        else:
-            logger.info(
-                "Worktree preserved for inspection: %s (%s)",
-                action.task_slug,
-                wt.path,
-            )
-            # Move to rejected dict so _cleanup skips it during normal task lifecycle
-            # but can still clean it up on process exit.
-            self._worktrees.pop(action.task_slug, None)
-            self._rejected_worktrees[action.task_slug] = wt
+        await self._cleanup_merged_worktree(
+            action=action,
+            wt=wt,
+            settlement_rejected=settlement_rejected,
+            loop=loop,
+        )
 
         if error:
             self._task_errors[action.task_slug] = error
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
-        # Sync terminal artifact snapshot for debugging and cleanup surfaces.
-        db_state = TaskState.MERGED if not error else TaskState.FAILED
-        try:
-            update_runtime_artifact_state(
-                self.session_root,
-                action.task_slug,
-                db_state.value,
-                force=True,
-            )
-        except Exception as exc:
-            logger.warning("DB state sync failed for %s: %s", action.task_slug, exc)
-
-        emit_event(
-            self.session_root,
-            "merge_completed" if not error else "task_merge_failed",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            error=error,
-        )
+        self._sync_merge_artifact_state(action.task_slug, error)
+        self._emit_merge_completion(action, error)
         return actions

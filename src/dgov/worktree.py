@@ -282,115 +282,102 @@ class IntegrationCandidateResult:
         self.error = error
 
 
+def _integration_candidate_failure(error: str) -> IntegrationCandidateResult:
+    return IntegrationCandidateResult(passed=False, error=error)
+
+
+def _git_rev_parse(cwd: str | Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=cwd,
+        env=_git_env(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _task_commits_to_replay(project_root: str, task_wt: Worktree) -> list[str]:
+    commits_res = subprocess.run(
+        ["git", "rev-list", "--reverse", f"{task_wt.commit}..{task_wt.branch}"],
+        cwd=project_root,
+        env=_git_env(project_root),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [commit for commit in commits_res.stdout.strip().split("\n") if commit]
+
+
+def _replay_commit(candidate_wt: Worktree, commit_sha: str) -> str | None:
+    pick_res = subprocess.run(
+        ["git", "cherry-pick", commit_sha],
+        cwd=candidate_wt.path,
+        env=_git_env(candidate_wt.path),
+        capture_output=True,
+        text=True,
+    )
+    if pick_res.returncode == 0:
+        return None
+    subprocess.run(
+        ["git", "cherry-pick", "--abort"],
+        cwd=candidate_wt.path,
+        env=_git_env(candidate_wt.path),
+        capture_output=True,
+    )
+    return pick_res.stderr
+
+
+def _cleanup_candidate_worktree(project_root: str, candidate_wt: Worktree | None) -> None:
+    if candidate_wt is None:
+        return
+    with contextlib.suppress(Exception):
+        remove_worktree(project_root, candidate_wt)
+
+
 def create_integration_candidate(
     project_root: str,
     task_wt: Worktree,
     candidate_slug: str,
 ) -> IntegrationCandidateResult:
-    """Materialize an ephemeral integration candidate from current HEAD and replay task commit.
-
-    Creates a temporary worktree at current session-root HEAD, then attempts to
-    cherry-pick the task's commits onto it. If replay fails, the main repo stays
-    clean (cherry-pick is aborted) and the temporary worktree is removed.
-
-    Returns an IntegrationCandidateResult indicating success or failure.
-    On failure, any created resources are cleaned up before returning.
-    """
-    git_env = _git_env(project_root)
+    """Replay task commits onto a temporary worktree at current HEAD."""
     candidate_wt: Worktree | None = None
 
     try:
-        # Get current HEAD sha
-        head_res = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=project_root,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
+        candidate_wt = create_worktree(
+            project_root,
+            candidate_slug,
+            base_ref=_git_rev_parse(project_root),
         )
-        target_head = head_res.stdout.strip()
-
-        # Create ephemeral worktree at current HEAD
-        candidate_wt = create_worktree(project_root, candidate_slug, base_ref=target_head)
-
-        # Get commits to replay from task worktree
-        commits_res = subprocess.run(
-            ["git", "rev-list", "--reverse", f"{task_wt.commit}..{task_wt.branch}"],
-            cwd=project_root,
-            env=git_env,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        commits = [c for c in commits_res.stdout.strip().split("\n") if c]
-
+        commits = _task_commits_to_replay(project_root, task_wt)
         if not commits:
-            # No commits to replay - task worktree has no changes
-            # Clean up and report failure
-            remove_worktree(project_root, candidate_wt)
-            return IntegrationCandidateResult(
-                passed=False,
-                error="No commits to replay from task worktree",
-            )
+            _cleanup_candidate_worktree(project_root, candidate_wt)
+            return _integration_candidate_failure("No commits to replay from task worktree")
 
-        # Replay each commit onto the candidate
         for commit_sha in commits:
-            pick_res = subprocess.run(
-                ["git", "cherry-pick", commit_sha],
-                cwd=candidate_wt.path,
-                env=_git_env(candidate_wt.path),
-                capture_output=True,
-                text=True,
-            )
-            if pick_res.returncode != 0:
-                # Replay failed - abort cherry-pick and clean up
-                subprocess.run(
-                    ["git", "cherry-pick", "--abort"],
-                    cwd=candidate_wt.path,
-                    env=_git_env(candidate_wt.path),
-                    capture_output=True,
-                )
-                remove_worktree(project_root, candidate_wt)
-                return IntegrationCandidateResult(
-                    passed=False,
+            replay_error = _replay_commit(candidate_wt, commit_sha)
+            if replay_error is not None:
+                _cleanup_candidate_worktree(project_root, candidate_wt)
+                return _integration_candidate_failure(
                     error=f"Failed to replay commit {commit_sha[:8]} onto current HEAD: "
-                    f"{pick_res.stderr}",
+                    f"{replay_error}",
                 )
-
-        # Get the final SHA of the candidate
-        final_res = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=candidate_wt.path,
-            env=_git_env(candidate_wt.path),
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        candidate_sha = final_res.stdout.strip()
 
         return IntegrationCandidateResult(
             passed=True,
             candidate_path=candidate_wt.path,
-            candidate_sha=candidate_sha,
+            candidate_sha=_git_rev_parse(candidate_wt.path),
         )
 
     except subprocess.CalledProcessError as exc:
-        # Clean up if we created a worktree
-        if candidate_wt is not None:
-            with contextlib.suppress(Exception):
-                remove_worktree(project_root, candidate_wt)
-        return IntegrationCandidateResult(
-            passed=False,
+        _cleanup_candidate_worktree(project_root, candidate_wt)
+        return _integration_candidate_failure(
             error=f"Git operation failed: {exc.stderr if hasattr(exc, 'stderr') else str(exc)}",
         )
     except Exception as exc:
-        # Clean up if we created a worktree
-        if candidate_wt is not None:
-            with contextlib.suppress(Exception):
-                remove_worktree(project_root, candidate_wt)
-        return IntegrationCandidateResult(
-            passed=False,
+        _cleanup_candidate_worktree(project_root, candidate_wt)
+        return _integration_candidate_failure(
             error=f"Unexpected error creating integration candidate: {exc}",
         )
 

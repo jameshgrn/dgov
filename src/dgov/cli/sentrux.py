@@ -10,6 +10,23 @@ import click
 
 from dgov.cli import _output, cli, want_json
 from dgov.cli.run import _run_sentrux, _sentrux_available
+from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
+
+
+def _is_degradation_output(output: str) -> bool:
+    lowered = output.lower()
+    if "no degradation" in lowered:
+        return False
+    return "degradation" in lowered or "degraded" in lowered
+
+
+def _structural_offender_report(target: str) -> str | None:
+    try:
+        report = likely_structural_offenders(Path(target), cache_root=Path(target))
+    except Exception:
+        return None
+    text = format_structural_offender_report(report).strip()
+    return text or None
 
 
 @cli.group(name="sentrux")
@@ -121,17 +138,33 @@ def sentrux_gate(path: Path | None, fail_on_degradation: bool) -> None:
         raise click.exceptions.Exit(code=1) from e
     output = (result.stdout or "") + (result.stderr or "")
 
-    degradation = "degradation" in output.lower() and "no degradation" not in output.lower()
+    degradation = _is_degradation_output(output)
 
     if result.returncode != 0 and not degradation:
         click.echo(f"Error: sentrux gate failed: {output}", err=True)
         raise click.exceptions.Exit(code=1)
 
     click.echo(output)
+    if degradation:
+        report = _structural_offender_report(target)
+        if report:
+            click.echo(f"\n{report}")
 
     if degradation and fail_on_degradation:
         click.echo("\nDegradation detected — failing.", err=True)
         raise click.exceptions.Exit(code=1)
+
+
+@sentrux_cmd.command(name="offenders")
+@click.argument("path", required=False, type=click.Path(path_type=Path, exists=True))
+def sentrux_offenders(path: Path | None) -> None:
+    """Show likely long/complex function offenders for the current commit."""
+    target = str(path) if path else "."
+    report = _structural_offender_report(target)
+    if not report:
+        click.echo("No structural snapshot available.")
+        raise click.exceptions.Exit(code=1)
+    click.echo(report)
 
 
 @sentrux_cmd.command(name="status")
