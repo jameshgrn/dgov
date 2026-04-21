@@ -1,0 +1,27 @@
+[tasks.phase-split]
+summary = "Reduce semantic gate orchestration complexity without changing verdict semantics."
+prompt = """
+Orient:
+- Read `src/dgov/semantic_settlement.py` around `_check_same_symbol_edit`, `_check_duplicate_definitions`, `_check_signature_drifts`, and `run_python_semantic_gate`.
+- Read `tests/test_semantic_settlement.py` before editing.
+- Preserve the current failure taxonomy and evidence payloads. Do not change event names, verdict fields, or the subprocess-facing contract.
+
+Edit:
+1. In `src/dgov/semantic_settlement.py`, split the Python semantic gate into smaller phases so symbol loading, per-check execution, and final verdict assembly are not concentrated in one large orchestrator.
+2. Preserve current semantics for same-symbol detection, duplicate-definition detection, signature drift detection, and fail-open risk acceptance where it is already intentional.
+3. Keep helper additions local to this module unless a new shared type is clearly necessary.
+4. Update `tests/test_semantic_settlement.py` with any targeted regressions exposed by the refactor.
+
+Verify:
+- `uv run ruff check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py`
+- `uv run ty check src/dgov/semantic_settlement.py`
+- `uv run pytest -q tests/test_semantic_settlement.py`
+"""
+commit_message = "Split semantic gate phases"
+files.edit = [
+  "src/dgov/semantic_settlement.py",
+  "tests/test_semantic_settlement.py",
+]
+files.read = [
+  "src/dgov/runner.py",
+]

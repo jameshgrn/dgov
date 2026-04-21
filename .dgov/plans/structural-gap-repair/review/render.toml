@@ -1,0 +1,30 @@
+[tasks.render-trim]
+summary = "Trim plan review and CLI rendering hotspots after runner and semantic splits land."
+prompt = """
+Orient:
+- Read `src/dgov/plan_review.py` around `_rollup_unit_events`, `_build_unit_review`, and `load_review`.
+- Read `src/dgov/cli/plan.py` around `_cmd_plan_review`, `_render_deployed_unit`, and `_review_to_json`.
+- Read the relevant review/CLI tests before editing. Preserve current output contracts unless a test-backed bug requires a focused adjustment.
+
+Edit:
+1. In `src/dgov/plan_review.py` and `src/dgov/cli/plan.py`, split large rendering/review helpers into smaller private helpers where that reduces function complexity without changing output shape.
+2. Keep data derivation and formatting boundaries explicit; do not move CLI formatting back into the data layer or vice versa.
+3. Update targeted tests in `tests/test_plan_review.py`, `tests/test_cli_plan_review.py`, and `tests/test_cli_plan_status.py` for any structural regression risks exposed by the split.
+
+Verify:
+- `uv run ruff check src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_plan_status.py`
+- `uv run ty check src/dgov/plan_review.py src/dgov/cli/plan.py`
+- `uv run pytest -q tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_plan_status.py`
+"""
+commit_message = "Trim plan review render hotspots"
+depends_on = [
+  "runtime/settlement.pipeline-split",
+  "semantic/gate.phase-split",
+]
+files.edit = [
+  "src/dgov/plan_review.py",
+  "src/dgov/cli/plan.py",
+  "tests/test_plan_review.py",
+  "tests/test_cli_plan_review.py",
+  "tests/test_cli_plan_status.py",
+]
