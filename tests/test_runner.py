@@ -1089,3 +1089,245 @@ class TestPythonSemanticGateSubprocess:
         assert verdict.passed is False
         assert verdict.gate_name == "python_semantic_subprocess"
         assert "boom" in verdict.error_message
+
+
+class TestRecoveryPipeline:
+    """Tests for the refactored recovery pipeline phases."""
+
+    def test_recovery_pipeline_runs_phases_in_order(self):
+        """Pipeline executes seed → rehydrate → cleanup → resume in order."""
+        phase_calls: list[str] = []
+
+        class _InstrumentedRunner(EventDagRunner):
+            def _phase_seed_deployed(self):
+                phase_calls.append("seed")
+
+            def _phase_rehydrate(self):
+                phase_calls.append("rehydrate")
+
+            def _phase_cleanup_orphans(self):
+                phase_calls.append("cleanup")
+
+            def _phase_resume_failed(self):
+                phase_calls.append("resume")
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            # Replace with instrumented methods
+            runner._phase_seed_deployed = lambda: phase_calls.append("seed")  # type: ignore
+            runner._phase_rehydrate = lambda: phase_calls.append("rehydrate")  # type: ignore
+            runner._phase_cleanup_orphans = lambda: phase_calls.append("cleanup")  # type: ignore
+            runner._phase_resume_failed = lambda: phase_calls.append("resume")  # type: ignore
+
+            runner._run_recovery_pipeline(continue_failed=True)
+
+        assert phase_calls == ["seed", "rehydrate", "cleanup", "resume"]
+
+    def test_recovery_pipeline_skips_resume_when_not_continuing(self):
+        """Pipeline skips resume phase when continue_failed=False."""
+        phase_calls: list[str] = []
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            runner._phase_seed_deployed = lambda: phase_calls.append("seed")  # type: ignore
+            runner._phase_rehydrate = lambda: phase_calls.append("rehydrate")  # type: ignore
+            runner._phase_cleanup_orphans = lambda: phase_calls.append("cleanup")  # type: ignore
+            runner._phase_resume_failed = lambda: phase_calls.append("resume")  # type: ignore
+
+            runner._run_recovery_pipeline(continue_failed=False)
+
+        assert phase_calls == ["seed", "rehydrate", "cleanup"]
+        assert "resume" not in phase_calls
+
+    def test_apply_rehydrate_event_dispatched(self):
+        """Rehydration applies dispatched events to kernel."""
+        from dgov.actions import TaskDispatched
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {"event": "dag_task_dispatched", "task_slug": "a", "pane": "pane-1"}
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            mock_handle.assert_called_once()
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskDispatched)
+            assert call_args.task_slug == "a"
+            assert call_args.pane_slug == "pane-1"
+
+    def test_apply_rehydrate_event_task_done(self):
+        """Rehydration applies task_done events to kernel."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {"event": "task_done", "task_slug": "a", "pane": "pane-1"}
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.DONE
+
+    def test_apply_rehydrate_event_task_failed(self):
+        """Rehydration applies task_failed events with FAILED state."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {
+                "event": "task_failed",
+                "task_slug": "a",
+                "pane": "pane-1",
+                "error": "test error",
+            }
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.FAILED
+
+    def test_apply_rehydrate_event_task_failed_timeout(self):
+        """Rehydration detects timeout from error string and sets TIMED_OUT state."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {
+                "event": "task_failed",
+                "task_slug": "a",
+                "pane": "pane-1",
+                "error": "worker timeout exceeded",
+            }
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.TIMED_OUT
+
+    def test_apply_rehydrate_event_governor_resumed(self):
+        """Rehydration restores governor-resume events for retry state."""
+        from dgov.actions import GovernorAction, TaskGovernorResumed
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {
+                "event": "dag_task_governor_resumed",
+                "task_slug": "a",
+                "pane": "pane-1",
+                "action": "retry",
+            }
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskGovernorResumed)
+            assert call_args.action == GovernorAction.RETRY
+
+    def test_abandon_orphaned_task_marks_abandoned(self):
+        """Orphan abandonment marks ACTIVE tasks as ABANDONED."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            # Pre-set task as ACTIVE (orphaned state)
+            runner.kernel.task_states["a"] = TaskState.ACTIVE
+
+            with (
+                patch.object(runner.kernel, "handle") as mock_handle,
+                patch("dgov.runner.update_runtime_artifact_state") as mock_update,
+                patch("dgov.runner.emit_event") as mock_emit,
+            ):
+                runner._abandon_orphaned_task("a")
+
+            # Verify kernel was told to abandon
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.ABANDONED
+
+            # Verify artifact state was updated
+            mock_update.assert_called_once()
+            assert mock_update.call_args[0][1] == "a"
+            assert mock_update.call_args[0][2] == TaskState.ABANDONED.value
+
+            # Verify event was emitted (emit_event: positional args)
+            mock_emit.assert_called_once()
+            assert mock_emit.call_args[0][1] == "task_abandoned"
+
+    def test_resume_single_task_emits_event(self):
+        """Resume emits governor-resumed event for auditability."""
+        from dgov.actions import GovernorAction, TaskGovernorResumed
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+
+            with (
+                patch.object(runner.kernel, "handle") as mock_handle,
+                patch("dgov.runner.emit_event") as mock_emit,
+            ):
+                runner._resume_single_task("a", TaskState.FAILED)
+
+            # Verify kernel was told to retry
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskGovernorResumed)
+            assert call_args.action == GovernorAction.RETRY
+
+            # Verify event was emitted (emit_event: positional args)
+            mock_emit.assert_called_once()
+            assert mock_emit.call_args[0][1] == "dag_task_governor_resumed"
+            assert mock_emit.call_args[1]["action"] == GovernorAction.RETRY.value
+
+    def test_resume_skips_non_terminal_states(self):
+        """Resume only processes terminal states (FAILED, ABANDONED, TIMED_OUT, SKIPPED)."""
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_parallel_dag())
+            # Set one pending, one done
+            runner.kernel.task_states["a"] = TaskState.PENDING
+            runner.kernel.task_states["b"] = TaskState.DONE
+
+            resumed: list[str] = []
+            runner._resume_single_task = lambda slug, state: resumed.append(slug)  # type: ignore
+
+            runner._phase_resume_failed()
+
+            # Neither should be resumed
+            assert resumed == []
+
+    def test_resume_processes_all_terminal_states(self):
+        """Resume processes FAILED, ABANDONED, TIMED_OUT, SKIPPED."""
+        from dgov.persistence.schema import TaskState
+
+        dag = _dag({
+            "failed": _task("failed"),
+            "abandoned": _task("abandoned"),
+            "timedout": _task("timedout"),
+            "skipped": _task("skipped"),
+        })
+
+        with _io_patches():
+            runner = _make_runner(dag)
+            runner.kernel.task_states["failed"] = TaskState.FAILED
+            runner.kernel.task_states["abandoned"] = TaskState.ABANDONED
+            runner.kernel.task_states["timedout"] = TaskState.TIMED_OUT
+            runner.kernel.task_states["skipped"] = TaskState.SKIPPED
+
+            resumed: list[str] = []
+            runner._resume_single_task = lambda slug, state: resumed.append(slug)  # type: ignore
+
+            runner._phase_resume_failed()
+
+            assert sorted(resumed) == ["abandoned", "failed", "skipped", "timedout"]

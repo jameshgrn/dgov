@@ -221,14 +221,25 @@ class EventDagRunner:
         if restart:
             reset_plan_state(session_root, dag.name)
         else:
-            self._seed_deployed_state()
-            self._rehydrate()
-            self._cleanup_orphaned_actives()
-            if continue_failed:
-                self._resume_failed()
+            self._run_recovery_pipeline(continue_failed=continue_failed)
 
-    def _seed_deployed_state(self) -> None:
-        """Mark already-deployed units as MERGED before replaying latest-run events."""
+    def _run_recovery_pipeline(self, continue_failed: bool = False) -> None:
+        """Orchestrate recovery phases: seed → rehydrate → cleanup → resume.
+
+        Phases are ordered for deterministic fail-closed behavior:
+        1. Seed deployed state from deploy log (static baseline)
+        2. Rehydrate from latest-run events (replay what happened)
+        3. Cleanup orphaned ACTIVE tasks (mark ABANDONED)
+        4. Resume failed tasks if requested (move to PENDING)
+        """
+        self._phase_seed_deployed()
+        self._phase_rehydrate()
+        self._phase_cleanup_orphans()
+        if continue_failed:
+            self._phase_resume_failed()
+
+    def _phase_seed_deployed(self) -> None:
+        """Phase 1: Mark already-deployed units as MERGED before replaying latest-run events."""
         from dgov import deploy_log
 
         deployed_units = {
@@ -238,36 +249,41 @@ class EventDagRunner:
             if slug in self.kernel.task_states:
                 self.kernel.task_states[slug] = TaskState.MERGED
 
-    def _cleanup_orphaned_actives(self) -> None:
-        """Abandon any ACTIVE tasks left over from a crashed prior run.
+    def _phase_cleanup_orphans(self) -> None:
+        """Phase 3: Abandon any ACTIVE tasks left over from a crashed prior run.
 
         After rehydration, ACTIVE tasks have no live worker — they are orphans.
         Mark them ABANDONED so --continue can retry them, and a bare run doesn't
         deadlock waiting for workers that will never finish.
         """
-
         for slug, state in list(self.kernel.task_states.items()):
             if state == TaskState.ACTIVE:
-                logger.warning(
-                    "Orphaned ACTIVE task after rehydration: %s — marking ABANDONED", slug
-                )
-                self.kernel.handle(TaskWaitDone(slug, "cleanup", TaskState.ABANDONED))
-                update_runtime_artifact_state(
-                    self.session_root,
-                    slug,
-                    TaskState.ABANDONED.value,
-                    force=True,
-                )
-                emit_event(
-                    self.session_root,
-                    "task_abandoned",
-                    "cleanup",
-                    plan_name=self.dag.name,
-                    task_slug=slug,
-                )
+                self._abandon_orphaned_task(slug)
 
-    def _resume_failed(self) -> None:
-        """Move all FAILED/ABANDONED/TIMED_OUT/SKIPPED tasks back to PENDING for retry."""
+    def _abandon_orphaned_task(self, slug: str) -> None:
+        """Mark a single orphaned ACTIVE task as ABANDONED. Extracted for testability."""
+        logger.warning("Orphaned ACTIVE task after rehydration: %s — marking ABANDONED", slug)
+        self.kernel.handle(TaskWaitDone(slug, "cleanup", TaskState.ABANDONED))
+        update_runtime_artifact_state(
+            self.session_root,
+            slug,
+            TaskState.ABANDONED.value,
+            force=True,
+        )
+        emit_event(
+            self.session_root,
+            "task_abandoned",
+            "cleanup",
+            plan_name=self.dag.name,
+            task_slug=slug,
+        )
+
+    def _phase_resume_failed(self) -> None:
+        """Phase 4: Move all FAILED/ABANDONED/TIMED_OUT/SKIPPED tasks back to PENDING for retry.
+
+        Only executes when continue_failed=True. Preserves the prior state for logging
+        and emits governor-resumed events for auditability.
+        """
         logger.info("Resuming failed tasks")
         for slug, state in list(self.kernel.task_states.items()):
             if state in (
@@ -276,19 +292,28 @@ class EventDagRunner:
                 TaskState.TIMED_OUT,
                 TaskState.SKIPPED,
             ):
-                logger.info("Resuming task: %s (prior state: %s)", slug, state)
-                self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
-                emit_event(
-                    self.session_root,
-                    "dag_task_governor_resumed",
-                    "runner",
-                    plan_name=self.dag.name,
-                    task_slug=slug,
-                    action=GovernorAction.RETRY.value,
-                )
+                self._resume_single_task(slug, state)
 
-    def _rehydrate(self) -> None:
-        """Replay past events for this plan to restore kernel state."""
+    def _resume_single_task(self, slug: str, prior_state: TaskState) -> None:
+        """Resume a single failed/abandoned task. Extracted for testability."""
+        logger.info("Resuming task: %s (prior state: %s)", slug, prior_state)
+        self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
+        emit_event(
+            self.session_root,
+            "dag_task_governor_resumed",
+            "runner",
+            plan_name=self.dag.name,
+            task_slug=slug,
+            action=GovernorAction.RETRY.value,
+        )
+
+    def _phase_rehydrate(self) -> None:
+        """Phase 2: Replay latest-run events to restore kernel state.
+
+        Scopes replay to events after the most recent run_start marker for
+        deterministic recovery. Preserves timeout detection from task_failed
+        events and governor-resume event handling for state machine consistency.
+        """
         from dgov.persistence import read_events
 
         events = read_events(self.session_root, plan_name=self.dag.name)
@@ -296,49 +321,51 @@ class EventDagRunner:
         for ev in events:
             if int(ev.get("id", 0)) <= run_start_id:
                 continue
-            ename = ev["event"]
-            task_slug = ev.get("task_slug")
-            pane = ev["pane"]
+            self._apply_rehydrate_event(ev)
 
-            if not task_slug or task_slug not in self.kernel.task_states:
-                continue
+    def _apply_rehydrate_event(self, ev: dict[str, Any]) -> None:
+        """Apply a single event during rehydration. Extracted for testability."""
+        ename = ev["event"]
+        task_slug = ev.get("task_slug")
+        pane = ev["pane"]
 
-            if ename == "dag_task_dispatched":
-                self.kernel.handle(TaskDispatched(task_slug, pane))
-            elif ename == "task_done":
-                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
-            elif ename == "task_abandoned":
-                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
-            elif ename == "task_failed":
-                # Check error string for specific terminal states like TIMED_OUT
-                error = ev.get("error", "").lower()
-                status = TaskState.FAILED
-                if "timeout" in error:
-                    status = TaskState.TIMED_OUT
-                self.kernel.handle(TaskWaitDone(task_slug, pane, status))
-            elif ename == "review_pass":
-                self.kernel.handle(
-                    TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)
-                )
-            elif ename == "review_fail":
-                self.kernel.handle(
-                    TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0)
-                )
-            elif ename == "merge_completed":
-                self.kernel.handle(TaskMergeDone(task_slug, error=None))
-            elif ename == "task_merge_failed":
-                self.kernel.handle(
-                    TaskMergeDone(task_slug, error=ev.get("error", "unknown error"))
-                )
-            elif ename == "dag_task_governor_resumed":
-                # Restore attempt counts and retry/skip/fail state
-                action_str = ev.get("action")
-                if action_str:
-                    try:
-                        action = GovernorAction(action_str)
-                        self.kernel.handle(TaskGovernorResumed(task_slug, action))
-                    except ValueError:
-                        pass
+        if not task_slug or task_slug not in self.kernel.task_states:
+            return
+
+        if ename == "dag_task_dispatched":
+            self.kernel.handle(TaskDispatched(task_slug, pane))
+        elif ename == "task_done":
+            self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
+        elif ename == "task_abandoned":
+            self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
+        elif ename == "task_failed":
+            # Check error string for specific terminal states like TIMED_OUT
+            error = ev.get("error", "").lower()
+            status = TaskState.FAILED
+            if "timeout" in error:
+                status = TaskState.TIMED_OUT
+            self.kernel.handle(TaskWaitDone(task_slug, pane, status))
+        elif ename == "review_pass":
+            self.kernel.handle(
+                TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)
+            )
+        elif ename == "review_fail":
+            self.kernel.handle(
+                TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0)
+            )
+        elif ename == "merge_completed":
+            self.kernel.handle(TaskMergeDone(task_slug, error=None))
+        elif ename == "task_merge_failed":
+            self.kernel.handle(TaskMergeDone(task_slug, error=ev.get("error", "unknown error")))
+        elif ename == "dag_task_governor_resumed":
+            # Restore attempt counts and retry/skip/fail state
+            action_str = ev.get("action")
+            if action_str:
+                try:
+                    action = GovernorAction(action_str)
+                    self.kernel.handle(TaskGovernorResumed(task_slug, action))
+                except ValueError:
+                    pass
 
     def _setup_signal_handlers(self) -> None:
         """Install signal handlers for graceful shutdown (Pillar #10)."""
