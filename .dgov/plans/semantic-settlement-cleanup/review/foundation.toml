@@ -4,14 +4,18 @@ role = "reviewer"
 prompt = """
 Orient:
 - Read the dependency diffs first.
+- This review closes out a cleanup pass whose targeted verification already ran before this task.
+- Do not call `run_tests()`, do not execute broad shell verification, and do not widen scope beyond the landed diffs and recorded evidence.
 - Focus on whether the cleanup preserved semantic-settlement behavior while reducing structural risk.
 
 Edit:
 1. Review for regressions in candidate replay, Python semantic gating, and review/report output.
 2. Prefer findings about fail-closed behavior, false positives, and missing verification over style commentary.
+3. If no blocker remains, explicitly state that the cleanup preserved the current contract based on the landed diffs and prior targeted checks.
 
 Verify:
-- Confirm whether the cleanup reduced complexity without weakening the current contract.
+- Verify by inspecting the dependency diffs and the already-run targeted checks only.
+- Treat this as a review-only task; do not run new tests or generic repo-wide commands.
 """
 depends_on = [
   "semantic/gate-flow.reduce-python-gate-orchestration",
