@@ -1,0 +1,28 @@
+[tasks.surface-integration-risk]
+summary = "Show integration telemetry in plan review output."
+depends_on = ["telemetry/shadow-risk.add-shadow-risk-scoring"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md`, `src/dgov/semantic_settlement.py`, and `src/dgov/plan_review.py`.
+- Read `src/dgov/cli/plan.py` to understand how human and JSON review output is rendered today.
+- Read `tests/test_plan_review.py` and the relevant review/status assertions in `tests/test_cli.py`.
+- Keep the default review concise. Only show integration detail when it exists.
+
+Edit:
+1. Extend `src/dgov/plan_review.py` so `UnitReview` carries the latest integration-risk summary and candidate-settlement outcome for a unit when those events exist in the current run window.
+2. Fold the new event family into the review loader without disturbing existing settlement-retry and merge accounting.
+3. Update `src/dgov/cli/plan.py` to render the new fields in both human and JSON output. Human output should stay terse and scannable; JSON should preserve the machine-readable values.
+4. Add targeted tests in `tests/test_plan_review.py` and `tests/test_cli.py` covering units with and without integration telemetry.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_plan_review.py tests/test_cli.py`
+- `uv run ruff check src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_plan_review.py tests/test_cli.py`
+- `uv run ty check`
+"""
+commit_message = "Surface integration risk in plan review"
+files.edit = ["src/dgov/plan_review.py", "src/dgov/cli/plan.py", "tests/test_plan_review.py", "tests/test_cli.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/semantic_settlement.py",
+  "src/dgov/persistence/events.py",
+]

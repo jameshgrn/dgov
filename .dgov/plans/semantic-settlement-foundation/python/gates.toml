@@ -1,0 +1,30 @@
+[tasks.add-python-semantic-gates]
+summary = "Reject integrated Python candidates that fail deterministic semantic checks."
+depends_on = ["runtime/candidate.add-integration-candidate"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md`, `src/dgov/semantic_settlement.py`, `src/dgov/runner.py`, and `src/dgov/worktree.py`.
+- Read `tests/test_semantic_settlement.py`, `tests/test_runner.py`, and `tests/test_integration.py`.
+- Keep this task Python-only and deterministic. No LLM synthesis, no AST rewriting, no new general plugin system.
+
+Edit:
+1. Extend `src/dgov/semantic_settlement.py` with Python analyzers that inspect integrated candidate files and produce explicit findings for `same_symbol_edit`, `duplicate_definition`, and `signature_drift`.
+2. Restrict the analyzers to touched `.py` files and fail closed only when the relevant files parse cleanly enough to make the finding trustworthy.
+3. Run the deterministic Python semantic gate during the integration-candidate phase in `src/dgov/runner.py`. If the gate fails, reject the task with a precise message and emit `semantic_gate_rejected`.
+4. Keep non-Python tasks unchanged.
+5. Add focused coverage in `tests/test_semantic_settlement.py`, `tests/test_runner.py`, and `tests/test_integration.py` for class-method collisions, duplicate definitions, and signature drift.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_semantic_settlement.py tests/test_runner.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+- `uv run pytest -q -m unit tests/test_boundaries.py`
+- `uv run ruff check src/dgov/semantic_settlement.py src/dgov/runner.py tests/test_semantic_settlement.py tests/test_runner.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run ty check`
+"""
+commit_message = "Add deterministic Python semantic gates"
+files.edit = ["src/dgov/semantic_settlement.py", "src/dgov/runner.py", "tests/test_semantic_settlement.py", "tests/test_runner.py", "tests/test_integration.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/worktree.py",
+  "tests/test_boundaries.py",
+]

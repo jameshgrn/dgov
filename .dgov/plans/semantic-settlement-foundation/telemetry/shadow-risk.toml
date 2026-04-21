@@ -1,0 +1,31 @@
+[tasks.add-shadow-risk-scoring]
+summary = "Emit non-blocking integration-risk telemetry before landing."
+depends_on = ["design/contract.lock-taxonomy"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` and `src/dgov/semantic_settlement.py` first.
+- Read `src/dgov/runner.py`, `src/dgov/worktree.py`, and `src/dgov/deploy_log.py` to understand the current settle-and-merge path.
+- Read `tests/test_runner.py` and `tests/test_integration.py` for existing merge behavior.
+- This task is shadow mode only. Do not change acceptance or rejection behavior.
+
+Edit:
+1. In `src/dgov/runner.py`, compute a semantic-settlement risk record after the task commit exists and before final landing. Use the task base snapshot, current target `HEAD`, declared file claims, and actual changed files as the primary evidence.
+2. Use `src/dgov/semantic_settlement.py` to classify the risk deterministically. Add lightweight Python symbol-overlap evidence only when it can be derived cheaply from touched `.py` files.
+3. Emit `integration_risk_scored` for every worker task that reaches the landing path. Emit `integration_overlap_detected` only when the evidence indicates a meaningful concurrent-overlap condition.
+4. Keep merge and settlement outcomes unchanged. A risky task should still land if the preexisting gates would have accepted it.
+5. Add targeted test coverage in `tests/test_runner.py` and `tests/test_integration.py` proving the events are emitted and that success behavior does not change.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_runner.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+- `uv run ruff check src/dgov/runner.py src/dgov/semantic_settlement.py tests/test_runner.py tests/test_integration.py`
+- `uv run ty check`
+"""
+commit_message = "Emit shadow integration risk events"
+files.edit = ["src/dgov/runner.py", "tests/test_runner.py", "tests/test_integration.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/semantic_settlement.py",
+  "src/dgov/worktree.py",
+  "src/dgov/deploy_log.py",
+]

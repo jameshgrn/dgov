@@ -1,0 +1,31 @@
+[tasks.add-integration-candidate]
+summary = "Validate an integrated candidate workspace before final merge."
+depends_on = ["telemetry/shadow-risk.add-shadow-risk-scoring"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md`, `src/dgov/runner.py`, `src/dgov/worktree.py`, `src/dgov/settlement.py`, and `src/dgov/semantic_settlement.py`.
+- Read `tests/test_worktree.py`, `tests/test_runner.py`, and `tests/test_integration.py` for current worktree and retry behavior.
+- Keep the public CLI unchanged. This task changes landing semantics inside the runtime only.
+- Do not add merge synthesis or any automatic conflict rewriting.
+
+Edit:
+1. In `src/dgov/worktree.py`, add a helper that materializes an ephemeral integration candidate from the current session-root `HEAD` and replays the task commit onto it. The helper must leave the main repo clean when replay fails.
+2. In `src/dgov/runner.py`, insert an integration-candidate step after isolated validation succeeds and before `merge_worktree(...)` runs. Use the candidate workspace to test whether the task still lands cleanly against current `HEAD`.
+3. Reuse `validate_sandbox(...)` against the integrated candidate instead of creating a parallel gate stack.
+4. If replay or candidate validation fails, reject the task with a clear actionable error, emit `integration_candidate_failed`, and preserve the original task worktree for inspection just like other settlement rejections.
+5. If the candidate passes, emit `integration_candidate_passed` and proceed to the existing final merge path.
+6. Add focused coverage in `tests/test_worktree.py`, `tests/test_runner.py`, and `tests/test_integration.py` for clean replay, moved `HEAD`, and candidate rejection.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_worktree.py tests/test_runner.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+- `uv run ruff check src/dgov/worktree.py src/dgov/runner.py tests/test_worktree.py tests/test_runner.py tests/test_integration.py`
+- `uv run ty check`
+"""
+commit_message = "Validate integrated candidate before merge"
+files.edit = ["src/dgov/worktree.py", "src/dgov/runner.py", "tests/test_worktree.py", "tests/test_runner.py", "tests/test_integration.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/settlement.py",
+  "src/dgov/semantic_settlement.py",
+]
