@@ -973,3 +973,205 @@ class TestIntegrationCandidate:
             candidate_idx = event_order.index("integration_candidate_passed")
             merge_idx = event_order.index("merge_completed")
             assert candidate_idx < merge_idx, "candidate_passed should precede merge_completed"
+
+
+# ---------------------------------------------------------------------------
+# Python Semantic Gate Integration Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPythonSemanticGateIntegration:
+    """Integration tests for deterministic Python semantic gate."""
+
+    def test_semantic_gate_rejects_same_symbol_edit(self, git_repo, monkeypatch):
+        """Python semantic gate rejects when both sides edit same symbol."""
+        from dgov.semantic_settlement import (
+            FailureClass,
+            SemanticGateVerdict,
+            SymbolOverlap,
+        )
+
+        events = []
+
+        async def _worker_with_edit(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            # Create valid Python file
+            code = """def process():
+    return "task version"
+"""
+            (worktree_path / "module.py").write_text(code)
+            on_exit(task_slug, pane_slug, 0, "")
+
+        def _capture_event(project_root, event, pane_slug, **kwargs):
+            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+
+        # Mock semantic gate to fail with same_symbol_edit
+        def _mock_semantic_gate_fail(*args, **kwargs):
+            return SemanticGateVerdict(
+                task_slug="same-edit-test",
+                gate_name="same_symbol_edit",
+                passed=False,
+                failure_class=FailureClass.SAME_SYMBOL_EDIT,
+                evidence=(
+                    SymbolOverlap(
+                        symbol_name="process",
+                        symbol_type="function",
+                        file_path="module.py",
+                        task_line_range=(1, 2),
+                        target_line_range=(1, 2),
+                    ),
+                ),
+                error_message="Both sides modified 'process'",
+                checked_at=0.0,
+            )
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_edit)
+        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+        monkeypatch.setattr("dgov.runner.run_python_semantic_gate", _mock_semantic_gate_fail)
+
+        dag = _dag({
+            "same-edit-test": _task("same-edit-test", commit_message="feat: edit process")
+        })
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        # Task should fail due to same symbol edit
+        assert results["same-edit-test"] == "failed"
+
+        # Verify semantic_gate_rejected was emitted
+        rejected_events = [e for e in events if e.get("event") == "semantic_gate_rejected"]
+        assert len(rejected_events) >= 1
+        assert rejected_events[0].get("failure_class") == FailureClass.SAME_SYMBOL_EDIT.value
+
+    def test_semantic_gate_rejects_signature_drift(self, git_repo, monkeypatch):
+        """Python semantic gate rejects when signature drift detected."""
+        from dgov.semantic_settlement import (
+            FailureClass,
+            SemanticGateVerdict,
+            SignatureDrift,
+        )
+
+        events = []
+
+        async def _worker_with_drift(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            # Create valid Python file
+            code = """def helper(x: int) -> str:
+    return str(x)
+"""
+            (worktree_path / "module.py").write_text(code)
+            on_exit(task_slug, pane_slug, 0, "")
+
+        def _capture_event(project_root, event, pane_slug, **kwargs):
+            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+
+        # Mock semantic gate to fail with signature_drift
+        def _mock_semantic_gate_fail(*args, **kwargs):
+            return SemanticGateVerdict(
+                task_slug="drift-test",
+                gate_name="signature_drift",
+                passed=False,
+                failure_class=FailureClass.SIGNATURE_DRIFT,
+                evidence=(
+                    SignatureDrift(
+                        symbol_name="helper",
+                        file_path="module.py",
+                        base_signature="def helper()",
+                        integrated_signature="def helper(x)",
+                    ),
+                ),
+                error_message="Signature changed for 'helper'",
+                checked_at=0.0,
+            )
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_drift)
+        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+        monkeypatch.setattr("dgov.runner.run_python_semantic_gate", _mock_semantic_gate_fail)
+
+        dag = _dag({"drift-test": _task("drift-test", commit_message="feat: change signature")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        # Task should fail due to signature drift
+        assert results["drift-test"] == "failed"
+
+        # Verify semantic_gate_rejected was emitted
+        rejected_events = [e for e in events if e.get("event") == "semantic_gate_rejected"]
+        assert len(rejected_events) >= 1
+        assert rejected_events[0].get("failure_class") == FailureClass.SIGNATURE_DRIFT.value
+
+    def test_semantic_gate_passes_clean_python(self, git_repo, monkeypatch):
+        """Python semantic gate passes for clean, valid Python code."""
+        events = []
+
+        async def _worker_with_clean_code(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            # Create clean, valid Python code
+            clean_code = """class Processor:
+    def process(self, data: str) -> str:
+        return data.upper()
+
+def helper(x: int) -> int:
+    return x * 2
+"""
+            (worktree_path / "clean.py").write_text(clean_code)
+            on_exit(task_slug, pane_slug, 0, "")
+
+        def _capture_event(project_root, event, pane_slug, **kwargs):
+            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_clean_code)
+        monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
+
+        dag = _dag({"clean-test": _task("clean-test", commit_message="feat: clean code")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        # Task should succeed
+        assert results["clean-test"] == "merged"
+
+        # Verify no semantic_gate_rejected was emitted
+        rejected_events = [e for e in events if e.get("event") == "semantic_gate_rejected"]
+        assert len(rejected_events) == 0
+
+        # Verify file was merged
+        assert (git_repo / "clean.py").exists()
+
+    def test_semantic_gate_bypasses_non_python_files(self, git_repo, monkeypatch):
+        """Non-Python tasks skip Python semantic gate and proceed normally."""
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+
+        dag = _dag({"docs-task": _task("docs-task", commit_message="docs: update readme")})
+        runner = EventDagRunner(dag, session_root=str(git_repo))
+        results = asyncio.run(runner.run())
+
+        # Non-Python task should succeed
+        assert results["docs-task"] == "merged"
+        assert (git_repo / "docs-task.txt").exists()

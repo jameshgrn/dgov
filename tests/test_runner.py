@@ -882,3 +882,95 @@ class TestIntegrationCandidate:
             assert results["research"] == "merged"
             # Integration candidate should not be created for researcher tasks
             mock_candidate.assert_not_called()
+
+
+class TestPythonSemanticGateRunner:
+    """Tests for Python semantic gate integration in runner._settle_and_merge."""
+
+    def test_python_semantic_gate_emits_rejected_event(self):
+        """When semantic gate fails, semantic_gate_rejected event is emitted."""
+        from dgov.semantic_settlement import FailureClass, SemanticGateVerdict
+
+        def _mock_semantic_gate_fail(*args, **kwargs):
+            return SemanticGateVerdict(
+                task_slug="a",
+                gate_name="same_symbol_edit",
+                passed=False,
+                failure_class=FailureClass.SAME_SYMBOL_EDIT,
+                evidence=(),
+                error_message="Concurrent edits detected",
+                checked_at=0.0,
+            )
+
+        with (
+            _io_patches() as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+            patch("dgov.runner.run_python_semantic_gate", side_effect=_mock_semantic_gate_fail),
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail due to semantic gate rejection
+            assert results["a"] == "failed"
+
+            # Verify semantic_gate_rejected was emitted
+            rejected_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "semantic_gate_rejected"
+            ]
+            assert len(rejected_calls) == 1
+            kwargs = rejected_calls[0].kwargs
+            assert kwargs.get("gate_name") == "same_symbol_edit"
+            assert kwargs.get("failure_class") == "same_symbol_edit"
+
+    def test_python_semantic_gate_passes_for_non_python_files(self):
+        """Non-Python tasks bypass semantic gate and proceed normally."""
+        task = DagTaskSpec(
+            slug="docs",
+            summary="Update docs",
+            prompt="Update readme",
+            commit_message="docs: update",
+            agent="test-agent",
+            files=DagFileSpec(create=("README.md",)),
+        )
+        dag = _dag({"docs": task})
+
+        with (
+            _io_patches() as _,
+            patch("dgov.runner.run_python_semantic_gate") as mock_gate,
+        ):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+            assert results["docs"] == "merged"
+            # Semantic gate should be called but with non-Python files
+            mock_gate.assert_called_once()
+            # First touched file is README.md which should bypass
+            call_kwargs = mock_gate.call_args.kwargs
+            assert "README.md" in str(call_kwargs.get("touched_files", []))
+
+    def test_python_semantic_gate_cleans_up_candidate_on_rejection(self):
+        """When semantic gate rejects, candidate worktree is removed."""
+        from dgov.semantic_settlement import FailureClass, SemanticGateVerdict
+
+        def _mock_semantic_gate_fail(*args, **kwargs):
+            return SemanticGateVerdict(
+                task_slug="a",
+                gate_name="duplicate_definition",
+                passed=False,
+                failure_class=FailureClass.DUPLICATE_DEFINITION,
+                evidence=(),
+                error_message="Duplicate function found",
+                checked_at=0.0,
+            )
+
+        with (
+            _io_patches() as _,
+            patch(_P_REMOVE_CANDIDATE) as mock_remove,
+            patch("dgov.runner.run_python_semantic_gate", side_effect=_mock_semantic_gate_fail),
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            assert results["a"] == "failed"
+            # Candidate should be cleaned up
+            mock_remove.assert_called()

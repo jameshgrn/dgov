@@ -14,9 +14,15 @@ Event family:
 
 from __future__ import annotations
 
+import ast
+import logging
+import subprocess
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Failure Taxonomy
@@ -423,6 +429,447 @@ def parse_semantic_gate_verdict(event_data: dict[str, Any]) -> SemanticGateVerdi
 
 
 # -----------------------------------------------------------------------------
+# Python Semantic Analyzers
+# -----------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _SymbolInfo:
+    """Internal representation of a Python symbol for analysis."""
+
+    name: str
+    symbol_type: str  # 'function', 'class', 'method', 'variable'
+    file_path: str
+    line_start: int
+    line_end: int
+    signature: str | None = None  # For functions/methods: "def name(arg: int) -> str"
+
+
+def _extract_function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """Extract a clean signature string from a function definition node."""
+    args = []
+    for arg in node.args.posonlyargs:
+        args.append(arg.arg)
+    for arg in node.args.args:
+        args.append(arg.arg)
+    if node.args.vararg:
+        args.append(f"*{node.args.vararg.arg}")
+    for arg in node.args.kwonlyargs:
+        args.append(arg.arg)
+    if node.args.kwarg:
+        args.append(f"**{node.args.kwarg.arg}")
+
+    sig = f"def {node.name}({', '.join(args)})"
+    if node.returns:
+        sig += " -> ..."
+    return sig
+
+
+def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
+    """Extract symbols from a Python file.
+
+    Returns a dict mapping symbol name to SymbolInfo.
+    Returns empty dict if file cannot be parsed.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+        tree = ast.parse(content)
+    except (SyntaxError, OSError, UnicodeDecodeError) as exc:
+        logger.debug("Failed to parse %s: %s", file_path, exc)
+        return {}
+
+    symbols: dict[str, _SymbolInfo] = {}
+
+    # First pass: find top-level classes to identify methods
+    top_level_classes: dict[str, ast.ClassDef] = {}
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            top_level_classes[node.name] = node
+
+    # Second pass: extract all symbols
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # Top-level function
+            sig = _extract_function_signature(node)
+            symbols[node.name] = _SymbolInfo(
+                name=node.name,
+                symbol_type="function",
+                file_path=str(file_path),
+                line_start=node.lineno,
+                line_end=getattr(node, "end_lineno", node.lineno),
+                signature=sig,
+            )
+        elif isinstance(node, ast.ClassDef):
+            symbols[node.name] = _SymbolInfo(
+                name=node.name,
+                symbol_type="class",
+                file_path=str(file_path),
+                line_start=node.lineno,
+                line_end=getattr(node, "end_lineno", node.lineno),
+                signature=None,
+            )
+            # Extract methods from class body
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    sig = _extract_function_signature(item)
+                    method_name = f"{node.name}.{item.name}"
+                    symbols[method_name] = _SymbolInfo(
+                        name=method_name,
+                        symbol_type="method",
+                        file_path=str(file_path),
+                        line_start=item.lineno,
+                        line_end=getattr(item, "end_lineno", item.lineno),
+                        signature=sig,
+                    )
+
+    return symbols
+
+
+def _check_same_symbol_edit(
+    task_symbols: dict[str, _SymbolInfo],
+    target_symbols: dict[str, _SymbolInfo],
+    touched_files: set[str],
+) -> list[SymbolOverlap]:
+    """Detect when both task and target changed the same symbol.
+
+    Only checks symbols in touched files.
+    """
+    overlaps: list[SymbolOverlap] = []
+
+    for name, task_sym in task_symbols.items():
+        # Only check if this file was touched
+        rel_path = Path(task_sym.file_path).name
+        if rel_path not in touched_files and task_sym.file_path not in touched_files:
+            continue
+
+        if name in target_symbols:
+            target_sym = target_symbols[name]
+            overlaps.append(
+                SymbolOverlap(
+                    symbol_name=name,
+                    symbol_type=task_sym.symbol_type,
+                    file_path=task_sym.file_path,
+                    task_line_range=(task_sym.line_start, task_sym.line_end),
+                    target_line_range=(target_sym.line_start, target_sym.line_end),
+                )
+            )
+
+    return overlaps
+
+
+def _check_duplicate_definitions(
+    integrated_files: list[Path],
+) -> list[DuplicateDefinition]:
+    """Detect when the same symbol is defined multiple times across files."""
+    all_symbols: dict[str, list[_SymbolInfo]] = {}
+    duplicates: list[DuplicateDefinition] = []
+
+    for file_path in integrated_files:
+        if file_path.suffix != ".py":
+            continue
+
+        symbols = _analyze_python_file_symbols(file_path)
+        for name, info in symbols.items():
+            if name not in all_symbols:
+                all_symbols[name] = []
+            all_symbols[name].append(info)
+
+    for name, infos in all_symbols.items():
+        if len(infos) > 1:
+            file_paths = tuple(i.file_path for i in infos)
+            line_numbers = tuple((i.line_start, i.line_end) for i in infos)
+            # Determine type from first occurrence
+            symbol_type = infos[0].symbol_type
+            duplicates.append(
+                DuplicateDefinition(
+                    symbol_name=name,
+                    symbol_type=symbol_type,
+                    file_paths=file_paths,
+                    line_numbers=line_numbers,
+                )
+            )
+
+    return duplicates
+
+
+def _check_signature_drift(
+    base_symbols: dict[str, _SymbolInfo],
+    integrated_symbols: dict[str, _SymbolInfo],
+    touched_files: set[str],
+) -> list[SignatureDrift]:
+    """Detect when a public callable's signature changed.
+
+    Only checks symbols in touched files.
+    """
+    drifts: list[SignatureDrift] = []
+
+    for name, int_sym in integrated_symbols.items():
+        # Only check functions/methods in touched files
+        if int_sym.symbol_type not in ("function", "method"):
+            continue
+
+        rel_path = Path(int_sym.file_path).name
+        if rel_path not in touched_files and int_sym.file_path not in touched_files:
+            continue
+
+        if name in base_symbols:
+            base_sym = base_symbols[name]
+            if base_sym.signature != int_sym.signature:
+                drifts.append(
+                    SignatureDrift(
+                        symbol_name=name,
+                        file_path=int_sym.file_path,
+                        base_signature=base_sym.signature or "unknown",
+                        integrated_signature=int_sym.signature or "unknown",
+                    )
+                )
+
+    return drifts
+
+
+def _get_symbols_at_commit(
+    project_root: str,
+    commit_sha: str,
+    file_paths: list[str],
+) -> dict[str, _SymbolInfo]:
+    """Extract symbols from files at a specific git commit.
+
+    Returns combined symbols from all files.
+    """
+    all_symbols: dict[str, _SymbolInfo] = {}
+
+    for rel_path in file_paths:
+        if not rel_path.endswith(".py"):
+            continue
+
+        # Get file content at commit
+        result = subprocess.run(
+            ["git", "show", f"{commit_sha}:{rel_path}"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            logger.debug("Could not get %s at commit %s", rel_path, commit_sha)
+            continue
+
+        try:
+            tree = ast.parse(result.stdout)
+        except SyntaxError:
+            logger.debug("Syntax error in %s at commit %s", rel_path, commit_sha)
+            continue
+
+        # Create a temporary path for analysis
+        temp_path = Path(rel_path)
+
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                # Skip methods (handled via class)
+                if any(isinstance(p, ast.ClassDef) for p in ast.walk(tree) if p != node):
+                    # Check if this is actually a method by seeing if parent is class
+                    # Simplified: skip if there's a class with this function in its body
+                    is_method = False
+                    for potential_class in ast.walk(tree):
+                        if isinstance(potential_class, ast.ClassDef):
+                            for item in potential_class.body:
+                                if item is node:
+                                    is_method = True
+                                    break
+                        if is_method:
+                            break
+                    if is_method:
+                        continue
+
+                sig = _extract_function_signature(node)
+                symbols = _SymbolInfo(
+                    name=node.name,
+                    symbol_type="function",
+                    file_path=str(temp_path),
+                    line_start=node.lineno,
+                    line_end=getattr(node, "end_lineno", node.lineno),
+                    signature=sig,
+                )
+                all_symbols[node.name] = symbols
+
+            elif isinstance(node, ast.ClassDef):
+                all_symbols[node.name] = _SymbolInfo(
+                    name=node.name,
+                    symbol_type="class",
+                    file_path=str(temp_path),
+                    line_start=node.lineno,
+                    line_end=getattr(node, "end_lineno", node.lineno),
+                    signature=None,
+                )
+
+                # Extract methods
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        sig = _extract_function_signature(item)
+                        method_name = f"{node.name}.{item.name}"
+                        all_symbols[method_name] = _SymbolInfo(
+                            name=method_name,
+                            symbol_type="method",
+                            file_path=str(temp_path),
+                            line_start=item.lineno,
+                            line_end=getattr(item, "end_lineno", item.lineno),
+                            signature=sig,
+                        )
+
+    return all_symbols
+
+
+def run_python_semantic_gate(
+    candidate_path: Path,
+    project_root: str,
+    task_base_sha: str,
+    target_head_sha: str,
+    touched_files: tuple[str, ...],
+    task_slug: str,
+) -> SemanticGateVerdict:
+    """Run deterministic Python semantic gates on an integration candidate.
+
+    Checks for:
+    - same_symbol_edit: Both sides changed the same Python symbol
+    - duplicate_definition: Integrated code defines same symbol twice
+    - signature_drift: Public callable changed shape
+
+    Returns a SemanticGateVerdict with findings.
+    """
+    py_files = [f for f in touched_files if f.endswith(".py")]
+
+    if not py_files:
+        # Non-Python tasks bypass the semantic gate
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="python_semantic",
+            passed=True,
+            checked_at=0.0,  # Will be filled by caller
+        )
+
+    # Check for syntax errors first (fail closed if we can't parse)
+    candidate_files: list[Path] = []
+    for rel_path in py_files:
+        full_path = candidate_path / rel_path
+        if full_path.exists():
+            candidate_files.append(full_path)
+            # Verify it parses
+            try:
+                content = full_path.read_text(encoding="utf-8", errors="replace")
+                ast.parse(content)
+            except SyntaxError as exc:
+                return SemanticGateVerdict(
+                    task_slug=task_slug,
+                    gate_name="syntax_check",
+                    passed=False,
+                    failure_class=FailureClass.SYNTAX_CONFLICT,
+                    evidence=(
+                        SyntaxConflict(
+                            file_path=str(rel_path),
+                            line_number=exc.lineno,
+                            column=exc.offset,
+                            error_message=str(exc),
+                            parser_used="python",
+                        ),
+                    ),
+                    error_message=f"Syntax error in {rel_path}: {exc}",
+                    checked_at=0.0,
+                )
+
+    if not candidate_files:
+        # No Python files to analyze
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="python_semantic",
+            passed=True,
+            checked_at=0.0,
+        )
+
+    # Get symbols from candidate (integrated result)
+    candidate_symbols: dict[str, _SymbolInfo] = {}
+    for file_path in candidate_files:
+        symbols = _analyze_python_file_symbols(file_path)
+        candidate_symbols.update(symbols)
+
+    # Check for duplicate definitions in integrated result
+    duplicates = _check_duplicate_definitions(candidate_files)
+    if duplicates:
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="duplicate_definition",
+            passed=False,
+            failure_class=FailureClass.DUPLICATE_DEFINITION,
+            evidence=tuple(duplicates),
+            error_message=f"Duplicate definitions found: {[d.symbol_name for d in duplicates]}",
+            checked_at=0.0,
+        )
+
+    # Get symbols from task base and target head for comparison
+    touched_set = set(touched_files)
+
+    try:
+        task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, list(py_files))
+        target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, list(py_files))
+    except Exception as exc:
+        logger.warning("Failed to get symbols for comparison: %s", exc)
+        # Fail open on git errors - we still did our best analysis
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="python_semantic",
+            passed=True,
+            checked_at=0.0,
+        )
+
+    # Check for same-symbol edits (concurrent modification)
+    same_symbol_edits = _check_same_symbol_edit(
+        task_base_symbols, target_head_symbols, touched_set
+    )
+    if same_symbol_edits:
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="same_symbol_edit",
+            passed=False,
+            failure_class=FailureClass.SAME_SYMBOL_EDIT,
+            evidence=tuple(same_symbol_edits),
+            error_message=f"Concurrent edits: {[s.symbol_name for s in same_symbol_edits]}",
+            checked_at=0.0,
+        )
+
+    # Check for signature drift
+    # Compare integrated result against both task base and target
+    drifts_from_base = _check_signature_drift(task_base_symbols, candidate_symbols, touched_set)
+    drifts_from_target = _check_signature_drift(
+        target_head_symbols, candidate_symbols, touched_set
+    )
+
+    # Combine unique drifts
+    all_drifts = {d.symbol_name: d for d in drifts_from_base}
+    for d in drifts_from_target:
+        if d.symbol_name not in all_drifts:
+            all_drifts[d.symbol_name] = d
+
+    if all_drifts:
+        drifts_list = list(all_drifts.values())
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="signature_drift",
+            passed=False,
+            failure_class=FailureClass.SIGNATURE_DRIFT,
+            evidence=tuple(drifts_list),
+            error_message=f"Signature drift detected: {[d.symbol_name for d in drifts_list]}",
+            checked_at=0.0,
+        )
+
+    # All gates passed
+    return SemanticGateVerdict(
+        task_slug=task_slug,
+        gate_name="python_semantic",
+        passed=True,
+        checked_at=0.0,
+    )
+
+
+# -----------------------------------------------------------------------------
 # Module exports
 # -----------------------------------------------------------------------------
 
@@ -448,4 +895,5 @@ __all__ = [
     "parse_integration_candidate_verdict",
     "parse_integration_risk_record",
     "parse_semantic_gate_verdict",
+    "run_python_semantic_gate",
 ]

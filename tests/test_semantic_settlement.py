@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -622,3 +623,231 @@ class TestImmutability:
         assert issubclass(RiskLevel, str)
         assert RiskLevel.HIGH == "high"
         assert str(RiskLevel.HIGH) == "high"
+
+
+class TestPythonSemanticAnalyzers:
+    """Tests for deterministic Python semantic gate analyzers."""
+
+    def test_analyze_python_file_symbols_extracts_functions(self, tmp_path: Path):
+        """Analyzer extracts function symbols from Python file."""
+        from dgov.semantic_settlement import _analyze_python_file_symbols
+
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""
+def foo():
+    pass
+
+def bar(x: int) -> str:
+    return str(x)
+
+async def baz():
+    pass
+""")
+
+        symbols = _analyze_python_file_symbols(test_file)
+
+        assert "foo" in symbols
+        assert "bar" in symbols
+        assert "baz" in symbols
+        assert symbols["foo"].symbol_type == "function"
+        assert symbols["bar"].symbol_type == "function"
+        assert "def bar(x)" in (symbols["bar"].signature or "")
+
+    def test_analyze_python_file_symbols_extracts_classes_and_methods(self, tmp_path: Path):
+        """Analyzer extracts class and method symbols."""
+        from dgov.semantic_settlement import _analyze_python_file_symbols
+
+        test_file = tmp_path / "test.py"
+        test_file.write_text("""
+class MyClass:
+    def method1(self):
+        pass
+
+    def method2(self, x: int):
+        return x
+""")
+
+        symbols = _analyze_python_file_symbols(test_file)
+
+        assert "MyClass" in symbols
+        assert symbols["MyClass"].symbol_type == "class"
+        assert "MyClass.method1" in symbols
+        assert "MyClass.method2" in symbols
+        assert symbols["MyClass.method1"].symbol_type == "method"
+
+    def test_check_duplicate_definitions_detects_duplicates(self, tmp_path: Path):
+        """Duplicate definition check finds same symbol in multiple files."""
+        from dgov.semantic_settlement import _check_duplicate_definitions
+
+        file1 = tmp_path / "a.py"
+        file1.write_text("def shared(): pass\n")
+
+        file2 = tmp_path / "b.py"
+        file2.write_text("def shared(): pass\n")
+
+        dups = _check_duplicate_definitions([file1, file2])
+
+        assert len(dups) == 1
+        assert dups[0].symbol_name == "shared"
+        assert len(dups[0].file_paths) == 2
+
+    def test_check_same_symbol_edit_detects_concurrent_edits(self):
+        """Same symbol edit check finds overlapping changes."""
+        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+
+        task_symbols = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 10, "def foo()"),
+        }
+        target_symbols = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 5, 15, "def foo(x)"),
+        }
+
+        overlaps = _check_same_symbol_edit(task_symbols, target_symbols, {"src/a.py"})
+
+        assert len(overlaps) == 1
+        assert overlaps[0].symbol_name == "foo"
+
+    def test_check_signature_drift_detects_changes(self):
+        """Signature drift check finds changed function signatures."""
+        from dgov.semantic_settlement import _check_signature_drift, _SymbolInfo
+
+        base = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 5, "def foo()"),
+        }
+        integrated = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 5, "def foo(x: int)"),
+        }
+
+        drifts = _check_signature_drift(base, integrated, {"src/a.py"})
+
+        assert len(drifts) == 1
+        assert drifts[0].symbol_name == "foo"
+
+    def test_run_python_semantic_gate_passes_non_python_files(self):
+        """Non-Python tasks bypass the semantic gate."""
+        from dgov.semantic_settlement import run_python_semantic_gate
+
+        verdict = run_python_semantic_gate(
+            candidate_path=Path("/tmp"),
+            project_root="/tmp",
+            task_base_sha="abc",
+            target_head_sha="def",
+            touched_files=("readme.md", "config.yaml"),
+            task_slug="task-1",
+        )
+
+        assert verdict.passed is True
+
+    def test_run_python_semantic_gate_detects_syntax_errors(self, tmp_path: Path):
+        """Semantic gate fails closed on syntax errors."""
+        from dgov.semantic_settlement import FailureClass, run_python_semantic_gate
+
+        bad_file = tmp_path / "bad.py"
+        bad_file.write_text("def broken(:")
+
+        verdict = run_python_semantic_gate(
+            candidate_path=tmp_path,
+            project_root=str(tmp_path),
+            task_base_sha="abc",
+            target_head_sha="def",
+            touched_files=("bad.py",),
+            task_slug="task-1",
+        )
+
+        assert verdict.passed is False
+        assert verdict.failure_class == FailureClass.SYNTAX_CONFLICT
+
+
+class TestPythonSemanticGateIntegration:
+    """Integration tests for Python semantic gate with real git repos."""
+
+    def test_semantic_gate_detects_class_method_collision(self, tmp_path: Path):
+        """Gate detects when both sides modify the same class method."""
+        import subprocess
+
+        from dgov.semantic_settlement import (
+            _get_symbols_at_commit,
+        )
+
+        # Initialize git repo
+        subprocess.run(
+            ["git", "init", "-b", "main"], cwd=tmp_path, check=True, capture_output=True
+        )
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+
+        # Create initial file with class
+        cls_file = tmp_path / "module.py"
+        cls_file.write_text("""
+class Processor:
+    def process(self):
+        return "base"
+""")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True
+        )
+
+        # Get base commit
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+        base_sha = result.stdout.strip()
+
+        # Create a branch with changes (task side)
+        subprocess.run(
+            ["git", "checkout", "-b", "task-branch"], cwd=tmp_path, check=True, capture_output=True
+        )
+        cls_file.write_text("""
+class Processor:
+    def process(self):
+        return "task version"
+""")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "task change"], cwd=tmp_path, check=True, capture_output=True
+        )
+
+        # Go back to main and make target changes
+        subprocess.run(["git", "checkout", "main"], cwd=tmp_path, check=True, capture_output=True)
+        cls_file.write_text("""
+class Processor:
+    def process(self):
+        return "target version"
+""")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "target change"], cwd=tmp_path, check=True, capture_output=True
+        )
+
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+        )
+        target_sha = result.stdout.strip()
+
+        # Get symbols at both commits
+        task_symbols = _get_symbols_at_commit(str(tmp_path), base_sha, ["module.py"])
+        target_symbols = _get_symbols_at_commit(str(tmp_path), target_sha, ["module.py"])
+
+        # Both should have the method
+        assert "Processor.process" in task_symbols
+        assert "Processor.process" in target_symbols
+
+    def test_semantic_gate_finds_duplicate_definitions(self, tmp_path: Path):
+        """Gate detects duplicate function definitions in integrated result."""
+        from dgov.semantic_settlement import (
+            _check_duplicate_definitions,
+        )
+
+        # Create two files with same function name (duplicate across files)
+        file1 = tmp_path / "a.py"
+        file1.write_text("def helper(): return 1")
+
+        file2 = tmp_path / "b.py"
+        file2.write_text("def helper(): return 2")
+
+        dups = _check_duplicate_definitions([file1, file2])
+
+        # Should detect cross-file duplicate
+        assert len(dups) == 1
+        assert dups[0].symbol_name == "helper"

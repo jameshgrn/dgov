@@ -47,11 +47,14 @@ from dgov.semantic_settlement import (
     IntegrationCandidateVerdict,
     IntegrationRiskRecord,
     RiskLevel,
+    SemanticGateVerdict,
     SymbolOverlap,
     emit_integration_candidate_failed,
     emit_integration_candidate_passed,
     emit_integration_overlap_detected,
     emit_integration_risk_scored,
+    emit_semantic_gate_rejected,
+    run_python_semantic_gate,
 )
 from dgov.settlement import (
     autofix_sandbox,
@@ -983,6 +986,49 @@ class EventDagRunner:
                 pane=action.pane_slug,
             )
             return candidate_result.error or "Integration candidate replay failed", True
+
+        # Run deterministic Python semantic gate on the integrated candidate
+        if candidate_result.candidate_path is not None:
+            semantic_verdict = run_python_semantic_gate(
+                candidate_path=candidate_result.candidate_path,
+                project_root=self.session_root,
+                task_base_sha=wt.commit,
+                target_head_sha=risk_record.target_head_sha,
+                touched_files=file_claims,
+                task_slug=action.task_slug,
+            )
+
+            if not semantic_verdict.passed:
+                # Semantic gate failed - clean up candidate and reject
+                if candidate_result.candidate_path is not None:
+                    await loop.run_in_executor(
+                        self._executor,
+                        remove_integration_candidate,
+                        self.session_root,
+                        candidate_result.candidate_path,
+                    )
+
+                # Emit semantic gate rejected event with timestamp
+                verdict = SemanticGateVerdict(
+                    task_slug=semantic_verdict.task_slug,
+                    gate_name=semantic_verdict.gate_name,
+                    passed=False,
+                    failure_class=semantic_verdict.failure_class,
+                    evidence=semantic_verdict.evidence,
+                    error_message=semantic_verdict.error_message,
+                    checked_at=time.time(),
+                )
+                emit_semantic_gate_rejected(
+                    emit_event,
+                    self.session_root,
+                    self.dag.name,
+                    verdict,
+                    pane=action.pane_slug,
+                )
+                gate_msg = semantic_verdict.error_message
+                if not gate_msg:
+                    gate_msg = f"Semantic gate '{semantic_verdict.gate_name}' rejected"
+                return (gate_msg, True)
 
         # Validate the integrated candidate using same gates as isolated validation
         if candidate_result.candidate_path is not None:
