@@ -1,6 +1,5 @@
 [tasks.reduce-python-gate-complexity]
 summary = "Reduce symbol-loading complexity in semantic settlement without changing gate behavior."
-depends_on = ["semantic/concurrency.fix-same-symbol-edit-false-positive"]
 prompt = """
 Orient:
 - Read `src/dgov/semantic_settlement.py` first.
