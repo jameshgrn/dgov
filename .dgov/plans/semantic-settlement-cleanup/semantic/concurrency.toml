@@ -1,0 +1,29 @@
+[tasks.fix-same-symbol-edit-false-positive]
+summary = "Make same-symbol-edit detection compare real concurrent changes instead of broad symbol overlap."
+prompt = """
+Orient:
+- Read `src/dgov/semantic_settlement.py` and `src/dgov/runner.py` first.
+- Read `tests/test_semantic_settlement.py`, `tests/test_runner.py`, and `tests/test_integration.py`.
+- Bug context: cleanup tasks on `src/dgov/semantic_settlement.py` are being rejected with `same_symbol_edit` because the current logic compares broad symbol presence between task-base and target-head, not actual symbol changes on both sides.
+- Preserve the intended contract: reject true concurrent edits to the same symbol, but do not reject a single-sided cleanup/refactor on an already-modified module.
+- Do not change persistence schema, review surfaces, or worktree replay behavior in this task.
+
+Edit:
+1. Fix `same_symbol_edit` detection so it compares real symbol changes on the task side and target side relative to the task base, instead of treating any shared symbol name as a conflict.
+2. Pass whatever additional task-side information is needed through the runner explicitly. Keep the interface change local and inspectable.
+3. Preserve deterministic AST-only behavior. Do not add synthesis, fuzzy matching, or speculative heuristics.
+4. Add focused tests covering:
+   - a true same-symbol concurrent edit that must still reject
+   - a one-sided cleanup/refactor on an existing file that must pass
+5. Stop once the false positive exposed by the cleanup plan is eliminated and the intended conflict detection still holds.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_semantic_settlement.py tests/test_runner.py tests/test_boundaries.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+- `uv run ruff check src/dgov/semantic_settlement.py src/dgov/runner.py tests/test_semantic_settlement.py tests/test_runner.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run ty check src/dgov/semantic_settlement.py src/dgov/runner.py tests/test_semantic_settlement.py tests/test_runner.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run sentrux gate .`
+"""
+commit_message = "Fix same-symbol gate false positives"
+files.edit = ["src/dgov/semantic_settlement.py", "src/dgov/runner.py", "tests/test_semantic_settlement.py", "tests/test_runner.py", "tests/test_integration.py"]
+files.read = ["tests/test_boundaries.py"]
