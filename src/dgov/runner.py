@@ -42,6 +42,13 @@ from dgov.persistence import (
     update_runtime_artifact_state,
 )
 from dgov.persistence.schema import TaskState, WorkerTask
+from dgov.semantic_settlement import (
+    IntegrationRiskRecord,
+    RiskLevel,
+    SymbolOverlap,
+    emit_integration_overlap_detected,
+    emit_integration_risk_scored,
+)
 from dgov.settlement import (
     autofix_sandbox,
     review_sandbox,
@@ -803,6 +810,91 @@ class EventDagRunner:
             self._worktrees.pop(action.task_slug, None)
             raise
 
+    def _compute_semantic_risk(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        file_claims: tuple[str, ...],
+    ) -> IntegrationRiskRecord:
+        """Compute integration risk record using task base, target HEAD, and changed files."""
+        import subprocess as sp
+
+        # Get current target HEAD
+        head_res = sp.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.session_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        target_head = head_res.stdout.strip() if head_res.returncode == 0 else ""
+
+        # Get actual changed files since task base
+        diff_res = sp.run(
+            ["git", "diff", "--name-only", wt.commit, wt.branch],
+            cwd=self.session_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff_res.returncode == 0:
+            changed_files = tuple(f for f in diff_res.stdout.strip().split("\n") if f)
+        else:
+            changed_files = ()
+
+        # Determine risk level based on overlap between changed files and claims
+        # Shadow mode: compute deterministically, do not block merge
+        risk_level = RiskLevel.NONE
+        overlap_evidence: list[SymbolOverlap] = []
+        python_overlap = False
+
+        # Check if any Python files were changed outside claims (cheap heuristic)
+        py_changed = [f for f in changed_files if f.endswith(".py")]
+        if py_changed:
+            # Simple overlap detection: claimed vs actual changed
+            claimed_set = set(file_claims)
+            unclaimed_py = [f for f in py_changed if f not in claimed_set]
+            if unclaimed_py:
+                # Elevated risk: Python files changed beyond claims
+                python_overlap = True
+                risk_level = RiskLevel.MEDIUM
+
+        return IntegrationRiskRecord(
+            task_slug=action.task_slug,
+            target_head_sha=target_head,
+            task_base_sha=wt.commit,
+            task_commit_sha=wt.branch,  # Branch tracks the task commits
+            risk_level=risk_level,
+            claimed_files=file_claims,
+            changed_files=changed_files,
+            python_overlap_detected=python_overlap,
+            overlap_evidence=tuple(overlap_evidence),
+            computed_at=time.time(),
+        )
+
+    def _emit_risk_events(
+        self,
+        action: MergeTask,
+        risk_record: IntegrationRiskRecord,
+    ) -> None:
+        """Emit integration_risk_scored and optionally integration_overlap_detected."""
+        emit_integration_risk_scored(
+            emit_event,
+            self.session_root,
+            self.dag.name,
+            risk_record,
+        )
+
+        # Emit overlap events only when meaningful overlap detected
+        for evidence in risk_record.overlap_evidence:
+            emit_integration_overlap_detected(
+                emit_event,
+                self.session_root,
+                self.dag.name,
+                action.task_slug,
+                evidence,
+            )
+
     async def _settle_and_merge(
         self,
         action: MergeTask,
@@ -842,6 +934,11 @@ class EventDagRunner:
 
         msg = task.commit_message or f"feat: completed {action.task_slug}"
         await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg, file_claims)
+
+        # Shadow-mode semantic settlement: compute risk after commit exists, before merge
+        # This is telemetry-only; merge behavior is unchanged
+        risk_record = self._compute_semantic_risk(action, wt, file_claims)
+        self._emit_risk_events(action, risk_record)
 
         gate_result = await loop.run_in_executor(
             self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, task_config

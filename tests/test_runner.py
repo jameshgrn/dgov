@@ -617,3 +617,79 @@ class TestCleanup:
             asyncio.run(_run_with_shutdown())
             assert len(runner._worker_tasks) == 0
             assert len(runner._worktrees) == 0
+
+
+class TestSemanticSettlementShadowMode:
+    """Tests for shadow-mode semantic settlement — telemetry only, no merge blocking."""
+
+    def test_integration_risk_scored_emitted_on_successful_merge(self):
+        """Every task that reaches landing path emits integration_risk_scored."""
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should still succeed (shadow mode)
+            assert results["a"] == "merged"
+
+            # Verify integration_risk_scored was emitted
+            risk_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+            ]
+            assert len(risk_calls) == 1
+            # Verify payload contains expected fields
+            call = risk_calls[0]
+            assert call.kwargs.get("task_slug") == "a"
+            assert "risk_level" in call.kwargs
+            assert "claimed_files" in call.kwargs
+            assert "changed_files" in call.kwargs
+
+    def test_integration_risk_scored_emitted_even_when_merge_fails(self):
+        """Risk scored even if settlement gate rejects (before failure path)."""
+        with _io_patches(validate=_mock_gate_fail) as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail (settlement gate rejected)
+            assert results["a"] == "failed"
+
+            # Risk should still be scored (happens before merge)
+            risk_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+            ]
+            assert len(risk_calls) == 1
+
+    def test_success_behavior_unchanged_in_shadow_mode(self):
+        """Shadow mode: risky tasks still land if gates would accept them."""
+        # Simulate a scenario with changed files but passing gates
+        with _io_patches() as _:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Verify unchanged success behavior
+            assert results["a"] == "merged"
+            assert runner.kernel.status.name == "COMPLETED"
+
+    def test_researcher_task_skips_semantic_risk_scoring(self):
+        """Read-only researcher tasks don't trigger settlement path."""
+        task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Research something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(),
+        )
+        dag = _dag({"research": task})
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+            assert results["research"] == "merged"
+
+            # No integration_risk_scored for researcher (no settlement path)
+            risk_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+            ]
+            assert len(risk_calls) == 0

@@ -734,3 +734,103 @@ class TestOrphanAbandon:
             "kernel.status must not be COMPLETED when all tasks were abandoned"
         )
         assert runner.kernel.status == DagState.FAILED
+
+
+class TestSemanticSettlementIntegration:
+    """Integration tests for shadow-mode semantic settlement events."""
+
+    def test_integration_risk_scored_event_has_required_fields(self, git_repo, monkeypatch):
+        """integration_risk_scored event contains all required fields for review."""
+        from dgov.persistence import read_events
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        dag = _dag({"risk-test": _task("risk-test")})
+        session_root = str(git_repo)
+        runner = EventDagRunner(dag, session_root=session_root)
+        asyncio.run(runner.run())
+
+        # Read events and verify integration_risk_scored was emitted
+        events = read_events(session_root, plan_name=dag.name)
+        risk_events = [e for e in events if e["event"] == "integration_risk_scored"]
+        assert len(risk_events) == 1
+
+        event = risk_events[0]
+        assert event["task_slug"] == "risk-test"
+        assert "target_head_sha" in event
+        assert "task_base_sha" in event
+        assert "risk_level" in event
+        assert "claimed_files" in event
+        assert "changed_files" in event
+        assert "python_overlap_detected" in event
+        assert "overlap_evidence" in event
+
+    def test_merge_succeeds_even_with_risk_detected(self, git_repo, monkeypatch):
+        """Shadow mode: merge succeeds regardless of risk level (telemetry only)."""
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+        monkeypatch.setattr("dgov.runner.validate_sandbox", _mock_settlement_pass)
+
+        # Create a task with files that will change
+        task = _task("risky-task")
+        dag = _dag({"risky-task": task})
+        session_root = str(git_repo)
+
+        # Add a file to the repo first (so there's something to change)
+        (git_repo / "existing.py").write_text("# original\n")
+        subprocess.run(["git", "add", "."], cwd=git_repo, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "add existing"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+        )
+
+        runner = EventDagRunner(dag, session_root=session_root)
+        results = asyncio.run(runner.run())
+
+        # Should still merge successfully (shadow mode)
+        assert results["risky-task"] == "merged"
+
+    def test_reviewer_task_skips_risk_scoring(self, git_repo, monkeypatch):
+        """Reviewer tasks (read-only) don't trigger settlement or risk scoring."""
+        from dgov.persistence import read_events
+
+        async def _mock_reviewer_worker(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            """Mock reviewer: no file changes, just exits 0."""
+            on_exit(task_slug, pane_slug, 0, "")
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_reviewer_worker)
+
+        task = DagTaskSpec(
+            slug="review",
+            summary="Review task",
+            prompt="Review code",
+            commit_message="review: notes",
+            agent="mock",
+            role="reviewer",
+            files=DagFileSpec(),
+        )
+        dag = _dag({"review": task})
+        session_root = str(git_repo)
+
+        runner = EventDagRunner(dag, session_root=session_root)
+        results = asyncio.run(runner.run())
+
+        # Reviewer should complete
+        assert results["review"] == "merged"
+
+        # No integration_risk_scored event for reviewer
+        events = read_events(session_root, plan_name=dag.name)
+        risk_events = [e for e in events if e["event"] == "integration_risk_scored"]
+        assert len(risk_events) == 0
