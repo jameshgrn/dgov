@@ -74,10 +74,7 @@ def sentrux_check(path: Path | None, json_fmt: bool) -> None:
                     quality = int(token)
                 except ValueError:
                     val = float(token)
-                    if val <= 1.0:
-                        quality = int(val * 10000)
-                    else:
-                        quality = int(val)
+                    quality = int(val * 10000) if val <= 1.0 else int(val)
             break
 
     if json_fmt or want_json():
