@@ -1037,16 +1037,14 @@ class TestPythonSemanticGateSubprocess:
             return subprocess.CompletedProcess(
                 cmd,
                 0,
-                stdout=json.dumps(
-                    {
-                        "task_slug": "a",
-                        "gate_name": "python_semantic",
-                        "passed": True,
-                        "failure_class": None,
-                        "error_message": "",
-                        "evidence": [],
-                    }
-                ),
+                stdout=json.dumps({
+                    "task_slug": "a",
+                    "gate_name": "python_semantic",
+                    "passed": True,
+                    "failure_class": None,
+                    "error_message": "",
+                    "evidence": [],
+                }),
                 stderr="",
             )
 
