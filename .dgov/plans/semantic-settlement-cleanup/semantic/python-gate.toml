@@ -5,6 +5,7 @@ Orient:
 - Read `src/dgov/semantic_settlement.py` first.
 - Read `tests/test_semantic_settlement.py`, `tests/test_runner.py`, and `tests/test_integration.py`.
 - The current branch is functionally correct but structurally degraded. `run_python_semantic_gate(...)` and `_get_symbols_at_commit(...)` are now major hotspots.
+- This task refactors the same gate that will evaluate its landing. If settlement retry exposes a deterministic false positive introduced by the refactor, fix that false positive directly and add focused coverage rather than looping on re-verification.
 - Preserve behavior: deterministic AST-based Python checks for `same_symbol_edit`, `duplicate_definition`, and `signature_drift` must remain semantically the same.
 - Do not change persistence schema, CLI output, or candidate replay behavior in this task.
 
@@ -12,7 +13,7 @@ Edit:
 1. In `src/dgov/semantic_settlement.py`, break the Python semantic gate path into smaller explicit helpers so the main orchestration reads as straight-line logic rather than nested condition ladders.
 2. Reduce branching in `_get_symbols_at_commit(...)` and `run_python_semantic_gate(...)`. Prefer small pure helpers for parse/load/classify steps over one large multi-responsibility function.
 3. Keep the implementation deterministic and inspectable. Do not add rewrite/synthesis behavior, dynamic plugins, or speculative generalization.
-4. Update tests only where needed to keep coverage readable and behavior locked.
+4. Update tests only where needed to keep coverage readable and behavior locked. If you narrow a false positive, make that behavioral change explicit in the tests.
 5. Stop when the semantic gate module is materially simpler and the structural regression is reduced. Prefer clarity over clever compression.
 
 Verify:
