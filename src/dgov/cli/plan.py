@@ -712,18 +712,23 @@ def _render_pending_unit(unit) -> None:
     click.echo("")
 
 
+# Dispatch mapping from unit status to renderer function.
+_UNIT_STATUS_RENDERERS = {
+    "deployed": _render_deployed_unit,
+    "failed": _render_failed_unit,
+    "active": _render_active_unit,
+    "pending": _render_pending_unit,
+    "not_run": _render_pending_unit,
+}
+
+
 def _render_unit(unit) -> None:
     """Render a single UnitReview block. Shape depends on status."""
-    if unit.status == "deployed":
-        _render_deployed_unit(unit)
-        return
-    if unit.status == "failed":
-        _render_failed_unit(unit)
-        return
-    if unit.status == "active":
-        _render_active_unit(unit)
-        return
-    _render_pending_unit(unit)
+    renderer = _UNIT_STATUS_RENDERERS.get(unit.status)
+    if renderer is None:
+        # Defensive: unknown status falls back to pending rendering.
+        renderer = _render_pending_unit
+    renderer(unit)
 
 
 def _render_multiline_field(label: str, text: str, max_lines: int = 4) -> None:

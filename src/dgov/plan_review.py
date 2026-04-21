@@ -777,6 +777,68 @@ def _build_unit_review(
     )
 
 
+def _fetch_worker_events_for_unit(
+    project_root: str,
+    plan_name: str,
+    uid: str,
+    lifecycle: list[dict],
+    run_start_id: int,
+) -> list[dict]:
+    """Fetch worker_log events for a unit, with fallback to task-only scoped query.
+
+    Primary fetch uses plan_name + task_slug. If empty, falls back to task_slug-only
+    with optional pane-based filtering.
+    """
+    worker_events = [
+        ev
+        for ev in read_events(
+            project_root,
+            plan_name=plan_name,
+            task_slug=uid,
+            after_id=run_start_id,
+        )
+        if ev.get("event") == "worker_log"
+    ]
+    if worker_events:
+        return worker_events
+
+    # Fallback: fetch by task_slug only, then filter by known panes if available.
+    fallback_events = [
+        ev
+        for ev in read_events(project_root, task_slug=uid, after_id=run_start_id)
+        if ev.get("event") == "worker_log"
+    ]
+    allowed_panes = {
+        pane for pane in (ev.get("pane") for ev in lifecycle) if isinstance(pane, str)
+    }
+    if allowed_panes:
+        fallback_events = [ev for ev in fallback_events if ev.get("pane") in allowed_panes]
+    return fallback_events
+
+
+def _combine_unit_events(lifecycle: list[dict], worker_events: list[dict]) -> list[dict]:
+    """Interleave lifecycle and worker log events chronologically by id."""
+    combined = worker_events + lifecycle
+    combined.sort(key=lambda e: e.get("id", 0))
+    return combined
+
+
+def _extract_run_start_ts(plan_events: list[dict], run_start_id: int) -> str | None:
+    """Extract timestamp of the run_start event matching the given id."""
+    for ev in plan_events:
+        if ev.get("event") == "run_start" and ev.get("id", 0) == run_start_id:
+            return ev.get("ts")
+    return None
+
+
+def _compute_run_duration(unit_reviews: list[UnitReview]) -> float | None:
+    """Aggregate duration across all units in the review."""
+    if not unit_reviews:
+        return None
+    total = sum(u.duration_s or 0.0 for u in unit_reviews)
+    return total or None
+
+
 def load_review(
     project_root: str,
     compiled_path: Path,
@@ -813,63 +875,37 @@ def load_review(
     # Lifecycle events scoped to this run only.
     scoped_plan_events = [ev for ev in plan_events if ev.get("id", 0) > run_start_id]
 
-    # Per-unit worker_log events — scoped by task_slug + run_start_id.
-    def _events_for_unit(uid: str) -> list[dict]:
+    deploy_records = {r.unit: r for r in read_deploy_log(project_root, plan_name)}
+
+    unit_reviews: list[UnitReview] = []
+    for uid in sorted(tasks):
+        # Build lifecycle events for this unit from plan-scoped events.
         lifecycle = [
             ev
             for ev in scoped_plan_events
             if ev.get("task_slug") == uid and ev.get("event") != "worker_log"
         ]
-        worker_events = [
-            ev
-            for ev in read_events(
-                project_root,
-                plan_name=plan_name,
-                task_slug=uid,
-                after_id=run_start_id,
-            )
-            if ev.get("event") == "worker_log"
-        ]
-        if not worker_events:
-            fallback_events = [
-                ev
-                for ev in read_events(project_root, task_slug=uid, after_id=run_start_id)
-                if ev.get("event") == "worker_log"
-            ]
-            allowed_panes = {
-                pane for pane in (ev.get("pane") for ev in lifecycle) if isinstance(pane, str)
-            }
-            if allowed_panes:
-                fallback_events = [ev for ev in fallback_events if ev.get("pane") in allowed_panes]
-            worker_events = fallback_events
-        # Interleave lifecycle (from plan-scoped fetch) and worker logs chronologically by id.
-        combined = worker_events + lifecycle
-        combined.sort(key=lambda e: e.get("id", 0))
-        return combined
+        # Fetch and combine with worker log events.
+        worker_events = _fetch_worker_events_for_unit(
+            project_root, plan_name, uid, lifecycle, run_start_id
+        )
+        unit_events = _combine_unit_events(lifecycle, worker_events)
 
-    deploy_records = {r.unit: r for r in read_deploy_log(project_root, plan_name)}
-
-    unit_reviews: list[UnitReview] = []
-    for uid in sorted(tasks):
         unit_reviews.append(
             _build_unit_review(
                 unit_id=uid,
                 task_data=tasks[uid],
                 deploy_record=deploy_records.get(uid),
-                unit_events=_events_for_unit(uid),
+                unit_events=unit_events,
                 project_root=project_root,
                 include_full_diff=include_full_diff,
                 iteration_budget=iteration_budget,
             )
         )
 
-    # Last-run envelope: look at the run_start ts and aggregate unit durations.
-    last_run_ts: str | None = None
-    for ev in plan_events:
-        if ev.get("event") == "run_start" and ev.get("id", 0) == run_start_id:
-            last_run_ts = ev.get("ts")
-            break
-    run_duration = sum(u.duration_s or 0.0 for u in unit_reviews) or None if unit_reviews else None
+    # Last-run envelope: extract timestamp and aggregate unit durations.
+    last_run_ts = _extract_run_start_ts(plan_events, run_start_id)
+    run_duration = _compute_run_duration(unit_reviews)
 
     return PlanReview(
         plan_name=plan_name,
