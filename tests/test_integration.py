@@ -1036,7 +1036,9 @@ class TestPythonSemanticGateIntegration:
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_edit)
         monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
-        monkeypatch.setattr("dgov.runner.run_python_semantic_gate", _mock_semantic_gate_fail)
+        monkeypatch.setattr(
+            "dgov.runner.run_python_semantic_gate_in_subprocess", _mock_semantic_gate_fail
+        )
 
         dag = _dag({
             "same-edit-test": _task("same-edit-test", commit_message="feat: edit process")
@@ -1104,7 +1106,9 @@ class TestPythonSemanticGateIntegration:
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_drift)
         monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
-        monkeypatch.setattr("dgov.runner.run_python_semantic_gate", _mock_semantic_gate_fail)
+        monkeypatch.setattr(
+            "dgov.runner.run_python_semantic_gate_in_subprocess", _mock_semantic_gate_fail
+        )
 
         dag = _dag({"drift-test": _task("drift-test", commit_message="feat: change signature")})
         runner = EventDagRunner(dag, session_root=str(git_repo))

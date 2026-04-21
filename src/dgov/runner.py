@@ -9,8 +9,12 @@ Follows Lacustrine Pillars:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import signal
+import subprocess
+import sys
 import time
 from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -54,7 +58,7 @@ from dgov.semantic_settlement import (
     emit_integration_overlap_detected,
     emit_integration_risk_scored,
     emit_semantic_gate_rejected,
-    run_python_semantic_gate,
+    parse_semantic_gate_verdict,
 )
 from dgov.settlement import (
     autofix_sandbox,
@@ -74,6 +78,99 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SEMANTIC_GATE_SUBPROCESS = """
+import json
+import sys
+from pathlib import Path
+
+from dgov.semantic_settlement import _evidence_payload, run_python_semantic_gate
+
+payload = json.loads(sys.argv[1])
+verdict = run_python_semantic_gate(
+    candidate_path=Path(payload["candidate_path"]),
+    project_root=payload["project_root"],
+    task_base_sha=payload["task_base_sha"],
+    task_commit_sha=payload["task_commit_sha"],
+    target_head_sha=payload["target_head_sha"],
+    touched_files=tuple(payload["touched_files"]),
+    task_slug=payload["task_slug"],
+)
+print(
+    json.dumps(
+        {
+            "task_slug": verdict.task_slug,
+            "gate_name": verdict.gate_name,
+            "passed": verdict.passed,
+            "failure_class": verdict.failure_class.value if verdict.failure_class else None,
+            "error_message": verdict.error_message,
+            "evidence": _evidence_payload(verdict.evidence),
+        }
+    )
+)
+"""
+
+
+def run_python_semantic_gate_in_subprocess(
+    *,
+    candidate_path: Path,
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    touched_files: tuple[str, ...],
+    task_slug: str,
+) -> SemanticGateVerdict:
+    """Run the semantic gate from the candidate snapshot, not the live governor process."""
+    payload = {
+        "candidate_path": str(candidate_path),
+        "project_root": project_root,
+        "task_base_sha": task_base_sha,
+        "task_commit_sha": task_commit_sha,
+        "target_head_sha": target_head_sha,
+        "touched_files": list(touched_files),
+        "task_slug": task_slug,
+    }
+    env = os.environ.copy()
+    candidate_src = candidate_path / "src"
+    pythonpath_root = candidate_src if candidate_src.exists() else candidate_path
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(pythonpath_root)
+        if not existing_pythonpath
+        else f"{pythonpath_root}{os.pathsep}{existing_pythonpath}"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", _SEMANTIC_GATE_SUBPROCESS, json.dumps(payload)],
+        cwd=candidate_path,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="python_semantic_subprocess",
+            passed=False,
+            error_message=f"Failed to execute semantic gate in candidate subprocess: {detail}",
+            checked_at=0.0,
+        )
+    try:
+        return parse_semantic_gate_verdict(json.loads(result.stdout))
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        detail = result.stdout.strip() or result.stderr.strip() or "empty output"
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="python_semantic_subprocess",
+            passed=False,
+            error_message=(
+                "Failed to parse semantic gate verdict from candidate subprocess: "
+                f"{exc}: {detail}"
+            ),
+            checked_at=0.0,
+        )
 
 
 class EventDagRunner:
@@ -1003,7 +1100,7 @@ class EventDagRunner:
                 task_commit_res.stdout.strip() if task_commit_res.returncode == 0 else None
             )
 
-            semantic_verdict = run_python_semantic_gate(
+            semantic_verdict = run_python_semantic_gate_in_subprocess(
                 candidate_path=candidate_result.candidate_path,
                 project_root=self.session_root,
                 task_base_sha=wt.commit,

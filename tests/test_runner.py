@@ -7,6 +7,9 @@ Tests: the kernel<->runner contract under happy, failure, and concurrent scenari
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -122,6 +125,18 @@ def _mock_integration_candidate_fail(project_root, task_wt, candidate_slug):
     )
 
 
+def _mock_semantic_gate_pass(*args, **kwargs):
+    """Mock successful semantic gate evaluation."""
+    from dgov.semantic_settlement import SemanticGateVerdict
+
+    return SemanticGateVerdict(
+        task_slug=kwargs.get("task_slug", "a"),
+        gate_name="python_semantic",
+        passed=True,
+        checked_at=0.0,
+    )
+
+
 # Patch targets — runner imports at top level
 _P_CREATE_WT = "dgov.runner.create_worktree"
 _P_MERGE_WT = "dgov.runner.merge_worktree"
@@ -138,6 +153,7 @@ _P_REVIEW = "dgov.runner.review_sandbox"
 _P_DEPLOY_APPEND = "dgov.deploy_log.append"
 _P_CREATE_CANDIDATE = "dgov.runner.create_integration_candidate"
 _P_REMOVE_CANDIDATE = "dgov.runner.remove_integration_candidate"
+_P_SEMANTIC_GATE = "dgov.runner.run_python_semantic_gate_in_subprocess"
 
 
 async def _fake_worker_success(
@@ -203,6 +219,7 @@ def _io_patches(
     create_wt=_mock_create_worktree,
     merge_wt=None,
     candidate=_mock_integration_candidate_pass,
+    semantic_gate=_mock_semantic_gate_pass,
 ):
     """Return a context manager that patches all I/O boundaries."""
     import contextlib
@@ -223,6 +240,7 @@ def _io_patches(
             patch(_P_REVIEW, side_effect=review),
             patch(_P_CREATE_CANDIDATE, side_effect=candidate),
             patch(_P_REMOVE_CANDIDATE),
+            patch(_P_SEMANTIC_GATE, side_effect=semantic_gate),
         ):
             yield
 
@@ -905,7 +923,7 @@ class TestPythonSemanticGateRunner:
         with (
             _io_patches() as _,
             patch(_P_EMIT_EVENT) as mock_emit,
-            patch("dgov.runner.run_python_semantic_gate", side_effect=_mock_semantic_gate_fail),
+            patch(_P_SEMANTIC_GATE, side_effect=_mock_semantic_gate_fail),
         ):
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
@@ -936,7 +954,7 @@ class TestPythonSemanticGateRunner:
 
         with (
             _io_patches() as _,
-            patch("dgov.runner.run_python_semantic_gate") as mock_gate,
+            patch(_P_SEMANTIC_GATE) as mock_gate,
         ):
             runner = _make_runner(dag)
             results = asyncio.run(runner.run())
@@ -966,7 +984,7 @@ class TestPythonSemanticGateRunner:
         with (
             _io_patches() as _,
             patch(_P_REMOVE_CANDIDATE) as mock_remove,
-            patch("dgov.runner.run_python_semantic_gate", side_effect=_mock_semantic_gate_fail),
+            patch(_P_SEMANTIC_GATE, side_effect=_mock_semantic_gate_fail),
         ):
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
@@ -974,3 +992,74 @@ class TestPythonSemanticGateRunner:
             assert results["a"] == "failed"
             # Candidate should be cleaned up
             mock_remove.assert_called()
+
+
+class TestPythonSemanticGateSubprocess:
+    """Tests for candidate-rooted semantic gate execution."""
+
+    def test_subprocess_uses_candidate_src_path(self, tmp_path, monkeypatch):
+        """Candidate subprocess should import from the candidate src tree first."""
+        from dgov.runner import run_python_semantic_gate_in_subprocess
+
+        captured: dict[str, object] = {}
+
+        def _fake_run(cmd, cwd, capture_output, text, env, check):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env"] = env
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps(
+                    {
+                        "task_slug": "a",
+                        "gate_name": "python_semantic",
+                        "passed": True,
+                        "failure_class": None,
+                        "error_message": "",
+                        "evidence": [],
+                    }
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr("dgov.runner.subprocess.run", _fake_run)
+
+        verdict = run_python_semantic_gate_in_subprocess(
+            candidate_path=tmp_path,
+            project_root="/tmp/project",
+            task_base_sha="base123",
+            task_commit_sha="task123",
+            target_head_sha="head123",
+            touched_files=("src/a.py",),
+            task_slug="a",
+        )
+
+        assert verdict.passed is True
+        assert captured["cwd"] == tmp_path
+        env = captured["env"]
+        assert isinstance(env, dict)
+        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
+
+    def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
+        """Runner should reject when candidate-side semantic execution fails."""
+        from dgov.runner import run_python_semantic_gate_in_subprocess
+
+        def _fake_run(cmd, cwd, capture_output, text, env, check):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        monkeypatch.setattr("dgov.runner.subprocess.run", _fake_run)
+
+        verdict = run_python_semantic_gate_in_subprocess(
+            candidate_path=tmp_path,
+            project_root="/tmp/project",
+            task_base_sha="base123",
+            task_commit_sha="task123",
+            target_head_sha="head123",
+            touched_files=("src/a.py",),
+            task_slug="a",
+        )
+
+        assert verdict.passed is False
+        assert verdict.gate_name == "python_semantic_subprocess"
+        assert "boom" in verdict.error_message
