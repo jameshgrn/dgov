@@ -1048,7 +1048,7 @@ class TestPythonSemanticGateSubprocess:
                 stderr="",
             )
 
-        monkeypatch.setattr("dgov.runner.subprocess.run", _fake_run)
+        monkeypatch.setattr("dgov.settlement_flow.subprocess.run", _fake_run)
 
         verdict = run_python_semantic_gate_in_subprocess(
             candidate_path=tmp_path,
@@ -1074,7 +1074,7 @@ class TestPythonSemanticGateSubprocess:
         def _fake_run(cmd, cwd, capture_output, text, env, check):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
 
-        monkeypatch.setattr("dgov.runner.subprocess.run", _fake_run)
+        monkeypatch.setattr("dgov.settlement_flow.subprocess.run", _fake_run)
 
         verdict = run_python_semantic_gate_in_subprocess(
             candidate_path=tmp_path,
