@@ -11,6 +11,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from dgov.config import ProjectConfig
@@ -1037,9 +1038,10 @@ class TestPythonSemanticGateSubprocess:
 
         assert verdict.passed is True
         assert captured["cwd"] == tmp_path
-        env = captured["env"]
-        assert isinstance(env, dict)
-        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
+        env = cast(dict[str, str], captured["env"])
+        pythonpath = env.get("PYTHONPATH")
+        assert isinstance(pythonpath, str)
+        assert pythonpath.split(os.pathsep)[0] == str(tmp_path)
 
     def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
         """Runner should reject when candidate-side semantic execution fails."""
