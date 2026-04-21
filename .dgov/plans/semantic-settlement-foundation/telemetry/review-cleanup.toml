@@ -1,0 +1,30 @@
+[tasks.reduce-review-surface-complexity]
+summary = "Reduce review-surface complexity before advancing to integrated-candidate work."
+depends_on = ["telemetry/review-surface.surface-integration-risk"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` first.
+- Read `src/dgov/plan_review.py`, `src/dgov/cli/plan.py`, `tests/test_plan_review.py`, and `tests/test_cli.py`.
+- The goal is to simplify the review/render surfaces that just grew during integration-telemetry work.
+- Preserve externally visible behavior: active/deployed/failed review states, integration telemetry fields in JSON, and terse human review output should remain semantically the same.
+- Do not touch runtime merge behavior or persistence schema in this task.
+
+Edit:
+1. In `src/dgov/plan_review.py`, reduce branching in the review assembly path. Prefer small pure helpers over one large `_build_unit_review(...)` flow when those helpers make the state transitions easier to inspect.
+2. In `src/dgov/cli/plan.py`, reduce branching in the review rendering path. Extract repetitive integration-telemetry display logic into small helpers rather than duplicating condition ladders inside `_render_deployed_unit(...)` and `_render_failed_unit(...)`.
+3. Keep the refactor explicit. Do not introduce a generic formatter framework or a large abstraction layer just to move code around.
+4. Trim or consolidate test helpers in `tests/test_plan_review.py` and `tests/test_cli.py` only where that directly supports the refactor and keeps coverage readable.
+5. Stop once the review surfaces are materially simpler and the sentrux regression is reduced. If sentrux still reports branch-level degradation after a reasonable cleanup, prefer the clearest smaller structure over endless micro-optimizations.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_plan_review.py tests/test_cli.py`
+- `uv run ruff check src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_plan_review.py tests/test_cli.py`
+- `uv run ty check src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_plan_review.py tests/test_cli.py`
+- `sentrux gate .`
+"""
+commit_message = "Reduce review surface complexity"
+files.edit = ["src/dgov/plan_review.py", "src/dgov/cli/plan.py", "tests/test_plan_review.py", "tests/test_cli.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/semantic_settlement.py",
+]

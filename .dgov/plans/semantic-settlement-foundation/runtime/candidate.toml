@@ -1,6 +1,6 @@
 [tasks.add-integration-candidate]
 summary = "Validate an integrated candidate workspace before final merge."
-depends_on = ["telemetry/shadow-risk.add-shadow-risk-scoring"]
+depends_on = ["telemetry/review-cleanup.reduce-review-surface-complexity"]
 prompt = """
 Orient:
 - Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md`, `src/dgov/runner.py`, `src/dgov/worktree.py`, `src/dgov/settlement.py`, and `src/dgov/semantic_settlement.py`.
