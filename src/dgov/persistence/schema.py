@@ -181,6 +181,12 @@ VALID_EVENTS = frozenset({
     "worker_log",
     "worker_done",
     "worker_error",
+    # Semantic Settlement (Phase 1: contract and telemetry)
+    "integration_risk_scored",
+    "integration_overlap_detected",
+    "integration_candidate_passed",
+    "integration_candidate_failed",
+    "semantic_gate_rejected",
 })
 
 _EVENT_TYPED_COLS = frozenset({
