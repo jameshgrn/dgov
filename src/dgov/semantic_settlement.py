@@ -205,52 +205,64 @@ class SemanticGateVerdict:
 # -----------------------------------------------------------------------------
 
 
+# Registry: evidence type name -> dataclass type
+_EVIDENCE_TYPES: dict[str, type[OverlapEvidence]] = {
+    "SymbolOverlap": SymbolOverlap,
+    "DuplicateDefinition": DuplicateDefinition,
+    "SignatureDrift": SignatureDrift,
+    "SyntaxConflict": SyntaxConflict,
+    "TextConflict": TextConflict,
+}
+
+# Fields that should be tuples in evidence dataclasses
+_TUPLE_FIELDS = frozenset({
+    "task_line_range",
+    "target_line_range",
+    "file_paths",
+    "line_numbers",
+    "base_lines",
+    "ours_lines",
+    "theirs_lines",
+})
+
+
+def _to_tuple(value: Any, field: str) -> Any:
+    """Convert list to tuple when needed for dataclass fields."""
+    if not isinstance(value, list):
+        return value
+    if field == "line_numbers":
+        return tuple(tuple(item) if isinstance(item, list) else item for item in value)
+    if field in _TUPLE_FIELDS:
+        return tuple(value)
+    return value
+
+
 def _serialize_evidence(evidence: OverlapEvidence) -> dict[str, Any]:
     """Convert an evidence dataclass to a JSON-serializable dict."""
-    result: dict[str, Any] = {"_kind": evidence.__class__.__name__}
-    result.update(asdict(evidence))
-    # Convert tuples to lists for JSON serialization
-    for key, value in result.items():
-        if isinstance(value, tuple):
-            result[key] = list(value)
-    return result
+    data = asdict(evidence)
+    return {"_kind": evidence.__class__.__name__} | {
+        k: list(v) if isinstance(v, tuple) else v for k, v in data.items()
+    }
 
 
 def _deserialize_evidence(data: dict[str, Any]) -> OverlapEvidence:
     """Reconstruct an evidence dataclass from a JSON-deserialized dict."""
     kind = data.pop("_kind", None)
-    # Convert lists back to tuples for dataclass fields
-    annotations: dict[str, Any] = {}
-    if kind == "SymbolOverlap":
-        annotations = SymbolOverlap.__annotations__
-    elif kind == "DuplicateDefinition":
-        annotations = DuplicateDefinition.__annotations__
-    elif kind == "SignatureDrift":
-        annotations = SignatureDrift.__annotations__
-    elif kind == "SyntaxConflict":
-        annotations = SyntaxConflict.__annotations__
-    elif kind == "TextConflict":
-        annotations = TextConflict.__annotations__
-
-    for key, value in list(data.items()):
-        if isinstance(value, list):
-            # Check if the expected type is a tuple
-            expected = annotations.get(key, str)
-            if "tuple" in str(expected).lower():
-                data[key] = tuple(value)
-
-    if kind == "SymbolOverlap":
-        return SymbolOverlap(**data)
-    elif kind == "DuplicateDefinition":
-        return DuplicateDefinition(**data)
-    elif kind == "SignatureDrift":
-        return SignatureDrift(**data)
-    elif kind == "SyntaxConflict":
-        return SyntaxConflict(**data)
-    elif kind == "TextConflict":
-        return TextConflict(**data)
-    else:
+    if kind not in _EVIDENCE_TYPES:
         raise ValueError(f"Unknown evidence kind: {kind}")
+    # Convert lists back to tuples where needed
+    converted = {k: _to_tuple(v, k) for k, v in data.items()}
+    return _EVIDENCE_TYPES[kind](**converted)
+
+
+def _evidence_payload(evidence: tuple[OverlapEvidence, ...]) -> list[dict[str, Any]]:
+    """Convert evidence tuple to serialized list for payloads."""
+    return [_serialize_evidence(e) for e in evidence]
+
+
+def _fc_value(fc: FailureClass | None) -> str | None:
+    """Convert optional FailureClass to its string value."""
+    return fc.value if fc else None
 
 
 def emit_integration_risk_scored(
@@ -260,16 +272,7 @@ def emit_integration_risk_scored(
     record: IntegrationRiskRecord,
     pane: str = "semantic-settlement",
 ) -> None:
-    """Emit integration_risk_scored event with structured payload.
-
-    Args:
-        emit_fn: The emit_event function from persistence.events
-        session_root: Project session root path
-        plan_name: DAG/plan name
-        record: The computed risk record
-        pane: Event pane identifier (default: semantic-settlement)
-    """
-    evidence_list = [_serialize_evidence(e) for e in record.overlap_evidence]
+    """Emit integration_risk_scored event with structured payload."""
     payload = {
         "task_slug": record.task_slug,
         "target_head_sha": record.target_head_sha,
@@ -279,7 +282,7 @@ def emit_integration_risk_scored(
         "claimed_files": list(record.claimed_files),
         "changed_files": list(record.changed_files),
         "python_overlap_detected": record.python_overlap_detected,
-        "overlap_evidence": evidence_list,
+        "overlap_evidence": _evidence_payload(record.overlap_evidence),
     }
     emit_fn(session_root, "integration_risk_scored", pane, plan_name=plan_name, **payload)
 
@@ -313,7 +316,7 @@ def emit_integration_candidate_passed(
         "candidate_sha": verdict.candidate_sha,
         "target_head_sha": verdict.target_head_sha,
         "passed": verdict.passed,
-        "evidence": [_serialize_evidence(e) for e in verdict.evidence],
+        "evidence": _evidence_payload(verdict.evidence),
     }
     emit_fn(session_root, "integration_candidate_passed", pane, plan_name=plan_name, **payload)
 
@@ -331,9 +334,9 @@ def emit_integration_candidate_failed(
         "candidate_sha": verdict.candidate_sha,
         "target_head_sha": verdict.target_head_sha,
         "passed": verdict.passed,
-        "failure_class": verdict.failure_class.value if verdict.failure_class else None,
+        "failure_class": _fc_value(verdict.failure_class),
         "error_message": verdict.error_message,
-        "evidence": [_serialize_evidence(e) for e in verdict.evidence],
+        "evidence": _evidence_payload(verdict.evidence),
     }
     emit_fn(session_root, "integration_candidate_failed", pane, plan_name=plan_name, **payload)
 
@@ -350,9 +353,9 @@ def emit_semantic_gate_rejected(
         "task_slug": verdict.task_slug,
         "gate_name": verdict.gate_name,
         "passed": verdict.passed,
-        "failure_class": verdict.failure_class.value if verdict.failure_class else None,
+        "failure_class": _fc_value(verdict.failure_class),
         "error_message": verdict.error_message,
-        "evidence": [_serialize_evidence(e) for e in verdict.evidence],
+        "evidence": _evidence_payload(verdict.evidence),
     }
     emit_fn(session_root, "semantic_gate_rejected", pane, plan_name=plan_name, **payload)
 
@@ -362,13 +365,20 @@ def emit_semantic_gate_rejected(
 # -----------------------------------------------------------------------------
 
 
+def _parse_evidence_list(data: dict[str, Any], key: str) -> tuple[OverlapEvidence, ...]:
+    """Parse a list of evidence dicts from event data."""
+    items = data.get(key, [])
+    return tuple(_deserialize_evidence(e) for e in items) if items else ()
+
+
+def _parse_failure_class(data: dict[str, Any]) -> FailureClass | None:
+    """Parse optional failure_class from event data."""
+    value = data.get("failure_class")
+    return FailureClass(value) if value else None
+
+
 def parse_integration_risk_record(event_data: dict[str, Any]) -> IntegrationRiskRecord:
     """Parse an integration_risk_scored event data dict into a typed record."""
-    evidence_list = event_data.get("overlap_evidence", [])
-    evidence_tuple = (
-        tuple(_deserialize_evidence(e) for e in evidence_list) if evidence_list else ()
-    )
-
     return IntegrationRiskRecord(
         task_slug=event_data["task_slug"],
         target_head_sha=event_data["target_head_sha"],
@@ -378,8 +388,8 @@ def parse_integration_risk_record(event_data: dict[str, Any]) -> IntegrationRisk
         claimed_files=tuple(event_data.get("claimed_files", [])),
         changed_files=tuple(event_data.get("changed_files", [])),
         python_overlap_detected=event_data.get("python_overlap_detected", False),
-        overlap_evidence=evidence_tuple,
-        computed_at=event_data.get("ts", 0.0),  # Use event timestamp if available
+        overlap_evidence=_parse_evidence_list(event_data, "overlap_evidence"),
+        computed_at=event_data.get("ts", 0.0),
     )
 
 
@@ -387,21 +397,13 @@ def parse_integration_candidate_verdict(
     event_data: dict[str, Any],
 ) -> IntegrationCandidateVerdict:
     """Parse an integration_candidate_passed/failed event into a typed verdict."""
-    evidence_list = event_data.get("evidence", [])
-    evidence_tuple = (
-        tuple(_deserialize_evidence(e) for e in evidence_list) if evidence_list else ()
-    )
-
-    failure_class_str = event_data.get("failure_class")
-    failure_class = FailureClass(failure_class_str) if failure_class_str else None
-
     return IntegrationCandidateVerdict(
         task_slug=event_data["task_slug"],
         candidate_sha=event_data["candidate_sha"],
         target_head_sha=event_data["target_head_sha"],
         passed=event_data["passed"],
-        failure_class=failure_class,
-        evidence=evidence_tuple,
+        failure_class=_parse_failure_class(event_data),
+        evidence=_parse_evidence_list(event_data, "evidence"),
         error_message=event_data.get("error_message", ""),
         validated_at=event_data.get("ts", 0.0),
     )
@@ -409,20 +411,12 @@ def parse_integration_candidate_verdict(
 
 def parse_semantic_gate_verdict(event_data: dict[str, Any]) -> SemanticGateVerdict:
     """Parse a semantic_gate_rejected event into a typed verdict."""
-    evidence_list = event_data.get("evidence", [])
-    evidence_tuple = (
-        tuple(_deserialize_evidence(e) for e in evidence_list) if evidence_list else ()
-    )
-
-    failure_class_str = event_data.get("failure_class")
-    failure_class = FailureClass(failure_class_str) if failure_class_str else None
-
     return SemanticGateVerdict(
         task_slug=event_data["task_slug"],
         gate_name=event_data["gate_name"],
         passed=event_data["passed"],
-        failure_class=failure_class,
-        evidence=evidence_tuple,
+        failure_class=_parse_failure_class(event_data),
+        evidence=_parse_evidence_list(event_data, "evidence"),
         error_message=event_data.get("error_message", ""),
         checked_at=event_data.get("ts", 0.0),
     )

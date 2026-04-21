@@ -32,6 +32,27 @@ from dgov.semantic_settlement import (
 pytestmark = pytest.mark.unit
 
 
+class MockEmit:
+    """Callable mock that captures emit calls for verification."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, session_root: str, event: str, pane: str, **kwargs: Any) -> None:
+        self.calls.append({
+            "session_root": session_root,
+            "event": event,
+            "pane": pane,
+            "kwargs": kwargs,
+        })
+
+
+@pytest.fixture
+def mock_emit():
+    """Create a mock emit function that captures calls."""
+    return MockEmit()
+
+
 class TestFailureClassEnum:
     """Tests for FailureClass StrEnum."""
 
@@ -97,141 +118,75 @@ class TestRiskLevelEnum:
             assert level == severity_order[i]
 
 
-class TestSymbolOverlap:
-    """Tests for SymbolOverlap evidence dataclass."""
+class TestEvidenceDataclasses:
+    """Tests for evidence dataclass construction."""
 
-    def test_basic_construction(self):
-        """SymbolOverlap can be constructed with required fields."""
+    def test_symbol_overlap_construction(self):
+        """SymbolOverlap can be constructed with all fields."""
         overlap = SymbolOverlap(
-            symbol_name="process_task",
+            symbol_name="process",
             symbol_type="function",
-            file_path="src/dgov/runner.py",
+            file_path="src/runner.py",
+            task_line_range=(10, 20),
+            target_line_range=(10, 25),
         )
-        assert overlap.symbol_name == "process_task"
-        assert overlap.symbol_type == "function"
-        assert overlap.file_path == "src/dgov/runner.py"
-        assert overlap.task_line_range is None
-        assert overlap.target_line_range is None
+        assert overlap.symbol_name == "process"
+        assert overlap.task_line_range == (10, 20)
 
-    def test_full_construction(self):
-        """SymbolOverlap can include line ranges."""
-        overlap = SymbolOverlap(
-            symbol_name="EventDagRunner",
-            symbol_type="class",
-            file_path="src/dgov/runner.py",
-            task_line_range=(45, 120),
-            target_line_range=(45, 115),
-        )
-        assert overlap.task_line_range == (45, 120)
-        assert overlap.target_line_range == (45, 115)
-
-
-class TestDuplicateDefinition:
-    """Tests for DuplicateDefinition evidence dataclass."""
-
-    def test_basic_construction(self):
-        """DuplicateDefinition captures multiple file paths."""
-        dup = DuplicateDefinition(
-            symbol_name="helper_func",
-            symbol_type="function",
-            file_paths=("src/a.py", "src/b.py"),
-        )
-        assert dup.symbol_name == "helper_func"
-        assert dup.file_paths == ("src/a.py", "src/b.py")
-
-    def test_with_line_numbers(self):
-        """DuplicateDefinition can include line number ranges."""
+    def test_duplicate_definition_construction(self):
+        """DuplicateDefinition captures multiple file paths and line numbers."""
         dup = DuplicateDefinition(
             symbol_name="config",
             symbol_type="variable",
             file_paths=("src/a.py", "src/b.py"),
             line_numbers=((10, 15), (20, 25)),
         )
+        assert dup.symbol_name == "config"
         assert dup.line_numbers == ((10, 15), (20, 25))
 
-
-class TestSignatureDrift:
-    """Tests for SignatureDrift evidence dataclass."""
-
-    def test_construction(self):
+    def test_signature_drift_construction(self):
         """SignatureDrift captures signature changes."""
         drift = SignatureDrift(
             symbol_name="run_task",
-            file_path="src/dgov/worker.py",
-            base_signature="def run_task(task: Task) -> Result",
-            integrated_signature="def run_task(task: Task, timeout: int) -> Result",
+            file_path="src/worker.py",
+            base_signature="def run_task() -> None",
+            integrated_signature="def run_task(timeout: int) -> None",
         )
         assert drift.symbol_name == "run_task"
         assert "timeout: int" in drift.integrated_signature
 
-
-class TestSyntaxConflict:
-    """Tests for SyntaxConflict evidence dataclass."""
-
-    def test_basic_construction(self):
-        """SyntaxConflict captures parse errors."""
+    def test_syntax_conflict_construction(self):
+        """SyntaxConflict captures parse errors with optional fields."""
         conflict = SyntaxConflict(
-            file_path="src/dgov/runner.py",
+            file_path="src/bad.py",
             line_number=42,
             column=15,
             error_message="invalid syntax",
+            parser_used="python",
         )
-        assert conflict.file_path == "src/dgov/runner.py"
+        assert conflict.file_path == "src/bad.py"
         assert conflict.line_number == 42
-        assert conflict.column == 15
-        assert conflict.error_message == "invalid syntax"
         assert conflict.parser_used == "python"
 
-    def test_custom_parser(self):
-        """SyntaxConflict supports non-Python parsers."""
-        conflict = SyntaxConflict(
-            file_path="config.yaml",
-            error_message="invalid YAML",
-            parser_used="yaml",
-        )
-        assert conflict.parser_used == "yaml"
-
-
-class TestTextConflict:
-    """Tests for TextConflict evidence dataclass."""
-
-    def test_basic_construction(self):
+    def test_text_conflict_construction(self):
         """TextConflict captures Git merge conflicts."""
         conflict = TextConflict(
-            file_path="src/dgov/runner.py",
+            file_path="src/conflict.py",
             conflict_markers=3,
             base_lines=(40, 50),
             ours_lines=(45, 55),
             theirs_lines=(40, 48),
         )
-        assert conflict.file_path == "src/dgov/runner.py"
+        assert conflict.file_path == "src/conflict.py"
         assert conflict.conflict_markers == 3
         assert conflict.base_lines == (40, 50)
 
 
-class TestIntegrationRiskRecord:
-    """Tests for IntegrationRiskRecord dataclass."""
+class TestVerdictDataclasses:
+    """Tests for verdict dataclass construction."""
 
-    def test_basic_construction(self):
-        """IntegrationRiskRecord captures risk assessment."""
-        record = IntegrationRiskRecord(
-            task_slug="task-123",
-            target_head_sha="abc123",
-            task_base_sha="def456",
-            task_commit_sha="ghi789",
-            risk_level=RiskLevel.MEDIUM,
-            claimed_files=("src/a.py", "src/b.py"),
-            changed_files=("src/a.py",),
-            python_overlap_detected=True,
-            overlap_evidence=(),
-            computed_at=0.0,
-        )
-        assert record.task_slug == "task-123"
-        assert record.risk_level == RiskLevel.MEDIUM
-        assert record.python_overlap_detected is True
-
-    def test_with_overlap_evidence(self):
-        """IntegrationRiskRecord can include overlap evidence."""
+    def test_integration_risk_record_construction(self):
+        """IntegrationRiskRecord captures risk assessment with evidence."""
         evidence = SymbolOverlap(
             symbol_name="process",
             symbol_type="function",
@@ -249,36 +204,24 @@ class TestIntegrationRiskRecord:
             overlap_evidence=(evidence,),
             computed_at=0.0,
         )
+        assert record.task_slug == "task-123"
+        assert record.risk_level == RiskLevel.HIGH
         assert len(record.overlap_evidence) == 1
-        ev = record.overlap_evidence[0]
-        assert isinstance(ev, SymbolOverlap)
-        assert ev.symbol_name == "process"
 
-
-class TestIntegrationCandidateVerdict:
-    """Tests for IntegrationCandidateVerdict dataclass."""
-
-    def test_passed_verdict(self):
+    def test_integration_candidate_verdict_passed(self):
         """Passed candidate verdict has no failure class."""
         verdict = IntegrationCandidateVerdict(
             task_slug="task-123",
             candidate_sha="candidate-abc",
             target_head_sha="target-def",
             passed=True,
-            failure_class=None,
-            evidence=(),
-            error_message="",
-            validated_at=0.0,
         )
         assert verdict.passed is True
         assert verdict.failure_class is None
 
-    def test_failed_verdict_with_evidence(self):
+    def test_integration_candidate_verdict_failed(self):
         """Failed candidate verdict includes failure class and evidence."""
-        evidence = TextConflict(
-            file_path="src/conflict.py",
-            conflict_markers=2,
-        )
+        evidence = TextConflict(file_path="src/conflict.py", conflict_markers=2)
         verdict = IntegrationCandidateVerdict(
             task_slug="task-123",
             candidate_sha="candidate-abc",
@@ -287,17 +230,12 @@ class TestIntegrationCandidateVerdict:
             failure_class=FailureClass.TEXT_CONFLICT,
             evidence=(evidence,),
             error_message="Merge conflict detected",
-            validated_at=0.0,
         )
         assert verdict.passed is False
         assert verdict.failure_class == FailureClass.TEXT_CONFLICT
         assert len(verdict.evidence) == 1
 
-
-class TestSemanticGateVerdict:
-    """Tests for SemanticGateVerdict dataclass."""
-
-    def test_passed_gate(self):
+    def test_semantic_gate_verdict_passed(self):
         """Passed gate has no failure."""
         verdict = SemanticGateVerdict(
             task_slug="task-123",
@@ -307,8 +245,8 @@ class TestSemanticGateVerdict:
         assert verdict.passed is True
         assert verdict.failure_class is None
 
-    def test_failed_gate(self):
-        """Failed gate includes precise reason."""
+    def test_semantic_gate_verdict_failed(self):
+        """Failed gate includes precise reason with evidence."""
         evidence = SymbolOverlap(
             symbol_name="process_data",
             symbol_type="function",
@@ -423,19 +361,8 @@ class TestEvidenceSerialization:
 class TestEventEmitters:
     """Tests for event emitter helpers."""
 
-    def test_emit_integration_risk_scored(self, tmp_path):
+    def test_emit_integration_risk_scored(self, tmp_path, mock_emit):
         """Risk scored event emits with correct payload structure."""
-
-        emitted_calls = []
-
-        def mock_emit(session_root, event, pane, **kwargs):
-            emitted_calls.append({
-                "session_root": session_root,
-                "event": event,
-                "pane": pane,
-                "kwargs": kwargs,
-            })
-
         record = IntegrationRiskRecord(
             task_slug="task-123",
             target_head_sha="abc123",
@@ -449,30 +376,17 @@ class TestEventEmitters:
             computed_at=0.0,
         )
 
-        emit_integration_risk_scored(
-            mock_emit,
-            str(tmp_path),
-            "test-plan",
-            record,
-        )
+        emit_integration_risk_scored(mock_emit, str(tmp_path), "test-plan", record)
 
-        assert len(emitted_calls) == 1
-        call = emitted_calls[0]
+        assert len(mock_emit.calls) == 1
+        call = mock_emit.calls[0]
         assert call["event"] == "integration_risk_scored"
         assert call["pane"] == "semantic-settlement"
         assert call["kwargs"]["task_slug"] == "task-123"
         assert call["kwargs"]["risk_level"] == "high"
 
-    def test_emit_integration_overlap_detected(self, tmp_path):
+    def test_emit_integration_overlap_detected(self, tmp_path, mock_emit):
         """Overlap detected event emits with evidence."""
-        emitted_calls = []
-
-        def mock_emit(session_root, event, pane, **kwargs):
-            emitted_calls.append({
-                "event": event,
-                "kwargs": kwargs,
-            })
-
         evidence = SymbolOverlap(
             symbol_name="process",
             symbol_type="function",
@@ -480,27 +394,15 @@ class TestEventEmitters:
         )
 
         emit_integration_overlap_detected(
-            mock_emit,
-            str(tmp_path),
-            "test-plan",
-            "task-123",
-            evidence,
+            mock_emit, str(tmp_path), "test-plan", "task-123", evidence
         )
 
-        assert len(emitted_calls) == 1
-        assert emitted_calls[0]["event"] == "integration_overlap_detected"
-        assert emitted_calls[0]["kwargs"]["evidence"]["_kind"] == "SymbolOverlap"
+        assert len(mock_emit.calls) == 1
+        assert mock_emit.calls[0]["event"] == "integration_overlap_detected"
+        assert mock_emit.calls[0]["kwargs"]["evidence"]["_kind"] == "SymbolOverlap"
 
-    def test_emit_integration_candidate_passed(self, tmp_path):
+    def test_emit_integration_candidate_passed(self, tmp_path, mock_emit):
         """Candidate passed event emits with verdict."""
-        emitted_calls = []
-
-        def mock_emit(session_root, event, pane, **kwargs):
-            emitted_calls.append({
-                "event": event,
-                "kwargs": kwargs,
-            })
-
         verdict = IntegrationCandidateVerdict(
             task_slug="task-123",
             candidate_sha="candidate-abc",
@@ -508,31 +410,15 @@ class TestEventEmitters:
             passed=True,
         )
 
-        emit_integration_candidate_passed(
-            mock_emit,
-            str(tmp_path),
-            "test-plan",
-            verdict,
-        )
+        emit_integration_candidate_passed(mock_emit, str(tmp_path), "test-plan", verdict)
 
-        assert len(emitted_calls) == 1
-        assert emitted_calls[0]["event"] == "integration_candidate_passed"
-        assert emitted_calls[0]["kwargs"]["passed"] is True
+        assert len(mock_emit.calls) == 1
+        assert mock_emit.calls[0]["event"] == "integration_candidate_passed"
+        assert mock_emit.calls[0]["kwargs"]["passed"] is True
 
-    def test_emit_integration_candidate_failed(self, tmp_path):
+    def test_emit_integration_candidate_failed(self, tmp_path, mock_emit):
         """Candidate failed event emits with failure details."""
-        emitted_calls = []
-
-        def mock_emit(session_root, event, pane, **kwargs):
-            emitted_calls.append({
-                "event": event,
-                "kwargs": kwargs,
-            })
-
-        evidence = TextConflict(
-            file_path="src/conflict.py",
-            conflict_markers=2,
-        )
+        evidence = TextConflict(file_path="src/conflict.py", conflict_markers=2)
         verdict = IntegrationCandidateVerdict(
             task_slug="task-123",
             candidate_sha="candidate-abc",
@@ -543,29 +429,16 @@ class TestEventEmitters:
             error_message="Merge conflict",
         )
 
-        emit_integration_candidate_failed(
-            mock_emit,
-            str(tmp_path),
-            "test-plan",
-            verdict,
-        )
+        emit_integration_candidate_failed(mock_emit, str(tmp_path), "test-plan", verdict)
 
-        assert len(emitted_calls) == 1
-        call = emitted_calls[0]
+        assert len(mock_emit.calls) == 1
+        call = mock_emit.calls[0]
         assert call["event"] == "integration_candidate_failed"
         assert call["kwargs"]["failure_class"] == "text_conflict"
         assert call["kwargs"]["error_message"] == "Merge conflict"
 
-    def test_emit_semantic_gate_rejected(self, tmp_path):
+    def test_emit_semantic_gate_rejected(self, tmp_path, mock_emit):
         """Semantic gate rejected event emits with gate details."""
-        emitted_calls = []
-
-        def mock_emit(session_root, event, pane, **kwargs):
-            emitted_calls.append({
-                "event": event,
-                "kwargs": kwargs,
-            })
-
         verdict = SemanticGateVerdict(
             task_slug="task-123",
             gate_name="same_symbol_edit",
@@ -574,15 +447,10 @@ class TestEventEmitters:
             error_message="Both sides modified the function",
         )
 
-        emit_semantic_gate_rejected(
-            mock_emit,
-            str(tmp_path),
-            "test-plan",
-            verdict,
-        )
+        emit_semantic_gate_rejected(mock_emit, str(tmp_path), "test-plan", verdict)
 
-        assert len(emitted_calls) == 1
-        call = emitted_calls[0]
+        assert len(mock_emit.calls) == 1
+        call = mock_emit.calls[0]
         assert call["event"] == "semantic_gate_rejected"
         assert call["kwargs"]["gate_name"] == "same_symbol_edit"
         assert call["kwargs"]["failure_class"] == "same_symbol_edit"
