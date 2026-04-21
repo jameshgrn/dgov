@@ -22,6 +22,10 @@ Requires Python 3.12+, git, `uv`, `sentrux`, and an OpenAI-compatible API key.
 
 ## Usage
 
+The dgov workflow follows a loop: **Plan → Compile → Run → Review**.
+
+### 1. Bootstrap
+
 ```bash
 git init
 dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
@@ -29,20 +33,7 @@ dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
 # Review .dgov/governor.md for planning and retry rules
 # If sentrux is installed, dgov init offers to create the baseline now.
 dgov sentrux gate-save   # Otherwise create the repo's explicit baseline yourself
-dgov init-plan my-plan   # Create a plan tree
-dgov compile .dgov/plans/my-plan/  # Compile it to _compiled.toml
-dgov run .dgov/plans/my-plan/      # Execute the compiled plan
-dgov fix "Refactor utils" -f src/utils.py -f src/main.py  # One-off fix
-dgov status              # Show live task status
-dgov --json status       # JSON status output
-dgov watch               # Stream events
-dgov sentrux check       # Run architectural quality check
-dgov clean               # Clean stale worktrees and outputs
 ```
-
-If the repo has no commits yet and only `.dgov` bootstrap files exist, the first `dgov run`
-creates the bootstrap commit automatically. If there are other uncommitted files, dgov asks
-before creating that snapshot.
 
 `dgov init` is idempotent for missing bootstrap files. If `.dgov/project.toml`
 exists but `.dgov/governor.md` does not, running `dgov init` again will scaffold
@@ -54,12 +45,59 @@ not a worker-editable file. If the final post-run sentrux comparison detects
 degradation after tasks merged cleanly, `dgov run` reports a degraded result
 and keeps the warning visible without relabeling the task run as failed.
 
+If the repo has no commits yet and only `.dgov` bootstrap files exist, the first `dgov run`
+creates the bootstrap commit automatically. If there are other uncommitted files, dgov asks
+before creating that snapshot.
+
+### 2. Plan → Compile → Run → Review
+
+```bash
+# Plan: author the work
+dgov init-plan my-plan   # Create a plan tree
+
+# Compile: validate and lock the plan
+dgov compile .dgov/plans/my-plan/  # Compile it to _compiled.toml
+
+# Run: execute the compiled plan
+dgov run .dgov/plans/my-plan/      # Dispatch tasks to workers
+
+# Review: debrief the results
+dgov plan review .dgov/plans/my-plan/  # Post-hoc debrief of the last run
+```
+
+Use `dgov plan review` as the standard way to debrief after a run. It shows
+per-unit results, diff stats, and any settlement issues that arose during
+execution.
+
+### 3. Monitor and recover
+
+```bash
+dgov status              # Show live task status
+dgov --json status       # JSON status output
+dgov watch               # Stream events in real-time
+dgov clean               # Clean stale worktrees and outputs
+```
+
 `dgov status`, `dgov watch`, and `dgov clean` derive live state from the event
 log, not from mutable task snapshots. Recovery flows through `dgov run`:
 
 - bare `dgov run <plan-dir>` surfaces abandoned work from a crashed prior run
 - `dgov run <plan-dir> --continue` retries failed or abandoned tasks
 - `dgov run <plan-dir> --restart` clears prior run state and starts fresh
+
+### 4. One-off fixes
+
+For quick tasks that don't need a full plan:
+
+```bash
+dgov fix "Refactor utils" -f src/utils.py -f src/main.py  # One-off fix
+```
+
+### 5. Quality checks
+
+```bash
+dgov sentrux check       # Run architectural quality check
+```
 
 ## LLM Endpoint Configuration
 
