@@ -497,13 +497,11 @@ def _filter_dag_to_task(dag: DagDefinition, only: str | None) -> DagDefinition:
 def _emit_run_start(dag_name: str, baseline_quality: int | None) -> None:
     if want_json():
         click.echo(
-            json.dumps(
-                {
-                    "status": "starting",
-                    "dag": dag_name,
-                    "sentrux_baseline": baseline_quality,
-                }
-            )
+            json.dumps({
+                "status": "starting",
+                "dag": dag_name,
+                "sentrux_baseline": baseline_quality,
+            })
         )
         return
     click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
@@ -524,9 +522,7 @@ def _classify_task_results(
     results: dict[str, str],
 ) -> tuple[list[str], list[str], list[str], list[str]]:
     failed = [slug for slug, status in results.items() if status == "failed"]
-    abandoned = [
-        slug for slug, status in results.items() if status in ("abandoned", "timed_out")
-    ]
+    abandoned = [slug for slug, status in results.items() if status in ("abandoned", "timed_out")]
     skipped = [slug for slug, status in results.items() if status == "skipped"]
     succeeded = [slug for slug, status in results.items() if status == "merged"]
     return failed, abandoned, skipped, succeeded
@@ -623,9 +619,9 @@ def _append_sentrux_log_lines(lines: list[str], gate_result: dict[str, object]) 
     offenders = gate_result.get("structural_offenders")
     if not isinstance(offenders, dict):
         return
-    summary = format_structural_offender_report(
-        {str(k): v for k, v in offenders.items()}
-    ).replace("\n", " | ")
+    summary = format_structural_offender_report({str(k): v for k, v in offenders.items()}).replace(
+        "\n", " | "
+    )
     lines.append(f"  sentrux_offenders: {summary[:400]}")
 
 
