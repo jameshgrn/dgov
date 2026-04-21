@@ -1,0 +1,20 @@
+[tasks.review-cleanup]
+summary = "Review cleanup pass for preserved behavior and reduced structural risk."
+role = "reviewer"
+prompt = """
+Orient:
+- Read the dependency diffs first.
+- Focus on whether the cleanup preserved semantic-settlement behavior while reducing structural risk.
+
+Edit:
+1. Review for regressions in candidate replay, Python semantic gating, and review/report output.
+2. Prefer findings about fail-closed behavior, false positives, and missing verification over style commentary.
+
+Verify:
+- Confirm whether the cleanup reduced complexity without weakening the current contract.
+"""
+depends_on = [
+  "semantic/python-gate.reduce-python-gate-complexity",
+  "runtime/settlement.reduce-runner-settlement-complexity",
+  "review/surfaces.reduce-review-hotspots",
+]

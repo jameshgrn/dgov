@@ -1,0 +1,28 @@
+[tasks.reduce-runner-settlement-complexity]
+summary = "Simplify settlement flow in runner after semantic-gate cleanup."
+depends_on = ["semantic/python-gate.reduce-python-gate-complexity"]
+prompt = """
+Orient:
+- Read `src/dgov/runner.py`, `src/dgov/worktree.py`, and `src/dgov/semantic_settlement.py`.
+- Read `tests/test_runner.py`, `tests/test_integration.py`, and `tests/test_worktree.py`.
+- The target hotspot is `_settle_and_merge(...)`. The branch now has correct candidate replay and semantic-gate behavior, but too much settlement orchestration sits in one method.
+- Preserve the current phase order: isolated validation -> integration candidate -> Python semantic gate -> final merge.
+- Do not change public CLI behavior, retry policy, or persistence schema in this task.
+
+Edit:
+1. Refactor `src/dgov/runner.py` so the settlement path is decomposed into smaller explicit helpers with clear ownership of candidate creation, candidate validation, semantic-gate evaluation, and merge continuation.
+2. Keep `_settle_and_merge(...)` as orchestration glue rather than the place where all branching lives.
+3. Do not move logic into a generic framework or create speculative abstractions. This is a local cleanup pass.
+4. Update focused tests only as needed to keep the existing behavior pinned.
+5. Stop when runner settlement reads materially cleaner and the sentrux regression is reduced.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_runner.py tests/test_worktree.py tests/test_boundaries.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+- `uv run ruff check src/dgov/runner.py tests/test_runner.py tests/test_worktree.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run ty check src/dgov/runner.py tests/test_runner.py tests/test_worktree.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run sentrux gate .`
+"""
+commit_message = "Reduce runner settlement complexity"
+files.edit = ["src/dgov/runner.py", "tests/test_runner.py", "tests/test_worktree.py", "tests/test_integration.py"]
+files.read = ["src/dgov/worktree.py", "src/dgov/semantic_settlement.py", "tests/test_boundaries.py"]
