@@ -40,6 +40,7 @@ from dgov.actions import (
 )
 from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.kernel import DagKernel
+from dgov.live_state import latest_run_start_ids
 from dgov.persistence import (
     emit_event,
     record_runtime_artifact,
@@ -278,7 +279,10 @@ class EventDagRunner:
         from dgov.persistence import read_events
 
         events = read_events(self.session_root, plan_name=self.dag.name)
+        run_start_id = latest_run_start_ids(events).get(self.dag.name, 0)
         for ev in events:
+            if int(ev.get("id", 0)) <= run_start_id:
+                continue
             ename = ev["event"]
             task_slug = ev.get("task_slug")
             pane = ev["pane"]

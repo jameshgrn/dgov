@@ -101,3 +101,28 @@ def test_rehydration_restores_attempts(tmp_path: Path, mock_dag: DagDefinition, 
 
     assert runner.kernel.task_states["a"] == TaskState.PENDING
     assert runner.kernel.attempts["a"] == 1
+
+
+@pytest.mark.unit
+def test_rehydration_scopes_to_latest_run_start(
+    tmp_path: Path, mock_dag: DagDefinition, monkeypatch
+):
+    """Older abandoned attempts must not poison a later run window."""
+    session_root = str(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    clear_connection_cache()
+
+    emit_event(session_root, "run_start", "run-1", plan_name="test-plan")
+    emit_event(session_root, "dag_task_dispatched", "p1", plan_name="test-plan", task_slug="a")
+    emit_event(session_root, "task_abandoned", "cleanup", plan_name="test-plan", task_slug="a")
+
+    emit_event(session_root, "run_start", "run-2", plan_name="test-plan")
+
+    runner = EventDagRunner(mock_dag, session_root=session_root)
+
+    assert runner.kernel.task_states["a"] == TaskState.PENDING
+    actions = runner.kernel.start()
+
+    from dgov.actions import DispatchTask
+
+    assert any(isinstance(a, DispatchTask) and a.task_slug == "a" for a in actions)
