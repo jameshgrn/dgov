@@ -16,6 +16,9 @@ Complete reference for the `dgov` command-line interface.
 | [`dgov compile`](#dgov-compile) | Compile a plan tree into `_compiled.toml` |
 | [`dgov validate`](#dgov-validate) | Parse and validate a plan without running it |
 | [`dgov plan status`](#dgov-plan-status) | Show pending vs deployed units for a plan |
+| [`dgov plan review`](#dgov-plan-review) | Post-hoc debrief of the last run for a plan |
+| [`dgov sentrux offenders`](#dgov-sentrux-offenders) | Show likely structural offenders |
+| [`dgov sentrux status`](#dgov-sentrux-status) | Check if Sentrux is installed and available |
 
 ---
 
@@ -101,9 +104,42 @@ dgov validate <plan-dir>/_compiled.toml
 
 Show deployment status for a compiled plan — which units have been deployed via `deployed.jsonl` versus which are still pending. Warns if the compiled plan is stale relative to source TOML files.
 
+Default output is a one-line summary: plan name, N/M deployed, and a staleness warning when the compile is out of date. Use `dgov plan review` for the rich per-unit debrief.
+
 ```bash
 dgov plan status .dgov/plans/my-plan/
+dgov plan status .dgov/plans/my-plan/ --verbose
 ```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--verbose, -v` | Show the per-unit list (default: one-line summary) |
+
+---
+
+## `dgov plan review`
+
+Post-hoc debrief of the last `dgov run` for a plan.
+
+Shows what landed, how hard each worker worked to land it, and the reject reason with a hint when settlement failed. Scopes to the last run via the run_start marker.
+
+Accepts either a live plan directory or an archived one. If the live path does not exist but an archive copy is found, the debrief resolves to the archive automatically and prints a note to stderr.
+
+```bash
+dgov plan review .dgov/plans/my-plan/
+dgov plan review my-plan/ --only tasks/main.thing
+dgov plan review my-plan/ --diff tasks/main.thing --events tasks/main.thing
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--only <unit>` | Review only this exact unit id |
+| `--diff <unit>` | Print the full git show diff for this unit (exact match) |
+| `--events <unit>` | Print the full worker activity timeline for this unit (exact match) |
 
 ---
 
@@ -411,6 +447,33 @@ dgov ledger resolve <entry_id>
 dgov ledger resolve 3
 # Output: Resolved entry #3
 ```
+
+---
+
+## `dgov sentrux offenders`
+
+Show likely long/complex function offenders for the current commit.
+
+Uses the structural snapshot to identify functions with high complexity or length that may need attention.
+
+```bash
+dgov sentrux offenders
+dgov sentrux offenders /path/to/project
+```
+
+---
+
+## `dgov sentrux status`
+
+Check if Sentrux is installed and available.
+
+```bash
+dgov sentrux status
+```
+
+**Output:**
+- `sentrux: installed and available` — Sentrux is ready to use
+- `sentrux: not found in PATH` — Sentrux needs to be installed
 
 ---
 
