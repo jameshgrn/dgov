@@ -172,8 +172,10 @@ The command outputs task progress to stderr and final results to stdout. In JSON
 }
 ```
 
-If the final post-run sentrux comparison detects degradation, the run exits
-nonzero even if all tasks merged.
+If the final post-run sentrux comparison detects degradation after all tasks
+merged, the run reports `status: degraded`, returns zero, and surfaces the
+sentrux warning in the output. Task failures and abandoned tasks still exit
+nonzero.
 
 ---
 

@@ -399,6 +399,36 @@ class TestBuildUnitReview:
             )
         assert review.worker_note_mismatches == ("tests/conftest.py",)
 
+    def test_deployed_unit_ignores_markdown_wrappers_in_worker_note_paths(self, tmp_path: Path):
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "Updated `src/dgov/example.py` and **tests/test_example.py**.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: tests"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/example.py", "tests/test_example.py"),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.worker_note_mismatches == ()
+
     def test_failed_unit_synthesizes_hint(self, tmp_path: Path):
         events = [
             _lifecycle(10, "dag_task_dispatched", "t", "p"),
@@ -443,6 +473,24 @@ class TestBuildUnitReview:
         assert review.status == "not_run"
         assert review.attempts == 0
         assert review.iterations is None
+        assert review.hint is None
+
+    def test_active_unit_stays_active_not_failed(self, tmp_path: Path):
+        review = _build_unit_review(
+            unit_id="t",
+            task_data={"summary": "pending merge"},
+            deploy_record=None,
+            unit_events=[
+                _lifecycle(1, "dag_task_dispatched", "t", "p"),
+                _worker_log(2, "t", "call", {"tool": "edit_file"}),
+                _worker_log(3, "t", "thought", "still working"),
+            ],
+            project_root=str(tmp_path),
+            include_full_diff=False,
+            iteration_budget=30,
+        )
+        assert review.status == "active"
+        assert review.last_thought == "still working"
         assert review.hint is None
 
     def test_stale_deploy_with_failed_current_run_shows_failed(self, tmp_path: Path):
@@ -726,8 +774,9 @@ class TestPlanReviewCounts:
             UnitReview(unit="a", summary="", status="deployed"),
             UnitReview(unit="b", summary="", status="deployed"),
             UnitReview(unit="c", summary="", status="failed"),
-            UnitReview(unit="d", summary="", status="pending"),
-            UnitReview(unit="e", summary="", status="not_run"),
+            UnitReview(unit="d", summary="", status="active"),
+            UnitReview(unit="e", summary="", status="pending"),
+            UnitReview(unit="f", summary="", status="not_run"),
         ]
         review = PlanReview(
             plan_name="p",
@@ -738,6 +787,7 @@ class TestPlanReviewCounts:
         )
         assert review.deployed_count == 2
         assert review.failed_count == 1
+        assert review.active_count == 1
         assert review.pending_count == 2
 
 

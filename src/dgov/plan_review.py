@@ -22,7 +22,7 @@ from typing import Literal
 from dgov.deploy_log import read as read_deploy_log
 from dgov.persistence import read_events
 
-UnitStatus = Literal["deployed", "failed", "pending", "not_run"]
+UnitStatus = Literal["deployed", "failed", "active", "pending", "not_run"]
 SettlementResult = Literal["ok", "ok_retried", "rejected", "n/a"]
 
 
@@ -91,6 +91,10 @@ class PlanReview:
     @property
     def failed_count(self) -> int:
         return sum(1 for u in self.units if u.status == "failed")
+
+    @property
+    def active_count(self) -> int:
+        return sum(1 for u in self.units if u.status == "active")
 
     @property
     def pending_count(self) -> int:
@@ -304,7 +308,9 @@ def _extract_path_mentions(text: str) -> tuple[str, ...]:
     seen: set[str] = set()
     paths: list[str] = []
     for raw in _PATH_TOKEN_SPLIT_RE.split(text):
-        path = raw.strip().strip(".")
+        path = raw.strip().strip(".").strip("*_`<>")
+        if path.startswith("./"):
+            path = path[2:]
         if not path or "." not in path:
             continue
         suffix = path.rsplit(".", 1)[1].lower()
@@ -323,7 +329,7 @@ def _worker_note_mismatches(
     """Return file-like mentions in a worker note that are absent from the landed diff."""
     if not done_summary or not landed_files:
         return ()
-    landed = set(landed_files)
+    landed = {path.lstrip("./") for path in landed_files}
     return tuple(path for path in _extract_path_mentions(done_summary) if path not in landed)
 
 
@@ -491,6 +497,7 @@ def _build_unit_review(
 
     # Status reflects the CURRENT run's outcome, not any historical deploy.
     # A unit that merged in an earlier run but failed in this run is "failed".
+    # A unit in flight during the current run is "active".
     # A unit that didn't run at all in this run falls back to deploy_log.
     status: UnitStatus
     if rollup["ran_in_run"]:
@@ -499,9 +506,7 @@ def _build_unit_review(
         elif rollup["failed_in_run"] or rollup["error"] or rollup["reject_verdict"]:
             status = "failed"
         else:
-            # Dispatched but no terminal event yet — still in flight or the
-            # run was killed mid-task. Surface as failed so the user notices.
-            status = "failed"
+            status = "active"
     elif deploy_record is not None:
         # Stale deploy from a prior run; this run did not touch the unit.
         status = "deployed"
@@ -566,7 +571,7 @@ def _build_unit_review(
         self_corrections=self_corrections,
         reject_verdict=rollup["reject_verdict"],
         error=rollup["error"],
-        last_thought=last_thought if status == "failed" else None,
+        last_thought=last_thought if status in ("failed", "active") else None,
         hint=hint,
     )
 

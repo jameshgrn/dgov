@@ -571,6 +571,7 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
     click.echo("")
     click.echo(
         f"Units: {review.deployed_count}/{total} deployed"
+        f" | {review.active_count} active"
         f" | {review.pending_count} pending"
         f" | {review.failed_count} failed"
     )
@@ -664,6 +665,24 @@ def _render_failed_unit(unit) -> None:
     click.echo("")
 
 
+def _render_active_unit(unit) -> None:
+    """Render an in-flight UnitReview block."""
+    marker = click.style("…", fg="cyan")
+    click.echo(f"  {marker} {unit.unit}  (active)")
+    if unit.summary:
+        click.echo(f"    task         {unit.summary}")
+    if unit.agent:
+        click.echo(f"    agent        {unit.agent}")
+    if unit.duration_s is not None:
+        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
+    if unit.iterations is not None:
+        plural = "s" if unit.iterations != 1 else ""
+        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+    if unit.last_thought:
+        _render_multiline_field("last thought", unit.last_thought, max_lines=2)
+    click.echo("")
+
+
 def _render_pending_unit(unit) -> None:
     """Render a pending/not_run UnitReview block."""
     marker = click.style("○", dim=True)
@@ -680,6 +699,9 @@ def _render_unit(unit) -> None:
         return
     if unit.status == "failed":
         _render_failed_unit(unit)
+        return
+    if unit.status == "active":
+        _render_active_unit(unit)
         return
     _render_pending_unit(unit)
 
@@ -780,6 +802,7 @@ def _review_to_json(review) -> str:
             "last_run_ts": review.last_run_ts,
             "last_run_duration_s": review.last_run_duration_s,
             "deployed": review.deployed_count,
+            "active": review.active_count,
             "failed": review.failed_count,
             "pending": review.pending_count,
             "units": [_unit_dict(u) for u in review.units],

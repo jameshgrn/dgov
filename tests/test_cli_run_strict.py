@@ -229,7 +229,7 @@ def test_run_requires_sentrux_baseline(
     assert "dgov sentrux gate-save" in result.output
 
 
-def test_run_fails_when_final_sentrux_compare_degrades(
+def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
@@ -266,8 +266,8 @@ def test_run_fails_when_final_sentrux_compare_degrades(
 
     result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
-    assert result.exit_code == 1
-    assert "status: failed" in result.output
+    assert result.exit_code == 0
+    assert "status: degraded" in result.output
     assert "sentrux: architectural degradation detected." in result.output.lower()
 
 

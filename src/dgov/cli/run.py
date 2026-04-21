@@ -535,7 +535,7 @@ def _cmd_run_plan(
     if not any_bad:
         run_status = "complete"
     elif sentrux_failed and not failed and not abandoned:
-        run_status = "failed"
+        run_status = "degraded"
     elif succeeded:
         run_status = "partial"
     else:
@@ -630,7 +630,7 @@ def _cmd_run_plan(
         if not want_json():
             click.echo(f"Plan fully deployed → archived to {dest}")
 
-    if run_status != "complete":
+    if run_status in ("failed", "partial"):
         raise click.exceptions.Exit(code=1)
 
 
@@ -653,7 +653,10 @@ def _append_run_log(
     failed = [s for s, st in results.items() if st == "failed"]
     abandoned = [s for s, st in results.items() if st in ("abandoned", "timed_out")]
     sentrux_failed = bool(gate_result.get("degradation")) or bool(gate_result.get("error"))
-    status = "ok" if not failed and not abandoned and not sentrux_failed else "fail"
+    if sentrux_failed and not failed and not abandoned:
+        status = "warn"
+    else:
+        status = "ok" if not failed and not abandoned else "fail"
 
     lines = [
         f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"
