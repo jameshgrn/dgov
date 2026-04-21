@@ -526,24 +526,59 @@ def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
 
 
 def _check_same_symbol_edit(
-    task_symbols: dict[str, _SymbolInfo],
-    target_symbols: dict[str, _SymbolInfo],
+    task_base_symbols: dict[str, _SymbolInfo],
+    task_commit_symbols: dict[str, _SymbolInfo],
+    target_head_symbols: dict[str, _SymbolInfo],
     touched_files: set[str],
 ) -> list[SymbolOverlap]:
     """Detect when both task and target changed the same symbol.
+
+    Compares actual changes: symbols that changed in the task (relative to base)
+    AND symbols that changed in the target (relative to task base). Only reports
+    overlap when BOTH sides modified the same symbol.
 
     Only checks symbols in touched files.
     """
     overlaps: list[SymbolOverlap] = []
 
-    for name, task_sym in task_symbols.items():
+    # Compute what actually changed on each side relative to task base
+    task_changed: dict[str, _SymbolInfo] = {}
+    for name, commit_sym in task_commit_symbols.items():
+        base_sym = task_base_symbols.get(name)
+        if base_sym is None:
+            # New symbol added by task
+            task_changed[name] = commit_sym
+        elif (
+            base_sym.line_start != commit_sym.line_start
+            or base_sym.line_end != commit_sym.line_end
+            or base_sym.signature != commit_sym.signature
+        ):
+            # Symbol modified by task (line range or signature changed)
+            task_changed[name] = commit_sym
+
+    target_changed: dict[str, _SymbolInfo] = {}
+    for name, target_sym in target_head_symbols.items():
+        base_sym = task_base_symbols.get(name)
+        if base_sym is None:
+            # New symbol added by target
+            target_changed[name] = target_sym
+        elif (
+            base_sym.line_start != target_sym.line_start
+            or base_sym.line_end != target_sym.line_end
+            or base_sym.signature != target_sym.signature
+        ):
+            # Symbol modified by target (line range or signature changed)
+            target_changed[name] = target_sym
+
+    # Find symbols that changed on BOTH sides (concurrent modification)
+    for name, task_sym in task_changed.items():
         # Only check if this file was touched
         rel_path = Path(task_sym.file_path).name
         if rel_path not in touched_files and task_sym.file_path not in touched_files:
             continue
 
-        if name in target_symbols:
-            target_sym = target_symbols[name]
+        if name in target_changed:
+            target_sym = target_changed[name]
             overlaps.append(
                 SymbolOverlap(
                     symbol_name=name,
@@ -557,16 +592,45 @@ def _check_same_symbol_edit(
     return overlaps
 
 
+def _is_test_file(file_path: str) -> bool:
+    """Check if a file path represents a test file.
+
+    Test files are identified by:
+    - Being in a tests/ directory
+    - Having 'test_' prefix in filename
+    - Having '_test.py' suffix
+    """
+    path = Path(file_path)
+    name = path.name
+    # Check path components for 'tests' directory
+    in_tests_dir = any(part == "tests" for part in path.parts)
+    # Check filename patterns
+    is_test_name = name.startswith("test_") or name.endswith("_test.py")
+    return in_tests_dir or is_test_name
+
+
 def _check_duplicate_definitions(
     integrated_files: list[Path],
 ) -> list[DuplicateDefinition]:
-    """Detect when the same symbol is defined multiple times across files."""
+    """Detect when the same symbol is defined multiple times across files.
+
+    Excludes test files from duplicate detection since test modules legitimately
+    have repeated helper functions and test names. Only flags duplicates in
+    production code or duplicates between production and test code.
+    """
     all_symbols: dict[str, list[_SymbolInfo]] = {}
+    file_is_test: dict[str, bool] = {}
     duplicates: list[DuplicateDefinition] = []
 
     for file_path in integrated_files:
         if file_path.suffix != ".py":
             continue
+
+        file_path_str = str(file_path)
+        abs_path_str = str(file_path.resolve())
+        is_test = _is_test_file(file_path_str)
+        file_is_test[file_path_str] = is_test
+        file_is_test[abs_path_str] = is_test
 
         symbols = _analyze_python_file_symbols(file_path)
         for name, info in symbols.items():
@@ -575,19 +639,52 @@ def _check_duplicate_definitions(
             all_symbols[name].append(info)
 
     for name, infos in all_symbols.items():
-        if len(infos) > 1:
-            file_paths = tuple(i.file_path for i in infos)
-            line_numbers = tuple((i.line_start, i.line_end) for i in infos)
-            # Determine type from first occurrence
-            symbol_type = infos[0].symbol_type
-            duplicates.append(
-                DuplicateDefinition(
-                    symbol_name=name,
-                    symbol_type=symbol_type,
-                    file_paths=file_paths,
-                    line_numbers=line_numbers,
-                )
+        if len(infos) <= 1:
+            continue
+
+        # Check if all occurrences are in test files
+        all_in_test_files = True
+        file_paths_list: list[str] = []
+
+        for info in infos:
+            fp = info.file_path
+            file_paths_list.append(fp)
+            # Check multiple ways: direct lookup, absolute path, or re-check
+            is_test = file_is_test.get(fp, False)
+            if not is_test:
+                # Try with absolute path
+                try:
+                    abs_fp = str(Path(fp).resolve())
+                    is_test = file_is_test.get(abs_fp, False)
+                except (OSError, ValueError):
+                    pass
+            if not is_test:
+                # Fallback: re-check the path directly
+                is_test = _is_test_file(fp)
+            if not is_test:
+                all_in_test_files = False
+
+        # Skip if ALL occurrences are in test files (legitimate test duplicates)
+        if all_in_test_files:
+            continue
+
+        # Skip common test helper patterns even in production context
+        # These are standard pytest patterns that may appear in both test and src
+        if name.startswith("test_") or name in ("setup", "teardown", "fixture"):
+            continue
+
+        file_paths = tuple(file_paths_list)
+        line_numbers = tuple((i.line_start, i.line_end) for i in infos)
+        # Determine type from first occurrence
+        symbol_type = infos[0].symbol_type
+        duplicates.append(
+            DuplicateDefinition(
+                symbol_name=name,
+                symbol_type=symbol_type,
+                file_paths=file_paths,
+                line_numbers=line_numbers,
             )
+        )
 
     return duplicates
 
@@ -723,6 +820,7 @@ def run_python_semantic_gate(
     candidate_path: Path,
     project_root: str,
     task_base_sha: str,
+    task_commit_sha: str | None,
     target_head_sha: str,
     touched_files: tuple[str, ...],
     task_slug: str,
@@ -804,12 +902,21 @@ def run_python_semantic_gate(
             checked_at=0.0,
         )
 
-    # Get symbols from task base and target head for comparison
+    # Get symbols from task base, task commit, and target head for comparison
     touched_set = set(touched_files)
 
     try:
         task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, list(py_files))
         target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, list(py_files))
+        # If task_commit_sha provided, get symbols at task commit to detect actual changes
+        task_commit_symbols: dict[str, _SymbolInfo]
+        if task_commit_sha:
+            task_commit_symbols = _get_symbols_at_commit(
+                project_root, task_commit_sha, list(py_files)
+            )
+        else:
+            # Fallback: use candidate symbols (the integrated result contains task changes)
+            task_commit_symbols = candidate_symbols
     except Exception as exc:
         logger.warning("Failed to get symbols for comparison: %s", exc)
         # Fail open on git errors - we still did our best analysis
@@ -822,7 +929,7 @@ def run_python_semantic_gate(
 
     # Check for same-symbol edits (concurrent modification)
     same_symbol_edits = _check_same_symbol_edit(
-        task_base_symbols, target_head_symbols, touched_set
+        task_base_symbols, task_commit_symbols, target_head_symbols, touched_set
     )
     if same_symbol_edits:
         return SemanticGateVerdict(

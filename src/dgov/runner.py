@@ -989,10 +989,25 @@ class EventDagRunner:
 
         # Run deterministic Python semantic gate on the integrated candidate
         if candidate_result.candidate_path is not None:
+            # Get task commit SHA from worktree branch (the task's final commit)
+            import subprocess as sp
+
+            task_commit_res = sp.run(
+                ["git", "rev-parse", wt.branch],
+                cwd=self.session_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            task_commit_sha = (
+                task_commit_res.stdout.strip() if task_commit_res.returncode == 0 else None
+            )
+
             semantic_verdict = run_python_semantic_gate(
                 candidate_path=candidate_result.candidate_path,
                 project_root=self.session_root,
                 task_base_sha=wt.commit,
+                task_commit_sha=task_commit_sha,
                 target_head_sha=risk_record.target_head_sha,
                 touched_files=file_claims,
                 task_slug=action.task_slug,

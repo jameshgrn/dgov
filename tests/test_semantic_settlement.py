@@ -695,17 +695,51 @@ class MyClass:
         """Same symbol edit check finds overlapping changes."""
         from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
 
-        task_symbols = {
+        # Task changed foo (line range changed from base)
+        task_base_symbols = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 5, "def foo()"),
+        }
+        task_commit_symbols = {
             "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 10, "def foo()"),
         }
-        target_symbols = {
+        # Target also changed foo (signature changed from base)
+        target_head_symbols = {
             "foo": _SymbolInfo("foo", "function", "src/a.py", 5, 15, "def foo(x)"),
         }
 
-        overlaps = _check_same_symbol_edit(task_symbols, target_symbols, {"src/a.py"})
+        overlaps = _check_same_symbol_edit(
+            task_base_symbols, task_commit_symbols, target_head_symbols, {"src/a.py"}
+        )
 
         assert len(overlaps) == 1
         assert overlaps[0].symbol_name == "foo"
+
+    def test_check_same_symbol_edit_passes_one_sided_cleanup(self):
+        """One-sided cleanup/refactor passes - only task changed the symbol."""
+        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+
+        # Base state
+        task_base_symbols = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 10, "def foo()"),
+            "bar": _SymbolInfo("bar", "function", "src/a.py", 12, 20, "def bar()"),
+        }
+        # Task changed only foo (cleanup)
+        task_commit_symbols = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 8, "def foo()"),  # Shortened
+            "bar": _SymbolInfo("bar", "function", "src/a.py", 12, 20, "def bar()"),
+        }
+        # Target did not change anything (same as base)
+        target_head_symbols = {
+            "foo": _SymbolInfo("foo", "function", "src/a.py", 1, 10, "def foo()"),
+            "bar": _SymbolInfo("bar", "function", "src/a.py", 12, 20, "def bar()"),
+        }
+
+        overlaps = _check_same_symbol_edit(
+            task_base_symbols, task_commit_symbols, target_head_symbols, {"src/a.py"}
+        )
+
+        # No overlap - only task changed, target didn't
+        assert len(overlaps) == 0
 
     def test_check_signature_drift_detects_changes(self):
         """Signature drift check finds changed function signatures."""
@@ -731,6 +765,7 @@ class MyClass:
             candidate_path=Path("/tmp"),
             project_root="/tmp",
             task_base_sha="abc",
+            task_commit_sha=None,  # Optional for non-Python
             target_head_sha="def",
             touched_files=("readme.md", "config.yaml"),
             task_slug="task-1",
@@ -749,6 +784,7 @@ class MyClass:
             candidate_path=tmp_path,
             project_root=str(tmp_path),
             task_base_sha="abc",
+            task_commit_sha=None,  # Syntax error detected before symbol comparison
             target_head_sha="def",
             touched_files=("bad.py",),
             task_slug="task-1",
@@ -756,6 +792,121 @@ class MyClass:
 
         assert verdict.passed is False
         assert verdict.failure_class == FailureClass.SYNTAX_CONFLICT
+
+    def test_check_same_symbol_edit_true_conflict_rejects(self):
+        """True concurrent edit to same symbol must still reject."""
+        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+
+        # Base: original symbol definition
+        task_base_symbols = {
+            "process": _SymbolInfo(
+                "process", "function", "src/worker.py", 10, 20, "def process()"
+            ),
+        }
+        # Task side: modified the symbol (line range changed)
+        task_commit_symbols = {
+            "process": _SymbolInfo(
+                "process", "function", "src/worker.py", 10, 25, "def process()"
+            ),
+        }
+        # Target side: also modified the same symbol (signature changed)
+        target_head_symbols = {
+            "process": _SymbolInfo(
+                "process", "function", "src/worker.py", 10, 20, "def process(item)"
+            ),
+        }
+
+        overlaps = _check_same_symbol_edit(
+            task_base_symbols, task_commit_symbols, target_head_symbols, {"src/worker.py"}
+        )
+
+        assert len(overlaps) == 1
+        assert overlaps[0].symbol_name == "process"
+
+    def test_check_same_symbol_edit_target_unchanged_passes(self):
+        """Task-only edit (target unchanged) should pass - not a concurrent conflict."""
+        from dgov.semantic_settlement import _check_same_symbol_edit, _SymbolInfo
+
+        # Base state
+        task_base_symbols = {
+            "cleanup": _SymbolInfo("cleanup", "function", "src/module.py", 1, 10, "def cleanup()"),
+        }
+        # Task: symbol was modified (cleanup refactor)
+        task_commit_symbols = {
+            "cleanup": _SymbolInfo("cleanup", "function", "src/module.py", 1, 15, "def cleanup()"),
+        }
+        # Target: symbol unchanged (same as base)
+        target_head_symbols = {
+            "cleanup": _SymbolInfo("cleanup", "function", "src/module.py", 1, 10, "def cleanup()"),
+        }
+
+        overlaps = _check_same_symbol_edit(
+            task_base_symbols, task_commit_symbols, target_head_symbols, {"src/module.py"}
+        )
+
+        # No concurrent conflict - only task changed it
+        assert len(overlaps) == 0
+
+    def test_check_duplicate_definitions_skips_test_files(self):
+        """Duplicate symbols in test files should not trigger rejection."""
+        import tempfile
+
+        from dgov.semantic_settlement import _check_duplicate_definitions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Create test files with same helper function (legitimate duplication)
+            test_dir = Path(tmp) / "tests"
+            test_dir.mkdir()
+
+            test_file1 = test_dir / "test_a.py"
+            test_file1.write_text("def helper(): return 1")
+
+            test_file2 = test_dir / "test_b.py"
+            test_file2.write_text("def helper(): return 2")
+
+            dups = _check_duplicate_definitions([test_file1, test_file2])
+
+            # Test file duplicates should be skipped
+            assert len(dups) == 0
+
+    def test_check_duplicate_definitions_allows_test_helpers(self):
+        """Common test helper names should not trigger duplicate detection."""
+        import tempfile
+
+        from dgov.semantic_settlement import _check_duplicate_definitions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # Production code file
+            src_file = Path(tmp) / "src.py"
+            src_file.write_text("def test_helper(): return 'production'")
+
+            # Test file with same name (test_helper is a common pattern)
+            test_file = Path(tmp) / "test_foo.py"
+            test_file.write_text("def test_helper(): return 'test'")
+
+            dups = _check_duplicate_definitions([src_file, test_file])
+
+            # test_* pattern duplicates should be allowed
+            assert len(dups) == 0
+
+    def test_check_duplicate_definitions_catches_production_dups(self):
+        """Duplicate symbols in production code should still be detected."""
+        import tempfile
+
+        from dgov.semantic_settlement import _check_duplicate_definitions
+
+        with tempfile.TemporaryDirectory() as tmp:
+            file1 = Path(tmp) / "module_a.py"
+            file1.write_text("def production_helper(): return 1")
+
+            file2 = Path(tmp) / "module_b.py"
+            file2.write_text("def production_helper(): return 2")
+
+            dups = _check_duplicate_definitions([file1, file2])
+
+            # Production code duplicates should be detected
+            assert len(dups) == 1
+            assert dups[0].symbol_name == "production_helper"
 
 
 class TestPythonSemanticGateIntegration:
