@@ -316,7 +316,12 @@ def _check_transient_scope(
     actual_files: frozenset[str],
     scope_ignore_files: Sequence[str] = (),
 ) -> ReviewResult | None:
-    """Reject transient unclaimed writes observed in worker tool activity."""
+    """Reject transient unclaimed writes observed in worker tool activity.
+
+    Checks ALL panes for this task across the current run (not just the current
+    pane). This ensures unclaimed writes from earlier retries are still caught
+    even if a later retry cleans the worktree and succeeds.
+    """
     if not session_root or not task_slug or not claimed_files:
         return None
 
@@ -325,10 +330,10 @@ def _check_transient_scope(
         scope_ignore_files
     )
     transient_paths: set[str] = set()
-    if pane_slug:
-        events = read_events(session_root, slug=pane_slug, task_slug=task_slug)
-    else:
-        events = read_events(session_root, task_slug=task_slug)
+    # Read all events for this task across all panes in the current run.
+    # This ensures transient scope enforcement fails closed across retries:
+    # an unclaimed write from any attempt in the active run causes rejection.
+    events = read_events(session_root, task_slug=task_slug)
 
     for event in events:
         if event.get("event") != "worker_log" or event.get("log_type") != "result":

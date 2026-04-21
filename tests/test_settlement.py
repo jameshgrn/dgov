@@ -363,7 +363,116 @@ class TestReviewSandbox:
             task_slug="task-1",
             pane_slug="pane-current",
         )
+        # Note: With fail-closed retry semantics, this now FAILS because
+        # unclaimed writes from earlier panes are still checked.
+        # The earlier pane's unclaimed scratch.py causes rejection.
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "scratch.py" in (result.error or "")
+
+    def test_transient_scope_fail_closed_across_retries(self, tmp_path: Path):
+        """Unclaimed writes from earlier panes fail review even if current pane is clean.
+
+        This tests the fail-closed retry semantics: an unclaimed tool write from any
+        attempt in the active run must cause review rejection, even if a later retry
+        cleans the worktree and succeeds.
+        """
+        worktree_retry = tmp_path / "worktree_retry"
+        worktree_retry.mkdir()
+        _init_repo(worktree_retry)
+        _add_tracked_file(worktree_retry, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree_retry, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        # First attempt (pane-1): wrote unclaimed debug file
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "write_file",
+                "status": "success",
+                "activity": [{"kind": "write_file", "path": "debug_1.py", "mode": "create"}],
+            },
+        )
+        # Second attempt (pane-2): only touches claimed file
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-2",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "edit_file",
+                "status": "success",
+                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
+            },
+        )
+
+        # Review on the second pane (retry) should still fail due to pane-1's unclaimed write
+        result = review_sandbox(
+            worktree_retry,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+            pane_slug="pane-2",
+        )
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "debug_1.py" in (result.error or "")
+
+    def test_transient_scope_claimed_writes_across_retries_pass(self, tmp_path: Path):
+        """Claimed writes from all panes pass review - no scope violation."""
+        worktree_retry = tmp_path / "worktree_retry"
+        worktree_retry.mkdir()
+        _init_repo(worktree_retry)
+        _add_tracked_file(worktree_retry, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree_retry, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        # First attempt wrote claimed file
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "write_file",
+                "status": "success",
+                "activity": [{"kind": "write_file", "path": "claimed.py", "mode": "edit"}],
+            },
+        )
+        # Second attempt also wrote claimed file
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-2",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "edit_file",
+                "status": "success",
+                "activity": [{"kind": "edit_file", "path": "claimed.py", "mode": "edit"}],
+            },
+        )
+
+        # Should pass - all writes were within claimed scope
+        result = review_sandbox(
+            worktree_retry,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+            pane_slug="pane-2",
+        )
         assert result.passed
+        assert result.verdict == "ok"
 
     def test_no_scope_check_without_claims(self, tmp_path: Path):
         _init_repo(tmp_path)
