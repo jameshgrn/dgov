@@ -1,4 +1,4 @@
 [plan]
 name = "semantic-settlement-foundation"
 summary = "Instrument and dogfood integration-aware settlement before any merge synthesis."
-sections = ["design", "telemetry", "runtime", "python", "review"]
+sections = ["design", "telemetry", "governance", "runtime", "python", "review"]
