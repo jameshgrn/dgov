@@ -1,0 +1,4 @@
+[plan]
+name = "structural-gap-repair"
+summary = "Reduce the post-settlement sentrux regression by splitting recovery, settlement, and review hotspots into smaller contracts."
+sections = ["runtime", "semantic", "review"]

@@ -1,0 +1,4 @@
+[plan]
+name = "scale-repair"
+summary = "Improve dgov dispatch scalability and plan ergonomics for larger projects."
+sections = ["runtime", "plans", "tests"]

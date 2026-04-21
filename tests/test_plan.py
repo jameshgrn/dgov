@@ -232,6 +232,25 @@ test_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
             == "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
         )
 
+    def test_parses_plan_with_task_iteration_budget(self, tmp_path):
+        plan_file = tmp_path / "plan.toml"
+        plan_file.write_text(
+            """
+[plan]
+name = "iteration-budget-plan"
+
+[tasks.focused]
+summary = "Stay focused"
+prompt = "Do it"
+commit_message = "Done"
+iteration_budget = 12
+"""
+        )
+
+        result = parse_plan_file(str(plan_file))
+
+        assert result.units["focused"].iteration_budget == 12
+
     def test_raises_file_not_found(self, tmp_path):
         with pytest.raises(FileNotFoundError):
             parse_plan_file(str(tmp_path / "does_not_exist.toml"))
@@ -356,6 +375,26 @@ class TestCompilePlan:
         result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].role == "researcher"
+
+    def test_preserves_unit_iteration_budget_when_specified(self):
+        plan = PlanSpec(
+            name="iteration-budget-plan",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Task",
+                    prompt="Do it",
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                    iteration_budget=12,
+                )
+            },
+        )
+
+        result = compile_plan(plan, project_agent="test-agent")
+
+        assert result.tasks["task-1"].iteration_budget == 12
 
     def test_uses_default_timeout_when_unit_has_none(self):
         plan = PlanSpec(
@@ -1103,6 +1142,59 @@ check stuff.
         prompt = "Do the thing."
         warnings = self._structure_warnings(validate_plan(self._plan(prompt)))
         assert "first-attempt success" in warnings[0].message
+
+    def _plan_with(self, prompt: str, **kwargs) -> PlanSpec:
+        return PlanSpec(
+            name="test-plan",
+            goal="Goal",
+            units={
+                "task": PlanUnit(
+                    slug="task",
+                    summary="Task",
+                    prompt=prompt,
+                    commit_message="Done",
+                    files=PlanUnitFiles(),
+                    **kwargs,
+                )
+            },
+        )
+
+    def test_test_cmd_suppresses_verify_warning(self):
+        prompt = """
+Orient:
+Read stuff.
+
+Edit:
+Change stuff.
+"""
+        plan = self._plan_with(prompt, test_cmd="uv run pytest -q")
+        assert self._structure_warnings(validate_plan(plan)) == []
+
+    def test_test_cmd_does_not_suppress_orient_or_edit(self):
+        prompt = "Just do the thing."
+        plan = self._plan_with(prompt, test_cmd="uv run pytest -q")
+        warnings = self._structure_warnings(validate_plan(plan))
+        assert len(warnings) == 1
+        assert "missing section headers: Orient, Edit." in warnings[0].message
+
+    def test_researcher_only_warns_orient(self):
+        prompt = "Just do the thing."
+        plan = self._plan_with(prompt, role="researcher")
+        warnings = self._structure_warnings(validate_plan(plan))
+        assert len(warnings) == 1
+        assert warnings[0].message == (
+            "Prompt is missing section headers: Orient. "
+            "Structured prompts (Orient/Edit/Verify) have higher "
+            "first-attempt success rates."
+        )
+
+    def test_reviewer_no_warning_with_orient(self):
+        prompt = """
+Orient:
+Read the dependency diffs.
+"""
+        plan = self._plan_with(prompt, role="reviewer")
+        assert self._structure_warnings(validate_plan(plan)) == []
 
 
 # =============================================================================

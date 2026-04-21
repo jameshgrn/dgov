@@ -77,14 +77,18 @@ class IllegalTransitionError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class WorkerTask:
-    """Represents a worker task record — immutable, strictly validated."""
+    """Runtime artifact row for a worker attempt.
+
+    This row tracks operational metadata like worktree and branch identity.
+    Lifecycle truth comes from events, not from this cached snapshot.
+    """
 
     slug: str
-    prompt: str
     agent: str
     project_root: str
     worktree_path: str
     branch_name: str
+    prompt: str = ""
     task_id: str | None = None  # worker instance ID; None for headless
     created_at: float = field(default_factory=time.time)
     owns_worktree: bool = True
@@ -102,8 +106,6 @@ class WorkerTask:
             )
         if not self.slug:
             raise ValueError("slug must be non-empty")
-        if not self.prompt:
-            raise ValueError("prompt must be non-empty")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +122,6 @@ class LedgerEntry:
 
 _TASK_COLUMNS = frozenset({
     "slug",
-    "prompt",
     "task_id",
     "agent",
     "project_root",
@@ -136,8 +137,6 @@ _TASK_COLUMNS = frozenset({
 
 _TASK_TYPED_COLS = frozenset({
     "plan_name",
-    "file_claims",
-    "commit_message",
 })
 
 # -- Path Helpers --
@@ -182,6 +181,12 @@ VALID_EVENTS = frozenset({
     "worker_log",
     "worker_done",
     "worker_error",
+    # Semantic Settlement (Phase 1: contract and telemetry)
+    "integration_risk_scored",
+    "integration_overlap_detected",
+    "integration_candidate_passed",
+    "integration_candidate_failed",
+    "semantic_gate_rejected",
 })
 
 _EVENT_TYPED_COLS = frozenset({

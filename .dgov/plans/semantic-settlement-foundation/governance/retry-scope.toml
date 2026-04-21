@@ -1,0 +1,30 @@
+[tasks.fail-closed-across-retries]
+summary = "Reject tasks when any retry attempt transiently writes outside file claims."
+depends_on = ["telemetry/review-note-filter.reduce-warning-noise"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` first.
+- Read `src/dgov/settlement.py`, `src/dgov/runner.py`, `tests/test_settlement.py`, and `tests/test_runner.py`.
+- Bug context: a live run for `telemetry/review-note-filter.reduce-warning-noise` persisted worker_log result events showing unclaimed `debug_*.py` writes in an earlier attempt, then retried after max-iterations and still passed review/commit.
+- Keep the public CLI unchanged. This is governor hygiene, not semantic-merge functionality.
+
+Edit:
+1. Make transient scope enforcement fail closed across task retries. An unclaimed tool write from any attempt in the active run must still cause review rejection even if a later retry cleans the worktree and succeeds.
+2. Preserve the current pass behavior for claimed writes and ignored paths.
+3. Keep the implementation explicit. Prefer a narrow change in review/settlement event scoping over new persistence schema or retry bookkeeping layers.
+4. Add focused tests in `tests/test_settlement.py` and `tests/test_runner.py` covering at least:
+   - an earlier-pane transient unclaimed write that must fail review after retry
+   - a claimed transient write across retries that still passes
+5. Stop once the retry path is fail-closed and the tests prove the earlier-attempt evidence is not dropped.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_settlement.py tests/test_runner.py`
+- `uv run ruff check src/dgov/settlement.py src/dgov/runner.py tests/test_settlement.py tests/test_runner.py`
+- `uv run ty check src/dgov/settlement.py src/dgov/runner.py tests/test_settlement.py tests/test_runner.py`
+"""
+commit_message = "Fail closed across retry scope violations"
+files.edit = ["src/dgov/settlement.py", "src/dgov/runner.py", "tests/test_settlement.py", "tests/test_runner.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/persistence/events.py",
+]

@@ -13,9 +13,9 @@ from rich.table import Table
 from rich.text import Text
 
 from dgov.cli import cli
-from dgov.persistence import all_tasks, latest_event_id, read_events
+from dgov.live_state import live_plan_names
+from dgov.persistence import latest_event_id, read_events
 from dgov.project_root import resolve_project_root
-from dgov.types import TaskState
 
 if TYPE_CHECKING:
     from rich.console import RenderableType
@@ -43,15 +43,11 @@ def _get_task_color(slug: str) -> str:
 
 
 def _infer_plan_name_from_active_tasks(project_root: str) -> str | None:
-    """Return the shared active plan name, if there is exactly one."""
-    active_plan_names = {
-        str(task["plan_name"])
-        for task in all_tasks(project_root)
-        if task.get("state") == TaskState.ACTIVE.value and task.get("plan_name")
-    }
-    if len(active_plan_names) != 1:
+    """Return the shared live plan name from the latest run-scoped event view."""
+    plan_names = live_plan_names(project_root)
+    if len(plan_names) != 1:
         return None
-    return next(iter(active_plan_names))
+    return next(iter(plan_names))
 
 
 def _default_watch_state(

@@ -20,7 +20,7 @@ from dgov.cli.init import (
     _render_project_toml,
 )
 from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
-from dgov.persistence import add_task, all_tasks, emit_event, replace_all_tasks
+from dgov.persistence import emit_event, list_runtime_artifacts, record_runtime_artifact
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
@@ -39,6 +39,79 @@ def _clean_json_env():
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+def _make_compiled_plan(
+    project_root: Path, plan_name: str, unit_summaries: dict[str, str]
+) -> Path:
+    """Write a minimal _compiled.toml into a plan directory under project_root."""
+    plan_dir = project_root / ".dgov" / "plans" / plan_name
+    plan_dir.mkdir(parents=True)
+    lines = [
+        "[plan]",
+        f'name = "{plan_name}"',
+        'source_mtime_max = "2026-04-10T12:00:00.000000+00:00"',
+        "",
+    ]
+    for uid, summary in unit_summaries.items():
+        lines.append(f'[tasks."{uid}"]')
+        lines.append(f'summary = "{summary}"')
+        lines.append('prompt = "do it"')
+        lines.append('commit_message = "c"')
+        lines.append('files.create = ["a.py"]')
+        lines.append("")
+    compiled_path = plan_dir / "_compiled.toml"
+    compiled_path.write_text("\n".join(lines))
+    (plan_dir / "_root.toml").write_text(
+        f'[plan]\nname = "{plan_name}"\nsummary = "t"\nsections = ["tasks"]\n'
+    )
+    return plan_dir
+
+
+def _patched_load_review(monkeypatch, **overrides):
+    """Return a helper that stubs load_review to return a fixed PlanReview."""
+    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+    default_unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        agent="kimi",
+        commit_sha="abcd1234" + "0" * 32,
+        commit_message="feat: did a",
+        commit_ts="2026-04-10T12:00:00Z",
+        diff_stat=DiffStat(files_changed=1, insertions=10, deletions=0),
+        landed_files=("src/dgov/example.py",),
+        duration_s=12.5,
+        iterations=4,
+        attempts=1,
+        settlement="ok",
+        done_summary="Added the thing.",
+    )
+    default_review = PlanReview(
+        plan_name="p",
+        source_dir=Path("p"),
+        last_run_ts="2026-04-10T12:00:00Z",
+        last_run_duration_s=12.5,
+        units=[default_unit],
+    )
+    review = overrides.get("review", default_review)
+
+    def _fake(**kwargs):
+        # Honor only-filter semantics for the `only=...` tests.
+        only = kwargs.get("only")
+        if only is not None:
+            filtered = [u for u in review.units if u.unit == only]
+            return PlanReview(
+                plan_name=review.plan_name,
+                source_dir=review.source_dir,
+                last_run_ts=review.last_run_ts,
+                last_run_duration_s=review.last_run_duration_s,
+                units=filtered,
+            )
+        return review
+
+    monkeypatch.setattr("dgov.plan_review.load_review", _fake)
 
 
 # -- Bare invocation / status --
@@ -83,30 +156,38 @@ def test_status_hides_history_by_default(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "merged-task",
-                "prompt": "done",
-                "agent": "qwen",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path / "wt-merged"),
-                "branch_name": "dgov/merged-task",
-                "state": TaskState.MERGED,
-                "task_id": None,
-            },
-            {
-                "slug": "active-task",
-                "prompt": "doing",
-                "agent": "qwen",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path / "wt-active"),
-                "branch_name": "dgov/active-task",
-                "state": TaskState.ACTIVE,
-                "task_id": None,
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path), "task_done", "pane-merged", plan_name="plan-a", task_slug="merged-task"
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "merge_completed",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-b", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-active",
+        plan_name="plan-b",
+        task_slug="active-task",
     )
 
     result = runner.invoke(cli, ["status"])
@@ -119,25 +200,56 @@ def test_status_all_shows_history(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "merged-task",
-                "prompt": "done",
-                "agent": "qwen",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path / "wt-merged"),
-                "branch_name": "dgov/merged-task",
-                "state": TaskState.MERGED,
-                "task_id": None,
-            }
-        ],
+        "dag_task_dispatched",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path), "task_done", "pane-merged", plan_name="plan-a", task_slug="merged-task"
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "merge_completed",
+        "pane-merged",
+        plan_name="plan-a",
+        task_slug="merged-task",
     )
 
     result = runner.invoke(cli, ["status", "--all"])
     assert result.exit_code == 0
     assert "merged-task" in result.output
+
+
+def test_status_scopes_live_view_to_latest_run_start(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-stale",
+        plan_name="plan-a",
+        task_slug="stale-task",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "stale-task" not in result.output
 
 
 # -- validate --
@@ -308,6 +420,63 @@ def test_sentrux_gate_fail_on_degradation_uses_command_output(
     assert "Degradation detected" in result.output
 
 
+def test_sentrux_gate_prints_structural_offender_report_on_degradation(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            1,
+            stdout="✗ Degradation detected\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr(
+        "dgov.cli.sentrux._structural_offender_report",
+        lambda target: "Likely structural offenders:\n- Complex functions:",
+    )
+
+    result = runner.invoke(cli, ["sentrux", "gate"])
+
+    assert result.exit_code == 0
+    assert "Likely structural offenders:" in result.output
+
+
+def test_sentrux_gate_treats_degraded_output_as_degradation(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("dgov.cli.sentrux._sentrux_available", lambda: True)
+
+    def _mock_run(
+        args: list[str],
+        cwd: str | None = None,
+        timeout: float = 30.0,
+        check: bool = True,
+    ):
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            1,
+            stdout="✗ DEGRADED\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr("dgov.cli.sentrux._run_sentrux", _mock_run)
+    monkeypatch.setattr("dgov.cli.sentrux._structural_offender_report", lambda target: None)
+
+    result = runner.invoke(cli, ["sentrux", "gate", "--fail-on-degradation"])
+
+    assert result.exit_code == 1
+    assert "Degradation detected" in result.output
+
+
 def test_preflight_command_reports_pass(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -464,6 +633,8 @@ def test_render_project_toml() -> None:
     assert 'llm_api_key_env = "FIREWORKS_API_KEY"' in content
     assert 'format_cmd = "uv run ruff format {file}"' in content
     assert 'ignore_files = ["uv.lock"]' in content
+    assert "built-in" in content
+    assert "bootstrap_timeout = 300" in content
     assert "[conventions]" in content
 
 
@@ -489,6 +660,9 @@ def test_help(runner: CliRunner) -> None:
     assert "status" in result.output
     assert "validate" in result.output
     assert "init" in result.output
+    assert "retry" not in result.output
+    assert "mark-done" not in result.output
+    assert "recover" not in result.output
 
 
 def test_version(runner: CliRunner) -> None:
@@ -516,140 +690,91 @@ def test_watch_help_shows_flags(runner: CliRunner) -> None:
 
 
 def test_infer_plan_name_no_active_tasks(tmp_path: Path) -> None:
-    replace_all_tasks(str(tmp_path), [])
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 def test_infer_plan_name_single_plan(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-a",
+        task_slug="fix/b",
     )
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
 
 
 def test_infer_plan_name_multiple_plans(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-b",
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-b", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="fix/b",
     )
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 def test_infer_plan_name_empty_plan_names(tmp_path: Path) -> None:
-    replace_all_tasks(
-        str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.ACTIVE.value,
-            },
-        ],
-    )
+    emit_event(str(tmp_path), "dag_task_dispatched", "pane-a", task_slug="fix/a")
+    emit_event(str(tmp_path), "dag_task_dispatched", "pane-b", plan_name="", task_slug="fix/b")
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 def test_infer_plan_name_mixed_states(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            },
-            {
-                "slug": "fix/b",
-                "prompt": "b",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-b",
-                "state": TaskState.MERGED.value,
-                "plan_name": "plan-b",
-            },
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-b", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="fix/b",
+    )
+    emit_event(str(tmp_path), "task_done", "pane-b", plan_name="plan-b", task_slug="fix/b")
+    emit_event(str(tmp_path), "review_pass", "pane-b", plan_name="plan-b", task_slug="fix/b")
+    emit_event(
+        str(tmp_path),
+        "merge_completed",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="fix/b",
     )
     assert _infer_plan_name_from_active_tasks(str(tmp_path)) == "plan-a"
 
 
 def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
-    replace_all_tasks(
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
         str(tmp_path),
-        [
-            {
-                "slug": "fix/a",
-                "prompt": "a",
-                "agent": "test",
-                "project_root": str(tmp_path),
-                "worktree_path": str(tmp_path),
-                "branch_name": "branch-a",
-                "state": TaskState.ACTIVE.value,
-                "plan_name": "plan-a",
-            }
-        ],
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
     )
     assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == ("plan-a", 0)
 
@@ -657,6 +782,20 @@ def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
 def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "task_done", "pane-a", plan_name="old-plan")
     assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == (None, 1)
+
+
+def test_infer_plan_name_ignores_stale_prior_run(tmp_path: Path) -> None:
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="fix/a",
+    )
+    emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
+
+    assert _infer_plan_name_from_active_tasks(str(tmp_path)) is None
 
 
 # -- init-plan --
@@ -690,6 +829,7 @@ class TestInitPlan:
         content = root_toml.read_text()
         assert 'name = "myplan"' in content
         assert 'sections = ["tasks"]' in content
+        assert "copy or rename each _example.toml" in result.output
 
     def test_init_plan_custom_sections(
         self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -814,7 +954,7 @@ commit_message = "a"
 files = ["a.py"]
 """
         compiled_path = compile_plan_tree(Path.cwd(), "unknown-slug-test", tasks_toml)
-        result = runner.invoke(cli, ["run", str(compiled_path), "--only", "nonexistent"])
+        result = runner.invoke(cli, ["run", str(compiled_path.parent), "--only", "nonexistent"])
         assert result.exit_code == 1
         assert "not found" in result.output.lower() or "nonexistent" in result.output
 
@@ -845,18 +985,45 @@ depends_on = ["b"]
 files = ["c.py"]
 """
         # IDs are qualified by section/file
-        compiled_path = compile_plan_tree(tmp_path, "filter-test", tasks_toml)
+        compiled_path = compile_plan_tree(Path.cwd(), "filter-test", tasks_toml)
+        plan_dir = compiled_path.parent
 
-        # dgov run --only tasks/main.b should accept the slug
-        target = "tasks/main.b"
-        result = runner.invoke(cli, ["run", str(compiled_path), "--only", target])
-        assert "not found" not in result.output.lower()
-        # Verify the task was accepted (run may fail for other reasons, but slug is valid)
-        assert "invalid" not in result.output.lower() or result.exit_code in (0, 1)
+        class _Runner:
+            def __init__(self, dag, **kwargs) -> None:
+                self.dag = dag
+                self._task_errors = {}
+                self._task_durations = {slug: 0.1 for slug in dag.tasks}
+
+            async def run(self) -> dict[str, str]:
+                return {slug: "merged" for slug in self.dag.tasks}
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr("dgov.cli.run._ensure_git_ready", lambda *args, **kwargs: None)
+        monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda *_: 100)
+        monkeypatch.setattr(
+            "dgov.cli.run._sentrux_compare",
+            lambda *_args, **_kwargs: {
+                "degradation": False,
+                "quality_before": 100,
+                "quality_after": 100,
+            },
+        )
+        monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+        monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+
+        try:
+            # dgov run --only tasks/main.b should accept the slug
+            target = "tasks/main.b"
+            result = runner.invoke(cli, ["run", str(plan_dir), "--only", target])
+            assert result.exit_code == 0
+            assert "not found" not in result.output.lower()
+            assert "status: complete" in result.output.lower()
+        finally:
+            monkeypatch.undo()
 
 
 def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
-    """Running with uncompiled plan.toml should fail with error message."""
+    """Running with a single plan TOML file should fail with directory guidance."""
     plan = tmp_path / "plan.toml"
     plan.write_text(
         '[plan]\nname = "test"\n\n'
@@ -867,7 +1034,8 @@ def test_run_rejects_uncompiled_plan(runner: CliRunner, tmp_path: Path) -> None:
     )
     result = runner.invoke(cli, ["run", str(plan)])
     assert result.exit_code == 1
-    assert "not compiled" in result.output.lower() or "must be compiled" in result.output.lower()
+    assert "requires a plan directory" in result.output.lower()
+    assert "dgov run <plan-dir>" in result.output
 
 
 # -- prune --
@@ -924,13 +1092,13 @@ def test_prune_removes_historical_tasks(runner: CliRunner, tmp_path: Path) -> No
             ),
         ]
         for task in tasks:
-            add_task(td, task)
+            record_runtime_artifact(td, task)
 
         result = runner.invoke(cli, ["prune"])
         assert result.exit_code == 0
         assert "Pruned 2 historical task(s)" in result.output
 
-        remaining = all_tasks(td)
+        remaining = list_runtime_artifacts(td)
         remaining_slugs = {t["slug"] for t in remaining}
         assert remaining_slugs == {"pending-task", "merged-task"}
 
@@ -948,7 +1116,7 @@ def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
             branch_name="test",
             state=TaskState.ABANDONED,
         )
-        add_task(td, task)
+        record_runtime_artifact(td, task)
 
         # First prune removes the task
         result1 = runner.invoke(cli, ["prune"])
@@ -959,3 +1127,158 @@ def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
         result2 = runner.invoke(cli, ["prune"])
         assert result2.exit_code == 0
         assert "Nothing to prune" in result2.output
+
+
+# -----------------------------------------------------------------------------
+# Integration risk telemetry rendering (dgov plan review)
+# -----------------------------------------------------------------------------
+
+
+class TestReviewIntegrationTelemetry:
+    """Tests for rendering integration risk and candidate outcome in plan review."""
+
+    def test_review_shows_integration_risk_when_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Human output should show risk level and overlap when present."""
+        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="deployed",
+            commit_sha="abc1234",
+            commit_message="feat: a",
+            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+            landed_files=("src/a.py",),
+            settlement="ok",
+            integration_risk_level="high",
+            integration_risk_detected=True,
+            integration_candidate_passed=True,
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert "risk=high, overlap detected" in result.output
+        assert "candidate    passed" in result.output
+
+    def test_review_shows_candidate_failure_when_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Human output should show candidate failure class when present."""
+        from dgov.plan_review import PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="failed",
+            reject_verdict="scope_violation",
+            integration_risk_level="critical",
+            integration_risk_detected=True,
+            integration_candidate_passed=False,
+            integration_failure_class="same_symbol_edit",
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 1  # Failed units exit non-zero
+        assert "risk=critical, overlap detected" in result.output
+        assert "candidate    same_symbol_edit" in result.output
+
+    def test_review_omits_integration_when_not_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Human output should not show integration fields when not present."""
+        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="deployed",
+            commit_sha="abc1234",
+            commit_message="feat: a",
+            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+            landed_files=("src/a.py",),
+            settlement="ok",
+            # No integration fields set (defaults)
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 0, result.output
+        # Should not have integration lines when not present
+        assert "risk=" not in result.output
+        assert "overlap detected" not in result.output
+        assert "candidate    passed" not in result.output
+
+    def test_review_json_includes_integration_fields(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """JSON output should include integration telemetry fields."""
+        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="deployed",
+            commit_sha="abc1234",
+            commit_message="feat: a",
+            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+            landed_files=("src/a.py",),
+            settlement="ok",
+            integration_risk_level="medium",
+            integration_risk_detected=True,
+            integration_candidate_passed=True,
+            integration_failure_class=None,
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        unit_data = data["units"][0]
+        assert unit_data["integration_risk_level"] == "medium"
+        assert unit_data["integration_risk_detected"] is True
+        assert unit_data["integration_candidate_passed"] is True
+        assert unit_data["integration_failure_class"] is None

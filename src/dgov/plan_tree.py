@@ -278,6 +278,7 @@ def _unit_from_task(fq_id: str, data: dict[str, Any], source: Path) -> PlanUnit:
         agent=data.get("agent", ""),
         role=data.get("role", "worker"),
         timeout_s=data.get("timeout_s", 0),
+        iteration_budget=data.get("iteration_budget"),
         test_cmd=data.get("test_cmd", ""),
     )
 

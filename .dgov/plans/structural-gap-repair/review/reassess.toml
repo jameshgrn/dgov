@@ -1,0 +1,23 @@
+[tasks.reassess-shape]
+summary = "Review the post-extraction shape against sentrux instead of trimming CLI render code by default."
+role = "reviewer"
+prompt = """
+Orient:
+- Read the deployed diffs for `runtime/boundary.extract-boundary` and `semantic/gate.phase-split` first.
+- Read the latest `sentrux gate` result after those units land.
+- This is a review-only task. Do not run `run_tests()` or broad shell verification unless the prior units explicitly failed to provide their recorded evidence.
+
+Edit:
+1. Review whether the new boundary actually reduced responsibility concentration in `runner.py` or merely moved methods without changing ownership.
+2. Call out any remaining module-boundary flaw that still explains a flat coupling score.
+3. If the shape is materially improved, state that explicitly and note whether any remaining debt is now secondary.
+
+Verify:
+- Verify from the landed diffs and the recorded sentrux/targeted-check evidence only.
+- Do not widen scope into CLI render cleanup unless the evidence shows it is still a primary hotspot.
+"""
+commit_message = "Review post-extraction structural shape"
+depends_on = [
+  "runtime/boundary.extract-boundary",
+  "semantic/gate.phase-split",
+]

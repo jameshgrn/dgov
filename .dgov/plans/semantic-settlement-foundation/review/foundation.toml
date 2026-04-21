@@ -1,0 +1,23 @@
+[tasks.review-foundation]
+summary = "Review the semantic-settlement foundation for false positives and fail-closed behavior."
+role = "reviewer"
+depends_on = [
+  "telemetry/review-surface.surface-integration-risk",
+  "runtime/candidate.add-integration-candidate",
+  "python/gates.add-python-semantic-gates",
+]
+prompt = """
+Orient:
+- Read the dependency diffs first.
+- Focus on integration semantics, not style.
+- Evaluate whether the branch stays fail-closed and evidence-rich under replay, validation, and semantic-gate failure.
+
+Edit:
+1. Check for false-positive risk scoring or semantic-gate conditions that would reject benign Python changes.
+2. Check that candidate workspace failures leave the main repo clean and preserve enough evidence for debugging.
+3. Check that plan review output remains terse and machine-readable.
+4. Flag any place where the implementation quietly falls back instead of failing with an actionable message.
+
+Verify:
+- Confirm the landed diffs preserve the phase order from `DESIGN.md`: contract -> telemetry -> integrated candidate -> Python gates.
+"""

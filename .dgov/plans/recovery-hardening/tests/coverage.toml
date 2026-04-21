@@ -1,0 +1,20 @@
+[tasks.cover-recovery-hardening]
+summary = "Update recovery and strict-run coverage for the fail-closed contract."
+depends_on = ["runtime/run.harden-run-entry", "runtime/run.remove-state-repair", "runtime/state.trim-persisted-contract"]
+prompt = """
+Orient:
+- Read `tests/test_cli_run_strict.py`, `tests/test_cli_state.py`, `tests/test_tasks.py`, `tests/test_continue.py`, and any touched helper files.
+- Keep the assertions behavioral: direct compiled-file execution should be rejected, plan-directory runs should compile before execution, and persisted task rows should no longer be treated as contract authority.
+
+Edit:
+1. Update or replace tests so they cover the new public contract without relying on removed commands.
+2. Keep the test surface narrow and focused on strict-run, persistence, and continue semantics.
+3. Delete tests for removed CLI commands rather than leaving stale expectations around compatibility behavior.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_run_strict.py tests/test_cli.py tests/test_tasks.py tests/test_continue.py`
+- `uv run ruff check tests/test_cli_run_strict.py tests/test_cli.py tests/test_tasks.py tests/test_continue.py`
+"""
+commit_message = "Refresh recovery hardening coverage"
+files.edit = ["tests/test_cli_run_strict.py", "tests/test_cli.py", "tests/test_tasks.py", "tests/test_continue.py"]
+files.read = ["src/dgov/cli/run.py", "src/dgov/cli/__init__.py", "src/dgov/persistence/schema.py", "src/dgov/persistence/tasks.py", "tests/test_cli_state.py"]

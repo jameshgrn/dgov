@@ -57,7 +57,7 @@ This is the sequence for going from idea to running plan.
    prompt references are almost always real bugs; prompt-structure warnings
    are advisory unless they reveal a genuinely vague prompt. If you leave a
    warning in place, record why it is acceptable in the handover or plan notes.
-8. **Run.** `dgov run <compiled>.toml`. Watch in a second terminal with
+8. **Run.** `dgov run <plan-dir>`. Watch in a second terminal with
    `dgov watch`.
 9. **Diagnose failures.** Scope violation = plan bug (fix claims, re-run).
    Settlement failure = maybe retry, maybe plan bug. Empty diff = the worker

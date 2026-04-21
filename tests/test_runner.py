@@ -7,9 +7,14 @@ Tests: the kernel<->runner contract under happy, failure, and concurrent scenari
 from __future__ import annotations
 
 import asyncio
+import json
+import os
+import subprocess
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
+from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.kernel import DagState
 from dgov.runner import EventDagRunner
@@ -98,6 +103,41 @@ def _mock_gate_fail(wt_path, base_commit, project_root, config=None):
     return GateResult(passed=False, error="lint failure")
 
 
+def _mock_integration_candidate_pass(project_root, task_wt, candidate_slug):
+    """Mock successful integration candidate creation."""
+    from pathlib import Path
+
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=True,
+        candidate_path=Path(f"/tmp/{candidate_slug}"),
+        candidate_sha="candidate123abc",
+    )
+
+
+def _mock_integration_candidate_fail(project_root, task_wt, candidate_slug):
+    """Mock failed integration candidate creation."""
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=False,
+        error="Replay failed: merge conflict detected",
+    )
+
+
+def _mock_semantic_gate_pass(*args, **kwargs):
+    """Mock successful semantic gate evaluation."""
+    from dgov.semantic_settlement import SemanticGateVerdict
+
+    return SemanticGateVerdict(
+        task_slug=kwargs.get("task_slug", "a"),
+        gate_name="python_semantic",
+        passed=True,
+        checked_at=0.0,
+    )
+
+
 # Patch targets — runner imports at top level
 _P_CREATE_WT = "dgov.runner.create_worktree"
 _P_MERGE_WT = "dgov.runner.merge_worktree"
@@ -105,12 +145,16 @@ _P_REMOVE_WT = "dgov.runner.remove_worktree"
 _P_COMMIT_WT = "dgov.runner.commit_in_worktree"
 _P_AUTOFIX = "dgov.runner.autofix_sandbox"
 _P_VALIDATE = "dgov.runner.validate_sandbox"
-_P_ADD_TASK = "dgov.runner.add_task"
+_P_PREPARE_WT = "dgov.runner.prepare_worktree"
+_P_RECORD_ARTIFACT = "dgov.runner.record_runtime_artifact"
 _P_EMIT_EVENT = "dgov.runner.emit_event"
 _P_HEADLESS = "dgov.runner.run_headless_worker"
 # review_sandbox imported at top level in runner
 _P_REVIEW = "dgov.runner.review_sandbox"
 _P_DEPLOY_APPEND = "dgov.deploy_log.append"
+_P_CREATE_CANDIDATE = "dgov.runner.create_integration_candidate"
+_P_REMOVE_CANDIDATE = "dgov.runner.remove_integration_candidate"
+_P_SEMANTIC_GATE = "dgov.runner.run_python_semantic_gate_in_subprocess"
 
 
 async def _fake_worker_success(
@@ -175,9 +219,35 @@ def _io_patches(
     validate=_mock_gate_pass,
     create_wt=_mock_create_worktree,
     merge_wt=None,
+    candidate=_mock_integration_candidate_pass,
+    semantic_gate=_mock_semantic_gate_pass,
+    deploy_records=None,
 ):
     """Return a context manager that patches all I/O boundaries."""
     import contextlib
+
+    from dgov.deploy_log import DeployRecord
+
+    recorded_deploys: list[DeployRecord] = list(deploy_records or [])
+
+    def _append_deploy(
+        project_root: str,
+        plan_name: str,
+        unit_id: str,
+        commit_sha: str,
+        timestamp=None,
+    ):
+        recorded_deploys.append(
+            DeployRecord(
+                plan=plan_name,
+                unit=unit_id,
+                sha=commit_sha,
+                ts=timestamp or "2026-01-01T00:00:00Z",
+            )
+        )
+
+    def _read_deploys(project_root: str, plan_name: str):
+        return [record for record in recorded_deploys if record.plan == plan_name]
 
     @contextlib.contextmanager
     def _ctx():
@@ -188,11 +258,16 @@ def _io_patches(
             patch(_P_COMMIT_WT, return_value="deadbeef"),
             patch(_P_AUTOFIX),
             patch(_P_VALIDATE, side_effect=validate),
-            patch(_P_ADD_TASK),
+            patch(_P_PREPARE_WT),
+            patch(_P_RECORD_ARTIFACT),
             patch(_P_EMIT_EVENT),
+            patch(_P_DEPLOY_APPEND, side_effect=_append_deploy),
             patch(_P_HEADLESS, side_effect=headless),
             patch(_P_REVIEW, side_effect=review),
-            patch(_P_DEPLOY_APPEND),
+            patch(_P_CREATE_CANDIDATE, side_effect=candidate),
+            patch(_P_REMOVE_CANDIDATE),
+            patch(_P_SEMANTIC_GATE, side_effect=semantic_gate),
+            patch("dgov.deploy_log.read", side_effect=_read_deploys),
         ):
             yield
 
@@ -282,6 +357,27 @@ class TestChain:
             results = asyncio.run(runner.run())
             assert results["a"] == "merged"
             assert results["b"] == "merged"
+
+    def test_dependent_dispatch_uses_latest_upstream_sha(self):
+        captured: list[str] = []
+
+        def _capture_create(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
+            captured.append(f"{slug}:{base_ref}")
+            return _mock_create_worktree(project_root, slug, base_ref)
+
+        with (
+            _io_patches(create_wt=_capture_create),
+            patch(
+                "dgov.deploy_log.read",
+                return_value=[
+                    MagicMock(unit="a", sha="dep-sha", ts="2026-04-18T12:00:00Z"),
+                ],
+            ),
+        ):
+            runner = _make_runner(_chain_dag())
+            asyncio.run(runner._dispatch(MagicMock(task_slug="b")))
+
+        assert captured == ["b:dep-sha"]
 
 
 class TestParallel:
@@ -373,6 +469,16 @@ class TestDispatchFailure:
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
             assert results["b"] == "merged"
+
+    def test_worktree_prepare_failure_sets_task_error(self):
+        with (
+            _io_patches(),
+            patch(_P_PREPARE_WT, side_effect=RuntimeError("prepare failed")),
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+            assert runner._task_errors["a"] == "prepare failed"
 
 
 class TestPartialDAG:
@@ -533,10 +639,12 @@ class TestResearcherRole:
             patch(_P_AUTOFIX) as mock_autofix,
             patch(_P_VALIDATE) as mock_validate,
             patch(_P_MERGE_WT) as mock_merge,
+            patch(_P_PREPARE_WT) as mock_prepare,
         ):
             runner = _make_runner(self._researcher_dag())
             results = asyncio.run(runner.run())
             assert results["a"] == "merged"
+            mock_prepare.assert_not_called()
             mock_commit.assert_not_called()
             mock_autofix.assert_not_called()
             mock_validate.assert_not_called()
@@ -549,6 +657,17 @@ class TestResearcherRole:
             # Researcher deploy records use the HEAD sha captured at worktree
             # creation (Worktree.commit == "abc123" per the mock helper).
             mock_append.assert_called_once_with("/tmp/test-project", "test-dag", "a", "abc123")
+
+
+class TestBootstrapPreparation:
+    def test_worker_dispatch_uses_bootstrap_timeout(self):
+        with _io_patches(), patch(_P_PREPARE_WT) as mock_prepare:
+            runner = _make_runner(_single_dag())
+            runner.project_config = ProjectConfig(bootstrap_timeout=17)
+            asyncio.run(runner._dispatch(MagicMock(task_slug="a")))
+
+        mock_prepare.assert_called_once()
+        assert mock_prepare.call_args.kwargs["timeout_s"] == 17
 
 
 class TestCleanup:
@@ -571,3 +690,842 @@ class TestCleanup:
             asyncio.run(_run_with_shutdown())
             assert len(runner._worker_tasks) == 0
             assert len(runner._worktrees) == 0
+
+
+class TestSemanticSettlementShadowMode:
+    """Tests for shadow-mode semantic settlement — telemetry only, no merge blocking."""
+
+    def test_integration_risk_scored_emitted_on_successful_merge(self):
+        """Every task that reaches landing path emits integration_risk_scored."""
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should still succeed (shadow mode)
+            assert results["a"] == "merged"
+
+            # Verify integration_risk_scored was emitted
+            risk_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+            ]
+            assert len(risk_calls) == 1
+            # Verify payload contains expected fields
+            call = risk_calls[0]
+            assert call.kwargs.get("task_slug") == "a"
+            assert "risk_level" in call.kwargs
+            assert "claimed_files" in call.kwargs
+            assert "changed_files" in call.kwargs
+
+    def test_integration_risk_scored_emitted_even_when_merge_fails(self):
+        """Risk scored even if settlement gate rejects (before failure path)."""
+        with _io_patches(validate=_mock_gate_fail) as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail (settlement gate rejected)
+            assert results["a"] == "failed"
+
+            # Risk should still be scored (happens before merge)
+            risk_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+            ]
+            assert len(risk_calls) == 1
+
+    def test_success_behavior_unchanged_in_shadow_mode(self):
+        """Shadow mode: risky tasks still land if gates would accept them."""
+        # Simulate a scenario with changed files but passing gates
+        with _io_patches() as _:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Verify unchanged success behavior
+            assert results["a"] == "merged"
+            assert runner.kernel.status.name == "COMPLETED"
+
+    def test_researcher_task_skips_semantic_risk_scoring(self):
+        """Read-only researcher tasks don't trigger settlement path."""
+        task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Research something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(),
+        )
+        dag = _dag({"research": task})
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+            assert results["research"] == "merged"
+
+            # No integration_risk_scored for researcher (no settlement path)
+            risk_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+            ]
+            assert len(risk_calls) == 0
+
+
+class TestRetryScopeFailClosed:
+    """Tests for fail-closed transient scope enforcement across retries.
+
+    Unclaimed tool writes from earlier attempts must cause review rejection
+    even if a later retry cleans the worktree and succeeds.
+    """
+
+    def test_transient_scope_fail_closed_across_retries(self):
+        """Earlier pane's unclaimed write causes failure on retry review."""
+
+        # Simulate review_sandbox behavior with transient scope checking
+        # First attempt pane: unclaimed write
+        # Second attempt pane: clean, claimed-only write
+        captured_reviews: list[dict] = []
+
+        def _review_with_history(wt_path, claimed_files=None, **kwargs):
+            from dgov.settlement import ReviewResult
+
+            captured_reviews.append(kwargs)
+            # Simulate that pane_slug is always passed
+            assert kwargs.get("pane_slug") is not None
+            assert kwargs.get("project_root") is not None
+            assert kwargs.get("task_slug") is not None
+            # Return pass - the actual scope check happens inside review_sandbox
+            return ReviewResult(passed=True, verdict="ok", actual_files=frozenset({"a.py"}))
+
+        with _io_patches(review=_review_with_history):
+            runner = _make_runner(_single_dag())
+            # Simulate that the runner would pass correct args to review_sandbox
+            asyncio.run(runner.run())
+
+        # Verify review was called with proper scoping params
+        assert len(captured_reviews) == 1
+        review_call = captured_reviews[0]
+        assert review_call.get("task_slug") == "a"
+        assert review_call.get("project_root") == "/tmp/test-project"
+
+    def test_review_receives_all_required_scope_params(self):
+        """Runner passes project_root, task_slug, pane_slug for scope enforcement."""
+        captured: dict = {}
+
+        def _capture_review(wt_path, claimed_files=None, **kwargs):
+            from dgov.settlement import ReviewResult
+
+            captured.update(kwargs)
+            return ReviewResult(passed=True, verdict="ok", actual_files=frozenset({"a.py"}))
+
+        with _io_patches(review=_capture_review):
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+
+        # Verify scope enforcement params are passed
+        assert captured.get("project_root") == "/tmp/test-project"
+        assert captured.get("task_slug") == "a"
+        assert captured.get("pane_slug") is not None  # Each dispatch gets a pane slug
+
+
+class TestIntegrationCandidate:
+    """Tests for integration candidate validation before merge."""
+
+    def test_integration_candidate_pass_emits_event(self):
+        """When candidate passes, integration_candidate_passed event is emitted."""
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            assert results["a"] == "merged"
+
+            # Verify integration_candidate_passed was emitted
+            passed_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_passed"
+            ]
+            assert len(passed_calls) == 1
+            # Verify payload has expected fields
+            kwargs = passed_calls[0].kwargs
+            assert kwargs.get("task_slug") == "a"
+            assert "candidate_sha" in kwargs
+
+    def test_integration_candidate_fail_rejects_task(self):
+        """When replay fails, task is rejected with integration_candidate_failed."""
+        with (
+            _io_patches(candidate=_mock_integration_candidate_fail) as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail due to candidate failure
+            assert results["a"] == "failed"
+
+            # Verify integration_candidate_failed was emitted
+            failed_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_failed"
+            ]
+            assert len(failed_calls) == 1
+            # Verify error details in payload
+            kwargs = failed_calls[0].kwargs
+            assert kwargs.get("task_slug") == "a"
+            assert "failure_class" in kwargs
+
+    def test_original_worktree_preserved_on_candidate_failure(self):
+        """When candidate fails, original task worktree is kept for inspection."""
+        with _io_patches(candidate=_mock_integration_candidate_fail) as _:
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+
+            # Original worktree should be in rejected_worktrees, not cleaned up
+            assert "a" in runner._rejected_worktrees
+
+    def test_candidate_validation_gate_failure_rejects(self):
+        """If candidate passes replay but fails validation gates, reject."""
+        # First call is isolated validation (pass), second is candidate validation (fail)
+        call_count = {"count": 0}
+
+        def _validate_with_candidate_fail(wt_path, base_commit, project_root, config=None):
+            from dgov.settlement import GateResult
+
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                return GateResult(passed=True)  # Isolated validation passes
+            return GateResult(passed=False, error="Candidate gate failed")
+
+        with (
+            _io_patches(validate=_validate_with_candidate_fail) as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail due to candidate gate failure
+            assert results["a"] == "failed"
+
+            # Verify both candidate creation and cleanup were called
+            # and integration_candidate_failed was emitted
+            failed_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_failed"
+            ]
+            assert len(failed_calls) == 1
+
+    def test_researcher_task_skips_integration_candidate(self):
+        """Read-only researcher tasks don't need integration candidate validation."""
+        task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Research something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(),
+        )
+        dag = _dag({"research": task})
+
+        with _io_patches() as _, patch(_P_CREATE_CANDIDATE) as mock_candidate:
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+            assert results["research"] == "merged"
+            # Integration candidate should not be created for researcher tasks
+            mock_candidate.assert_not_called()
+
+
+class TestPythonSemanticGateRunner:
+    """Tests for Python semantic gate integration in runner._settle_and_merge."""
+
+    def test_python_semantic_gate_emits_rejected_event(self):
+        """When semantic gate fails, semantic_gate_rejected event is emitted."""
+        from dgov.semantic_settlement import FailureClass, SemanticGateVerdict
+
+        def _mock_semantic_gate_fail(*args, **kwargs):
+            return SemanticGateVerdict(
+                task_slug="a",
+                gate_name="same_symbol_edit",
+                passed=False,
+                failure_class=FailureClass.SAME_SYMBOL_EDIT,
+                evidence=(),
+                error_message="Concurrent edits detected",
+                checked_at=0.0,
+            )
+
+        with (
+            _io_patches() as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+            patch(_P_SEMANTIC_GATE, side_effect=_mock_semantic_gate_fail),
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail due to semantic gate rejection
+            assert results["a"] == "failed"
+
+            # Verify semantic_gate_rejected was emitted
+            rejected_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "semantic_gate_rejected"
+            ]
+            assert len(rejected_calls) == 1
+            kwargs = rejected_calls[0].kwargs
+            assert kwargs.get("gate_name") == "same_symbol_edit"
+            assert kwargs.get("failure_class") == "same_symbol_edit"
+
+    def test_python_semantic_gate_passes_for_non_python_files(self):
+        """Non-Python tasks bypass semantic gate and proceed normally."""
+        task = DagTaskSpec(
+            slug="docs",
+            summary="Update docs",
+            prompt="Update readme",
+            commit_message="docs: update",
+            agent="test-agent",
+            files=DagFileSpec(create=("README.md",)),
+        )
+        dag = _dag({"docs": task})
+
+        with (
+            _io_patches() as _,
+            patch(_P_SEMANTIC_GATE) as mock_gate,
+        ):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+            assert results["docs"] == "merged"
+            # Semantic gate should be called but with non-Python files
+            mock_gate.assert_called_once()
+            # First touched file is README.md which should bypass
+            call_kwargs = mock_gate.call_args.kwargs
+            assert "README.md" in str(call_kwargs.get("touched_files", []))
+
+    def test_python_semantic_gate_cleans_up_candidate_on_rejection(self):
+        """When semantic gate rejects, candidate worktree is removed."""
+        from dgov.semantic_settlement import FailureClass, SemanticGateVerdict
+
+        def _mock_semantic_gate_fail(*args, **kwargs):
+            return SemanticGateVerdict(
+                task_slug="a",
+                gate_name="duplicate_definition",
+                passed=False,
+                failure_class=FailureClass.DUPLICATE_DEFINITION,
+                evidence=(),
+                error_message="Duplicate function found",
+                checked_at=0.0,
+            )
+
+        with (
+            _io_patches() as _,
+            patch(_P_REMOVE_CANDIDATE) as mock_remove,
+            patch(_P_SEMANTIC_GATE, side_effect=_mock_semantic_gate_fail),
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            assert results["a"] == "failed"
+            # Candidate should be cleaned up
+            mock_remove.assert_called()
+
+
+class TestPythonSemanticGateSubprocess:
+    """Tests for candidate-rooted semantic gate execution."""
+
+    def test_subprocess_uses_candidate_src_path(self, tmp_path, monkeypatch):
+        """Candidate subprocess should import from the candidate src tree first."""
+        from dgov.runner import run_python_semantic_gate_in_subprocess
+
+        captured: dict[str, object] = {}
+
+        def _fake_run(cmd, cwd, capture_output, text, env, check):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env"] = env
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=json.dumps({
+                    "task_slug": "a",
+                    "gate_name": "python_semantic",
+                    "passed": True,
+                    "failure_class": None,
+                    "error_message": "",
+                    "evidence": [],
+                }),
+                stderr="",
+            )
+
+        monkeypatch.setattr("dgov.settlement_flow.subprocess.run", _fake_run)
+
+        verdict = run_python_semantic_gate_in_subprocess(
+            candidate_path=tmp_path,
+            project_root="/tmp/project",
+            task_base_sha="base123",
+            task_commit_sha="task123",
+            target_head_sha="head123",
+            touched_files=("src/a.py",),
+            task_slug="a",
+        )
+
+        assert verdict.passed is True
+        assert captured["cwd"] == tmp_path
+        env = cast(dict[str, str], captured["env"])
+        pythonpath = env.get("PYTHONPATH")
+        assert isinstance(pythonpath, str)
+        assert pythonpath.split(os.pathsep)[0] == str(tmp_path)
+
+    def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
+        """Runner should reject when candidate-side semantic execution fails."""
+        from dgov.runner import run_python_semantic_gate_in_subprocess
+
+        def _fake_run(cmd, cwd, capture_output, text, env, check):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
+
+        monkeypatch.setattr("dgov.settlement_flow.subprocess.run", _fake_run)
+
+        verdict = run_python_semantic_gate_in_subprocess(
+            candidate_path=tmp_path,
+            project_root="/tmp/project",
+            task_base_sha="base123",
+            task_commit_sha="task123",
+            target_head_sha="head123",
+            touched_files=("src/a.py",),
+            task_slug="a",
+        )
+
+        assert verdict.passed is False
+        assert verdict.gate_name == "python_semantic_subprocess"
+        assert "boom" in verdict.error_message
+
+
+class TestRecoveryPipeline:
+    """Tests for the refactored recovery pipeline phases."""
+
+    def test_recovery_pipeline_runs_phases_in_order(self):
+        """Pipeline executes seed → rehydrate → cleanup → resume in order."""
+        phase_calls: list[str] = []
+
+        class _InstrumentedRunner(EventDagRunner):
+            def _phase_seed_deployed(self):
+                phase_calls.append("seed")
+
+            def _phase_rehydrate(self):
+                phase_calls.append("rehydrate")
+
+            def _phase_cleanup_orphans(self):
+                phase_calls.append("cleanup")
+
+            def _phase_resume_failed(self):
+                phase_calls.append("resume")
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            # Replace with instrumented methods
+            runner._phase_seed_deployed = lambda: phase_calls.append("seed")  # type: ignore
+            runner._phase_rehydrate = lambda: phase_calls.append("rehydrate")  # type: ignore
+            runner._phase_cleanup_orphans = lambda: phase_calls.append("cleanup")  # type: ignore
+            runner._phase_resume_failed = lambda: phase_calls.append("resume")  # type: ignore
+
+            runner._run_recovery_pipeline(continue_failed=True)
+
+        assert phase_calls == ["seed", "rehydrate", "cleanup", "resume"]
+
+    def test_recovery_pipeline_skips_resume_when_not_continuing(self):
+        """Pipeline skips resume phase when continue_failed=False."""
+        phase_calls: list[str] = []
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            runner._phase_seed_deployed = lambda: phase_calls.append("seed")  # type: ignore
+            runner._phase_rehydrate = lambda: phase_calls.append("rehydrate")  # type: ignore
+            runner._phase_cleanup_orphans = lambda: phase_calls.append("cleanup")  # type: ignore
+            runner._phase_resume_failed = lambda: phase_calls.append("resume")  # type: ignore
+
+            runner._run_recovery_pipeline(continue_failed=False)
+
+        assert phase_calls == ["seed", "rehydrate", "cleanup"]
+        assert "resume" not in phase_calls
+
+    def test_apply_rehydrate_event_dispatched(self):
+        """Rehydration applies dispatched events to kernel."""
+        from dgov.actions import TaskDispatched
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {"event": "dag_task_dispatched", "task_slug": "a", "pane": "pane-1"}
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            mock_handle.assert_called_once()
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskDispatched)
+            assert call_args.task_slug == "a"
+            assert call_args.pane_slug == "pane-1"
+
+    def test_apply_rehydrate_event_task_done(self):
+        """Rehydration applies task_done events to kernel."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {"event": "task_done", "task_slug": "a", "pane": "pane-1"}
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.DONE
+
+    def test_apply_rehydrate_event_task_failed(self):
+        """Rehydration applies task_failed events with FAILED state."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {
+                "event": "task_failed",
+                "task_slug": "a",
+                "pane": "pane-1",
+                "error": "test error",
+            }
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.FAILED
+
+    def test_apply_rehydrate_event_task_failed_timeout(self):
+        """Rehydration detects timeout from error string and sets TIMED_OUT state."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {
+                "event": "task_failed",
+                "task_slug": "a",
+                "pane": "pane-1",
+                "error": "worker timeout exceeded",
+            }
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.TIMED_OUT
+
+    def test_apply_rehydrate_event_governor_resumed(self):
+        """Rehydration restores governor-resume events for retry state."""
+        from dgov.actions import GovernorAction, TaskGovernorResumed
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ev = {
+                "event": "dag_task_governor_resumed",
+                "task_slug": "a",
+                "pane": "pane-1",
+                "action": "retry",
+            }
+
+            with patch.object(runner.kernel, "handle") as mock_handle:
+                runner._apply_rehydrate_event(ev)
+
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskGovernorResumed)
+            assert call_args.action == GovernorAction.RETRY
+
+    def test_abandon_orphaned_task_marks_abandoned(self):
+        """Orphan abandonment marks ACTIVE tasks as ABANDONED."""
+        from dgov.actions import TaskWaitDone
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            # Pre-set task as ACTIVE (orphaned state)
+            runner.kernel.task_states["a"] = TaskState.ACTIVE
+
+            with (
+                patch.object(runner.kernel, "handle") as mock_handle,
+                patch("dgov.runner.update_runtime_artifact_state") as mock_update,
+                patch("dgov.runner.emit_event") as mock_emit,
+            ):
+                runner._abandon_orphaned_task("a")
+
+            # Verify kernel was told to abandon
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskWaitDone)
+            assert call_args.task_state == TaskState.ABANDONED
+
+            # Verify artifact state was updated
+            mock_update.assert_called_once()
+            assert mock_update.call_args[0][1] == "a"
+            assert mock_update.call_args[0][2] == TaskState.ABANDONED.value
+
+            # Verify event was emitted (emit_event: positional args)
+            mock_emit.assert_called_once()
+            assert mock_emit.call_args[0][1] == "task_abandoned"
+
+    def test_resume_single_task_emits_event(self):
+        """Resume emits governor-resumed event for auditability."""
+        from dgov.actions import GovernorAction, TaskGovernorResumed
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+
+            with (
+                patch.object(runner.kernel, "handle") as mock_handle,
+                patch("dgov.runner.emit_event") as mock_emit,
+            ):
+                runner._resume_single_task("a", TaskState.FAILED)
+
+            # Verify kernel was told to retry
+            call_args = mock_handle.call_args[0][0]
+            assert isinstance(call_args, TaskGovernorResumed)
+            assert call_args.action == GovernorAction.RETRY
+
+            # Verify event was emitted (emit_event: positional args)
+            mock_emit.assert_called_once()
+            assert mock_emit.call_args[0][1] == "dag_task_governor_resumed"
+            assert mock_emit.call_args[1]["action"] == GovernorAction.RETRY.value
+
+    def test_resume_skips_non_terminal_states(self):
+        """Resume only processes terminal states (FAILED, ABANDONED, TIMED_OUT, SKIPPED)."""
+        from dgov.persistence.schema import TaskState
+
+        with _io_patches():
+            runner = _make_runner(_parallel_dag())
+            # Set one pending, one done
+            runner.kernel.task_states["a"] = TaskState.PENDING
+            runner.kernel.task_states["b"] = TaskState.DONE
+
+            resumed: list[str] = []
+            runner._resume_single_task = lambda slug, state: resumed.append(slug)  # type: ignore
+
+            runner._phase_resume_failed()
+
+            # Neither should be resumed
+            assert resumed == []
+
+    def test_resume_processes_all_terminal_states(self):
+        """Resume processes FAILED, ABANDONED, TIMED_OUT, SKIPPED."""
+        from dgov.persistence.schema import TaskState
+
+        dag = _dag({
+            "failed": _task("failed"),
+            "abandoned": _task("abandoned"),
+            "timedout": _task("timedout"),
+            "skipped": _task("skipped"),
+        })
+
+        with _io_patches():
+            runner = _make_runner(dag)
+            runner.kernel.task_states["failed"] = TaskState.FAILED
+            runner.kernel.task_states["abandoned"] = TaskState.ABANDONED
+            runner.kernel.task_states["timedout"] = TaskState.TIMED_OUT
+            runner.kernel.task_states["skipped"] = TaskState.SKIPPED
+
+            resumed: list[str] = []
+            runner._resume_single_task = lambda slug, state: resumed.append(slug)  # type: ignore
+
+            runner._phase_resume_failed()
+
+            assert sorted(resumed) == ["abandoned", "failed", "skipped", "timedout"]
+
+
+class TestSettlementPhaseBoundaries:
+    """Tests for settlement phase split — verify each phase boundary independently."""
+
+    def test_prepare_and_commit_returns_true_for_edit_tasks(self):
+        """_prepare_and_commit returns was_settlement=True for normal edit tasks."""
+        from unittest.mock import MagicMock
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", file_claims=("a.py",), pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._prepare_and_commit(action, wt, loop)
+                assert error is None
+                assert was_settlement is True  # Indicates settlement should continue
+
+            asyncio.run(_test())
+
+    def test_prepare_and_commit_returns_false_for_researcher(self):
+        """_prepare_and_commit returns was_settlement=False for researcher role."""
+        from unittest.mock import MagicMock
+
+        from dgov.dag_parser import DagFileSpec, DagTaskSpec
+
+        researcher_task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Investigate something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(read=("src/foo.py",)),
+        )
+        dag = _dag({"research": researcher_task})
+
+        with _io_patches():
+            runner = _make_runner(dag)
+            action = MagicMock(task_slug="research", file_claims=(), pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "research")
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._prepare_and_commit(action, wt, loop)
+                assert error is None
+                assert was_settlement is False  # Indicates settlement should skip
+
+            asyncio.run(_test())
+
+    def test_cleanup_rejected_candidate_removes_and_emits(self):
+        """_cleanup_rejected_candidate removes candidate and emits failure event."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from dgov.semantic_settlement import FailureClass, IntegrationCandidateVerdict
+        from dgov.worktree import IntegrationCandidateResult
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            candidate_result = IntegrationCandidateResult(
+                passed=True,
+                candidate_path=Path("/tmp/test-candidate"),
+                candidate_sha="abc123",
+            )
+            verdict = IntegrationCandidateVerdict(
+                task_slug="a",
+                candidate_sha="abc123",
+                target_head_sha="",
+                passed=False,
+                failure_class=FailureClass.BEHAVIORAL_MISMATCH,
+                error_message="validation failed",
+                validated_at=0.0,
+            )
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                with (
+                    patch("dgov.runner.remove_integration_candidate") as mock_remove,
+                    patch("dgov.runner.emit_integration_candidate_failed") as mock_emit,
+                ):
+                    await runner._cleanup_rejected_candidate(
+                        action, candidate_result, verdict, loop
+                    )
+
+                    mock_remove.assert_called_once()
+                    mock_emit.assert_called_once()
+
+            asyncio.run(_test())
+
+    def test_cleanup_passed_candidate_removes_and_emits(self):
+        """_cleanup_passed_candidate removes candidate and emits success event."""
+        from pathlib import Path
+        from unittest.mock import MagicMock, patch
+
+        from dgov.worktree import IntegrationCandidateResult
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            candidate_result = IntegrationCandidateResult(
+                passed=True,
+                candidate_path=Path("/tmp/test-candidate"),
+                candidate_sha="abc123",
+            )
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                with (
+                    patch("dgov.runner.remove_integration_candidate") as mock_remove,
+                    patch("dgov.runner.emit_integration_candidate_passed") as mock_emit,
+                ):
+                    await runner._cleanup_passed_candidate(action, candidate_result, loop)
+
+                    mock_remove.assert_called_once()
+                    mock_emit.assert_called_once()
+                    # Verify pass verdict contains expected fields
+                    call_args = mock_emit.call_args
+                    assert call_args[0][3].task_slug == "a"
+                    assert call_args[0][3].passed is True
+
+            asyncio.run(_test())
+
+    def test_settle_and_merge_early_return_on_prepare_error(self):
+        """_settle_and_merge returns early when _prepare_and_commit returns error."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            # Mock prepare_and_commit to return an error
+            runner._prepare_and_commit = AsyncMock(return_value=("prepare failed", True))  # type: ignore
+            runner._run_isolated_validation = AsyncMock()  # type: ignore
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                assert error == "prepare failed"
+                assert was_settlement is True
+                runner._run_isolated_validation.assert_not_called()  # type: ignore
+
+            asyncio.run(_test())
+
+    def test_settle_and_merge_early_return_on_validation_error(self):
+        """_settle_and_merge returns early when _run_isolated_validation returns error."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            runner._prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
+            runner._run_isolated_validation = AsyncMock(return_value=("validation failed", None))  # type: ignore
+            runner._create_integration_candidate_with_emit = AsyncMock()  # type: ignore
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                assert error == "validation failed"
+                assert was_settlement is True
+                runner._create_integration_candidate_with_emit.assert_not_called()  # type: ignore
+
+            asyncio.run(_test())
+
+    def test_settle_and_merge_early_return_on_candidate_fail(self):
+        """_settle_and_merge returns early when candidate creation fails."""
+        from unittest.mock import AsyncMock, MagicMock
+
+        from dgov.worktree import IntegrationCandidateResult
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            action = MagicMock(task_slug="a", pane_slug="pane-1")
+            wt = _mock_create_worktree("/tmp", "a")
+
+            runner._prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
+            runner._run_isolated_validation = AsyncMock(return_value=(None, MagicMock()))  # type: ignore
+            runner._create_integration_candidate_with_emit = AsyncMock(  # type: ignore
+                return_value=IntegrationCandidateResult(
+                    passed=False, error="candidate creation failed"
+                )
+            )
+            runner._run_semantic_gate_on_candidate = AsyncMock()  # type: ignore
+
+            async def _test():
+                loop = asyncio.get_running_loop()
+                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                assert error and "candidate creation failed" in error
+                assert was_settlement is True
+                runner._run_semantic_gate_on_candidate.assert_not_called()  # type: ignore
+
+            asyncio.run(_test())

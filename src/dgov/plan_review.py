@@ -22,7 +22,7 @@ from typing import Literal
 from dgov.deploy_log import read as read_deploy_log
 from dgov.persistence import read_events
 
-UnitStatus = Literal["deployed", "failed", "pending", "not_run"]
+UnitStatus = Literal["deployed", "failed", "active", "pending", "not_run"]
 SettlementResult = Literal["ok", "ok_retried", "rejected", "n/a"]
 
 
@@ -72,6 +72,12 @@ class UnitReview:
     error: str | None = None
     last_thought: str | None = None
     hint: str | None = None
+    # Integration risk telemetry (populated when semantic settlement events exist)
+    integration_risk_level: str | None = None  # RiskLevel value
+    # True if python_overlap_detected or any overlap evidence
+    integration_risk_detected: bool = False
+    integration_candidate_passed: bool | None = None  # None if no candidate validation
+    integration_failure_class: str | None = None  # FailureClass value
 
 
 @dataclass(frozen=True)
@@ -91,6 +97,10 @@ class PlanReview:
     @property
     def failed_count(self) -> int:
         return sum(1 for u in self.units if u.status == "failed")
+
+    @property
+    def active_count(self) -> int:
+        return sum(1 for u in self.units if u.status == "active")
 
     @property
     def pending_count(self) -> int:
@@ -298,13 +308,78 @@ _ROOT_FILE_SUFFIXES = {
     "yml",
 }
 
+# Change-indicating words that suggest the worker is claiming to have modified a file.
+# These must appear within a small window before the path to count as a change claim.
+_CHANGE_VERBS = frozenset({
+    "add",
+    "added",
+    "change",
+    "changed",
+    "create",
+    "created",
+    "edit",
+    "edited",
+    "fix",
+    "fixed",
+    "implement",
+    "implemented",
+    "modify",
+    "modified",
+    "remove",
+    "removed",
+    "rename",
+    "renamed",
+    "update",
+    "updated",
+    "write",
+    "wrote",
+})
+
+# Non-change indicators that suggest the path is mentioned in a verification/reference context.
+# These suppress change-claim detection when they appear immediately before the path.
+_NON_CHANGE_CONTEXT_WORDS = frozenset({
+    "verify",
+    "verified",
+    "check",
+    "checked",
+    "confirm",
+    "confirmed",
+    "ensure",
+    "ensured",
+    "test",
+    "tested",
+    "see",
+    "reference",
+    "import",
+    "from",
+    "using",
+    "via",
+    "in",
+    "at",
+    "by",
+    "read",
+    "reading",
+})
+
+# Window size for context detection: how many tokens before the path to check for change verbs.
+_CHANGE_CONTEXT_WINDOW = 4
+
 
 def _extract_path_mentions(text: str) -> tuple[str, ...]:
-    """Return ordered unique file-like path mentions from free text."""
+    """Return ordered unique file-like path mentions that appear in change-claim context.
+
+    Filters out paths that appear to be mentioned only in verification, reference,
+    or other non-change contexts. Only returns paths where a change-indicating word
+    appears within the preceding token window.
+    """
     seen: set[str] = set()
     paths: list[str] = []
-    for raw in _PATH_TOKEN_SPLIT_RE.split(text):
-        path = raw.strip().strip(".")
+    tokens = [t.strip() for t in _PATH_TOKEN_SPLIT_RE.split(text) if t.strip()]
+
+    for i, raw in enumerate(tokens):
+        path = raw.strip().strip(".").strip("*_`<>")
+        if path.startswith("./"):
+            path = path[2:]
         if not path or "." not in path:
             continue
         suffix = path.rsplit(".", 1)[1].lower()
@@ -312,8 +387,28 @@ def _extract_path_mentions(text: str) -> tuple[str, ...]:
             continue
         if path in seen:
             continue
-        seen.add(path)
-        paths.append(path)
+
+        # Check for change-claim context in the preceding window.
+        start_idx = max(0, i - _CHANGE_CONTEXT_WINDOW)
+        preceding_tokens = tokens[start_idx:i]
+
+        # Check if any token is a change verb (case-insensitive).
+        has_change_verb = any(t.lower() in _CHANGE_VERBS for t in preceding_tokens)
+
+        # Check if the immediate context suggests non-change usage.
+        # If the token right before the path is a non-change word, suppress the change claim.
+        has_non_change_context = False
+        if preceding_tokens:
+            # Check the token immediately before the path.
+            immediate_prev = preceding_tokens[-1].lower()
+            if immediate_prev in _NON_CHANGE_CONTEXT_WORDS:
+                has_non_change_context = True
+
+        # Only include the path if it has a change verb and no non-change context override.
+        if has_change_verb and not has_non_change_context:
+            seen.add(path)
+            paths.append(path)
+
     return tuple(paths)
 
 
@@ -323,7 +418,7 @@ def _worker_note_mismatches(
     """Return file-like mentions in a worker note that are absent from the landed diff."""
     if not done_summary or not landed_files:
         return ()
-    landed = set(landed_files)
+    landed = {path.lstrip("./") for path in landed_files}
     return tuple(path for path in _extract_path_mentions(done_summary) if path not in landed)
 
 
@@ -406,6 +501,30 @@ def _apply_worker_log_event(ev: dict, state: dict) -> None:
         state["error"] = content
 
 
+def _apply_semantic_settlement_event(ev: dict, state: dict) -> None:
+    """Handle semantic settlement events: risk scoring, candidate validation, gates."""
+    event_type = ev.get("event")
+    if event_type == "integration_risk_scored":
+        # Capture risk level and overlap detection
+        risk_level = ev.get("risk_level")
+        if isinstance(risk_level, str):
+            state["integration_risk_level"] = risk_level
+        # python_overlap_detected is boolean in payload
+        if ev.get("python_overlap_detected") is True:
+            state["integration_risk_detected"] = True
+        # Also check for any overlap_evidence in the payload
+        overlap_evidence = ev.get("overlap_evidence")
+        if isinstance(overlap_evidence, list) and len(overlap_evidence) > 0:
+            state["integration_risk_detected"] = True
+    elif event_type == "integration_candidate_passed":
+        state["integration_candidate_passed"] = True
+    elif event_type == "integration_candidate_failed" or event_type == "semantic_gate_rejected":
+        state["integration_candidate_passed"] = False
+        fc = ev.get("failure_class")
+        if isinstance(fc, str):
+            state["integration_failure_class"] = fc
+
+
 def _rollup_unit_events(unit_events: list[dict]) -> dict:
     """Collapse a unit's events into a rollup dict used by _build_unit_review."""
     state: dict = {
@@ -422,6 +541,11 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merge_sha": None,
         "merged_in_run": False,
         "failed_in_run": False,
+        # Integration risk telemetry
+        "integration_risk_level": None,
+        "integration_risk_detected": False,
+        "integration_candidate_passed": None,
+        "integration_failure_class": None,
     }
 
     for ev in unit_events:
@@ -429,6 +553,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
             _apply_worker_log_event(ev, state)
         else:
             _apply_lifecycle_event(ev, state)
+            _apply_semantic_settlement_event(ev, state)
 
     duration_s: float | None = None
     dispatched_ts = state["dispatched_ts"]
@@ -460,6 +585,11 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merged_in_run": state["merged_in_run"],
         "failed_in_run": state["failed_in_run"],
         "ran_in_run": ran_in_run,
+        # Integration risk telemetry
+        "integration_risk_level": state["integration_risk_level"],
+        "integration_risk_detected": state["integration_risk_detected"],
+        "integration_candidate_passed": state["integration_candidate_passed"],
+        "integration_failure_class": state["integration_failure_class"],
     }
 
 
@@ -478,6 +608,98 @@ def _settlement_result(
     return "n/a"
 
 
+def _compute_unit_status(
+    ran_in_run: bool,
+    merged_in_run: bool,
+    failed_in_run: bool,
+    has_error: bool,
+    has_reject_verdict: bool,
+    deploy_record,
+) -> UnitStatus:
+    """Determine unit status from rollup state and deploy record.
+
+    Status reflects the CURRENT run's outcome, not any historical deploy.
+    A unit that merged in an earlier run but failed in this run is "failed".
+    A unit in flight during the current run is "active".
+    A unit that didn't run at all in this run falls back to deploy_log.
+    """
+    if ran_in_run:
+        if merged_in_run:
+            return "deployed"
+        if failed_in_run or has_error or has_reject_verdict:
+            return "failed"
+        return "active"
+    if deploy_record is not None:
+        return "deployed"
+    return "not_run"
+
+
+def _fetch_deployed_commit_info(
+    project_root: str,
+    deploy_record,
+    done_summary: str | None,
+    include_full_diff: bool,
+) -> dict:
+    """Fetch git-derived info for a deployed unit.
+
+    Returns a dict with: commit_sha, commit_ts, commit_message, diff_stat,
+    landed_files, full_diff, worker_note_mismatches.
+    """
+    commit_sha = deploy_record.sha
+    commit_ts = deploy_record.ts
+    commit_message = _git_show_message(project_root, commit_sha)
+    diff_stat = _git_show_stat(project_root, commit_sha)
+    landed_files = _git_show_paths(project_root, commit_sha) or ()
+    worker_note_mismatches = _worker_note_mismatches(done_summary, landed_files)
+    full_diff = None
+    if include_full_diff:
+        full_diff = _git_show_full_diff(project_root, commit_sha)
+    return {
+        "commit_sha": commit_sha,
+        "commit_ts": commit_ts,
+        "commit_message": commit_message,
+        "diff_stat": diff_stat,
+        "landed_files": landed_files,
+        "full_diff": full_diff,
+        "worker_note_mismatches": worker_note_mismatches,
+    }
+
+
+def _empty_commit_info() -> dict:
+    """Return empty commit info structure for non-deployed units."""
+    return {
+        "commit_sha": None,
+        "commit_ts": None,
+        "commit_message": None,
+        "diff_stat": None,
+        "landed_files": (),
+        "full_diff": None,
+        "worker_note_mismatches": (),
+    }
+
+
+def _compute_self_corrections(failed_tool_calls: int, status: UnitStatus) -> int:
+    """Count self-corrections: only count on deployed units (recovered failures).
+
+    Failed units did not recover, so they show 0.
+    """
+    return failed_tool_calls if status == "deployed" else 0
+
+
+def _compute_attempts(unit_events: list[dict], settlement_retries: int) -> int:
+    """Compute total attempts including settlement retries."""
+    return 1 + settlement_retries if unit_events else 0
+
+
+def _compute_last_thought(thoughts: list[str], status: UnitStatus) -> str | None:
+    """Return the last thought for failed or active units."""
+    if not thoughts:
+        return None
+    if status in ("failed", "active"):
+        return thoughts[-1]
+    return None
+
+
 def _build_unit_review(
     unit_id: str,
     task_data: dict,
@@ -489,85 +711,132 @@ def _build_unit_review(
 ) -> UnitReview:
     rollup = _rollup_unit_events(unit_events)
 
-    # Status reflects the CURRENT run's outcome, not any historical deploy.
-    # A unit that merged in an earlier run but failed in this run is "failed".
-    # A unit that didn't run at all in this run falls back to deploy_log.
-    status: UnitStatus
-    if rollup["ran_in_run"]:
-        if rollup["merged_in_run"]:
-            status = "deployed"
-        elif rollup["failed_in_run"] or rollup["error"] or rollup["reject_verdict"]:
-            status = "failed"
-        else:
-            # Dispatched but no terminal event yet — still in flight or the
-            # run was killed mid-task. Surface as failed so the user notices.
-            status = "failed"
-    elif deploy_record is not None:
-        # Stale deploy from a prior run; this run did not touch the unit.
-        status = "deployed"
-    else:
-        status = "not_run"
+    # Determine unit status from rollup state and historical deploy record
+    status = _compute_unit_status(
+        ran_in_run=rollup["ran_in_run"],
+        merged_in_run=rollup["merged_in_run"],
+        failed_in_run=rollup["failed_in_run"],
+        has_error=bool(rollup["error"]),
+        has_reject_verdict=bool(rollup["reject_verdict"]),
+        deploy_record=deploy_record,
+    )
 
-    commit_sha: str | None = None
-    commit_message: str | None = None
-    commit_ts: str | None = None
-    diff_stat: DiffStat | None = None
-    landed_files: tuple[str, ...] = ()
-    full_diff: str | None = None
-    worker_note_mismatches: tuple[str, ...] = ()
-
+    # Fetch commit info for deployed units, or use empty placeholders
     if status == "deployed" and deploy_record is not None:
-        commit_sha = deploy_record.sha
-        commit_ts = deploy_record.ts
-        commit_message = _git_show_message(project_root, commit_sha)
-        diff_stat = _git_show_stat(project_root, commit_sha)
-        landed_files = _git_show_paths(project_root, commit_sha) or ()
-        worker_note_mismatches = _worker_note_mismatches(rollup["done_summary"], landed_files)
-        if include_full_diff:
-            full_diff = _git_show_full_diff(project_root, commit_sha)
+        commit_info = _fetch_deployed_commit_info(
+            project_root, deploy_record, rollup["done_summary"], include_full_diff
+        )
+    else:
+        commit_info = _empty_commit_info()
 
-    attempts = 1 + rollup["settlement_retries"] if unit_events else 0
+    # Compute derived metrics
+    attempts = _compute_attempts(unit_events, rollup["settlement_retries"])
     settlement = _settlement_result(status, rollup["settlement_retries"], rollup["reject_verdict"])
+    self_corrections = _compute_self_corrections(rollup["failed_tool_calls"], status)
+    last_thought = _compute_last_thought(rollup["thoughts"], status)
 
-    last_thought = rollup["thoughts"][-1] if rollup["thoughts"] else None
+    # Synthesize hint only for failed units
     hint = None
     if status == "failed":
+        unit_iteration_budget = task_data.get("iteration_budget", iteration_budget)
         hint = synthesize_hint(
             rollup["reject_verdict"],
             rollup["error"],
             rollup["iterations"],
-            iteration_budget,
+            unit_iteration_budget,
         )
-
-    # Only count self-corrections on units that made it to deployed — a
-    # failed unit's failed tool calls were not recovered from.
-    self_corrections = rollup["failed_tool_calls"] if status == "deployed" else 0
 
     return UnitReview(
         unit=unit_id,
         summary=task_data.get("summary", ""),
         status=status,
         agent=task_data.get("agent", ""),
-        commit_sha=commit_sha,
-        commit_message=commit_message,
-        commit_ts=commit_ts,
-        diff_stat=diff_stat,
-        landed_files=landed_files,
-        full_diff=full_diff,
+        commit_sha=commit_info["commit_sha"],
+        commit_message=commit_info["commit_message"],
+        commit_ts=commit_info["commit_ts"],
+        diff_stat=commit_info["diff_stat"],
+        landed_files=commit_info["landed_files"],
+        full_diff=commit_info["full_diff"],
         duration_s=rollup["duration_s"],
         iterations=rollup["iterations"],
         attempts=attempts,
         settlement=settlement,
         done_summary=rollup["done_summary"],
-        worker_note_mismatches=worker_note_mismatches,
+        worker_note_mismatches=commit_info["worker_note_mismatches"],
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
         self_corrections=self_corrections,
         reject_verdict=rollup["reject_verdict"],
         error=rollup["error"],
-        last_thought=last_thought if status == "failed" else None,
+        last_thought=last_thought,
         hint=hint,
+        integration_risk_level=rollup["integration_risk_level"],
+        integration_risk_detected=rollup["integration_risk_detected"],
+        integration_candidate_passed=rollup["integration_candidate_passed"],
+        integration_failure_class=rollup["integration_failure_class"],
     )
+
+
+def _fetch_worker_events_for_unit(
+    project_root: str,
+    plan_name: str,
+    uid: str,
+    lifecycle: list[dict],
+    run_start_id: int,
+) -> list[dict]:
+    """Fetch worker_log events for a unit, with fallback to task-only scoped query.
+
+    Primary fetch uses plan_name + task_slug. If empty, falls back to task_slug-only
+    with optional pane-based filtering.
+    """
+    worker_events = [
+        ev
+        for ev in read_events(
+            project_root,
+            plan_name=plan_name,
+            task_slug=uid,
+            after_id=run_start_id,
+        )
+        if ev.get("event") == "worker_log"
+    ]
+    if worker_events:
+        return worker_events
+
+    # Fallback: fetch by task_slug only, then filter by known panes if available.
+    fallback_events = [
+        ev
+        for ev in read_events(project_root, task_slug=uid, after_id=run_start_id)
+        if ev.get("event") == "worker_log"
+    ]
+    allowed_panes = {
+        pane for pane in (ev.get("pane") for ev in lifecycle) if isinstance(pane, str)
+    }
+    if allowed_panes:
+        fallback_events = [ev for ev in fallback_events if ev.get("pane") in allowed_panes]
+    return fallback_events
+
+
+def _combine_unit_events(lifecycle: list[dict], worker_events: list[dict]) -> list[dict]:
+    """Interleave lifecycle and worker log events chronologically by id."""
+    combined = worker_events + lifecycle
+    combined.sort(key=lambda e: e.get("id", 0))
+    return combined
+
+
+def _extract_run_start_ts(plan_events: list[dict], run_start_id: int) -> str | None:
+    """Extract timestamp of the run_start event matching the given id."""
+    for ev in plan_events:
+        if ev.get("event") == "run_start" and ev.get("id", 0) == run_start_id:
+            return ev.get("ts")
+    return None
+
+
+def _compute_run_duration(unit_reviews: list[UnitReview]) -> float | None:
+    """Aggregate duration across all units in the review."""
+    if not unit_reviews:
+        return None
+    total = sum(u.duration_s or 0.0 for u in unit_reviews)
+    return total or None
 
 
 def load_review(
@@ -606,63 +875,37 @@ def load_review(
     # Lifecycle events scoped to this run only.
     scoped_plan_events = [ev for ev in plan_events if ev.get("id", 0) > run_start_id]
 
-    # Per-unit worker_log events — scoped by task_slug + run_start_id.
-    def _events_for_unit(uid: str) -> list[dict]:
+    deploy_records = {r.unit: r for r in read_deploy_log(project_root, plan_name)}
+
+    unit_reviews: list[UnitReview] = []
+    for uid in sorted(tasks):
+        # Build lifecycle events for this unit from plan-scoped events.
         lifecycle = [
             ev
             for ev in scoped_plan_events
             if ev.get("task_slug") == uid and ev.get("event") != "worker_log"
         ]
-        worker_events = [
-            ev
-            for ev in read_events(
-                project_root,
-                plan_name=plan_name,
-                task_slug=uid,
-                after_id=run_start_id,
-            )
-            if ev.get("event") == "worker_log"
-        ]
-        if not worker_events:
-            fallback_events = [
-                ev
-                for ev in read_events(project_root, task_slug=uid, after_id=run_start_id)
-                if ev.get("event") == "worker_log"
-            ]
-            allowed_panes = {
-                pane for pane in (ev.get("pane") for ev in lifecycle) if isinstance(pane, str)
-            }
-            if allowed_panes:
-                fallback_events = [ev for ev in fallback_events if ev.get("pane") in allowed_panes]
-            worker_events = fallback_events
-        # Interleave lifecycle (from plan-scoped fetch) and worker logs chronologically by id.
-        combined = worker_events + lifecycle
-        combined.sort(key=lambda e: e.get("id", 0))
-        return combined
+        # Fetch and combine with worker log events.
+        worker_events = _fetch_worker_events_for_unit(
+            project_root, plan_name, uid, lifecycle, run_start_id
+        )
+        unit_events = _combine_unit_events(lifecycle, worker_events)
 
-    deploy_records = {r.unit: r for r in read_deploy_log(project_root, plan_name)}
-
-    unit_reviews: list[UnitReview] = []
-    for uid in sorted(tasks):
         unit_reviews.append(
             _build_unit_review(
                 unit_id=uid,
                 task_data=tasks[uid],
                 deploy_record=deploy_records.get(uid),
-                unit_events=_events_for_unit(uid),
+                unit_events=unit_events,
                 project_root=project_root,
                 include_full_diff=include_full_diff,
                 iteration_budget=iteration_budget,
             )
         )
 
-    # Last-run envelope: look at the run_start ts and aggregate unit durations.
-    last_run_ts: str | None = None
-    for ev in plan_events:
-        if ev.get("event") == "run_start" and ev.get("id", 0) == run_start_id:
-            last_run_ts = ev.get("ts")
-            break
-    run_duration = sum(u.duration_s or 0.0 for u in unit_reviews) or None if unit_reviews else None
+    # Last-run envelope: extract timestamp and aggregate unit durations.
+    last_run_ts = _extract_run_start_ts(plan_events, run_start_id)
+    run_duration = _compute_run_duration(unit_reviews)
 
     return PlanReview(
         plan_name=plan_name,

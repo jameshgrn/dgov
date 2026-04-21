@@ -161,6 +161,29 @@ class TestSynthesizeHint:
         assert synthesize_hint(None, None, 10, 30) is None
 
 
+def test_build_unit_review_prefers_task_iteration_budget_override() -> None:
+    unit = _build_unit_review(
+        unit_id="tasks/main.a",
+        task_data={"summary": "do a", "iteration_budget": 5},
+        deploy_record=None,
+        unit_events=[
+            _lifecycle(1, "dag_task_dispatched", "tasks/main.a", "plan"),
+            _worker_log(2, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(3, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(4, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(5, "tasks/main.a", "call", {"tool": "read_file"}),
+            _worker_log(6, "tasks/main.a", "call", {"tool": "read_file"}),
+            _lifecycle(7, "task_merge_failed", "tasks/main.a", "plan"),
+        ],
+        project_root=".",
+        include_full_diff=False,
+        iteration_budget=30,
+    )
+
+    assert unit.hint is not None
+    assert "5-iteration budget" in unit.hint
+
+
 # ---------------------------------------------------------------------------
 # _rollup_unit_events
 # ---------------------------------------------------------------------------
@@ -376,6 +399,134 @@ class TestBuildUnitReview:
             )
         assert review.worker_note_mismatches == ("tests/conftest.py",)
 
+    def test_deployed_unit_ignores_markdown_wrappers_in_worker_note_paths(self, tmp_path: Path):
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "Updated `src/dgov/example.py` and **tests/test_example.py**.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: tests"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/example.py", "tests/test_example.py"),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.worker_note_mismatches == ()
+
+    def test_deployed_unit_ignores_verification_only_file_mentions(self, tmp_path: Path):
+        """Paths mentioned only in verification context should not trigger mismatch warnings."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "Fixed the bug in src/dgov/core.py. "
+                "Verified that tests/test_core.py still passes.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: fix"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/core.py",),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        # Only src/dgov/core.py was claimed as changed; tests/test_core.py is verification-only.
+        assert review.worker_note_mismatches == ()
+
+    def test_deployed_unit_ignores_reference_only_file_mentions(self, tmp_path: Path):
+        """Paths mentioned only in reference context should not trigger mismatch warnings."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "Updated src/dgov/config.py. "
+                "See src/dgov/example.py for reference implementation.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: update"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/config.py",),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        # Only src/dgov/config.py was claimed as changed; src/dgov/example.py is reference-only.
+        assert review.worker_note_mismatches == ()
+
+    def test_deployed_unit_change_claim_without_verb_not_extracted(self, tmp_path: Path):
+        """Paths without change-indicating context should not be extracted as claims."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "The issue was in src/dgov/core.py. No changes needed to tests/test_core.py.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: fix"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/core.py",),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        # Neither path has a change verb, so no mismatch warnings.
+        assert review.worker_note_mismatches == ()
+
     def test_failed_unit_synthesizes_hint(self, tmp_path: Path):
         events = [
             _lifecycle(10, "dag_task_dispatched", "t", "p"),
@@ -420,6 +571,24 @@ class TestBuildUnitReview:
         assert review.status == "not_run"
         assert review.attempts == 0
         assert review.iterations is None
+        assert review.hint is None
+
+    def test_active_unit_stays_active_not_failed(self, tmp_path: Path):
+        review = _build_unit_review(
+            unit_id="t",
+            task_data={"summary": "pending merge"},
+            deploy_record=None,
+            unit_events=[
+                _lifecycle(1, "dag_task_dispatched", "t", "p"),
+                _worker_log(2, "t", "call", {"tool": "edit_file"}),
+                _worker_log(3, "t", "thought", "still working"),
+            ],
+            project_root=str(tmp_path),
+            include_full_diff=False,
+            iteration_budget=30,
+        )
+        assert review.status == "active"
+        assert review.last_thought == "still working"
         assert review.hint is None
 
     def test_stale_deploy_with_failed_current_run_shows_failed(self, tmp_path: Path):
@@ -703,8 +872,9 @@ class TestPlanReviewCounts:
             UnitReview(unit="a", summary="", status="deployed"),
             UnitReview(unit="b", summary="", status="deployed"),
             UnitReview(unit="c", summary="", status="failed"),
-            UnitReview(unit="d", summary="", status="pending"),
-            UnitReview(unit="e", summary="", status="not_run"),
+            UnitReview(unit="d", summary="", status="active"),
+            UnitReview(unit="e", summary="", status="pending"),
+            UnitReview(unit="f", summary="", status="not_run"),
         ]
         review = PlanReview(
             plan_name="p",
@@ -715,6 +885,7 @@ class TestPlanReviewCounts:
         )
         assert review.deployed_count == 2
         assert review.failed_count == 1
+        assert review.active_count == 1
         assert review.pending_count == 2
 
 
@@ -724,3 +895,168 @@ class TestDiffStatSummary:
 
     def test_plural_files(self):
         assert DiffStat(files_changed=3, insertions=40, deletions=5).summary() == "3 files, +40 -5"
+
+
+# ---------------------------------------------------------------------------
+# Integration risk telemetry (semantic settlement events)
+# ---------------------------------------------------------------------------
+
+
+class TestIntegrationRiskTelemetry:
+    """Tests for integration_risk_scored, integration_candidate_passed/failed events."""
+
+    def test_integration_risk_scored_captured(self):
+        """rollup should capture risk_level and overlap detection from integration_risk_scored."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "integration_risk_scored",
+                "t",
+                "plan",
+                risk_level="high",
+                python_overlap_detected=True,
+                overlap_evidence=[{"_kind": "SymbolOverlap", "symbol_name": "foo"}],
+            ),
+            _lifecycle(3, "merge_completed", "t", "plan", merge_sha="abc123"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_risk_level"] == "high"
+        assert rollup["integration_risk_detected"] is True
+
+    def test_integration_risk_scored_no_overlap(self):
+        """rollup should capture risk_level even when no overlap detected."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "integration_risk_scored",
+                "t",
+                "plan",
+                risk_level="low",
+                python_overlap_detected=False,
+                overlap_evidence=[],
+            ),
+            _lifecycle(3, "merge_completed", "t", "plan"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_risk_level"] == "low"
+        assert rollup["integration_risk_detected"] is False
+
+    def test_integration_candidate_passed(self):
+        """rollup should capture successful candidate validation."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(2, "integration_risk_scored", "t", "plan", risk_level="medium"),
+            _lifecycle(
+                3,
+                "integration_candidate_passed",
+                "t",
+                "plan",
+                candidate_sha="deadbeef",
+                passed=True,
+            ),
+            _lifecycle(4, "merge_completed", "t", "plan"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_candidate_passed"] is True
+        assert rollup["integration_failure_class"] is None
+
+    def test_integration_candidate_failed(self):
+        """rollup should capture failed candidate validation with failure class."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "integration_candidate_failed",
+                "t",
+                "plan",
+                candidate_sha="deadbeef",
+                passed=False,
+                failure_class="syntax_conflict",
+                error_message="parse error",
+            ),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_candidate_passed"] is False
+        assert rollup["integration_failure_class"] == "syntax_conflict"
+
+    def test_semantic_gate_rejected(self):
+        """rollup should capture semantic gate rejection with failure class."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "semantic_gate_rejected",
+                "t",
+                "plan",
+                gate_name="same_symbol_edit",
+                passed=False,
+                failure_class="same_symbol_edit",
+                error_message="concurrent edit detected",
+            ),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_candidate_passed"] is False
+        assert rollup["integration_failure_class"] == "same_symbol_edit"
+
+    def test_build_unit_review_includes_integration_fields(self, tmp_path: Path):
+        """UnitReview should include integration fields when events present."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(1, "t", "call", {"tool": "edit_file"}),
+            _lifecycle(
+                2,
+                "integration_risk_scored",
+                "t",
+                "p",
+                risk_level="high",
+                python_overlap_detected=True,
+            ),
+            _lifecycle(3, "integration_candidate_passed", "t", "p", passed=True),
+            _lifecycle(4, "merge_completed", "t", "p", merge_sha="abc123"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: x"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("a.py",)),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "do it"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.integration_risk_level == "high"
+        assert review.integration_risk_detected is True
+        assert review.integration_candidate_passed is True
+        assert review.integration_failure_class is None
+
+    def test_unit_without_integration_events_has_none_values(self, tmp_path: Path):
+        """UnitReview should have None/false defaults when no integration events."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(1, "t", "call", {"tool": "edit_file"}),
+            _lifecycle(2, "merge_completed", "t", "p", merge_sha="abc123"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: x"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("a.py",)),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "do it"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.integration_risk_level is None
+        assert review.integration_risk_detected is False
+        assert review.integration_candidate_passed is None
+        assert review.integration_failure_class is None

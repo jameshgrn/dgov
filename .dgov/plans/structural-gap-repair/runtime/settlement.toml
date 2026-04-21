@@ -1,0 +1,29 @@
+[tasks.pipeline-split]
+summary = "Reduce runner settlement orchestration complexity by splitting candidate validation and finalize phases."
+prompt = """
+Orient:
+- Read `src/dgov/runner.py` around `_run_semantic_gate_on_candidate`, `_validate_and_finalize_candidate`, `_settle_and_merge`, `_settlement_retry`, and `_merge`.
+- Read the settlement-facing tests in `tests/test_runner.py`.
+- Keep the current settlement contract intact: same rejection classes, same retry behavior, same cleanup semantics, no new config or flags.
+
+Edit:
+1. In `src/dgov/runner.py`, split the settlement path into smaller private phases so candidate validation, retry, and final merge/cleanup steps are easier to reason about independently.
+2. Preserve existing event emission and fail-closed behavior on candidate rejection, settlement retry exhaustion, and merge failure.
+3. Avoid broad architectural moves. Stay inside the existing runner/settlement boundary and use private helpers unless a new type is clearly justified.
+4. Update `tests/test_runner.py` to pin any behavior that becomes easier to regress during the split.
+
+Verify:
+- `uv run ruff check src/dgov/runner.py tests/test_runner.py`
+- `uv run ty check src/dgov/runner.py`
+- `uv run pytest -q tests/test_runner.py`
+"""
+commit_message = "Split runner settlement pipeline"
+depends_on = ["runtime/recovery.recovery-split"]
+files.edit = [
+  "src/dgov/runner.py",
+  "tests/test_runner.py",
+]
+files.read = [
+  "src/dgov/settlement.py",
+  "src/dgov/semantic_settlement.py",
+]

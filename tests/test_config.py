@@ -19,6 +19,7 @@ class TestProjectConfigDefaults:
         assert pc.worker_iteration_budget == 50
         assert pc.worker_iteration_warn_at == 40
         assert pc.worker_tree_max_lines == 80
+        assert pc.bootstrap_timeout == 300
 
     def test_resolve_test_cmd(self):
         pc = ProjectConfig(test_cmd="pytest {test_dir} -q", test_dir="tests/")
@@ -141,6 +142,7 @@ class TestLoadProjectConfig:
             "worker_iteration_budget = 75\n"
             "worker_iteration_warn_at = 60\n"
             "worker_tree_max_lines = 0\n"
+            "bootstrap_timeout = 45\n"
         )
         pc = load_project_config(tmp_path)
         assert pc.language == "go"
@@ -152,6 +154,7 @@ class TestLoadProjectConfig:
         assert pc.worker_iteration_budget == 75
         assert pc.worker_iteration_warn_at == 60
         assert pc.worker_tree_max_lines == 0
+        assert pc.bootstrap_timeout == 45
 
     def test_partial_toml_fills_defaults(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
@@ -210,7 +213,7 @@ deny_shell_commands = ["pip", "python -m pip"]
 
 class TestScopeIgnoreFiles:
     def test_default_is_empty(self):
-        assert ProjectConfig().scope_ignore_files == ()
+        assert ProjectConfig().scope_ignore_files == (".venv", "uv.lock", "__pycache__", "*.pyc")
 
     def test_loads_from_scope_section(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
@@ -219,12 +222,23 @@ class TestScopeIgnoreFiles:
             '[project]\n\n[scope]\nignore_files = ["uv.lock", "go.sum"]\n'
         )
         pc = load_project_config(tmp_path)
-        assert pc.scope_ignore_files == ("uv.lock", "go.sum")
+        assert pc.scope_ignore_files == (
+            ".venv",
+            "uv.lock",
+            "__pycache__",
+            "*.pyc",
+            "go.sum",
+        )
 
-    def test_worker_payload_round_trip(self):
+    def test_scope_ignore_files_is_governor_only(self):
+        """scope_ignore_files is consumed by settlement, not the worker, so it
+        must not appear in the worker payload. Keeps AtomicConfig minimal."""
         pc = ProjectConfig(scope_ignore_files=("uv.lock",))
-        restored = ProjectConfig.from_worker_payload(pc.to_worker_payload())
-        assert restored.scope_ignore_files == ("uv.lock",)
+        payload = pc.to_worker_payload()
+        assert "scope_ignore_files" not in payload
+        # After round-trip, scope_ignore_files falls back to default ().
+        restored = ProjectConfig.from_worker_payload(payload)
+        assert restored.scope_ignore_files == (".venv", "uv.lock", "__pycache__", "*.pyc")
 
     def test_rejects_reserved_paths(self, tmp_path):
         dgov_dir = tmp_path / ".dgov"
@@ -245,7 +259,7 @@ class TestScopeIgnoreFiles:
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text('[project]\nlanguage = "python"\n')
         pc = load_project_config(tmp_path)
-        assert pc.scope_ignore_files == ()
+        assert pc.scope_ignore_files == (".venv", "uv.lock", "__pycache__", "*.pyc")
 
 
 class TestTypeCheckCommand:

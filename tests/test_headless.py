@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from dgov.dag_parser import DagFileSpec, DagTaskSpec
-from dgov.workers.headless import _script_for_role, run_headless_worker
+from dgov.workers.headless import _config_json_for_task, _script_for_role, run_headless_worker
 
 
 def test_script_for_worker_role() -> None:
@@ -90,6 +90,25 @@ def test_run_headless_worker_uses_project_config_payload(
     assert isinstance(task_scope_json, str)
     assert json.loads(task_scope_json)["create"] == ["x.py"]
     assert exits == [(0, "")]
+
+
+def test_config_json_for_task_applies_iteration_budget_override(tmp_path: Path) -> None:
+    dgov_dir = tmp_path / ".dgov"
+    dgov_dir.mkdir()
+    (dgov_dir / "project.toml").write_text("[project]\nworker_iteration_budget = 50\n")
+    task = DagTaskSpec(
+        slug="t1",
+        summary="test",
+        prompt="do it",
+        commit_message="test: task",
+        agent="test-agent",
+        iteration_budget=9,
+        files=DagFileSpec(create=("x.py",)),
+    )
+
+    payload = json.loads(_config_json_for_task(str(tmp_path), task))
+
+    assert payload["worker_iteration_budget"] == 9
 
 
 def test_run_headless_worker_emits_plan_name_on_worker_logs(

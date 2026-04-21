@@ -295,6 +295,26 @@ edit = ["README.md"]
     assert task.all_touches() == ("README.md",)
 
 
+def test_parse_dag_file_task_iteration_budget(tmp_path: Path):
+    toml_content = """
+[plan]
+name = "iteration-budget-dag"
+
+[tasks.task1]
+summary = "Task with override"
+prompt = "Do it"
+commit_message = "done"
+iteration_budget = 14
+files = ["src/foo.py"]
+"""
+    dag_file = tmp_path / "iteration.toml"
+    dag_file.write_text(toml_content)
+
+    result = parse_dag_file(str(dag_file))
+
+    assert result.tasks["task1"].iteration_budget == 14
+
+
 def test_all_touches_includes_touch_field():
     """all_touches() includes touch alongside create/edit/delete."""
     files = DagFileSpec(

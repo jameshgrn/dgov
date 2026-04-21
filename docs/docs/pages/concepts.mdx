@@ -85,14 +85,14 @@ tools. `dgov` exists for cases where the structure and auditability matter.
 | `settlement.py` | Review, autofix, validation, and sentrux gates |
 | `plan_tree.py` | Tree walk, merge, ref resolution, and validation |
 | `plan.py` | Compiled plan parsing and DAG compilation |
-| `persistence/` | SQLite event log and task state |
+| `persistence/` | SQLite event log, runtime artifact cache, and slug history |
 
 ## Kernel Model
 
 The kernel is the center of the system. It does not know about subprocesses,
 git, HTTP, or the OpenAI client. It only knows:
 
-- current task states
+- event-derived lifecycle state
 - incoming events
 - outgoing actions
 
@@ -104,6 +104,14 @@ That separation matters because it gives you:
 - fewer “hidden” side effects in orchestration code
 
 The runner does the messy part. The kernel stays small and explicit.
+
+## Authorities
+
+Three stores matter, and they do different jobs:
+
+- **Event log**: lifecycle authority. Dispatch, retry, status, watch, and live cleanup decisions derive from events.
+- **Deploy log**: landed-output authority. This answers what actually made it onto main.
+- **Runtime artifact rows**: bookkeeping only. These cache worktree paths, branch names, and similar operational crumbs for debugging and cleanup, but they do not define lifecycle truth.
 
 ## Snapshot Isolation
 

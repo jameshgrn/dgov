@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -10,8 +11,12 @@ from pathlib import Path
 import pytest
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+from dgov.persistence import clear_connection_cache, emit_event, record_runtime_artifact
+from dgov.persistence.connection import _get_db
+from dgov.persistence.schema import WorkerTask
 from dgov.runner import EventDagRunner
-from dgov.settlement import GateResult
+from dgov.settlement import GateResult, ReviewResult
+from dgov.types import TaskState
 
 
 @pytest.fixture()
@@ -126,8 +131,6 @@ def test_continue_retries_failed_tasks(git_repo, monkeypatch):
 
 def test_continue_retries_abandoned_tasks(git_repo, monkeypatch):
     """Proves that --continue (continue_failed=True) picks up ABANDONED tasks."""
-    from dgov.persistence import emit_event
-    from dgov.types import TaskState
 
     async def _noop(self):
         pass
@@ -167,3 +170,100 @@ def test_continue_retries_abandoned_tasks(git_repo, monkeypatch):
     assert runner2.kernel.task_states["t1"] == TaskState.PENDING
     results2 = asyncio.run(runner2.run())
     assert results2["t1"] == "merged"
+
+
+def test_continue_uses_current_dag_claims_not_stale_task_rows(git_repo, monkeypatch):
+    """Recompiled task scope must come from the current DAG, not stale task rows."""
+
+    async def _noop(self):
+        pass
+
+    async def _mock_worker_new_scope(
+        project_root,
+        plan_name,
+        task_slug,
+        pane_slug,
+        worktree_path,
+        task,
+        task_scope,
+        on_exit,
+        on_event=None,
+    ):
+        assert task_scope["create"] == ["new.txt"]
+        (worktree_path / "new.txt").write_text("new scope output\n")
+        on_exit(task_slug, pane_slug, 0, "")
+
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def _review_current_scope(*args, claimed_files, **kwargs):
+        captured["claimed_files"] = tuple(claimed_files or ())
+        return ReviewResult(
+            passed=False,
+            verdict="captured_scope",
+            actual_files=frozenset({"new.txt"}),
+            error="intentional stop after scope capture",
+        )
+
+    monkeypatch.setattr("dgov.runner.EventDagRunner._check_model_env", _noop)
+    monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_new_scope)
+    monkeypatch.setattr("dgov.runner.review_sandbox", _review_current_scope)
+
+    session_root = str(git_repo)
+    clear_connection_cache()
+
+    record_runtime_artifact(
+        session_root,
+        WorkerTask(
+            slug="t1",
+            agent="mock",
+            project_root=session_root,
+            worktree_path=str(git_repo / ".dgov" / "old-wt"),
+            branch_name="dgov/t1-old",
+            state=TaskState.FAILED,
+            plan_name="test-claims",
+        ),
+    )
+    conn = _get_db(session_root)
+    conn.execute(
+        "UPDATE tasks SET metadata = ? WHERE slug = ?",
+        (json.dumps({"file_claims": ["old.txt"], "commit_message": "old"}), "t1"),
+    )
+    conn.commit()
+
+    emit_event(
+        session_root,
+        "dag_task_dispatched",
+        "pane-old",
+        plan_name="test-claims",
+        task_slug="t1",
+    )
+    emit_event(
+        session_root,
+        "task_failed",
+        "pane-old",
+        plan_name="test-claims",
+        task_slug="t1",
+        error="review:scope_violation — stale old.txt claim",
+    )
+
+    dag = _dag(
+        {
+            "t1": DagTaskSpec(
+                slug="t1",
+                summary="t1",
+                prompt="t1",
+                commit_message="feat: t1",
+                agent="mock",
+                files=DagFileSpec(create=("new.txt",)),
+            )
+        },
+        name="test-claims",
+    )
+
+    runner = EventDagRunner(dag, session_root=session_root, continue_failed=True)
+    assert runner.kernel.task_states["t1"] == TaskState.PENDING
+
+    results = asyncio.run(runner.run())
+
+    assert captured["claimed_files"] == ("new.txt",)
+    assert results["t1"] == "failed"

@@ -583,3 +583,41 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
         assert 'role = "researcher"' in result
+
+    def test_iteration_budget_emitted_for_task_override(self, tmp_path):
+        """Task-local iteration budgets should round-trip through compiled TOML."""
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+
+        root_meta = RootMeta(
+            name="iteration-plan",
+            summary="Test with task iteration budget",
+            sections=("section1",),
+        )
+
+        unit = PlanUnit(
+            slug="section1/file.focused_task",
+            summary="Focused task",
+            prompt="Implement carefully",
+            commit_message="Done",
+            files=PlanUnitFiles(),
+            iteration_budget=12,
+        )
+
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={"section1/file.focused_task": unit},
+            source_map={"section1/file.focused_task": plan_root / "section1" / "file.toml"},
+            source_mtime_max=1234567890.0,
+        )
+
+        bundle = BundleResult(
+            plan=flat_plan,
+            sop_mapping={"section1/file.focused_task": ()},
+            sop_set_hash="iteration_hash",
+        )
+
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        assert "iteration_budget = 12" in result

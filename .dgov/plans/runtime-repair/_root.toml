@@ -1,0 +1,4 @@
+[plan]
+name = "runtime-repair"
+summary = "Repair dgov worktree lifecycle failures without adding new surface area."
+sections = ["runtime", "tests"]

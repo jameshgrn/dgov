@@ -20,7 +20,8 @@ import subprocess
 import textwrap
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from fnmatch import fnmatch
+from pathlib import Path, PurePosixPath
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.persistence import read_events
@@ -219,32 +220,56 @@ def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
 
 
 def _is_scope_ignored(
-    path: str, ignored_exact: frozenset[str], ignored_dirs: tuple[str, ...]
+    path: str,
+    ignored_exact: frozenset[str],
+    ignored_prefix_dirs: tuple[str, ...],
+    ignored_named_dirs: frozenset[str],
+    ignored_globs: tuple[str, ...],
 ) -> bool:
-    """Check if a path matches the ignore list (exact match or directory prefix)."""
+    """Check if a path matches the ignore list."""
     if path in ignored_exact:
         return True
-    return any(path.startswith(d) for d in ignored_dirs)
+    parts = PurePosixPath(path).parts
+    return (
+        any(path.startswith(prefix) for prefix in ignored_prefix_dirs)
+        or any(name in parts for name in ignored_named_dirs)
+        or any(
+            fnmatch(path, pattern) or fnmatch(PurePosixPath(path).name, pattern)
+            for pattern in ignored_globs
+        )
+    )
 
 
 def _split_ignore_entries(
     scope_ignore_files: Sequence[str],
-) -> tuple[frozenset[str], tuple[str, ...]]:
-    """Split ignore entries into exact-file matches and directory prefixes.
+) -> tuple[frozenset[str], tuple[str, ...], frozenset[str], tuple[str, ...]]:
+    """Split ignore entries into exact paths, directory rules, and globs.
 
-    Entries ending with '/' are directory prefixes. Entries without a file
-    extension (no '.' in the basename) are also treated as directory prefixes.
+    Entries ending with '/' become directory rules. Bare directory names such
+    as `.venv` or `__pycache__` match any path segment with that name.
+    Entries containing glob syntax are matched with fnmatch.
     """
     exact: set[str] = set()
-    dirs: list[str] = []
+    prefix_dirs: list[str] = []
+    named_dirs: set[str] = set()
+    globs: list[str] = []
     for entry in scope_ignore_files:
-        if entry.endswith("/"):
-            dirs.append(entry)
+        if any(ch in entry for ch in "*?["):
+            globs.append(entry)
+        elif entry.endswith("/"):
+            stripped = entry.rstrip("/")
+            if "/" in stripped:
+                prefix_dirs.append(stripped + "/")
+            else:
+                named_dirs.add(stripped)
         elif "." not in entry.rsplit("/", 1)[-1]:
-            dirs.append(entry.rstrip("/") + "/")
+            if "/" in entry:
+                prefix_dirs.append(entry.rstrip("/") + "/")
+            else:
+                named_dirs.add(entry.rstrip("/"))
         else:
             exact.add(entry)
-    return frozenset(exact), tuple(dirs)
+    return frozenset(exact), tuple(prefix_dirs), frozenset(named_dirs), tuple(globs)
 
 
 def _check_scope(
@@ -256,17 +281,22 @@ def _check_scope(
 
     Files listed in `scope_ignore_files` (from `[scope] ignore_files` in
     project.toml) are treated as tooling side-effects and exempted from the
-    unclaimed check — e.g. uv.lock updated by `uv run`, .venv/ touched by uv.
-
-    Entries without a file extension are treated as directory prefixes.
+    unclaimed check — e.g. uv.lock updated by `uv run`, `.venv` directories,
+    nested `__pycache__` dirs, and `*.pyc` bytecode files.
     """
     if not claimed_files:
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_dirs = _split_ignore_entries(scope_ignore_files)
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+        scope_ignore_files
+    )
     unclaimed = frozenset(
-        f for f in actual_files - claimed if not _is_scope_ignored(f, ignored_exact, ignored_dirs)
+        f
+        for f in actual_files - claimed
+        if not _is_scope_ignored(
+            f, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
+        )
     )
     if unclaimed:
         return ReviewResult(
@@ -286,17 +316,24 @@ def _check_transient_scope(
     actual_files: frozenset[str],
     scope_ignore_files: Sequence[str] = (),
 ) -> ReviewResult | None:
-    """Reject transient unclaimed writes observed in worker tool activity."""
+    """Reject transient unclaimed writes observed in worker tool activity.
+
+    Checks ALL panes for this task across the current run (not just the current
+    pane). This ensures unclaimed writes from earlier retries are still caught
+    even if a later retry cleans the worktree and succeeds.
+    """
     if not session_root or not task_slug or not claimed_files:
         return None
 
     claimed = frozenset(claimed_files)
-    ignored_exact, ignored_dirs = _split_ignore_entries(scope_ignore_files)
+    ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
+        scope_ignore_files
+    )
     transient_paths: set[str] = set()
-    if pane_slug:
-        events = read_events(session_root, slug=pane_slug, task_slug=task_slug)
-    else:
-        events = read_events(session_root, task_slug=task_slug)
+    # Read all events for this task across all panes in the current run.
+    # This ensures transient scope enforcement fails closed across retries:
+    # an unclaimed write from any attempt in the active run causes rejection.
+    events = read_events(session_root, task_slug=task_slug)
 
     for event in events:
         if event.get("event") != "worker_log" or event.get("log_type") != "result":
@@ -317,7 +354,10 @@ def _check_transient_scope(
     unclaimed = sorted(
         p
         for p in transient_paths
-        if p not in claimed and not _is_scope_ignored(p, ignored_exact, ignored_dirs)
+        if p not in claimed
+        and not _is_scope_ignored(
+            p, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
+        )
     )
     if not unclaimed:
         return None

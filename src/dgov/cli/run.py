@@ -19,9 +19,11 @@ import click
 
 from dgov.archive import archive_plan
 from dgov.cli import _output, cli, want_json
+from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
-from dgov.plan import compile_plan, parse_plan_file
+from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
+from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
 from dgov.runner import EventDagRunner
 
 
@@ -92,25 +94,21 @@ def run_cmd(
     stream: bool,
     verbose: bool,
 ) -> None:
-    """Run a compiled plan (_compiled.toml or plan directory).
+    """Compile and run a plan directory.
 
     Example: dgov run .dgov/plans/my-plan/
     """
-    plan_file = plan
-    plan_dir: Path | None = None
-    if plan.is_dir():
-        plan_file = plan / "_compiled.toml"
-        if not plan_file.exists():
-            click.echo(f"Error: No _compiled.toml found in {plan}", err=True)
-            click.echo("Run 'dgov compile <dir>' first.", err=True)
-            raise SystemExit(1)
-        plan_dir = plan
-
-    if plan_file.suffix != ".toml":
-        click.echo(f"Error: Plan file must be .toml, got: {plan_file}", err=True)
+    if not plan.is_dir():
+        click.echo("Error: dgov run requires a plan directory, not a file path.", err=True)
+        click.echo(
+            "Fix: run `dgov run <plan-dir>` so dgov compiles the current source first.", err=True
+        )
         raise SystemExit(1)
 
     project_root = str(resolve_project_root())
+    plan_dir = plan
+    _compile_plan_for_run(plan_dir)
+    plan_file = plan_dir / "_compiled.toml"
     _cmd_run_plan(
         str(plan_file),
         project_root,
@@ -122,6 +120,13 @@ def run_cmd(
         stream=stream,
         verbose=verbose,
     )
+
+
+def _compile_plan_for_run(plan_dir: Path) -> None:
+    """Compile the current plan tree before every public run."""
+    from dgov.cli.compile import _cmd_compile
+
+    _cmd_compile(plan_dir, dry_run=False, recompile_sops=False, graph=False)
 
 
 def _parse_quality(line: str) -> int | None:
@@ -313,6 +318,16 @@ def _read_sentrux_baseline_quality(project_root: str) -> int | None:
     return None
 
 
+def _baseline_from_empty_project(baseline_path: Path) -> bool:
+    if not baseline_path.exists():
+        return False
+    try:
+        bdata = json.loads(baseline_path.read_text())
+    except Exception:
+        return False
+    return bdata.get("total_import_edges") == 0
+
+
 def _require_sentrux_baseline(project_root: str) -> int | None:
     """Fail fast unless sentrux is installed and a baseline exists."""
     if not _sentrux_available():
@@ -331,38 +346,60 @@ def _require_sentrux_baseline(project_root: str) -> int | None:
     return _read_sentrux_baseline_quality(project_root)
 
 
+def _parse_sentrux_gate_output(output: str) -> tuple[bool, int | None]:
+    degradation = False
+    quality_after: int | None = None
+    for line in output.splitlines():
+        if line.startswith("Quality:") and "->" in line:
+            quality_after = _parse_quality(line)
+        elif "No degradation" in line or "✓ No degradation" in line:
+            degradation = False
+        elif "degradation" in line.lower() or "degraded" in line.lower():
+            degradation = True
+    return degradation, quality_after
+
+
+def _scan_head_against_sentrux_baseline(
+    project_root: str,
+    baseline_path: Path,
+) -> tuple[subprocess.CompletedProcess[str], dict[str, object] | None]:
+    with _clean_head_worktree(project_root) as scan_dir:
+        scan_sentrux_dir = scan_dir / ".sentrux"
+        if scan_sentrux_dir.exists():
+            shutil.rmtree(scan_sentrux_dir)
+        shutil.copytree(baseline_path.parent, scan_sentrux_dir)
+        result = _run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
+        offenders: dict[str, object] | None = None
+        try:
+            offenders = likely_structural_offenders(
+                scan_dir,
+                cache_root=Path(project_root),
+            )
+        except Exception:
+            offenders = None
+        return result, offenders
+
+
 def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[str, object]:
     """Run `sentrux gate` and build a gate_result dict comparing against baseline."""
     gate_result: dict[str, object] = {
         "degradation": None,
         "quality_before": baseline_quality,
         "quality_after": None,
+        "structural_offenders": None,
     }
     if not want_json():
         click.echo("[sentrux] Comparing against baseline...")
 
-    # Skip comparison when baseline was from an empty project (no import edges).
     baseline_path = _sentrux_baseline_path(project_root)
-    if baseline_path.exists():
-        try:
-            bdata = json.loads(baseline_path.read_text())
-            if bdata.get("total_import_edges") == 0:
-                gate_result["degradation"] = False
-                if not want_json():
-                    click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")
-                return gate_result
-        except Exception:
-            pass
+    if _baseline_from_empty_project(baseline_path):
+        gate_result["degradation"] = False
+        if not want_json():
+            click.echo("[sentrux] Gate result: ✓ clean (empty baseline skipped)")
+        return gate_result
 
-    # Scan HEAD via a clean worktree so uncommitted changes in the governor's
-    # workspace are not falsely attributed to the run (ledger bug #26).
     try:
-        with _clean_head_worktree(project_root) as scan_dir:
-            scan_sentrux_dir = scan_dir / ".sentrux"
-            if scan_sentrux_dir.exists():
-                shutil.rmtree(scan_sentrux_dir)
-            shutil.copytree(baseline_path.parent, scan_sentrux_dir)
-            result = _run_sentrux(["gate", str(scan_dir)], timeout=30.0, check=False)
+        result, offenders = _scan_head_against_sentrux_baseline(project_root, baseline_path)
     except subprocess.CalledProcessError as e:
         gate_result["error"] = f"Sentrux gate setup failed: {e}"
         if not want_json():
@@ -375,15 +412,7 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
         return gate_result
 
     output = (result.stdout or "") + (result.stderr or "")
-    degradation = False
-    quality_after: int | None = None
-    for line in output.splitlines():
-        if line.startswith("Quality:") and "->" in line:
-            quality_after = _parse_quality(line)
-        elif "No degradation" in line or "✓ No degradation" in line:
-            degradation = False
-        elif "degradation" in line.lower():
-            degradation = True
+    degradation, quality_after = _parse_sentrux_gate_output(output)
 
     if result.returncode != 0 and not degradation:
         gate_result["error"] = output.strip() or "Sentrux gate failed."
@@ -393,6 +422,8 @@ def _sentrux_compare(project_root: str, baseline_quality: int | None) -> dict[st
 
     gate_result["degradation"] = degradation
     gate_result["quality_after"] = quality_after
+    if degradation and offenders is not None:
+        gate_result["structural_offenders"] = offenders
     if not want_json():
         status = "✓ clean" if not degradation else "✗ degradation detected"
         click.echo(f"[sentrux] Gate result: {status}")
@@ -433,6 +464,272 @@ def _make_worker_event_callback(stream: bool = False) -> Callable[[str, str, obj
     return _on_event
 
 
+def _ensure_compiled_plan(plan: PlanSpec, plan_file: str) -> None:
+    if getattr(plan, "source_mtime_max", None) or os.environ.get("DGOV_ALLOW_UNCOMPILED"):
+        return
+    click.echo(f"Error: Plan {plan_file} is not compiled.", err=True)
+    click.echo("dgov requires plans to be compiled via the Plan Tree pipeline.", err=True)
+    click.echo("To fix this:", err=True)
+    click.echo("1. Ensure your plan is in a directory with a _root.toml.", err=True)
+    click.echo("2. Run: dgov compile <dir>", err=True)
+    click.echo("3. Run: dgov run <dir>", err=True)
+    raise click.exceptions.Exit(code=1)
+
+
+def _filter_dag_to_task(dag: DagDefinition, only: str | None) -> DagDefinition:
+    if only is None:
+        return dag
+    if only not in dag.tasks:
+        click.echo(f"Error: Task '{only}' not found in plan", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    to_keep: set[str] = set()
+    queue = [only]
+    while queue:
+        slug = queue.pop()
+        if slug in to_keep or slug not in dag.tasks:
+            continue
+        to_keep.add(slug)
+        queue.extend(dag.tasks[slug].depends_on)
+    return dag.model_copy(update={"tasks": {k: v for k, v in dag.tasks.items() if k in to_keep}})
+
+
+def _emit_run_start(dag_name: str, baseline_quality: int | None) -> None:
+    if want_json():
+        click.echo(
+            json.dumps({
+                "status": "starting",
+                "dag": dag_name,
+                "sentrux_baseline": baseline_quality,
+            })
+        )
+        return
+    click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
+
+
+def _run_plan_runner(runner: EventDagRunner) -> tuple[dict[str, str], timedelta]:
+    try:
+        start_time = datetime.now(UTC)
+        results = asyncio.run(runner.run())
+        end_time = datetime.now(UTC)
+        return results, end_time - start_time
+    except KeyboardInterrupt:
+        _output({"status": "interrupted"})
+        raise click.exceptions.Exit(code=130) from None
+
+
+def _classify_task_results(
+    results: dict[str, str],
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    failed = [slug for slug, status in results.items() if status == "failed"]
+    abandoned = [slug for slug, status in results.items() if status in ("abandoned", "timed_out")]
+    skipped = [slug for slug, status in results.items() if status == "skipped"]
+    succeeded = [slug for slug, status in results.items() if status == "merged"]
+    return failed, abandoned, skipped, succeeded
+
+
+def _sentrux_failed(gate_result: dict[str, object]) -> bool:
+    return bool(gate_result.get("degradation")) or bool(gate_result.get("error"))
+
+
+def _derive_run_status(
+    *,
+    failed: list[str],
+    abandoned: list[str],
+    succeeded: list[str],
+    sentrux_failed: bool,
+) -> str:
+    if not failed and not abandoned and not sentrux_failed:
+        return "complete"
+    if sentrux_failed and not failed and not abandoned:
+        return "degraded"
+    if succeeded:
+        return "partial"
+    return "failed"
+
+
+def _stale_run_state(
+    *,
+    duration: timedelta,
+    failed: list[str],
+    skipped: list[str],
+    succeeded: list[str],
+    task_errors: dict[str, str],
+) -> bool:
+    return bool(
+        duration.total_seconds() < 1.0
+        and bool(failed or skipped)
+        and not succeeded
+        and not task_errors
+    )
+
+
+def _emit_stale_run_warning() -> None:
+    click.echo(
+        "No tasks were dispatched — prior run state is still in the database.",
+        err=True,
+    )
+    click.echo("  To retry failed tasks:  dgov run --continue <plan>", err=True)
+    click.echo("  To start fresh:         dgov run --restart <plan>", err=True)
+
+
+def _emit_sentrux_warning(gate_result: dict[str, object]) -> None:
+    sentrux_message = gate_result.get("error") or "Architectural degradation detected."
+    click.echo(f"  sentrux: {sentrux_message}", err=True)
+    offenders = gate_result.get("structural_offenders")
+    if isinstance(offenders, dict):
+        report = format_structural_offender_report({str(k): v for k, v in offenders.items()})
+        click.echo(report, err=True)
+
+
+def _run_log_status(
+    *,
+    failed: list[str],
+    abandoned: list[str],
+    gate_result: dict[str, object],
+) -> str:
+    if _sentrux_failed(gate_result) and not failed and not abandoned:
+        return "warn"
+    return "ok" if not failed and not abandoned else "fail"
+
+
+def _append_task_error_lines(lines: list[str], task_errors: dict[str, str] | None) -> None:
+    if not task_errors:
+        return
+    for slug, err in task_errors.items():
+        lines.append(f"    error[{slug}]: {err[:200]}")
+
+
+def _append_task_duration_line(lines: list[str], task_durations: dict[str, float] | None) -> None:
+    if not task_durations:
+        return
+    dur_str = ", ".join(f"{slug}: {duration}s" for slug, duration in task_durations.items())
+    lines.append(f"  durations: {dur_str}")
+
+
+def _append_sentrux_log_lines(lines: list[str], gate_result: dict[str, object]) -> None:
+    quality_before = gate_result.get("quality_before")
+    quality_after = gate_result.get("quality_after")
+    if quality_before is not None:
+        lines.append(f"  sentrux: {quality_before} -> {quality_after}")
+    if gate_result.get("degradation"):
+        lines.append("  sentrux_status: degradation")
+    if gate_result.get("error"):
+        lines.append(f"  sentrux_error: {str(gate_result['error'])[:200]}")
+    offenders = gate_result.get("structural_offenders")
+    if not isinstance(offenders, dict):
+        return
+    summary = format_structural_offender_report({str(k): v for k, v in offenders.items()}).replace(
+        "\n", " | "
+    )
+    lines.append(f"  sentrux_offenders: {summary[:400]}")
+
+
+def _run_status_and_summary(
+    results: dict[str, str],
+    task_errors: dict[str, str],
+    gate_result: dict[str, object],
+    duration: timedelta,
+) -> tuple[str, list[str], list[str], list[str], list[str], bool]:
+    failed, abandoned, skipped, succeeded = _classify_task_results(results)
+    sentrux_failure = _sentrux_failed(gate_result)
+    run_status = _derive_run_status(
+        failed=failed,
+        abandoned=abandoned,
+        succeeded=succeeded,
+        sentrux_failed=sentrux_failure,
+    )
+    stale_state = _stale_run_state(
+        duration=duration,
+        failed=failed,
+        skipped=skipped,
+        succeeded=succeeded,
+        task_errors=task_errors,
+    )
+    return run_status, failed, abandoned, skipped, succeeded, stale_state
+
+
+def _emit_run_warnings(
+    *,
+    failed: list[str],
+    abandoned: list[str],
+    skipped: list[str],
+    succeeded: list[str],
+    task_errors: dict[str, str],
+    gate_result: dict[str, object],
+    duration: timedelta,
+) -> None:
+    if want_json():
+        return
+    if _stale_run_state(
+        duration=duration,
+        failed=failed,
+        skipped=skipped,
+        succeeded=succeeded,
+        task_errors=task_errors,
+    ):
+        _emit_stale_run_warning()
+    for slug, err in task_errors.items():
+        click.echo(f"  {slug}: {err[:200]}")
+    if abandoned:
+        click.echo(
+            f"  {len(abandoned)} task(s) abandoned from a prior crashed run. "
+            "Use `dgov run --continue` to retry them.",
+            err=True,
+        )
+    if _sentrux_failed(gate_result):
+        _emit_sentrux_warning(gate_result)
+
+
+def _emit_verbose_task_durations(
+    *,
+    verbose: bool,
+    task_durations: dict[str, float],
+    results: dict[str, str],
+) -> None:
+    if not verbose or want_json() or not task_durations:
+        return
+    click.echo("  per-task:", err=True)
+    for slug in sorted(task_durations):
+        status = results.get(slug, "?")
+        click.echo(f"    {slug}  {status}  {task_durations[slug]}s", err=True)
+
+
+def _emit_post_run_hint(
+    *,
+    stream: bool,
+    plan_dir: Path | None,
+    plan_file: str,
+) -> None:
+    if stream or want_json():
+        return
+    hint_target = str(plan_dir) if plan_dir is not None else plan_file
+    click.echo(
+        f"  Live stream: dgov watch   |   Debrief: dgov plan review {hint_target}",
+        err=True,
+    )
+
+
+def _maybe_archive_completed_plan(
+    *,
+    run_status: str,
+    only: str | None,
+    plan_dir: Path | None,
+    project_root: str,
+    dag: DagDefinition,
+) -> None:
+    if (
+        run_status != "complete"
+        or only is not None
+        or plan_dir is None
+        or not is_plan_complete(project_root, dag.name, set(dag.tasks))
+    ):
+        return
+    dest = archive_plan(plan_dir)
+    if not want_json():
+        click.echo(f"Plan fully deployed → archived to {dest}")
+
+
 def _cmd_run_plan(
     plan_file: str,
     project_root: str,
@@ -448,44 +745,11 @@ def _cmd_run_plan(
     from dgov.config import load_project_config
 
     plan = parse_plan_file(plan_file)
-
-    # Pillar #4: Determinism - Only run compiled plans.
-    # source_mtime_max is always set by `dgov compile`; absent on hand-authored files.
-    # Bypass for hand-crafted plans or dev use via DGOV_ALLOW_UNCOMPILED=1.
-    if not plan.source_mtime_max and not os.environ.get("DGOV_ALLOW_UNCOMPILED"):
-        click.echo(f"Error: Plan {plan_file} is not compiled.", err=True)
-        click.echo("dgov requires plans to be compiled via the Plan Tree pipeline.", err=True)
-        click.echo("To fix this:", err=True)
-        click.echo("1. Ensure your plan is in a directory with a _root.toml.", err=True)
-        click.echo("2. Run: dgov compile <dir>", err=True)
-        click.echo("3. Run: dgov run <dir>/_compiled.toml", err=True)
-        raise click.exceptions.Exit(code=1)
+    _ensure_compiled_plan(plan, plan_file)
 
     pc = load_project_config(project_root)
     dag = compile_plan(plan, project_agent=pc.default_agent)
-
-    # Filter to only specified task and its transitive dependencies
-    if only is not None:
-        if only not in dag.tasks:
-            click.echo(f"Error: Task '{only}' not found in plan", err=True)
-            raise click.exceptions.Exit(code=1)
-
-        # BFS to collect all transitive dependencies
-        to_keep: set[str] = set()
-        queue = [only]
-        while queue:
-            slug = queue.pop()
-            if slug in to_keep:
-                continue
-            if slug not in dag.tasks:
-                continue
-            to_keep.add(slug)
-            task = dag.tasks[slug]
-            queue.extend(task.depends_on)
-
-        dag = dag.model_copy(
-            update={"tasks": {k: v for k, v in dag.tasks.items() if k in to_keep}}
-        )
+    dag = _filter_dag_to_task(dag, only)
 
     _ensure_git_ready(project_root, yes=yes)
 
@@ -498,80 +762,27 @@ def _cmd_run_plan(
         restart=restart,
         continue_failed=continue_failed,
     )
+    _emit_run_start(dag.name, baseline_quality)
 
-    if want_json():
-        click.echo(
-            json.dumps({
-                "status": "starting",
-                "dag": dag.name,
-                "sentrux_baseline": baseline_quality,
-            })
-        )
-    else:
-        click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
-
-    try:
-        start_time = datetime.now(UTC)
-        results = asyncio.run(runner.run())
-        end_time = datetime.now(UTC)
-        duration = end_time - start_time
-    except KeyboardInterrupt:
-        _output({"status": "interrupted"})
-        raise click.exceptions.Exit(code=130) from None
-
+    results, duration = _run_plan_runner(runner)
     gate_result = _sentrux_compare(project_root, baseline_quality)
-
-    failed = [s for s, st in results.items() if st == "failed"]
-    abandoned = [s for s, st in results.items() if st in ("abandoned", "timed_out")]
-    skipped = [s for s, st in results.items() if st == "skipped"]
-    succeeded = [s for s, st in results.items() if st == "merged"]
-    task_errors = {slug: err for slug, err in runner._task_errors.items() if slug in failed}
-
-    sentrux_failed = bool(gate_result.get("degradation")) or bool(gate_result.get("error"))
-    any_bad = failed or abandoned or sentrux_failed
-    if not any_bad:
-        run_status = "complete"
-    elif sentrux_failed and not failed and not abandoned:
-        run_status = "failed"
-    elif succeeded:
-        run_status = "partial"
-    else:
-        run_status = "failed"
-
-    # Detect stale-state run: failed/skipped tasks but nothing was dispatched
-    stale_state = (
-        duration.total_seconds() < 1.0
-        and (failed or skipped)
-        and not succeeded
-        and not task_errors
+    failed_now = [s for s, st in results.items() if st == "failed"]
+    task_errors = {slug: err for slug, err in runner._task_errors.items() if slug in failed_now}
+    run_status, failed, abandoned, skipped, succeeded, _ = _run_status_and_summary(
+        results,
+        task_errors,
+        gate_result,
+        duration,
     )
-    if stale_state and not want_json():
-        click.echo(
-            "No tasks were dispatched — prior run state is still in the database.",
-            err=True,
-        )
-        click.echo(
-            "  To retry failed tasks:  dgov run --continue <plan>",
-            err=True,
-        )
-        click.echo(
-            "  To start fresh:         dgov run --restart <plan>",
-            err=True,
-        )
-
-    if task_errors and not want_json():
-        for slug, err in task_errors.items():
-            click.echo(f"  {slug}: {err[:200]}")
-
-    if abandoned and not want_json():
-        click.echo(
-            f"  {len(abandoned)} task(s) abandoned from a prior crashed run. "
-            "Use `dgov run --continue` to retry them.",
-            err=True,
-        )
-    if sentrux_failed and not want_json():
-        sentrux_message = gate_result.get("error") or "Architectural degradation detected."
-        click.echo(f"  sentrux: {sentrux_message}", err=True)
+    _emit_run_warnings(
+        failed=failed,
+        abandoned=abandoned,
+        skipped=skipped,
+        succeeded=succeeded,
+        task_errors=task_errors,
+        gate_result=gate_result,
+        duration=duration,
+    )
 
     _output({
         "status": run_status,
@@ -585,25 +796,12 @@ def _cmd_run_plan(
         "sentrux": gate_result,
         "duration_s": round(duration.total_seconds(), 2),
     })
-
-    # Verbose mode: print per-task durations for the merged tasks. Plan 3
-    # extends this with self-correction counts.
-    if verbose and not want_json() and runner._task_durations:
-        click.echo("  per-task:", err=True)
-        for slug in sorted(runner._task_durations):
-            status = results.get(slug, "?")
-            dur = runner._task_durations[slug]
-            click.echo(f"    {slug}  {status}  {dur}s", err=True)
-
-    # Post-run hints: nudge users toward the live stream and debrief surfaces
-    # unless they already opted into streaming (in which case they've seen it
-    # all) or are in JSON mode (where extra stdout would break parsers).
-    if not stream and not want_json():
-        hint_target = str(plan_dir) if plan_dir is not None else plan_file
-        click.echo(
-            f"  Live stream: dgov watch   |   Debrief: dgov plan review {hint_target}",
-            err=True,
-        )
+    _emit_verbose_task_durations(
+        verbose=verbose,
+        task_durations=runner._task_durations,
+        results=results,
+    )
+    _emit_post_run_hint(stream=stream, plan_dir=plan_dir, plan_file=plan_file)
 
     _append_run_log(
         project_root,
@@ -615,19 +813,15 @@ def _cmd_run_plan(
         runner._task_durations,
         task_errors,
     )
+    _maybe_archive_completed_plan(
+        run_status=run_status,
+        only=only,
+        plan_dir=plan_dir,
+        project_root=project_root,
+        dag=dag,
+    )
 
-    # Auto-archive when all units are deployed. Suppressed for --only runs (intentionally partial).
-    if (
-        run_status == "complete"
-        and only is None
-        and plan_dir is not None
-        and is_plan_complete(project_root, dag.name, set(dag.tasks))
-    ):
-        dest = archive_plan(plan_dir)
-        if not want_json():
-            click.echo(f"Plan fully deployed → archived to {dest}")
-
-    if run_status != "complete":
+    if run_status in ("failed", "partial"):
         raise click.exceptions.Exit(code=1)
 
 
@@ -646,11 +840,8 @@ def _append_run_log(
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%SZ")
-    merged = [s for s, st in results.items() if st == "merged"]
-    failed = [s for s, st in results.items() if st == "failed"]
-    abandoned = [s for s, st in results.items() if st in ("abandoned", "timed_out")]
-    sentrux_failed = bool(gate_result.get("degradation")) or bool(gate_result.get("error"))
-    status = "ok" if not failed and not abandoned and not sentrux_failed else "fail"
+    failed, abandoned, _, merged = _classify_task_results(results)
+    status = _run_log_status(failed=failed, abandoned=abandoned, gate_result=gate_result)
 
     lines = [
         f"[{ts}] {plan_name} ({plan_file}) — {status} ({round(duration.total_seconds(), 2)}s)"
@@ -661,20 +852,9 @@ def _append_run_log(
         lines.append(f"  failed: {', '.join(failed)}")
     if abandoned:
         lines.append(f"  abandoned: {', '.join(abandoned)}")
-    if task_errors:
-        for slug, err in task_errors.items():
-            lines.append(f"    error[{slug}]: {err[:200]}")
-    if task_durations:
-        dur_str = ", ".join(f"{s}: {d}s" for s, d in task_durations.items())
-        lines.append(f"  durations: {dur_str}")
-    quality_before = gate_result.get("quality_before")
-    quality_after = gate_result.get("quality_after")
-    if quality_before is not None:
-        lines.append(f"  sentrux: {quality_before} -> {quality_after}")
-    if gate_result.get("degradation"):
-        lines.append("  sentrux_status: degradation")
-    if gate_result.get("error"):
-        lines.append(f"  sentrux_error: {str(gate_result['error'])[:200]}")
+    _append_task_error_lines(lines, task_errors)
+    _append_task_duration_line(lines, task_durations)
+    _append_sentrux_log_lines(lines, gate_result)
     lines.append("")
 
     with log_path.open("a") as f:

@@ -316,6 +316,7 @@ agent = "acct/model"
 role = "researcher"
 depends_on = ["a", "b/c.d"]
 timeout_s = 123
+iteration_budget = 42
 files.create = ["new.py"]
 files.edit = ["old.py"]
 files.delete = ["gone.py"]
@@ -330,6 +331,7 @@ files.delete = ["gone.py"]
         assert unit.role == "researcher"
         assert unit.depends_on == ("a", "b/c.d")
         assert unit.timeout_s == 123
+        assert unit.iteration_budget == 42
         assert unit.files.create == ("new.py",)
         assert unit.files.edit == ("old.py",)
         assert unit.files.delete == ("gone.py",)
@@ -343,6 +345,7 @@ files.delete = ["gone.py"]
         assert unit.role == "worker"
         assert unit.depends_on == ()
         assert unit.timeout_s == 0
+        assert unit.iteration_budget is None
         assert unit.files.create == ()
 
     def test_file_with_no_tasks_section(self, tmp_path: Path) -> None:

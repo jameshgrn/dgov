@@ -1,0 +1,4 @@
+[plan]
+name = "semantic-settlement-cleanup"
+summary = "Pay down structural complexity added during semantic-settlement foundation work."
+sections = ["semantic", "runtime", "review"]

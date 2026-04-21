@@ -1,0 +1,30 @@
+[tasks.reduce-warning-noise]
+summary = "Keep worker-note mismatch warnings precise before runtime settlement changes."
+depends_on = ["telemetry/review-cleanup.reduce-review-surface-complexity"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` first.
+- Read `src/dgov/plan_review.py` and `tests/test_plan_review.py`.
+- The goal is to preserve the worker-note mismatch warning as a trust check while removing false positives caused by verification text and incidental file mentions.
+- Keep the behavior explicit. Do not add fuzzy NLP, scoring models, or a generic parsing framework.
+- Do not change runtime merge behavior, event schema, or CLI output shape in this task.
+
+Edit:
+1. In `src/dgov/plan_review.py`, tighten worker-note file extraction or mismatch comparison so the warning focuses on likely change-claim mentions rather than every file-like token in the note.
+2. Preserve warnings for real mismatches where the worker summary claims landed edits that are absent from the deployed diff.
+3. Keep the heuristic deterministic and inspectable. Prefer narrow path-like rules or section-aware filtering over broad suppression.
+4. Add focused coverage in `tests/test_plan_review.py` for markdown-wrapped paths, real mismatches, and verification-only file mentions that should no longer warn.
+5. Stop once the warning signal is materially less noisy without weakening the fail-closed review posture.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_plan_review.py`
+- `uv run ruff check src/dgov/plan_review.py tests/test_plan_review.py`
+- `uv run ty check src/dgov/plan_review.py tests/test_plan_review.py`
+- `sentrux gate .`
+"""
+commit_message = "Reduce review warning noise"
+files.edit = ["src/dgov/plan_review.py", "tests/test_plan_review.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/cli/plan.py",
+]

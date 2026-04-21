@@ -116,10 +116,9 @@ Worker guidance lives in `.dgov/sops/*.md`. SOP files are standardized:
 
 ## How it works
 
-dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch and subprocess. Plans are defined in TOML, compiled to DAGs, and executed through a pure kernel with event-sourced state.
+dgov dispatches tasks to AI coding agents running in isolated git worktrees. Each worker gets its own branch and subprocess. Plans are defined in TOML, compiled to DAGs, and executed through a pure kernel with event-sourced lifecycle state.
 
-State is stored in `.dgov/state.db` (SQLite WAL). Workers are subprocess-isolated via an
-OpenAI-compatible API client.
+State is stored in `.dgov/state.db` (SQLite WAL). The event log is the authority for lifecycle state; runtime artifact rows are best-effort bookkeeping for worktrees, branches, and related execution metadata. Workers are subprocess-isolated via an OpenAI-compatible API client.
 
 ## Usage
 
@@ -131,16 +130,14 @@ dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
 dgov init-plan <name>    # Initialize a new plan directory
 dgov fix <prompt>        # Create and run a single-task fix plan
 dgov compile <dir>       # Compile a plan tree to _compiled.toml
-dgov run <dir>           # Execute a compiled plan directory
-dgov run _compiled.toml  # Execute a compiled plan file directly
+dgov run <dir>           # Compile and run a plan directory
 dgov validate plan.toml  # Validate a plan without running
 dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units
 dgov archive-plan <name> # Manually archive a plan to .dgov/plans/archive/
 dgov ledger add <cat>    # Record bug, rule, or debt
 dgov clean               # Clean stale worktrees and output directories
-dgov recover             # Recover from a crashed run (mark orphaned tasks abandoned)
-dgov prune               # Remove historical task records
+dgov prune               # Remove historical runtime artifact rows
 dgov sentrux check       # Run architectural quality check
 dgov sentrux gate-save   # Create or refresh the explicit baseline
 dgov sentrux gate        # Compare current state against that baseline
@@ -188,7 +185,7 @@ depends_on = ["add-feature"]
 | `sop_bundler.py` | Load SOPs, pick per unit, prepend to prompts |
 | `deploy_log.py` | Append-only JSONL deploy history |
 | `config.py` | ProjectConfig + `load_project_config()` |
-| `persistence/` | SQLite event store (tasks + events + slug history) |
+| `persistence/` | SQLite event store, runtime artifact rows, and slug history |
 | `cli/` | Click interface |
 
 ## Development

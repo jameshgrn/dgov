@@ -71,6 +71,16 @@ class TestSettlementPurity:
         assert not violations, f"settlement.py imports forbidden modules: {violations}"
 
 
+class TestSettlementFlowBoundary:
+    """settlement_flow.py must not reach back into orchestration internals."""
+
+    def test_settlement_flow_imports(self):
+        imports = _get_imports(_SRC / "settlement_flow.py")
+        forbidden = {"dgov.runner", "dgov.kernel", "dgov.worker"}
+        violations = imports & forbidden
+        assert not violations, f"settlement_flow.py imports forbidden modules: {violations}"
+
+
 class TestWorkerLaunchBoundary:
     """Headless worker must run inside the installed dgov interpreter."""
 

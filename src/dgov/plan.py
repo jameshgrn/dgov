@@ -86,6 +86,7 @@ class PlanUnit:
     agent: str = ""
     role: Literal["worker", "researcher", "reviewer"] = "worker"
     timeout_s: int = 0
+    iteration_budget: int | None = None
     test_cmd: str = ""
 
 
@@ -129,6 +130,7 @@ def parse_plan_file(path: str) -> PlanSpec:
             role=task.role,
             depends_on=task.depends_on,
             timeout_s=task.timeout_s,
+            iteration_budget=task.iteration_budget,
             test_cmd=task.test_cmd,
             files=PlanUnitFiles(
                 create=task.files.create,
@@ -205,6 +207,7 @@ def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
             depends_on=unit.depends_on,
             files=dag_files,
             timeout_s=timeout_s,
+            iteration_budget=unit.iteration_budget,
             test_cmd=unit.test_cmd,
         )
 
@@ -381,6 +384,12 @@ def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:
     missing = [
         phase for phase, pattern in _PROMPT_PHASE_RES.items() if not pattern.search(unit.prompt)
     ]
+    # Read-only roles don't edit or verify — only Orient matters.
+    if unit.role in ("researcher", "reviewer"):
+        missing = [p for p in missing if p == "Orient"]
+    # test_cmd means settlement runs verification automatically.
+    elif unit.test_cmd and "Verify" in missing:
+        missing.remove("Verify")
     if not missing:
         return []
     return [

@@ -1,0 +1,21 @@
+[tasks.cover-runtime-repairs]
+summary = "Add focused coverage for the runtime repair bundle."
+prompt = """
+Orient:
+- Read the runtime changes in `src/dgov/runner.py`, `src/dgov/worktree.py`, `src/dgov/config.py`, `src/dgov/settlement.py`, and `src/dgov/cli/init.py`.
+- Extend existing tests instead of creating a new test topology.
+- Keep the assertions behavior-focused.
+
+Edit:
+1. In `tests/test_worktree.py` and `tests/test_runner.py`, cover worktree preparation failures/successes and dependency-aware base-ref selection.
+2. In `tests/test_settlement.py` and `tests/test_config.py`, cover built-in scope-ignore defaults and the matching behavior for directory and `.pyc` side effects.
+3. In `tests/test_cli.py`, cover any comment/output changes needed to keep `dgov init` aligned with runtime defaults.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_worktree.py tests/test_runner.py tests/test_settlement.py tests/test_config.py tests/test_cli.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+"""
+commit_message = "Add coverage for runtime repair bundle"
+depends_on = ["runtime/worktree.repair-worktree-runtime", "runtime/scope-ignore.harden-scope-ignores"]
+files.edit = ["tests/test_worktree.py", "tests/test_runner.py", "tests/test_settlement.py", "tests/test_config.py", "tests/test_cli.py", "tests/test_integration.py"]
+files.read = ["src/dgov/runner.py", "src/dgov/worktree.py", "src/dgov/config.py", "src/dgov/settlement.py", "src/dgov/cli/init.py"]

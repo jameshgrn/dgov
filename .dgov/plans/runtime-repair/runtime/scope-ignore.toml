@@ -1,0 +1,20 @@
+[tasks.harden-scope-ignores]
+summary = "Make tooling-managed files globally exempt from scope violations."
+prompt = """
+Orient:
+- Read `src/dgov/config.py`, `src/dgov/settlement.py`, and `src/dgov/cli/init.py` first.
+- Read `tests/test_settlement.py`, `tests/test_config.py`, and `tests/test_cli.py`.
+- Keep this limited to runtime/config behavior already implied by the current scope-ignore feature.
+
+Edit:
+1. In `src/dgov/config.py`, merge user-configured scope ignores with built-in defaults so Python/uv side effects do not require per-task touch claims.
+2. Cover the concrete runtime side effects called out in the review: `.venv`, `uv.lock`, `__pycache__`, and `.pyc` files.
+3. In `src/dgov/settlement.py`, extend ignore matching only as much as needed to support those defaults safely.
+4. In `src/dgov/cli/init.py`, keep generated project config and comments aligned with the runtime behavior so the docs do not drift.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_settlement.py tests/test_config.py tests/test_cli.py`
+"""
+commit_message = "Harden default scope ignore behavior"
+files.edit = ["src/dgov/config.py", "src/dgov/settlement.py", "src/dgov/cli/init.py"]
+files.read = ["tests/test_settlement.py", "tests/test_config.py", "tests/test_cli.py"]

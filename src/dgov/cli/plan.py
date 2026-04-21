@@ -163,6 +163,7 @@ def init_plan_cmd(name: str, sections: str, force: bool) -> None:
 
     Creates .dgov/plans/<name>/ with _root.toml and section directories.
     Each section gets a _example.toml showing the unit format.
+    Copy or rename it before compile; underscore-prefixed files are ignored.
 
     \b
     Example: dgov init-plan my-plan --sections tasks,docs
@@ -213,6 +214,10 @@ sections = [{sections_toml}]
         click.echo(f"Initialized plan '{name}':")
         for path in created:
             click.echo(f"  {path}")
+        click.echo(
+            "Next: copy or rename each _example.toml to a non-underscore filename before "
+            "running compile."
+        )
 
 
 @cli.group(name="plan")
@@ -566,6 +571,7 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
     click.echo("")
     click.echo(
         f"Units: {review.deployed_count}/{total} deployed"
+        f" | {review.active_count} active"
         f" | {review.pending_count} pending"
         f" | {review.failed_count} failed"
     )
@@ -621,6 +627,7 @@ def _render_deployed_unit(unit) -> None:
             unit.settlement, unit.settlement
         )
         click.echo(f"    settlement   {label}")
+    _render_integration_telemetry(unit)
     if unit.done_summary:
         _render_multiline_field("worker note ", unit.done_summary)
     if unit.worker_note_mismatches:
@@ -632,6 +639,24 @@ def _render_deployed_unit(unit) -> None:
             )
         )
     click.echo("")
+
+
+def _render_integration_telemetry(unit) -> None:
+    """Render integration risk and candidate validation telemetry if present."""
+    has_risk_level = unit.integration_risk_level and unit.integration_risk_level != "none"
+    if has_risk_level or unit.integration_risk_detected:
+        if has_risk_level:
+            risk_label = unit.integration_risk_level
+            if unit.integration_risk_detected:
+                risk_label += ", overlap detected"
+            click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
+        else:
+            click.echo(click.style("    integration  overlap detected", fg="yellow"))
+    if unit.integration_candidate_passed is True:
+        click.echo("    candidate    passed")
+    elif unit.integration_candidate_passed is False:
+        fc = unit.integration_failure_class or "failed"
+        click.echo(click.style(f"    candidate    {fc}", fg="red"))
 
 
 def _render_failed_unit(unit) -> None:
@@ -650,12 +675,31 @@ def _render_failed_unit(unit) -> None:
         click.echo(f"    iterations   {unit.iterations} tool call{plural}")
     if unit.reject_verdict:
         click.echo(f"    reject       {unit.reject_verdict}")
+    _render_integration_telemetry(unit)
     if unit.error:
         _render_multiline_field("error       ", unit.error)
     if unit.last_thought:
         _render_multiline_field("last thought", unit.last_thought, max_lines=2)
     if unit.hint:
         click.echo(click.style(f"    hint         {unit.hint}", fg="yellow"))
+    click.echo("")
+
+
+def _render_active_unit(unit) -> None:
+    """Render an in-flight UnitReview block."""
+    marker = click.style("…", fg="cyan")
+    click.echo(f"  {marker} {unit.unit}  (active)")
+    if unit.summary:
+        click.echo(f"    task         {unit.summary}")
+    if unit.agent:
+        click.echo(f"    agent        {unit.agent}")
+    if unit.duration_s is not None:
+        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
+    if unit.iterations is not None:
+        plural = "s" if unit.iterations != 1 else ""
+        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+    if unit.last_thought:
+        _render_multiline_field("last thought", unit.last_thought, max_lines=2)
     click.echo("")
 
 
@@ -668,15 +712,23 @@ def _render_pending_unit(unit) -> None:
     click.echo("")
 
 
+# Dispatch mapping from unit status to renderer function.
+_UNIT_STATUS_RENDERERS = {
+    "deployed": _render_deployed_unit,
+    "failed": _render_failed_unit,
+    "active": _render_active_unit,
+    "pending": _render_pending_unit,
+    "not_run": _render_pending_unit,
+}
+
+
 def _render_unit(unit) -> None:
     """Render a single UnitReview block. Shape depends on status."""
-    if unit.status == "deployed":
-        _render_deployed_unit(unit)
-        return
-    if unit.status == "failed":
-        _render_failed_unit(unit)
-        return
-    _render_pending_unit(unit)
+    renderer = _UNIT_STATUS_RENDERERS.get(unit.status)
+    if renderer is None:
+        # Defensive: unknown status falls back to pending rendering.
+        renderer = _render_pending_unit
+    renderer(unit)
 
 
 def _render_multiline_field(label: str, text: str, max_lines: int = 4) -> None:
@@ -766,6 +818,11 @@ def _review_to_json(review) -> str:
             "error": u.error,
             "last_thought": u.last_thought,
             "hint": u.hint,
+            # Integration risk telemetry
+            "integration_risk_level": u.integration_risk_level,
+            "integration_risk_detected": u.integration_risk_detected,
+            "integration_candidate_passed": u.integration_candidate_passed,
+            "integration_failure_class": u.integration_failure_class,
         }
 
     return json.dumps(
@@ -775,6 +832,7 @@ def _review_to_json(review) -> str:
             "last_run_ts": review.last_run_ts,
             "last_run_duration_s": review.last_run_duration_s,
             "deployed": review.deployed_count,
+            "active": review.active_count,
             "failed": review.failed_count,
             "pending": review.pending_count,
             "units": [_unit_dict(u) for u in review.units],

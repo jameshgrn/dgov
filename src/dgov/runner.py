@@ -15,6 +15,7 @@ import time
 from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -33,21 +34,38 @@ from dgov.actions import (
     TaskReviewDone,
     TaskWaitDone,
 )
+from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.kernel import DagKernel
-from dgov.persistence import add_task, emit_event, update_task_state
+from dgov.live_state import latest_run_start_ids
+from dgov.persistence import (
+    emit_event,
+    record_runtime_artifact,
+    update_runtime_artifact_state,
+)
 from dgov.persistence.schema import TaskState, WorkerTask
-from dgov.settlement import (
+from dgov.settlement import review_sandbox
+from dgov.settlement_flow import (
+    IntegrationCandidateResult,
+    IntegrationCandidateVerdict,
+    IntegrationRiskRecord,
+    SettlementFlow,
     autofix_sandbox,
-    review_sandbox,
+    commit_in_worktree,
+    create_integration_candidate,
+    emit_integration_candidate_failed,
+    emit_integration_candidate_passed,
+    emit_semantic_gate_rejected,
+    merge_worktree,
+    remove_integration_candidate,
+    run_python_semantic_gate_in_subprocess,
     validate_sandbox,
 )
 from dgov.types import WorkerExit, Worktree
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
-    commit_in_worktree,
     create_worktree,
-    merge_worktree,
+    prepare_worktree,
     remove_worktree,
 )
 
@@ -96,40 +114,79 @@ class EventDagRunner:
         self._task_durations: dict[str, float] = {}
         self._task_timeouts: dict[str, float] = {}
         self._shutdown_event = asyncio.Event()
+        self._settlement_flow = SettlementFlow(
+            session_root=session_root,
+            plan_name=dag.name,
+            project_config=self.project_config,
+            executor=self._executor,
+        )
 
         if restart:
             reset_plan_state(session_root, dag.name)
         else:
-            self._rehydrate()
-            self._cleanup_orphaned_actives()
-            if continue_failed:
-                self._resume_failed()
+            self._run_recovery_pipeline(continue_failed=continue_failed)
 
-    def _cleanup_orphaned_actives(self) -> None:
-        """Abandon any ACTIVE tasks left over from a crashed prior run.
+    def _run_recovery_pipeline(self, continue_failed: bool = False) -> None:
+        """Orchestrate recovery phases: seed → rehydrate → cleanup → resume.
+
+        Phases are ordered for deterministic fail-closed behavior:
+        1. Seed deployed state from deploy log (static baseline)
+        2. Rehydrate from latest-run events (replay what happened)
+        3. Cleanup orphaned ACTIVE tasks (mark ABANDONED)
+        4. Resume failed tasks if requested (move to PENDING)
+        """
+        self._phase_seed_deployed()
+        self._phase_rehydrate()
+        self._phase_cleanup_orphans()
+        if continue_failed:
+            self._phase_resume_failed()
+
+    def _phase_seed_deployed(self) -> None:
+        """Phase 1: Mark already-deployed units as MERGED before replaying latest-run events."""
+        from dgov import deploy_log
+
+        deployed_units = {
+            record.unit for record in deploy_log.read(self.session_root, self.dag.name)
+        }
+        for slug in deployed_units:
+            if slug in self.kernel.task_states:
+                self.kernel.task_states[slug] = TaskState.MERGED
+
+    def _phase_cleanup_orphans(self) -> None:
+        """Phase 3: Abandon any ACTIVE tasks left over from a crashed prior run.
 
         After rehydration, ACTIVE tasks have no live worker — they are orphans.
         Mark them ABANDONED so --continue can retry them, and a bare run doesn't
         deadlock waiting for workers that will never finish.
         """
-
         for slug, state in list(self.kernel.task_states.items()):
             if state == TaskState.ACTIVE:
-                logger.warning(
-                    "Orphaned ACTIVE task after rehydration: %s — marking ABANDONED", slug
-                )
-                self.kernel.handle(TaskWaitDone(slug, "cleanup", TaskState.ABANDONED))
-                update_task_state(self.session_root, slug, TaskState.ABANDONED.value, force=True)
-                emit_event(
-                    self.session_root,
-                    "task_abandoned",
-                    "cleanup",
-                    plan_name=self.dag.name,
-                    task_slug=slug,
-                )
+                self._abandon_orphaned_task(slug)
 
-    def _resume_failed(self) -> None:
-        """Move all FAILED/ABANDONED/TIMED_OUT/SKIPPED tasks back to PENDING for retry."""
+    def _abandon_orphaned_task(self, slug: str) -> None:
+        """Mark a single orphaned ACTIVE task as ABANDONED. Extracted for testability."""
+        logger.warning("Orphaned ACTIVE task after rehydration: %s — marking ABANDONED", slug)
+        self.kernel.handle(TaskWaitDone(slug, "cleanup", TaskState.ABANDONED))
+        update_runtime_artifact_state(
+            self.session_root,
+            slug,
+            TaskState.ABANDONED.value,
+            force=True,
+        )
+        emit_event(
+            self.session_root,
+            "task_abandoned",
+            "cleanup",
+            plan_name=self.dag.name,
+            task_slug=slug,
+        )
+
+    def _phase_resume_failed(self) -> None:
+        """Phase 4: Move all FAILED/ABANDONED/TIMED_OUT/SKIPPED tasks back to PENDING for retry.
+
+        Only executes when continue_failed=True. Preserves the prior state for logging
+        and emits governor-resumed events for auditability.
+        """
         logger.info("Resuming failed tasks")
         for slug, state in list(self.kernel.task_states.items()):
             if state in (
@@ -138,66 +195,80 @@ class EventDagRunner:
                 TaskState.TIMED_OUT,
                 TaskState.SKIPPED,
             ):
-                logger.info("Resuming task: %s (prior state: %s)", slug, state)
-                self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
-                emit_event(
-                    self.session_root,
-                    "dag_task_governor_resumed",
-                    "runner",
-                    plan_name=self.dag.name,
-                    task_slug=slug,
-                    action=GovernorAction.RETRY.value,
-                )
+                self._resume_single_task(slug, state)
 
-    def _rehydrate(self) -> None:
-        """Replay past events for this plan to restore kernel state."""
+    def _resume_single_task(self, slug: str, prior_state: TaskState) -> None:
+        """Resume a single failed/abandoned task. Extracted for testability."""
+        logger.info("Resuming task: %s (prior state: %s)", slug, prior_state)
+        self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
+        emit_event(
+            self.session_root,
+            "dag_task_governor_resumed",
+            "runner",
+            plan_name=self.dag.name,
+            task_slug=slug,
+            action=GovernorAction.RETRY.value,
+        )
+
+    def _phase_rehydrate(self) -> None:
+        """Phase 2: Replay latest-run events to restore kernel state.
+
+        Scopes replay to events after the most recent run_start marker for
+        deterministic recovery. Preserves timeout detection from task_failed
+        events and governor-resume event handling for state machine consistency.
+        """
         from dgov.persistence import read_events
 
         events = read_events(self.session_root, plan_name=self.dag.name)
+        run_start_id = latest_run_start_ids(events).get(self.dag.name, 0)
         for ev in events:
-            ename = ev["event"]
-            task_slug = ev.get("task_slug")
-            pane = ev["pane"]
-
-            if not task_slug or task_slug not in self.kernel.task_states:
+            if int(ev.get("id", 0)) <= run_start_id:
                 continue
+            self._apply_rehydrate_event(ev)
 
-            if ename == "dag_task_dispatched":
-                self.kernel.handle(TaskDispatched(task_slug, pane))
-            elif ename == "task_done":
-                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
-            elif ename == "task_abandoned":
-                self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
-            elif ename == "task_failed":
-                # Check error string for specific terminal states like TIMED_OUT
-                error = ev.get("error", "").lower()
-                status = TaskState.FAILED
-                if "timeout" in error:
-                    status = TaskState.TIMED_OUT
-                self.kernel.handle(TaskWaitDone(task_slug, pane, status))
-            elif ename == "review_pass":
-                self.kernel.handle(
-                    TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)
-                )
-            elif ename == "review_fail":
-                self.kernel.handle(
-                    TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0)
-                )
-            elif ename == "merge_completed":
-                self.kernel.handle(TaskMergeDone(task_slug, error=None))
-            elif ename == "task_merge_failed":
-                self.kernel.handle(
-                    TaskMergeDone(task_slug, error=ev.get("error", "unknown error"))
-                )
-            elif ename == "dag_task_governor_resumed":
-                # Restore attempt counts and retry/skip/fail state
-                action_str = ev.get("action")
-                if action_str:
-                    try:
-                        action = GovernorAction(action_str)
-                        self.kernel.handle(TaskGovernorResumed(task_slug, action))
-                    except ValueError:
-                        pass
+    def _apply_rehydrate_event(self, ev: dict[str, Any]) -> None:
+        """Apply a single event during rehydration. Extracted for testability."""
+        ename = ev["event"]
+        task_slug = ev.get("task_slug")
+        pane = ev["pane"]
+
+        if not task_slug or task_slug not in self.kernel.task_states:
+            return
+
+        if ename == "dag_task_dispatched":
+            self.kernel.handle(TaskDispatched(task_slug, pane))
+        elif ename == "task_done":
+            self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
+        elif ename == "task_abandoned":
+            self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
+        elif ename == "task_failed":
+            # Check error string for specific terminal states like TIMED_OUT
+            error = ev.get("error", "").lower()
+            status = TaskState.FAILED
+            if "timeout" in error:
+                status = TaskState.TIMED_OUT
+            self.kernel.handle(TaskWaitDone(task_slug, pane, status))
+        elif ename == "review_pass":
+            self.kernel.handle(
+                TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)
+            )
+        elif ename == "review_fail":
+            self.kernel.handle(
+                TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0)
+            )
+        elif ename == "merge_completed":
+            self.kernel.handle(TaskMergeDone(task_slug, error=None))
+        elif ename == "task_merge_failed":
+            self.kernel.handle(TaskMergeDone(task_slug, error=ev.get("error", "unknown error")))
+        elif ename == "dag_task_governor_resumed":
+            # Restore attempt counts and retry/skip/fail state
+            action_str = ev.get("action")
+            if action_str:
+                try:
+                    action = GovernorAction(action_str)
+                    self.kernel.handle(TaskGovernorResumed(task_slug, action))
+                except ValueError:
+                    pass
 
     def _setup_signal_handlers(self) -> None:
         """Install signal handlers for graceful shutdown (Pillar #10)."""
@@ -349,7 +420,7 @@ class EventDagRunner:
             TaskState.SKIPPED,
         ):
             try:
-                update_task_state(
+                update_runtime_artifact_state(
                     self.session_root, action.task_slug, kernel_state.value, force=True
                 )
             except Exception as exc:
@@ -620,6 +691,40 @@ class EventDagRunner:
 
         return "\n".join(sections)
 
+    def _upstream_units(self, task_slug: str) -> tuple[str, ...]:
+        """Return the transitive dependency closure for a task."""
+        seen: set[str] = set()
+        stack = list(self.dag.tasks[task_slug].depends_on)
+        while stack:
+            dep = stack.pop()
+            if dep in seen:
+                continue
+            seen.add(dep)
+            stack.extend(self.dag.tasks[dep].depends_on)
+        return tuple(seen)
+
+    def _base_ref_for_task(self, task_slug: str) -> str:
+        """Choose the git base for a task's worktree."""
+        task = self.dag.tasks[task_slug]
+        if not task.depends_on:
+            return "HEAD"
+
+        from dgov import deploy_log
+
+        records = {
+            record.unit: record for record in deploy_log.read(self.session_root, self.dag.name)
+        }
+        upstream = self._upstream_units(task_slug)
+        missing = sorted(dep for dep in upstream if dep not in records)
+        if missing:
+            raise RuntimeError(
+                f"Cannot create worktree for '{task_slug}' because upstream deploy records are "
+                f"missing for: {missing}. Fix: rerun or repair the plan state before continuing."
+            )
+
+        latest = max((records[dep] for dep in upstream), key=lambda record: record.ts)
+        return latest.sha
+
     async def _dispatch(self, action: DispatchTask) -> list[DagAction]:
         """Dispatch task to Atomic Headless Worker (Pillar #2)."""
         import uuid
@@ -647,8 +752,9 @@ class EventDagRunner:
             )
 
         # Pillar #3: Snapshot Isolation
+        base_ref = self._base_ref_for_task(action.task_slug)
         wt = await loop.run_in_executor(
-            self._executor, create_worktree, self.session_root, action.task_slug
+            self._executor, create_worktree, self.session_root, action.task_slug, base_ref
         )
         self._worktrees[action.task_slug] = wt
 
@@ -658,6 +764,17 @@ class EventDagRunner:
             agent = self.project_config.agents[agent]
 
         try:
+            if task.role not in ("researcher", "reviewer"):
+                await loop.run_in_executor(
+                    self._executor,
+                    partial(
+                        prepare_worktree,
+                        wt,
+                        language=self.project_config.language,
+                        setup_cmd=self.project_config.setup_cmd,
+                        timeout_s=self.project_config.bootstrap_timeout,
+                    ),
+                )
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
             self._pending_dispatches.add(action.task_slug)
             self._task_start_times[action.task_slug] = time.time()
@@ -670,7 +787,7 @@ class EventDagRunner:
                 "read": list(task.files.read),
             }
 
-            # Create task record with file claims for scope enforcement
+            # Record runtime artifact metadata for cleanup and debugging only.
             file_claims = tuple(
                 dict.fromkeys(
                     task.files.create + task.files.edit + task.files.delete + task.files.touch
@@ -688,7 +805,7 @@ class EventDagRunner:
                 plan_name=self.dag.name,
                 file_claims=file_claims,
             )
-            add_task(self.session_root, task_record)
+            record_runtime_artifact(self.session_root, task_record)
 
             # Atomic transition to WAITING
             kernel_actions = self.kernel.handle(TaskDispatched(action.task_slug, pane_slug))
@@ -737,6 +854,7 @@ class EventDagRunner:
             logger.error(
                 "Dispatch failed for %s after worktree creation: %s", action.task_slug, exc
             )
+            self._task_errors[action.task_slug] = str(exc)
             self._pending_dispatches.discard(action.task_slug)
             try:
                 await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
@@ -745,61 +863,196 @@ class EventDagRunner:
             self._worktrees.pop(action.task_slug, None)
             raise
 
+    async def _prepare_and_commit(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        loop: asyncio.AbstractEventLoop,
+    ) -> tuple[str | None, bool]:
+        """Autofix, commit, and handle read-only roles."""
+        from dgov import deploy_log
+
+        return await self._settlement_flow.prepare_and_commit(
+            task=self.dag.tasks[action.task_slug],
+            action=action,
+            wt=wt,
+            loop=loop,
+            emit_event_fn=emit_event,
+            autofix_fn=autofix_sandbox,
+            commit_fn=commit_in_worktree,
+            deploy_append_fn=deploy_log.append,
+        )
+
+    async def _run_isolated_validation(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        loop: asyncio.AbstractEventLoop,
+    ) -> tuple[str | None, IntegrationRiskRecord | None]:
+        """Compute risk and run isolated validation gate."""
+        return await self._settlement_flow.run_isolated_validation(
+            task=self.dag.tasks[action.task_slug],
+            action=action,
+            wt=wt,
+            loop=loop,
+            emit_event_fn=emit_event,
+            validate_fn=validate_sandbox,
+        )
+
+    async def _run_semantic_gate_on_candidate(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        candidate_result: IntegrationCandidateResult,
+        risk_record: IntegrationRiskRecord,
+        loop: asyncio.AbstractEventLoop,
+    ) -> str | None:
+        """Run deterministic Python semantic gate on the integrated candidate."""
+        return await self._settlement_flow.run_semantic_gate_on_candidate(
+            action=action,
+            wt=wt,
+            candidate_result=candidate_result,
+            risk_record=risk_record,
+            loop=loop,
+            emit_event_fn=emit_event,
+            remove_candidate_fn=remove_integration_candidate,
+            semantic_gate_fn=run_python_semantic_gate_in_subprocess,
+            rejected_emit_fn=emit_semantic_gate_rejected,
+        )
+
+    async def _validate_and_finalize_candidate(
+        self,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        task_config: ProjectConfig,
+        loop: asyncio.AbstractEventLoop,
+    ) -> str | None:
+        """Validate candidate with same gates as isolated validation."""
+        return await self._settlement_flow.validate_and_finalize_candidate(
+            action=action,
+            candidate_result=candidate_result,
+            task_config=task_config,
+            loop=loop,
+            emit_event_fn=emit_event,
+            validate_fn=validate_sandbox,
+            remove_candidate_fn=remove_integration_candidate,
+            failed_emit_fn=emit_integration_candidate_failed,
+            passed_emit_fn=emit_integration_candidate_passed,
+        )
+
+    async def _create_integration_candidate_with_emit(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        loop: asyncio.AbstractEventLoop,
+    ) -> IntegrationCandidateResult:
+        """Create integration candidate and emit failure event if replay fails."""
+        return await self._settlement_flow.create_integration_candidate_with_emit(
+            action=action,
+            wt=wt,
+            loop=loop,
+            emit_event_fn=emit_event,
+            create_candidate_fn=create_integration_candidate,
+            failed_emit_fn=emit_integration_candidate_failed,
+        )
+
+    async def _finalize_merge(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Merge worktree into main and record deployment."""
+        from dgov import deploy_log
+
+        await self._settlement_flow.finalize_merge(
+            action=action,
+            wt=wt,
+            loop=loop,
+            merge_fn=merge_worktree,
+            deploy_append_fn=deploy_log.append,
+        )
+
+    async def _cleanup_rejected_candidate(
+        self,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        verdict: IntegrationCandidateVerdict,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Clean up rejected candidate and emit failure event."""
+        await self._settlement_flow.cleanup_rejected_candidate(
+            action=action,
+            candidate_result=candidate_result,
+            verdict=verdict,
+            loop=loop,
+            emit_event_fn=emit_event,
+            remove_candidate_fn=remove_integration_candidate,
+            failed_emit_fn=emit_integration_candidate_failed,
+        )
+
+    async def _cleanup_passed_candidate(
+        self,
+        action: MergeTask,
+        candidate_result: IntegrationCandidateResult,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Clean up passed candidate and emit success event."""
+        await self._settlement_flow.cleanup_passed_candidate(
+            action=action,
+            candidate_result=candidate_result,
+            loop=loop,
+            emit_event_fn=emit_event,
+            remove_candidate_fn=remove_integration_candidate,
+            passed_emit_fn=emit_integration_candidate_passed,
+        )
+
     async def _settle_and_merge(
         self,
         action: MergeTask,
         wt: Worktree,
         loop: asyncio.AbstractEventLoop,
     ) -> tuple[str | None, bool]:
-        """Run autofix → commit → validate → merge. Returns (error, was_settlement)."""
+        """Run settlement phases: prepare → validate → candidate → merge.
+
+        Phase-split for testability: each phase can fail independently.
+        Returns (error, was_settlement) tuple.
+        """
         task = self.dag.tasks[action.task_slug]
-        file_claims = action.file_claims
         pc = self.project_config
         task_config = replace(pc, test_cmd=task.test_cmd) if task.test_cmd else pc
 
-        # Researcher tasks are read-only by construction: no edits, no commits,
-        # no settlement gates. The `done` summary is already in the event log.
-        # Record the research against the HEAD sha so plan status can show it
-        # as deployed without inventing a fake commit. See ledger bug #27.
-        if task.role in ("researcher", "reviewer"):
-            from dgov import deploy_log
+        # Phase 1: Prepare and commit (or handle read-only roles)
+        error, was_settlement = await self._prepare_and_commit(action, wt, loop)
+        if error or was_settlement is False:
+            return error, was_settlement
 
-            deploy_log.append(self.session_root, self.dag.name, action.task_slug, wt.commit)
-            if task.role == "reviewer":
-                emit_event(
-                    self.session_root,
-                    "reviewer_verdict",
-                    action.pane_slug,
-                    plan_name=self.dag.name,
-                    task_slug=action.task_slug,
-                )
-                logger.info("REVIEWED %s", action.task_slug)
-            else:
-                logger.info("RESEARCHED %s", action.task_slug)
-            return None, False
+        # Phase 2: Isolated validation (compute risk + run gate)
+        error, risk_record = await self._run_isolated_validation(action, wt, loop)
+        if error or risk_record is None:
+            return error, True
 
-        await loop.run_in_executor(
-            self._executor, autofix_sandbox, wt.path, file_claims, task_config
+        # Phase 3: Create integration candidate
+        candidate_result = await self._create_integration_candidate_with_emit(action, wt, loop)
+        if not candidate_result.passed:
+            return candidate_result.error or "Integration candidate replay failed", True
+
+        # Phase 4: Run semantic gate on candidate
+        error = await self._run_semantic_gate_on_candidate(
+            action, wt, candidate_result, risk_record, loop
         )
+        if error:
+            return error, True
 
-        msg = task.commit_message or f"feat: completed {action.task_slug}"
-        await loop.run_in_executor(self._executor, commit_in_worktree, wt, msg, file_claims)
-
-        gate_result = await loop.run_in_executor(
-            self._executor, validate_sandbox, wt.path, wt.commit, self.session_root, task_config
+        # Phase 5: Validate candidate with same gates as isolated validation
+        error = await self._validate_and_finalize_candidate(
+            action, candidate_result, task_config, loop
         )
+        if error:
+            return error, True
 
-        if not gate_result.passed:
-            return gate_result.error, True
-
-        merge_sha = await loop.run_in_executor(
-            self._executor, merge_worktree, self.session_root, wt
-        )
-        logger.info("COMMITTED %s", action.task_slug)
-
-        from dgov import deploy_log
-
-        deploy_log.append(self.session_root, self.dag.name, action.task_slug, merge_sha)
+        # Phase 6: Final merge and deploy
+        await self._finalize_merge(action, wt, loop)
         return None, False
 
     async def _settlement_retry(
@@ -815,7 +1068,31 @@ class EventDagRunner:
         sp.run(["git", "reset", "HEAD~1"], cwd=wt.path, capture_output=True)
 
         task = self.dag.tasks[action.task_slug]
-        feedback_prompt = (
+        retry_task = DagTaskSpec(
+            slug=action.task_slug,
+            summary=f"[retry] {task.summary}",
+            prompt=self._settlement_retry_prompt(task, settlement_error),
+            commit_message=task.commit_message,
+            depends_on=task.depends_on,
+            files=task.files,
+            agent=task.agent,
+            timeout_s=task.timeout_s,
+            test_cmd=task.test_cmd,
+        )
+        await run_headless_worker(
+            self.session_root,
+            self.dag.name,
+            action.task_slug,
+            f"{action.pane_slug}-retry",
+            wt.path,
+            retry_task,
+            self._retry_scope(action.task_slug, task),
+            self._noop_retry_exit,
+            on_event=self.on_event,
+        )
+
+    def _settlement_retry_prompt(self, task: DagTaskSpec, settlement_error: str) -> str:
+        return (
             "Your previous attempt was REJECTED by settlement. "
             "Fix the issue and call done.\n\n"
             f"SETTLEMENT ERROR:\n{settlement_error}\n\n"
@@ -824,21 +1101,9 @@ class EventDagRunner:
             "Use git_diff to see them, fix the problem, then call done."
         )
 
-        from dgov.dag_parser import DagTaskSpec
-
-        retry_task = DagTaskSpec(
-            slug=action.task_slug,
-            summary=f"[retry] {task.summary}",
-            prompt=feedback_prompt,
-            commit_message=task.commit_message,
-            depends_on=task.depends_on,
-            files=task.files,
-            agent=task.agent,
-            timeout_s=task.timeout_s,
-            test_cmd=task.test_cmd,
-        )
-        retry_scope = {
-            "task_slug": action.task_slug,
+    def _retry_scope(self, task_slug: str, task: DagTaskSpec) -> dict[str, object]:
+        return {
+            "task_slug": task_slug,
             "create": list(task.files.create),
             "edit": list(task.files.edit),
             "delete": list(task.files.delete),
@@ -846,22 +1111,72 @@ class EventDagRunner:
             "read": list(task.files.read),
         }
 
-        pane_slug = action.pane_slug + "-retry"
+    def _noop_retry_exit(self, slug: str, pane: str, code: int, err: str = "") -> None:
+        if code != 0:
+            logger.warning("Settlement retry worker exited %d for %s: %s", code, slug, err)
 
-        def _noop_exit(slug: str, pane: str, code: int, err: str = "") -> None:
-            if code != 0:
-                logger.warning("Settlement retry worker exited %d for %s: %s", code, slug, err)
-
-        await run_headless_worker(
+    async def _retry_after_settlement_rejection(
+        self,
+        action: MergeTask,
+        wt: Worktree,
+        loop: asyncio.AbstractEventLoop,
+        error: str,
+    ) -> tuple[str | None, bool]:
+        logger.info("SETTLEMENT RETRY %s — feeding error back to worker", action.task_slug)
+        emit_event(
             self.session_root,
-            self.dag.name,
-            action.task_slug,
-            pane_slug,
-            wt.path,
-            retry_task,
-            retry_scope,
-            _noop_exit,
-            on_event=self.on_event,
+            "settlement_retry",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            error=error,
+        )
+        await self._settlement_retry(action, wt, error)
+        retry_error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
+        if settlement_rejected:
+            logger.warning("REJECTED %s after retry: %s", action.task_slug, retry_error)
+        return retry_error, settlement_rejected
+
+    async def _cleanup_merged_worktree(
+        self,
+        *,
+        action: MergeTask,
+        wt: Worktree,
+        settlement_rejected: bool,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        if settlement_rejected:
+            logger.info("Worktree preserved for inspection: %s (%s)", action.task_slug, wt.path)
+            self._worktrees.pop(action.task_slug, None)
+            self._rejected_worktrees[action.task_slug] = wt
+            return
+
+        try:
+            await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+        except Exception as exc:
+            logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
+        self._worktrees.pop(action.task_slug, None)
+
+    def _sync_merge_artifact_state(self, task_slug: str, error: str | None) -> None:
+        db_state = TaskState.MERGED if not error else TaskState.FAILED
+        try:
+            update_runtime_artifact_state(
+                self.session_root,
+                task_slug,
+                db_state.value,
+                force=True,
+            )
+        except Exception as exc:
+            logger.warning("DB state sync failed for %s: %s", task_slug, exc)
+
+    def _emit_merge_completion(self, action: MergeTask, error: str | None) -> None:
+        emit_event(
+            self.session_root,
+            "merge_completed" if not error else "task_merge_failed",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            error=error,
         )
 
     async def _merge(self, action: MergeTask) -> list[DagAction]:
@@ -877,65 +1192,26 @@ class EventDagRunner:
         try:
             error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
 
-            # Settlement retry: give worker one chance to fix
             if settlement_rejected and error:
-                logger.info(
-                    "SETTLEMENT RETRY %s — feeding error back to worker",
-                    action.task_slug,
+                error, settlement_rejected = await self._retry_after_settlement_rejection(
+                    action, wt, loop, error
                 )
-                emit_event(
-                    self.session_root,
-                    "settlement_retry",
-                    action.pane_slug,
-                    plan_name=self.dag.name,
-                    task_slug=action.task_slug,
-                    error=error,
-                )
-                await self._settlement_retry(action, wt, error)
-                error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
-                if settlement_rejected:
-                    logger.warning("REJECTED %s after retry: %s", action.task_slug, error)
-
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
             error = str(exc)
 
-        # Cleanup — keep worktree on settlement rejection so governor can inspect
-        if not settlement_rejected:
-            try:
-                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
-            except Exception as exc:
-                logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
-            self._worktrees.pop(action.task_slug, None)
-        else:
-            logger.info(
-                "Worktree preserved for inspection: %s (%s)",
-                action.task_slug,
-                wt.path,
-            )
-            # Move to rejected dict so _cleanup skips it during normal task lifecycle
-            # but can still clean it up on process exit.
-            self._worktrees.pop(action.task_slug, None)
-            self._rejected_worktrees[action.task_slug] = wt
+        await self._cleanup_merged_worktree(
+            action=action,
+            wt=wt,
+            settlement_rejected=settlement_rejected,
+            loop=loop,
+        )
 
         if error:
             self._task_errors[action.task_slug] = error
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 
-        # Sync terminal state to DB so dgov status reflects reality
-        db_state = TaskState.MERGED if not error else TaskState.FAILED
-        try:
-            update_task_state(self.session_root, action.task_slug, db_state.value, force=True)
-        except Exception as exc:
-            logger.warning("DB state sync failed for %s: %s", action.task_slug, exc)
-
-        emit_event(
-            self.session_root,
-            "merge_completed" if not error else "task_merge_failed",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            error=error,
-        )
+        self._sync_merge_artifact_state(action.task_slug, error)
+        self._emit_merge_completion(action, error)
         return actions

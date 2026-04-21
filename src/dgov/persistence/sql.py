@@ -8,7 +8,6 @@ Only tables actively used by the Lacustrine kernel are initialized.
 _CREATE_TABLE_SQL = """\
 CREATE TABLE IF NOT EXISTS tasks (
     slug TEXT PRIMARY KEY,
-    prompt TEXT,
     task_id TEXT,
     agent TEXT,
     project_root TEXT,
@@ -21,9 +20,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     role TEXT DEFAULT 'worker',
     state TEXT,
     metadata TEXT,
-    plan_name TEXT DEFAULT NULL,
-    file_claims TEXT NOT NULL DEFAULT '[]',
-    commit_message TEXT DEFAULT NULL
+    plan_name TEXT DEFAULT NULL
 )"""
 
 _CREATE_EVENTS_TABLE_SQL = """

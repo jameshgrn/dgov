@@ -236,3 +236,278 @@ class TestValidEvents:
         assert "dag_task_dispatched" in VALID_EVENTS
         assert "worker_log" in VALID_EVENTS
         assert "invalid_event" not in VALID_EVENTS
+
+    def test_valid_events_contains_semantic_settlement_events(self):
+        """VALID_EVENTS contains the semantic settlement event family."""
+        semantic_events = {
+            "integration_risk_scored",
+            "integration_overlap_detected",
+            "integration_candidate_passed",
+            "integration_candidate_failed",
+            "semantic_gate_rejected",
+        }
+        for event in semantic_events:
+            assert event in VALID_EVENTS, f"{event} should be in VALID_EVENTS"
+
+
+class TestSemanticSettlementEvents:
+    """Tests for semantic settlement event round-tripping through persistence."""
+
+    def test_emit_integration_risk_scored_roundtrip(self, tmp_path):
+        """integration_risk_scored event emits and reads back correctly."""
+        from dgov.semantic_settlement import (
+            IntegrationRiskRecord,
+            RiskLevel,
+            emit_integration_risk_scored,
+        )
+
+        session_root = _session(tmp_path)
+
+        record = IntegrationRiskRecord(
+            task_slug="task-123",
+            target_head_sha="abc123",
+            task_base_sha="def456",
+            task_commit_sha="ghi789",
+            risk_level=RiskLevel.HIGH,
+            claimed_files=("src/a.py", "src/b.py"),
+            changed_files=("src/a.py",),
+            python_overlap_detected=True,
+        )
+
+        emit_integration_risk_scored(
+            emit_event,
+            session_root,
+            "test-plan",
+            record,
+        )
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "integration_risk_scored"
+        assert ev["task_slug"] == "task-123"
+        assert ev["risk_level"] == "high"
+        assert ev["target_head_sha"] == "abc123"
+        assert ev["task_commit_sha"] == "ghi789"
+        assert ev["python_overlap_detected"] is True
+
+    def test_emit_integration_overlap_detected_roundtrip(self, tmp_path):
+        """integration_overlap_detected event emits and reads back correctly."""
+        from dgov.semantic_settlement import SymbolOverlap, emit_integration_overlap_detected
+
+        session_root = _session(tmp_path)
+
+        evidence = SymbolOverlap(
+            symbol_name="process_data",
+            symbol_type="function",
+            file_path="src/runner.py",
+            task_line_range=(10, 20),
+        )
+
+        emit_integration_overlap_detected(
+            emit_event,
+            session_root,
+            "test-plan",
+            "task-123",
+            evidence,
+        )
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "integration_overlap_detected"
+        assert ev["task_slug"] == "task-123"
+        assert ev["evidence"]["_kind"] == "SymbolOverlap"
+        assert ev["evidence"]["symbol_name"] == "process_data"
+
+    def test_emit_integration_candidate_passed_roundtrip(self, tmp_path):
+        """integration_candidate_passed event emits and reads back correctly."""
+        from dgov.semantic_settlement import (
+            IntegrationCandidateVerdict,
+            emit_integration_candidate_passed,
+        )
+
+        session_root = _session(tmp_path)
+
+        verdict = IntegrationCandidateVerdict(
+            task_slug="task-123",
+            candidate_sha="candidate-abc",
+            target_head_sha="target-def",
+            passed=True,
+        )
+
+        emit_integration_candidate_passed(
+            emit_event,
+            session_root,
+            "test-plan",
+            verdict,
+        )
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "integration_candidate_passed"
+        assert ev["task_slug"] == "task-123"
+        assert ev["candidate_sha"] == "candidate-abc"
+        assert ev["passed"] is True
+
+    def test_emit_integration_candidate_failed_roundtrip(self, tmp_path):
+        """integration_candidate_failed event emits and reads back correctly."""
+        from dgov.semantic_settlement import (
+            FailureClass,
+            IntegrationCandidateVerdict,
+            TextConflict,
+            emit_integration_candidate_failed,
+        )
+
+        session_root = _session(tmp_path)
+
+        evidence = TextConflict(
+            file_path="src/conflict.py",
+            conflict_markers=3,
+        )
+        verdict = IntegrationCandidateVerdict(
+            task_slug="task-123",
+            candidate_sha="candidate-abc",
+            target_head_sha="target-def",
+            passed=False,
+            failure_class=FailureClass.TEXT_CONFLICT,
+            evidence=(evidence,),
+            error_message="Merge conflict detected",
+        )
+
+        emit_integration_candidate_failed(
+            emit_event,
+            session_root,
+            "test-plan",
+            verdict,
+        )
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "integration_candidate_failed"
+        assert ev["passed"] is False
+        assert ev["failure_class"] == "text_conflict"
+        assert ev["error_message"] == "Merge conflict detected"
+        assert ev["evidence"][0]["_kind"] == "TextConflict"
+
+    def test_emit_semantic_gate_rejected_roundtrip(self, tmp_path):
+        """semantic_gate_rejected event emits and reads back correctly."""
+        from dgov.semantic_settlement import (
+            FailureClass,
+            SemanticGateVerdict,
+            SymbolOverlap,
+            emit_semantic_gate_rejected,
+        )
+
+        session_root = _session(tmp_path)
+
+        evidence = SymbolOverlap(
+            symbol_name="process_data",
+            symbol_type="function",
+            file_path="src/worker.py",
+        )
+        verdict = SemanticGateVerdict(
+            task_slug="task-123",
+            gate_name="same_symbol_edit",
+            passed=False,
+            failure_class=FailureClass.SAME_SYMBOL_EDIT,
+            evidence=(evidence,),
+            error_message="Both sides modified process_data",
+        )
+
+        emit_semantic_gate_rejected(
+            emit_event,
+            session_root,
+            "test-plan",
+            verdict,
+        )
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "semantic_gate_rejected"
+        assert ev["gate_name"] == "same_symbol_edit"
+        assert ev["failure_class"] == "same_symbol_edit"
+
+    def test_semantic_settlement_events_filter_by_plan_name(self, tmp_path):
+        """Semantic settlement events can be filtered by plan_name."""
+        from dgov.semantic_settlement import (
+            IntegrationCandidateVerdict,
+            IntegrationRiskRecord,
+            RiskLevel,
+            emit_integration_candidate_passed,
+            emit_integration_risk_scored,
+        )
+
+        session_root = _session(tmp_path)
+
+        # Emit for plan-a
+        record_a = IntegrationRiskRecord(
+            task_slug="task-a",
+            target_head_sha="abc",
+            task_base_sha="def",
+            task_commit_sha="ghi",
+            risk_level=RiskLevel.LOW,
+            claimed_files=(),
+            changed_files=(),
+        )
+        emit_integration_risk_scored(emit_event, session_root, "plan-a", record_a)
+
+        # Emit for plan-b
+        record_b = IntegrationRiskRecord(
+            task_slug="task-b",
+            target_head_sha="abc",
+            task_base_sha="def",
+            task_commit_sha="ghi",
+            risk_level=RiskLevel.HIGH,
+            claimed_files=(),
+            changed_files=(),
+        )
+        emit_integration_risk_scored(emit_event, session_root, "plan-b", record_b)
+
+        verdict_b = IntegrationCandidateVerdict(
+            task_slug="task-b",
+            candidate_sha="candidate",
+            target_head_sha="target",
+            passed=True,
+        )
+        emit_integration_candidate_passed(emit_event, session_root, "plan-b", verdict_b)
+
+        # Filter by plan
+        plan_a_events = read_events(session_root, plan_name="plan-a")
+        plan_b_events = read_events(session_root, plan_name="plan-b")
+
+        assert len(plan_a_events) == 1
+        assert plan_a_events[0]["plan_name"] == "plan-a"
+        assert plan_a_events[0]["risk_level"] == "low"
+
+        assert len(plan_b_events) == 2
+
+    def test_semantic_settlement_events_filter_by_task_slug(self, tmp_path):
+        """Semantic settlement events can be filtered by task_slug."""
+        from dgov.semantic_settlement import (
+            IntegrationCandidateVerdict,
+            emit_integration_candidate_passed,
+        )
+
+        session_root = _session(tmp_path)
+
+        # Emit for different tasks
+        for slug in ["task-1", "task-2", "task-1"]:
+            verdict = IntegrationCandidateVerdict(
+                task_slug=slug,
+                candidate_sha=f"candidate-{slug}",
+                target_head_sha="target",
+                passed=True,
+            )
+            emit_integration_candidate_passed(emit_event, session_root, "plan", verdict)
+
+        # Filter by task
+        task_1_events = read_events(session_root, task_slug="task-1")
+        task_2_events = read_events(session_root, task_slug="task-2")
+
+        assert len(task_1_events) == 2
+        assert len(task_2_events) == 1
+        assert task_2_events[0]["candidate_sha"] == "candidate-task-2"

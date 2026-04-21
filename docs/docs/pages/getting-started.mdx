@@ -38,7 +38,6 @@ dgov --json status       # JSON status output
 dgov watch               # Stream events
 dgov sentrux check       # Run architectural quality check
 dgov clean               # Clean stale worktrees and outputs
-dgov recover             # Recover from a crashed run
 ```
 
 If the repo has no commits yet and only `.dgov` bootstrap files exist, the first `dgov run`
@@ -51,8 +50,16 @@ the missing governor charter without overwriting project config.
 
 `dgov run` requires an existing `.sentrux/baseline.json`. Create or refresh it
 explicitly with `dgov sentrux gate-save`. The baseline is governor-owned state,
-not a worker-editable file, and the final post-run sentrux comparison can fail
-the run even if every task merged cleanly.
+not a worker-editable file. If the final post-run sentrux comparison detects
+degradation after tasks merged cleanly, `dgov run` reports a degraded result
+and keeps the warning visible without relabeling the task run as failed.
+
+`dgov status`, `dgov watch`, and `dgov clean` derive live state from the event
+log, not from mutable task snapshots. Recovery flows through `dgov run`:
+
+- bare `dgov run <plan-dir>` surfaces abandoned work from a crashed prior run
+- `dgov run <plan-dir> --continue` retries failed or abandoned tasks
+- `dgov run <plan-dir> --restart` clears prior run state and starts fresh
 
 ## LLM Endpoint Configuration
 

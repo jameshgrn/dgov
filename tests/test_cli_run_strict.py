@@ -1,4 +1,4 @@
-"""Tests for strict dgov run requirements (Plan Tree enforcement)."""
+"""Tests for strict dgov run requirements (plan directory enforcement)."""
 
 from __future__ import annotations
 
@@ -18,61 +18,90 @@ def runner():
     return CliRunner()
 
 
-def test_run_uncompiled_plan_fails(runner: CliRunner, tmp_path: Path) -> None:
-    """dgov run should fail if the plan is not compiled (missing source_mtime_max)."""
-    plan = tmp_path / "plan.toml"
-    plan.write_text(
-        '[plan]\nname = "uncompiled"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
+def _write_plan_tree(tmp_path: Path, name: str = "compiled") -> Path:
+    plan_dir = tmp_path / ".dgov" / "plans" / name
+    task_dir = plan_dir / "tasks"
+    task_dir.mkdir(parents=True)
+    (plan_dir / "_root.toml").write_text(
+        f'[plan]\nname = "{name}"\nsummary = "test"\nsections = ["tasks"]\n'
     )
-    result = runner.invoke(cli, ["run", str(plan)])
-    assert result.exit_code != 0
-    assert "not compiled" in result.output.lower()
-    assert "_root.toml" in result.output
+    (task_dir / "main.toml").write_text(
+        """
+[tasks.a]
+summary = "do a"
+prompt = "do a"
+commit_message = "a"
+files.edit = ["src/a.py"]
+"""
+    )
+    return plan_dir
 
 
-def test_run_compiled_plan_passes_check(runner: CliRunner, tmp_path: Path, monkeypatch) -> None:
-    """dgov run should pass the check if source_mtime_max is present
-    (sop_set_hash not required).
-    """
-    plan = tmp_path / "_compiled.toml"
-    plan.write_text(
-        '[plan]\nname = "compiled"\n'
+def _write_compiled(plan_dir: Path, name: str = "compiled") -> Path:
+    compiled = plan_dir / "_compiled.toml"
+    compiled.write_text(
+        f'[plan]\nname = "{name}"\n'
         'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
         "[tasks.a]\n"
         'summary = "do a"\n'
         'prompt = "do a"\n'
         'commit_message = "a"\n'
     )
+    return compiled
 
-    # We mock the actual runner execution to just test the pre-run check
-    # because full execution requires FIREWORKS_API_KEY and actual worktrees.
-    monkeypatch.setattr("dgov.cli.run.EventDagRunner", lambda *args, **kwargs: None)
 
-    # We'll likely hit an error later when it tries to use the None runner,
-    # but the point is it passed the "uncompiled" check.
-    result = runner.invoke(cli, ["run", str(plan)])
+def test_run_rejects_compiled_file_input(runner: CliRunner, tmp_path: Path) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    compiled = _write_compiled(plan_dir, "compiled")
 
-    # It should NOT fail with "not compiled"
-    assert "not compiled" not in result.output.lower()
+    result = runner.invoke(cli, ["run", str(compiled)])
+
+    assert result.exit_code != 0
+    assert "requires a plan directory" in result.output.lower()
+    assert "dgov run <plan-dir>" in result.output
+
+
+def test_run_plan_dir_compiles_before_execution(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    captured: dict[str, object] = {}
+
+    def _capture_compile(path: Path) -> None:
+        captured["compiled"] = path
+        _write_compiled(path, "compiled")
+
+    def _capture_run(plan_file: str, project_root: str, **kwargs: object) -> None:
+        captured["plan_file"] = plan_file
+        captured["project_root"] = project_root
+        captured["kwargs"] = kwargs
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", _capture_compile)
+    monkeypatch.setattr("dgov.cli.run._cmd_run_plan", _capture_run)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert captured["compiled"] == plan_dir
+    assert captured["plan_file"] == str(plan_dir / "_compiled.toml")
+    assert captured["project_root"] == str(tmp_path)
+    assert captured["kwargs"] == {
+        "restart": False,
+        "continue_failed": False,
+        "only": None,
+        "plan_dir": plan_dir,
+        "yes": False,
+        "stream": False,
+        "verbose": False,
+    }
 
 
 def test_run_auto_bootstraps_dgov_only_repo(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = tmp_path / ".dgov" / "plans" / "bootstrap" / "_compiled.toml"
-    plan.parent.mkdir(parents=True)
-    plan.write_text(
-        '[plan]\nname = "compiled"\n'
-        'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-    )
+    plan_dir = _write_plan_tree(tmp_path, "bootstrap")
+    _write_compiled(plan_dir, "compiled")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
     class _Runner:
@@ -83,6 +112,7 @@ def test_run_auto_bootstraps_dgov_only_repo(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -96,10 +126,7 @@ def test_run_auto_bootstraps_dgov_only_repo(
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
 
-    try:
-        result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)
-    finally:
-        monkeypatch.undo()
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
     head = subprocess.run(
         ["git", "rev-parse", "--verify", "HEAD"],
@@ -116,15 +143,8 @@ def test_run_auto_bootstraps_dgov_only_repo(
 def test_run_returns_nonzero_on_failed_plan(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = tmp_path / "_compiled.toml"
-    plan.write_text(
-        '[plan]\nname = "compiled"\n'
-        'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-    )
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
@@ -141,6 +161,7 @@ def test_run_returns_nonzero_on_failed_plan(
         async def run(self) -> dict[str, str]:
             return {"a": "failed"}
 
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -154,7 +175,7 @@ def test_run_returns_nonzero_on_failed_plan(
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
     assert result.exit_code == 1
     assert "status: failed" in result.output
@@ -164,28 +185,20 @@ def test_run_returns_nonzero_on_failed_plan(
 def test_run_auto_creates_bootstrap_commit_in_headless(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = tmp_path / "_compiled.toml"
-    plan.write_text(
-        '[plan]\nname = "compiled"\n'
-        'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-    )
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
     (tmp_path / "README.md").write_text("hello\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
 
-    # In headless (isatty=False), it should auto-create commit and then fail on missing baseline
-    result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
     assert result.exit_code == 1
     assert "created bootstrap commit from current working tree" in result.output.lower()
     assert "no sentrux baseline found" in result.output.lower()
 
-    # Verify commit exists
     git_log = subprocess.run(
         ["git", "log", "-n", "1", "--oneline"], cwd=tmp_path, capture_output=True, text=True
     ).stdout
@@ -195,15 +208,8 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
 def test_run_requires_sentrux_baseline(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = tmp_path / "_compiled.toml"
-    plan.write_text(
-        '[plan]\nname = "compiled"\n'
-        'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-    )
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
@@ -212,28 +218,22 @@ def test_run_requires_sentrux_baseline(
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
 
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
     assert result.exit_code == 1
     assert "no sentrux baseline found" in result.output.lower()
     assert "dgov sentrux gate-save" in result.output
 
 
-def test_run_fails_when_final_sentrux_compare_degrades(
+def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    plan = tmp_path / "_compiled.toml"
-    plan.write_text(
-        '[plan]\nname = "compiled"\n'
-        'source_mtime_max = "2026-04-08T00:00:00Z"\n\n'
-        "[tasks.a]\n"
-        'summary = "do a"\n'
-        'prompt = "do a"\n'
-        'commit_message = "a"\n'
-    )
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
 
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
@@ -250,6 +250,7 @@ def test_run_fails_when_final_sentrux_compare_degrades(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
     monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
     monkeypatch.setattr(
@@ -263,20 +264,69 @@ def test_run_fails_when_final_sentrux_compare_degrades(
     monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
 
-    result = runner.invoke(cli, ["run", str(plan)], catch_exceptions=False)
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
-    assert result.exit_code == 1
-    assert "status: failed" in result.output
+    assert result.exit_code == 0
+    assert "status: degraded" in result.output
     assert "sentrux: architectural degradation detected." in result.output.lower()
 
 
-def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
-    """_clean_head_worktree yields a checkout at HEAD, ignoring dirty working-tree changes.
+def test_run_reports_structural_offenders_when_sentrux_degrades(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
 
-    Regression for ledger bug #26: the post-run sentrux gate used to scan the
-    live working tree, so uncommitted changes in the governor's workspace were
-    falsely attributed to the run.
-    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("init\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+
+    class _Runner:
+        def __init__(self, *args, **kwargs) -> None:
+            self._task_errors = {}
+            self._task_durations = {"a": 0.1}
+
+        async def run(self) -> dict[str, str]:
+            return {"a": "merged"}
+
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda project_root, baseline_quality: {
+            "degradation": True,
+            "quality_before": baseline_quality,
+            "quality_after": 90,
+            "structural_offenders": {
+                "commit_sha": "abc123",
+                "complex_functions": [
+                    {
+                        "path": "src/dgov/runner.py",
+                        "qualname": "_merge",
+                        "lineno": 100,
+                        "cyclomatic": 12,
+                    }
+                ],
+                "cog_complex_functions": [],
+                "long_functions": [],
+            },
+        },
+    )
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "Likely structural offenders at abc123" in result.output
+
+
+def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
+    """_clean_head_worktree yields a checkout at HEAD, ignoring dirty working-tree changes."""
     from dgov.cli.run import _clean_head_worktree
 
     repo = tmp_path / "repo"
@@ -300,18 +350,14 @@ def test_clean_head_worktree_isolates_from_dirty_state(tmp_path: Path) -> None:
         env=env,
     )
 
-    # Dirty the working tree after committing.
     tracked.write_text("x = 2  # uncommitted\n")
     (repo / "untracked.py").write_text("y = 999\n")
 
     with _clean_head_worktree(str(repo)) as scan_dir:
-        # The scan dir reflects HEAD, not the live working tree.
         assert (scan_dir / "tracked.py").read_text() == "x = 1\n"
         assert not (scan_dir / "untracked.py").exists()
         snapshot = scan_dir
 
-    # Cleanup removes the temporary worktree after the context exits.
     assert not snapshot.exists()
-    # The main working tree is untouched.
     assert tracked.read_text() == "x = 2  # uncommitted\n"
     assert (repo / "untracked.py").exists()

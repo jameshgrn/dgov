@@ -1,0 +1,27 @@
+[tasks.reduce-python-gate-complexity]
+summary = "Reduce symbol-loading complexity in semantic settlement without changing gate behavior."
+prompt = """
+Orient:
+- Read `src/dgov/semantic_settlement.py` first.
+- Read `tests/test_semantic_settlement.py` and `tests/test_boundaries.py`.
+- The current branch is functionally correct but structurally degraded. `_get_symbols_at_commit(...)` and the symbol extraction path are now major hotspots.
+- This task is the first half of the cleanup. Do not refactor `run_python_semantic_gate(...)` yet.
+- Preserve behavior exactly for symbol extraction and commit-file loading.
+- Do not change runner behavior, candidate replay behavior, or gate verdict semantics in this task.
+
+Edit:
+1. In `src/dgov/semantic_settlement.py`, reduce branching in `_get_symbols_at_commit(...)` and the local symbol extraction helpers only.
+2. Prefer small pure helpers for git file loading, source parsing, and symbol extraction so `_get_symbols_at_commit(...)` becomes straight-line orchestration.
+3. Keep the implementation deterministic and inspectable. Do not add rewrite/synthesis behavior, new findings, or speculative generalization.
+4. Update `tests/test_semantic_settlement.py` only where needed to keep symbol-loading behavior locked and coverage readable.
+5. Stop once the symbol-loading path is materially simpler. Leave gate orchestration cleanup for the next unit.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_semantic_settlement.py tests/test_boundaries.py`
+- `uv run ruff check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py tests/test_boundaries.py`
+- `uv run ty check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py tests/test_boundaries.py`
+- `uv run sentrux gate .`
+"""
+commit_message = "Reduce semantic symbol loading complexity"
+files.edit = ["src/dgov/semantic_settlement.py", "tests/test_semantic_settlement.py"]
+files.read = ["tests/test_boundaries.py"]

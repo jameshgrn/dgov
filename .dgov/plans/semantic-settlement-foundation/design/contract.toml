@@ -1,0 +1,42 @@
+[tasks.lock-taxonomy]
+summary = "Add the semantic-settlement contract and event schema."
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` first.
+- Read `src/dgov/runner.py`, `src/dgov/worktree.py`, `src/dgov/settlement.py`, `src/dgov/persistence/schema.py`, `src/dgov/persistence/events.py`, `src/dgov/persistence/sql.py`, and `src/dgov/persistence/connection.py`.
+- Read `tests/test_persistence_events.py` and `tests/test_runner.py` for current event and merge behavior.
+- Keep runtime behavior unchanged in this task. This is contract work, not merge-policy work.
+- Do not add new CLI flags or planner surface area.
+- Keep the persistence changes minimal enough to stay inside existing settlement quality gates. Do not add new migration paths or helper abstractions unless the current schema machinery truly cannot support the new typed columns.
+
+Edit:
+1. Create `src/dgov/semantic_settlement.py` with explicit `StrEnum` and dataclass types for the failure taxonomy, risk levels, overlap evidence, and candidate verdicts described in `DESIGN.md`.
+2. Keep the module small and deterministic. It should define the shared contract and payload-shaping helpers the runtime can use later; it should not perform merge orchestration yet.
+3. Extend `src/dgov/persistence/schema.py` with the semantic-settlement event family and any typed columns that should be first-class query keys instead of opaque JSON.
+4. If the new typed event columns require persistence schema updates, make the corresponding minimal changes in `src/dgov/persistence/sql.py` and `src/dgov/persistence/connection.py` so both fresh databases and migrated databases support the new fields.
+5. Update `src/dgov/persistence/events.py` only as needed so the new event shapes round-trip cleanly through `emit_event(...)` and `read_events(...)`.
+6. Add focused coverage in `tests/test_persistence_events.py` and create `tests/test_semantic_settlement.py` for serialization and payload-shape behavior.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_persistence_events.py tests/test_semantic_settlement.py`
+- `uv run ruff check src/dgov/semantic_settlement.py src/dgov/persistence/schema.py src/dgov/persistence/events.py tests/test_persistence_events.py tests/test_semantic_settlement.py`
+- `uv run ty check`
+"""
+commit_message = "Add semantic settlement contract"
+files.create = ["src/dgov/semantic_settlement.py", "tests/test_semantic_settlement.py"]
+files.edit = [
+  "src/dgov/persistence/schema.py",
+  "src/dgov/persistence/events.py",
+  "src/dgov/persistence/sql.py",
+  "src/dgov/persistence/connection.py",
+  "tests/test_persistence_events.py",
+]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/runner.py",
+  "src/dgov/worktree.py",
+  "src/dgov/settlement.py",
+  "src/dgov/persistence/sql.py",
+  "src/dgov/persistence/connection.py",
+  "tests/test_runner.py",
+]
