@@ -68,8 +68,16 @@ def sentrux_check(path: Path | None, json_fmt: bool) -> None:
     quality = 0
     for line in output.splitlines():
         if line.startswith("Quality: "):
+            token = line.split(":", 1)[1].strip()
             with contextlib.suppress(ValueError):
-                quality = int(line.split(":", 1)[1].strip())
+                try:
+                    quality = int(token)
+                except ValueError:
+                    val = float(token)
+                    if val <= 1.0:
+                        quality = int(val * 10000)
+                    else:
+                        quality = int(val)
             break
 
     if json_fmt or want_json():

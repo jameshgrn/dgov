@@ -130,7 +130,11 @@ def _compile_plan_for_run(plan_dir: Path) -> None:
 
 
 def _parse_quality(line: str) -> int | None:
-    """Extract quality value from a 'Quality: N' or 'Quality: A -> B' line."""
+    """Extract quality value from a 'Quality: N' or 'Quality: A -> B' line.
+
+    Supports both integer scores (e.g. 6922) and float signals (e.g. 0.69)
+    by scaling signals (x10000) to match the sentrux check scale.
+    """
     if not line.startswith("Quality:"):
         return None
     rest = line.split(":", 1)[1].strip()
@@ -138,7 +142,13 @@ def _parse_quality(line: str) -> int | None:
     try:
         return int(token)
     except ValueError:
-        return None
+        try:
+            val = float(token)
+            if val <= 1.0:
+                return int(val * 10000)
+            return int(val)
+        except ValueError:
+            return None
 
 
 def _sentrux_available() -> bool:
@@ -300,7 +310,11 @@ def _sentrux_baseline_path(project_root: str) -> Path:
 
 
 def _read_sentrux_baseline_quality(project_root: str) -> int | None:
-    """Read the saved baseline quality from .sentrux/baseline.json when available."""
+    """Read the saved baseline quality from .sentrux/baseline.json when available.
+
+    Supports quality_signal floats by scaling them (x10000) to match the
+    sentrux check scale.
+    """
     baseline_path = _sentrux_baseline_path(project_root)
     if not baseline_path.exists():
         return None
@@ -311,9 +325,9 @@ def _read_sentrux_baseline_quality(project_root: str) -> int | None:
 
     for key in ("quality", "quality_score", "quality_signal"):
         value = data.get(key)
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
+        if isinstance(value, (int, float)):
+            if key == "quality_signal" and isinstance(value, float) and value <= 1.0:
+                return int(value * 10000)
             return int(value)
     return None
 
