@@ -50,7 +50,7 @@ Individual task definitions live inside section TOMLs such as `tasks/main.toml`.
 | `slug` | string | Yes (implicit) | — | Task identifier (from table key) |
 | `summary` | string | Yes | — | Short description for logs and UI |
 | `prompt` | string | Yes | — | Instructions sent to the worker agent |
-| `agent` | string | No | project default | Model/router override for this task |
+| `agent` | string | No | project default | Model/router override for this task. Only overrides the model/router name—provider config stays in `project.toml` |
 | `depends_on` | array of strings | No | `[]` | Slugs that must complete first |
 | `commit_message` | string | Yes | — | Git commit message on success |
 | `timeout_s` | integer | No | 900 | Seconds before task aborts |
@@ -61,11 +61,38 @@ File claims enforce **isolation** between concurrent tasks. The kernel validates
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `create` | array of strings | Files the task will create |
-| `edit` | array of strings | Files the task will modify |
-| `delete` | array of strings | Files the task will remove |
-| `read` | array of strings | Files the task reads (informational, not enforced) |
-| `touch` | array of strings | Flat claim list used by compiled plans and shorthand authoring |
+| `create` | array of strings | Files the task will create. Use when the task generates new files that don't exist yet. |
+| `edit` | array of strings | Files the task will modify. Use when the task changes existing file content. |
+| `delete` | array of strings | Files the task will remove. Use when the task deletes existing files. |
+| `read` | array of strings | Files the task reads (informational, not enforced). Use when the task needs to reference a file without modifying it. |
+| `touch` | array of strings | Flat claim list used by compiled plans and shorthand authoring. Equivalent to `files = ["..."]` shorthand. |
+
+#### Claim Type Examples
+
+Use explicit claim types when the operation is clear:
+
+```toml
+[tasks.add_feature]
+summary = "Add new authentication module"
+prompt = "Create auth.py with login/logout functions"
+files.create = ["src/auth.py"]
+
+[tasks.fix_bug]
+summary = "Fix type error in utils"
+prompt = "Update the type annotation in utils.py line 42"
+files.edit = ["src/utils.py"]
+
+[tasks.cleanup]
+summary = "Remove deprecated module"
+prompt = "Delete the legacy helpers module"
+files.delete = ["src/legacy_helpers.py"]
+
+[tasks.audit]
+summary = "Review codebase for issues"
+prompt = "Read src/api.py and src/models.py, then write findings to audit.md"
+files.read = ["src/api.py", "src/models.py"]
+files.create = ["audit.md"]
+```
 
 ### Flat File Claims Shorthand
 
@@ -89,9 +116,6 @@ files.touch = ["config.json"]
 
 Use the shorthand for brevity when the operation is clear from context, or use explicit `create`/`edit`/`delete`/`read` when you need precise control.
 
-`agent` only overrides the model/router name for a task. Provider selection stays
-repo-level through `.dgov/project.toml` (`llm_base_url` and `llm_api_key_env`).
-
 ---
 
 ## File Claim Isolation
@@ -101,6 +125,8 @@ File claims are the foundation of deterministic concurrency:
 1. **Declaration**: Every task must declare files it touches
 2. **Validation**: Before execution, the kernel checks for conflicts
 3. **Enforcement**: Independent tasks with overlapping paths fail validation
+
+> **Kernel Validation Note**: The kernel validates that **independent tasks** (those with no dependency edge between them) never claim overlapping file paths. Dependent tasks (where A depends_on B) are allowed to touch the same files because they execute sequentially. This ensures safe parallel execution while allowing intentional file sharing through explicit ordering.
 
 ### Conflict Example (Invalid)
 
