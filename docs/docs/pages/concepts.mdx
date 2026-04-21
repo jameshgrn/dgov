@@ -142,6 +142,92 @@ This is a deliberate split of responsibilities:
 If you collapse those roles, you get a system that is harder to reason about
 and much easier to fool.
 
+## Semantic Settlement
+
+Semantic settlement goes beyond simple merge gates. A clean `git merge` is
+necessary but not sufficient for safe integration. The semantic layer
+analyzes *what* changed, not just *that* something changed.
+
+### Core Philosophy
+
+Traditional merge gates ask: "Does this apply cleanly?" Semantic settlement
+asks: "Will this work correctly when integrated with the current target?"
+
+This distinction matters when:
+
+- Two tasks touch the same Python symbol in different ways
+- A function signature changes in one task while another task calls it
+- Identical symbols get defined in separate files that both land
+- Valid changes combine to produce invalid ordering or behavior
+
+The semantic layer detects these integration risks *before* the merge
+completes, using evidence derived from AST analysis, diff inspection, and
+symbol-level overlap detection.
+
+### Failure Taxonomy (`FailureClass`)
+
+When semantic settlement rejects a candidate, it classifies the failure
+precisely:
+
+| Failure Class | Meaning |
+|--------------|---------|
+| `TEXT_CONFLICT` | Git cannot replay the task commit cleanly on target HEAD |
+| `SYNTAX_CONFLICT` | The integrated file no longer parses (invalid Python/JSON/etc) |
+| `SAME_SYMBOL_EDIT` | Both sides changed the same Python symbol (function, class, etc) |
+| `DUPLICATE_DEFINITION` | Integrated code defines the same symbol in multiple files |
+| `SIGNATURE_DRIFT` | A public callable changed its signature relative to task base or target |
+| `ORDERING_CONFLICT` | Operations are valid individually but invalid in integrated order |
+| `BEHAVIORAL_MISMATCH` | Parse-level checks pass but settlement gates (tests, lint, etc) fail |
+
+Each failure class corresponds to a specific integration risk. The taxonomy
+enables targeted remediation: a `SAME_SYMBOL_EDIT` suggests coordination
+between tasks, while `SIGNATURE_DRIFT` suggests a stale task base.
+
+### Risk Levels (`RiskLevel`)
+
+Before attempting integration, `dgov` scores the *risk* of integration:
+
+| Level | Meaning | Action |
+|-------|---------|--------|
+| `NONE` | No detectable risk | Standard settlement gates |
+| `LOW` | Minimal risk | Standard settlement gates sufficient |
+| `MEDIUM` | Elevated risk | Shadow-mode validation recommended |
+| `HIGH` | Significant risk | Integrated candidate validation required |
+| `CRITICAL` | Near-certain conflict | Reject without full integration attempt |
+
+Risk scoring considers Python symbol overlap, file claim intersections, and
+the recency of the task base relative to target HEAD. Critical risk tasks
+are rejected early to avoid wasting compute on doomed integration attempts.
+
+### Symbol Overlap Evidence (`SymbolOverlap`)
+
+When two tasks touch the same code entity, `dgov` captures the overlap as
+structured evidence:
+
+- **symbol_name**: The affected function, class, or variable
+- **symbol_type**: Classification (`function`, `class`, `method`, etc)
+- **file_path**: Where the symbol lives
+- **task_line_range**: Lines the task modified
+- **target_line_range**: Lines the target has modified
+
+This evidence enables precise conflict reporting. Instead of "merge failed,"
+the system can report: "Task A and Task B both edited `process_order()` in
+`checkout.py`--Task A at lines 45-52, Task B at lines 48-55."
+
+### Integration Candidate Validation
+
+The semantic layer builds ephemeral integration candidates to validate
+merge outcomes before the real merge happens:
+
+1. Create a temporary workspace rooted at target HEAD
+2. Replay the task commit
+3. Run the full settlement pipeline (syntax checks, tests, lint, sentrux)
+4. Record pass/fail with specific failure class and evidence
+
+Only candidates that pass this validation proceed to the actual merge. This
+"shadow integration" catches problems that would otherwise appear only after
+the merge was already recorded in git history.
+
 ## Plans As Control Surfaces
 
 Plans are not just prompts in a file. They are the primary control surface for
