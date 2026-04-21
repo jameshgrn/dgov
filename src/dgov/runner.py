@@ -220,10 +220,22 @@ class EventDagRunner:
         if restart:
             reset_plan_state(session_root, dag.name)
         else:
+            self._seed_deployed_state()
             self._rehydrate()
             self._cleanup_orphaned_actives()
             if continue_failed:
                 self._resume_failed()
+
+    def _seed_deployed_state(self) -> None:
+        """Mark already-deployed units as MERGED before replaying latest-run events."""
+        from dgov import deploy_log
+
+        deployed_units = {
+            record.unit for record in deploy_log.read(self.session_root, self.dag.name)
+        }
+        for slug in deployed_units:
+            if slug in self.kernel.task_states:
+                self.kernel.task_states[slug] = TaskState.MERGED
 
     def _cleanup_orphaned_actives(self) -> None:
         """Abandon any ACTIVE tasks left over from a crashed prior run.

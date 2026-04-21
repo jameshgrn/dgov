@@ -221,9 +221,33 @@ def _io_patches(
     merge_wt=None,
     candidate=_mock_integration_candidate_pass,
     semantic_gate=_mock_semantic_gate_pass,
+    deploy_records=None,
 ):
     """Return a context manager that patches all I/O boundaries."""
     import contextlib
+
+    from dgov.deploy_log import DeployRecord
+
+    recorded_deploys: list[DeployRecord] = list(deploy_records or [])
+
+    def _append_deploy(
+        project_root: str,
+        plan_name: str,
+        unit_id: str,
+        commit_sha: str,
+        timestamp=None,
+    ):
+        recorded_deploys.append(
+            DeployRecord(
+                plan=plan_name,
+                unit=unit_id,
+                sha=commit_sha,
+                ts=timestamp or "2026-01-01T00:00:00Z",
+            )
+        )
+
+    def _read_deploys(project_root: str, plan_name: str):
+        return [record for record in recorded_deploys if record.plan == plan_name]
 
     @contextlib.contextmanager
     def _ctx():
@@ -237,11 +261,13 @@ def _io_patches(
             patch(_P_PREPARE_WT),
             patch(_P_RECORD_ARTIFACT),
             patch(_P_EMIT_EVENT),
+            patch(_P_DEPLOY_APPEND, side_effect=_append_deploy),
             patch(_P_HEADLESS, side_effect=headless),
             patch(_P_REVIEW, side_effect=review),
             patch(_P_CREATE_CANDIDATE, side_effect=candidate),
             patch(_P_REMOVE_CANDIDATE),
             patch(_P_SEMANTIC_GATE, side_effect=semantic_gate),
+            patch("dgov.deploy_log.read", side_effect=_read_deploys),
         ):
             yield
 
