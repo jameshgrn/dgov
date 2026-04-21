@@ -627,19 +627,7 @@ def _render_deployed_unit(unit) -> None:
             unit.settlement, unit.settlement
         )
         click.echo(f"    settlement   {label}")
-    # Integration risk telemetry — only show when present
-    if unit.integration_risk_level and unit.integration_risk_level != "none":
-        risk_label = unit.integration_risk_level
-        if unit.integration_risk_detected:
-            risk_label += ", overlap detected"
-        click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
-    elif unit.integration_risk_detected:
-        click.echo(click.style("    integration  overlap detected", fg="yellow"))
-    if unit.integration_candidate_passed is True:
-        click.echo("    candidate    passed")
-    elif unit.integration_candidate_passed is False:
-        fc = unit.integration_failure_class or "failed"
-        click.echo(click.style(f"    candidate    {fc}", fg="red"))
+    _render_integration_telemetry(unit)
     if unit.done_summary:
         _render_multiline_field("worker note ", unit.done_summary)
     if unit.worker_note_mismatches:
@@ -651,6 +639,24 @@ def _render_deployed_unit(unit) -> None:
             )
         )
     click.echo("")
+
+
+def _render_integration_telemetry(unit) -> None:
+    """Render integration risk and candidate validation telemetry if present."""
+    has_risk_level = unit.integration_risk_level and unit.integration_risk_level != "none"
+    if has_risk_level or unit.integration_risk_detected:
+        if has_risk_level:
+            risk_label = unit.integration_risk_level
+            if unit.integration_risk_detected:
+                risk_label += ", overlap detected"
+            click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
+        else:
+            click.echo(click.style("    integration  overlap detected", fg="yellow"))
+    if unit.integration_candidate_passed is True:
+        click.echo("    candidate    passed")
+    elif unit.integration_candidate_passed is False:
+        fc = unit.integration_failure_class or "failed"
+        click.echo(click.style(f"    candidate    {fc}", fg="red"))
 
 
 def _render_failed_unit(unit) -> None:
@@ -669,19 +675,7 @@ def _render_failed_unit(unit) -> None:
         click.echo(f"    iterations   {unit.iterations} tool call{plural}")
     if unit.reject_verdict:
         click.echo(f"    reject       {unit.reject_verdict}")
-    # Integration risk telemetry — only show when present
-    if unit.integration_risk_level and unit.integration_risk_level != "none":
-        risk_label = unit.integration_risk_level
-        if unit.integration_risk_detected:
-            risk_label += ", overlap detected"
-        click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
-    elif unit.integration_risk_detected:
-        click.echo(click.style("    integration  overlap detected", fg="yellow"))
-    if unit.integration_candidate_passed is True:
-        click.echo("    candidate    passed")
-    elif unit.integration_candidate_passed is False:
-        fc = unit.integration_failure_class or "failed"
-        click.echo(click.style(f"    candidate    {fc}", fg="red"))
+    _render_integration_telemetry(unit)
     if unit.error:
         _render_multiline_field("error       ", unit.error)
     if unit.last_thought:

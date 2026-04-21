@@ -525,6 +525,98 @@ def _settlement_result(
     return "n/a"
 
 
+def _compute_unit_status(
+    ran_in_run: bool,
+    merged_in_run: bool,
+    failed_in_run: bool,
+    has_error: bool,
+    has_reject_verdict: bool,
+    deploy_record,
+) -> UnitStatus:
+    """Determine unit status from rollup state and deploy record.
+
+    Status reflects the CURRENT run's outcome, not any historical deploy.
+    A unit that merged in an earlier run but failed in this run is "failed".
+    A unit in flight during the current run is "active".
+    A unit that didn't run at all in this run falls back to deploy_log.
+    """
+    if ran_in_run:
+        if merged_in_run:
+            return "deployed"
+        if failed_in_run or has_error or has_reject_verdict:
+            return "failed"
+        return "active"
+    if deploy_record is not None:
+        return "deployed"
+    return "not_run"
+
+
+def _fetch_deployed_commit_info(
+    project_root: str,
+    deploy_record,
+    done_summary: str | None,
+    include_full_diff: bool,
+) -> dict:
+    """Fetch git-derived info for a deployed unit.
+
+    Returns a dict with: commit_sha, commit_ts, commit_message, diff_stat,
+    landed_files, full_diff, worker_note_mismatches.
+    """
+    commit_sha = deploy_record.sha
+    commit_ts = deploy_record.ts
+    commit_message = _git_show_message(project_root, commit_sha)
+    diff_stat = _git_show_stat(project_root, commit_sha)
+    landed_files = _git_show_paths(project_root, commit_sha) or ()
+    worker_note_mismatches = _worker_note_mismatches(done_summary, landed_files)
+    full_diff = None
+    if include_full_diff:
+        full_diff = _git_show_full_diff(project_root, commit_sha)
+    return {
+        "commit_sha": commit_sha,
+        "commit_ts": commit_ts,
+        "commit_message": commit_message,
+        "diff_stat": diff_stat,
+        "landed_files": landed_files,
+        "full_diff": full_diff,
+        "worker_note_mismatches": worker_note_mismatches,
+    }
+
+
+def _empty_commit_info() -> dict:
+    """Return empty commit info structure for non-deployed units."""
+    return {
+        "commit_sha": None,
+        "commit_ts": None,
+        "commit_message": None,
+        "diff_stat": None,
+        "landed_files": (),
+        "full_diff": None,
+        "worker_note_mismatches": (),
+    }
+
+
+def _compute_self_corrections(failed_tool_calls: int, status: UnitStatus) -> int:
+    """Count self-corrections: only count on deployed units (recovered failures).
+
+    Failed units did not recover, so they show 0.
+    """
+    return failed_tool_calls if status == "deployed" else 0
+
+
+def _compute_attempts(unit_events: list[dict], settlement_retries: int) -> int:
+    """Compute total attempts including settlement retries."""
+    return 1 + settlement_retries if unit_events else 0
+
+
+def _compute_last_thought(thoughts: list[str], status: UnitStatus) -> str | None:
+    """Return the last thought for failed or active units."""
+    if not thoughts:
+        return None
+    if status in ("failed", "active"):
+        return thoughts[-1]
+    return None
+
+
 def _build_unit_review(
     unit_id: str,
     task_data: dict,
@@ -536,46 +628,31 @@ def _build_unit_review(
 ) -> UnitReview:
     rollup = _rollup_unit_events(unit_events)
 
-    # Status reflects the CURRENT run's outcome, not any historical deploy.
-    # A unit that merged in an earlier run but failed in this run is "failed".
-    # A unit in flight during the current run is "active".
-    # A unit that didn't run at all in this run falls back to deploy_log.
-    status: UnitStatus
-    if rollup["ran_in_run"]:
-        if rollup["merged_in_run"]:
-            status = "deployed"
-        elif rollup["failed_in_run"] or rollup["error"] or rollup["reject_verdict"]:
-            status = "failed"
-        else:
-            status = "active"
-    elif deploy_record is not None:
-        # Stale deploy from a prior run; this run did not touch the unit.
-        status = "deployed"
-    else:
-        status = "not_run"
+    # Determine unit status from rollup state and historical deploy record
+    status = _compute_unit_status(
+        ran_in_run=rollup["ran_in_run"],
+        merged_in_run=rollup["merged_in_run"],
+        failed_in_run=rollup["failed_in_run"],
+        has_error=bool(rollup["error"]),
+        has_reject_verdict=bool(rollup["reject_verdict"]),
+        deploy_record=deploy_record,
+    )
 
-    commit_sha: str | None = None
-    commit_message: str | None = None
-    commit_ts: str | None = None
-    diff_stat: DiffStat | None = None
-    landed_files: tuple[str, ...] = ()
-    full_diff: str | None = None
-    worker_note_mismatches: tuple[str, ...] = ()
-
+    # Fetch commit info for deployed units, or use empty placeholders
     if status == "deployed" and deploy_record is not None:
-        commit_sha = deploy_record.sha
-        commit_ts = deploy_record.ts
-        commit_message = _git_show_message(project_root, commit_sha)
-        diff_stat = _git_show_stat(project_root, commit_sha)
-        landed_files = _git_show_paths(project_root, commit_sha) or ()
-        worker_note_mismatches = _worker_note_mismatches(rollup["done_summary"], landed_files)
-        if include_full_diff:
-            full_diff = _git_show_full_diff(project_root, commit_sha)
+        commit_info = _fetch_deployed_commit_info(
+            project_root, deploy_record, rollup["done_summary"], include_full_diff
+        )
+    else:
+        commit_info = _empty_commit_info()
 
-    attempts = 1 + rollup["settlement_retries"] if unit_events else 0
+    # Compute derived metrics
+    attempts = _compute_attempts(unit_events, rollup["settlement_retries"])
     settlement = _settlement_result(status, rollup["settlement_retries"], rollup["reject_verdict"])
+    self_corrections = _compute_self_corrections(rollup["failed_tool_calls"], status)
+    last_thought = _compute_last_thought(rollup["thoughts"], status)
 
-    last_thought = rollup["thoughts"][-1] if rollup["thoughts"] else None
+    # Synthesize hint only for failed units
     hint = None
     if status == "failed":
         unit_iteration_budget = task_data.get("iteration_budget", iteration_budget)
@@ -586,33 +663,29 @@ def _build_unit_review(
             unit_iteration_budget,
         )
 
-    # Only count self-corrections on units that made it to deployed — a
-    # failed unit's failed tool calls were not recovered from.
-    self_corrections = rollup["failed_tool_calls"] if status == "deployed" else 0
-
     return UnitReview(
         unit=unit_id,
         summary=task_data.get("summary", ""),
         status=status,
         agent=task_data.get("agent", ""),
-        commit_sha=commit_sha,
-        commit_message=commit_message,
-        commit_ts=commit_ts,
-        diff_stat=diff_stat,
-        landed_files=landed_files,
-        full_diff=full_diff,
+        commit_sha=commit_info["commit_sha"],
+        commit_message=commit_info["commit_message"],
+        commit_ts=commit_info["commit_ts"],
+        diff_stat=commit_info["diff_stat"],
+        landed_files=commit_info["landed_files"],
+        full_diff=commit_info["full_diff"],
         duration_s=rollup["duration_s"],
         iterations=rollup["iterations"],
         attempts=attempts,
         settlement=settlement,
         done_summary=rollup["done_summary"],
-        worker_note_mismatches=worker_note_mismatches,
+        worker_note_mismatches=commit_info["worker_note_mismatches"],
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
         self_corrections=self_corrections,
         reject_verdict=rollup["reject_verdict"],
         error=rollup["error"],
-        last_thought=last_thought if status in ("failed", "active") else None,
+        last_thought=last_thought,
         hint=hint,
         integration_risk_level=rollup["integration_risk_level"],
         integration_risk_detected=rollup["integration_risk_detected"],
