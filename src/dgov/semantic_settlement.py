@@ -799,6 +799,97 @@ def _get_symbols_at_commit(
     return all_symbols
 
 
+def _filter_python_files(touched_files: tuple[str, ...]) -> list[str]:
+    """Filter touched files to only Python files."""
+    return [f for f in touched_files if f.endswith(".py")]
+
+
+def _validate_candidate_syntax(
+    candidate_path: Path, py_files: list[str]
+) -> tuple[list[Path], SyntaxConflict | None]:
+    """Validate syntax of candidate Python files.
+
+    Returns tuple of (valid_candidate_files, syntax_conflict).
+    If syntax_conflict is not None, validation failed.
+    """
+    candidate_files: list[Path] = []
+    for rel_path in py_files:
+        full_path = candidate_path / rel_path
+        if not full_path.exists():
+            continue
+        candidate_files.append(full_path)
+        try:
+            content = full_path.read_text(encoding="utf-8", errors="replace")
+            ast.parse(content)
+        except SyntaxError as exc:
+            conflict = SyntaxConflict(
+                file_path=str(rel_path),
+                line_number=exc.lineno,
+                column=exc.offset,
+                error_message=str(exc),
+                parser_used="python",
+            )
+            return ([], conflict)
+    return (candidate_files, None)
+
+
+def _extract_candidate_symbols(candidate_files: list[Path]) -> dict[str, _SymbolInfo]:
+    """Extract symbols from all candidate Python files."""
+    candidate_symbols: dict[str, _SymbolInfo] = {}
+    for file_path in candidate_files:
+        symbols = _analyze_python_file_symbols(file_path)
+        candidate_symbols.update(symbols)
+    return candidate_symbols
+
+
+def _load_comparison_symbols(
+    project_root: str,
+    task_base_sha: str,
+    task_commit_sha: str | None,
+    target_head_sha: str,
+    py_files: list[str],
+    candidate_symbols: dict[str, _SymbolInfo],
+) -> tuple[dict[str, _SymbolInfo], dict[str, _SymbolInfo], dict[str, _SymbolInfo]] | None:
+    """Load symbols from git commits for comparison.
+
+    Returns (task_base_symbols, task_commit_symbols, target_head_symbols) or None on error.
+    """
+    try:
+        task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, py_files)
+        target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, py_files)
+        if task_commit_sha:
+            task_commit_symbols = _get_symbols_at_commit(project_root, task_commit_sha, py_files)
+        else:
+            task_commit_symbols = candidate_symbols
+        return (task_base_symbols, task_commit_symbols, target_head_symbols)
+    except Exception as exc:
+        logger.warning("Failed to get symbols for comparison: %s", exc)
+        return None
+
+
+def _check_signature_drifts(
+    task_base_symbols: dict[str, _SymbolInfo],
+    target_head_symbols: dict[str, _SymbolInfo],
+    candidate_symbols: dict[str, _SymbolInfo],
+    touched_set: set[str],
+) -> list[SignatureDrift]:
+    """Check for signature drift against both base and target."""
+    drifts_from_base = _check_signature_drift(task_base_symbols, candidate_symbols, touched_set)
+    drifts_from_target = _check_signature_drift(
+        target_head_symbols, candidate_symbols, touched_set
+    )
+
+    # Combine unique drifts
+    all_drifts: dict[str, SignatureDrift] = {}
+    for d in drifts_from_base:
+        all_drifts[d.symbol_name] = d
+    for d in drifts_from_target:
+        if d.symbol_name not in all_drifts:
+            all_drifts[d.symbol_name] = d
+
+    return list(all_drifts.values())
+
+
 def run_python_semantic_gate(
     candidate_path: Path,
     project_root: str,
@@ -817,48 +908,9 @@ def run_python_semantic_gate(
 
     Returns a SemanticGateVerdict with findings.
     """
-    py_files = [f for f in touched_files if f.endswith(".py")]
-
+    # Phase 1: Filter to Python files
+    py_files = _filter_python_files(touched_files)
     if not py_files:
-        # Non-Python tasks bypass the semantic gate
-        return SemanticGateVerdict(
-            task_slug=task_slug,
-            gate_name="python_semantic",
-            passed=True,
-            checked_at=0.0,  # Will be filled by caller
-        )
-
-    # Check for syntax errors first (fail closed if we can't parse)
-    candidate_files: list[Path] = []
-    for rel_path in py_files:
-        full_path = candidate_path / rel_path
-        if full_path.exists():
-            candidate_files.append(full_path)
-            # Verify it parses
-            try:
-                content = full_path.read_text(encoding="utf-8", errors="replace")
-                ast.parse(content)
-            except SyntaxError as exc:
-                return SemanticGateVerdict(
-                    task_slug=task_slug,
-                    gate_name="syntax_check",
-                    passed=False,
-                    failure_class=FailureClass.SYNTAX_CONFLICT,
-                    evidence=(
-                        SyntaxConflict(
-                            file_path=str(rel_path),
-                            line_number=exc.lineno,
-                            column=exc.offset,
-                            error_message=str(exc),
-                            parser_used="python",
-                        ),
-                    ),
-                    error_message=f"Syntax error in {rel_path}: {exc}",
-                    checked_at=0.0,
-                )
-
-    if not candidate_files:
-        # No Python files to analyze
         return SemanticGateVerdict(
             task_slug=task_slug,
             gate_name="python_semantic",
@@ -866,13 +918,33 @@ def run_python_semantic_gate(
             checked_at=0.0,
         )
 
-    # Get symbols from candidate (integrated result)
-    candidate_symbols: dict[str, _SymbolInfo] = {}
-    for file_path in candidate_files:
-        symbols = _analyze_python_file_symbols(file_path)
-        candidate_symbols.update(symbols)
+    # Phase 2: Validate syntax (fail closed if we can't parse)
+    candidate_files, syntax_conflict = _validate_candidate_syntax(candidate_path, py_files)
+    if syntax_conflict:
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="syntax_check",
+            passed=False,
+            failure_class=FailureClass.SYNTAX_CONFLICT,
+            evidence=(syntax_conflict,),
+            error_message=(
+                f"Syntax error in {syntax_conflict.file_path}: {syntax_conflict.error_message}"
+            ),
+            checked_at=0.0,
+        )
 
-    # Check for duplicate definitions in integrated result
+    if not candidate_files:
+        return SemanticGateVerdict(
+            task_slug=task_slug,
+            gate_name="python_semantic",
+            passed=True,
+            checked_at=0.0,
+        )
+
+    # Phase 3: Extract symbols from candidate
+    candidate_symbols = _extract_candidate_symbols(candidate_files)
+
+    # Phase 4: Check for duplicate definitions
     duplicates = _check_duplicate_definitions(candidate_files)
     if duplicates:
         return SemanticGateVerdict(
@@ -885,23 +957,11 @@ def run_python_semantic_gate(
             checked_at=0.0,
         )
 
-    # Get symbols from task base, task commit, and target head for comparison
-    touched_set = set(touched_files)
-
-    try:
-        task_base_symbols = _get_symbols_at_commit(project_root, task_base_sha, list(py_files))
-        target_head_symbols = _get_symbols_at_commit(project_root, target_head_sha, list(py_files))
-        # If task_commit_sha provided, get symbols at task commit to detect actual changes
-        task_commit_symbols: dict[str, _SymbolInfo]
-        if task_commit_sha:
-            task_commit_symbols = _get_symbols_at_commit(
-                project_root, task_commit_sha, list(py_files)
-            )
-        else:
-            # Fallback: use candidate symbols (the integrated result contains task changes)
-            task_commit_symbols = candidate_symbols
-    except Exception as exc:
-        logger.warning("Failed to get symbols for comparison: %s", exc)
+    # Phase 5: Load symbols from git commits for comparison
+    comparison = _load_comparison_symbols(
+        project_root, task_base_sha, task_commit_sha, target_head_sha, py_files, candidate_symbols
+    )
+    if comparison is None:
         # Fail open on git errors - we still did our best analysis
         return SemanticGateVerdict(
             task_slug=task_slug,
@@ -909,8 +969,10 @@ def run_python_semantic_gate(
             passed=True,
             checked_at=0.0,
         )
+    task_base_symbols, task_commit_symbols, target_head_symbols = comparison
 
-    # Check for same-symbol edits (concurrent modification)
+    # Phase 6: Check for same-symbol edits (concurrent modification)
+    touched_set = set(touched_files)
     same_symbol_edits = _check_same_symbol_edit(
         task_base_symbols, task_commit_symbols, target_head_symbols, touched_set
     )
@@ -925,28 +987,18 @@ def run_python_semantic_gate(
             checked_at=0.0,
         )
 
-    # Check for signature drift
-    # Compare integrated result against both task base and target
-    drifts_from_base = _check_signature_drift(task_base_symbols, candidate_symbols, touched_set)
-    drifts_from_target = _check_signature_drift(
-        target_head_symbols, candidate_symbols, touched_set
+    # Phase 7: Check for signature drift
+    drifts = _check_signature_drifts(
+        task_base_symbols, target_head_symbols, candidate_symbols, touched_set
     )
-
-    # Combine unique drifts
-    all_drifts = {d.symbol_name: d for d in drifts_from_base}
-    for d in drifts_from_target:
-        if d.symbol_name not in all_drifts:
-            all_drifts[d.symbol_name] = d
-
-    if all_drifts:
-        drifts_list = list(all_drifts.values())
+    if drifts:
         return SemanticGateVerdict(
             task_slug=task_slug,
             gate_name="signature_drift",
             passed=False,
             failure_class=FailureClass.SIGNATURE_DRIFT,
-            evidence=tuple(drifts_list),
-            error_message=f"Signature drift detected: {[d.symbol_name for d in drifts_list]}",
+            evidence=tuple(drifts),
+            error_message=f"Signature drift detected: {[d.symbol_name for d in drifts]}",
             checked_at=0.0,
         )
 
