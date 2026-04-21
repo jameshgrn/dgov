@@ -308,12 +308,75 @@ _ROOT_FILE_SUFFIXES = {
     "yml",
 }
 
+# Change-indicating words that suggest the worker is claiming to have modified a file.
+# These must appear within a small window before the path to count as a change claim.
+_CHANGE_VERBS = frozenset({
+    "add",
+    "added",
+    "change",
+    "changed",
+    "create",
+    "created",
+    "edit",
+    "edited",
+    "fix",
+    "fixed",
+    "implement",
+    "implemented",
+    "modify",
+    "modified",
+    "remove",
+    "removed",
+    "rename",
+    "renamed",
+    "update",
+    "updated",
+    "write",
+    "wrote",
+})
+
+# Non-change indicators that suggest the path is mentioned in a verification/reference context.
+# These suppress change-claim detection when they appear immediately before the path.
+_NON_CHANGE_CONTEXT_WORDS = frozenset({
+    "verify",
+    "verified",
+    "check",
+    "checked",
+    "confirm",
+    "confirmed",
+    "ensure",
+    "ensured",
+    "test",
+    "tested",
+    "see",
+    "reference",
+    "import",
+    "from",
+    "using",
+    "via",
+    "in",
+    "at",
+    "by",
+    "read",
+    "reading",
+})
+
+# Window size for context detection: how many tokens before the path to check for change verbs.
+_CHANGE_CONTEXT_WINDOW = 4
+
 
 def _extract_path_mentions(text: str) -> tuple[str, ...]:
-    """Return ordered unique file-like path mentions from free text."""
+    """Return ordered unique file-like path mentions that appear in change-claim context.
+
+    Filters out paths that appear to be mentioned only in verification, reference,
+    or other non-change contexts. Only returns paths where a change-indicating word
+    appears within the preceding token window.
+    """
     seen: set[str] = set()
     paths: list[str] = []
-    for raw in _PATH_TOKEN_SPLIT_RE.split(text):
+    tokens = [t.strip() for t in _PATH_TOKEN_SPLIT_RE.split(text) if t.strip()]
+
+    for i, raw in enumerate(tokens):
         path = raw.strip().strip(".").strip("*_`<>")
         if path.startswith("./"):
             path = path[2:]
@@ -324,8 +387,28 @@ def _extract_path_mentions(text: str) -> tuple[str, ...]:
             continue
         if path in seen:
             continue
-        seen.add(path)
-        paths.append(path)
+
+        # Check for change-claim context in the preceding window.
+        start_idx = max(0, i - _CHANGE_CONTEXT_WINDOW)
+        preceding_tokens = tokens[start_idx:i]
+
+        # Check if any token is a change verb (case-insensitive).
+        has_change_verb = any(t.lower() in _CHANGE_VERBS for t in preceding_tokens)
+
+        # Check if the immediate context suggests non-change usage.
+        # If the token right before the path is a non-change word, suppress the change claim.
+        has_non_change_context = False
+        if preceding_tokens:
+            # Check the token immediately before the path.
+            immediate_prev = preceding_tokens[-1].lower()
+            if immediate_prev in _NON_CHANGE_CONTEXT_WORDS:
+                has_non_change_context = True
+
+        # Only include the path if it has a change verb and no non-change context override.
+        if has_change_verb and not has_non_change_context:
+            seen.add(path)
+            paths.append(path)
+
     return tuple(paths)
 
 

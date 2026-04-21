@@ -429,6 +429,104 @@ class TestBuildUnitReview:
             )
         assert review.worker_note_mismatches == ()
 
+    def test_deployed_unit_ignores_verification_only_file_mentions(self, tmp_path: Path):
+        """Paths mentioned only in verification context should not trigger mismatch warnings."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "Fixed the bug in src/dgov/core.py. "
+                "Verified that tests/test_core.py still passes.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: fix"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/core.py",),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        # Only src/dgov/core.py was claimed as changed; tests/test_core.py is verification-only.
+        assert review.worker_note_mismatches == ()
+
+    def test_deployed_unit_ignores_reference_only_file_mentions(self, tmp_path: Path):
+        """Paths mentioned only in reference context should not trigger mismatch warnings."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "Updated src/dgov/config.py. "
+                "See src/dgov/example.py for reference implementation.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: update"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/config.py",),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        # Only src/dgov/config.py was claimed as changed; src/dgov/example.py is reference-only.
+        assert review.worker_note_mismatches == ()
+
+    def test_deployed_unit_change_claim_without_verb_not_extracted(self, tmp_path: Path):
+        """Paths without change-indicating context should not be extracted as claims."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abcd1234", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(
+                10,
+                "t",
+                "done",
+                "The issue was in src/dgov/core.py. No changes needed to tests/test_core.py.",
+            ),
+            _lifecycle(11, "merge_completed", "t", "p", merge_sha="abcd1234"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: fix"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch(
+                "dgov.plan_review._git_show_paths",
+                return_value=("src/dgov/core.py",),
+            ),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "x"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        # Neither path has a change verb, so no mismatch warnings.
+        assert review.worker_note_mismatches == ()
+
     def test_failed_unit_synthesizes_hint(self, tmp_path: Path):
         events = [
             _lifecycle(10, "dag_task_dispatched", "t", "p"),
