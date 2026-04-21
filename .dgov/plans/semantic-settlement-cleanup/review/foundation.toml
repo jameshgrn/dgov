@@ -14,7 +14,7 @@ Verify:
 - Confirm whether the cleanup reduced complexity without weakening the current contract.
 """
 depends_on = [
-  "semantic/python-gate.reduce-python-gate-complexity",
+  "semantic/gate-flow.reduce-python-gate-orchestration",
   "runtime/settlement.reduce-runner-settlement-complexity",
   "review/surfaces.reduce-review-hotspots",
 ]

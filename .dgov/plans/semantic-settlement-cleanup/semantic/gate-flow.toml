@@ -1,0 +1,29 @@
+[tasks.reduce-python-gate-orchestration]
+summary = "Reduce semantic gate orchestration complexity after symbol-loading cleanup."
+depends_on = ["semantic/python-gate.reduce-python-gate-complexity"]
+prompt = """
+Orient:
+- Read `src/dgov/semantic_settlement.py` first.
+- Read `tests/test_semantic_settlement.py`, `tests/test_runner.py`, and `tests/test_integration.py`.
+- The current branch is functionally correct but structurally degraded. `run_python_semantic_gate(...)` remains a hotspot after symbol-loading cleanup.
+- Preserve behavior: deterministic AST-based Python checks for `same_symbol_edit`, `duplicate_definition`, and `signature_drift` must remain semantically the same.
+- Do not change persistence schema, CLI output, or candidate replay behavior in this task.
+
+Edit:
+1. In `src/dgov/semantic_settlement.py`, reduce branching in `run_python_semantic_gate(...)` by extracting small explicit helpers for filter, syntax validation, duplicate detection, same-symbol edit detection, and signature drift evaluation.
+2. Keep the implementation deterministic and inspectable. Do not add rewrite/synthesis behavior, dynamic plugins, or new semantic findings.
+3. If this cleanup exposes a deterministic false positive in the existing gate behavior, narrow that false positive explicitly and add focused coverage rather than leaving the worker in a verification loop.
+4. Update tests only where needed to keep coverage readable and behavior locked.
+5. Stop when the gate orchestration reads as straight-line logic and the structural regression is reduced.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_semantic_settlement.py tests/test_boundaries.py`
+- `uv run pytest -q -m unit tests/test_runner.py`
+- `uv run pytest -q -m integration tests/test_integration.py`
+- `uv run ruff check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py tests/test_runner.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run ty check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py tests/test_runner.py tests/test_integration.py tests/test_boundaries.py`
+- `uv run sentrux gate .`
+"""
+commit_message = "Reduce Python gate orchestration complexity"
+files.edit = ["src/dgov/semantic_settlement.py", "tests/test_semantic_settlement.py", "tests/test_runner.py", "tests/test_integration.py"]
+files.read = ["src/dgov/runner.py", "tests/test_boundaries.py"]

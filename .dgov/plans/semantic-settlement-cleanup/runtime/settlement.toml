@@ -1,6 +1,6 @@
 [tasks.reduce-runner-settlement-complexity]
 summary = "Simplify settlement flow in runner after semantic-gate cleanup."
-depends_on = ["semantic/python-gate.reduce-python-gate-complexity"]
+depends_on = ["semantic/gate-flow.reduce-python-gate-orchestration"]
 prompt = """
 Orient:
 - Read `src/dgov/runner.py`, `src/dgov/worktree.py`, and `src/dgov/semantic_settlement.py`.
