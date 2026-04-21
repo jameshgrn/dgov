@@ -465,49 +465,76 @@ def _extract_function_signature(node: ast.FunctionDef | ast.AsyncFunctionDef) ->
     return sig
 
 
-def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
-    """Extract symbols from a Python file.
+def _load_file_at_commit(project_root: str, commit_sha: str, rel_path: str) -> str | None:
+    """Load file content from a specific git commit.
 
-    Returns a dict mapping symbol name to SymbolInfo.
-    Returns empty dict if file cannot be parsed.
+    Returns None if file cannot be retrieved.
+    """
+    result = subprocess.run(
+        ["git", "show", f"{commit_sha}:{rel_path}"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        logger.debug("Could not get %s at commit %s", rel_path, commit_sha)
+        return None
+    return result.stdout
+
+
+def _parse_python_source(source: str, source_hint: str) -> ast.Module | None:
+    """Parse Python source code into an AST.
+
+    Returns None on syntax errors. source_hint is used for logging only.
     """
     try:
-        content = file_path.read_text(encoding="utf-8", errors="replace")
-        tree = ast.parse(content)
-    except (SyntaxError, OSError, UnicodeDecodeError) as exc:
-        logger.debug("Failed to parse %s: %s", file_path, exc)
-        return {}
+        return ast.parse(source)
+    except SyntaxError:
+        logger.debug("Syntax error in %s", source_hint)
+        return None
 
+
+def _is_method_node(node: ast.AST, class_nodes: list[ast.ClassDef]) -> bool:
+    """Check if a function node is a method of any class in the given list."""
+    return any(node in cls.body for cls in class_nodes)
+
+
+def _extract_module_symbols(tree: ast.Module, file_path: str) -> dict[str, _SymbolInfo]:
+    """Extract symbols from a parsed Python module AST.
+
+    Returns a dict mapping symbol name to _SymbolInfo.
+    """
     symbols: dict[str, _SymbolInfo] = {}
 
-    # First pass: find top-level classes to identify methods
-    top_level_classes: dict[str, ast.ClassDef] = {}
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef):
-            top_level_classes[node.name] = node
+    # Collect all class definitions for method detection
+    class_nodes = [node for node in tree.body if isinstance(node, ast.ClassDef)]
 
-    # Second pass: extract all symbols
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # Top-level function
+            # Skip methods (handled via their class)
+            if _is_method_node(node, class_nodes):
+                continue
+
             sig = _extract_function_signature(node)
             symbols[node.name] = _SymbolInfo(
                 name=node.name,
                 symbol_type="function",
-                file_path=str(file_path),
+                file_path=file_path,
                 line_start=node.lineno,
                 line_end=getattr(node, "end_lineno", node.lineno),
                 signature=sig,
             )
+
         elif isinstance(node, ast.ClassDef):
             symbols[node.name] = _SymbolInfo(
                 name=node.name,
                 symbol_type="class",
-                file_path=str(file_path),
+                file_path=file_path,
                 line_start=node.lineno,
                 line_end=getattr(node, "end_lineno", node.lineno),
                 signature=None,
             )
+
             # Extract methods from class body
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -516,13 +543,31 @@ def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
                     symbols[method_name] = _SymbolInfo(
                         name=method_name,
                         symbol_type="method",
-                        file_path=str(file_path),
+                        file_path=file_path,
                         line_start=item.lineno,
                         line_end=getattr(item, "end_lineno", item.lineno),
                         signature=sig,
                     )
 
     return symbols
+
+
+def _analyze_python_file_symbols(file_path: Path) -> dict[str, _SymbolInfo]:
+    """Extract symbols from a Python file.
+
+    Returns a dict mapping symbol name to SymbolInfo.
+    Returns empty dict if file cannot be parsed.
+    """
+    try:
+        content = file_path.read_text(encoding="utf-8", errors="replace")
+        tree = _parse_python_source(content, str(file_path))
+        if tree is None:
+            return {}
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("Failed to read %s: %s", file_path, exc)
+        return {}
+
+    return _extract_module_symbols(tree, str(file_path))
 
 
 def _check_same_symbol_edit(
@@ -739,79 +784,17 @@ def _get_symbols_at_commit(
         if not rel_path.endswith(".py"):
             continue
 
-        # Get file content at commit
-        result = subprocess.run(
-            ["git", "show", f"{commit_sha}:{rel_path}"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-        )
-
-        if result.returncode != 0:
-            logger.debug("Could not get %s at commit %s", rel_path, commit_sha)
+        content = _load_file_at_commit(project_root, commit_sha, rel_path)
+        if content is None:
             continue
 
-        try:
-            tree = ast.parse(result.stdout)
-        except SyntaxError:
-            logger.debug("Syntax error in %s at commit %s", rel_path, commit_sha)
+        source_hint = f"{rel_path} at commit {commit_sha}"
+        tree = _parse_python_source(content, source_hint)
+        if tree is None:
             continue
 
-        # Create a temporary path for analysis
-        temp_path = Path(rel_path)
-
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                # Skip methods (handled via class)
-                if any(isinstance(p, ast.ClassDef) for p in ast.walk(tree) if p != node):
-                    # Check if this is actually a method by seeing if parent is class
-                    # Simplified: skip if there's a class with this function in its body
-                    is_method = False
-                    for potential_class in ast.walk(tree):
-                        if isinstance(potential_class, ast.ClassDef):
-                            for item in potential_class.body:
-                                if item is node:
-                                    is_method = True
-                                    break
-                        if is_method:
-                            break
-                    if is_method:
-                        continue
-
-                sig = _extract_function_signature(node)
-                symbols = _SymbolInfo(
-                    name=node.name,
-                    symbol_type="function",
-                    file_path=str(temp_path),
-                    line_start=node.lineno,
-                    line_end=getattr(node, "end_lineno", node.lineno),
-                    signature=sig,
-                )
-                all_symbols[node.name] = symbols
-
-            elif isinstance(node, ast.ClassDef):
-                all_symbols[node.name] = _SymbolInfo(
-                    name=node.name,
-                    symbol_type="class",
-                    file_path=str(temp_path),
-                    line_start=node.lineno,
-                    line_end=getattr(node, "end_lineno", node.lineno),
-                    signature=None,
-                )
-
-                # Extract methods
-                for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        sig = _extract_function_signature(item)
-                        method_name = f"{node.name}.{item.name}"
-                        all_symbols[method_name] = _SymbolInfo(
-                            name=method_name,
-                            symbol_type="method",
-                            file_path=str(temp_path),
-                            line_start=item.lineno,
-                            line_end=getattr(item, "end_lineno", item.lineno),
-                            signature=sig,
-                        )
+        file_symbols = _extract_module_symbols(tree, rel_path)
+        all_symbols.update(file_symbols)
 
     return all_symbols
 
