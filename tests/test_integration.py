@@ -834,3 +834,142 @@ class TestSemanticSettlementIntegration:
         events = read_events(session_root, plan_name=dag.name)
         risk_events = [e for e in events if e["event"] == "integration_risk_scored"]
         assert len(risk_events) == 0
+
+
+class TestIntegrationCandidate:
+    """Integration tests for integration candidate validation with real git."""
+
+    def test_clean_replay_lands_successfully(self, git_repo, monkeypatch):
+        """When task replay is clean against HEAD, it lands successfully."""
+        from dgov.persistence import read_events
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+        # Use real validation
+
+        dag = _dag({"clean-task": _task("clean-task")})
+        session_root = str(git_repo)
+
+        runner = EventDagRunner(dag, session_root=session_root)
+        results = asyncio.run(runner.run())
+
+        assert results["clean-task"] == "merged"
+        assert (git_repo / "clean-task.txt").exists()
+
+        # Verify integration_candidate_passed was emitted
+        events = read_events(session_root, plan_name=dag.name)
+        passed_events = [e for e in events if e["event"] == "integration_candidate_passed"]
+        assert len(passed_events) == 1
+        assert passed_events[0]["task_slug"] == "clean-task"
+
+    def test_moved_head_replay_succeeds(self, git_repo, monkeypatch):
+        """Task can replay cleanly even when HEAD moved forward."""
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+
+        dag = _dag({"task-a": _task("task-a")})
+        session_root = str(git_repo)
+
+        # First task runs and merges
+        runner_a = EventDagRunner(dag, session_root=session_root)
+        results_a = asyncio.run(runner_a.run())
+        assert results_a["task-a"] == "merged"
+
+        # Now run another task - its integration candidate should replay on top of task-a
+        dag_b = _dag({"task-b": _task("task-b")})
+        runner_b = EventDagRunner(dag_b, session_root=session_root)
+        results_b = asyncio.run(runner_b.run())
+
+        assert results_b["task-b"] == "merged"
+        assert (git_repo / "task-a.txt").exists()
+        assert (git_repo / "task-b.txt").exists()
+
+    def test_candidate_rejection_preserves_worktree(self, git_repo, monkeypatch):
+        """When integration candidate fails, original worktree is preserved."""
+
+        from dgov.persistence import read_events
+        from dgov.worktree import _worktrees_dir
+
+        # Create task worktree that creates a file, while main also creates the same file
+        async def _conflict_worker(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            # Write a file in the worktree
+            (worktree_path / "new_file.py").write_text("x = 1\n")
+            on_exit(task_slug, pane_slug, 0, "")
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _conflict_worker)
+
+        # Task claims to create new_file.py
+        dag = _dag({
+            "conflict-task": DagTaskSpec(
+                slug="conflict-task",
+                summary="Task that creates file",
+                prompt="Create file",
+                commit_message="feat: add file",
+                agent="mock",
+                files=DagFileSpec(create=("new_file.py",)),
+            )
+        })
+        session_root = str(git_repo)
+
+        # Create the same file on main AFTER the task worktree is created
+        # But before the integration candidate is validated
+        # We'll simulate this by mocking the integration candidate creation to fail
+        def _failing_candidate(project_root, task_wt, candidate_slug):
+            from dgov.worktree import IntegrationCandidateResult
+
+            return IntegrationCandidateResult(
+                passed=False,
+                error="Simulated: file exists on main causing conflict",
+            )
+
+        monkeypatch.setattr("dgov.runner.create_integration_candidate", _failing_candidate)
+
+        runner = EventDagRunner(dag, session_root=session_root)
+        results = asyncio.run(runner.run())
+
+        # Task should fail due to integration candidate conflict
+        assert results["conflict-task"] == "failed"
+
+        # Verify integration_candidate_failed was emitted (may be 2 due to retry)
+        events = read_events(session_root, plan_name=dag.name)
+        failed_events = [e for e in events if e["event"] == "integration_candidate_failed"]
+        assert len(failed_events) >= 1  # At least one failure event
+        assert all(e["task_slug"] == "conflict-task" for e in failed_events)
+
+        # Verify worktree was preserved for inspection
+        wt_dir = _worktrees_dir(session_root)
+        # The worktree should still exist (not cleaned up on failure)
+        # There may be multiple due to settlement retry
+        preserved_wts = list(wt_dir.glob("conflict-task*")) if wt_dir.exists() else []
+        assert len(preserved_wts) >= 1
+
+    def test_candidate_passed_before_merge_event(self, git_repo, monkeypatch):
+        """integration_candidate_passed event precedes merge_completed."""
+        from dgov.persistence import read_events
+
+        monkeypatch.setattr("dgov.runner.run_headless_worker", _mock_worker_ok)
+
+        dag = _dag({"ordered-task": _task("ordered-task")})
+        session_root = str(git_repo)
+
+        runner = EventDagRunner(dag, session_root=session_root)
+        results = asyncio.run(runner.run())
+
+        assert results["ordered-task"] == "merged"
+
+        # Verify event order: candidate_passed before merge_completed
+        events = read_events(session_root, plan_name=dag.name)
+        event_order = [e["event"] for e in events]
+
+        if "integration_candidate_passed" in event_order and "merge_completed" in event_order:
+            candidate_idx = event_order.index("integration_candidate_passed")
+            merge_idx = event_order.index("merge_completed")
+            assert candidate_idx < merge_idx, "candidate_passed should precede merge_completed"

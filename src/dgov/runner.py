@@ -43,9 +43,13 @@ from dgov.persistence import (
 )
 from dgov.persistence.schema import TaskState, WorkerTask
 from dgov.semantic_settlement import (
+    FailureClass,
+    IntegrationCandidateVerdict,
     IntegrationRiskRecord,
     RiskLevel,
     SymbolOverlap,
+    emit_integration_candidate_failed,
+    emit_integration_candidate_passed,
     emit_integration_overlap_detected,
     emit_integration_risk_scored,
 )
@@ -58,9 +62,11 @@ from dgov.types import WorkerExit, Worktree
 from dgov.workers.headless import run_headless_worker
 from dgov.worktree import (
     commit_in_worktree,
+    create_integration_candidate,
     create_worktree,
     merge_worktree,
     prepare_worktree,
+    remove_integration_candidate,
     remove_worktree,
 )
 
@@ -946,6 +952,101 @@ class EventDagRunner:
 
         if not gate_result.passed:
             return gate_result.error, True
+
+        # Integration candidate validation: test whether task lands cleanly against current HEAD
+        candidate_slug = f"{action.task_slug}-candidate"
+        candidate_result = await loop.run_in_executor(
+            self._executor,
+            create_integration_candidate,
+            self.session_root,
+            wt,
+            candidate_slug,
+        )
+
+        if not candidate_result.passed:
+            # Replay failed - emit event and reject task
+            # (preserve original worktree for inspection)
+            verdict = IntegrationCandidateVerdict(
+                task_slug=action.task_slug,
+                candidate_sha="",
+                target_head_sha="",
+                passed=False,
+                failure_class=FailureClass.TEXT_CONFLICT,
+                error_message=candidate_result.error or "Failed to create integration candidate",
+                validated_at=time.time(),
+            )
+            emit_integration_candidate_failed(
+                emit_event,
+                self.session_root,
+                self.dag.name,
+                verdict,
+                pane=action.pane_slug,
+            )
+            return candidate_result.error or "Integration candidate replay failed", True
+
+        # Validate the integrated candidate using same gates as isolated validation
+        if candidate_result.candidate_path is not None:
+            candidate_gate_result = await loop.run_in_executor(
+                self._executor,
+                validate_sandbox,
+                candidate_result.candidate_path,
+                candidate_result.candidate_sha,
+                self.session_root,
+                task_config,
+            )
+
+            if not candidate_gate_result.passed:
+                # Candidate validation failed - clean up candidate, emit event, reject task
+                if candidate_result.candidate_path is not None:
+                    await loop.run_in_executor(
+                        self._executor,
+                        remove_integration_candidate,
+                        self.session_root,
+                        candidate_result.candidate_path,
+                    )
+                verdict = IntegrationCandidateVerdict(
+                    task_slug=action.task_slug,
+                    candidate_sha=candidate_result.candidate_sha,
+                    target_head_sha="",
+                    passed=False,
+                    failure_class=FailureClass.BEHAVIORAL_MISMATCH,
+                    error_message=candidate_gate_result.error
+                    or "Integrated candidate failed validation gates",
+                    validated_at=time.time(),
+                )
+                emit_integration_candidate_failed(
+                    emit_event,
+                    self.session_root,
+                    self.dag.name,
+                    verdict,
+                    pane=action.pane_slug,
+                )
+                return (
+                    candidate_gate_result.error or "Integrated candidate validation failed",
+                    True,
+                )
+
+            # Candidate passed - clean up and emit success event
+            await loop.run_in_executor(
+                self._executor,
+                remove_integration_candidate,
+                self.session_root,
+                candidate_result.candidate_path,
+            )
+            pass_verdict = IntegrationCandidateVerdict(
+                task_slug=action.task_slug,
+                candidate_sha=candidate_result.candidate_sha,
+                target_head_sha="",
+                passed=True,
+                validated_at=time.time(),
+            )
+            emit_integration_candidate_passed(
+                emit_event,
+                self.session_root,
+                self.dag.name,
+                pass_verdict,
+                pane=action.pane_slug,
+            )
 
         merge_sha = await loop.run_in_executor(
             self._executor, merge_worktree, self.session_root, wt

@@ -99,6 +99,29 @@ def _mock_gate_fail(wt_path, base_commit, project_root, config=None):
     return GateResult(passed=False, error="lint failure")
 
 
+def _mock_integration_candidate_pass(project_root, task_wt, candidate_slug):
+    """Mock successful integration candidate creation."""
+    from pathlib import Path
+
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=True,
+        candidate_path=Path(f"/tmp/{candidate_slug}"),
+        candidate_sha="candidate123abc",
+    )
+
+
+def _mock_integration_candidate_fail(project_root, task_wt, candidate_slug):
+    """Mock failed integration candidate creation."""
+    from dgov.worktree import IntegrationCandidateResult
+
+    return IntegrationCandidateResult(
+        passed=False,
+        error="Replay failed: merge conflict detected",
+    )
+
+
 # Patch targets — runner imports at top level
 _P_CREATE_WT = "dgov.runner.create_worktree"
 _P_MERGE_WT = "dgov.runner.merge_worktree"
@@ -113,6 +136,8 @@ _P_HEADLESS = "dgov.runner.run_headless_worker"
 # review_sandbox imported at top level in runner
 _P_REVIEW = "dgov.runner.review_sandbox"
 _P_DEPLOY_APPEND = "dgov.deploy_log.append"
+_P_CREATE_CANDIDATE = "dgov.runner.create_integration_candidate"
+_P_REMOVE_CANDIDATE = "dgov.runner.remove_integration_candidate"
 
 
 async def _fake_worker_success(
@@ -177,6 +202,7 @@ def _io_patches(
     validate=_mock_gate_pass,
     create_wt=_mock_create_worktree,
     merge_wt=None,
+    candidate=_mock_integration_candidate_pass,
 ):
     """Return a context manager that patches all I/O boundaries."""
     import contextlib
@@ -195,6 +221,8 @@ def _io_patches(
             patch(_P_EMIT_EVENT),
             patch(_P_HEADLESS, side_effect=headless),
             patch(_P_REVIEW, side_effect=review),
+            patch(_P_CREATE_CANDIDATE, side_effect=candidate),
+            patch(_P_REMOVE_CANDIDATE),
         ):
             yield
 
@@ -750,3 +778,107 @@ class TestRetryScopeFailClosed:
         assert captured.get("project_root") == "/tmp/test-project"
         assert captured.get("task_slug") == "a"
         assert captured.get("pane_slug") is not None  # Each dispatch gets a pane slug
+
+
+class TestIntegrationCandidate:
+    """Tests for integration candidate validation before merge."""
+
+    def test_integration_candidate_pass_emits_event(self):
+        """When candidate passes, integration_candidate_passed event is emitted."""
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            assert results["a"] == "merged"
+
+            # Verify integration_candidate_passed was emitted
+            passed_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_passed"
+            ]
+            assert len(passed_calls) == 1
+            # Verify payload has expected fields
+            kwargs = passed_calls[0].kwargs
+            assert kwargs.get("task_slug") == "a"
+            assert "candidate_sha" in kwargs
+
+    def test_integration_candidate_fail_rejects_task(self):
+        """When replay fails, task is rejected with integration_candidate_failed."""
+        with (
+            _io_patches(candidate=_mock_integration_candidate_fail) as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail due to candidate failure
+            assert results["a"] == "failed"
+
+            # Verify integration_candidate_failed was emitted
+            failed_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_failed"
+            ]
+            assert len(failed_calls) == 1
+            # Verify error details in payload
+            kwargs = failed_calls[0].kwargs
+            assert kwargs.get("task_slug") == "a"
+            assert "failure_class" in kwargs
+
+    def test_original_worktree_preserved_on_candidate_failure(self):
+        """When candidate fails, original task worktree is kept for inspection."""
+        with _io_patches(candidate=_mock_integration_candidate_fail) as _:
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+
+            # Original worktree should be in rejected_worktrees, not cleaned up
+            assert "a" in runner._rejected_worktrees
+
+    def test_candidate_validation_gate_failure_rejects(self):
+        """If candidate passes replay but fails validation gates, reject."""
+        # First call is isolated validation (pass), second is candidate validation (fail)
+        call_count = {"count": 0}
+
+        def _validate_with_candidate_fail(wt_path, base_commit, project_root, config=None):
+            from dgov.settlement import GateResult
+
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                return GateResult(passed=True)  # Isolated validation passes
+            return GateResult(passed=False, error="Candidate gate failed")
+
+        with (
+            _io_patches(validate=_validate_with_candidate_fail) as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            # Task should fail due to candidate gate failure
+            assert results["a"] == "failed"
+
+            # Verify both candidate creation and cleanup were called
+            # and integration_candidate_failed was emitted
+            failed_calls = [
+                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_failed"
+            ]
+            assert len(failed_calls) == 1
+
+    def test_researcher_task_skips_integration_candidate(self):
+        """Read-only researcher tasks don't need integration candidate validation."""
+        task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Research something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(),
+        )
+        dag = _dag({"research": task})
+
+        with _io_patches() as _, patch(_P_CREATE_CANDIDATE) as mock_candidate:
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+            assert results["research"] == "merged"
+            # Integration candidate should not be created for researcher tasks
+            mock_candidate.assert_not_called()

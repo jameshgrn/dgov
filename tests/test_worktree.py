@@ -315,3 +315,157 @@ class TestPruneOrphans:
 
         assert result["worktrees"] == 1
         assert orphan.exists()
+
+
+class TestIntegrationCandidate:
+    """Tests for integration candidate creation and validation."""
+
+    def test_create_integration_candidate_success(self, git_repo):
+        """Successfully replay task commits onto current HEAD."""
+        from dgov.worktree import (
+            create_integration_candidate,
+            create_worktree,
+            remove_worktree,
+        )
+
+        # Create task worktree with a commit
+        task_wt = create_worktree(git_repo, "task-a")
+        (task_wt.path / "hello.py").write_text("print('hello')\n")
+        commit_in_worktree(task_wt, "add hello.py", file_claims=("hello.py",))
+
+        # Create integration candidate
+        result = create_integration_candidate(git_repo, task_wt, "task-a-candidate")
+
+        assert result.passed is True
+        assert result.candidate_path is not None
+        assert result.candidate_path.exists()
+        assert len(result.candidate_sha) == 40
+        # File should be replayed onto candidate
+        assert (result.candidate_path / "hello.py").exists()
+
+        # Clean up
+        from dgov.worktree import remove_integration_candidate
+
+        remove_integration_candidate(git_repo, result.candidate_path)
+        remove_worktree(git_repo, task_wt)
+
+    def test_create_integration_candidate_no_commits(self, git_repo):
+        """Fail gracefully when task worktree has no commits to replay."""
+        from dgov.worktree import create_integration_candidate, create_worktree
+
+        # Create task worktree but don't commit anything
+        task_wt = create_worktree(git_repo, "task-empty")
+
+        result = create_integration_candidate(git_repo, task_wt, "task-empty-candidate")
+
+        assert result.passed is False
+        assert result.error is not None
+        assert "No commits to replay" in result.error
+
+        # Clean up
+        from dgov.worktree import remove_worktree
+
+        remove_worktree(git_repo, task_wt)
+
+    def test_create_integration_candidate_leaves_repo_clean_on_failure(self, git_repo):
+        """If replay fails, main repo stays clean."""
+        from dgov.worktree import (
+            create_integration_candidate,
+            create_worktree,
+            remove_worktree,
+        )
+
+        # Create initial task worktree with a commit
+        task_wt = create_worktree(git_repo, "task-base")
+        (task_wt.path / "base.py").write_text("x = 1\n")
+        commit_in_worktree(task_wt, "add base", file_claims=("base.py",))
+        merge_worktree(git_repo, task_wt)
+
+        # Create second task worktree that modifies the same file
+        task_wt2 = create_worktree(git_repo, "task-conflict")
+        (task_wt2.path / "base.py").write_text("x = 2\n")  # Different content
+        commit_in_worktree(task_wt2, "modify base", file_claims=("base.py",))
+
+        # Meanwhile, modify the file on main to create a conflict
+        (Path(git_repo) / "base.py").write_text("x = 3\n")
+        env = {**os.environ, **_GIT_ENV}
+        subprocess.run(
+            ["git", "add", "base.py"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "change on main"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+
+        # Now try to create integration candidate - should fail
+        result = create_integration_candidate(git_repo, task_wt2, "task-conflict-candidate")
+
+        assert result.passed is False
+        assert result.error is not None
+        assert "Failed to replay" in result.error
+
+        # Verify main repo is clean (no partial cherry-pick state)
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=git_repo,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert status.stdout.strip() == ""
+
+        # Clean up
+        remove_worktree(git_repo, task_wt2)
+
+    def test_create_integration_candidate_at_current_head(self, git_repo):
+        """Candidate is rooted at current HEAD, not task base."""
+        from dgov.worktree import (
+            create_integration_candidate,
+            create_worktree,
+            remove_worktree,
+        )
+
+        # Create task worktree
+        task_wt = create_worktree(git_repo, "task-head")
+        (task_wt.path / "task.py").write_text("# task code\n")
+        commit_in_worktree(task_wt, "add task code", file_claims=("task.py",))
+
+        # Add new commit on main while task is working
+        env = {**os.environ, **_GIT_ENV}
+        (Path(git_repo) / "main.py").write_text("# main code\n")
+        subprocess.run(
+            ["git", "add", "main.py"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "progress on main"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+
+        # Create integration candidate
+        result = create_integration_candidate(git_repo, task_wt, "task-head-candidate")
+
+        assert result.passed is True
+        assert result.candidate_path is not None
+        # Candidate should have both main.py (from HEAD) and task.py (from replay)
+        assert (result.candidate_path / "main.py").exists()
+        assert (result.candidate_path / "task.py").exists()
+
+        # Clean up
+        from dgov.worktree import remove_integration_candidate
+
+        remove_integration_candidate(git_repo, result.candidate_path)
+        remove_worktree(git_repo, task_wt)

@@ -8,6 +8,7 @@ Follows Lacustrine Pillars:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -263,6 +264,180 @@ def merge_worktree(project_root: str, wt: Worktree) -> str:
         text=True,
     )
     return res.stdout.strip()
+
+
+class IntegrationCandidateResult:
+    """Outcome of creating and validating an integration candidate."""
+
+    def __init__(
+        self,
+        passed: bool,
+        candidate_path: Path | None = None,
+        candidate_sha: str = "",
+        error: str | None = None,
+    ) -> None:
+        self.passed = passed
+        self.candidate_path = candidate_path
+        self.candidate_sha = candidate_sha
+        self.error = error
+
+
+def create_integration_candidate(
+    project_root: str,
+    task_wt: Worktree,
+    candidate_slug: str,
+) -> IntegrationCandidateResult:
+    """Materialize an ephemeral integration candidate from current HEAD and replay task commit.
+
+    Creates a temporary worktree at current session-root HEAD, then attempts to
+    cherry-pick the task's commits onto it. If replay fails, the main repo stays
+    clean (cherry-pick is aborted) and the temporary worktree is removed.
+
+    Returns an IntegrationCandidateResult indicating success or failure.
+    On failure, any created resources are cleaned up before returning.
+    """
+    git_env = _git_env(project_root)
+    candidate_wt: Worktree | None = None
+
+    try:
+        # Get current HEAD sha
+        head_res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_root,
+            env=git_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        target_head = head_res.stdout.strip()
+
+        # Create ephemeral worktree at current HEAD
+        candidate_wt = create_worktree(project_root, candidate_slug, base_ref=target_head)
+
+        # Get commits to replay from task worktree
+        commits_res = subprocess.run(
+            ["git", "rev-list", "--reverse", f"{task_wt.commit}..{task_wt.branch}"],
+            cwd=project_root,
+            env=git_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        commits = [c for c in commits_res.stdout.strip().split("\n") if c]
+
+        if not commits:
+            # No commits to replay - task worktree has no changes
+            # Clean up and report failure
+            remove_worktree(project_root, candidate_wt)
+            return IntegrationCandidateResult(
+                passed=False,
+                error="No commits to replay from task worktree",
+            )
+
+        # Replay each commit onto the candidate
+        for commit_sha in commits:
+            pick_res = subprocess.run(
+                ["git", "cherry-pick", commit_sha],
+                cwd=candidate_wt.path,
+                env=_git_env(candidate_wt.path),
+                capture_output=True,
+                text=True,
+            )
+            if pick_res.returncode != 0:
+                # Replay failed - abort cherry-pick and clean up
+                subprocess.run(
+                    ["git", "cherry-pick", "--abort"],
+                    cwd=candidate_wt.path,
+                    env=_git_env(candidate_wt.path),
+                    capture_output=True,
+                )
+                remove_worktree(project_root, candidate_wt)
+                return IntegrationCandidateResult(
+                    passed=False,
+                    error=f"Failed to replay commit {commit_sha[:8]} onto current HEAD: "
+                    f"{pick_res.stderr}",
+                )
+
+        # Get the final SHA of the candidate
+        final_res = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=candidate_wt.path,
+            env=_git_env(candidate_wt.path),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        candidate_sha = final_res.stdout.strip()
+
+        return IntegrationCandidateResult(
+            passed=True,
+            candidate_path=candidate_wt.path,
+            candidate_sha=candidate_sha,
+        )
+
+    except subprocess.CalledProcessError as exc:
+        # Clean up if we created a worktree
+        if candidate_wt is not None:
+            with contextlib.suppress(Exception):
+                remove_worktree(project_root, candidate_wt)
+        return IntegrationCandidateResult(
+            passed=False,
+            error=f"Git operation failed: {exc.stderr if hasattr(exc, 'stderr') else str(exc)}",
+        )
+    except Exception as exc:
+        # Clean up if we created a worktree
+        if candidate_wt is not None:
+            with contextlib.suppress(Exception):
+                remove_worktree(project_root, candidate_wt)
+        return IntegrationCandidateResult(
+            passed=False,
+            error=f"Unexpected error creating integration candidate: {exc}",
+        )
+
+
+def remove_integration_candidate(project_root: str, candidate_path: Path) -> None:
+    """Remove an ephemeral integration candidate worktree.
+
+    Uses the same cleanup logic as regular worktrees but handles the
+    ephemeral candidate naming convention.
+    """
+    git_env = _git_env(project_root)
+    # Find branch from worktree listing
+    res = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+        text=True,
+    )
+    branch_name: str | None = None
+    current_path: str | None = None
+    for line in res.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree ") :].strip()
+        elif (
+            line.startswith("branch ")
+            and current_path
+            and Path(current_path).resolve() == candidate_path.resolve()
+        ):
+            branch_name = line[len("branch ") :].strip().removeprefix("refs/heads/")
+            break
+
+    # Remove worktree directory
+    subprocess.run(
+        ["git", "worktree", "remove", "-f", str(candidate_path)],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+    )
+    # Remove branch if we found it
+    if branch_name:
+        subprocess.run(
+            ["git", "branch", "-D", branch_name],
+            cwd=project_root,
+            env=git_env,
+            capture_output=True,
+        )
 
 
 def remove_worktree(project_root: str, wt: Worktree) -> None:
