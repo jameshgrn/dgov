@@ -797,3 +797,168 @@ class TestDiffStatSummary:
 
     def test_plural_files(self):
         assert DiffStat(files_changed=3, insertions=40, deletions=5).summary() == "3 files, +40 -5"
+
+
+# ---------------------------------------------------------------------------
+# Integration risk telemetry (semantic settlement events)
+# ---------------------------------------------------------------------------
+
+
+class TestIntegrationRiskTelemetry:
+    """Tests for integration_risk_scored, integration_candidate_passed/failed events."""
+
+    def test_integration_risk_scored_captured(self):
+        """rollup should capture risk_level and overlap detection from integration_risk_scored."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "integration_risk_scored",
+                "t",
+                "plan",
+                risk_level="high",
+                python_overlap_detected=True,
+                overlap_evidence=[{"_kind": "SymbolOverlap", "symbol_name": "foo"}],
+            ),
+            _lifecycle(3, "merge_completed", "t", "plan", merge_sha="abc123"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_risk_level"] == "high"
+        assert rollup["integration_risk_detected"] is True
+
+    def test_integration_risk_scored_no_overlap(self):
+        """rollup should capture risk_level even when no overlap detected."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "integration_risk_scored",
+                "t",
+                "plan",
+                risk_level="low",
+                python_overlap_detected=False,
+                overlap_evidence=[],
+            ),
+            _lifecycle(3, "merge_completed", "t", "plan"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_risk_level"] == "low"
+        assert rollup["integration_risk_detected"] is False
+
+    def test_integration_candidate_passed(self):
+        """rollup should capture successful candidate validation."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(2, "integration_risk_scored", "t", "plan", risk_level="medium"),
+            _lifecycle(
+                3,
+                "integration_candidate_passed",
+                "t",
+                "plan",
+                candidate_sha="deadbeef",
+                passed=True,
+            ),
+            _lifecycle(4, "merge_completed", "t", "plan"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_candidate_passed"] is True
+        assert rollup["integration_failure_class"] is None
+
+    def test_integration_candidate_failed(self):
+        """rollup should capture failed candidate validation with failure class."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "integration_candidate_failed",
+                "t",
+                "plan",
+                candidate_sha="deadbeef",
+                passed=False,
+                failure_class="syntax_conflict",
+                error_message="parse error",
+            ),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_candidate_passed"] is False
+        assert rollup["integration_failure_class"] == "syntax_conflict"
+
+    def test_semantic_gate_rejected(self):
+        """rollup should capture semantic gate rejection with failure class."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(
+                2,
+                "semantic_gate_rejected",
+                "t",
+                "plan",
+                gate_name="same_symbol_edit",
+                passed=False,
+                failure_class="same_symbol_edit",
+                error_message="concurrent edit detected",
+            ),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["integration_candidate_passed"] is False
+        assert rollup["integration_failure_class"] == "same_symbol_edit"
+
+    def test_build_unit_review_includes_integration_fields(self, tmp_path: Path):
+        """UnitReview should include integration fields when events present."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(1, "t", "call", {"tool": "edit_file"}),
+            _lifecycle(
+                2,
+                "integration_risk_scored",
+                "t",
+                "p",
+                risk_level="high",
+                python_overlap_detected=True,
+            ),
+            _lifecycle(3, "integration_candidate_passed", "t", "p", passed=True),
+            _lifecycle(4, "merge_completed", "t", "p", merge_sha="abc123"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: x"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("a.py",)),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "do it"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.integration_risk_level == "high"
+        assert review.integration_risk_detected is True
+        assert review.integration_candidate_passed is True
+        assert review.integration_failure_class is None
+
+    def test_unit_without_integration_events_has_none_values(self, tmp_path: Path):
+        """UnitReview should have None/false defaults when no integration events."""
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:00:00Z")
+        events = [
+            _worker_log(1, "t", "call", {"tool": "edit_file"}),
+            _lifecycle(2, "merge_completed", "t", "p", merge_sha="abc123"),
+        ]
+        with (
+            patch("dgov.plan_review._git_show_message", return_value="feat: x"),
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=("a.py",)),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "do it"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root=str(tmp_path),
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.integration_risk_level is None
+        assert review.integration_risk_detected is False
+        assert review.integration_candidate_passed is None
+        assert review.integration_failure_class is None

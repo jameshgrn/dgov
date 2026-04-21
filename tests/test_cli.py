@@ -41,6 +41,79 @@ def runner():
     return CliRunner()
 
 
+def _make_compiled_plan(
+    project_root: Path, plan_name: str, unit_summaries: dict[str, str]
+) -> Path:
+    """Write a minimal _compiled.toml into a plan directory under project_root."""
+    plan_dir = project_root / ".dgov" / "plans" / plan_name
+    plan_dir.mkdir(parents=True)
+    lines = [
+        "[plan]",
+        f'name = "{plan_name}"',
+        'source_mtime_max = "2026-04-10T12:00:00.000000+00:00"',
+        "",
+    ]
+    for uid, summary in unit_summaries.items():
+        lines.append(f'[tasks."{uid}"]')
+        lines.append(f'summary = "{summary}"')
+        lines.append('prompt = "do it"')
+        lines.append('commit_message = "c"')
+        lines.append('files.create = ["a.py"]')
+        lines.append("")
+    compiled_path = plan_dir / "_compiled.toml"
+    compiled_path.write_text("\n".join(lines))
+    (plan_dir / "_root.toml").write_text(
+        f'[plan]\nname = "{plan_name}"\nsummary = "t"\nsections = ["tasks"]\n'
+    )
+    return plan_dir
+
+
+def _patched_load_review(monkeypatch, **overrides):
+    """Return a helper that stubs load_review to return a fixed PlanReview."""
+    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+    default_unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        agent="kimi",
+        commit_sha="abcd1234" + "0" * 32,
+        commit_message="feat: did a",
+        commit_ts="2026-04-10T12:00:00Z",
+        diff_stat=DiffStat(files_changed=1, insertions=10, deletions=0),
+        landed_files=("src/dgov/example.py",),
+        duration_s=12.5,
+        iterations=4,
+        attempts=1,
+        settlement="ok",
+        done_summary="Added the thing.",
+    )
+    default_review = PlanReview(
+        plan_name="p",
+        source_dir=Path("p"),
+        last_run_ts="2026-04-10T12:00:00Z",
+        last_run_duration_s=12.5,
+        units=[default_unit],
+    )
+    review = overrides.get("review", default_review)
+
+    def _fake(**kwargs):
+        # Honor only-filter semantics for the `only=...` tests.
+        only = kwargs.get("only")
+        if only is not None:
+            filtered = [u for u in review.units if u.unit == only]
+            return PlanReview(
+                plan_name=review.plan_name,
+                source_dir=review.source_dir,
+                last_run_ts=review.last_run_ts,
+                last_run_duration_s=review.last_run_duration_s,
+                units=filtered,
+            )
+        return review
+
+    monkeypatch.setattr("dgov.plan_review.load_review", _fake)
+
+
 # -- Bare invocation / status --
 
 
@@ -997,3 +1070,158 @@ def test_prune_idempotent(runner: CliRunner, tmp_path: Path) -> None:
         result2 = runner.invoke(cli, ["prune"])
         assert result2.exit_code == 0
         assert "Nothing to prune" in result2.output
+
+
+# -----------------------------------------------------------------------------
+# Integration risk telemetry rendering (dgov plan review)
+# -----------------------------------------------------------------------------
+
+
+class TestReviewIntegrationTelemetry:
+    """Tests for rendering integration risk and candidate outcome in plan review."""
+
+    def test_review_shows_integration_risk_when_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Human output should show risk level and overlap when present."""
+        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="deployed",
+            commit_sha="abc1234",
+            commit_message="feat: a",
+            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+            landed_files=("src/a.py",),
+            settlement="ok",
+            integration_risk_level="high",
+            integration_risk_detected=True,
+            integration_candidate_passed=True,
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert "risk=high, overlap detected" in result.output
+        assert "candidate    passed" in result.output
+
+    def test_review_shows_candidate_failure_when_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Human output should show candidate failure class when present."""
+        from dgov.plan_review import PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="failed",
+            reject_verdict="scope_violation",
+            integration_risk_level="critical",
+            integration_risk_detected=True,
+            integration_candidate_passed=False,
+            integration_failure_class="same_symbol_edit",
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 1  # Failed units exit non-zero
+        assert "risk=critical, overlap detected" in result.output
+        assert "candidate    same_symbol_edit" in result.output
+
+    def test_review_omits_integration_when_not_present(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Human output should not show integration fields when not present."""
+        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="deployed",
+            commit_sha="abc1234",
+            commit_message="feat: a",
+            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+            landed_files=("src/a.py",),
+            settlement="ok",
+            # No integration fields set (defaults)
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 0, result.output
+        # Should not have integration lines when not present
+        assert "risk=" not in result.output
+        assert "overlap detected" not in result.output
+        assert "candidate    passed" not in result.output
+
+    def test_review_json_includes_integration_fields(
+        self, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """JSON output should include integration telemetry fields."""
+        from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+        unit = UnitReview(
+            unit="tasks/main.a",
+            summary="do a",
+            status="deployed",
+            commit_sha="abc1234",
+            commit_message="feat: a",
+            diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+            landed_files=("src/a.py",),
+            settlement="ok",
+            integration_risk_level="medium",
+            integration_risk_detected=True,
+            integration_candidate_passed=True,
+            integration_failure_class=None,
+        )
+        review = PlanReview(
+            plan_name="p",
+            source_dir=None,
+            last_run_ts=None,
+            last_run_duration_s=None,
+            units=[unit],
+        )
+        plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+        _patched_load_review(monkeypatch, review=review)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        unit_data = data["units"][0]
+        assert unit_data["integration_risk_level"] == "medium"
+        assert unit_data["integration_risk_detected"] is True
+        assert unit_data["integration_candidate_passed"] is True
+        assert unit_data["integration_failure_class"] is None

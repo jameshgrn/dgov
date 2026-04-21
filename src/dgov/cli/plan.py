@@ -627,6 +627,19 @@ def _render_deployed_unit(unit) -> None:
             unit.settlement, unit.settlement
         )
         click.echo(f"    settlement   {label}")
+    # Integration risk telemetry — only show when present
+    if unit.integration_risk_level and unit.integration_risk_level != "none":
+        risk_label = unit.integration_risk_level
+        if unit.integration_risk_detected:
+            risk_label += ", overlap detected"
+        click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
+    elif unit.integration_risk_detected:
+        click.echo(click.style("    integration  overlap detected", fg="yellow"))
+    if unit.integration_candidate_passed is True:
+        click.echo("    candidate    passed")
+    elif unit.integration_candidate_passed is False:
+        fc = unit.integration_failure_class or "failed"
+        click.echo(click.style(f"    candidate    {fc}", fg="red"))
     if unit.done_summary:
         _render_multiline_field("worker note ", unit.done_summary)
     if unit.worker_note_mismatches:
@@ -656,6 +669,19 @@ def _render_failed_unit(unit) -> None:
         click.echo(f"    iterations   {unit.iterations} tool call{plural}")
     if unit.reject_verdict:
         click.echo(f"    reject       {unit.reject_verdict}")
+    # Integration risk telemetry — only show when present
+    if unit.integration_risk_level and unit.integration_risk_level != "none":
+        risk_label = unit.integration_risk_level
+        if unit.integration_risk_detected:
+            risk_label += ", overlap detected"
+        click.echo(click.style(f"    integration  risk={risk_label}", fg="yellow"))
+    elif unit.integration_risk_detected:
+        click.echo(click.style("    integration  overlap detected", fg="yellow"))
+    if unit.integration_candidate_passed is True:
+        click.echo("    candidate    passed")
+    elif unit.integration_candidate_passed is False:
+        fc = unit.integration_failure_class or "failed"
+        click.echo(click.style(f"    candidate    {fc}", fg="red"))
     if unit.error:
         _render_multiline_field("error       ", unit.error)
     if unit.last_thought:
@@ -793,6 +819,11 @@ def _review_to_json(review) -> str:
             "error": u.error,
             "last_thought": u.last_thought,
             "hint": u.hint,
+            # Integration risk telemetry
+            "integration_risk_level": u.integration_risk_level,
+            "integration_risk_detected": u.integration_risk_detected,
+            "integration_candidate_passed": u.integration_candidate_passed,
+            "integration_failure_class": u.integration_failure_class,
         }
 
     return json.dumps(

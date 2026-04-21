@@ -72,6 +72,12 @@ class UnitReview:
     error: str | None = None
     last_thought: str | None = None
     hint: str | None = None
+    # Integration risk telemetry (populated when semantic settlement events exist)
+    integration_risk_level: str | None = None  # RiskLevel value
+    # True if python_overlap_detected or any overlap evidence
+    integration_risk_detected: bool = False
+    integration_candidate_passed: bool | None = None  # None if no candidate validation
+    integration_failure_class: str | None = None  # FailureClass value
 
 
 @dataclass(frozen=True)
@@ -412,6 +418,30 @@ def _apply_worker_log_event(ev: dict, state: dict) -> None:
         state["error"] = content
 
 
+def _apply_semantic_settlement_event(ev: dict, state: dict) -> None:
+    """Handle semantic settlement events: risk scoring, candidate validation, gates."""
+    event_type = ev.get("event")
+    if event_type == "integration_risk_scored":
+        # Capture risk level and overlap detection
+        risk_level = ev.get("risk_level")
+        if isinstance(risk_level, str):
+            state["integration_risk_level"] = risk_level
+        # python_overlap_detected is boolean in payload
+        if ev.get("python_overlap_detected") is True:
+            state["integration_risk_detected"] = True
+        # Also check for any overlap_evidence in the payload
+        overlap_evidence = ev.get("overlap_evidence")
+        if isinstance(overlap_evidence, list) and len(overlap_evidence) > 0:
+            state["integration_risk_detected"] = True
+    elif event_type == "integration_candidate_passed":
+        state["integration_candidate_passed"] = True
+    elif event_type == "integration_candidate_failed" or event_type == "semantic_gate_rejected":
+        state["integration_candidate_passed"] = False
+        fc = ev.get("failure_class")
+        if isinstance(fc, str):
+            state["integration_failure_class"] = fc
+
+
 def _rollup_unit_events(unit_events: list[dict]) -> dict:
     """Collapse a unit's events into a rollup dict used by _build_unit_review."""
     state: dict = {
@@ -428,6 +458,11 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merge_sha": None,
         "merged_in_run": False,
         "failed_in_run": False,
+        # Integration risk telemetry
+        "integration_risk_level": None,
+        "integration_risk_detected": False,
+        "integration_candidate_passed": None,
+        "integration_failure_class": None,
     }
 
     for ev in unit_events:
@@ -435,6 +470,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
             _apply_worker_log_event(ev, state)
         else:
             _apply_lifecycle_event(ev, state)
+            _apply_semantic_settlement_event(ev, state)
 
     duration_s: float | None = None
     dispatched_ts = state["dispatched_ts"]
@@ -466,6 +502,11 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merged_in_run": state["merged_in_run"],
         "failed_in_run": state["failed_in_run"],
         "ran_in_run": ran_in_run,
+        # Integration risk telemetry
+        "integration_risk_level": state["integration_risk_level"],
+        "integration_risk_detected": state["integration_risk_detected"],
+        "integration_candidate_passed": state["integration_candidate_passed"],
+        "integration_failure_class": state["integration_failure_class"],
     }
 
 
@@ -573,6 +614,10 @@ def _build_unit_review(
         error=rollup["error"],
         last_thought=last_thought if status in ("failed", "active") else None,
         hint=hint,
+        integration_risk_level=rollup["integration_risk_level"],
+        integration_risk_detected=rollup["integration_risk_detected"],
+        integration_candidate_passed=rollup["integration_candidate_passed"],
+        integration_failure_class=rollup["integration_failure_class"],
     )
 
 
