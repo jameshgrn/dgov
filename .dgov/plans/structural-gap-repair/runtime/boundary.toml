@@ -1,0 +1,37 @@
+[tasks.extract-boundary]
+summary = "Extract integration-settlement orchestration out of runner into a narrower module boundary."
+prompt = """
+Orient:
+- Read `src/dgov/runner.py` around the settlement path after the two landed runner cleanup commits.
+- Read `src/dgov/settlement.py`, `src/dgov/semantic_settlement.py`, and `src/dgov/worktree.py` only to understand the current orchestration boundary; do not rewrite their internal contracts unless the extraction requires a narrow signature adjustment.
+- Read `tests/test_runner.py` and `tests/test_boundaries.py` before editing.
+- The goal is architectural, not cosmetic: reduce `runner.py` import and responsibility concentration by moving a coherent integration-settlement orchestration concern behind a new module boundary.
+
+Edit:
+1. Create one new orchestration module under `src/dgov/` for the integrated-candidate / semantic-settlement flow that currently lives inside `EventDagRunner`.
+2. Move the coherent settlement-orchestration concern out of `src/dgov/runner.py` into that module. Keep the runner as the caller/coordinator, not the implementation home for candidate lifecycle details.
+3. Preserve fail-closed behavior, existing emitted events, retry semantics, and the current settlement contract. Do not change CLI surfaces or add new configuration.
+4. Update the shared patch-target constants and helper fixtures in `tests/test_runner.py` first, before fixing individual tests. This extraction changes ownership, so the first move in tests should be to realign the common patch surface rather than chasing one failing test at a time.
+5. Add or adjust `tests/test_boundaries.py` only if the extraction introduces a new architectural invariant worth pinning.
+5. Prefer explicit parameter passing over reaching back into runner state from the new module. The point is to narrow ownership, not hide the same coupling behind globals.
+
+Verify:
+- `uv run ruff check src/dgov/runner.py src/dgov/settlement_flow.py tests/test_runner.py tests/test_boundaries.py`
+- `uv run ty check src/dgov/runner.py src/dgov/settlement_flow.py`
+- `uv run pytest -q tests/test_runner.py tests/test_boundaries.py`
+"""
+commit_message = "Extract settlement orchestration boundary"
+depends_on = ["runtime/settlement.pipeline-split"]
+iteration_budget = 120
+test_cmd = "uv run pytest -q tests/test_runner.py tests/test_boundaries.py"
+files.create = ["src/dgov/settlement_flow.py"]
+files.edit = [
+  "src/dgov/runner.py",
+  "tests/test_runner.py",
+  "tests/test_boundaries.py",
+]
+files.read = [
+  "src/dgov/settlement.py",
+  "src/dgov/semantic_settlement.py",
+  "src/dgov/worktree.py",
+]

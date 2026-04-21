@@ -1,13 +1,14 @@
 [tasks.phase-split]
-summary = "Reduce semantic gate orchestration complexity without changing verdict semantics."
+summary = "Reduce semantic gate orchestration complexity only if boundary extraction leaves it as a real hotspot."
 prompt = """
 Orient:
 - Read `src/dgov/semantic_settlement.py` around `_check_same_symbol_edit`, `_check_duplicate_definitions`, `_check_signature_drifts`, and `run_python_semantic_gate`.
+- Read the preceding boundary-extraction diff first so you do not duplicate work that should stay on the new orchestration module side.
 - Read `tests/test_semantic_settlement.py` before editing.
 - Preserve the current failure taxonomy and evidence payloads. Do not change event names, verdict fields, or the subprocess-facing contract.
 
 Edit:
-1. In `src/dgov/semantic_settlement.py`, split the Python semantic gate into smaller phases so symbol loading, per-check execution, and final verdict assembly are not concentrated in one large orchestrator.
+1. In `src/dgov/semantic_settlement.py`, reduce only the residual semantic-gate hotspot that remains after the orchestration boundary extraction. Do not move runner/orchestration concerns back into this module.
 2. Preserve current semantics for same-symbol detection, duplicate-definition detection, signature drift detection, and fail-open risk acceptance where it is already intentional.
 3. Keep helper additions local to this module unless a new shared type is clearly necessary.
 4. Update `tests/test_semantic_settlement.py` with any targeted regressions exposed by the refactor.
@@ -25,3 +26,4 @@ files.edit = [
 files.read = [
   "src/dgov/runner.py",
 ]
+depends_on = ["runtime/boundary.extract-boundary"]
