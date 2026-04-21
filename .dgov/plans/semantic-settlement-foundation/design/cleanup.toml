@@ -1,0 +1,33 @@
+[tasks.reduce-contract-complexity]
+summary = "Reduce contract-surface complexity before advancing to integration telemetry."
+depends_on = ["design/contract.lock-taxonomy"]
+prompt = """
+Orient:
+- Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` first.
+- Read `src/dgov/semantic_settlement.py`, `tests/test_semantic_settlement.py`, and `tests/test_persistence_events.py`.
+- The goal is to reduce the complexity introduced by the Phase 1 contract work before `telemetry/shadow-risk` builds on it.
+- Preserve the external contract: keep the event names, typed dataclasses, and public parse/emit helpers stable unless a rename is strictly necessary to reduce complexity and the tests are updated accordingly.
+- Do not touch `src/dgov/runner.py`, `src/dgov/worktree.py`, or persistence schema files in this task.
+
+Edit:
+1. In `src/dgov/semantic_settlement.py`, reduce branching and duplication in the serialization/deserialization and emit-helper paths. Prefer simple table-driven dispatch or small internal helpers over long `if/elif` ladders or repeated payload-building code.
+2. Keep the module explicit. Do not introduce a generic plugin layer or speculative abstraction; the target is a smaller, clearer contract module, not a framework.
+3. In `tests/test_semantic_settlement.py`, trim repetitive test structure where it is inflating complexity without adding signal. Keep coverage for round-trips, immutability, and error cases.
+4. Leave `tests/test_persistence_events.py` unchanged unless the cleanup truly requires a matching update.
+5. Stop when the contract module is materially simpler and the sentrux regression is reduced or eliminated. If sentrux still degrades after a reasonable cleanup, prefer the cleanest smaller design over endless micro-tuning.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_semantic_settlement.py tests/test_boundaries.py`
+- `uv run ruff check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py`
+- `uv run ty check src/dgov/semantic_settlement.py tests/test_semantic_settlement.py`
+- `sentrux gate .`
+"""
+commit_message = "Reduce semantic settlement contract complexity"
+files.edit = ["src/dgov/semantic_settlement.py", "tests/test_semantic_settlement.py"]
+files.read = [
+  ".dgov/plans/semantic-settlement-foundation/DESIGN.md",
+  "src/dgov/runner.py",
+  "src/dgov/worktree.py",
+  "tests/test_persistence_events.py",
+  "tests/test_boundaries.py",
+]

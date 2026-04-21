@@ -1,6 +1,6 @@
 [tasks.add-shadow-risk-scoring]
 summary = "Emit non-blocking integration-risk telemetry before landing."
-depends_on = ["design/contract.lock-taxonomy"]
+depends_on = ["design/cleanup.reduce-contract-complexity"]
 prompt = """
 Orient:
 - Read `.dgov/plans/semantic-settlement-foundation/DESIGN.md` and `src/dgov/semantic_settlement.py` first.
