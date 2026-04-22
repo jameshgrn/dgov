@@ -486,10 +486,23 @@ def run_worker(
         {"role": "user", "content": goal},
     ]
     nudged = False
+    warned_budget = False
     allowed_tools = get_allowed_tool_names("worker")
     budget = _iteration_budget(config)
+    warn_at = config.worker_iteration_warn_at
 
-    for _ in range(budget):  # Pillar #10: Fail-closed via iteration limit
+    for iteration in range(budget):  # Pillar #10: Fail-closed via iteration limit
+        # One-time budget warning when approaching limit
+        if not warned_budget and iteration >= warn_at:
+            warned_budget = True
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"WARNING: You have used {iteration}/{budget} iterations. "
+                    "Wrap up your work and call `done` soon."
+                ),
+            })
+
         try:
             resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
                 model=model,
