@@ -83,11 +83,11 @@ class PlanUnit:
     commit_message: str
     files: PlanUnitFiles
     depends_on: tuple[str, ...] = ()
-    agent: str = ""
+    agent: str | None = None
     role: Literal["worker", "researcher", "reviewer"] = "worker"
-    timeout_s: int = 0
+    timeout_s: int | None = None
     iteration_budget: int | None = None
-    test_cmd: str = ""
+    test_cmd: str | None = None
 
 
 @dataclass(frozen=True)
@@ -99,11 +99,11 @@ class PlanSpec:
     units: dict[str, PlanUnit]
     project_root: str = "."
     session_root: str = "."
-    default_agent: str = ""
+    default_agent: str | None = None
     default_timeout_s: int = 600
     max_retries: int = 3
-    sop_set_hash: str = ""
-    source_mtime_max: str = ""
+    sop_set_hash: str | None = None
+    source_mtime_max: str | None = None
 
 
 @dataclass(frozen=True)
@@ -124,8 +124,8 @@ def parse_plan_file(path: str) -> PlanSpec:
         units[slug] = PlanUnit(
             slug=slug,
             summary=task.summary,
-            prompt=task.prompt,
-            commit_message=task.commit_message,
+            prompt=task.prompt or "",
+            commit_message=task.commit_message or "",
             agent=task.agent,
             role=task.role,
             depends_on=task.depends_on,
@@ -288,6 +288,8 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     # Unclaimed prompt path reference check
     # Workers that touch unclaimed files get scope_violation (terminal, no retry).
     for slug, unit in plan.units.items():
+        if not unit.prompt:
+            continue
         claimed = {
             _normalize_touch_path(p)
             for p in (*unit.files.create, *unit.files.edit, *unit.files.touch, *unit.files.read)
@@ -319,7 +321,7 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     # Empty prompt check — catch at compile time, not at dispatch time.
     # Reviewers are exempt: they get auto-generated prompts from dependency diffs.
     for slug, unit in plan.units.items():
-        if not unit.prompt.strip() and unit.role != "reviewer":
+        if not (unit.prompt or "").strip() and unit.role != "reviewer":
             issues.append(
                 PlanIssue(
                     severity="error",
@@ -381,6 +383,16 @@ def _check_verify_only_task(slug: str, unit: PlanUnit) -> list[PlanIssue]:
 
 def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:
     """Warn when a prompt is missing Orient/Edit/Verify section headers."""
+    if not unit.prompt:
+        return [
+            PlanIssue(
+                severity="warning",
+                message="Prompt is missing section headers: Orient, Edit, Verify. "
+                "Structured prompts (Orient/Edit/Verify) have higher "
+                "success rates. Add headers: ## Orient, ## Edit, ## Verify.",
+                unit=slug,
+            )
+        ]
     missing = [
         phase for phase, pattern in _PROMPT_PHASE_RES.items() if not pattern.search(unit.prompt)
     ]

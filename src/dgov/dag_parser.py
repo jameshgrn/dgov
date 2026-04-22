@@ -30,15 +30,15 @@ class DagTaskSpec(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     slug: str
     summary: str
-    prompt: str = ""
-    commit_message: str = ""
-    agent: str = ""
+    prompt: str | None = None
+    commit_message: str | None = None
+    agent: str | None = None
     role: Literal["worker", "researcher", "reviewer"] = "worker"
     depends_on: tuple[str, ...] = ()
     files: DagFileSpec = Field(default_factory=DagFileSpec)
     timeout_s: int = 900
     iteration_budget: int | None = None
-    test_cmd: str = ""
+    test_cmd: str | None = None
     sop_mapping: tuple[str, ...] = ()
 
     def all_touches(self) -> tuple[str, ...]:

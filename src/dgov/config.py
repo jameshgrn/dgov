@@ -40,10 +40,12 @@ class ProjectConfig(AtomicConfig):
     review_hooks: tuple[str, ...] = ()
     agents: dict[str, str] = field(default_factory=dict)
     scope_ignore_files: tuple[str, ...] = _DEFAULT_SCOPE_IGNORE_FILES
-    setup_cmd: str = ""
+    setup_cmd: str | None = None
 
     def resolve_test_cmd(self, file: str = "") -> str:
         """Build the test command with substitutions."""
+        if not self.test_cmd:
+            return ""
         cmd = self.test_cmd.replace("{test_dir}", self.test_dir)
         if file:
             cmd = cmd.replace("{test_dir}", file).replace(self.test_dir, file)
@@ -64,7 +66,7 @@ class ProjectConfig(AtomicConfig):
         return self.lint_fix_cmd.replace("{file}", target)
 
     def resolve_type_check_cmd(self) -> str:
-        return self.type_check_cmd
+        return self.type_check_cmd or ""
 
     def llm_runtime_settings(self) -> tuple[str, str]:
         """Return the configured OpenAI-compatible runtime endpoint settings."""
@@ -168,7 +170,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         format_cmd=proj.get("format_cmd", ProjectConfig.format_cmd),
         lint_fix_cmd=proj.get("lint_fix_cmd", ProjectConfig.lint_fix_cmd),
         format_check_cmd=proj.get("format_check_cmd", ProjectConfig.format_check_cmd),
-        type_check_cmd=proj.get("type_check_cmd", ""),
+        type_check_cmd=proj.get("type_check_cmd") or None,
         test_markers=markers,
         worker_iteration_budget=proj.get("worker_iteration_budget", 50),
         worker_iteration_warn_at=proj.get("worker_iteration_warn_at", 40),
@@ -181,7 +183,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         conventions=conventions,
         tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
         scope_ignore_files=scope_ignore_files,
-        setup_cmd=proj.get("setup_cmd", ""),
+        setup_cmd=proj.get("setup_cmd") or None,
     )
 
 

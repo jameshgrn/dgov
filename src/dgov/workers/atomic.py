@@ -39,7 +39,7 @@ class AtomicConfig:
     lint_cmd: str = "python -m ruff check {file}"
     format_cmd: str = "python -m ruff format {file}"
     lint_fix_cmd: str = "python -m ruff check --fix --unsafe-fixes {file}"
-    type_check_cmd: str = ""
+    type_check_cmd: str | None = None
     worker_iteration_budget: int = 50
     worker_iteration_warn_at: int = 40
     worker_tree_max_lines: int = 80

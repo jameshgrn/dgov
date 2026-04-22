@@ -368,7 +368,7 @@ commit_message = "task 1"
     assert result.default_max_retries == 3
 
     task = result.tasks["task1"]
-    assert task.agent == ""
+    assert task.agent is None
     assert task.role == "worker"
     assert task.depends_on == ()
     assert task.timeout_s == 900

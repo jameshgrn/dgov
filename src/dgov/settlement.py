@@ -818,6 +818,8 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
     Changed test files run directly. Changed source files trigger only
     tests that import from the changed modules — never the full suite.
     """
+    if not config.test_cmd:
+        return ""
     if "{test_dir}" not in config.test_cmd:
         return config.test_cmd
     test_dir = config.test_dir.rstrip("/")
@@ -1072,7 +1074,7 @@ def _run_acceptance_gates(
         return GateResult(passed=True)
 
     # 0. Run setup command (e.g. npm ci for JS/TS worktrees)
-    setup_failure = _run_setup_cmd(config.setup_cmd, worktree_path)
+    setup_failure = _run_setup_cmd(config.setup_cmd or "", worktree_path)
     if setup_failure is not None:
         return setup_failure
 

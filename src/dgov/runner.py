@@ -680,7 +680,7 @@ class EventDagRunner:
             )
 
         # Append user-provided prompt guidance if any
-        if task.prompt.strip():
+        if task.prompt and task.prompt.strip():
             sections.append(f"## Additional review guidance\n{task.prompt}\n")
 
         sections.append(
@@ -739,7 +739,7 @@ class EventDagRunner:
         if task.role == "reviewer":
             prompt = self._build_reviewer_prompt(action.task_slug, task)
         else:
-            prompt = task.prompt
+            prompt = task.prompt or ""
 
         # Enrich prompt with prior failure context on retry
         prior_error = self._task_errors.get(action.task_slug)
@@ -771,7 +771,7 @@ class EventDagRunner:
                         prepare_worktree,
                         wt,
                         language=self.project_config.language,
-                        setup_cmd=self.project_config.setup_cmd,
+                        setup_cmd=self.project_config.setup_cmd or "",
                         timeout_s=self.project_config.bootstrap_timeout,
                     ),
                 )
@@ -1096,7 +1096,7 @@ class EventDagRunner:
             "Your previous attempt was REJECTED by settlement. "
             "Fix the issue and call done.\n\n"
             f"SETTLEMENT ERROR:\n{settlement_error}\n\n"
-            f"ORIGINAL TASK:\n{task.prompt}\n\n"
+            f"ORIGINAL TASK:\n{task.prompt or ''}\n\n"
             "The worktree has your changes (uncommitted). "
             "Use git_diff to see them, fix the problem, then call done."
         )
