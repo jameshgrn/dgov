@@ -12,6 +12,7 @@ Three phases:
 from __future__ import annotations
 
 import ast
+import contextlib
 import logging
 import re
 import shlex
@@ -907,6 +908,44 @@ def _count_diagnostics(output: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+# Regex to parse ty/basedpyright output format:
+#   error[error-code]: message
+#      --> file/path.py:line:col
+_DIAG_ERROR_CODE_RE = re.compile(r"^error\[([^\]]+)\]:", re.MULTILINE)
+_DIAG_FILE_PATH_RE = re.compile(r"^\s+-->\s+([^:]+):\d+:\d+", re.MULTILINE)
+
+
+def _parse_diagnostic_identities(
+    output: str, project_root: Path | None = None
+) -> set[tuple[str, str]]:
+    """Extract (relative_file, error_code) tuples from type checker output.
+
+    Ignores line numbers (which shift when code is edited) to enable
+    identity-based comparison between baseline and worktree.
+
+    The ty/basedpyright output format is:
+        error[error-code]: message
+           --> file/path.py:line:col
+    """
+    identities: set[tuple[str, str]] = set()
+
+    # Find all error codes and file paths
+    error_codes = _DIAG_ERROR_CODE_RE.findall(output)
+    file_paths = _DIAG_FILE_PATH_RE.findall(output)
+
+    # Pair them up - they appear in order in the output
+    for i, code in enumerate(error_codes):
+        if i < len(file_paths):
+            file_path = file_paths[i]
+            # Make path relative to project root if provided
+            if project_root is not None:
+                with contextlib.suppress(ValueError):
+                    file_path = str(Path(file_path).relative_to(project_root))
+            identities.add((file_path, code))
+
+    return identities
+
+
 def _type_check_gate(
     type_check_cmd: str,
     worktree_path: Path,
@@ -916,8 +955,9 @@ def _type_check_gate(
     """Run type checker with baseline comparison.
 
     Runs the type checker in both the project root (baseline) and the
-    worktree. Only fails if the worktree introduces MORE diagnostics
-    than the baseline — pre-existing errors are not the worker's fault.
+    worktree. Only fails if the worktree introduces NEW diagnostic identities
+    (file, error_code pairs) that don't exist in the baseline — pre-existing
+    errors are not the worker's fault, even if line numbers shift.
     """
     # Baseline: run in project root (current HEAD)
     baseline_res = subprocess.run(
@@ -928,7 +968,8 @@ def _type_check_gate(
         text=True,
         timeout=timeout,
     )
-    baseline_count = _count_diagnostics((baseline_res.stdout or "") + (baseline_res.stderr or ""))
+    baseline_output = (baseline_res.stdout or "") + (baseline_res.stderr or "")
+    baseline_ids = _parse_diagnostic_identities(baseline_output, Path(project_root))
 
     # Worktree: run against worker's changes
     worktree_res = subprocess.run(
@@ -940,20 +981,22 @@ def _type_check_gate(
         timeout=timeout,
     )
     worktree_output = (worktree_res.stdout or "") + (worktree_res.stderr or "")
-    worktree_count = _count_diagnostics(worktree_output)
+    worktree_ids = _parse_diagnostic_identities(worktree_output, worktree_path)
 
-    if worktree_res.returncode != 0 and worktree_count > baseline_count:
+    # Compare identity sets: new diagnostics are those in worktree but not baseline
+    new_ids = worktree_ids - baseline_ids
+
+    if worktree_res.returncode != 0 and new_ids:
         output = worktree_output[-500:]
         return GateResult(
             passed=False,
-            error=f"Type check failure ({worktree_count} diagnostics, "
-            f"baseline {baseline_count}):\n{output}",
+            error=f"Type check failure ({len(new_ids)} new diagnostic(s), "
+            f"{len(worktree_ids)} total):\n{output}",
         )
-    if worktree_res.returncode != 0 and worktree_count <= baseline_count:
+    if worktree_res.returncode != 0 and not new_ids:
         logger.warning(
-            "Type check: %d diagnostics (baseline %d) — pre-existing, not blocking",
-            worktree_count,
-            baseline_count,
+            "Type check: %d diagnostic(s) (all pre-existing) — not blocking",
+            len(worktree_ids),
         )
     return None
 

@@ -80,6 +80,8 @@ def _build_baseline_diag_note(config: object, session_root: str) -> str:
     """
     import subprocess
 
+    from dgov.settlement import _count_diagnostics
+
     type_check_cmd = getattr(config, "type_check_cmd", None)
     if not type_check_cmd:
         return ""
@@ -96,10 +98,7 @@ def _build_baseline_diag_note(config: object, session_root: str) -> str:
         return ""
     if res.returncode == 0:
         return ""
-    import re
-
-    m = re.search(r"Found (\d+) diagnostics?", (res.stdout or "") + (res.stderr or ""))
-    count = int(m.group(1)) if m else 0
+    count = _count_diagnostics((res.stdout or "") + (res.stderr or ""))
     if count == 0:
         return ""
     return (

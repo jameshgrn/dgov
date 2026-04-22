@@ -776,25 +776,35 @@ class TestValidateSandbox:
 
     @pytest.mark.unit
     def test_validate_type_check_gate_fail_new_diagnostics(self, tmp_path: Path):
-        """Type check gate fails when worktree has more diagnostics than baseline."""
+        """Type check gate fails when worktree has new diagnostic identities."""
         base = _init_repo(tmp_path)
         (tmp_path / "clean.py").write_text("x = 1\n")
         _git(tmp_path, "add", ".")
         _git(tmp_path, "commit", "-m", "add clean.py")
-        # Counter file: baseline (1st call) passes, worktree (2nd call) fails.
+        # Counter file: baseline (1st call) has 1 diagnostic, worktree (2nd call) has 2.
         counter = tmp_path / ".ty_counter"
         cmd = (
             f'n=$(cat "{counter}" 2>/dev/null || echo 0); '
             f'echo $((n+1)) > "{counter}"; '
             'if [ "$n" -ge 1 ]; then '
+            # Worktree: 2 diagnostics (one new, one pre-existing)
+            'echo "error[new-error]: new issue"; '
+            'echo "   --> clean.py:1:1"; '
+            'echo "error[preexisting]: old issue"; '
+            'echo "   --> clean.py:2:2"; '
             'echo "Found 2 diagnostics" >&2; exit 1; '
-            "else exit 0; fi"
+            "else "
+            # Baseline: 1 diagnostic
+            'echo "error[preexisting]: old issue"; '
+            'echo "   --> clean.py:2:2"; '
+            'echo "Found 1 diagnostic" >&2; exit 1; '
+            "fi"
         )
         config = ProjectConfig(type_check_cmd=cmd, test_cmd="")
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
         assert result.passed is False
         assert "Type check failure" in (result.error or "")
-        assert "baseline 0" in (result.error or "")
+        assert "1 new diagnostic" in (result.error or "")
 
     @pytest.mark.unit
     def test_validate_type_check_gate_pass_preexisting(self, tmp_path: Path):
@@ -803,10 +813,86 @@ class TestValidateSandbox:
         (tmp_path / "clean.py").write_text("x = 1\n")
         _git(tmp_path, "add", ".")
         _git(tmp_path, "commit", "-m", "add clean.py")
-        # Both baseline and worktree fail with same count → pass
-        cmd = 'echo "Found 3 diagnostics" >&2; exit 1'
+        # Both baseline and worktree have same diagnostic identities → pass
+        cmd = (
+            'echo "error[preexisting]: old issue"; '
+            'echo "   --> clean.py:1:1"; '
+            'echo "Found 1 diagnostic" >&2; exit 1'
+        )
         config = ProjectConfig(type_check_cmd=cmd, test_cmd="")
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        assert result.passed is True
+
+    @pytest.mark.unit
+    def test_validate_type_check_gate_fail_identity_regression(self, tmp_path: Path):
+        """Type check gate catches regressions where N old errors fixed but N new ones introduced.
+
+        This tests the identity-based comparison: even if the count stays the same,
+        new diagnostic identities (file, error_code pairs) should be caught.
+        """
+        base = _init_repo(tmp_path)
+        (tmp_path / "clean.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add clean.py")
+        # Counter file: baseline (1st call) has 2 diagnostics, worktree (2nd call) has 2 different ones.
+        counter = tmp_path / ".ty_counter"
+        cmd = (
+            f'n=$(cat "{counter}" 2>/dev/null || echo 0); '
+            f'echo $((n+1)) > "{counter}"; '
+            'if [ "$n" -ge 1 ]; then '
+            # Worktree: 2 diagnostics (both different from baseline)
+            'echo "error[new-error-1]: new issue 1"; '
+            'echo "   --> clean.py:1:1"; '
+            'echo "error[new-error-2]: new issue 2"; '
+            'echo "   --> clean.py:2:2"; '
+            'echo "Found 2 diagnostics" >&2; exit 1; '
+            "else "
+            # Baseline: 2 different diagnostics (same count, different identities)
+            'echo "error[old-error-1]: old issue 1"; '
+            'echo "   --> clean.py:1:1"; '
+            'echo "error[old-error-2]: old issue 2"; '
+            'echo "   --> clean.py:2:2"; '
+            'echo "Found 2 diagnostics" >&2; exit 1; '
+            "fi"
+        )
+        config = ProjectConfig(type_check_cmd=cmd, test_cmd="")
+        result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        # Should FAIL because worktree has 2 new diagnostic identities
+        assert result.passed is False
+        assert "Type check failure" in (result.error or "")
+        assert "2 new diagnostic" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_validate_type_check_gate_pass_same_identities_line_shift(self, tmp_path: Path):
+        """Type check gate passes when same errors move to different lines.
+
+        Line numbers shift when code is edited, but the (file, error_code)
+        identity should still match and not be flagged as new.
+        """
+        base = _init_repo(tmp_path)
+        (tmp_path / "clean.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add clean.py")
+        # Counter file: baseline (1st call) has error at line 1, worktree (2nd call) at line 5
+        counter = tmp_path / ".ty_counter"
+        cmd = (
+            f'n=$(cat "{counter}" 2>/dev/null || echo 0); '
+            f'echo $((n+1)) > "{counter}"; '
+            'if [ "$n" -ge 1 ]; then '
+            # Worktree: same error code, different line
+            'echo "error[preexisting]: old issue"; '
+            'echo "   --> clean.py:5:1"; '  # Line changed from 1 to 5
+            'echo "Found 1 diagnostic" >&2; exit 1; '
+            "else "
+            # Baseline: error at line 1
+            'echo "error[preexisting]: old issue"; '
+            'echo "   --> clean.py:1:1"; '
+            'echo "Found 1 diagnostic" >&2; exit 1; '
+            "fi"
+        )
+        config = ProjectConfig(type_check_cmd=cmd, test_cmd="")
+        result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        # Should PASS because the (file, error_code) identity is the same
         assert result.passed is True
 
     @pytest.mark.unit
