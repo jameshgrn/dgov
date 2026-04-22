@@ -88,6 +88,7 @@ class PlanUnit:
     timeout_s: int | None = None
     iteration_budget: int | None = None
     test_cmd: str | None = None
+    prompt_file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -117,14 +118,30 @@ class PlanIssue:
 
 def parse_plan_file(path: str) -> PlanSpec:
     """Parse a TOML plan file into a PlanSpec."""
+    from pathlib import Path
+
     dag_def = parse_dag_file(path)
+    plan_path = Path(path).resolve()
+    plan_dir = plan_path.parent
 
     units = {}
     for slug, task in dag_def.tasks.items():
+        # Resolve prompt_file if set
+        prompt = task.prompt or ""
+        prompt_file = task.prompt_file
+        if prompt_file:
+            prompt_path = plan_dir / prompt_file
+            if not prompt_path.exists():
+                raise FileNotFoundError(
+                    f"Task '{slug}': prompt_file not found: {prompt_file} "
+                    f"(resolved: {prompt_path})"
+                )
+            prompt = prompt_path.read_text(encoding="utf-8")
+
         units[slug] = PlanUnit(
             slug=slug,
             summary=task.summary,
-            prompt=task.prompt or "",
+            prompt=prompt,
             commit_message=task.commit_message or "",
             agent=task.agent,
             role=task.role,
@@ -132,6 +149,7 @@ def parse_plan_file(path: str) -> PlanSpec:
             timeout_s=task.timeout_s,
             iteration_budget=task.iteration_budget,
             test_cmd=task.test_cmd,
+            prompt_file=prompt_file,
             files=PlanUnitFiles(
                 create=task.files.create,
                 edit=task.files.edit,

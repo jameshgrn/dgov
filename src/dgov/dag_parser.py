@@ -31,6 +31,7 @@ class DagTaskSpec(BaseModel):
     slug: str
     summary: str
     prompt: str | None = None
+    prompt_file: str | None = None
     commit_message: str | None = None
     agent: str | None = None
     role: Literal["worker", "researcher", "reviewer"] = "worker"

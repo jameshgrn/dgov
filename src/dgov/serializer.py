@@ -40,6 +40,9 @@ def serialize_compiled_toml(
         mapping = br.sop_mapping.get(fq_id, ())
         lines.append(f"[tasks.{_toml_key(fq_id)}]")
         lines.append(f"summary = {_toml_str(unit.summary)}")
+        # Emit prompt_file if it was set on the unit, otherwise inline the prompt
+        if unit.prompt_file:
+            lines.append(f"prompt_file = {_toml_str(unit.prompt_file)}")
         if unit.prompt:
             lines.append(f"prompt = {_toml_ml_str(unit.prompt)}")
         else:
