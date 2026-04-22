@@ -596,37 +596,51 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
         )
 
 
+def _render_unit_fields(fields: list[tuple[str, str | None]]) -> None:
+    """Render a list of label/value pairs with consistent formatting."""
+    for label, value in fields:
+        if value is not None:
+            click.echo(f"    {label:12s} {value}")
+
+
 def _render_deployed_unit(unit) -> None:
     """Render a deployed UnitReview block."""
     marker = click.style("✓", fg="green")
     header = f"  {marker} {unit.unit}"
     click.echo(header)
-    if unit.summary:
-        click.echo(f"    task         {unit.summary}")
-    if unit.commit_sha and unit.commit_message:
-        click.echo(f"    commit       {unit.commit_sha[:8]} — {unit.commit_message}")
-    elif unit.commit_sha:
-        click.echo(f"    commit       {unit.commit_sha[:8]}")
-    if unit.agent:
-        click.echo(f"    agent        {unit.agent}")
-    if unit.diff_stat is not None:
-        click.echo(f"    diff         {unit.diff_stat.summary()}")
+    fields: list[tuple[str, str | None]] = [
+        ("task", unit.summary),
+        (
+            "commit",
+            f"{unit.commit_sha[:8]} — {unit.commit_message}"
+            if unit.commit_sha and unit.commit_message
+            else (unit.commit_sha[:8] if unit.commit_sha else None),
+        ),
+        ("agent", unit.agent),
+        ("diff", unit.diff_stat.summary() if unit.diff_stat is not None else None),
+        ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
+        (
+            "iterations",
+            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
+            if unit.iterations is not None
+            else None,
+        ),
+        (
+            "settlement",
+            {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
+                unit.settlement, unit.settlement
+            )
+            if unit.settlement != "n/a"
+            else None,
+        ),
+    ]
+    _render_unit_fields(fields)
     if unit.landed_files:
         _render_path_list("files       ", unit.landed_files)
-    if unit.duration_s is not None:
-        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
-    if unit.iterations is not None:
-        plural = "s" if unit.iterations != 1 else ""
-        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
     if unit.self_corrections > 0:
         click.echo(
             f"    self-correct {unit.self_corrections} failed tool call(s) recovered before done"
         )
-    if unit.settlement != "n/a":
-        label = {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
-            unit.settlement, unit.settlement
-        )
-        click.echo(f"    settlement   {label}")
     _render_integration_telemetry(unit)
     if unit.done_summary:
         _render_multiline_field("worker note ", unit.done_summary)
@@ -664,17 +678,19 @@ def _render_failed_unit(unit) -> None:
     marker = click.style("✗", fg="red")
     where = unit.reject_verdict or "worker error"
     click.echo(f"  {marker} {unit.unit}  (failed: {where})")
-    if unit.agent:
-        click.echo(f"    agent        {unit.agent}")
-    if unit.attempts > 1:
-        click.echo(f"    attempts     {unit.attempts}")
-    if unit.duration_s is not None:
-        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
-    if unit.iterations is not None:
-        plural = "s" if unit.iterations != 1 else ""
-        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
-    if unit.reject_verdict:
-        click.echo(f"    reject       {unit.reject_verdict}")
+    fields: list[tuple[str, str | None]] = [
+        ("agent", unit.agent),
+        ("attempts", str(unit.attempts) if unit.attempts > 1 else None),
+        ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
+        (
+            "iterations",
+            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
+            if unit.iterations is not None
+            else None,
+        ),
+        ("reject", unit.reject_verdict),
+    ]
+    _render_unit_fields(fields)
     _render_integration_telemetry(unit)
     if unit.error:
         _render_multiline_field("error       ", unit.error)
@@ -689,15 +705,18 @@ def _render_active_unit(unit) -> None:
     """Render an in-flight UnitReview block."""
     marker = click.style("…", fg="cyan")
     click.echo(f"  {marker} {unit.unit}  (active)")
-    if unit.summary:
-        click.echo(f"    task         {unit.summary}")
-    if unit.agent:
-        click.echo(f"    agent        {unit.agent}")
-    if unit.duration_s is not None:
-        click.echo(f"    duration     {_fmt_duration(unit.duration_s)}")
-    if unit.iterations is not None:
-        plural = "s" if unit.iterations != 1 else ""
-        click.echo(f"    iterations   {unit.iterations} tool call{plural}")
+    fields: list[tuple[str, str | None]] = [
+        ("task", unit.summary),
+        ("agent", unit.agent),
+        ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
+        (
+            "iterations",
+            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
+            if unit.iterations is not None
+            else None,
+        ),
+    ]
+    _render_unit_fields(fields)
     if unit.last_thought:
         _render_multiline_field("last thought", unit.last_thought, max_lines=2)
     click.echo("")
