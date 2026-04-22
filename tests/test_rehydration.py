@@ -101,7 +101,7 @@ def test_rehydration_restores_attempts(tmp_path: Path, mock_dag: DagDefinition, 
     runner = EventDagRunner(mock_dag, session_root=session_root)
 
     assert runner.kernel.task_states["a"] == TaskState.PENDING
-    assert runner._attempts["a"] == 1
+    assert runner._ctx("a").attempts == 1
 
 
 @pytest.mark.unit

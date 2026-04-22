@@ -106,8 +106,15 @@ def test_run_auto_bootstraps_dgov_only_repo(
 
     class _Runner:
         def __init__(self, *args, **kwargs) -> None:
-            self._task_errors = {}
-            self._task_durations = {}
+            pass
+
+        @property
+        def task_errors(self):
+            return {}
+
+        @property
+        def task_durations(self):
+            return {}
 
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
@@ -155,8 +162,15 @@ def test_run_returns_nonzero_on_failed_plan(
 
     class _Runner:
         def __init__(self, *args, **kwargs) -> None:
-            self._task_errors = {"a": "boom"}
-            self._task_durations = {"a": 0.1}
+            pass
+
+        @property
+        def task_errors(self):
+            return {"a": "boom"}
+
+        @property
+        def task_durations(self):
+            return {"a": 0.1}
 
         async def run(self) -> dict[str, str]:
             return {"a": "failed"}
@@ -244,8 +258,15 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
 
     class _Runner:
         def __init__(self, *args, **kwargs) -> None:
-            self._task_errors = {}
-            self._task_durations = {"a": 0.1}
+            pass
+
+        @property
+        def task_errors(self):
+            return {}
+
+        @property
+        def task_durations(self):
+            return {"a": 0.1}
 
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
@@ -286,8 +307,15 @@ def test_run_reports_structural_offenders_when_sentrux_degrades(
 
     class _Runner:
         def __init__(self, *args, **kwargs) -> None:
-            self._task_errors = {}
-            self._task_durations = {"a": 0.1}
+            pass
+
+        @property
+        def task_errors(self):
+            return {}
+
+        @property
+        def task_durations(self):
+            return {"a": 0.1}
 
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}

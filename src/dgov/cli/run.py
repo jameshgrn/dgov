@@ -798,7 +798,7 @@ def _cmd_run_plan(
     results, duration = _run_plan_runner(runner)
     gate_result = _sentrux_compare(project_root, baseline_quality)
     failed_now = [s for s, st in results.items() if st == "failed"]
-    task_errors = {slug: err for slug, err in runner._task_errors.items() if slug in failed_now}
+    task_errors = {slug: err for slug, err in runner.task_errors.items() if slug in failed_now}
     run_status, failed, abandoned, skipped, succeeded, _ = _run_status_and_summary(
         results,
         task_errors,
@@ -829,7 +829,7 @@ def _cmd_run_plan(
     })
     _emit_verbose_task_durations(
         verbose=verbose,
-        task_durations=runner._task_durations,
+        task_durations=runner.task_durations,
         results=results,
     )
     _emit_post_run_hint(stream=stream, plan_dir=plan_dir, plan_file=plan_file)
@@ -841,7 +841,7 @@ def _cmd_run_plan(
         results,
         gate_result,
         duration,
-        runner._task_durations,
+        runner.task_durations,
         task_errors,
     )
     _maybe_archive_completed_plan(

@@ -991,8 +991,15 @@ files = ["c.py"]
         class _Runner:
             def __init__(self, dag, **kwargs) -> None:
                 self.dag = dag
-                self._task_errors = {}
-                self._task_durations = {slug: 0.1 for slug in dag.tasks}
+                self._durations = {slug: 0.1 for slug in dag.tasks}
+
+            @property
+            def task_errors(self):
+                return {}
+
+            @property
+            def task_durations(self):
+                return self._durations
 
             async def run(self) -> dict[str, str]:
                 return {slug: "merged" for slug in self.dag.tasks}

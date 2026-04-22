@@ -14,7 +14,7 @@ import signal
 import time
 from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -70,6 +70,20 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TaskContext:
+    """Per-task runtime state tracked by EventDagRunner."""
+
+    pane_slug: str | None = None
+    attempts: int = 0
+    error: str | None = None
+    start_time: float | None = None
+    duration: float | None = None
+    worktree: Worktree | None = None
+    worker_task: asyncio.Task[None] | None = None
+    rejected_worktree: Worktree | None = None
 
 
 def _build_baseline_diag_note(config: object, session_root: str) -> str:
@@ -136,8 +150,8 @@ class EventDagRunner:
             for slug, t in dag.tasks.items()
         }
         self.task_read_files = {slug: tuple(t.files.read) for slug, t in dag.tasks.items()}
-        self._pane_slugs: dict[str, str] = {}
-        self._attempts: dict[str, int] = {}
+        self._tasks: dict[str, TaskContext] = {}
+        self._pane_slugs: dict[str, str] = {}  # shared ref with kernel
         self.kernel = DagKernel(
             deps=self.deps,
             task_files=self.task_files,
@@ -148,13 +162,6 @@ class EventDagRunner:
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
-        self._worktrees: dict[str, Worktree] = {}
-        self._rejected_worktrees: dict[str, Worktree] = {}  # Preserved for inspection
-        self._worker_tasks: dict[str, asyncio.Task[None]] = {}
-        self._task_errors: dict[str, str] = {}
-        self._task_start_times: dict[str, float] = {}
-        self._task_durations: dict[str, float] = {}
-        self._task_timeouts: dict[str, float] = {}
         self._shutdown_event = asyncio.Event()
         self._settlement_flow = SettlementFlow(
             session_root=session_root,
@@ -167,6 +174,26 @@ class EventDagRunner:
             reset_plan_state(session_root, dag.name)
         else:
             self._run_recovery_pipeline(continue_failed=continue_failed)
+
+    def _ctx(self, slug: str) -> TaskContext:
+        """Get or create TaskContext for a slug."""
+        ctx = self._tasks.get(slug)
+        if ctx is None:
+            ctx = TaskContext()
+            self._tasks[slug] = ctx
+        return ctx
+
+    @property
+    def task_errors(self) -> dict[str, str]:
+        """Reconstruct errors dict for CLI consumption."""
+        return {slug: ctx.error for slug, ctx in self._tasks.items() if ctx.error}
+
+    @property
+    def task_durations(self) -> dict[str, float]:
+        """Reconstruct durations dict for CLI consumption."""
+        return {
+            slug: ctx.duration for slug, ctx in self._tasks.items() if ctx.duration is not None
+        }
 
     def _run_recovery_pipeline(self, continue_failed: bool = False) -> None:
         """Orchestrate recovery phases: seed → rehydrate → cleanup → resume.
@@ -311,7 +338,7 @@ class EventDagRunner:
                     self.kernel.handle(TaskGovernorResumed(task_slug, action))
                     # Restore attempt count in runner (kernel no longer tracks this)
                     if action == GovernorAction.RETRY:
-                        self._attempts[task_slug] = self._attempts.get(task_slug, 0) + 1
+                        self._ctx(task_slug).attempts += 1
                 except ValueError:
                     pass
 
@@ -335,29 +362,37 @@ class EventDagRunner:
 
     async def _cleanup(self) -> None:
         """Cleanup all resources — worktrees, executor, connections (Pillar #3, #10)."""
+        active_workers = [
+            (slug, ctx.worker_task) for slug, ctx in self._tasks.items() if ctx.worker_task
+        ]
+        active_wts = [ctx.worktree for ctx in self._tasks.values() if ctx.worktree]
+        rejected_wts = [
+            ctx.rejected_worktree for ctx in self._tasks.values() if ctx.rejected_worktree
+        ]
         logger.info(
             "Cleaning up %d worker tasks, %d worktrees",
-            len(self._worker_tasks),
-            len(self._worktrees) + len(self._rejected_worktrees),
+            len(active_workers),
+            len(active_wts) + len(rejected_wts),
         )
 
         # Cancel active worker asyncio tasks first — stop work before removing worktrees
-        for task_slug, atask in list(self._worker_tasks.items()):
+        for task_slug, atask in active_workers:
             if not atask.done():
                 atask.cancel()
                 logger.debug("Cancelled worker task: %s", task_slug)
 
         # Wait briefly for cancellations to propagate
-        if self._worker_tasks:
-            await asyncio.gather(*self._worker_tasks.values(), return_exceptions=True)
-        self._worker_tasks.clear()
+        if active_workers:
+            await asyncio.gather(*[atask for _, atask in active_workers], return_exceptions=True)
+        for ctx in self._tasks.values():
+            ctx.worker_task = None
         self._pending_dispatches.clear()
 
         # Close all worktrees (including rejected ones for total cleanup ONLY if shutdown was set)
         loop = asyncio.get_running_loop()
-        to_clean = list(self._worktrees.values())
+        to_clean = list(active_wts)
         if self._shutdown_event.is_set():
-            to_clean += list(self._rejected_worktrees.values())
+            to_clean += rejected_wts
 
         for wt in to_clean:
             try:
@@ -365,9 +400,10 @@ class EventDagRunner:
             except Exception as exc:
                 logger.warning("Failed to remove worktree: %s", exc)
 
-        self._worktrees.clear()
-        if self._shutdown_event.is_set():
-            self._rejected_worktrees.clear()
+        for ctx in self._tasks.values():
+            ctx.worktree = None
+            if self._shutdown_event.is_set():
+                ctx.rejected_worktree = None
 
         # Shutdown executor
         self._executor.shutdown(wait=False)
@@ -448,7 +484,10 @@ class EventDagRunner:
 
     async def _cleanup_task(self, action: CleanupTask) -> list[DagAction]:
         """Remove worktree for a task (terminal failure/skip)."""
-        wt = self._worktrees.pop(action.task_slug, None)
+        ctx = self._tasks.get(action.task_slug)
+        wt = ctx.worktree if ctx else None
+        if ctx:
+            ctx.worktree = None
         if wt:
             loop = asyncio.get_running_loop()
             try:
@@ -475,17 +514,19 @@ class EventDagRunner:
     def _handle_worker_exit(self, exit_event: WorkerExit) -> list[DagAction]:
         """Convert a worker exit into kernel actions, recording errors and emitting events."""
         self._pending_dispatches.discard(exit_event.task_slug)
-        self._worker_tasks.pop(exit_event.task_slug, None)
+        ctx = self._ctx(exit_event.task_slug)
+        ctx.worker_task = None
         status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
 
         if exit_event.last_error:
-            self._task_errors[exit_event.task_slug] = exit_event.last_error
+            ctx.error = exit_event.last_error
 
         # Calculate task duration
-        start_time = self._task_start_times.pop(exit_event.task_slug, None)
+        start_time = ctx.start_time
+        ctx.start_time = None
         duration = round(time.time() - start_time, 2) if start_time else None
         if duration is not None:
-            self._task_durations[exit_event.task_slug] = duration
+            ctx.duration = duration
 
         actions = self.kernel.handle(
             TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
@@ -552,7 +593,8 @@ class EventDagRunner:
                 )
             )
 
-        wt = self._worktrees.get(action.task_slug)
+        ctx = self._tasks.get(action.task_slug)
+        wt = ctx.worktree if ctx else None
         if not wt:
             return self.kernel.handle(
                 TaskReviewDone(
@@ -594,7 +636,7 @@ class EventDagRunner:
                     f"\nhint: add these paths to files.edit in task"
                     f" '{action.task_slug}', then recompile and re-run"
                 )
-            self._task_errors[action.task_slug] = error_msg
+            self._ctx(action.task_slug).error = error_msg
 
         return self.kernel.handle(
             TaskReviewDone(
@@ -611,8 +653,9 @@ class EventDagRunner:
 
     def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
         """Decide retry vs fail based on attempt count."""
-        attempts = self._attempts.get(action.task_slug, 0)
-        error_detail = self._task_errors.get(action.task_slug, "")
+        ctx = self._ctx(action.task_slug)
+        attempts = ctx.attempts
+        error_detail = ctx.error or ""
 
         gov_action = GovernorAction.FAIL
         if error_detail in self._NON_RETRYABLE_ERRORS:
@@ -622,7 +665,7 @@ class EventDagRunner:
                 error_detail,
             )
         elif attempts < self.kernel.max_retries:
-            self._attempts[action.task_slug] = attempts + 1
+            ctx.attempts = attempts + 1
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
                 action.task_slug,
@@ -794,9 +837,10 @@ class EventDagRunner:
             prompt = self._baseline_diag_note + prompt
 
         # Enrich prompt with prior failure context on retry
-        prior_error = self._task_errors.get(action.task_slug)
+        ctx = self._ctx(action.task_slug)
+        prior_error = ctx.error
         if prior_error:
-            attempt = self._attempts.get(action.task_slug, 0)
+            attempt = ctx.attempts
             prompt = (
                 f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
                 f"Fix the issue described above, then complete the original task.\n\n"
@@ -808,7 +852,7 @@ class EventDagRunner:
         wt = await loop.run_in_executor(
             self._executor, create_worktree, self.session_root, action.task_slug, base_ref
         )
-        self._worktrees[action.task_slug] = wt
+        ctx.worktree = wt
 
         # Re-resolve agent from project config mapping
         agent = task.agent
@@ -828,9 +872,10 @@ class EventDagRunner:
                     ),
                 )
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
-            self._pane_slugs[action.task_slug] = pane_slug
+            ctx.pane_slug = pane_slug
+            self._pane_slugs[action.task_slug] = pane_slug  # kernel shared ref
             self._pending_dispatches.add(action.task_slug)
-            self._task_start_times[action.task_slug] = time.time()
+            ctx.start_time = time.time()
             task_scope = {
                 "task_slug": action.task_slug,
                 "create": list(task.files.create),
@@ -906,7 +951,7 @@ class EventDagRunner:
                     timeout_s,
                 )
             )
-            self._worker_tasks[action.task_slug] = worker_task
+            ctx.worker_task = worker_task
             return kernel_actions
 
         except Exception as exc:
@@ -914,13 +959,13 @@ class EventDagRunner:
             logger.error(
                 "Dispatch failed for %s after worktree creation: %s", action.task_slug, exc
             )
-            self._task_errors[action.task_slug] = str(exc)
+            ctx.error = str(exc)
             self._pending_dispatches.discard(action.task_slug)
             try:
                 await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
             except Exception as cleanup_exc:
                 logger.warning("Worktree cleanup after dispatch failure: %s", cleanup_exc)
-            self._worktrees.pop(action.task_slug, None)
+            ctx.worktree = None
             raise
 
     async def _prepare_and_commit(
@@ -1213,17 +1258,18 @@ class EventDagRunner:
         settlement_rejected: bool,
         loop: asyncio.AbstractEventLoop,
     ) -> None:
+        ctx = self._ctx(action.task_slug)
         if settlement_rejected:
             logger.info("Worktree preserved for inspection: %s (%s)", action.task_slug, wt.path)
-            self._worktrees.pop(action.task_slug, None)
-            self._rejected_worktrees[action.task_slug] = wt
+            ctx.worktree = None
+            ctx.rejected_worktree = wt
             return
 
         try:
             await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
         except Exception as exc:
             logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
-        self._worktrees.pop(action.task_slug, None)
+        ctx.worktree = None
 
     def _sync_merge_artifact_state(self, task_slug: str, error: str | None) -> None:
         db_state = TaskState.MERGED if not error else TaskState.FAILED
@@ -1249,7 +1295,8 @@ class EventDagRunner:
 
     async def _merge(self, action: MergeTask) -> list[DagAction]:
         """Commit-or-Kill: Merge worktree branch into base (Pillar #2)."""
-        wt = self._worktrees.get(action.task_slug)
+        ctx = self._tasks.get(action.task_slug)
+        wt = ctx.worktree if ctx else None
         if not wt:
             return self.kernel.handle(TaskMergeDone(action.task_slug))
 
@@ -1276,7 +1323,7 @@ class EventDagRunner:
         )
 
         if error:
-            self._task_errors[action.task_slug] = error
+            self._ctx(action.task_slug).error = error
 
         actions = self.kernel.handle(TaskMergeDone(action.task_slug, error=error))
 

@@ -330,7 +330,7 @@ class TestSingleTaskHappy:
         with _io_patches():
             runner = _make_runner(_single_dag())
             asyncio.run(runner.run())
-            assert len(runner._worktrees) == 0
+            assert not any(ctx.worktree for ctx in runner._tasks.values())
 
     def test_task_test_cmd_override_reaches_settlement(self):
         captured: dict[str, object] = {}
@@ -397,7 +397,7 @@ class TestWorkerFailure:
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
-            assert runner._attempts.get("a", 0) >= 1
+            assert runner._ctx("a").attempts >= 1
 
     def test_runner_honors_dag_retry_budget(self):
         dag = DagDefinition(
@@ -480,7 +480,7 @@ class TestDispatchFailure:
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
-            assert runner._task_errors["a"] == "prepare failed"
+            assert runner._ctx("a").error == "prepare failed"
 
 
 class TestPartialDAG:
@@ -690,8 +690,8 @@ class TestCleanup:
                     trigger_task.cancel()
 
             asyncio.run(_run_with_shutdown())
-            assert len(runner._worker_tasks) == 0
-            assert len(runner._worktrees) == 0
+            assert not any(ctx.worker_task for ctx in runner._tasks.values())
+            assert not any(ctx.worktree for ctx in runner._tasks.values())
 
 
 class TestSemanticSettlementShadowMode:
@@ -877,7 +877,7 @@ class TestIntegrationCandidate:
             asyncio.run(runner.run())
 
             # Original worktree should be in rejected_worktrees, not cleaned up
-            assert "a" in runner._rejected_worktrees
+            assert runner._ctx("a").rejected_worktree is not None
 
     def test_candidate_validation_gate_failure_rejects(self):
         """If candidate passes replay but fails validation gates, reject."""
