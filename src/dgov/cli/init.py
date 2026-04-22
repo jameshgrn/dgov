@@ -31,6 +31,33 @@ _EXCLUDE_DIRS = frozenset({
 })
 
 
+_DGOV_GITIGNORE = """\
+# Runtime state — never commit
+state.db
+state.db-wal
+state.db-shm
+runs.log
+out/
+runtime/
+plans/deployed.jsonl
+plans/archive/
+plans/*/_compiled.toml
+"""
+
+_SENTRUX_GITIGNORE = """\
+# Runtime output — never commit
+history.log
+current.json
+"""
+
+
+def _ensure_gitignore(directory: Path, content: str) -> None:
+    """Write a .gitignore if it doesn't already exist."""
+    gitignore = directory / ".gitignore"
+    if not gitignore.exists():
+        gitignore.write_text(content)
+
+
 def _sentrux_available() -> bool:
     """Return True when the sentrux binary is available."""
     return shutil.which("sentrux") is not None
@@ -501,6 +528,12 @@ def init_cmd(force: bool, yes: bool) -> None:
     governor_content = _render_governor_md()
 
     dgov_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_gitignore(dgov_dir, _DGOV_GITIGNORE)
+
+    sentrux_dir = project_root / ".sentrux"
+    sentrux_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_gitignore(sentrux_dir, _SENTRUX_GITIGNORE)
+
     created: list[Path] = []
 
     if force or not config_path.exists():

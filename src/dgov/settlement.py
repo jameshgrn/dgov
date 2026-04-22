@@ -49,6 +49,24 @@ class ReviewResult:
     error: str | None = None
 
 
+def _walk_shallow(node: ast.AST) -> list[ast.AST]:
+    """Walk AST children without descending into nested scopes.
+
+    Skips ``FunctionDef``, ``AsyncFunctionDef``, ``ClassDef``, and
+    ``ExceptHandler`` nodes so that raises inside nested handlers or
+    inner functions are not associated with the outer exception name.
+    """
+    _SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.ExceptHandler)
+    result: list[ast.AST] = []
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        child = stack.pop()
+        result.append(child)
+        if not isinstance(child, _SCOPE_NODES):
+            stack.extend(ast.iter_child_nodes(child))
+    return result
+
+
 class SmartFixer:
     """Harness-level refactorer for 'unfixable' lint rules.
 
@@ -79,32 +97,45 @@ class SmartFixer:
 
         If an except block has 'except ... as exc:' and a bare 'raise NewError()',
         automatically convert to 'raise NewError() from exc'.
+
+        Uses AST to locate targets but edits text directly — never round-trips
+        through ast.unparse(), which would rewrite the entire file.
         """
         try:
             tree = ast.parse(content)
         except SyntaxError:
             return content
 
-        modified = False
+        # Collect (line_number, end_col, exc_name) for each bare raise in an except-as block.
+        # Process bottom-up (reversed) so earlier insertions don't shift later line offsets.
+        # Only scan direct body statements — skip nested functions, classes, and inner
+        # try/except blocks to avoid associating raises with the wrong exception name.
+        fixes: list[tuple[int, int, str]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler) or not node.name:
+                continue
+            exc_name = node.name
+            for child in _walk_shallow(node):
+                if (
+                    isinstance(child, ast.Raise)
+                    and child.exc
+                    and not child.cause
+                    and child.end_col_offset is not None
+                    and child.end_lineno is not None
+                ):
+                    fixes.append((child.end_lineno, child.end_col_offset, exc_name))
 
-        class B904Transformer(ast.NodeTransformer):
-            def visit_ExceptHandler(self, node: ast.ExceptHandler) -> ast.AST:
-                # Need an exception variable name to chain from
-                exc_name = node.name
-                if not exc_name:
-                    return self.generic_visit(node)
+        if not fixes:
+            return content
 
-                # Look for bare 'raise' statements in this handler
-                for body_node in ast.walk(node):
-                    if isinstance(body_node, ast.Raise) and body_node.exc and not body_node.cause:
-                        # Append 'from {exc_name}'
-                        body_node.cause = ast.Name(id=exc_name, ctx=ast.Load())
-                        nonlocal modified
-                        modified = True
-                return node
+        lines = content.splitlines(keepends=True)
+        for lineno, end_col, exc_name in sorted(fixes, reverse=True):
+            idx = lineno - 1  # 1-indexed → 0-indexed
+            line = lines[idx]
+            # Insert ' from exc_name' at end_col (before any trailing comment/newline)
+            lines[idx] = line[:end_col] + f" from {exc_name}" + line[end_col:]
 
-        new_tree = B904Transformer().visit(tree)
-        return ast.unparse(new_tree) if modified else content
+        return "".join(lines)
 
     def _fix_e501_comments(self, content: str) -> str:
         """Fix E501 (line-too-long) for comments.
@@ -461,6 +492,200 @@ def review_sandbox(
         return ReviewResult(passed=False, verdict="exception", error=f"Review failed: {exc}")
 
 
+def _file_in_base(worktree_path: Path, rel_path: str) -> bool:
+    """Return True if the file exists in the worktree's HEAD commit."""
+    res = subprocess.run(
+        ["git", "cat-file", "-t", f"HEAD:{rel_path}"],
+        cwd=worktree_path,
+        capture_output=True,
+    )
+    return res.returncode == 0
+
+
+def _file_existed_at(worktree_path: Path, rel_path: str, commit: str) -> bool:
+    """Return True if the file existed at the given commit."""
+    res = subprocess.run(
+        ["git", "cat-file", "-t", f"{commit}:{rel_path}"],
+        cwd=worktree_path,
+        capture_output=True,
+    )
+    return res.returncode == 0
+
+
+def _worker_changed_lines(worktree_path: Path, rel_path: str) -> set[int]:
+    """Parse ``git diff --unified=0`` to get 0-indexed line numbers the worker changed."""
+    result = subprocess.run(
+        ["git", "diff", "--unified=0", "--", rel_path],
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+    )
+    changed: set[int] = set()
+    for line in result.stdout.splitlines():
+        if not line.startswith("@@"):
+            continue
+        # Format: @@ -a[,b] +c[,d] @@
+        match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+        if match:
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            for i in range(start, start + count):
+                changed.add(i - 1)  # git is 1-indexed, we use 0-indexed
+    return changed
+
+
+def _is_import_block_line(line: str, in_paren: bool) -> tuple[bool, bool]:
+    """Return (is_part_of_import_block, currently_inside_parens).
+
+    Handles multiline imports like ``from x import (\\n a, b\\n)`` and
+    comment lines interleaved between imports.
+    """
+    stripped = line.strip()
+    if in_paren:
+        # Inside a parenthesized import — everything until closing paren
+        return True, ")" not in stripped
+    if stripped.startswith(("import ", "from ")):
+        return True, "(" in stripped and ")" not in stripped
+    # Blank lines and comments between imports are part of the block
+    if stripped == "" or stripped.startswith("#"):
+        return True, False
+    return False, False
+
+
+def _expand_to_import_blocks(lines: list[str], changed: set[int]) -> set[int]:
+    """Expand changed lines to cover entire import blocks when any import was touched.
+
+    Import reordering is a structural change that affects the whole block.
+    If the worker added or modified any import line, autofix needs to own
+    the entire contiguous import section to apply sorting correctly.
+
+    Handles multiline imports (``from x import (...)``), comment lines
+    between imports, and blank separator lines.
+    """
+    if not changed:
+        return changed
+
+    # Find contiguous import blocks
+    blocks: list[tuple[int, int]] = []
+    i = 0
+    in_paren = False
+    while i < len(lines):
+        is_import, in_paren = _is_import_block_line(lines[i], in_paren)
+        if is_import:
+            start = i
+            while i < len(lines):
+                is_import, in_paren = _is_import_block_line(lines[i], in_paren)
+                if is_import:
+                    i += 1
+                else:
+                    break
+            # Trim trailing blank/comment-only lines from block boundary
+            end = i
+            while end > start and lines[end - 1].strip() in ("", "#"):
+                end -= 1
+            if end > start:
+                blocks.append((start, end))
+        else:
+            i += 1
+
+    expanded = set(changed)
+    for start, end in blocks:
+        if any(ln in changed for ln in range(start, end)):
+            expanded.update(range(start, end))
+    return expanded
+
+
+def _scope_to_changed(
+    worker_lines: list[str],
+    fixed_lines: list[str],
+    changed_lines: set[int],
+) -> list[str]:
+    """Keep autofix changes only within worker-modified regions.
+
+    Uses ``difflib.SequenceMatcher`` to align the pre- and post-autofix
+    versions.  For each difference block:
+    - **replace/delete**: if any original line is in ``changed_lines``, keep
+      the autofix version; otherwise revert to the worker's text.
+    - **insert** (``i1 == i2``): keep the insertion when the insertion point
+      is adjacent to a changed line.  This handles import reordering where
+      SequenceMatcher splits the block into separate insert + delete ops.
+    """
+    import difflib
+
+    sm = difflib.SequenceMatcher(None, worker_lines, fixed_lines)
+    result: list[str] = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            result.extend(worker_lines[i1:i2])
+        elif tag == "insert":
+            # i1 == i2 for inserts — check adjacency
+            adjacent = i1 in changed_lines or (i1 > 0 and i1 - 1 in changed_lines)
+            if adjacent:
+                result.extend(fixed_lines[j1:j2])
+        elif tag == "delete":
+            if any(ln in changed_lines for ln in range(i1, i2)):
+                pass  # accept deletion
+            else:
+                result.extend(worker_lines[i1:i2])
+        else:
+            # replace
+            if any(ln in changed_lines for ln in range(i1, i2)):
+                result.extend(fixed_lines[j1:j2])
+            else:
+                result.extend(worker_lines[i1:i2])
+    return result
+
+
+def _autofix_full(
+    rel_files: list[str],
+    worktree_path: Path,
+    config: ProjectConfig,
+) -> None:
+    """Run lint-fix + SmartFixer + format on full files (used for new files)."""
+    if not rel_files:
+        return
+    _run_cmd(config.lint_fix_cmd, rel_files, worktree_path, timeout=config.settlement_timeout)
+    SmartFixer(worktree_path, line_length=config.line_length).fix_all(rel_files)
+    _run_cmd(config.format_cmd, rel_files, worktree_path, timeout=config.settlement_timeout)
+
+
+def _autofix_scoped_single(
+    worktree_path: Path,
+    rel_path: str,
+    config: ProjectConfig,
+) -> None:
+    """Autofix one existing file, scoped to worker-changed regions only.
+
+    1. Record which lines the worker changed (via ``git diff``).
+    2. Save the worker's content.
+    3. Run full autofix (ruff + SmartFixer + format).
+    4. Use ``_scope_to_changed`` to keep only autofix changes that overlap
+       with the worker's edits. Pre-existing code style is preserved.
+    """
+    path = worktree_path / rel_path
+
+    changed_lines = _worker_changed_lines(worktree_path, rel_path)
+    if not changed_lines:
+        return  # worker didn't touch this file
+
+    worker_lines = path.read_text().splitlines(keepends=True)
+
+    # Expand changed_lines to cover entire import blocks when worker touched imports
+    changed_lines = _expand_to_import_blocks(worker_lines, changed_lines)
+
+    # Run full autofix in-place
+    _run_cmd(config.lint_fix_cmd, [rel_path], worktree_path, timeout=config.settlement_timeout)
+    SmartFixer(worktree_path, line_length=config.line_length).fix_all([rel_path])
+    _run_cmd(config.format_cmd, [rel_path], worktree_path, timeout=config.settlement_timeout)
+
+    fixed_lines = path.read_text().splitlines(keepends=True)
+    if worker_lines == fixed_lines:
+        return  # autofix changed nothing
+
+    scoped = _scope_to_changed(worker_lines, fixed_lines, changed_lines)
+    path.write_text("".join(scoped))
+
+
 def autofix_sandbox(
     worktree_path: Path,
     file_claims: tuple[str, ...] = (),
@@ -468,8 +693,11 @@ def autofix_sandbox(
 ) -> None:
     """Mechanical auto-fix: lint fix then format. Called BEFORE commit.
 
+    New files get full autofix (no pre-existing code to preserve).
+    Existing files get scoped autofix — only worker-changed regions are
+    modified, preserving pre-existing code style.
+
     Order matters: lint fix can change formatting, so format runs LAST.
-    Scoped to claimed files if provided, otherwise all source files.
     """
     if config is None:
         config = load_project_config(worktree_path)
@@ -493,15 +721,14 @@ def autofix_sandbox(
     if not rel:
         return
 
-    # 1. Standard Lint fix (may remove imports, change lines)
-    _run_cmd(config.lint_fix_cmd, rel, worktree_path, timeout=config.settlement_timeout)
+    # Split into new files (full autofix) and existing files (scoped autofix)
+    new_files = [f for f in rel if not _file_in_base(worktree_path, f)]
+    existing_files = [f for f in rel if _file_in_base(worktree_path, f)]
 
-    # 2. Smart Fixer (Logical and Prose fixes that Ruff skips)
-    sf = SmartFixer(worktree_path, line_length=config.line_length)
-    sf.fix_all(rel)
+    _autofix_full(new_files, worktree_path, config)
 
-    # 3. Format LAST (canonical formatting after all mutations)
-    _run_cmd(config.format_cmd, rel, worktree_path, timeout=config.settlement_timeout)
+    for f in existing_files:
+        _autofix_scoped_single(worktree_path, f, config)
 
 
 def _changed_source_files(
@@ -741,13 +968,106 @@ def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> G
     return None
 
 
+def _scoped_lint_check(
+    worktree_path: Path,
+    existing_files: list[str],
+    base_commit: str,
+    config: ProjectConfig,
+) -> GateResult | None:
+    """Run lint check scoped to worker-changed lines only.
+
+    Uses ``ruff check --output-format=json`` to get per-diagnostic line numbers,
+    then filters to only lines changed between ``base_commit`` and HEAD.
+    Pre-existing lint issues in unchanged regions are ignored.
+
+    Only works with Ruff (requires ``--output-format=json``). The caller
+    must check ``"ruff" in config.lint_cmd`` before calling this function.
+    """
+    import json as json_mod
+
+    # Build changed-line sets per file
+    changed_by_file: dict[str, set[int]] = {}
+    for f in existing_files:
+        diff_res = subprocess.run(
+            ["git", "diff", "--unified=0", base_commit, "HEAD", "--", f],
+            cwd=worktree_path,
+            capture_output=True,
+            text=True,
+        )
+        lines: set[int] = set()
+        for line in diff_res.stdout.splitlines():
+            if not line.startswith("@@"):
+                continue
+            match = re.search(r"\+(\d+)(?:,(\d+))?", line)
+            if match:
+                start = int(match.group(1))
+                count = int(match.group(2)) if match.group(2) is not None else 1
+                lines.update(range(start, start + count))
+        if lines:
+            changed_by_file[f] = lines
+
+    if not changed_by_file:
+        return None
+
+    # Run ruff with JSON output on all existing files at once
+    file_args = " ".join(shlex.quote(f) for f in existing_files)
+    lint_json_cmd = config.lint_cmd.replace("{file}", file_args)
+    # Inject --output-format=json before the file args
+    lint_json_cmd = lint_json_cmd + " --output-format=json"
+
+    res = subprocess.run(
+        lint_json_cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=config.settlement_timeout,
+    )
+
+    if res.returncode == 0:
+        return None  # no lint issues at all
+
+    # Parse JSON diagnostics and filter to changed lines
+    try:
+        diagnostics = json_mod.loads(res.stdout)
+    except (json_mod.JSONDecodeError, ValueError):
+        # Can't parse JSON — fall back to full lint (fail-closed)
+        output = (res.stdout + res.stderr)[-500:]
+        return GateResult(passed=False, error=f"Lint failure:\n{output}")
+
+    scoped_issues: list[str] = []
+    for diag in diagnostics:
+        filename = diag.get("filename", "")
+        # ruff outputs absolute paths; convert to relative
+        try:
+            rel_name = str(Path(filename).relative_to(worktree_path))
+        except ValueError:
+            rel_name = filename
+        row = diag.get("location", {}).get("row", 0)
+        if rel_name in changed_by_file and row in changed_by_file[rel_name]:
+            code = diag.get("code", "?")
+            msg = diag.get("message", "")
+            scoped_issues.append(f"{rel_name}:{row} {code} {msg}")
+
+    if scoped_issues:
+        detail = "\n".join(scoped_issues[:10])
+        return GateResult(passed=False, error=f"Lint failure (worker-changed lines):\n{detail}")
+    return None
+
+
 def _run_acceptance_gates(
     worktree_path: Path,
     changed_files: Sequence[str],
     project_root: str,
     config: ProjectConfig,
+    base_commit: str | None = None,
 ) -> GateResult:
-    """Run the shared acceptance gates for a resolved changed-file set."""
+    """Run the shared acceptance gates for a resolved changed-file set.
+
+    When ``base_commit`` is provided (post-commit validation), lint and format
+    checks are scoped to worker-changed lines for existing files, preventing
+    false failures from pre-existing style issues.
+    """
     if not changed_files:
         return GateResult(passed=True)
 
@@ -760,25 +1080,79 @@ def _run_acceptance_gates(
 
     try:
         if existing_changed_files:
-            res_lint = _run_cmd(
-                config.lint_cmd,
-                existing_changed_files,
-                worktree_path,
-                timeout=config.settlement_timeout,
-            )
-            if res_lint.returncode != 0:
-                output = (res_lint.stdout + res_lint.stderr)[-500:]
-                return GateResult(passed=False, error=f"Lint failure:\n{output}")
+            if base_commit:
+                # Post-commit: scope lint to worker-changed lines only.
+                # Format check is skipped for existing files — scoped autofix
+                # already formatted the worker's regions, and pre-existing
+                # format issues are not the worker's responsibility.
+                new_in_commit = [
+                    f
+                    for f in existing_changed_files
+                    if not _file_existed_at(worktree_path, f, base_commit)
+                ]
+                preexisting = [f for f in existing_changed_files if f not in new_in_commit]
 
-            res_fmt = _run_cmd(
-                config.format_check_cmd,
-                existing_changed_files,
-                worktree_path,
-                timeout=config.settlement_timeout,
-            )
-            if res_fmt.returncode != 0:
-                output = (res_fmt.stdout + res_fmt.stderr)[-500:]
-                return GateResult(passed=False, error=f"Format failure:\n{output}")
+                # New files: full lint + format check
+                if new_in_commit:
+                    res_lint = _run_cmd(
+                        config.lint_cmd,
+                        new_in_commit,
+                        worktree_path,
+                        timeout=config.settlement_timeout,
+                    )
+                    if res_lint.returncode != 0:
+                        output = (res_lint.stdout + res_lint.stderr)[-500:]
+                        return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                    res_fmt = _run_cmd(
+                        config.format_check_cmd,
+                        new_in_commit,
+                        worktree_path,
+                        timeout=config.settlement_timeout,
+                    )
+                    if res_fmt.returncode != 0:
+                        output = (res_fmt.stdout + res_fmt.stderr)[-500:]
+                        return GateResult(passed=False, error=f"Format failure:\n{output}")
+
+                # Existing files: scoped lint when Ruff available, else full lint
+                if preexisting:
+                    if "ruff" in config.lint_cmd:
+                        lint_result = _scoped_lint_check(
+                            worktree_path, preexisting, base_commit, config
+                        )
+                        if lint_result is not None:
+                            return lint_result
+                    else:
+                        # Non-Ruff linters: can't scope, run full lint
+                        res_lint = _run_cmd(
+                            config.lint_cmd,
+                            preexisting,
+                            worktree_path,
+                            timeout=config.settlement_timeout,
+                        )
+                        if res_lint.returncode != 0:
+                            output = (res_lint.stdout + res_lint.stderr)[-500:]
+                            return GateResult(passed=False, error=f"Lint failure:\n{output}")
+            else:
+                # Pre-commit / preflight: full checks (current behavior)
+                res_lint = _run_cmd(
+                    config.lint_cmd,
+                    existing_changed_files,
+                    worktree_path,
+                    timeout=config.settlement_timeout,
+                )
+                if res_lint.returncode != 0:
+                    output = (res_lint.stdout + res_lint.stderr)[-500:]
+                    return GateResult(passed=False, error=f"Lint failure:\n{output}")
+
+                res_fmt = _run_cmd(
+                    config.format_check_cmd,
+                    existing_changed_files,
+                    worktree_path,
+                    timeout=config.settlement_timeout,
+                )
+                if res_fmt.returncode != 0:
+                    output = (res_fmt.stdout + res_fmt.stderr)[-500:]
+                    return GateResult(passed=False, error=f"Format failure:\n{output}")
 
         if config.type_check_cmd:
             res_ty = subprocess.run(
@@ -837,4 +1211,6 @@ def validate_sandbox(
         config = load_project_config(project_root)
 
     changed_files = _changed_source_files(worktree_path, base_commit, config.source_extensions)
-    return _run_acceptance_gates(worktree_path, changed_files, project_root, config)
+    return _run_acceptance_gates(
+        worktree_path, changed_files, project_root, config, base_commit=base_commit
+    )

@@ -42,9 +42,18 @@ def _clone_repo(repo: str, base_commit: str, work_dir: Path) -> Path:
 
 
 def _extract_patch(repo_dir: Path, base_commit: str) -> str:
-    """Return git diff between the base commit and current HEAD."""
+    """Return git diff between the base commit and current HEAD, excluding dgov artifacts."""
     result = subprocess.run(
-        ["git", "diff", base_commit, "HEAD"],
+        [
+            "git",
+            "diff",
+            base_commit,
+            "HEAD",
+            "--",
+            ".",
+            ":!.dgov/",
+            ":!.sentrux/",
+        ],
         cwd=repo_dir,
         capture_output=True,
         text=True,
@@ -70,13 +79,40 @@ def run(input: dict[str, dict], **kwargs) -> dict:
         work_dir = Path(tmpdir)
         repo_dir = _clone_repo(repo, base_commit, work_dir)
 
+        import sys
+
         # 1. Bootstrap dgov (detects tooling, creates sentrux baseline)
-        subprocess.run(
+        init_result = subprocess.run(
             ["dgov", "init", "--yes"],
             cwd=repo_dir,
-            check=True,
             capture_output=True,
+            text=True,
         )
+        print(f"[dgov] init returncode={init_result.returncode}", file=sys.stderr)
+        if init_result.stderr:
+            print(f"[dgov] init stderr: {init_result.stderr[:1000]}", file=sys.stderr)
+        if init_result.returncode != 0:
+            return {
+                task_id: {
+                    "history": [{"role": "assistant", "content": ""}],
+                    "cost": 0.0,
+                }
+            }
+
+        # Clear test_cmd — SWE-bench evaluates tests in Docker; dgov's test
+        # gate would fail on missing deps in the worktree.
+        import re
+
+        config_path = repo_dir / ".dgov" / "project.toml"
+        config_text = config_path.read_text()
+        config_text = re.sub(
+            r'^test_cmd\s*=\s*".*"', 'test_cmd = ""', config_text, flags=re.MULTILINE
+        )
+        config_path.write_text(config_text)
+
+        # .dgov/ and .sentrux/ are untracked — worktrees branch from HEAD
+        # without needing these committed. Workers read config from
+        # session_root (the main repo), not from the worktree.
 
         # 2. Planner explores repo + emits plan → compile → run
         #    Full pipeline: settlement (autofix + lint + scope) + sentrux gate
@@ -85,7 +121,14 @@ def run(input: dict[str, dict], **kwargs) -> dict:
             cwd=repo_dir,
             capture_output=True,
             text=True,
+            timeout=2400,
         )
+
+        print(f"[dgov] plan create returncode={result.returncode}", file=sys.stderr)
+        if result.stdout:
+            print(f"[dgov] stdout: {result.stdout[:2000]}", file=sys.stderr)
+        if result.stderr:
+            print(f"[dgov] stderr: {result.stderr[:2000]}", file=sys.stderr)
 
         if result.returncode != 0:
             # Return empty patch on failure — HAL scores it as 0
