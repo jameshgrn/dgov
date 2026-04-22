@@ -110,7 +110,7 @@ class PlanSpec:
 class PlanIssue:
     """A validation issue found in a plan."""
 
-    severity: str  # "error" or "warning"
+    severity: Literal["error", "warning"]
     message: str
     unit: str | None = None
 

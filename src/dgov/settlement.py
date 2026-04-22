@@ -38,6 +38,12 @@ class GateResult:
     passed: bool
     error: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.passed and self.error is not None:
+            raise ValueError("GateResult: passed=True but error is set")
+        if not self.passed and not self.error:
+            raise ValueError("GateResult: passed=False but no error message")
+
 
 @dataclass(frozen=True)
 class ReviewResult:
@@ -47,6 +53,12 @@ class ReviewResult:
     verdict: str
     actual_files: frozenset[str] = frozenset()
     error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.passed and self.error is not None:
+            raise ValueError("ReviewResult: passed=True but error is set")
+        if not self.passed and not self.error:
+            raise ValueError("ReviewResult: passed=False but no error message")
 
 
 def _walk_shallow(node: ast.AST) -> list[ast.AST]:
