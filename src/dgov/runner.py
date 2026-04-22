@@ -72,6 +72,44 @@ from dgov.worktree import (
 logger = logging.getLogger(__name__)
 
 
+def _build_baseline_diag_note(config: object, session_root: str) -> str:
+    """Capture baseline type-check diagnostic count for worker context.
+
+    Returns a short note string to prepend to worker prompts, or empty
+    string if no type checker is configured or baseline is clean.
+    """
+    import subprocess
+
+    type_check_cmd = getattr(config, "type_check_cmd", None)
+    if not type_check_cmd:
+        return ""
+    try:
+        res = subprocess.run(
+            type_check_cmd,
+            shell=True,
+            cwd=session_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return ""
+    if res.returncode == 0:
+        return ""
+    import re
+
+    m = re.search(r"Found (\d+) diagnostics?", (res.stdout or "") + (res.stderr or ""))
+    count = int(m.group(1)) if m else 0
+    if count == 0:
+        return ""
+    return (
+        f"\nNOTE: The type checker (`{type_check_cmd}`) has {count} pre-existing "
+        f"diagnostic(s) at HEAD. These are NOT your responsibility — do not "
+        f"attempt to fix them. Settlement compares against this baseline and "
+        f"will only reject if you introduce NEW diagnostics.\n"
+    )
+
+
 class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
@@ -98,11 +136,13 @@ class EventDagRunner:
             )
             for slug, t in dag.tasks.items()
         }
+        self.task_read_files = {slug: tuple(t.files.read) for slug, t in dag.tasks.items()}
         self.kernel = DagKernel(
             deps=self.deps,
             task_files=self.task_files,
             max_retries=dag.default_max_retries,
         )
+        self._baseline_diag_note = _build_baseline_diag_note(self.project_config, session_root)
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
@@ -521,9 +561,11 @@ class EventDagRunner:
         # Always use the current plan's file claims for review, ensuring resumed
         # tasks honor the most recent recompiled scope.
         claimed_files = self.task_files.get(action.task_slug)
+        read_files = self.task_read_files.get(action.task_slug, ())
         review_result = review_sandbox(
             wt.path,
             claimed_files=claimed_files,
+            read_files=read_files,
             project_root=self.session_root,
             task_slug=action.task_slug,
             pane_slug=action.pane_slug,
@@ -740,6 +782,10 @@ class EventDagRunner:
             prompt = self._build_reviewer_prompt(action.task_slug, task)
         else:
             prompt = task.prompt or ""
+
+        # Inject baseline diagnostic note so workers don't waste iterations
+        if self._baseline_diag_note:
+            prompt = self._baseline_diag_note + prompt
 
         # Enrich prompt with prior failure context on retry
         prior_error = self._task_errors.get(action.task_slug)

@@ -153,6 +153,12 @@ class DagKernel:
         if event.passed:
             self.task_states[event.task_slug] = TaskState.REVIEWED_PASS
             return self._try_merge()
+        # Read-scope violations are retriable: the worker edited a
+        # files.read file. Route through InterruptGovernor (retry logic)
+        # instead of cascading terminal failure to dependents.
+        if event.verdict == "read_scope_violation":
+            self.task_states[event.task_slug] = TaskState.FAILED
+            return [InterruptGovernor(event.task_slug, "", reason="read_scope_violation")]
         self.task_states[event.task_slug] = TaskState.FAILED
         self._cascade_failure(event.task_slug)
         return [CleanupTask(event.task_slug), *self._try_merge(), *self._schedule()]

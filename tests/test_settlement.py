@@ -775,16 +775,39 @@ class TestValidateSandbox:
         assert result.passed is True
 
     @pytest.mark.unit
-    def test_validate_type_check_gate_fail(self, tmp_path: Path):
-        """Type check gate fails when type_check_cmd fails."""
+    def test_validate_type_check_gate_fail_new_diagnostics(self, tmp_path: Path):
+        """Type check gate fails when worktree has more diagnostics than baseline."""
         base = _init_repo(tmp_path)
         (tmp_path / "clean.py").write_text("x = 1\n")
         _git(tmp_path, "add", ".")
         _git(tmp_path, "commit", "-m", "add clean.py")
-        config = ProjectConfig(type_check_cmd="exit 1", test_cmd="")
+        # Counter file: baseline (1st call) passes, worktree (2nd call) fails.
+        counter = tmp_path / ".ty_counter"
+        cmd = (
+            f'n=$(cat "{counter}" 2>/dev/null || echo 0); '
+            f'echo $((n+1)) > "{counter}"; '
+            'if [ "$n" -ge 1 ]; then '
+            'echo "Found 2 diagnostics" >&2; exit 1; '
+            "else exit 0; fi"
+        )
+        config = ProjectConfig(type_check_cmd=cmd, test_cmd="")
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
         assert result.passed is False
         assert "Type check failure" in (result.error or "")
+        assert "baseline 0" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_validate_type_check_gate_pass_preexisting(self, tmp_path: Path):
+        """Type check gate passes when diagnostics are pre-existing (not new)."""
+        base = _init_repo(tmp_path)
+        (tmp_path / "clean.py").write_text("x = 1\n")
+        _git(tmp_path, "add", ".")
+        _git(tmp_path, "commit", "-m", "add clean.py")
+        # Both baseline and worktree fail with same count → pass
+        cmd = 'echo "Found 3 diagnostics" >&2; exit 1'
+        config = ProjectConfig(type_check_cmd=cmd, test_cmd="")
+        result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
+        assert result.passed is True
 
     @pytest.mark.unit
     def test_validate_type_check_skipped_when_empty(self, tmp_path: Path):

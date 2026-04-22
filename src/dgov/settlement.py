@@ -319,6 +319,7 @@ def _check_scope(
     actual_files: frozenset[str],
     claimed_files: Sequence[str] | None,
     scope_ignore_files: Sequence[str] = (),
+    read_files: Sequence[str] = (),
 ) -> ReviewResult | None:
     """Check that changed files are within claimed scope. Returns ReviewResult on failure.
 
@@ -326,6 +327,10 @@ def _check_scope(
     project.toml) are treated as tooling side-effects and exempted from the
     unclaimed check — e.g. uv.lock updated by `uv run`, `.venv` directories,
     nested `__pycache__` dirs, and `*.pyc` bytecode files.
+
+    Files in `read_files` that were edited produce a softer
+    ``read_scope_violation`` verdict — the runner can retry the worker
+    instead of cascading failure.
     """
     if not claimed_files:
         return None
@@ -341,14 +346,30 @@ def _check_scope(
             f, ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs
         )
     )
-    if unclaimed:
+    if not unclaimed:
+        return None
+
+    # Distinguish: all unclaimed files are in read claims → retriable soft violation.
+    # Any truly unclaimed file (not in read either) → hard scope violation.
+    read_set = frozenset(read_files)
+    truly_unclaimed = unclaimed - read_set
+    if truly_unclaimed:
         return ReviewResult(
             passed=False,
             verdict="scope_violation",
             actual_files=actual_files,
-            error=f"Touched unclaimed files: {sorted(unclaimed)}",
+            error=f"Touched unclaimed files: {sorted(truly_unclaimed)}",
         )
-    return None
+    return ReviewResult(
+        passed=False,
+        verdict="read_scope_violation",
+        actual_files=actual_files,
+        error=(
+            f"Edited read-only files: {sorted(unclaimed)}. "
+            "Revert changes to these files and call done — "
+            "files.read grants read access only, not write."
+        ),
+    )
 
 
 def _check_transient_scope(
@@ -421,6 +442,7 @@ def review_sandbox(
     task_slug: str | None = None,
     pane_slug: str | None = None,
     scope_ignore_files: Sequence[str] = (),
+    read_files: Sequence[str] = (),
 ) -> ReviewResult:
     """FAST review gate — git sanity checks in microseconds.
 
@@ -454,7 +476,7 @@ def review_sandbox(
             return result
 
         # 4. Scope enforcement
-        result = _check_scope(actual_files, claimed_files, scope_ignore_files)
+        result = _check_scope(actual_files, claimed_files, scope_ignore_files, read_files)
         if result is not None:
             return result
 
@@ -876,6 +898,66 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
     return None
 
 
+_DIAG_COUNT_RE = re.compile(r"Found (\d+) diagnostics?")
+
+
+def _count_diagnostics(output: str) -> int:
+    """Parse 'Found N diagnostics' from type checker output."""
+    m = _DIAG_COUNT_RE.search(output)
+    return int(m.group(1)) if m else 0
+
+
+def _type_check_gate(
+    type_check_cmd: str,
+    worktree_path: Path,
+    project_root: str,
+    timeout: int = 120,
+) -> GateResult | None:
+    """Run type checker with baseline comparison.
+
+    Runs the type checker in both the project root (baseline) and the
+    worktree. Only fails if the worktree introduces MORE diagnostics
+    than the baseline — pre-existing errors are not the worker's fault.
+    """
+    # Baseline: run in project root (current HEAD)
+    baseline_res = subprocess.run(
+        type_check_cmd,
+        shell=True,
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    baseline_count = _count_diagnostics((baseline_res.stdout or "") + (baseline_res.stderr or ""))
+
+    # Worktree: run against worker's changes
+    worktree_res = subprocess.run(
+        type_check_cmd,
+        shell=True,
+        cwd=worktree_path,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    worktree_output = (worktree_res.stdout or "") + (worktree_res.stderr or "")
+    worktree_count = _count_diagnostics(worktree_output)
+
+    if worktree_res.returncode != 0 and worktree_count > baseline_count:
+        output = worktree_output[-500:]
+        return GateResult(
+            passed=False,
+            error=f"Type check failure ({worktree_count} diagnostics, "
+            f"baseline {baseline_count}):\n{output}",
+        )
+    if worktree_res.returncode != 0 and worktree_count <= baseline_count:
+        logger.warning(
+            "Type check: %d diagnostics (baseline %d) — pre-existing, not blocking",
+            worktree_count,
+            baseline_count,
+        )
+    return None
+
+
 _SENTRUX_WARN_ONLY = re.compile(
     r"(complex functions increased|coupling increased)",
     re.IGNORECASE,
@@ -1169,17 +1251,14 @@ def _run_acceptance_gates(
                     return GateResult(passed=False, error=f"Format failure:\n{output}")
 
         if config.type_check_cmd:
-            res_ty = subprocess.run(
+            ty_failure = _type_check_gate(
                 config.type_check_cmd,
-                shell=True,
-                cwd=worktree_path,
-                capture_output=True,
-                text=True,
+                worktree_path,
+                project_root,
                 timeout=config.settlement_timeout,
             )
-            if res_ty.returncode != 0:
-                output = (res_ty.stdout + res_ty.stderr)[-500:]
-                return GateResult(passed=False, error=f"Type check failure:\n{output}")
+            if ty_failure is not None:
+                return ty_failure
 
         test_cmd = _build_test_cmd(config, list(changed_files), worktree_path)
         if test_cmd:
