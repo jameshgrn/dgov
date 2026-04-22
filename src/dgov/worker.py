@@ -344,7 +344,10 @@ def _validate_plan(args: dict[str, Any]) -> str | None:
         return "Error: emit_plan requires at least one task."
 
     slugs: list[str] = []
-    for i, task in enumerate(tasks):
+    for i, raw_task in enumerate(tasks):
+        if not isinstance(raw_task, dict):
+            return f"Error: Task {i} is not a dict."
+        task = cast(dict[str, Any], raw_task)
         slug = task.get("slug", "")
         if not slug or not _SLUG_RE.match(slug):
             return f"Error: Task {i} has invalid slug {slug!r}. Must match [A-Za-z0-9_-]+."
@@ -367,10 +370,11 @@ def _validate_plan(args: dict[str, Any]) -> str | None:
                 return f"Error: Worker task {slug!r} must claim at least one file (create, edit, or touch)."
 
     slug_set = set(slugs)
-    for task in tasks:
-        for dep in task.get("depends_on", []):
+    for raw in tasks:
+        t = cast(dict[str, Any], raw)
+        for dep in t.get("depends_on", []):
             if dep not in slug_set:
-                return f"Error: Task {task['slug']!r} depends on unknown slug {dep!r}."
+                return f"Error: Task {t['slug']!r} depends on unknown slug {dep!r}."
 
     # Cycle detection via topological sort
     visited: set[str] = set()
