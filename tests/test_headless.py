@@ -61,10 +61,10 @@ def test_run_headless_worker_uses_project_config_payload(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _mock_create_subprocess_exec)
 
-    exits: list[tuple[int, str]] = []
+    exits: list[tuple[int, str, int, int]] = []
 
-    def _on_exit(task_slug: str, pane_slug: str, exit_code: int, last_error: str) -> None:
-        exits.append((exit_code, last_error))
+    def _on_exit(task_slug: str, pane_slug: str, exit_code: int, last_error: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+        exits.append((exit_code, last_error, prompt_tokens, completion_tokens))
 
     asyncio.run(
         run_headless_worker(
@@ -89,7 +89,7 @@ def test_run_headless_worker_uses_project_config_payload(
     task_scope_json = args[-1]
     assert isinstance(task_scope_json, str)
     assert json.loads(task_scope_json)["create"] == ["x.py"]
-    assert exits == [(0, "")]
+    assert exits == [(0, "", 0, 0)]
 
 
 def test_config_json_for_task_applies_iteration_budget_override(tmp_path: Path) -> None:

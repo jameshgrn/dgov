@@ -491,6 +491,9 @@ def run_worker(
     budget = _iteration_budget(config)
     warn_at = config.worker_iteration_warn_at
 
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+
     for iteration in range(budget):  # Pillar #10: Fail-closed via iteration limit
         # One-time budget warning when approaching limit
         if not warned_budget and iteration >= warn_at:
@@ -514,6 +517,10 @@ def run_worker(
             WorkerEvent("error", f"API Failure: {e!s}").emit()
             _cleanup()
             sys.exit(1)
+
+        if resp.usage:
+            total_prompt_tokens += resp.usage.prompt_tokens
+            total_completion_tokens += resp.usage.completion_tokens
 
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
@@ -544,6 +551,15 @@ def run_worker(
             result, is_done = _execute_tool_call(call, actuators, allowed_tools=allowed_tools)
             if is_done:
                 _cleanup()
+                print(
+                    json.dumps({
+                        "worker_tokens": {
+                            "prompt_tokens": total_prompt_tokens,
+                            "completion_tokens": total_completion_tokens,
+                        }
+                    }),
+                    flush=True,
+                )
                 sys.exit(0)
             messages.append({
                 "role": "tool",
@@ -554,6 +570,15 @@ def run_worker(
 
     WorkerEvent("error", f"Exceeded max iterations ({budget})").emit()
     _cleanup()
+    print(
+        json.dumps({
+            "worker_tokens": {
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+            }
+        }),
+        flush=True,
+    )
     sys.exit(1)
 
 

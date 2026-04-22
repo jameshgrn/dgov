@@ -56,7 +56,7 @@ async def run_headless_worker(
     worktree_path: Path,
     task: DagTaskSpec,
     task_scope: Mapping[str, object],
-    on_exit: Callable[[str, str, int, str], None],
+    on_exit: Callable[[str, str, int, str, int, int], None],
     on_event: Callable[[str, str, object], None] | None = None,
 ) -> None:
     """Execute the headless worker lifecycle."""
@@ -79,6 +79,8 @@ async def run_headless_worker(
     ]
 
     last_error = ""
+    prompt_tokens = 0
+    completion_tokens = 0
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -114,13 +116,17 @@ async def run_headless_worker(
                         last_error = str(content) if content else ""
                     if on_event is not None:
                         on_event(task_slug, log_type, content)
+                elif "worker_tokens" in data:
+                    token_data = data["worker_tokens"]
+                    prompt_tokens = token_data.get("prompt_tokens", 0)
+                    completion_tokens = token_data.get("completion_tokens", 0)
             except json.JSONDecodeError:
                 if line:
                     logger.debug("Worker [%s] raw: %s", task_slug, line)
 
         exit_code = await process.wait()
-        on_exit(task_slug, pane_slug, exit_code, last_error)
+        on_exit(task_slug, pane_slug, exit_code, last_error, prompt_tokens, completion_tokens)
 
     except Exception as exc:
         logger.error("Headless worker [%s] failed to start: %s", task_slug, exc)
-        on_exit(task_slug, pane_slug, 1, str(exc))
+        on_exit(task_slug, pane_slug, 1, str(exc), 0, 0)

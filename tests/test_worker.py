@@ -385,7 +385,8 @@ def test_run_worker_uses_configured_iteration_budget(
             nonlocal call_count
             call_count += 1
             return SimpleNamespace(
-                choices=[SimpleNamespace(message=_FakeMessage(), finish_reason="length")]
+                choices=[SimpleNamespace(message=_FakeMessage(), finish_reason="length")],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
             )
 
     monkeypatch.setattr("dgov.worker.OpenAI", _FakeOpenAI)

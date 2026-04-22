@@ -38,6 +38,8 @@ class WorkerExit:
     exit_code: int
     output_dir: str
     last_error: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 # -- Worktree type --

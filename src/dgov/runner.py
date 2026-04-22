@@ -656,7 +656,7 @@ class EventDagRunner:
         worktree_path: Path,
         task: DagTaskSpec,
         task_scope: Mapping[str, object],
-        on_exit: Callable[[str, str, int, str], None],
+        on_exit: Callable[[str, str, int, str, int, int], None],
         timeout_s: int,
     ) -> None:
         """Run headless worker with wall-clock timeout enforcement."""
@@ -685,7 +685,7 @@ class EventDagRunner:
                 task_slug=task_slug,
                 error=f"Wall-clock timeout after {timeout_s}s",
             )
-            on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s")
+            on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s", 0, 0)
 
     def _build_reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
         """Build a reviewer prompt with dependency diffs auto-injected."""
@@ -873,7 +873,12 @@ class EventDagRunner:
             )
 
             def _on_worker_exit(
-                task_slug: str, pane_slug: str, exit_code: int, last_error: str = ""
+                task_slug: str,
+                pane_slug: str,
+                exit_code: int,
+                last_error: str = "",
+                prompt_tokens: int = 0,
+                completion_tokens: int = 0,
             ) -> None:
                 exit_event = WorkerExit(
                     task_slug=task_slug,
@@ -881,6 +886,8 @@ class EventDagRunner:
                     exit_code=exit_code,
                     output_dir=str(output_dir),
                     last_error=last_error,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
                 )
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
@@ -1164,7 +1171,15 @@ class EventDagRunner:
             "read": list(task.files.read),
         }
 
-    def _noop_retry_exit(self, slug: str, pane: str, code: int, err: str = "") -> None:
+    def _noop_retry_exit(
+        self,
+        slug: str,
+        pane: str,
+        code: int,
+        err: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
         if code != 0:
             logger.warning("Settlement retry worker exited %d for %s: %s", code, slug, err)
 
