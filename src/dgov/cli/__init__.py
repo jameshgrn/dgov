@@ -119,6 +119,7 @@ def cli(
       dgov fix <prompt>          Create and run a one-off fix plan
       dgov watch                 Stream events live
       dgov archive-plan <name>   Manually archive a plan
+      dgov plan create <goal>    Auto-generate an implementation plan
       dgov plan status <dir>     Show pending vs deployed units
       dgov plan review <dir>     Post-hoc debrief of the last run
       dgov sentrux check         Run architectural quality check

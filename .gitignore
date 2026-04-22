@@ -19,3 +19,6 @@ HANDOVER.md
 .napkin.md
 docs/docs/dist/
 docs/node_modules/
+benchmarks/hal/results/
+benchmarks/hal/runs/
+benchmarks/hal/cache/

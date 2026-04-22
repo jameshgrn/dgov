@@ -247,7 +247,7 @@ def _create_bootstrap_commit(project_root: str, files: list[str]) -> None:
 
 
 def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
-    """Fail fast unless the current directory is a git repo with at least one commit."""
+    """Fail fast unless the current directory is a git repo with a clean working tree."""
     repo_check = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         cwd=project_root,
@@ -302,6 +302,23 @@ def _ensure_git_ready(project_root: str, yes: bool = False) -> None:
             err=True,
         )
         click.echo("Fix: create a bootstrap commit or commit manually, then try again.", err=True)
+        raise click.exceptions.Exit(code=1)
+
+    # HEAD exists — check for uncommitted changes. Worktrees branch from HEAD,
+    # so uncommitted files cause cherry-pick conflicts at merge time.
+    dirty = _working_tree_files(project_root)
+    dirty = [f for f in dirty if not f.startswith(".dgov/")]
+    if dirty:
+        click.echo("Error: working tree has uncommitted changes.", err=True)
+        click.echo(
+            "Worktrees branch from HEAD — uncommitted files cause merge conflicts.",
+            err=True,
+        )
+        for f in dirty[:10]:
+            click.echo(f"  {f}", err=True)
+        if len(dirty) > 10:
+            click.echo(f"  ... and {len(dirty) - 10} more", err=True)
+        click.echo("Fix: commit or stash your changes, then retry.", err=True)
         raise click.exceptions.Exit(code=1)
 
 

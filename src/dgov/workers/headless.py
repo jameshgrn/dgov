@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # Absolute path to worker.py — resolved at import time, not runtime.
 _WORKER_SCRIPT = Path(__file__).resolve().parent.parent / "worker.py"
 _RESEARCHER_SCRIPT = Path(__file__).resolve().parent.parent / "researcher.py"
+_PLANNER_SCRIPT = Path(__file__).resolve().parent.parent / "planner.py"
 
 
 def _script_for_role(role: str) -> Path:
@@ -32,6 +33,8 @@ def _script_for_role(role: str) -> Path:
         return _WORKER_SCRIPT
     if role in ("researcher", "reviewer"):
         return _RESEARCHER_SCRIPT
+    if role == "planner":
+        return _PLANNER_SCRIPT
     raise ValueError(f"Unknown task role: {role}")
 
 

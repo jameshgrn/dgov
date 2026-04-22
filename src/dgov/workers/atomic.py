@@ -896,6 +896,129 @@ _RESEARCHER_EXCLUDED_TOOLS = frozenset({
     "format_file",
 })
 
+_PLANNER_EXCLUDED_TOOLS = frozenset(_RESEARCHER_EXCLUDED_TOOLS)
+
+_EMIT_PLAN_SPEC: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "emit_plan",
+        "description": (
+            "Emit a structured implementation plan. Terminal — calling this "
+            "completes your mission. The plan must contain at least one task "
+            "with file claims and a commit message."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Kebab-case plan name (e.g. 'fix-auth-bug')",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One-paragraph summary of the plan.",
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "Ordered list of tasks to execute.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {
+                                "type": "string",
+                                "description": "Unique kebab-case task identifier.",
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "One-line task summary.",
+                            },
+                            "prompt": {
+                                "type": "string",
+                                "description": (
+                                    "Full task prompt with Orient/Edit/Verify sections. "
+                                    "This is what the worker will see."
+                                ),
+                            },
+                            "commit_message": {
+                                "type": "string",
+                                "description": "Imperative commit message.",
+                            },
+                            "files": {
+                                "type": "object",
+                                "description": "File claims for this task.",
+                                "properties": {
+                                    "create": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "default": [],
+                                    },
+                                    "edit": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "default": [],
+                                    },
+                                    "touch": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "default": [],
+                                    },
+                                    "read": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "default": [],
+                                    },
+                                },
+                            },
+                            "depends_on": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Slugs of tasks this depends on.",
+                                "default": [],
+                            },
+                            "role": {
+                                "type": "string",
+                                "enum": ["worker", "researcher", "reviewer"],
+                                "default": "worker",
+                            },
+                        },
+                        "required": ["slug", "summary", "prompt", "commit_message"],
+                    },
+                },
+                "config_overrides": {
+                    "type": "object",
+                    "description": (
+                        "Optional project config overrides discovered during analysis. "
+                        "Supported keys: src_dir, test_dir, lint_cmd, format_cmd, "
+                        "lint_fix_cmd, test_cmd, language."
+                    ),
+                },
+            },
+            "required": ["name", "summary", "tasks"],
+        },
+    },
+}
+
+_ASK_USER_SPEC: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "ask_user",
+        "description": (
+            "Ask the user a question to resolve ambiguity. One question at a time. "
+            "Include your recommended answer with each question."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question, with your recommended answer.",
+                },
+            },
+            "required": ["question"],
+        },
+    },
+}
+
 
 def _tool_name(spec: dict[str, Any]) -> str:
     function = spec.get("function")
@@ -907,7 +1030,10 @@ def _tool_name(spec: dict[str, Any]) -> str:
     return name
 
 
-def get_tool_spec(role: Literal["worker", "researcher"] = "worker") -> list[Any]:
+def get_tool_spec(
+    role: Literal["worker", "researcher", "planner"] = "worker",
+    interactive: bool = False,
+) -> list[Any]:
     specs = [
         # Core tools
         {
@@ -1470,8 +1596,21 @@ def get_tool_spec(role: Literal["worker", "researcher"] = "worker") -> list[Any]
         return specs
     if role == "researcher":
         return [spec for spec in specs if _tool_name(spec) not in _RESEARCHER_EXCLUDED_TOOLS]
+    if role == "planner":
+        base = [
+            spec
+            for spec in specs
+            if _tool_name(spec) not in _PLANNER_EXCLUDED_TOOLS and _tool_name(spec) != "done"
+        ]
+        base.append(_EMIT_PLAN_SPEC)
+        if interactive:
+            base.append(_ASK_USER_SPEC)
+        return base
     raise ValueError(f"Unknown tool role: {role}")
 
 
-def get_allowed_tool_names(role: Literal["worker", "researcher"] = "worker") -> frozenset[str]:
-    return frozenset(_tool_name(spec) for spec in get_tool_spec(role))
+def get_allowed_tool_names(
+    role: Literal["worker", "researcher", "planner"] = "worker",
+    interactive: bool = False,
+) -> frozenset[str]:
+    return frozenset(_tool_name(spec) for spec in get_tool_spec(role, interactive=interactive))

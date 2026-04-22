@@ -30,6 +30,9 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
+import re  # noqa: E402
+from collections.abc import Callable  # noqa: E402
+
 from dgov.workers.atomic import (  # noqa: E402
     AtomicConfig,
     AtomicTools,
@@ -331,10 +334,74 @@ COMMON FAILURES (learn from these):
     return "".join(sections)
 
 
+_SLUG_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_plan(args: dict[str, Any]) -> str | None:
+    """Validate emit_plan arguments. Returns error string or None on success."""
+    tasks = args.get("tasks")
+    if not tasks or not isinstance(tasks, list):
+        return "Error: emit_plan requires at least one task."
+
+    slugs: list[str] = []
+    for i, task in enumerate(tasks):
+        slug = task.get("slug", "")
+        if not slug or not _SLUG_RE.match(slug):
+            return f"Error: Task {i} has invalid slug {slug!r}. Must match [A-Za-z0-9_-]+."
+        if slug in slugs:
+            return f"Error: Duplicate task slug {slug!r}."
+        slugs.append(slug)
+
+        if not task.get("prompt", "").strip():
+            return f"Error: Task {slug!r} has empty prompt."
+        if not task.get("commit_message", "").strip():
+            return f"Error: Task {slug!r} has empty commit_message."
+
+        role = task.get("role", "worker")
+        if role == "worker":
+            files = task.get("files", {})
+            has_files = any(
+                files.get(k) for k in ("create", "edit", "touch") if isinstance(files.get(k), list)
+            )
+            if not has_files:
+                return f"Error: Worker task {slug!r} must claim at least one file (create, edit, or touch)."
+
+    slug_set = set(slugs)
+    for task in tasks:
+        for dep in task.get("depends_on", []):
+            if dep not in slug_set:
+                return f"Error: Task {task['slug']!r} depends on unknown slug {dep!r}."
+
+    # Cycle detection via topological sort
+    visited: set[str] = set()
+    in_stack: set[str] = set()
+    dep_map = {t["slug"]: t.get("depends_on", []) for t in tasks}
+
+    def _has_cycle(slug: str) -> bool:
+        if slug in in_stack:
+            return True
+        if slug in visited:
+            return False
+        visited.add(slug)
+        in_stack.add(slug)
+        for dep in dep_map.get(slug, []):
+            if _has_cycle(dep):
+                return True
+        in_stack.discard(slug)
+        return False
+
+    for s in slugs:
+        if _has_cycle(s):
+            return f"Error: Dependency cycle detected involving {s!r}."
+
+    return None
+
+
 def _execute_tool_call(
     call,
     actuators: AtomicTools,
     allowed_tools: frozenset[str] | None = None,
+    ask_user_fn: Callable[[str], str] | None = None,
 ) -> tuple[str, bool]:
     """Execute one tool call. Returns (result_text, is_done_signal)."""
     name = call.function.name
@@ -356,6 +423,21 @@ def _execute_tool_call(
     if name == "done":
         WorkerEvent("done", args.get("summary")).emit()
         return args.get("summary", ""), True
+
+    if name == "emit_plan":
+        error = _validate_plan(args)
+        if error:
+            WorkerEvent("result", {"tool": name, "status": "failed", "activity": []}).emit()
+            return error, False
+        WorkerEvent("plan", args).emit()
+        return args.get("summary", "Plan emitted."), True
+
+    if name == "ask_user":
+        if ask_user_fn is None:
+            return "Error: ask_user is not available in autonomous mode.", False
+        answer = ask_user_fn(args.get("question", ""))
+        WorkerEvent("result", {"tool": name, "status": "success", "activity": []}).emit()
+        return answer, False
 
     func = getattr(actuators, name, None)
     result = func(**args) if func else f"Error: Unknown tool {name}"

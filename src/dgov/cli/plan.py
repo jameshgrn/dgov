@@ -1,4 +1,4 @@
-"""Plan subcommands — validate, plan status, init-plan."""
+"""Plan subcommands — validate, plan status, init-plan, plan create."""
 
 from __future__ import annotations
 
@@ -840,3 +840,7 @@ def _review_to_json(review) -> str:
         indent=2,
         default=str,
     )
+
+
+# Register plan create subcommand — must be at bottom after plan_cmd is defined
+from dgov.cli import plan_create as plan_create  # noqa: E402
