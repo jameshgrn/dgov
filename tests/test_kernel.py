@@ -377,7 +377,7 @@ class TestGovernorResume:
         k.handle(TaskWaitDone("a", "p-a", TaskState.FAILED))
         actions = k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
         assert k.task_states["a"] == TaskState.PENDING
-        assert k.attempts["a"] == 1
+        # attempts tracking moved to runner; kernel no longer tracks this
         assert any(isinstance(a, DispatchTask) and a.task_slug == "a" for a in actions)
 
     def test_fail_terminal(self):
@@ -415,7 +415,7 @@ class TestGovernorResume:
             k.handle(TaskDispatched("a", f"p-{i}"))
             k.handle(TaskWaitDone("a", f"p-{i}", TaskState.FAILED))
             k.handle(TaskGovernorResumed("a", GovernorAction.RETRY))
-            assert k.attempts["a"] == i + 1
+            # attempts tracking moved to runner; kernel no longer tracks this
 
     def test_governor_resumed_ignored_for_merged(self):
         """Cannot un-merge a task via governor retry."""
@@ -620,7 +620,8 @@ class TestSerialization:
     def test_structure(self):
         k = _k({"a": (), "b": ("a",)})
         d = k.to_dict()
-        assert set(d.keys()) == {"task_states", "pane_slugs", "attempts", "merge_order"}
+        # pane_slugs and attempts moved to runner; kernel no longer tracks these
+        assert set(d.keys()) == {"task_states", "merge_order"}
         assert d["task_states"]["a"] == "pending"
 
     def test_after_progress(self):
@@ -629,4 +630,4 @@ class TestSerialization:
         k.handle(TaskDispatched("a", "p-a"))
         d = k.to_dict()
         assert d["task_states"]["a"] == "active"
-        assert d["pane_slugs"]["a"] == "p-a"
+        # pane_slugs moved to runner; kernel no longer tracks this

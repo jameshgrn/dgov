@@ -136,9 +136,12 @@ class EventDagRunner:
             for slug, t in dag.tasks.items()
         }
         self.task_read_files = {slug: tuple(t.files.read) for slug, t in dag.tasks.items()}
+        self._pane_slugs: dict[str, str] = {}
+        self._attempts: dict[str, int] = {}
         self.kernel = DagKernel(
             deps=self.deps,
             task_files=self.task_files,
+            pane_slugs=self._pane_slugs,
             max_retries=dag.default_max_retries,
         )
         self._baseline_diag_note = _build_baseline_diag_note(self.project_config, session_root)
@@ -306,6 +309,9 @@ class EventDagRunner:
                 try:
                     action = GovernorAction(action_str)
                     self.kernel.handle(TaskGovernorResumed(task_slug, action))
+                    # Restore attempt count in runner (kernel no longer tracks this)
+                    if action == GovernorAction.RETRY:
+                        self._attempts[task_slug] = self._attempts.get(task_slug, 0) + 1
                 except ValueError:
                     pass
 
@@ -605,7 +611,7 @@ class EventDagRunner:
 
     def _handle_interrupt(self, action: InterruptGovernor) -> list[DagAction]:
         """Decide retry vs fail based on attempt count."""
-        attempts = self.kernel.attempts.get(action.task_slug, 0)
+        attempts = self._attempts.get(action.task_slug, 0)
         error_detail = self._task_errors.get(action.task_slug, "")
 
         gov_action = GovernorAction.FAIL
@@ -616,6 +622,7 @@ class EventDagRunner:
                 error_detail,
             )
         elif attempts < self.kernel.max_retries:
+            self._attempts[action.task_slug] = attempts + 1
             logger.info(
                 "Task %s failed — retry %d/%d: %s",
                 action.task_slug,
@@ -789,7 +796,7 @@ class EventDagRunner:
         # Enrich prompt with prior failure context on retry
         prior_error = self._task_errors.get(action.task_slug)
         if prior_error:
-            attempt = self.kernel.attempts.get(action.task_slug, 0)
+            attempt = self._attempts.get(action.task_slug, 0)
             prompt = (
                 f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
                 f"Fix the issue described above, then complete the original task.\n\n"
@@ -821,6 +828,7 @@ class EventDagRunner:
                     ),
                 )
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
+            self._pane_slugs[action.task_slug] = pane_slug
             self._pending_dispatches.add(action.task_slug)
             self._task_start_times[action.task_slug] = time.time()
             task_scope = {

@@ -67,12 +67,11 @@ class DagKernel:
 
     deps: dict[str, tuple[str, ...]]
     task_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    pane_slugs: dict[str, str] = field(default_factory=dict)
     max_retries: int = 3
 
     # Mutable state
     task_states: dict[str, TaskState] = field(init=False)
-    pane_slugs: dict[str, str] = field(default_factory=dict)
-    attempts: dict[str, int] = field(default_factory=dict)
     merge_order: list[str] = field(init=False)
 
     def __post_init__(self) -> None:
@@ -115,8 +114,6 @@ class DagKernel:
     def to_dict(self) -> dict:
         return {
             "task_states": {k: v.value for k, v in self.task_states.items()},
-            "pane_slugs": self.pane_slugs,
-            "attempts": self.attempts,
             "merge_order": self.merge_order,
         }
 
@@ -126,7 +123,6 @@ class DagKernel:
         if self.task_states.get(event.task_slug) != TaskState.PENDING:
             return []
         self.task_states[event.task_slug] = TaskState.ACTIVE
-        self.pane_slugs[event.task_slug] = event.pane_slug
         return []
 
     def _on_wait_done(self, event: TaskWaitDone) -> list[DagAction]:
@@ -193,7 +189,6 @@ class DagKernel:
             return []
         if event.action == GovernorAction.RETRY:
             self.task_states[slug] = TaskState.PENDING
-            self.attempts[slug] = self.attempts.get(slug, 0) + 1
             return self._schedule()
         if event.action == GovernorAction.SKIP:
             self.task_states[slug] = TaskState.SKIPPED

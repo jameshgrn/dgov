@@ -71,6 +71,7 @@ def _mock_review_pass(
     task_slug=None,
     pane_slug=None,
     scope_ignore_files=(),
+    read_files=(),
 ):
     from dgov.settlement import ReviewResult
 
@@ -85,6 +86,7 @@ def _mock_review_fail(
     task_slug=None,
     pane_slug=None,
     scope_ignore_files=(),
+    read_files=(),
 ):
     from dgov.settlement import ReviewResult
 
@@ -395,7 +397,7 @@ class TestWorkerFailure:
             runner = _make_runner(_single_dag())
             results = asyncio.run(runner.run())
             assert results["a"] == "failed"
-            assert runner.kernel.attempts.get("a", 0) >= 1
+            assert runner._attempts.get("a", 0) >= 1
 
     def test_runner_honors_dag_retry_budget(self):
         dag = DagDefinition(
