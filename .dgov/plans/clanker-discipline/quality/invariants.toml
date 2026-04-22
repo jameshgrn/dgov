@@ -1,0 +1,188 @@
+# Enforce result-type invariants, add Literal types, refactor CLI renders.
+
+[tasks.result-invariants]
+summary = "Add __post_init__ invariant checks to GateResult and ReviewResult."
+depends_on = ["consumers/guards.settlement-none-guards"]
+prompt = """
+**Orient**
+
+Read `src/dgov/settlement.py` lines 33-49 (GateResult and ReviewResult classes).
+
+These frozen dataclasses have `passed: bool` + `error: str | None = None` but
+nothing enforces the invariant:
+- If passed=True, error must be None
+- If passed=False, error must be a non-empty str
+
+This means callers can construct `GateResult(passed=True, error="oops")` or
+`GateResult(passed=False)` (no error message) — both are bugs.
+
+**Edit**
+
+1. Add `__post_init__` to GateResult:
+   ```python
+   def __post_init__(self) -> None:
+       if self.passed and self.error is not None:
+           raise ValueError("GateResult: passed=True but error is set")
+       if not self.passed and not self.error:
+           raise ValueError("GateResult: passed=False but no error message")
+   ```
+
+2. Add `__post_init__` to ReviewResult:
+   ```python
+   def __post_init__(self) -> None:
+       if self.passed and self.error is not None:
+           raise ValueError("ReviewResult: passed=True but error is set")
+       if not self.passed and not self.error:
+           raise ValueError("ReviewResult: passed=False but no error message")
+   ```
+
+3. Search all construction sites of GateResult and ReviewResult in settlement.py
+   to confirm they all satisfy the invariant. Look for cases where:
+   - `passed=False` is constructed without an error argument (would now raise)
+   - `passed=True` is constructed with an error argument (would now raise)
+   Fix any that violate.
+
+4. Also check `src/dgov/settlement_flow.py` and `src/dgov/cli/preflight.py`
+   for construction sites.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/settlement.py
+uv run pytest -q -m unit tests/test_settlement.py
+```
+"""
+commit_message = "refactor: enforce GateResult/ReviewResult passed/error invariant"
+files.edit = ["src/dgov/settlement.py"]
+files.read = [
+    "src/dgov/settlement_flow.py",
+    "src/dgov/cli/preflight.py",
+    "tests/test_settlement.py",
+]
+
+[tasks.ledger-literal]
+summary = "Change LedgerEntry.status from str to Literal['open', 'resolved']."
+prompt = """
+**Orient**
+
+Read:
+- `src/dgov/persistence/schema.py` — LedgerEntry class (~line 112)
+- `src/dgov/persistence/ledger.py` — uses of status field
+
+LedgerEntry.status is currently `str = "open"` but only two values are ever
+used: "open" and "resolved". Make it a Literal type for safety.
+
+**Edit**
+
+1. In `src/dgov/persistence/schema.py`, add `from typing import Literal` if
+   not already imported.
+
+2. Change `status: str = "open"` to
+   `status: Literal["open", "resolved"] = "open"` on LedgerEntry.
+
+3. In `src/dgov/persistence/ledger.py`, check if any code constructs
+   LedgerEntry with a hardcoded status string — make sure it matches
+   the Literal values.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/persistence/schema.py src/dgov/persistence/ledger.py
+uv run pytest -q -m unit tests/test_ledger.py
+```
+"""
+commit_message = "refactor: use Literal type for LedgerEntry.status"
+files.edit = [
+    "src/dgov/persistence/schema.py",
+    "src/dgov/persistence/ledger.py",
+]
+files.read = ["tests/test_ledger.py"]
+
+[tasks.plan-issue-literal]
+summary = "Change PlanIssue.severity from str to Literal['error', 'warning']."
+depends_on = ["models/sentinels.dag-parser-sentinels"]
+prompt = """
+**Orient**
+
+Read `src/dgov/plan.py` — PlanIssue class (~line 109).
+
+PlanIssue.severity is `str` but only "error" and "warning" are ever used
+(check all construction sites in plan.py). Make it a Literal for type safety.
+
+**Edit**
+
+1. Add `from typing import Literal` to imports if not already present
+   (Literal is already imported for the role field).
+
+2. Change `severity: str` to `severity: Literal["error", "warning"]`.
+
+3. Verify all construction sites pass one of these two values.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/plan.py
+uv run pytest -q -m unit tests/test_plan.py tests/test_plan_tree.py
+```
+"""
+commit_message = "refactor: use Literal type for PlanIssue.severity"
+files.edit = ["src/dgov/plan.py"]
+files.read = ["tests/test_plan.py", "tests/test_plan_tree.py"]
+
+[tasks.cli-render-tables]
+summary = "Refactor CLI plan review render functions from if-chains to data tables."
+prompt = """
+**Orient**
+
+Read `src/dgov/cli/plan.py` lines 595-730 — the four render functions:
+- `_render_deployed_unit()` (~line 599)
+- `_render_failed_unit()` (~line 662)
+- `_render_active_unit()` (~line 688)
+- `_render_pending_unit()` (~line 706)
+
+Each function does the same thing: check optional fields on a unit and
+`click.echo()` a formatted label+value line. This is data, not logic.
+
+**Edit**
+
+1. Create a helper function `_render_unit_fields(fields: list[tuple[str, str | None]]) -> None`
+   that iterates the list and echoes non-None values with consistent formatting:
+   ```python
+   def _render_unit_fields(fields: list[tuple[str, str | None]]) -> None:
+       for label, value in fields:
+           if value is not None:
+               click.echo(f"    {label:13s} {value}")
+   ```
+
+2. Refactor each render function to build a list of (label, value) tuples
+   instead of individual if/echo blocks. For example, `_render_deployed_unit`
+   becomes:
+   ```python
+   def _render_deployed_unit(unit: UnitReview) -> None:
+       fields: list[tuple[str, str | None]] = [
+           ("task", unit.summary),
+           ("commit", f"{unit.commit_sha[:8]} — {unit.commit_message}" if unit.commit_sha and unit.commit_message else None),
+           ("agent", unit.agent),
+           ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
+           # ... etc
+       ]
+       _render_unit_fields(fields)
+   ```
+
+3. Keep special-case formatting (like the self_corrections line with coloring)
+   as separate echo calls after the table — don't force everything into the
+   table pattern.
+
+4. Apply the same pattern to all four functions.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/cli/plan.py
+uv run ruff format --check src/dgov/cli/plan.py
+uv run pytest -q -m unit tests/test_plan_review.py
+```
+"""
+commit_message = "refactor: convert CLI render if-chains to data-driven field tables"
+files.edit = ["src/dgov/cli/plan.py"]
+files.read = ["tests/test_plan_review.py"]

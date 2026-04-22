@@ -1,0 +1,134 @@
+# Fix external consumers of the now-Optional fields in runner.py,
+# settlement.py, and config.py.
+
+[tasks.runner-none-guards]
+summary = "Guard runner.py against None prompt and test_cmd from sentinel cleanup."
+depends_on = ["models/sentinels.dag-parser-sentinels"]
+prompt = """
+**Orient**
+
+Read `src/dgov/runner.py` lines 670-690 and lines 1020-1030.
+
+The upstream model field `DagTaskSpec.prompt` is now `str | None = None`
+(was `str = ""`). One callsite in runner.py calls `.strip()` on it without
+a guard:
+
+Line ~683: `if task.prompt.strip():`
+This will raise AttributeError if prompt is None.
+
+Also check line ~742 (`prompt = task.prompt`) and line ~1099
+(`f"ORIGINAL TASK:\n{task.prompt}"`) — f-strings handle None as the
+string "None", which is wrong. Guard these too.
+
+**Edit**
+
+1. Line ~683: change `if task.prompt.strip():` to `if task.prompt and task.prompt.strip():`
+   Or: `if (task.prompt or "").strip():`
+
+2. Line ~742: change `prompt = task.prompt` to `prompt = task.prompt or ""`
+
+3. Line ~1099: guard with `if task.prompt:` before including in the f-string,
+   or use `task.prompt or ""`.
+
+4. Search the rest of runner.py for any other `.prompt` or `.test_cmd`
+   attribute access on task objects that could now be None. Fix any you find.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/runner.py
+uv run ruff format --check src/dgov/runner.py
+uv run pytest -q -m unit tests/test_runner.py
+```
+"""
+commit_message = "fix: guard runner against None prompt/test_cmd after sentinel cleanup"
+files.edit = ["src/dgov/runner.py"]
+files.read = ["src/dgov/dag_parser.py", "tests/test_runner.py"]
+
+[tasks.settlement-none-guards]
+summary = "Guard settlement.py against None test_cmd from sentinel cleanup."
+depends_on = ["models/sentinels.dag-parser-sentinels"]
+prompt = """
+**Orient**
+
+Read `src/dgov/settlement.py` lines 815-845 (function `_build_test_cmd`).
+
+The field `ProjectConfig.test_cmd` can now be `str | None = None` (was
+`str = ""`). Two callsites in `_build_test_cmd` call string methods on it
+without a guard:
+
+Line ~821: `if "{test_dir}" not in config.test_cmd:` — `in` on None raises TypeError
+Line ~845: `config.test_cmd.replace(...)` — `.replace()` on None raises AttributeError
+
+**Edit**
+
+1. At the top of `_build_test_cmd`, add an early return:
+   ```python
+   if not config.test_cmd:
+       return ""
+   ```
+   This handles both None and empty string, and the rest of the function
+   can safely assume test_cmd is a non-empty str.
+
+2. Search the rest of settlement.py for other `.test_cmd` accesses.
+   The function `_run_test_gate` at line ~848 receives the string result
+   of `_build_test_cmd`, so it's fine.
+
+3. Also check `config.setup_cmd` and `config.type_check_cmd` accesses —
+   these should already be guarded by truthiness checks, but verify.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/settlement.py
+uv run ruff format --check src/dgov/settlement.py
+uv run pytest -q -m unit tests/test_settlement.py
+```
+"""
+commit_message = "fix: guard settlement against None test_cmd after sentinel cleanup"
+files.edit = ["src/dgov/settlement.py"]
+files.read = ["src/dgov/config.py", "tests/test_settlement.py"]
+
+[tasks.config-sentinels]
+summary = "Replace hollow sentinels in ProjectConfig and AtomicConfig with None."
+depends_on = ["models/sentinels.dag-parser-sentinels"]
+prompt = """
+**Orient**
+
+Read `src/dgov/config.py` fully, and `src/dgov/workers/atomic.py` lines 1-50
+(AtomicConfig class).
+
+Change these fields from `str = ""` to `str | None = None`:
+- `ProjectConfig.setup_cmd` (config.py ~line 43)
+- `ProjectConfig.type_check_cmd` (config.py, likely in AtomicConfig)
+
+All downstream consumers already use truthiness checks (`if self.type_check_cmd:`,
+`if not setup_cmd:`), so these are safe changes. But verify by searching for
+every `.setup_cmd` and `.type_check_cmd` access.
+
+Also check `resolve_test_cmd()` and similar methods — they call
+`self.test_cmd.replace(...)` which will break if test_cmd is None. Add guards.
+
+**Edit**
+
+1. Change `setup_cmd: str = ""` to `setup_cmd: str | None = None` in ProjectConfig.
+2. Change `type_check_cmd: str = ""` to `type_check_cmd: str | None = None` wherever it's defined.
+3. In any `resolve_*_cmd()` method that calls `.replace()` on a potentially-None field,
+   add an early return: `if not self.test_cmd: return ""`
+4. Search `src/dgov/workers/atomic.py` for `.test_cmd`, `.setup_cmd`,
+   `.type_check_cmd` accesses and guard any that call string methods.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/config.py src/dgov/workers/atomic.py
+uv run ruff format --check src/dgov/config.py src/dgov/workers/atomic.py
+uv run pytest -q -m unit tests/test_config.py
+```
+"""
+commit_message = "refactor: replace hollow sentinels with None in ProjectConfig"
+files.edit = [
+    "src/dgov/config.py",
+    "src/dgov/workers/atomic.py",
+]
+files.read = ["tests/test_config.py"]

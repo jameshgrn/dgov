@@ -1,0 +1,169 @@
+# Change hollow string sentinels ("") to str | None = None in the two
+# core data models (DagTaskSpec and PlanUnit) plus their serializer.
+# Also fixes the 3 breaking consumers inside plan.py itself.
+
+[tasks.dag-parser-sentinels]
+summary = "Replace hollow string sentinels with None in DagTaskSpec and fix plan.py consumers."
+prompt = """
+**Orient**
+
+Read these files before editing:
+- `src/dgov/dag_parser.py` — DagTaskSpec model (lines 29-42)
+- `src/dgov/plan.py` — PlanUnit model (lines 76-91), compile_plan (lines 160-215), validate_plan (lines 220-400)
+
+This task changes 5 fields from `str = ""` to `str | None = None` and 1 field
+from `int = 0` to `int | None = None`. The fields:
+
+In DagTaskSpec (dag_parser.py):
+- `prompt: str = ""` -> `prompt: str | None = None`
+- `commit_message: str = ""` -> `commit_message: str | None = None`
+- `agent: str = ""` -> `agent: str | None = None`
+- `test_cmd: str = ""` -> `test_cmd: str | None = None`
+
+In PlanUnit (plan.py):
+- `agent: str = ""` -> `agent: str | None = None`
+- `test_cmd: str = ""` -> `test_cmd: str | None = None`
+- `timeout_s: int = 0` -> `timeout_s: int | None = None`
+
+In PlanSpec (plan.py):
+- `default_agent: str = ""` -> `default_agent: str | None = None`
+- `sop_set_hash: str = ""` -> `sop_set_hash: str | None = None`
+- `source_mtime_max: str = ""` -> `source_mtime_max: str | None = None`
+
+Do NOT change PlanUnit.prompt or PlanUnit.commit_message — those are required
+fields (no default), keep them as `str`.
+
+Do NOT change DagTaskSpec.timeout_s — it has a real default of 900, not a
+sentinel. Leave it as `int = 900`.
+
+**Edit**
+
+1. In `src/dgov/dag_parser.py`, change the 4 DagTaskSpec fields listed above.
+
+2. In `src/dgov/plan.py`, change the 6 PlanUnit/PlanSpec fields listed above.
+
+3. Fix the 3 breaking consumers in plan.py that call methods on potentially-None
+   prompt strings. All are inside `validate_plan()`:
+
+   Line ~297: `for m in _PROMPT_PATH_RE.finditer(unit.prompt):`
+   Fix: guard with `if unit.prompt:` before the loop, or use `unit.prompt or ""`
+
+   Line ~322: `if not unit.prompt.strip() and unit.role != "reviewer":`
+   Fix: change to `if not (unit.prompt or "").strip() and unit.role != "reviewer":`
+
+   Line ~385: `if not pattern.search(unit.prompt)`
+   Fix: guard the comprehension with `if not unit.prompt: missing = list(_PROMPT_PHASE_RES)` early return,
+   or use `pattern.search(unit.prompt or "")`
+
+4. In `compile_plan()` (plan.py ~line 180), the existing `unit.agent or plan.default_agent or project_agent`
+   chain already handles None correctly — no change needed. Same for
+   `unit.timeout_s if unit.timeout_s else plan.default_timeout_s` at ~line 190.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/dag_parser.py src/dgov/plan.py
+uv run ruff format --check src/dgov/dag_parser.py src/dgov/plan.py
+uv run pytest -q -m unit tests/test_dag_parser.py tests/test_plan.py tests/test_plan_tree.py
+```
+"""
+commit_message = "refactor: replace hollow string sentinels with None in DagTaskSpec and PlanUnit"
+files.edit = [
+    "src/dgov/dag_parser.py",
+    "src/dgov/plan.py",
+]
+files.read = [
+    "tests/test_dag_parser.py",
+    "tests/test_plan.py",
+    "tests/test_plan_tree.py",
+]
+
+[tasks.serializer-none-guards]
+summary = "Update serializer to handle None fields from DagTaskSpec/PlanUnit sentinel cleanup."
+depends_on = ["dag-parser-sentinels"]
+prompt = """
+**Orient**
+
+Read `src/dgov/serializer.py` (the entire file). The upstream models
+(DagTaskSpec, PlanUnit) now use `str | None = None` instead of `str = ""`
+for: agent, test_cmd, timeout_s, sop_set_hash, source_mtime_max.
+
+The serializer already guards most fields with `if unit.X:` truthiness
+checks (lines ~45, 52, 56), which work identically for None and "".
+But two fields are always emitted without guards:
+
+Line ~43: `lines.append(f"prompt = {_toml_ml_str(unit.prompt)}")`
+  — PlanUnit.prompt is still required (str, not Optional), so NO change needed.
+
+Line ~44: `lines.append(f"commit_message = {_toml_str(unit.commit_message)}")`
+  — PlanUnit.commit_message is still required (str, not Optional), so NO change needed.
+
+So the serializer should already work. But verify by reading the file and
+confirming every field access on PlanUnit is guarded for None where the
+field is now Optional.
+
+**Edit**
+
+1. Read `src/dgov/serializer.py` fully.
+2. If any unguarded access exists on the now-Optional fields (agent, test_cmd,
+   timeout_s, sop_set_hash, source_mtime_max), add a truthiness guard.
+3. If everything is already guarded, make no changes — just verify.
+
+**Verify**
+
+```
+uv run ruff check src/dgov/serializer.py
+uv run pytest -q -m unit tests/test_serializer.py
+```
+"""
+commit_message = "refactor: guard serializer against None fields from sentinel cleanup"
+files.edit = ["src/dgov/serializer.py"]
+files.read = ["tests/test_serializer.py"]
+
+[tasks.test-model-sentinels]
+summary = "Fix any tests that construct DagTaskSpec or PlanUnit with empty-string sentinel values."
+depends_on = ["dag-parser-sentinels"]
+prompt = """
+**Orient**
+
+Read these test files:
+- `tests/test_dag_parser.py`
+- `tests/test_plan.py`
+- `tests/test_plan_tree.py`
+- `tests/test_serializer.py`
+
+The models DagTaskSpec and PlanUnit changed: fields `prompt`, `commit_message`,
+`agent`, `test_cmd` (on DagTaskSpec) and `agent`, `test_cmd`, `timeout_s` (on
+PlanUnit) now default to `None` instead of `""`. PlanSpec fields `default_agent`,
+`sop_set_hash`, `source_mtime_max` also default to `None`.
+
+Tests that explicitly pass `""` for these fields or assert `== ""` on them
+need updating to use `None` instead. Tests that don't set these fields at all
+are fine — they'll pick up the new None default automatically.
+
+**Edit**
+
+1. In each test file, search for explicit `""` values passed to or asserted on
+   the changed fields. Replace with `None`.
+2. Search for assertions like `assert unit.agent == ""` and change to
+   `assert unit.agent is None`.
+3. Do NOT change tests for fields that are still str (PlanUnit.prompt,
+   PlanUnit.commit_message, PlanUnit.summary — these are required, not optional).
+
+**Verify**
+
+```
+uv run pytest -q -m unit tests/test_dag_parser.py tests/test_plan.py tests/test_plan_tree.py tests/test_serializer.py
+```
+"""
+commit_message = "test: update test expectations for None sentinel defaults"
+files.edit = [
+    "tests/test_dag_parser.py",
+    "tests/test_plan.py",
+    "tests/test_plan_tree.py",
+    "tests/test_serializer.py",
+]
+files.read = [
+    "src/dgov/dag_parser.py",
+    "src/dgov/plan.py",
+]

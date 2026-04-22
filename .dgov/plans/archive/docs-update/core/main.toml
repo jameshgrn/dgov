@@ -1,0 +1,38 @@
+[tasks.add-semantic-settlement-docs]
+summary = "Document Semantic Settlement foundation"
+prompt = """
+Orient:
+- Read `docs/docs/pages/concepts.mdx`.
+- Read `src/dgov/semantic_settlement.py` to understand the failure taxonomy and risk levels.
+
+Edit:
+1. Add a new section "Semantic Settlement" to `concepts.mdx`.
+2. Explain the core philosophy: integration-aware settlement that goes beyond simple merge gates.
+3. Document the `FailureClass` taxonomy (TEXT_CONFLICT, SYNTAX_CONFLICT, etc.).
+4. Document the `RiskLevel` and `SymbolOverlap` concepts.
+
+Verify:
+- Ensure technical terms match the code.
+"""
+commit_message = "docs: document semantic settlement concepts"
+files.edit = ["docs/docs/pages/concepts.mdx"]
+files.read = ["src/dgov/semantic_settlement.py"]
+
+[tasks.refine-getting-started]
+summary = "Refine Getting Started with Governor Loop"
+prompt = """
+Orient:
+- Read `docs/docs/pages/getting-started.mdx`.
+- Read `.dgov/governor.md`.
+
+Edit:
+1. Update the "Usage" section to better reflect the loop: Plan -> Compile -> Run -> Review.
+2. Briefly mention `dgov plan review` as the standard way to debrief after a run.
+3. Ensure the installation instructions and requirements are still accurate.
+
+Verify:
+- Check for flow and clarity.
+"""
+commit_message = "docs: refine getting started with governor loop"
+files.edit = ["docs/docs/pages/getting-started.mdx"]
+files.read = [".dgov/governor.md"]

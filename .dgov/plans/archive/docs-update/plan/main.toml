@@ -1,0 +1,18 @@
+[tasks.update-plan-reference]
+summary = "Clarify file claims and agent overrides in plan reference"
+prompt = """
+Orient:
+- Read `docs/docs/pages/plan-reference.mdx`.
+- Read `src/dgov/plan.py` or `src/dgov/dag_parser.py` if needed to confirm field defaults.
+
+Edit:
+1. Ensure the `files` claim semantics (`create`, `edit`, `delete`, `read`, `touch`) are clearly explained with examples of when to use each.
+2. Clarify that `agent` only overrides the model/router, while provider config remains in `project.toml`.
+3. Add a note about the kernel validating file conflicts between independent tasks.
+
+Verify:
+- Check for accuracy against current implementation.
+"""
+commit_message = "docs: clarify plan reference details"
+files.edit = ["docs/docs/pages/plan-reference.mdx"]
+files.read = ["src/dgov/plan.py", "src/dgov/dag_parser.py"]

@@ -1,0 +1,4 @@
+[plan]
+name = "docs-update"
+summary = "Update documentation to reflect Semantic Settlement, new CLI commands, and refined task states."
+sections = ["cli", "core", "plan"]

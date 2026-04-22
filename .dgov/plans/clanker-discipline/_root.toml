@@ -1,0 +1,10 @@
+# Clanker discipline: eliminate hollow sentinels, enforce result invariants,
+# refactor CLI render if-chains to data tables.
+#
+# Scoped to mechanical, well-isolated fixes. Runner state consolidation
+# and kernel field relocation intentionally deferred (too cross-cutting).
+
+[plan]
+name = "clanker-discipline"
+summary = "Eliminate hollow string sentinels, add result-type invariants, refactor CLI render functions to data tables."
+sections = ["models", "consumers", "quality"]

@@ -22,3 +22,5 @@ docs/node_modules/
 benchmarks/hal/results/
 benchmarks/hal/runs/
 benchmarks/hal/cache/
+benchmarks/hal/agents/*/requirements.txt
+results/

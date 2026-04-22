@@ -1,0 +1,20 @@
+[tasks.update-cli-reference]
+summary = "Add missing commands and details to CLI reference"
+prompt = """
+Orient:
+- Read `docs/docs/pages/cli-reference.mdx`.
+- Read `src/dgov/cli/plan.py` and `src/dgov/cli/sentrux.py` to understand the current command surface.
+
+Edit:
+1. Add a new section for `dgov plan review` with all its options (`--only`, `--diff`, `--events`).
+2. Expand `dgov plan status` to include the `--verbose` flag.
+3. Add a section for `dgov sentrux offenders` and `dgov sentrux status`.
+4. Ensure the commands overview table is up to date.
+
+Verify:
+- Check that the new sections follow the existing styling.
+- Verify all links and anchor tags are correct.
+"""
+commit_message = "docs: update cli reference with missing commands"
+files.edit = ["docs/docs/pages/cli-reference.mdx"]
+files.read = ["src/dgov/cli/plan.py", "src/dgov/cli/sentrux.py"]
