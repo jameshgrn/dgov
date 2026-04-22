@@ -267,7 +267,8 @@ def bundle(
 
         bodies = [sop_by_name[n].render_prompt_block() for n in picked_names if n in sop_by_name]
         if bodies:
-            rewritten[uid] = replace(unit, prompt="\n\n".join(bodies) + "\n\n" + unit.prompt)
+            prompt_suffix = unit.prompt or ""
+            rewritten[uid] = replace(unit, prompt="\n\n".join(bodies) + "\n\n" + prompt_suffix)
         else:
             rewritten[uid] = unit
 

@@ -40,7 +40,10 @@ def serialize_compiled_toml(
         mapping = br.sop_mapping.get(fq_id, ())
         lines.append(f"[tasks.{_toml_key(fq_id)}]")
         lines.append(f"summary = {_toml_str(unit.summary)}")
-        lines.append(f"prompt = {_toml_ml_str(unit.prompt)}")
+        if unit.prompt:
+            lines.append(f"prompt = {_toml_ml_str(unit.prompt)}")
+        else:
+            lines.append('prompt = ""')
         lines.append(f"commit_message = {_toml_str(unit.commit_message)}")
         if unit.agent:
             lines.append(f"agent = {_toml_str(unit.agent)}")

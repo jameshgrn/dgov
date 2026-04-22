@@ -45,6 +45,8 @@ class AtomicConfig:
     worker_tree_max_lines: int = 80
     line_length: int = 99
     test_markers: tuple[str, ...] = ()
+    # User-defined project conventions — arbitrary key/value pairs from [conventions] in
+    # project.toml. Injected into the worker system prompt as "key: value" lines.
     conventions: dict[str, str] = field(default_factory=dict)
     tool_policy: ToolPolicy = field(default_factory=ToolPolicy)
 
