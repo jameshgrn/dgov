@@ -71,9 +71,9 @@ commit_message = "refactor: replace hollow string sentinels with None in DagTask
 files.edit = [
     "src/dgov/dag_parser.py",
     "src/dgov/plan.py",
+    "tests/test_dag_parser.py",
 ]
 files.read = [
-    "tests/test_dag_parser.py",
     "tests/test_plan.py",
     "tests/test_plan_tree.py",
 ]
