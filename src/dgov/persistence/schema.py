@@ -8,6 +8,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from dgov.persistence.sql import (
     _CREATE_EVENTS_TABLE_SQL,
@@ -115,7 +116,7 @@ class LedgerEntry:
     id: int | None
     category: str
     content: str
-    status: str = "open"
+    status: Literal["open", "resolved"] = "open"
     created_at: float = field(default_factory=time.time)
     resolved_at: float | None = None
 
