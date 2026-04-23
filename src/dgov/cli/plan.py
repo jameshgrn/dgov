@@ -749,6 +749,12 @@ def _render_failed_unit(unit) -> None:
             "fork",
             f"{unit.fork_depth} clean-context relaunch(es)" if unit.fork_depth > 0 else None,
         ),
+        (
+            "tokens",
+            f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
+            if unit.prompt_tokens is not None and unit.completion_tokens is not None
+            else None,
+        ),
     ]
     _render_unit_fields(fields)
     _render_integration_telemetry(unit)

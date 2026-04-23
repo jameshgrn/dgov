@@ -2020,7 +2020,6 @@ class TestAsyncErrorPaths:
     def test_worker_tokens_propagate_through_events(self):
         """Worker token counts flow through emit_event to event log."""
         emitted: list[dict] = []
-        original_emit = None
 
         # Capture emit_event calls
         def _capture_emit(session_root, event, pane, **kwargs):
@@ -2041,10 +2040,9 @@ class TestAsyncErrorPaths:
             on_exit(task_slug, pane_slug, 0, "", 1500, 500)
 
         dag = _dag({"a": _task("a")})
-        with _io_patches(headless=_worker_with_tokens):
-            with patch(_P_EMIT_EVENT, _capture_emit):
-                runner = _make_runner(dag)
-                asyncio.run(runner.run())
+        with _io_patches(headless=_worker_with_tokens), patch(_P_EMIT_EVENT, _capture_emit):
+            runner = _make_runner(dag)
+            asyncio.run(runner.run())
 
         done_events = [e for e in emitted if e["event"] == "task_done"]
         assert len(done_events) >= 1

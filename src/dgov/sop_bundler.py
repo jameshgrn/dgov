@@ -98,9 +98,9 @@ class IdentityBundler:
 class TagBasedSopBundler:
     """Deterministic bundler — assigns SOPs by tag intersection.
 
-    For each unit, extracts keywords from the summary, prompt, and file
-    paths, then matches against each SOP's applies_to tags. Zero latency,
-    zero external dependencies.
+    For each unit, extracts keywords from the summary, file extensions,
+    and role, then matches against each SOP's applies_to tags. Zero
+    latency, zero external dependencies.
     """
 
     def pick(
