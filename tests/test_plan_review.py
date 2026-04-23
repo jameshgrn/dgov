@@ -1314,3 +1314,129 @@ class TestLoadReviewRunLevelFields:
         assert review.sentrux_quality_after is None
         assert review.sentrux_error is None
         assert review.sentrux_offender_summary is None
+
+
+# ---------------------------------------------------------------------------
+# Fork and self-review rollup
+# ---------------------------------------------------------------------------
+
+
+class TestForkAndSelfReviewRollup:
+    """Tests for iteration_fork and self_review_* event tracking in rollup."""
+
+    def test_iteration_fork_tracks_max_depth(self):
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "iteration_fork", "t", "p", fork_depth=1),
+            _lifecycle(3, "iteration_fork", "t", "p", fork_depth=2),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["fork_depth"] == 2
+
+    def test_no_fork_events_gives_zero_depth(self):
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["fork_depth"] == 0
+
+    def test_self_review_passed(self):
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "self_review_passed", "t", "p"),
+            _lifecycle(3, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["self_review_outcome"] == "passed"
+
+    def test_self_review_rejected_then_auto_passed(self):
+        """rejected → fix_started → auto_passed: last-write-wins gives auto_passed."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "self_review_rejected", "t", "p", findings="bug found"),
+            _lifecycle(3, "self_review_fix_started", "t", "p"),
+            _lifecycle(4, "self_review_auto_passed", "t", "p", findings="still bad"),
+            _lifecycle(5, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["self_review_outcome"] == "auto_passed"
+
+    def test_self_review_rejected_then_passed(self):
+        """rejected → fix_started → passed: last-write-wins gives passed."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "self_review_rejected", "t", "p", findings="bug found"),
+            _lifecycle(3, "self_review_fix_started", "t", "p"),
+            _lifecycle(4, "self_review_passed", "t", "p"),
+            _lifecycle(5, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["self_review_outcome"] == "passed"
+
+    def test_self_review_error(self):
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "self_review_error", "t", "p", error="timeout"),
+            _lifecycle(3, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["self_review_outcome"] == "error"
+
+    def test_no_self_review_gives_none(self):
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["self_review_outcome"] is None
+
+    def test_fork_and_self_review_together(self):
+        """A task can have both forks and self-review — independent tracking."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "iteration_fork", "t", "p", fork_depth=1),
+            _lifecycle(3, "self_review_rejected", "t", "p", findings="x"),
+            _lifecycle(4, "self_review_fix_started", "t", "p"),
+            _lifecycle(5, "self_review_passed", "t", "p"),
+            _lifecycle(6, "merge_completed", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["fork_depth"] == 1
+        assert rollup["self_review_outcome"] == "passed"
+
+    def test_fix_started_alone_no_state_change(self):
+        """self_review_fix_started with no outcome events keeps outcome as None."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p"),
+            _lifecycle(2, "self_review_fix_started", "t", "p"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["self_review_outcome"] is None
+
+    def test_build_unit_review_wires_fork_and_self_review(self):
+        """New fields propagate through _build_unit_review to UnitReview."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p", ts="2026-04-10T12:00:00+00:00"),
+            _lifecycle(2, "iteration_fork", "t", "p", fork_depth=1),
+            _lifecycle(3, "self_review_passed", "t", "p"),
+            _lifecycle(4, "merge_completed", "t", "p", ts="2026-04-10T12:01:00+00:00"),
+        ]
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:01:00")
+        with (
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=()),
+            patch("dgov.plan_review._git_show_message", return_value="msg"),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "test"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root="/fake",
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.fork_depth == 1
+        assert review.self_review_outcome == "passed"
+        assert review.status == "deployed"

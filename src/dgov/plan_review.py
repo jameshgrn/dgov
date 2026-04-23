@@ -498,6 +498,8 @@ def _apply_lifecycle_event(ev: dict, state: dict) -> None:
         if isinstance(depth, int):
             state["fork_depth"] = max(state["fork_depth"], depth)
         return
+    if event_type == "self_review_fix_started":
+        return  # Acknowledged but no state change
     if event_type == "self_review_passed":
         state["self_review_outcome"] = "passed"
     elif event_type == "self_review_rejected":
