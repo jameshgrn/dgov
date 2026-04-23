@@ -1,0 +1,19 @@
+[tasks.document-sentrux-debt-hygiene]
+summary = "Document Sentrux offender debt refresh guidance."
+prompt = """
+Orient:
+1. Read `.dgov/governor.md`.
+2. The operational lesson from dogfooding: Sentrux offender debt gets stale after each structural cleanup. The governor should refresh durable debt entries when the offender list changes.
+3. Keep the guidance short and operational. Do not duplicate general ledger rules.
+
+Edit:
+1. In `.dgov/governor.md`, add a concise operational-memory rule: after structural/Sentrux cleanup, rerun `uv run dgov sentrux offenders`, resolve stale offender debt, and add the current offender snapshot if debt remains.
+2. Do not edit AGENTS.md, CLAUDE.md, or GEMINI.md for this repository-specific governor rule.
+
+Verify:
+1. Run `uv run dgov status`.
+2. Run `uv run dgov ledger list -r . -c debt -s open`.
+"""
+commit_message = "Document Sentrux debt hygiene"
+files.edit = [".dgov/governor.md"]
+test_cmd = "uv run dgov status"

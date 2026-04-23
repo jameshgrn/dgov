@@ -1,0 +1,30 @@
+[tasks.emit-run-completed-event]
+summary = "Emit a structured run_completed event from dgov run."
+prompt = """
+Orient:
+1. Read `src/dgov/cli/run.py`, `src/dgov/persistence/events.py`, and `src/dgov/persistence/schema.py`.
+2. `emit_event` already stores unknown keyword payload in JSON data and `read_events` merges it back. Do not add typed columns or schema migrations for this task.
+3. The goal is only to persist the final run envelope after Sentrux comparison, not to change run status behavior.
+
+Edit:
+1. Add `run_completed` to `VALID_EVENTS` in `src/dgov/persistence/schema.py`.
+2. In `src/dgov/cli/run.py`, import `emit_event` and add a small helper that emits `run_completed` with `plan_name`, `run_status`, `duration_s`, and `sentrux` gate result.
+3. Call that helper after `run_status` and `gate_result` are computed. Preserve existing CLI output and `.dgov/runs.log` behavior.
+4. In `tests/test_persistence_events.py`, assert `run_completed` is a valid event.
+5. In `tests/test_cli_run_strict.py`, add a focused assertion that `dgov run` emits `run_completed` with the final degraded status and Sentrux payload.
+
+Verify:
+1. Run `uv run pytest -q tests/test_persistence_events.py tests/test_cli_run_strict.py`.
+2. Run `uv run ruff check src/dgov/cli/run.py src/dgov/persistence/schema.py tests/test_persistence_events.py tests/test_cli_run_strict.py`.
+3. Run `uv run ruff format --check src/dgov/cli/run.py src/dgov/persistence/schema.py tests/test_persistence_events.py tests/test_cli_run_strict.py`.
+"""
+commit_message = "Emit run completion events"
+files.edit = [
+  "src/dgov/cli/run.py",
+  "src/dgov/persistence/schema.py",
+  "tests/test_persistence_events.py",
+  "tests/test_cli_run_strict.py",
+]
+files.read = ["src/dgov/persistence/events.py"]
+test_cmd = "uv run pytest -q tests/test_persistence_events.py tests/test_cli_run_strict.py"
+

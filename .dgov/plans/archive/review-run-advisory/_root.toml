@@ -1,0 +1,5 @@
+[plan]
+name = "review-run-advisory"
+summary = "Surface run-level Sentrux advisories in plan review and document debt hygiene."
+sections = ["review", "guidance"]
+

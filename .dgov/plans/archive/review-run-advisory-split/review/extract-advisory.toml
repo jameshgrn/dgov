@@ -1,0 +1,26 @@
+[tasks.extract-run-advisory]
+summary = "Load run-level Sentrux advisory data in plan review."
+prompt = """
+Orient:
+1. Read `src/dgov/plan_review.py` and `tests/test_plan_review.py`.
+2. The runtime task adds a `run_completed` event with final `run_status` and `sentrux` payload.
+3. Historic runs only have `.dgov/runs.log`; add a narrow fallback that extracts the latest matching block for the current plan name.
+
+Edit:
+1. Extend `PlanReview` with run-level fields for `run_status`, Sentrux degradation, quality before/after, Sentrux error, and an offender summary string.
+2. In `load_review`, extract those fields from the latest `run_completed` event after the latest `run_start` marker.
+3. If no structured event exists, parse the latest matching `.dgov/runs.log` block for `sentrux`, `sentrux_status`, `sentrux_error`, and `sentrux_offenders` lines.
+4. Keep unit rollup behavior unchanged.
+5. Add focused tests for structured-event extraction and runs.log fallback extraction.
+
+Verify:
+1. Run `uv run pytest -q tests/test_plan_review.py`.
+2. Run `uv run ruff check src/dgov/plan_review.py tests/test_plan_review.py`.
+3. Run `uv run ruff format --check src/dgov/plan_review.py tests/test_plan_review.py`.
+"""
+commit_message = "Load run advisories in plan review"
+depends_on = ["runtime/completion-event.emit-run-completed-event"]
+files.edit = ["src/dgov/plan_review.py", "tests/test_plan_review.py"]
+files.read = [".dgov/runs.log"]
+test_cmd = "uv run pytest -q tests/test_plan_review.py"
+

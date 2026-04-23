@@ -1,0 +1,37 @@
+[tasks.surface-run-sentrux-review]
+summary = "Show final run Sentrux status in dgov plan review."
+prompt = """
+Orient:
+1. Read `src/dgov/plan_review.py`, `src/dgov/cli/plan.py`, and `src/dgov/cli/run.py`.
+2. The bug: `dgov run` can finish with run-level `status: degraded` from Sentrux while every task shows settlement ok. `dgov plan review` currently renders only task-level status, so the debrief hides the run-level advisory.
+3. Prefer a structured event for future runs. The current event schema lives in `src/dgov/persistence/schema.py`.
+4. Existing historic runs only have `.dgov/runs.log`; add a narrow fallback if useful, but do not build a broad runs.log dashboard.
+
+Edit:
+1. Add a structured run-completion event after `dgov run` computes final `run_status` and Sentrux `gate_result`.
+2. Extend the plan review data model to carry run-level status and Sentrux review data.
+3. Teach `load_review` to extract the latest current-run completion event. If no structured event exists, fall back narrowly to the latest matching `.dgov/runs.log` entry for the plan name.
+4. Render run-level Sentrux degraded/advisory status in human review output near the header, before units.
+5. Include the same run-level fields in JSON review output.
+6. Keep task-level settlement rendering unchanged.
+7. Add targeted tests for data extraction, human rendering, JSON rendering, and event validity/emission.
+
+Verify:
+1. Run `uv run pytest -q tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_run_strict.py tests/test_persistence_events.py`.
+2. Run `uv run ruff check src/dgov/plan_review.py src/dgov/cli/plan.py src/dgov/cli/run.py src/dgov/persistence/schema.py tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_run_strict.py tests/test_persistence_events.py`.
+3. Run `uv run ruff format --check src/dgov/plan_review.py src/dgov/cli/plan.py src/dgov/cli/run.py src/dgov/persistence/schema.py tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_run_strict.py tests/test_persistence_events.py`.
+"""
+commit_message = "Surface run advisories in plan review"
+files.edit = [
+  "src/dgov/plan_review.py",
+  "src/dgov/cli/plan.py",
+  "src/dgov/cli/run.py",
+  "src/dgov/persistence/schema.py",
+  "tests/test_plan_review.py",
+  "tests/test_cli_plan_review.py",
+  "tests/test_cli_run_strict.py",
+  "tests/test_persistence_events.py",
+]
+files.read = [".dgov/runs.log"]
+test_cmd = "uv run pytest -q tests/test_plan_review.py tests/test_cli_plan_review.py tests/test_cli_run_strict.py tests/test_persistence_events.py"
+

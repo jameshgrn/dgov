@@ -1,0 +1,5 @@
+[plan]
+name = "review-run-advisory-split"
+summary = "Surface run-level Sentrux advisories in plan review through smaller tasks."
+sections = ["runtime", "review", "cli"]
+
