@@ -8,6 +8,17 @@ from pathlib import Path
 from typing import NamedTuple
 
 
+class ConstitutionalViolation(ValueError):
+    """Raised when a plan unit violates department ownership boundaries.
+
+    This occurs when a unit's file claims (edit/create/delete) touch paths
+    owned by a department, but the unit lacks authorization (via summary
+    or tags) to operate in that department's domain.
+    """
+
+    pass
+
+
 class TaskState(StrEnum):
     """Task lifecycle states for the governor event loop."""
 
