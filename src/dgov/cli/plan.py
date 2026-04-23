@@ -556,6 +556,41 @@ def _fmt_duration(seconds: float | None) -> str:
     return f"{int(minutes)}m {rem:.0f}s"
 
 
+def _run_status_color(run_status: str) -> str | None:
+    """Return display color for run-level status."""
+    if run_status == "failed":
+        return "red"
+    if run_status in ("degraded", "partial"):
+        return "yellow"
+    return None
+
+
+def _format_sentrux_advisory(review) -> str | None:
+    """Build the run-level Sentrux advisory line for human review output."""
+    if not review.sentrux_degradation:
+        return None
+    advisory_parts = ["sentrux degradation detected"]
+    if review.sentrux_quality_before is not None and review.sentrux_quality_after is not None:
+        before, after = review.sentrux_quality_before, review.sentrux_quality_after
+        advisory_parts.append(f"quality {before} -> {after}")
+    if review.sentrux_offender_summary:
+        advisory_parts.append(review.sentrux_offender_summary)
+    if review.sentrux_error:
+        advisory_parts.append(f"error: {review.sentrux_error}")
+    return "; ".join(advisory_parts)
+
+
+def _render_run_advisory(review) -> None:
+    """Render run-level status and Sentrux advisory before unit details."""
+    if review.run_status:
+        status_line = f"  run status: {review.run_status}"
+        color = _run_status_color(review.run_status)
+        click.echo(click.style(status_line, fg=color) if color else status_line)
+    sentrux_advisory = _format_sentrux_advisory(review)
+    if sentrux_advisory:
+        click.echo(click.style(f"  advisory: {sentrux_advisory}", fg="yellow"))
+
+
 def _render_review_human(review, *, diff_unit: str | None, events_unit: str | None) -> None:
     """Render a PlanReview for a human. Not pure — writes to stdout via click.echo."""
     click.echo(f"Plan: {review.plan_name}")
@@ -566,26 +601,7 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
         if review.last_run_duration_s:
             dur_part = f" ({_fmt_duration(review.last_run_duration_s)})"
         click.echo(f"  last run: {review.last_run_ts}{dur_part}")
-
-    # Run-level status and Sentrux advisory
-    if review.run_status:
-        status_color = None
-        if review.run_status in ("degraded", "partial", "failed"):
-            status_color = "yellow" if review.run_status in ("degraded", "partial") else "red"
-        if status_color:
-            click.echo(click.style(f"  run status: {review.run_status}", fg=status_color))
-        else:
-            click.echo(f"  run status: {review.run_status}")
-    if review.sentrux_degradation:
-        advisory_parts = ["sentrux degradation detected"]
-        if review.sentrux_quality_before is not None and review.sentrux_quality_after is not None:
-            before, after = review.sentrux_quality_before, review.sentrux_quality_after
-            advisory_parts.append(f"quality {before} -> {after}")
-        if review.sentrux_offender_summary:
-            advisory_parts.append(review.sentrux_offender_summary)
-        if review.sentrux_error:
-            advisory_parts.append(f"error: {review.sentrux_error}")
-        click.echo(click.style(f"  advisory: {'; '.join(advisory_parts)}", fg="yellow"))
+    _render_run_advisory(review)
 
     total = len(review.units)
     click.echo("")

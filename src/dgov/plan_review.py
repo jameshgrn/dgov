@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from dgov.deploy_log import read as read_deploy_log
 from dgov.persistence import read_events
+from dgov.repo_snapshot import format_structural_offender_report
 
 UnitStatus = Literal["deployed", "failed", "active", "pending", "not_run"]
 SettlementResult = Literal["ok", "ok_retried", "rejected", "n/a"]
@@ -846,6 +847,17 @@ def _compute_run_duration(unit_reviews: list[UnitReview]) -> float | None:
     return total or None
 
 
+def _format_structural_offenders(offenders: object) -> str | None:
+    """Return a compact report for Sentrux structural offender payloads."""
+    if not isinstance(offenders, dict):
+        return None
+    normalized = {str(k): v for k, v in offenders.items()}
+    sentrux_keys = {"complex_functions", "cog_complex_functions", "long_functions"}
+    if sentrux_keys & normalized.keys():
+        return format_structural_offender_report(normalized)
+    return ", ".join(f"{key}: {value}" for key, value in normalized.items())
+
+
 def _extract_run_completed_fields(plan_events: list[dict], run_start_id: int) -> dict[str, Any]:
     """Extract run-level fields from the latest run_completed event after run_start_id.
 
@@ -870,10 +882,7 @@ def _extract_run_completed_fields(plan_events: list[dict], run_start_id: int) ->
 
     sentrux = latest_run_completed.get("sentrux") or {}
     offenders = sentrux.get("structural_offenders") if isinstance(sentrux, dict) else None
-    offender_summary: str | None = None
-    if isinstance(offenders, dict):
-        # Format as "key: count" pairs joined by ", "
-        offender_summary = ", ".join(f"{k}: {v}" for k, v in offenders.items())
+    offender_summary = _format_structural_offenders(offenders)
 
     return {
         "run_status": latest_run_completed.get("run_status"),
