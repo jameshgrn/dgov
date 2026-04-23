@@ -32,6 +32,9 @@ system level. Workers may be probabilistic. Governance should not be.
 - `.napkin.md` is local scratch for workflow quirks and provisional notes.
 - If a note in handover or napkin is durable, promote it into the ledger or the
   relevant charter/SOP instead of duplicating it indefinitely.
+- After structural/Sentrux cleanup, rerun `uv run dgov sentrux offenders`,
+  resolve stale offender debt, and add the current offender snapshot if debt
+  remains.
 
 ## Plan Authoring Workflow
 
