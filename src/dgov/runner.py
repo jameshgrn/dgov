@@ -1177,6 +1177,87 @@ class EventDagRunner:
             )
             on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s", 0, 0)
 
+    def _get_ledger_entries_for_task(self, task: DagTaskSpec) -> list[dict]:
+        """Query ledger for open entries where affected_paths intersects with task claims.
+
+        Returns list of dicts with 'id' and 'content' keys for entries that overlap
+        with the task's file claims.
+        """
+        from dgov.persistence.ledger import list_ledger_entries
+
+        # Get all file paths this task claims (create, edit, delete, touch)
+        task_paths = set(task.all_touches())
+        if not task_paths:
+            return []
+
+        # Query for open ledger entries
+        entries = list_ledger_entries(self.session_root, status="open")
+
+        # Filter to entries with path overlap
+        overlapping = []
+        for entry in entries:
+            entry_paths = set(entry.affected_paths)
+            if entry_paths & task_paths:  # Set intersection
+                overlapping.append({"id": entry.id, "content": entry.content})
+
+        return overlapping
+
+    def _format_probation_section(self, entries: list[dict]) -> str:
+        """Format ledger entries as Active Probation (Case Law) section.
+
+        Each entry is formatted with its ID and content under the probation header.
+        Returns empty string if no entries.
+        """
+        if not entries:
+            return ""
+
+        lines = ["\n## Active Probation (Case Law)\n"]
+        for entry in entries:
+            lines.append(f"**Entry #{entry['id']}:** {entry['content']}\n")
+
+        return "".join(lines)
+
+    def _build_worker_prompt(
+        self,
+        task_slug: str,
+        task: DagTaskSpec,
+        prior_error: str | None = None,
+        attempt: int = 0,
+    ) -> str:
+        """Build the full worker prompt with all enrichments.
+
+        This includes:
+        1. Base prompt (or reviewer-generated prompt for reviewer role)
+        2. Baseline diagnostic note
+        3. Active probation (case law) from ledger entries
+        4. Prior error context for retries
+        """
+        # Build base prompt
+        if task.role == "reviewer":
+            prompt = self._build_reviewer_prompt(task_slug, task)
+        else:
+            prompt = task.prompt or ""
+
+        # Inject baseline diagnostic note so workers don't waste iterations
+        if self._baseline_diag_note:
+            prompt = self._baseline_diag_note + prompt
+
+        # Inject active probation (case law) from ledger
+        ledger_entries = self._get_ledger_entries_for_task(task)
+        probation_section = self._format_probation_section(ledger_entries)
+        if probation_section:
+            prompt = prompt + probation_section
+
+        # Enrich prompt with prior failure context on retry
+        if prior_error:
+            prompt = (
+                f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
+                f"Fix the issue described above, then complete the original task.\n\n"
+                f"ORIGINAL TASK:\n{prompt}"
+            )
+
+        return prompt
+
     def _build_reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
         """Build a reviewer prompt with dependency diffs auto-injected."""
         import subprocess as sp
@@ -1272,27 +1353,9 @@ class EventDagRunner:
         output_dir.mkdir(parents=True, exist_ok=True)
         loop = asyncio.get_running_loop()
 
-        # Reviewer: build prompt from dependency diffs (before retry enrichment
-        # so that retry context wraps the generated prompt, not replaces it)
-        if task.role == "reviewer":
-            prompt = self._build_reviewer_prompt(action.task_slug, task)
-        else:
-            prompt = task.prompt or ""
-
-        # Inject baseline diagnostic note so workers don't waste iterations
-        if self._baseline_diag_note:
-            prompt = self._baseline_diag_note + prompt
-
-        # Enrich prompt with prior failure context on retry
+        # Build worker prompt with all enrichments (baseline diag, ledger probation, retry context)
         ctx = self._ctx(action.task_slug)
-        prior_error = ctx.error
-        if prior_error:
-            attempt = ctx.attempts
-            prompt = (
-                f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
-                f"Fix the issue described above, then complete the original task.\n\n"
-                f"ORIGINAL TASK:\n{prompt}"
-            )
+        prompt = self._build_worker_prompt(action.task_slug, task, ctx.error, ctx.attempts)
 
         # Pillar #3: Snapshot Isolation
         base_ref = self._base_ref_for_task(action.task_slug)
@@ -1383,7 +1446,7 @@ class EventDagRunner:
                 )
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
-            dispatch_task = task if not prior_error else task.model_copy(update={"prompt": prompt})
+            dispatch_task = task if not ctx.error else task.model_copy(update={"prompt": prompt})
             # Use re-resolved agent
             dispatch_task = dispatch_task.model_copy(update={"agent": agent})
             timeout_s = task.timeout_s
