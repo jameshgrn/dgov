@@ -68,6 +68,9 @@ class UnitReview:
     # recovered from en route to a deployed commit. Zero for failed units
     # (no recovery occurred) and for units with no tool activity at all.
     self_corrections: int = 0
+    # Fork and self-review telemetry
+    fork_depth: int = 0  # Number of clean-context forks that occurred
+    self_review_outcome: str | None = None  # passed | rejected | auto_passed | error | None
     # Failure info (populated for status == "failed")
     reject_verdict: str | None = None
     error: str | None = None
@@ -489,6 +492,20 @@ def _apply_lifecycle_event(ev: dict, state: dict) -> None:
         # settlement_retry resets merged-in-run until a later merge_completed.
         state["merged_in_run"] = False
         state["failed_in_run"] = False
+        return
+    if event_type == "iteration_fork":
+        depth = ev.get("fork_depth")
+        if isinstance(depth, int):
+            state["fork_depth"] = max(state["fork_depth"], depth)
+        return
+    if event_type == "self_review_passed":
+        state["self_review_outcome"] = "passed"
+    elif event_type == "self_review_rejected":
+        state["self_review_outcome"] = "rejected"
+    elif event_type == "self_review_auto_passed":
+        state["self_review_outcome"] = "auto_passed"
+    elif event_type == "self_review_error":
+        state["self_review_outcome"] = "error"
 
 
 def _apply_worker_log_event(ev: dict, state: dict) -> None:
@@ -549,6 +566,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merge_sha": None,
         "merged_in_run": False,
         "failed_in_run": False,
+        # Fork and self-review telemetry
+        "fork_depth": 0,
+        "self_review_outcome": None,
         # Integration risk telemetry
         "integration_risk_level": None,
         "integration_risk_detected": False,
@@ -593,6 +613,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merged_in_run": state["merged_in_run"],
         "failed_in_run": state["failed_in_run"],
         "ran_in_run": ran_in_run,
+        # Fork and self-review telemetry
+        "fork_depth": state["fork_depth"],
+        "self_review_outcome": state["self_review_outcome"],
         # Integration risk telemetry
         "integration_risk_level": state["integration_risk_level"],
         "integration_risk_detected": state["integration_risk_detected"],
@@ -774,6 +797,8 @@ def _build_unit_review(
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
         self_corrections=self_corrections,
+        fork_depth=rollup["fork_depth"],
+        self_review_outcome=rollup["self_review_outcome"],
         reject_verdict=rollup["reject_verdict"],
         error=rollup["error"],
         last_thought=last_thought,

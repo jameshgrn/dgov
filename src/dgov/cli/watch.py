@@ -126,6 +126,34 @@ def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableT
         error = ev.get("error", "")
         return _make_row(ts, "⟳", "retry", "bold yellow", task_slug, error, full_width=True)
 
+    # Iteration fork
+    if event_type == "iteration_fork":
+        depth = ev.get("fork_depth", "?")
+        return _make_row(ts, "⑂", "fork", "bold yellow", task_slug, f"depth {depth}")
+
+    # Self-review events
+    if event_type == "self_review_passed":
+        return _make_row(ts, "✔", "self-rev ok", "green", task_slug, "")
+    if event_type == "self_review_rejected":
+        findings = ev.get("findings") or ""
+        preview = findings[:120] + "…" if len(findings) > 120 else findings
+        return _make_row(ts, "✖", "self-rev ✗", "bold yellow", task_slug, preview, full_width=True)
+    if event_type == "self_review_auto_passed":
+        return _make_row(ts, "⟳", "self-rev auto", "yellow", task_slug, "auto-passed after fix")
+    if event_type == "self_review_fix_started":
+        return _make_row(ts, "⟳", "self-rev fix", "yellow", task_slug, "relaunching worker")
+    if event_type == "self_review_error":
+        error = ev.get("error", "")
+        return _make_row(
+            ts,
+            "✖",
+            "self-rev err",
+            "bold red",
+            task_slug,
+            f"auto-passed: {error}",
+            full_width=True,
+        )
+
     # Everything else
     label = _EVENT_LABELS.get(event_type, event_type)
     return _make_row(ts, " ", label, "dim", task_slug, "")
@@ -244,6 +272,12 @@ _EVENT_LABELS: dict[str, str] = {
     "dag_completed": "dag done",
     "dag_failed": "dag FAIL",
     "settlement_retry": "retry",
+    "iteration_fork": "fork",
+    "self_review_passed": "self-rev ok",
+    "self_review_rejected": "self-rev ✗",
+    "self_review_auto_passed": "self-rev auto",
+    "self_review_fix_started": "self-rev fix",
+    "self_review_error": "self-rev err",
 }
 
 

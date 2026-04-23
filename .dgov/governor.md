@@ -73,6 +73,16 @@ This is the sequence for going from idea to running plan.
 - Commit messages must be imperative and reflect one logical change.
 - If a task needs different model behavior, override `agent`; do not restate
   general governance rules in the task prompt.
+- Use `self_review = true` on tasks where the worker is likely to make
+  semantic mistakes (e.g. wrong method receiver, unused return values,
+  incorrect API usage). Self-review spawns a clean-context reviewer on
+  the diff after the worker finishes. If the reviewer rejects, the worker
+  gets one fix attempt, then auto-passes to settlement regardless.
+- Use `max_fork_depth` (default 1) to control how many times a worker
+  that exhausts its iteration budget is relaunched with a clean context.
+  Each fork resets the iteration counter but preserves the worktree state.
+  Set to 0 to disable forking; set higher (e.g. 2–3) for large tasks
+  that legitimately need multiple passes.
 
 ### Prompt structure
 
@@ -139,6 +149,24 @@ Tasks that only capture output (examples, docs, screenshots) should not claim
 to code files tempts it to "fix" things it finds while reading, leading to
 scope violations on unrelated edits. Use `files.create` for the output files
 only, and `files.read` for any source files the task needs to inspect.
+
+### Task fields reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `summary` | string | required | One-line description |
+| `prompt` | string | — | Inline instructions (Orient / Edit / Verify) |
+| `prompt_file` | string | — | Path to external prompt file (mutually exclusive with `prompt`) |
+| `commit_message` | string | — | Imperative commit message |
+| `agent` | string | plan/project default | Model override for this task |
+| `role` | string | `"worker"` | `"worker"`, `"researcher"`, or `"reviewer"` |
+| `depends_on` | list | `[]` | Task slugs that must complete first |
+| `files` | table/list | required | File claims (see above) |
+| `timeout_s` | int | `900` | Per-attempt wall-clock timeout in seconds |
+| `iteration_budget` | int | — | Max tool calls before exhaustion (overrides project default) |
+| `test_cmd` | string | — | Task-specific test command for settlement |
+| `self_review` | bool | `false` | Spawn a clean-context reviewer on the diff after the worker finishes |
+| `max_fork_depth` | int | `1` | Max clean-context relaunches when iteration budget is exhausted |
 
 ## Retry And Failure Rules
 

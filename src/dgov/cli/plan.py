@@ -677,6 +677,20 @@ def _render_deployed_unit(unit) -> None:
         click.echo(
             f"    self-correct {unit.self_corrections} failed tool call(s) recovered before done"
         )
+    if unit.fork_depth > 0:
+        click.echo(f"    fork         {unit.fork_depth} clean-context relaunch(es)")
+    if unit.self_review_outcome is not None:
+        _sr_labels = {
+            "passed": ("self-review passed", "green"),
+            "rejected": ("self-review rejected → fix applied", "yellow"),
+            "auto_passed": ("self-review rejected → auto-passed after fix", "yellow"),
+            "error": ("self-review error → auto-passed", "red"),
+        }
+        label, color = _sr_labels.get(
+            unit.self_review_outcome,
+            (f"self-review: {unit.self_review_outcome}", None),
+        )
+        click.echo(click.style(f"    self-review  {label}", fg=color))
     _render_integration_telemetry(unit)
     if unit.done_summary:
         _render_multiline_field("worker note ", unit.done_summary)
@@ -725,6 +739,10 @@ def _render_failed_unit(unit) -> None:
             else None,
         ),
         ("reject", unit.reject_verdict),
+        (
+            "fork",
+            f"{unit.fork_depth} clean-context relaunch(es)" if unit.fork_depth > 0 else None,
+        ),
     ]
     _render_unit_fields(fields)
     _render_integration_telemetry(unit)
@@ -863,6 +881,8 @@ def _review_to_json(review) -> str:
             "duration_s": u.duration_s,
             "iterations": u.iterations,
             "self_corrections": u.self_corrections,
+            "fork_depth": u.fork_depth,
+            "self_review_outcome": u.self_review_outcome,
             "attempts": u.attempts,
             "settlement": u.settlement,
             "done_summary": u.done_summary,
