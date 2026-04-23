@@ -12,7 +12,7 @@ was introduced), the whole event log for that plan is considered.
 
 from __future__ import annotations
 
-import contextlib
+import logging
 import re
 import subprocess
 import tomllib
@@ -23,6 +23,8 @@ from typing import Any, Literal
 from dgov.deploy_log import read as read_deploy_log
 from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
+
+_log = logging.getLogger(__name__)
 
 UnitStatus = Literal["deployed", "failed", "active", "pending", "not_run"]
 SettlementResult = Literal["ok", "ok_retried", "rejected", "n/a"]
@@ -494,8 +496,10 @@ def _apply_lifecycle_event(ev: dict, state: dict) -> None:
             if isinstance(val, int):
                 state[field] = state.get(field, 0) + val
             elif isinstance(val, str):
-                with contextlib.suppress(ValueError):
+                try:
                     state[field] = state.get(field, 0) + int(val)
+                except ValueError:
+                    _log.warning("Non-numeric %s value %r in %s event", field, val, event_type)
     if event_type in _TERMINAL_EVENTS:
         _apply_terminal_event(event_type, ev, state)
         return

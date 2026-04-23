@@ -8,14 +8,10 @@ See .dgov/plans/plan-system/DESIGN.md for the full compile pipeline.
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
-
-from openai import OpenAI
-from pydantic import BaseModel
 
 from dgov.plan import PlanUnit
 from dgov.plan_tree import FlatPlan
@@ -138,97 +134,9 @@ class TagBasedSopBundler:
             elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
                 tokens.update(("javascript", "typescript"))
         # Role-based tags
-        if hasattr(unit, "role") and unit.role in ("reviewer", "researcher"):
+        if unit.role in ("reviewer", "researcher"):
             tokens.update(("review", "reviewer"))
         return frozenset(tokens)
-
-
-class SopMappingResponse(BaseModel):
-    """Structured response for SOP mapping."""
-
-    mapping: dict[str, list[str]]
-
-
-class LLMSopBundler:
-    """Production bundler — one governor LLM call to pick SOPs per unit.
-
-    Uses an OpenAI-compatible client to map units to SOPs.
-    """
-
-    def __init__(
-        self,
-        model: str = "accounts/fireworks/routers/kimi-k2p5-turbo",
-        base_url: str = "https://api.fireworks.ai/inference/v1",
-        api_key_env: str = "FIREWORKS_API_KEY",
-    ) -> None:
-        self.model = model
-        self.base_url = base_url
-        self.api_key_env = api_key_env
-
-    def pick(
-        self,
-        units: dict[str, PlanUnit],
-        sops: list[Sop],
-    ) -> dict[str, list[str]]:
-        api_key = os.environ.get(self.api_key_env)
-        if not api_key:
-            raise ValueError(f"{self.api_key_env} missing — required for LLMSopBundler")
-
-        client = OpenAI(base_url=self.base_url, api_key=api_key)
-
-        sop_list = "\n".join(
-            (
-                f"- {s.name}: {s.title} | summary: {s.summary} | "
-                f"applies_to: {', '.join(s.applies_to)} | priority: {s.priority}"
-            )
-            for s in sops
-        )
-        unit_list = "\n".join(f"- {uid}: {u.summary}" for uid, u in units.items())
-
-        prompt = f"""You are the dgov governor. Your task is to assign relevant Standard Operating
-Procedures (SOPs) to each unit of work in a plan.
-
-AVAILABLE SOPS:
-{sop_list}
-
-PLAN UNITS:
-{unit_list}
-
-For each unit, identify which SOPs are relevant to its task based on the SOP title, summary,
-applies_to tags, priority, and unit summary. A unit can have zero, one, or multiple SOPs assigned.
-
-Return a JSON object with a "mapping" key where each key is a unit ID and the value is a list of
-SOP names.
-Example:
-{{
-  "mapping": {{
-    "unit/id.one": ["sop-a", "sop-b"],
-    "unit/id.two": []
-  }}
-}}
-"""
-
-        try:
-            resp = client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a precise task-to-SOP assignment engine.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
-            content = resp.choices[0].message.content
-            if not content:
-                return {uid: [] for uid in units}
-
-            data = SopMappingResponse.model_validate_json(content)
-            return data.mapping
-        except Exception as e:
-            # Pillar #6: Fail fast. If the governor can't pick SOPs, compile fails.
-            raise RuntimeError(f"LLMSopBundler failed: {e!s}") from e
 
 
 def load_sops(sops_dir: Path) -> list[Sop]:

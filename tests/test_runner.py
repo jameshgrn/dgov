@@ -1885,19 +1885,21 @@ class TestSelfReview:
             # Auto-pass after one fix cycle — self-review is advisory
             assert results["a"] == "merged"
 
-    def test_self_review_prompt_structure(self):
-        """Review prompt contains framing, diff, and verdict protocol."""
+    def test_self_review_prompt_structure_without_sops(self):
+        """Without SOPs, prompt contains inline fallback criteria."""
         dag = _dag({"x": _task_with_self_review("x")})
         with _io_patches():
             runner = _make_runner(dag)
+        runner._review_sop_blocks = ()
         prompt = runner._build_self_review_prompt("diff --git a/foo.py b/foo.py\n+hello")
         assert "+hello" in prompt
         assert "semantic correctness" in prompt
         assert "NO context" in prompt
         assert '"approved"' in prompt
+        assert "Logic errors" in prompt
 
     def test_self_review_prompt_injects_sop_blocks(self):
-        """When review SOPs are loaded, their content appears in the prompt."""
+        """When review SOPs are loaded, their content replaces fallback."""
         dag = _dag({"x": _task_with_self_review("x")})
         with _io_patches():
             runner = _make_runner(dag)
@@ -1905,6 +1907,7 @@ class TestSelfReview:
         prompt = runner._build_self_review_prompt("diff --git a/f.py b/f.py\n+x")
         assert "[SOP: Test Review]" in prompt
         assert "check things" in prompt
+        assert "Logic errors" not in prompt
 
     def test_self_review_skipped_for_read_only_roles(self):
         """Researcher/reviewer roles skip self-review even if self_review=True."""

@@ -890,6 +890,14 @@ class EventDagRunner:
         ]
         if self._review_sop_blocks:
             parts.append("\n" + "\n\n".join(self._review_sop_blocks) + "\n")
+        else:
+            parts.append(
+                "\nFocus on:\n"
+                "- Logic errors (wrong conditions, off-by-one, inverted checks)\n"
+                "- No-ops (code that appears to do something but has no effect)\n"
+                "- Silently wrong behavior (swallowed errors, wrong variable used)\n"
+                "- Missing edge cases (null/empty/boundary conditions)\n"
+            )
         parts.append(
             f"\nDIFF:\n```diff\n{diff_text}\n```\n\n"
             "Read the surrounding code in the repo for context if needed.\n\n"
