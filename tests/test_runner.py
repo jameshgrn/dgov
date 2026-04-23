@@ -1982,8 +1982,9 @@ class TestAsyncErrorPaths:
 
     def test_fork_no_worktree_skips_fork(self):
         """If worktree is None when iteration exhaustion fires, no fork attempt."""
+        runner_ref: list[EventDagRunner] = []
 
-        async def _exhaust_worker(
+        async def _exhaust_and_clear_wt(
             project_root,
             plan_name,
             task_slug,
@@ -1995,6 +1996,8 @@ class TestAsyncErrorPaths:
             on_event=None,
         ):
             await asyncio.sleep(0.01)
+            # Clear worktree AFTER dispatch set it, BEFORE exit triggers fork check
+            runner_ref[0]._ctx(task_slug).worktree = None
             on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
 
         task = DagTaskSpec(
@@ -2007,10 +2010,9 @@ class TestAsyncErrorPaths:
             max_fork_depth=1,
         )
         dag = _dag({"a": task})
-        with _io_patches(headless=_exhaust_worker):
+        with _io_patches(headless=_exhaust_and_clear_wt):
             runner = _make_runner(dag)
-            # Remove worktree from context to simulate None worktree
-            runner._ctx("a").worktree = None
+            runner_ref.append(runner)
             results = asyncio.run(runner.run())
             # Without worktree, fork cannot happen — task fails
             assert results["a"] == "failed"
