@@ -9,7 +9,147 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+from dgov.plan import PlanUnit, PlanUnitFiles
+from dgov.plan_tree import FlatPlan
 from dgov.sop_bundler import BundleResult
+
+
+def _format_timestamp(source_mtime_max: float) -> str:
+    """Format a Unix timestamp as ISO 8601 UTC string."""
+    return datetime.fromtimestamp(source_mtime_max, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _format_plan_section(name: str, timestamp: str, sop_set_hash: str) -> list[str]:
+    """Format the [plan] section header with metadata."""
+    return [
+        "[plan]",
+        f"name = {_toml_str(name)}",
+        f"source_mtime_max = {_toml_str(timestamp)}",
+        f"sop_set_hash = {_toml_str(sop_set_hash)}",
+        "",
+    ]
+
+
+def _format_prompt_fields(unit: PlanUnit) -> list[str]:
+    """Format prompt-related fields (prompt_file and prompt)."""
+    lines: list[str] = []
+    if unit.prompt_file:
+        lines.append(f"prompt_file = {_toml_str(unit.prompt_file)}")
+    if unit.prompt:
+        lines.append(f"prompt = {_toml_ml_str(unit.prompt)}")
+    else:
+        lines.append('prompt = ""')
+    return lines
+
+
+def _format_optional_string_field(value: str | None, key: str) -> list[str]:
+    """Format an optional string field if value is present."""
+    if value:
+        return [f"{key} = {_toml_str(value)}"]
+    return []
+
+
+def _format_optional_int_field(value: int | None, key: str) -> list[str]:
+    """Format an optional integer field if value is present."""
+    if value is not None:
+        return [f"{key} = {value}"]
+    return []
+
+
+def _format_string_array_field(items: tuple[str, ...] | list[str], key: str) -> list[str]:
+    """Format a string array field if items are present."""
+    if items:
+        formatted = ", ".join(_toml_str(item) for item in items)
+        return [f"{key} = [{formatted}]"]
+    return []
+
+
+def _format_role_field(role: str) -> list[str]:
+    """Format role field only if non-default ('worker')."""
+    if role != "worker":
+        return [f"role = {_toml_str(role)}"]
+    return []
+
+
+def _has_structured_files(files: PlanUnitFiles) -> bool:
+    """Check if files has any non-touch categories."""
+    return bool(files.create or files.edit or files.delete or files.read)
+
+
+def _format_files(files: PlanUnitFiles) -> list[str]:
+    """Format files section - either flat or structured depending on content."""
+    lines: list[str] = []
+    has_any = files.create or files.edit or files.delete or files.read or files.touch
+
+    if not has_any:
+        return lines
+
+    # Pure touch-only case: use flat format
+    if files.touch and not _has_structured_files(files):
+        lines.append(f"files = [{', '.join(_toml_str(f) for f in files.touch)}]")
+        return lines
+
+    # Structured format with sub-keys
+    if files.touch:
+        lines.append(f"files.touch = [{', '.join(_toml_str(f) for f in files.touch)}]")
+    if files.create:
+        lines.append(f"files.create = [{', '.join(_toml_str(f) for f in files.create)}]")
+    if files.edit:
+        lines.append(f"files.edit = [{', '.join(_toml_str(f) for f in files.edit)}]")
+    if files.delete:
+        lines.append(f"files.delete = [{', '.join(_toml_str(f) for f in files.delete)}]")
+    if files.read:
+        lines.append(f"files.read = [{', '.join(_toml_str(f) for f in files.read)}]")
+
+    return lines
+
+
+def _format_task_section(fq_id: str, unit: PlanUnit, mapping: tuple[str, ...]) -> list[str]:
+    """Format a single [tasks."<fq_id>"] section with all its fields."""
+    lines: list[str] = []
+
+    # Section header and key metadata
+    lines.append(f"[tasks.{_toml_key(fq_id)}]")
+    lines.append(f"summary = {_toml_str(unit.summary)}")
+
+    # Prompt fields
+    lines.extend(_format_prompt_fields(unit))
+
+    # Core required field
+    lines.append(f"commit_message = {_toml_str(unit.commit_message)}")
+
+    # Optional string fields
+    lines.extend(_format_optional_string_field(unit.agent, "agent"))
+    lines.extend(_format_role_field(unit.role))
+
+    # Arrays
+    lines.extend(_format_string_array_field(unit.depends_on, "depends_on"))
+    lines.extend(_format_string_array_field(mapping, "sop_mapping"))
+
+    # Optional numeric fields
+    lines.extend(_format_optional_int_field(unit.timeout_s, "timeout_s"))
+    lines.extend(_format_optional_int_field(unit.iteration_budget, "iteration_budget"))
+
+    # Optional test command
+    lines.extend(_format_optional_string_field(unit.test_cmd, "test_cmd"))
+
+    # Files section
+    lines.extend(_format_files(unit.files))
+
+    lines.append("")
+    return lines
+
+
+def _format_all_task_sections(
+    plan: FlatPlan, sop_mapping: dict[str, tuple[str, ...]]
+) -> list[str]:
+    """Format all task sections in sorted order."""
+    lines: list[str] = []
+    for fq_id in sorted(plan.units):
+        unit = plan.units[fq_id]
+        mapping = sop_mapping.get(fq_id, ())
+        lines.extend(_format_task_section(fq_id, unit, mapping))
+    return lines
 
 
 def serialize_compiled_toml(
@@ -25,81 +165,11 @@ def serialize_compiled_toml(
     plan = br.plan
     meta = plan.root_meta
 
-    ts = datetime.fromtimestamp(source_mtime_max, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    ts = _format_timestamp(source_mtime_max)
 
-    lines: list[str] = [
-        "[plan]",
-        f"name = {_toml_str(meta.name)}",
-        f"source_mtime_max = {_toml_str(ts)}",
-        f"sop_set_hash = {_toml_str(br.sop_set_hash)}",
-        "",
-    ]
-
-    for fq_id in sorted(plan.units):
-        unit = plan.units[fq_id]
-        mapping = br.sop_mapping.get(fq_id, ())
-        lines.append(f"[tasks.{_toml_key(fq_id)}]")
-        lines.append(f"summary = {_toml_str(unit.summary)}")
-        # Emit prompt_file if it was set on the unit, otherwise inline the prompt
-        if unit.prompt_file:
-            lines.append(f"prompt_file = {_toml_str(unit.prompt_file)}")
-        if unit.prompt:
-            lines.append(f"prompt = {_toml_ml_str(unit.prompt)}")
-        else:
-            lines.append('prompt = ""')
-        lines.append(f"commit_message = {_toml_str(unit.commit_message)}")
-        if unit.agent:
-            lines.append(f"agent = {_toml_str(unit.agent)}")
-        if unit.role != "worker":
-            lines.append(f"role = {_toml_str(unit.role)}")
-        if unit.depends_on:
-            deps = ", ".join(_toml_str(d) for d in unit.depends_on)
-            lines.append(f"depends_on = [{deps}]")
-        if unit.timeout_s:
-            lines.append(f"timeout_s = {unit.timeout_s}")
-        if unit.iteration_budget is not None:
-            lines.append(f"iteration_budget = {unit.iteration_budget}")
-        if unit.test_cmd:
-            lines.append(f"test_cmd = {_toml_str(unit.test_cmd)}")
-        if mapping:
-            items = ", ".join(_toml_str(m) for m in mapping)
-            lines.append(f"sop_mapping = [{items}]")
-        # files — flat list (touch) or structured sub-table
-        has_files = (
-            unit.files.create
-            or unit.files.edit
-            or unit.files.delete
-            or unit.files.read
-            or unit.files.touch
-        )
-        if has_files:
-            if unit.files.touch and not (
-                unit.files.create or unit.files.edit or unit.files.delete or unit.files.read
-            ):
-                # Pure flat list — serialize as `files = [...]`
-                lines.append(f"files = [{', '.join(_toml_str(f) for f in unit.files.touch)}]")
-            else:
-                if unit.files.touch:
-                    lines.append(
-                        f"files.touch = [{', '.join(_toml_str(f) for f in unit.files.touch)}]"
-                    )
-                if unit.files.create:
-                    lines.append(
-                        f"files.create = [{', '.join(_toml_str(f) for f in unit.files.create)}]"
-                    )
-                if unit.files.edit:
-                    lines.append(
-                        f"files.edit = [{', '.join(_toml_str(f) for f in unit.files.edit)}]"
-                    )
-                if unit.files.delete:
-                    lines.append(
-                        f"files.delete = [{', '.join(_toml_str(f) for f in unit.files.delete)}]"
-                    )
-                if unit.files.read:
-                    lines.append(
-                        f"files.read = [{', '.join(_toml_str(f) for f in unit.files.read)}]"
-                    )
-        lines.append("")
+    lines: list[str] = []
+    lines.extend(_format_plan_section(meta.name, ts, br.sop_set_hash))
+    lines.extend(_format_all_task_sections(plan, br.sop_mapping))
 
     return "\n".join(lines)
 
