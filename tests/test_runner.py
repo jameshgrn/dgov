@@ -1944,3 +1944,118 @@ class TestNewSchemaFields:
     def test_max_fork_depth_set_zero(self):
         t = DagTaskSpec(slug="x", summary="y", max_fork_depth=0)
         assert t.max_fork_depth == 0
+
+
+# ---------------------------------------------------------------------------
+# Async error path tests
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncErrorPaths:
+    """Tests for runner error recovery paths that were previously uncovered."""
+
+    def test_self_review_exception_auto_passes(self):
+        """If self-review raises an exception, task still passes to settlement."""
+
+        async def _crash_on_review(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            if "-self-review" in task_slug:
+                raise RuntimeError("reviewer exploded")
+            on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_crash_on_review), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            # Self-review is advisory — exception auto-passes to settlement
+            assert results["a"] == "merged"
+
+    def test_fork_no_worktree_skips_fork(self):
+        """If worktree is None when iteration exhaustion fires, no fork attempt."""
+
+        async def _exhaust_worker(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+
+        task = DagTaskSpec(
+            slug="a",
+            summary="Test",
+            prompt="Do a",
+            commit_message="a",
+            agent="test",
+            files=DagFileSpec(create=("a.py",)),
+            max_fork_depth=1,
+        )
+        dag = _dag({"a": task})
+        with _io_patches(headless=_exhaust_worker):
+            runner = _make_runner(dag)
+            # Remove worktree from context to simulate None worktree
+            runner._ctx("a").worktree = None
+            results = asyncio.run(runner.run())
+            # Without worktree, fork cannot happen — task fails
+            assert results["a"] == "failed"
+
+    def test_worker_tokens_propagate_through_events(self):
+        """Worker token counts flow through emit_event to event log."""
+        emitted: list[dict] = []
+        original_emit = None
+
+        # Capture emit_event calls
+        def _capture_emit(session_root, event, pane, **kwargs):
+            emitted.append({"event": event, **kwargs})
+
+        async def _worker_with_tokens(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            on_exit(task_slug, pane_slug, 0, "", 1500, 500)
+
+        dag = _dag({"a": _task("a")})
+        with _io_patches(headless=_worker_with_tokens):
+            with patch(_P_EMIT_EVENT, _capture_emit):
+                runner = _make_runner(dag)
+                asyncio.run(runner.run())
+
+        done_events = [e for e in emitted if e["event"] == "task_done"]
+        assert len(done_events) >= 1
+        assert done_events[0]["prompt_tokens"] == 1500
+        assert done_events[0]["completion_tokens"] == 500
+
+    def test_concurrent_failures_both_reported(self):
+        """When two parallel tasks both fail, both are reported as failed."""
+        task_a = _task("a")
+        task_b = _task("b")
+        dag = _dag({"a": task_a, "b": task_b})
+        with _io_patches(headless=_fake_worker_fail):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+            assert results["b"] == "failed"
