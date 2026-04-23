@@ -834,7 +834,7 @@ class TestValidateSandbox:
         (tmp_path / "clean.py").write_text("x = 1\n")
         _git(tmp_path, "add", ".")
         _git(tmp_path, "commit", "-m", "add clean.py")
-        # Counter file: baseline (1st call) has 2 diagnostics, worktree (2nd call) has 2 different ones.
+        # Counter file: baseline has 2 diagnostics, worktree has 2 different ones.
         counter = tmp_path / ".ty_counter"
         cmd = (
             f'n=$(cat "{counter}" 2>/dev/null || echo 0); '

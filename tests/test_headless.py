@@ -63,7 +63,14 @@ def test_run_headless_worker_uses_project_config_payload(
 
     exits: list[tuple[int, str, int, int]] = []
 
-    def _on_exit(task_slug: str, pane_slug: str, exit_code: int, last_error: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
+    def _on_exit(
+        task_slug: str,
+        pane_slug: str,
+        exit_code: int,
+        last_error: str,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
         exits.append((exit_code, last_error, prompt_tokens, completion_tokens))
 
     asyncio.run(

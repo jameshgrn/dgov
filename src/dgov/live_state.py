@@ -13,8 +13,6 @@ LIVE_STATES = frozenset({
     "active",
     "done",
     "reviewing",
-    "reviewed_pass",
-    "reviewed_fail",
     "merging",
 })
 
