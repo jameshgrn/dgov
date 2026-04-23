@@ -1,0 +1,5 @@
+[plan]
+name = "serializer-order-cleanup"
+summary = "Restore serializer field ordering after helper extraction."
+sections = ["fix"]
+

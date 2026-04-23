@@ -1,0 +1,5 @@
+[plan]
+name = "serializer-complexity"
+summary = "Reduce serializer complexity with behavior-preserving helper extraction."
+sections = ["refactor"]
+
