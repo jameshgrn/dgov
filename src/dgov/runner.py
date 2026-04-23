@@ -604,6 +604,8 @@ class EventDagRunner:
             task_slug=exit_event.task_slug,
             error=exit_event.last_error if status == TaskState.FAILED else None,
             duration=duration,
+            prompt_tokens=exit_event.prompt_tokens or None,
+            completion_tokens=exit_event.completion_tokens or None,
         )
         return actions
 

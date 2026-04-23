@@ -32,7 +32,6 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: boo
 
 def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
-    from dgov.config import load_project_config
     from dgov.plan_tree import (
         merge_tree,
         resolve_refs,
@@ -40,7 +39,7 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
         walk_tree,
     )
     from dgov.serializer import serialize_compiled_toml
-    from dgov.sop_bundler import IdentityBundler, LLMSopBundler, bundle
+    from dgov.sop_bundler import IdentityBundler, TagBasedSopBundler, bundle
 
     # 1. Walk
     try:
@@ -80,16 +79,7 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
     # 5. Bundle SOPs
     project_root = resolve_project_root()
     sops_dir = project_root / ".dgov" / "sops"
-    project_config = load_project_config(project_root)
-    bundler = (
-        IdentityBundler()
-        if dry_run
-        else LLMSopBundler(
-            model=project_config.default_agent,
-            base_url=project_config.llm_base_url,
-            api_key_env=project_config.llm_api_key_env,
-        )
-    )
+    bundler = IdentityBundler() if dry_run else TagBasedSopBundler()
 
     # Caching: read existing _compiled.toml if present to reuse mapping if hash matches
     cached_mapping = None

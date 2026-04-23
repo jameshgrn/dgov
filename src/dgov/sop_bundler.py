@@ -95,6 +95,48 @@ class IdentityBundler:
         return {uid: [] for uid in units}
 
 
+class TagBasedSopBundler:
+    """Deterministic bundler — assigns SOPs by tag intersection.
+
+    For each unit, extracts keywords from the summary, prompt, and file
+    paths, then matches against each SOP's applies_to tags. Zero latency,
+    zero external dependencies.
+    """
+
+    def pick(
+        self,
+        units: dict[str, PlanUnit],
+        sops: list[Sop],
+    ) -> dict[str, list[str]]:
+        return {uid: self._match(unit, sops) for uid, unit in units.items()}
+
+    @staticmethod
+    def _match(unit: PlanUnit, sops: list[Sop]) -> list[str]:
+        keywords = TagBasedSopBundler._extract_keywords(unit)
+        return [s.name for s in sops if frozenset(s.applies_to) & keywords]
+
+    @staticmethod
+    def _extract_keywords(unit: PlanUnit) -> frozenset[str]:
+        """Extract matching keywords from a unit's metadata."""
+        tokens: set[str] = set()
+        for text in (unit.summary or "", unit.prompt or ""):
+            tokens.update(word.lower().strip(".,;:()\"'`") for word in text.split())
+        # File extensions → language tags
+        for path in (
+            *(unit.files.create if unit.files else ()),
+            *(unit.files.edit if unit.files else ()),
+            *(unit.files.touch if unit.files else ()),
+        ):
+            if path.endswith(".py"):
+                tokens.add("python")
+            elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
+                tokens.update(("javascript", "typescript"))
+        # Role-based tags
+        if hasattr(unit, "role") and unit.role in ("reviewer", "researcher"):
+            tokens.update(("review", "reviewer"))
+        return frozenset(tokens)
+
+
 class SopMappingResponse(BaseModel):
     """Structured response for SOP mapping."""
 

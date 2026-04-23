@@ -669,6 +669,12 @@ def _render_deployed_unit(unit) -> None:
             if unit.settlement != "n/a"
             else None,
         ),
+        (
+            "tokens",
+            f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
+            if unit.prompt_tokens is not None and unit.completion_tokens is not None
+            else None,
+        ),
     ]
     _render_unit_fields(fields)
     if unit.landed_files:
@@ -880,6 +886,8 @@ def _review_to_json(review) -> str:
             "full_diff": u.full_diff,
             "duration_s": u.duration_s,
             "iterations": u.iterations,
+            "prompt_tokens": u.prompt_tokens,
+            "completion_tokens": u.completion_tokens,
             "self_corrections": u.self_corrections,
             "fork_depth": u.fork_depth,
             "self_review_outcome": u.self_review_outcome,

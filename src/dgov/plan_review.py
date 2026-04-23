@@ -12,6 +12,7 @@ was introduced), the whole event log for that plan is considered.
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 import tomllib
@@ -68,6 +69,9 @@ class UnitReview:
     # recovered from en route to a deployed commit. Zero for failed units
     # (no recovery occurred) and for units with no tool activity at all.
     self_corrections: int = 0
+    # Token usage (from task_done/task_failed events)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
     # Fork and self-review telemetry
     fork_depth: int = 0  # Number of clean-context forks that occurred
     self_review_outcome: str | None = None  # passed | rejected | auto_passed | error | None
@@ -484,6 +488,14 @@ def _apply_lifecycle_event(ev: dict, state: dict) -> None:
     if event_type == "dag_task_dispatched" and state["dispatched_ts"] is None:
         state["dispatched_ts"] = ev.get("ts")
         return
+    if event_type in ("task_done", "task_failed"):
+        for field in ("prompt_tokens", "completion_tokens"):
+            val = ev.get(field)
+            if isinstance(val, int):
+                state[field] = state.get(field, 0) + val
+            elif isinstance(val, str):
+                with contextlib.suppress(ValueError):
+                    state[field] = state.get(field, 0) + int(val)
     if event_type in _TERMINAL_EVENTS:
         _apply_terminal_event(event_type, ev, state)
         return
@@ -615,6 +627,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merged_in_run": state["merged_in_run"],
         "failed_in_run": state["failed_in_run"],
         "ran_in_run": ran_in_run,
+        # Token usage
+        "prompt_tokens": state.get("prompt_tokens") or None,
+        "completion_tokens": state.get("completion_tokens") or None,
         # Fork and self-review telemetry
         "fork_depth": state["fork_depth"],
         "self_review_outcome": state["self_review_outcome"],
@@ -799,6 +814,8 @@ def _build_unit_review(
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
         self_corrections=self_corrections,
+        prompt_tokens=rollup["prompt_tokens"],
+        completion_tokens=rollup["completion_tokens"],
         fork_depth=rollup["fork_depth"],
         self_review_outcome=rollup["self_review_outcome"],
         reject_verdict=rollup["reject_verdict"],
