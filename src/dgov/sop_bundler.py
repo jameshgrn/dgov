@@ -117,10 +117,16 @@ class TagBasedSopBundler:
 
     @staticmethod
     def _extract_keywords(unit: PlanUnit) -> frozenset[str]:
-        """Extract matching keywords from a unit's metadata."""
+        """Extract matching keywords from structured unit metadata.
+
+        Only uses high-signal sources to avoid false positives from common
+        English words in prompts. Sources: file extensions, role, and
+        summary words (short, curated by the plan author).
+        """
         tokens: set[str] = set()
-        for text in (unit.summary or "", unit.prompt or ""):
-            tokens.update(word.lower().strip(".,;:()\"'`") for word in text.split())
+        # Summary only — prompt text is too noisy (common words match SOP tags)
+        if unit.summary:
+            tokens.update(word.lower().strip(".,;:()\"'`") for word in unit.summary.split())
         # File extensions → language tags
         for path in (
             *(unit.files.create if unit.files else ()),
