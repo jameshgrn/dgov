@@ -31,6 +31,10 @@ def _minimal_root(tmp_path: Path, sections: str = '["alpha"]') -> None:
     )
 
 
+def _plan_system_fixture() -> Path:
+    return Path(__file__).parent.parent / ".dgov" / "plans" / "archive" / "plan-system"
+
+
 class TestHappyPath:
     def test_parses_root_meta(self, tmp_path: Path) -> None:
         _minimal_root(tmp_path, '["alpha"]')
@@ -187,7 +191,7 @@ class TestDogfood:
     """Smoke test: walker can parse the plan-system's own tree."""
 
     def test_walks_plan_system_tree(self) -> None:
-        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan_root = _plan_system_fixture()
         tree = walk_tree(plan_root)
         assert tree.root_meta.name == "plan-system"
         assert set(tree.root_meta.sections) == {"compile", "cli", "runtime"}
@@ -481,7 +485,7 @@ class TestMergerTypeChecks:
 
 class TestMergerDogfood:
     def test_merges_plan_system_tree(self) -> None:
-        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan_root = _plan_system_fixture()
         plan = merge_tree(walk_tree(plan_root))
         expected_ids = {
             "compile/pipeline.walker",
@@ -677,7 +681,7 @@ class TestResolverUnknownRefs:
 
 class TestResolverDogfood:
     def test_resolves_plan_system_refs(self) -> None:
-        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan_root = _plan_system_fixture()
         plan = resolve_refs(merge_tree(walk_tree(plan_root)))
         # compile pipeline chain: walker → merger → resolver → validator → sop-bundler
         assert plan.units["compile/pipeline.merger"].depends_on == ("compile/pipeline.walker",)
@@ -854,7 +858,7 @@ class TestValidatorUnreachable:
 
 class TestValidatorDogfood:
     def test_plan_system_validates_clean(self) -> None:
-        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
+        plan_root = _plan_system_fixture()
         plan = resolve_refs(merge_tree(walk_tree(plan_root)))
         report = validate(plan)
         assert report.cycles == ()

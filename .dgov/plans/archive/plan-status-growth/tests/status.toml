@@ -1,0 +1,27 @@
+[tasks.cover-recompile-growth]
+summary = "Cover dgov plan status after a plan grows and is recompiled."
+prompt = """
+Orient:
+- Read `tests/test_cli_plan_status.py` first.
+- Read `src/dgov/cli/plan.py` and `src/dgov/cli/compile.py` only for context.
+- The bug to lock down: after a plan has already been compiled/deployed, growing the DAG and recompiling must make `dgov plan status` report the new total unit count and must not report stale immediately after the successful recompile.
+- Do not edit runtime code unless the new test fails.
+
+Edit:
+1. In `tests/test_cli_plan_status.py`, add a regression test that:
+   - creates and compiles a minimal plan tree,
+   - records one deployed unit in the deploy log,
+   - grows the DAG by adding a new task file or section,
+   - recompiles the plan,
+   - runs `dgov plan status` in JSON mode,
+   - asserts the expanded unit count, deployed/pending counts, and `stale is False`.
+2. Keep the test deterministic and scoped to `dgov plan status`; do not run the full suite.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_cli_plan_status.py`
+- `uv run ruff check tests/test_cli_plan_status.py`
+- `uv run ruff format --check tests/test_cli_plan_status.py`
+"""
+commit_message = "Cover plan status after recompiled DAG growth"
+files.edit = ["tests/test_cli_plan_status.py"]
+files.read = ["src/dgov/cli/plan.py", "src/dgov/cli/compile.py"]

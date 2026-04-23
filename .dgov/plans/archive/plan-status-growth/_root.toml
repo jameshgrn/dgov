@@ -1,0 +1,4 @@
+[plan]
+name = "plan-status-growth"
+summary = "Lock regression coverage for plan status after a recompiled plan DAG grows."
+sections = ["tests"]

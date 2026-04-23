@@ -607,8 +607,9 @@ class TestBundleIntegration:
     """Bundle against a real plan tree (plan-system dogfood)."""
 
     def test_bundle_plan_system_with_identity(self) -> None:
-        plan_root = Path(__file__).parent.parent / ".dgov" / "plans" / "plan-system"
-        sops_dir = plan_root.parent.parent / "sops"
+        project_root = Path(__file__).parent.parent
+        plan_root = project_root / ".dgov" / "plans" / "archive" / "plan-system"
+        sops_dir = project_root / ".dgov" / "sops"
         plan = resolve_refs(merge_tree(walk_tree(plan_root)))
         result = bundle(plan, sops_dir, IdentityBundler())
         # Identity bundler keeps prompts unchanged even when SOPs exist.

@@ -1,0 +1,4 @@
+[plan]
+name = "status-live-view"
+summary = "Fix dgov status live-view state classification so stale reviewed outcomes do not appear active."
+sections = ["runtime"]
