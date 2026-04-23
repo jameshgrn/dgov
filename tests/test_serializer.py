@@ -621,3 +621,72 @@ class TestSerializeCompiledTomlWithAgentAndTimeout:
         result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
 
         assert "iteration_budget = 12" in result
+
+    def test_sop_mapping_appears_after_numeric_and_test_cmd_fields(self, tmp_path):
+        """sop_mapping should be emitted after timeout_s, iteration_budget, and test_cmd.
+
+        This ensures the original field ordering is preserved: agent, role,
+        depends_on, timeout_s, iteration_budget, test_cmd, sop_mapping, then files.
+        """
+        plan_root = tmp_path / "test_plan"
+        plan_root.mkdir()
+
+        root_meta = RootMeta(
+            name="ordering-plan",
+            summary="Test field ordering",
+            sections=("section1",),
+        )
+
+        unit = PlanUnit(
+            slug="section1/file.complete_task",
+            summary="Complete task with all optional fields",
+            prompt="Do everything",
+            commit_message="Complete",
+            files=PlanUnitFiles(edit=("src/main.py",)),
+            timeout_s=300,
+            iteration_budget=5,
+            test_cmd="pytest tests/test_main.py",
+        )
+
+        flat_plan = FlatPlan(
+            plan_root=plan_root,
+            root_meta=root_meta,
+            units={"section1/file.complete_task": unit},
+            source_map={"section1/file.complete_task": plan_root / "section1" / "file.toml"},
+            source_mtime_max=1234567890.0,
+        )
+
+        bundle = BundleResult(
+            plan=flat_plan,
+            sop_mapping={"section1/file.complete_task": ("sop-a", "sop-b")},
+            sop_set_hash="ordering_hash",
+        )
+
+        result = serialize_compiled_toml(bundle, flat_plan.source_mtime_max)
+
+        # Extract the task section to verify field ordering
+        task_section_start = result.find('[tasks."section1/file.complete_task"]')
+        assert task_section_start != -1
+        task_section_end = result.find("\n[", task_section_start + 1)
+        if task_section_end == -1:
+            task_section_end = len(result)
+        task_section = result[task_section_start:task_section_end]
+
+        # Find positions of each field
+        timeout_pos = task_section.find("timeout_s = 300")
+        iteration_pos = task_section.find("iteration_budget = 5")
+        test_cmd_pos = task_section.find('test_cmd = "pytest tests/test_main.py"')
+        sop_mapping_pos = task_section.find('sop_mapping = ["sop-a", "sop-b"]')
+
+        # All fields must be present
+        assert timeout_pos != -1, "timeout_s not found"
+        assert iteration_pos != -1, "iteration_budget not found"
+        assert test_cmd_pos != -1, "test_cmd not found"
+        assert sop_mapping_pos != -1, "sop_mapping not found"
+
+        # Verify ordering: timeout_s, iteration_budget, test_cmd, then sop_mapping
+        assert timeout_pos < iteration_pos < test_cmd_pos < sop_mapping_pos, (
+            f"Field ordering violated: timeout_s={timeout_pos}, "
+            f"iteration_budget={iteration_pos}, test_cmd={test_cmd_pos}, "
+            f"sop_mapping={sop_mapping_pos}"
+        )

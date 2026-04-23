@@ -124,7 +124,6 @@ def _format_task_section(fq_id: str, unit: PlanUnit, mapping: tuple[str, ...]) -
 
     # Arrays
     lines.extend(_format_string_array_field(unit.depends_on, "depends_on"))
-    lines.extend(_format_string_array_field(mapping, "sop_mapping"))
 
     # Optional numeric fields
     lines.extend(_format_optional_int_field(unit.timeout_s, "timeout_s"))
@@ -132,6 +131,9 @@ def _format_task_section(fq_id: str, unit: PlanUnit, mapping: tuple[str, ...]) -
 
     # Optional test command
     lines.extend(_format_optional_string_field(unit.test_cmd, "test_cmd"))
+
+    # sop_mapping comes after test_cmd, before files
+    lines.extend(_format_string_array_field(mapping, "sop_mapping"))
 
     # Files section
     lines.extend(_format_files(unit.files))
@@ -159,7 +161,7 @@ def serialize_compiled_toml(
     """Serialize a BundleResult into flat PlanSpec TOML (dispatch-ready).
 
     Produces `[plan]` + `[tasks."<fq_id>"]` sections compatible with
-    `parse_dag_file`. Imports BundleResult lazily to avoid circular deps.
+    `parse_dag_file`.
     """
     br = bundle_result
     plan = br.plan
