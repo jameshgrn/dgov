@@ -84,6 +84,9 @@ class TaskContext:
     worktree: Worktree | None = None
     worker_task: asyncio.Task[None] | None = None
     rejected_worktree: Worktree | None = None
+    call_count: int = 0
+    fork_depth: int = 0
+    review_file_count: int = 0
 
 
 def _build_baseline_diag_note(config: object, session_root: str) -> str:
@@ -470,7 +473,11 @@ class EventDagRunner:
             elif isinstance(action, MergeTask):
                 dispatch_coros.append((action.task_slug, self._merge(action)))
             elif isinstance(action, ReviewTask):
-                next_actions.extend(self._run_review(action))
+                structural = self._run_structural_review(action)
+                if structural is not None:
+                    next_actions.extend(structural)
+                else:
+                    dispatch_coros.append((action.task_slug, self._run_self_review_gate(action)))
             elif isinstance(action, CleanupTask):
                 next_actions.extend(await self._cleanup_task(action))
             elif isinstance(action, InterruptGovernor):
@@ -511,15 +518,49 @@ class EventDagRunner:
                 logger.warning("DB state sync failed for %s: %s", action.task_slug, exc)
         return []
 
+    _ITERATION_EXHAUSTED_MARKER = "Exceeded max iterations"
+
     def _handle_worker_exit(self, exit_event: WorkerExit) -> list[DagAction]:
         """Convert a worker exit into kernel actions, recording errors and emitting events."""
         self._pending_dispatches.discard(exit_event.task_slug)
         ctx = self._ctx(exit_event.task_slug)
         ctx.worker_task = None
-        status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
 
         if exit_event.last_error:
             ctx.error = exit_event.last_error
+
+        # --- Clean-context fork on iteration exhaustion ---
+        task = self.dag.tasks[exit_event.task_slug]
+        if (
+            exit_event.exit_code != 0
+            and self._ITERATION_EXHAUSTED_MARKER in (exit_event.last_error or "")
+            and ctx.fork_depth < task.max_fork_depth
+            and ctx.worktree is not None
+        ):
+            ctx.fork_depth += 1
+            ctx.call_count = 0
+            ctx.start_time = time.time()
+            self._pending_dispatches.add(exit_event.task_slug)
+            logger.info(
+                "Task %s exhausted iterations — forking with clean context (depth %d/%d)",
+                exit_event.task_slug,
+                ctx.fork_depth,
+                task.max_fork_depth,
+            )
+            emit_event(
+                self.session_root,
+                "iteration_fork",
+                exit_event.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=exit_event.task_slug,
+                fork_depth=ctx.fork_depth,
+            )
+            ctx.worker_task = asyncio.create_task(
+                self._fork_worker(exit_event.task_slug, ctx.worktree, exit_event.pane_slug)
+            )
+            return []  # kernel still sees task as ACTIVE
+
+        status = TaskState.DONE if exit_event.exit_code == 0 else TaskState.FAILED
 
         # Calculate task duration
         start_time = ctx.start_time
@@ -541,6 +582,344 @@ class EventDagRunner:
             duration=duration,
         )
         return actions
+
+    async def _get_worktree_diff(self, wt: Worktree) -> str:
+        """Get the diff of uncommitted changes in a worktree."""
+        import subprocess as sp
+
+        loop = asyncio.get_running_loop()
+        try:
+            diff_result = await loop.run_in_executor(
+                self._executor,
+                lambda: sp.run(
+                    ["git", "diff", "HEAD"],
+                    cwd=wt.path,
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                ),
+            )
+            return diff_result.stdout or ""
+        except Exception:
+            return ""
+
+    async def _fork_worker(
+        self,
+        task_slug: str,
+        wt: Worktree,
+        pane_slug: str,
+    ) -> None:
+        """Fork a fresh worker with clean context in the existing worktree.
+
+        The forked worker inherits the worktree state (uncommitted changes)
+        but gets a distilled prompt with the diff of work done so far.
+
+        On any failure, pushes a failed WorkerExit so _run_loop never hangs.
+        """
+        loop = asyncio.get_running_loop()
+        task = self.dag.tasks[task_slug]
+        ctx = self._ctx(task_slug)
+        fork_pane = f"{pane_slug}-fork-{ctx.fork_depth}"
+
+        def _push_exit(
+            slug: str,
+            pane: str,
+            code: int,
+            err: str = "",
+            prompt_tokens: int = 0,
+            completion_tokens: int = 0,
+        ) -> None:
+            exit_event = WorkerExit(
+                task_slug=slug,
+                pane_slug=pane,
+                exit_code=code,
+                output_dir="",
+                last_error=err,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+            loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
+
+        try:
+            diff_text = await self._get_worktree_diff(wt) or "(no diff available)"
+            handoff_prompt = self._build_fork_handoff_prompt(task, diff_text)
+
+            forked_task = task.model_copy(
+                update={
+                    "summary": f"[fork-{ctx.fork_depth}] {task.summary}",
+                    "prompt": handoff_prompt,
+                }
+            )
+            task_scope = self._retry_scope(task_slug, task)
+            counted_on_event = self._make_counted_on_event(task_slug)
+
+            await asyncio.wait_for(
+                run_headless_worker(
+                    self.session_root,
+                    self.dag.name,
+                    task_slug,
+                    fork_pane,
+                    wt.path,
+                    forked_task,
+                    task_scope,
+                    _push_exit,
+                    on_event=counted_on_event,
+                ),
+                timeout=float(task.timeout_s) if task.timeout_s > 0 else None,
+            )
+        except TimeoutError:
+            logger.error("Forked worker %s timed out after %ds", task_slug, task.timeout_s)
+            _push_exit(task_slug, fork_pane, 1, f"Fork timed out after {task.timeout_s}s")
+        except Exception as exc:
+            logger.error("Fork failed for %s: %s", task_slug, exc)
+            _push_exit(task_slug, fork_pane, 1, f"Fork failed: {exc}")
+
+    @staticmethod
+    def _build_fork_handoff_prompt(task: DagTaskSpec, diff_text: str) -> str:
+        """Build a clean-context handoff prompt for a forked worker."""
+        return (
+            "You are continuing work that a previous worker started but did not "
+            "complete. The previous worker ran out of iterations. Their changes "
+            "are already in the worktree.\n\n"
+            "YOUR TASK (original):\n"
+            f"{task.prompt or ''}\n\n"
+            "CHANGES MADE SO FAR:\n"
+            f"```diff\n{diff_text}\n```\n\n"
+            "INSTRUCTIONS:\n"
+            "1. Use git_diff to see the current state of all changes.\n"
+            "2. Complete any remaining work for the task.\n"
+            "3. If the changes look complete, verify them (check_syntax, "
+            "run_tests) and call done.\n"
+            "4. If the changes are incomplete or incorrect, fix them and call "
+            "done.\n"
+            "Do NOT start from scratch. Build on the existing work.\n"
+        )
+
+    # ---- Self-review (clean-context semantic review) ----
+
+    async def _run_self_review_gate(self, action: ReviewTask) -> list[DagAction]:
+        """Async self-review gate — runs after structural review passes."""
+        task = self.dag.tasks[action.task_slug]
+        ctx = self._ctx(action.task_slug)
+        wt = ctx.worktree
+        if not wt:
+            return self.kernel.handle(
+                TaskReviewDone(
+                    action.task_slug,
+                    passed=True,
+                    verdict="self_review_skipped",
+                    commit_count=ctx.review_file_count,
+                )
+            )
+
+        emit_event(
+            self.session_root,
+            "review_pass",
+            action.pane_slug,
+            plan_name=self.dag.name,
+            task_slug=action.task_slug,
+            verdict="structural_pass",
+        )
+
+        # Self-review is advisory — any failure auto-passes to settlement
+        try:
+            passed, findings = await self._run_self_review(action.task_slug, wt, action.pane_slug)
+
+            if passed:
+                emit_event(
+                    self.session_root,
+                    "self_review_passed",
+                    action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                )
+            else:
+                emit_event(
+                    self.session_root,
+                    "self_review_rejected",
+                    action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    findings=findings,
+                )
+                # Re-launch worker in same worktree with findings
+                await self._relaunch_worker_with_findings(
+                    action.task_slug, wt, findings or "", task
+                )
+                # Second self-review — auto-pass regardless of outcome
+                passed2, findings2 = await self._run_self_review(
+                    action.task_slug, wt, action.pane_slug
+                )
+                event_name = "self_review_passed" if passed2 else "self_review_auto_passed"
+                emit_event(
+                    self.session_root,
+                    event_name,
+                    action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    findings=findings2,
+                )
+        except Exception as exc:
+            logger.warning("Self-review failed for %s, auto-passing: %s", action.task_slug, exc)
+            emit_event(
+                self.session_root,
+                "self_review_error",
+                action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                error=str(exc),
+            )
+
+        # Always pass to settlement
+        return self.kernel.handle(
+            TaskReviewDone(
+                action.task_slug,
+                passed=True,
+                verdict="self_review_complete",
+                commit_count=ctx.review_file_count,
+            )
+        )
+
+    async def _run_self_review(
+        self,
+        task_slug: str,
+        wt: Worktree,
+        pane_slug: str,
+    ) -> tuple[bool, str | None]:
+        """Spawn a clean-context reviewer on the diff. Returns (passed, findings)."""
+        import json
+
+        task = self.dag.tasks[task_slug]
+
+        diff_text = await self._get_worktree_diff(wt)
+        if not diff_text.strip():
+            return True, None
+
+        review_prompt = self._build_self_review_prompt(diff_text)
+
+        # Capture reviewer output via on_event
+        captured: list[str] = []
+
+        def _capture(slug: str, log_type: str, content: object) -> None:
+            if log_type == "done" and content:
+                captured.append(str(content))
+            if self.on_event is not None:
+                self.on_event(f"{task_slug}/self-review", log_type, content)
+
+        reviewer_task = DagTaskSpec(
+            slug=f"{task_slug}-self-review",
+            summary=f"Semantic review of {task_slug}",
+            prompt=review_prompt,
+            role="reviewer",
+            agent=task.agent,
+            timeout_s=120,
+        )
+        reviewer_scope: dict[str, object] = {"task_slug": f"{task_slug}-self-review"}
+
+        await asyncio.wait_for(
+            run_headless_worker(
+                self.session_root,
+                self.dag.name,
+                f"{task_slug}-self-review",
+                f"{pane_slug}-self-review",
+                wt.path,
+                reviewer_task,
+                reviewer_scope,
+                self._noop_retry_exit,
+                on_event=_capture,
+            ),
+            timeout=120.0,
+        )
+
+        if not captured:
+            return True, None
+
+        output = captured[-1]
+        try:
+            verdict = json.loads(output)
+            if verdict.get("approved", True):
+                return True, None
+            issues = verdict.get("issues", [])
+            return False, "\n".join(f"- {issue}" for issue in issues)
+        except (json.JSONDecodeError, AttributeError):
+            # Fallback: keyword scan for natural-language responses
+            lower = output.lower()
+            if any(w in lower for w in ("no issues", "looks good", "approved", "lgtm")):
+                return True, None
+            if any(w in lower for w in ("issue", "bug", "error", "incorrect", "wrong", "missing")):
+                return False, output
+            return True, None
+
+    @staticmethod
+    def _build_self_review_prompt(diff_text: str) -> str:
+        """Build a clean-context review prompt. No task prompt, no worker reasoning."""
+        return (
+            "You are reviewing a code change for semantic correctness.\n"
+            "You have NO context about what the change was supposed to do.\n"
+            "Reason backward from the implementation itself.\n\n"
+            "Focus on:\n"
+            "- Logic errors (wrong conditions, off-by-one, inverted checks)\n"
+            "- No-ops (code that appears to do something but has no effect)\n"
+            "- Missing edge cases (null/empty/boundary conditions)\n"
+            "- Silently wrong behavior (swallowed errors, wrong variable used)\n"
+            "- API misuse (calling methods that don't exist, wrong arg order)\n\n"
+            "Do NOT flag:\n"
+            "- Style preferences (naming, formatting, comment quality)\n"
+            "- Missing tests (that's a separate concern)\n"
+            "- Architectural opinions\n\n"
+            f"DIFF:\n```diff\n{diff_text}\n```\n\n"
+            "Read the surrounding code in the repo for context if needed.\n\n"
+            "Respond via the `done` tool with a JSON verdict:\n"
+            '{"approved": true, "issues": []}  -- if no semantic issues\n'
+            '{"approved": false, "issues": ["description of issue 1", '
+            '"description of issue 2"]}  -- if issues found\n'
+        )
+
+    async def _relaunch_worker_with_findings(
+        self,
+        task_slug: str,
+        wt: Worktree,
+        findings: str,
+        task: DagTaskSpec,
+    ) -> None:
+        """Re-launch worker in same worktree with self-review findings."""
+        fix_prompt = (
+            "A semantic review of your changes found the following issues:\n\n"
+            f"{findings}\n\n"
+            "Fix these issues in the current worktree, then call done.\n"
+            "Use git_diff to see your current changes.\n\n"
+            f"ORIGINAL TASK:\n{task.prompt or ''}"
+        )
+        fix_task = task.model_copy(
+            update={
+                "summary": f"[review-fix] {task.summary}",
+                "prompt": fix_prompt,
+            }
+        )
+        fix_scope = self._retry_scope(task_slug, task)
+
+        emit_event(
+            self.session_root,
+            "self_review_fix_started",
+            self._ctx(task_slug).pane_slug or "",
+            plan_name=self.dag.name,
+            task_slug=task_slug,
+        )
+
+        await asyncio.wait_for(
+            run_headless_worker(
+                self.session_root,
+                self.dag.name,
+                task_slug,
+                f"{self._ctx(task_slug).pane_slug or ''}-review-fix",
+                wt.path,
+                fix_task,
+                fix_scope,
+                self._noop_retry_exit,
+                on_event=self.on_event,
+            ),
+            timeout=float(task.timeout_s) if task.timeout_s > 0 else None,
+        )
 
     async def _run_loop(self) -> dict[str, str]:
         """Main event loop — separated for graceful shutdown handling."""
@@ -569,8 +948,8 @@ class EventDagRunner:
 
         return self._task_state_snapshot()
 
-    def _run_review(self, action: ReviewTask) -> list[DagAction]:
-        """Execute fast review gate — git sanity checks (microseconds)."""
+    def _run_structural_review(self, action: ReviewTask) -> list[DagAction] | None:
+        """Structural review gate (scope check). Returns None if self-review needed."""
         task = self.dag.tasks[action.task_slug]
 
         # Read-only roles (researcher, reviewer) produce no code changes.
@@ -619,29 +998,51 @@ class EventDagRunner:
             scope_ignore_files=self.project_config.scope_ignore_files,
         )
 
+        if not review_result.passed:
+            emit_event(
+                self.session_root,
+                "review_fail",
+                action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                verdict=review_result.verdict,
+                error=review_result.error,
+            )
+            if review_result.error:
+                error_msg = f"review:{review_result.verdict} — {review_result.error}"
+                if review_result.verdict == "scope_violation":
+                    error_msg += (
+                        f"\nhint: add these paths to files.edit in task"
+                        f" '{action.task_slug}', then recompile and re-run"
+                    )
+                self._ctx(action.task_slug).error = error_msg
+            return self.kernel.handle(
+                TaskReviewDone(
+                    action.task_slug,
+                    passed=False,
+                    verdict=review_result.verdict,
+                    commit_count=len(review_result.actual_files),
+                )
+            )
+
+        # Structural review passed — defer to async self-review if enabled
+        if task.self_review and task.role == "worker":
+            ctx = self._ctx(action.task_slug)
+            ctx.review_file_count = len(review_result.actual_files)
+            return None  # signal: route to _run_self_review_gate
+
         emit_event(
             self.session_root,
-            "review_pass" if review_result.passed else "review_fail",
+            "review_pass",
             action.pane_slug,
             plan_name=self.dag.name,
             task_slug=action.task_slug,
             verdict=review_result.verdict,
-            error=review_result.error,
         )
-
-        if not review_result.passed and review_result.error:
-            error_msg = f"review:{review_result.verdict} — {review_result.error}"
-            if review_result.verdict == "scope_violation":
-                error_msg += (
-                    f"\nhint: add these paths to files.edit in task"
-                    f" '{action.task_slug}', then recompile and re-run"
-                )
-            self._ctx(action.task_slug).error = error_msg
-
         return self.kernel.handle(
             TaskReviewDone(
                 action.task_slug,
-                passed=review_result.passed,
+                passed=True,
                 verdict=review_result.verdict,
                 commit_count=len(review_result.actual_files),
             )
@@ -692,6 +1093,18 @@ class EventDagRunner:
         )
         return self.kernel.handle(TaskGovernorResumed(action.task_slug, gov_action))
 
+    def _make_counted_on_event(self, task_slug: str) -> Callable[[str, str, object], None] | None:
+        """Wrap on_event to count tool calls per task."""
+        ctx = self._ctx(task_slug)
+
+        def _counted(slug: str, log_type: str, content: object) -> None:
+            if log_type == "call":
+                ctx.call_count += 1
+            if self.on_event is not None:
+                self.on_event(slug, log_type, content)
+
+        return _counted
+
     async def _run_with_timeout(
         self,
         task_slug: str,
@@ -701,6 +1114,7 @@ class EventDagRunner:
         task_scope: Mapping[str, object],
         on_exit: Callable[[str, str, int, str, int, int], None],
         timeout_s: int,
+        on_event: Callable[[str, str, object], None] | None = None,
     ) -> None:
         """Run headless worker with wall-clock timeout enforcement."""
         try:
@@ -714,7 +1128,7 @@ class EventDagRunner:
                     task,
                     task_scope,
                     on_exit,
-                    on_event=self.on_event,
+                    on_event=on_event if on_event is not None else self.on_event,
                 ),
                 timeout=float(timeout_s) if timeout_s > 0 else None,
             )
@@ -940,6 +1354,10 @@ class EventDagRunner:
             # Use re-resolved agent
             dispatch_task = dispatch_task.model_copy(update={"agent": agent})
             timeout_s = task.timeout_s
+            # Reset fork state on fresh dispatch (governor retry starts clean)
+            ctx.fork_depth = 0
+            ctx.call_count = 0
+            counted_on_event = self._make_counted_on_event(action.task_slug)
             worker_task = asyncio.create_task(
                 self._run_with_timeout(
                     action.task_slug,
@@ -949,6 +1367,7 @@ class EventDagRunner:
                     task_scope,
                     _on_worker_exit,
                     timeout_s,
+                    on_event=counted_on_event,
                 )
             )
             ctx.worker_task = worker_task

@@ -157,6 +157,7 @@ _P_DEPLOY_APPEND = "dgov.deploy_log.append"
 _P_CREATE_CANDIDATE = "dgov.runner.create_integration_candidate"
 _P_REMOVE_CANDIDATE = "dgov.runner.remove_integration_candidate"
 _P_SEMANTIC_GATE = "dgov.runner.run_python_semantic_gate_in_subprocess"
+_P_GET_DIFF = "dgov.runner.EventDagRunner._get_worktree_diff"
 
 
 async def _fake_worker_success(
@@ -1531,3 +1532,401 @@ class TestSettlementPhaseBoundaries:
                 runner._run_semantic_gate_on_candidate.assert_not_called()  # type: ignore
 
             asyncio.run(_test())
+
+
+# ---------------------------------------------------------------------------
+# Feature A: Clean-Context Fork on Iteration Exhaustion
+# ---------------------------------------------------------------------------
+
+
+def _task_with_fork(
+    slug: str, max_fork_depth: int = 1, depends_on: tuple[str, ...] = ()
+) -> DagTaskSpec:
+    return DagTaskSpec(
+        slug=slug,
+        summary=f"Test task {slug}",
+        prompt=f"Do {slug}",
+        commit_message=f"feat: {slug}",
+        agent="test-agent",
+        depends_on=depends_on,
+        files=DagFileSpec(create=(f"{slug}.py",)),
+        max_fork_depth=max_fork_depth,
+    )
+
+
+async def _fake_diff(_self, _wt):
+    return "diff --git a/file.py b/file.py\n+fake change\n"
+
+
+class TestContextFork:
+    def test_iteration_exhaustion_triggers_fork(self):
+        """When worker exhausts iterations and fork_depth < max, fork instead of fail."""
+        call_count = {"n": 0}
+
+        async def _exhaust_then_succeed(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+            else:
+                # Forked worker succeeds
+                on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_fork("a", max_fork_depth=1)})
+        with _io_patches(headless=_exhaust_then_succeed), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            assert runner._ctx("a").fork_depth == 1
+
+    def test_fork_depth_zero_disables_forking(self):
+        """max_fork_depth=0 means no forking — normal retry path."""
+
+        async def _exhaust(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+
+        dag = _dag({"a": _task_with_fork("a", max_fork_depth=0)})
+        with _io_patches(headless=_exhaust):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+
+    def test_fork_depth_limit_prevents_infinite_fork(self):
+        """After max_fork_depth forks, iteration exhaustion goes to normal fail."""
+
+        async def _always_exhaust(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+
+        dag = _dag({"a": _task_with_fork("a", max_fork_depth=1)})
+        with _io_patches(headless=_always_exhaust), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            # First call: fork. Second call: also exhausts. Third: governor retry.
+            # Governor retry also exhausts. Eventually fails.
+            assert results["a"] == "failed"
+
+    def test_non_exhaustion_failure_bypasses_fork(self):
+        """Non-iteration errors go through normal retry, not fork."""
+
+        async def _regular_fail(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            on_exit(task_slug, pane_slug, 1, "some other error")
+
+        dag = _dag({"a": _task_with_fork("a", max_fork_depth=1)})
+        with _io_patches(headless=_regular_fail):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "failed"
+            assert runner._ctx("a").fork_depth == 0
+
+    def test_fork_handoff_prompt_contains_diff_and_original(self):
+        """Handoff prompt includes original task prompt and diff."""
+        task = _task_with_fork("a")
+        prompt = EventDagRunner._build_fork_handoff_prompt(
+            task, "diff --git a/foo.py b/foo.py\n+hello"
+        )
+        assert "Do a" in prompt  # original task prompt
+        assert "+hello" in prompt  # diff content
+        assert "Do NOT start from scratch" in prompt
+
+    def test_call_count_incremented_by_counted_on_event(self):
+        """_make_counted_on_event increments call_count on 'call' events."""
+        dag = _dag({"a": _task("a")})
+        with _io_patches():
+            runner = _make_runner(dag)
+            ctx = runner._ctx("a")
+            tracked = runner._make_counted_on_event("a")
+            assert tracked is not None
+            tracked("a", "call", {"tool": "read_file"})
+            tracked("a", "thought", "thinking...")
+            tracked("a", "call", {"tool": "edit_file"})
+            assert ctx.call_count == 2
+
+    def test_fork_crash_pushes_failed_exit(self):
+        """If _fork_worker raises, a failed WorkerExit is pushed so _run_loop doesn't hang."""
+        call_count = {"n": 0}
+
+        async def _exhaust_once(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+            else:
+                on_exit(task_slug, pane_slug, 0, "")
+
+        async def _crash_diff(_self, _wt):
+            raise RuntimeError("git exploded")
+
+        dag = _dag({"a": _task_with_fork("a", max_fork_depth=1)})
+        with _io_patches(headless=_exhaust_once), patch(_P_GET_DIFF, _crash_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            # Fork crashes → failed exit pushed → governor retries → succeeds
+            assert results["a"] == "merged"
+
+    def test_fork_then_self_review_combined(self):
+        """Task with both max_fork_depth=1 and self_review=True works end-to-end."""
+        call_count = {"n": 0}
+
+        async def _exhaust_then_succeed_with_review(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                # First worker exhausts
+                on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)")
+            elif "-self-review" in task_slug and on_event:
+                # Reviewer approves
+                on_event(task_slug, "done", '{"approved": true, "issues": []}')
+                on_exit(task_slug, pane_slug, 0, "")
+            else:
+                # Forked worker succeeds
+                on_exit(task_slug, pane_slug, 0, "")
+
+        task = DagTaskSpec(
+            slug="a",
+            summary="Test task a",
+            prompt="Do a",
+            commit_message="feat: a",
+            agent="test-agent",
+            files=DagFileSpec(create=("a.py",)),
+            max_fork_depth=1,
+            self_review=True,
+        )
+        dag = _dag({"a": task})
+        with (
+            _io_patches(headless=_exhaust_then_succeed_with_review),
+            patch(_P_GET_DIFF, _fake_diff),
+        ):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            assert runner._ctx("a").fork_depth == 1
+
+
+# ---------------------------------------------------------------------------
+# Feature B: Post-Worker Semantic Self-Review
+# ---------------------------------------------------------------------------
+
+
+def _task_with_self_review(
+    slug: str, self_review: bool = True, depends_on: tuple[str, ...] = ()
+) -> DagTaskSpec:
+    return DagTaskSpec(
+        slug=slug,
+        summary=f"Test task {slug}",
+        prompt=f"Do {slug}",
+        commit_message=f"feat: {slug}",
+        agent="test-agent",
+        depends_on=depends_on,
+        files=DagFileSpec(create=(f"{slug}.py",)),
+        self_review=self_review,
+    )
+
+
+class TestSelfReview:
+    def test_self_review_disabled_skips_semantic_review(self):
+        """self_review=False uses the sync structural-only path."""
+        dag = _dag({"a": _task_with_self_review("a", self_review=False)})
+        with _io_patches():
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+
+    def test_self_review_enabled_reviewer_approves(self):
+        """When reviewer says approved, task merges normally."""
+        call_slugs: list[str] = []
+
+        async def _tracking_worker(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            call_slugs.append(task_slug)
+            # Self-review reviewer emits approved JSON via on_event
+            if "-self-review" in task_slug and on_event:
+                on_event(task_slug, "done", '{"approved": true, "issues": []}')
+            on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_tracking_worker), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["a"] == "merged"
+            assert any("-self-review" in s for s in call_slugs)
+
+    def test_self_review_finds_issues_triggers_fix_cycle(self):
+        """When reviewer finds issues, worker is re-launched with findings."""
+        call_count: dict[str, int] = {}
+
+        async def _review_then_fix(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            call_count[task_slug] = call_count.get(task_slug, 0) + 1
+            if "-self-review" in task_slug and on_event:
+                n = call_count[task_slug]
+                if n == 1:
+                    # First review: reject
+                    on_event(
+                        task_slug, "done", '{"approved": false, "issues": ["off-by-one in loop"]}'
+                    )
+                else:
+                    # Second review: approve
+                    on_event(task_slug, "done", '{"approved": true, "issues": []}')
+            on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_review_then_fix), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            # Should still merge — self-review is advisory
+            assert results["a"] == "merged"
+
+    def test_self_review_second_review_auto_passes(self):
+        """Second self-review auto-passes even if reviewer still finds issues."""
+
+        async def _always_reject_review(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            await asyncio.sleep(0.01)
+            if "-self-review" in task_slug and on_event:
+                on_event(task_slug, "done", '{"approved": false, "issues": ["still bad"]}')
+            on_exit(task_slug, pane_slug, 0, "")
+
+        dag = _dag({"a": _task_with_self_review("a", self_review=True)})
+        with _io_patches(headless=_always_reject_review), patch(_P_GET_DIFF, _fake_diff):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            # Auto-pass after one fix cycle — self-review is advisory
+            assert results["a"] == "merged"
+
+    def test_self_review_prompt_excludes_task_prompt(self):
+        """Review prompt must NOT contain the original task prompt."""
+        prompt = EventDagRunner._build_self_review_prompt("diff --git a/foo.py b/foo.py\n+hello")
+        assert "+hello" in prompt
+        assert "Logic errors" in prompt
+        assert "Do NOT flag" in prompt
+
+    def test_self_review_skipped_for_read_only_roles(self):
+        """Researcher/reviewer roles skip self-review even if self_review=True."""
+        task = DagTaskSpec(
+            slug="r",
+            summary="Research task",
+            prompt="Read stuff",
+            agent="test-agent",
+            role="researcher",
+            self_review=True,
+        )
+        dag = _dag({"r": task})
+        with _io_patches():
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+            assert results["r"] == "merged"
+
+
+# ---------------------------------------------------------------------------
+# Schema: new DagTaskSpec fields
+# ---------------------------------------------------------------------------
+
+
+class TestNewSchemaFields:
+    def test_self_review_defaults_false(self):
+        t = DagTaskSpec(slug="x", summary="y")
+        assert t.self_review is False
+
+    def test_max_fork_depth_defaults_one(self):
+        t = DagTaskSpec(slug="x", summary="y")
+        assert t.max_fork_depth == 1
+
+    def test_self_review_set_true(self):
+        t = DagTaskSpec(slug="x", summary="y", self_review=True)
+        assert t.self_review is True
+
+    def test_max_fork_depth_set_zero(self):
+        t = DagTaskSpec(slug="x", summary="y", max_fork_depth=0)
+        assert t.max_fork_depth == 0

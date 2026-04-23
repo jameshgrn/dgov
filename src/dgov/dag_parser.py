@@ -41,6 +41,8 @@ class DagTaskSpec(BaseModel):
     iteration_budget: int | None = None
     test_cmd: str | None = None
     sop_mapping: tuple[str, ...] = ()
+    self_review: bool = False
+    max_fork_depth: int = 1
 
     def all_touches(self) -> tuple[str, ...]:
         return tuple(
