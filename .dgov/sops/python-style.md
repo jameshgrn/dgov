@@ -11,10 +11,6 @@ priority: must
 - touching functions or stateful code that could drift toward cleverness or flag piles
 
 ## Do
-- use `uv run <command>` for Python tools in uv-managed repos
-- use `ruff check` and `ruff format`
-- use `ty check` when the repo config enables type checking
-- keep edits minimal and scoped to the requested change
 - prefer explicit, readable logic over dense cleverness
 - keep semantic functions pure and isolate orchestration side effects
 

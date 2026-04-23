@@ -11,7 +11,6 @@ priority: must
 - refactoring code that currently relies on multiple booleans or optional-field grab bags
 
 ## Do
-- keep separation of powers explicit: the plan contracts scope, the worker implements, settlement verifies
 - keep `kernel.py` pure: `(state, event) -> (new_state, actions)` with no I/O or persistence imports
 - prefer derivation from durable evidence like events over storing redundant booleans or cached conclusions
 - prefer explicit state machines or discriminated models over optional-field grab bags
@@ -21,7 +20,6 @@ priority: must
 ## Do Not
 - pile on flags to explain one condition
 - preserve contradictory or impossible states just to keep a diff smaller
-- hide architecture rewrites inside unrelated feature work
 
 ## Verify
 - check that structural invariants still fail closed at compile or settlement time

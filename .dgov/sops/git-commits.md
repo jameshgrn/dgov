@@ -3,7 +3,7 @@ name: git-commits
 title: Git & Commit Standards
 summary: Commit and git hygiene rules for scoped work, safe history, and no secret leakage.
 applies_to: [git, commit, history]
-priority: should
+priority: must
 ---
 ## When
 - preparing or reviewing git changes

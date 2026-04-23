@@ -19,12 +19,10 @@ priority: must
 
 ## Do Not
 - run the full test suite
-- edit tests in unclaimed files
 - mock logic or internal state just to force a passing result
 
 ## Verify
 - rerun the exact targeted command that covers the changed behavior
-- report verification failures in unclaimed files instead of editing around them
 - confirm scope violations are avoided before settlement
 
 ## Escalate

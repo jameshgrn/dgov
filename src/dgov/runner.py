@@ -126,6 +126,29 @@ def _build_baseline_diag_note(config: object, session_root: str) -> str:
     )
 
 
+_REVIEW_APPLIES_TO = frozenset({"review", "reviewer"})
+
+
+def _load_review_sop_blocks(session_root: str) -> tuple[str, ...]:
+    """Load SOPs tagged for review and render their prompt blocks.
+
+    Called once at runner init. Returns pre-rendered blocks for injection
+    into self-review prompts. Falls back to empty tuple if SOPs dir is
+    missing or unparseable (self-review still works, just without SOP
+    guidance).
+    """
+    from dgov.sop_bundler import load_sops
+
+    sops_dir = Path(session_root) / ".dgov" / "sops"
+    try:
+        all_sops = load_sops(sops_dir)
+    except (ValueError, OSError) as exc:
+        logger.warning("Failed to load review SOPs from %s: %s", sops_dir, exc)
+        return ()
+    review_sops = [s for s in all_sops if _REVIEW_APPLIES_TO & frozenset(s.applies_to)]
+    return tuple(s.render_prompt_block() for s in review_sops)
+
+
 class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
@@ -162,6 +185,7 @@ class EventDagRunner:
             max_retries=dag.default_max_retries,
         )
         self._baseline_diag_note = _build_baseline_diag_note(self.project_config, session_root)
+        self._review_sop_blocks = _load_review_sop_blocks(session_root)
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
@@ -850,30 +874,29 @@ class EventDagRunner:
                 return False, output
             return True, None
 
-    @staticmethod
-    def _build_self_review_prompt(diff_text: str) -> str:
-        """Build a clean-context review prompt. No task prompt, no worker reasoning."""
-        return (
+    def _build_self_review_prompt(self, diff_text: str) -> str:
+        """Build a clean-context review prompt.
+
+        Framing and verdict protocol live here (code). Review criteria come
+        from SOPs loaded at runner init (policy). No task prompt, no worker
+        reasoning — the reviewer sees only the diff and SOP guidance.
+        """
+        parts = [
             "You are reviewing a code change for semantic correctness.\n"
             "You have NO context about what the change was supposed to do.\n"
-            "Reason backward from the implementation itself.\n\n"
-            "Focus on:\n"
-            "- Logic errors (wrong conditions, off-by-one, inverted checks)\n"
-            "- No-ops (code that appears to do something but has no effect)\n"
-            "- Missing edge cases (null/empty/boundary conditions)\n"
-            "- Silently wrong behavior (swallowed errors, wrong variable used)\n"
-            "- API misuse (calling methods that don't exist, wrong arg order)\n\n"
-            "Do NOT flag:\n"
-            "- Style preferences (naming, formatting, comment quality)\n"
-            "- Missing tests (that's a separate concern)\n"
-            "- Architectural opinions\n\n"
-            f"DIFF:\n```diff\n{diff_text}\n```\n\n"
+            "Reason backward from the implementation itself.\n",
+        ]
+        if self._review_sop_blocks:
+            parts.append("\n" + "\n\n".join(self._review_sop_blocks) + "\n")
+        parts.append(
+            f"\nDIFF:\n```diff\n{diff_text}\n```\n\n"
             "Read the surrounding code in the repo for context if needed.\n\n"
             "Respond via the `done` tool with a JSON verdict:\n"
             '{"approved": true, "issues": []}  -- if no semantic issues\n'
             '{"approved": false, "issues": ["description of issue 1", '
             '"description of issue 2"]}  -- if issues found\n'
         )
+        return "".join(parts)
 
     async def _relaunch_worker_with_findings(
         self,

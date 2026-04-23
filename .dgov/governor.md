@@ -165,6 +165,7 @@ only, and `files.read` for any source files the task needs to inspect.
 | `timeout_s` | int | `900` | Per-attempt wall-clock timeout in seconds |
 | `iteration_budget` | int | — | Max tool calls before exhaustion (overrides project default) |
 | `test_cmd` | string | — | Task-specific test command for settlement |
+| `sop_mapping` | list | `[]` | SOP filenames assigned by the compiler (set automatically during compile) |
 | `self_review` | bool | `false` | Spawn a clean-context reviewer on the diff after the worker finishes |
 | `max_fork_depth` | int | `1` | Max clean-context relaunches when iteration budget is exhausted |
 
