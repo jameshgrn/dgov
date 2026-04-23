@@ -17,7 +17,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from dgov.deploy_log import read as read_deploy_log
 from dgov.persistence import read_events
@@ -89,6 +89,13 @@ class PlanReview:
     last_run_ts: str | None
     last_run_duration_s: float | None
     units: list[UnitReview] = field(default_factory=list)
+    # Run-level fields extracted from run_completed event or runs.log fallback
+    run_status: str | None = None  # "complete", "degraded", "partial", "failed"
+    sentrux_degradation: bool | None = None
+    sentrux_quality_before: int | None = None
+    sentrux_quality_after: int | None = None
+    sentrux_error: str | None = None
+    sentrux_offender_summary: str | None = None
 
     @property
     def deployed_count(self) -> int:
@@ -839,6 +846,125 @@ def _compute_run_duration(unit_reviews: list[UnitReview]) -> float | None:
     return total or None
 
 
+def _extract_run_completed_fields(plan_events: list[dict], run_start_id: int) -> dict[str, Any]:
+    """Extract run-level fields from the latest run_completed event after run_start_id.
+
+    Returns a dict with keys: run_status, sentrux_degradation, sentrux_quality_before,
+    sentrux_quality_after, sentrux_error, sentrux_offender_summary.
+    """
+    # Find the latest run_completed event with id > run_start_id
+    latest_run_completed: dict | None = None
+    for ev in plan_events:
+        is_later_run_completed = (
+            ev.get("event") == "run_completed"
+            and ev.get("id", 0) > run_start_id
+            and (
+                latest_run_completed is None or ev.get("id", 0) > latest_run_completed.get("id", 0)
+            )
+        )
+        if is_later_run_completed:
+            latest_run_completed = ev
+
+    if latest_run_completed is None:
+        return {}
+
+    sentrux = latest_run_completed.get("sentrux") or {}
+    offenders = sentrux.get("structural_offenders") if isinstance(sentrux, dict) else None
+    offender_summary: str | None = None
+    if isinstance(offenders, dict):
+        # Format as "key: count" pairs joined by ", "
+        offender_summary = ", ".join(f"{k}: {v}" for k, v in offenders.items())
+
+    return {
+        "run_status": latest_run_completed.get("run_status"),
+        "sentrux_degradation": sentrux.get("degradation") if isinstance(sentrux, dict) else None,
+        "sentrux_quality_before": sentrux.get("quality_before")
+        if isinstance(sentrux, dict)
+        else None,
+        "sentrux_quality_after": sentrux.get("quality_after")
+        if isinstance(sentrux, dict)
+        else None,
+        "sentrux_error": sentrux.get("error") if isinstance(sentrux, dict) else None,
+        "sentrux_offender_summary": offender_summary,
+    }
+
+
+def _parse_runs_log_block(log_text: str, plan_name: str) -> dict[str, Any]:
+    """Parse the latest matching block from .dgov/runs.log for run-level fields.
+
+    Looks for a block starting with "[timestamp] plan_name ..." and extracts:
+    - sentrux: "X -> Y" lines for quality before/after
+    - sentrux_status: degradation detection
+    - sentrux_error: error messages
+    - sentrux_offenders: offender summary string
+    """
+    lines = log_text.splitlines()
+    # Find the latest block header matching this plan name
+    block_start = -1
+    for i, line in enumerate(lines):
+        match = re.match(r"^\[([^\]]+)\]\s+(\S+)", line)
+        if match and match.group(2) == plan_name:
+            block_start = i
+
+    if block_start == -1:
+        return {}
+
+    # Collect all lines in this block (until next block or EOF)
+    block_lines: list[str] = []
+    for i in range(block_start, len(lines)):
+        line = lines[i]
+        # Next block starts with timestamp in brackets at line start
+        if i > block_start and re.match(r"^\[([^\]]+)\]\s+(\S+)", line):
+            break
+        block_lines.append(line)
+
+    result: dict[str, object] = {}
+    offenders_str: str | None = None
+
+    for line in block_lines:
+        # Parse "sentrux: X -> Y" for quality values
+        sentrux_match = re.search(r"sentrux:\s*(\d+)\s*->\s*(\d+|None)", line)
+        if sentrux_match:
+            try:
+                result["sentrux_quality_before"] = int(sentrux_match.group(1))
+                after_str = sentrux_match.group(2)
+                if after_str != "None":
+                    result["sentrux_quality_after"] = int(after_str)
+            except (ValueError, TypeError):
+                pass
+
+        # Parse "sentrux_status: degradation"
+        if "sentrux_status: degradation" in line:
+            result["sentrux_degradation"] = True
+
+        # Parse "sentrux_error: ..."
+        error_match = re.match(r"\s+sentrux_error:\s*(.+)", line)
+        if error_match:
+            result["sentrux_error"] = error_match.group(1).strip()
+
+        # Parse "sentrux_offenders: ..."
+        offenders_match = re.match(r"\s+sentrux_offenders:\s*(.+)", line)
+        if offenders_match:
+            offenders_str = offenders_match.group(1).strip()
+
+    if offenders_str:
+        result["sentrux_offender_summary"] = offenders_str
+
+    return result
+
+
+def _load_runs_log_fields(project_root: str, plan_name: str) -> dict[str, Any]:
+    """Load and parse .dgov/runs.log for run-level fields. Returns empty dict on missing file."""
+    log_path = Path(project_root) / ".dgov" / "runs.log"
+    if not log_path.exists():
+        return {}
+    try:
+        log_text = log_path.read_text()
+        return _parse_runs_log_block(log_text, plan_name)
+    except (OSError, UnicodeDecodeError):
+        return {}
+
+
 def load_review(
     project_root: str,
     compiled_path: Path,
@@ -907,10 +1033,21 @@ def load_review(
     last_run_ts = _extract_run_start_ts(plan_events, run_start_id)
     run_duration = _compute_run_duration(unit_reviews)
 
+    # Extract run-level fields from structured events (preferred) or runs.log fallback
+    run_fields = _extract_run_completed_fields(plan_events, run_start_id)
+    if not run_fields:
+        run_fields = _load_runs_log_fields(project_root, plan_name)
+
     return PlanReview(
         plan_name=plan_name,
         source_dir=plan_dir,
         last_run_ts=last_run_ts,
         last_run_duration_s=run_duration,
         units=unit_reviews,
+        run_status=run_fields.get("run_status"),
+        sentrux_degradation=run_fields.get("sentrux_degradation"),
+        sentrux_quality_before=run_fields.get("sentrux_quality_before"),
+        sentrux_quality_after=run_fields.get("sentrux_quality_after"),
+        sentrux_error=run_fields.get("sentrux_error"),
+        sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
     )

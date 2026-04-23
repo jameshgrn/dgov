@@ -13,7 +13,10 @@ from dgov.plan_review import (
     PlanReview,
     UnitReview,
     _build_unit_review,
+    _extract_run_completed_fields,
     _find_run_start_id,
+    _load_runs_log_fields,
+    _parse_runs_log_block,
     _rollup_unit_events,
     load_review,
     synthesize_hint,
@@ -1060,3 +1063,254 @@ class TestIntegrationRiskTelemetry:
         assert review.integration_risk_detected is False
         assert review.integration_candidate_passed is None
         assert review.integration_failure_class is None
+
+
+# ---------------------------------------------------------------------------
+# Run-level field extraction from run_completed event
+# ---------------------------------------------------------------------------
+
+
+class TestExtractRunCompletedFields:
+    def test_extracts_all_fields_from_run_completed_event(self):
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p", "ts": "2026-01-01T00:00:00Z"},
+            {
+                "id": 10,
+                "event": "run_completed",
+                "plan_name": "p",
+                "run_status": "degraded",
+                "sentrux": {
+                    "degradation": True,
+                    "quality_before": 100,
+                    "quality_after": 90,
+                    "structural_offenders": {"functions": 5, "classes": 2},
+                },
+            },
+        ]
+        fields = _extract_run_completed_fields(events, 1)
+        assert fields["run_status"] == "degraded"
+        assert fields["sentrux_degradation"] is True
+        assert fields["sentrux_quality_before"] == 100
+        assert fields["sentrux_quality_after"] == 90
+        assert fields["sentrux_offender_summary"] == "functions: 5, classes: 2"
+
+    def test_extracts_error_field_when_present(self):
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p"},
+            {
+                "id": 10,
+                "event": "run_completed",
+                "plan_name": "p",
+                "run_status": "failed",
+                "sentrux": {"degradation": False, "error": "Sentrux gate failed: timeout"},
+            },
+        ]
+        fields = _extract_run_completed_fields(events, 1)
+        assert fields["run_status"] == "failed"
+        assert fields["sentrux_error"] == "Sentrux gate failed: timeout"
+        assert fields["sentrux_degradation"] is False
+
+    def test_returns_empty_dict_when_no_run_completed_event(self):
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p"},
+            {"id": 5, "event": "dag_completed", "plan_name": "p"},
+        ]
+        fields = _extract_run_completed_fields(events, 1)
+        assert fields == {}
+
+    def test_ignores_run_completed_before_run_start_id(self):
+        events = [
+            {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "old"},
+            {"id": 20, "event": "run_start", "plan_name": "p"},
+            {"id": 30, "event": "run_completed", "plan_name": "p", "run_status": "new"},
+        ]
+        fields = _extract_run_completed_fields(events, 20)
+        assert fields["run_status"] == "new"
+
+    def test_uses_latest_run_completed_when_multiple_exist(self):
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p"},
+            {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "first"},
+            {"id": 20, "event": "run_completed", "plan_name": "p", "run_status": "second"},
+        ]
+        fields = _extract_run_completed_fields(events, 1)
+        assert fields["run_status"] == "second"
+
+
+# ---------------------------------------------------------------------------
+# runs.log fallback parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseRunsLogBlock:
+    def test_parses_quality_before_and_after(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — ok (10.5s)
+  sentrux: 95 -> 88
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["sentrux_quality_before"] == 95
+        assert result["sentrux_quality_after"] == 88
+
+    def test_parses_degradation_status(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — warn (10.5s)
+  sentrux: 95 -> 85
+  sentrux_status: degradation
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["sentrux_degradation"] is True
+
+    def test_parses_error_message(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — fail (5.2s)
+  sentrux_error: Sentrux gate setup failed: git error
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["sentrux_error"] == "Sentrux gate setup failed: git error"
+
+    def test_parses_offender_summary(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — warn (10.5s)
+  sentrux_offenders: functions: 5, classes: 2 | methods: 3
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["sentrux_offender_summary"] == "functions: 5, classes: 2 | methods: 3"
+
+    def test_uses_latest_block_for_plan(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — ok (10.5s)
+  sentrux: 90 -> 85
+
+[2026-01-02 00:00:00Z] other-plan (.dgov/plans/other) — ok (8.0s)
+  sentrux: 100 -> 95
+
+[2026-01-03 00:00:00Z] my-plan (.dgov/plans/my-plan) — degraded (12.0s)
+  sentrux: 95 -> 80
+  sentrux_status: degradation
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["sentrux_quality_before"] == 95
+        assert result["sentrux_quality_after"] == 80
+        assert result["sentrux_degradation"] is True
+
+    def test_returns_empty_dict_for_nonexistent_plan(self):
+        log_text = """[2026-01-01 00:00:00Z] other-plan (.dgov/plans/other) — ok (10.5s)"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result == {}
+
+    def test_handles_none_quality_after(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — fail (5.0s)
+  sentrux: 100 -> None
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["sentrux_quality_before"] == 100
+        assert "sentrux_quality_after" not in result
+
+
+class TestLoadRunsLogFields:
+    def test_loads_from_actual_file(self, tmp_path: Path):
+        dgov_dir = tmp_path / ".dgov"
+        dgov_dir.mkdir()
+        log_file = dgov_dir / "runs.log"
+        log_content = """\
+[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — degraded (10.5s)
+  sentrux: 100 -> 85
+  sentrux_status: degradation
+  sentrux_offenders: functions: 5
+"""
+        log_file.write_text(log_content)
+        result = _load_runs_log_fields(str(tmp_path), "my-plan")
+        assert result["sentrux_quality_before"] == 100
+        assert result["sentrux_quality_after"] == 85
+        assert result["sentrux_degradation"] is True
+        assert result["sentrux_offender_summary"] == "functions: 5"
+
+    def test_returns_empty_dict_when_file_missing(self, tmp_path: Path):
+        result = _load_runs_log_fields(str(tmp_path), "my-plan")
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Integration: load_review with run-level fields
+# ---------------------------------------------------------------------------
+
+
+class TestLoadReviewRunLevelFields:
+    def test_prefers_structured_event_over_runs_log(self, tmp_path: Path):
+        """When run_completed event exists, it takes precedence over runs.log."""
+        compiled_path = _make_compiled(tmp_path, "p", {"t1": {"summary": "task 1"}})
+
+        # Create runs.log with different values
+        dgov_dir = tmp_path / ".dgov"
+        log_file = dgov_dir / "runs.log"
+        log_file.write_text(
+            "[2026-01-01 00:00:00Z] p (.dgov/plans/p) — ok (10.0s)\n  sentrux: 50 -> 40\n"
+        )
+
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p", "ts": "2026-01-10T00:00:00Z"},
+            {
+                "id": 10,
+                "event": "run_completed",
+                "plan_name": "p",
+                "run_status": "complete",
+                "sentrux": {"degradation": False, "quality_before": 100, "quality_after": 98},
+            },
+        ]
+
+        with (
+            patch("dgov.plan_review.read_events", return_value=events),
+            patch("dgov.plan_review.read_deploy_log", return_value=[]),
+        ):
+            review = load_review(str(tmp_path), compiled_path)
+
+        assert review.run_status == "complete"
+        assert review.sentrux_degradation is False
+        assert review.sentrux_quality_before == 100
+        assert review.sentrux_quality_after == 98
+
+    def test_falls_back_to_runs_log_when_no_structured_event(self, tmp_path: Path):
+        """When no run_completed event, falls back to parsing runs.log."""
+        compiled_path = _make_compiled(tmp_path, "p", {"t1": {"summary": "task 1"}})
+
+        dgov_dir = tmp_path / ".dgov"
+        log_file = dgov_dir / "runs.log"
+        log_file.write_text(
+            "[2026-01-01 00:00:00Z] p (.dgov/plans/p) — degraded (10.0s)\n"
+            "  sentrux: 100 -> 85\n"
+            "  sentrux_status: degradation\n"
+            "  sentrux_error: Gate timeout\n"
+        )
+
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p", "ts": "2026-01-10T00:00:00Z"},
+            # No run_completed event
+        ]
+
+        with (
+            patch("dgov.plan_review.read_events", return_value=events),
+            patch("dgov.plan_review.read_deploy_log", return_value=[]),
+        ):
+            review = load_review(str(tmp_path), compiled_path)
+
+        assert review.sentrux_degradation is True
+        assert review.sentrux_quality_before == 100
+        assert review.sentrux_quality_after == 85
+        assert review.sentrux_error == "Gate timeout"
+
+    def test_none_fields_when_no_event_and_no_runs_log(self, tmp_path: Path):
+        """When neither event nor runs.log exist, fields should be None."""
+        compiled_path = _make_compiled(tmp_path, "p", {"t1": {"summary": "task 1"}})
+
+        events = [
+            {"id": 1, "event": "run_start", "plan_name": "p", "ts": "2026-01-10T00:00:00Z"},
+        ]
+
+        with (
+            patch("dgov.plan_review.read_events", return_value=events),
+            patch("dgov.plan_review.read_deploy_log", return_value=[]),
+        ):
+            review = load_review(str(tmp_path), compiled_path)
+
+        assert review.run_status is None
+        assert review.sentrux_degradation is None
+        assert review.sentrux_quality_before is None
+        assert review.sentrux_quality_after is None
+        assert review.sentrux_error is None
+        assert review.sentrux_offender_summary is None
