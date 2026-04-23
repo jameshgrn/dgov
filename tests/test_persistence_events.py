@@ -237,6 +237,10 @@ class TestValidEvents:
         assert "worker_log" in VALID_EVENTS
         assert "invalid_event" not in VALID_EVENTS
 
+    def test_valid_events_contains_run_completed(self):
+        """VALID_EVENTS should contain run_completed event."""
+        assert "run_completed" in VALID_EVENTS
+
     def test_valid_events_contains_semantic_settlement_events(self):
         """VALID_EVENTS contains the semantic settlement event family."""
         semantic_events = {

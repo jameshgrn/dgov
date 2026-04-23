@@ -157,6 +157,7 @@ def state_path(session_root: str) -> Path:
 VALID_EVENTS = frozenset({
     # Run lifecycle (bounds events for dgov plan review)
     "run_start",
+    "run_completed",
     # Runner lifecycle
     "task_created",
     "task_done",

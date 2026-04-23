@@ -21,6 +21,7 @@ from dgov.archive import archive_plan
 from dgov.cli import _output, cli, want_json
 from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
+from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
 from dgov.repo_snapshot import format_structural_offender_report, likely_structural_offenders
@@ -538,6 +539,25 @@ def _emit_run_start(dag_name: str, baseline_quality: int | None) -> None:
     click.echo(f"[sentrux] Baseline quality: {baseline_quality}")
 
 
+def _emit_run_completed(
+    project_root: str,
+    plan_name: str,
+    run_status: str,
+    duration: timedelta,
+    gate_result: dict[str, object],
+) -> None:
+    """Emit run_completed event with final status and Sentrux gate result."""
+    emit_event(
+        project_root,
+        event="run_completed",
+        pane=plan_name,
+        plan_name=plan_name,
+        run_status=run_status,
+        duration_s=round(duration.total_seconds(), 2),
+        sentrux=gate_result,
+    )
+
+
 def _run_plan_runner(runner: EventDagRunner) -> tuple[dict[str, str], timedelta]:
     try:
         start_time = datetime.now(UTC)
@@ -850,6 +870,14 @@ def _cmd_run_plan(
         plan_dir=plan_dir,
         project_root=project_root,
         dag=dag,
+    )
+
+    _emit_run_completed(
+        project_root=project_root,
+        plan_name=dag.name,
+        run_status=run_status,
+        duration=duration,
+        gate_result=gate_result,
     )
 
     if run_status in ("failed", "partial"):

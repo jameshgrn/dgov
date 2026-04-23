@@ -292,6 +292,76 @@ def test_run_reports_degraded_when_final_sentrux_compare_degrades(
     assert "sentrux: architectural degradation detected." in result.output.lower()
 
 
+def test_run_emits_run_completed_event_with_degraded_status(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify that dgov run emits run_completed event with final status and sentrux payload."""
+    plan_dir = _write_plan_tree(tmp_path, "compiled")
+    _write_compiled(plan_dir, "compiled")
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("init\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+
+    class _Runner:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @property
+        def task_errors(self):
+            return {}
+
+        @property
+        def task_durations(self):
+            return {"a": 0.1}
+
+        async def run(self) -> dict[str, str]:
+            return {"a": "merged"}
+
+    captured_events: list[dict] = []
+
+    def _capture_emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
+        captured_events.append({"event": event, "pane": pane, **kwargs})
+
+    monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
+    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr("dgov.cli.run._require_sentrux_baseline", lambda project_root: 100)
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda project_root, baseline_quality: {
+            "degradation": True,
+            "quality_before": baseline_quality,
+            "quality_after": 90,
+        },
+    )
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
+    monkeypatch.setattr("dgov.cli.run.emit_event", _capture_emit_event)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
+
+    assert result.exit_code == 0
+
+    # Find run_completed event
+    run_completed_events = [e for e in captured_events if e.get("event") == "run_completed"]
+    assert len(run_completed_events) == 1
+
+    run_completed = run_completed_events[0]
+    assert run_completed["pane"] == "compiled"
+    assert run_completed["plan_name"] == "compiled"
+    assert run_completed["run_status"] == "degraded"
+    assert "duration_s" in run_completed
+    assert isinstance(run_completed["duration_s"], float)
+    assert run_completed["sentrux"] == {
+        "degradation": True,
+        "quality_before": 100,
+        "quality_after": 90,
+    }
+
+
 def test_run_reports_structural_offenders_when_sentrux_degrades(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
