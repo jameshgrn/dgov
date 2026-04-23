@@ -252,6 +252,76 @@ def test_status_scopes_live_view_to_latest_run_start(
     assert "stale-task" not in result.output
 
 
+def test_status_hides_reviewed_failure_by_default(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_fail",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "active: 0" in result.output
+    assert "failed-review-task" not in result.output
+
+
+def test_status_all_shows_reviewed_failure(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_fail",
+        "pane-failed-review",
+        plan_name="plan-a",
+        task_slug="failed-review-task",
+    )
+
+    result = runner.invoke(cli, ["status", "--all"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "reviewed_fail" in result.output
+    assert "failed-review-task" in result.output
+
+
 # -- validate --
 
 

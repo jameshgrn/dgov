@@ -85,3 +85,30 @@ def test_live_plan_names_ignores_stale_prior_runs(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "run_start", "run-a-2", plan_name="plan-a")
 
     assert live_plan_names(str(tmp_path)) == set()
+
+
+def test_live_plan_names_ignores_review_outcomes(tmp_path: Path) -> None:
+    """Review outcomes are historical results, not live plan activity."""
+    emit_event(str(tmp_path), "run_start", "run-a-1", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-a",
+        plan_name="plan-a",
+        task_slug="task-a",
+    )
+    emit_event(str(tmp_path), "task_done", "pane-a", plan_name="plan-a", task_slug="task-a")
+    emit_event(str(tmp_path), "review_fail", "pane-a", plan_name="plan-a", task_slug="task-a")
+
+    emit_event(str(tmp_path), "run_start", "run-b-1", plan_name="plan-b")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-b",
+        plan_name="plan-b",
+        task_slug="task-b",
+    )
+    emit_event(str(tmp_path), "task_done", "pane-b", plan_name="plan-b", task_slug="task-b")
+    emit_event(str(tmp_path), "review_pass", "pane-b", plan_name="plan-b", task_slug="task-b")
+
+    assert live_plan_names(str(tmp_path)) == set()

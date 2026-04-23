@@ -264,7 +264,7 @@ class TestScopeIgnoreFiles:
 
 class TestTypeCheckCommand:
     def test_type_check_cmd_default(self):
-        assert ProjectConfig().type_check_cmd == ""
+        assert ProjectConfig().type_check_cmd is None
 
     def test_resolve_type_check_cmd(self):
         pc = ProjectConfig(type_check_cmd="ty check")

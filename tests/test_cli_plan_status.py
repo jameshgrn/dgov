@@ -173,6 +173,36 @@ def test_status_blocked_by_cleared_after_deploy(runner: CliRunner, tmp_path: Pat
     assert beta["blocked_by"] == ""
 
 
+def test_status_after_recompiled_dag_growth(runner: CliRunner, tmp_path: Path) -> None:
+    """Growing and recompiling a previously deployed plan updates status immediately."""
+    plan_dir = _make_plan_tree(tmp_path)
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        os.chdir(td)
+        _compile_plan(runner, plan_dir)
+        deploy_append(td, "test-plan", "core/work.alpha", "sha1")
+
+        (plan_dir / "core" / "extra.toml").write_text(
+            "[tasks.gamma]\n"
+            'summary = "Gamma"\nprompt = "Do gamma"\ncommit_message = "gamma"\n'
+            'depends_on = ["core/work.beta"]\nfiles.create = ["c.py"]\n'
+        )
+        _compile_plan(runner, plan_dir)
+
+        result = runner.invoke(cli, ["--json", "plan", "status", str(plan_dir)])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data["units"] == 3
+    assert data["deployed"] == 1
+    assert data["pending"] == 2
+    assert data["stale"] is False
+
+    statuses = {u["unit"]: u for u in data["unit_statuses"]}
+    assert statuses["core/work.alpha"]["status"] == "deployed"
+    assert statuses["core/work.beta"]["status"] == "pending"
+    assert statuses["core/extra.gamma"]["blocked_by"] == "core/work.beta"
+
+
 # -- Staleness --
 
 
