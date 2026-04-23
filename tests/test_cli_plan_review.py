@@ -233,6 +233,127 @@ def test_review_json_output_is_valid(
     assert unit["settlement"] == "ok"
 
 
+def test_review_renders_run_level_status_and_advisory(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run-level status and Sentrux advisory should appear before unit count."""
+    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        commit_sha="abcd1234",
+        commit_message="feat: did a",
+        diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+        landed_files=("src/a.py",),
+        settlement="ok",
+        attempts=1,
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts="2026-04-10T12:00:00Z",
+        last_run_duration_s=30.0,
+        run_status="degraded",
+        sentrux_degradation=True,
+        sentrux_quality_before=85,
+        sentrux_quality_after=82,
+        sentrux_offender_summary="2 offenders in src/module.py",
+        sentrux_error=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    # Run status should appear before unit count
+    assert "run status: degraded" in result.output
+    # Advisory should include quality change and offender summary
+    assert "sentrux degradation detected" in result.output
+    assert "quality 85 -> 82" in result.output
+    assert "2 offenders in src/module.py" in result.output
+
+
+def test_review_failed_run_status_shows_red(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failed run status should be styled differently (we just verify it appears)."""
+    from dgov.plan_review import PlanReview, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="failed",
+        settlement="rejected",
+        reject_verdict="scope_violation",
+        attempts=1,
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts="2026-04-10T12:00:00Z",
+        last_run_duration_s=10.0,
+        run_status="failed",
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 1, result.output
+    assert "run status: failed" in result.output
+
+
+def test_review_json_includes_run_level_fields(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON output should include run-level Sentrux advisory fields."""
+    from dgov.plan_review import DiffStat, PlanReview, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
+        landed_files=("src/a.py",),
+        settlement="ok",
+        attempts=1,
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=Path("/some/path"),
+        last_run_ts="2026-04-10T12:00:00Z",
+        last_run_duration_s=25.0,
+        run_status="degraded",
+        sentrux_degradation=True,
+        sentrux_quality_before=90,
+        sentrux_quality_after=87,
+        sentrux_offender_summary="1 offender",
+        sentrux_error="timeout during analysis",
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["run_status"] == "degraded"
+    assert data["sentrux_degradation"] is True
+    assert data["sentrux_quality_before"] == 90
+    assert data["sentrux_quality_after"] == 87
+    assert data["sentrux_offender_summary"] == "1 offender"
+    assert data["sentrux_error"] == "timeout during analysis"
+
+
 # -- --only flag --
 
 

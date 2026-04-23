@@ -567,6 +567,26 @@ def _render_review_human(review, *, diff_unit: str | None, events_unit: str | No
             dur_part = f" ({_fmt_duration(review.last_run_duration_s)})"
         click.echo(f"  last run: {review.last_run_ts}{dur_part}")
 
+    # Run-level status and Sentrux advisory
+    if review.run_status:
+        status_color = None
+        if review.run_status in ("degraded", "partial", "failed"):
+            status_color = "yellow" if review.run_status in ("degraded", "partial") else "red"
+        if status_color:
+            click.echo(click.style(f"  run status: {review.run_status}", fg=status_color))
+        else:
+            click.echo(f"  run status: {review.run_status}")
+    if review.sentrux_degradation:
+        advisory_parts = ["sentrux degradation detected"]
+        if review.sentrux_quality_before is not None and review.sentrux_quality_after is not None:
+            before, after = review.sentrux_quality_before, review.sentrux_quality_after
+            advisory_parts.append(f"quality {before} -> {after}")
+        if review.sentrux_offender_summary:
+            advisory_parts.append(review.sentrux_offender_summary)
+        if review.sentrux_error:
+            advisory_parts.append(f"error: {review.sentrux_error}")
+        click.echo(click.style(f"  advisory: {'; '.join(advisory_parts)}", fg="yellow"))
+
     total = len(review.units)
     click.echo("")
     click.echo(
@@ -850,6 +870,12 @@ def _review_to_json(review) -> str:
             "source_dir": str(review.source_dir) if review.source_dir else None,
             "last_run_ts": review.last_run_ts,
             "last_run_duration_s": review.last_run_duration_s,
+            "run_status": review.run_status,
+            "sentrux_degradation": review.sentrux_degradation,
+            "sentrux_quality_before": review.sentrux_quality_before,
+            "sentrux_quality_after": review.sentrux_quality_after,
+            "sentrux_error": review.sentrux_error,
+            "sentrux_offender_summary": review.sentrux_offender_summary,
             "deployed": review.deployed_count,
             "active": review.active_count,
             "failed": review.failed_count,
