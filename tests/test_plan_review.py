@@ -1143,6 +1143,14 @@ class TestExtractRunCompletedFields:
 
 
 class TestParseRunsLogBlock:
+    def test_parses_header_status(self):
+        log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — warn (10.5s)
+  sentrux: 95 -> 85
+  sentrux_status: degradation
+"""
+        result = _parse_runs_log_block(log_text, "my-plan")
+        assert result["run_status"] == "degraded"
+
     def test_parses_quality_before_and_after(self):
         log_text = """[2026-01-01 00:00:00Z] my-plan (.dgov/plans/my-plan) — ok (10.5s)
   sentrux: 95 -> 88
@@ -1216,6 +1224,7 @@ class TestLoadRunsLogFields:
 """
         log_file.write_text(log_content)
         result = _load_runs_log_fields(str(tmp_path), "my-plan")
+        assert result["run_status"] == "degraded"
         assert result["sentrux_quality_before"] == 100
         assert result["sentrux_quality_after"] == 85
         assert result["sentrux_degradation"] is True

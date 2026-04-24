@@ -46,6 +46,7 @@ def mock_compile(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 def mock_run(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Mock the _cmd_run_plan function imported by fix.py."""
     mock = MagicMock()
+    mock.return_value = "complete"
     monkeypatch.setattr("dgov.cli.fix._cmd_run_plan", mock)
     return mock
 
@@ -244,7 +245,7 @@ class TestFixEdgeCases:
         mock_compile.assert_not_called()
         mock_run.assert_not_called()
 
-    def test_auto_generated_name_collision_uses_suffix(
+    def test_auto_generated_name_collision_fails_for_live_unresolved_plan(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -253,7 +254,7 @@ class TestFixEdgeCases:
         mock_run: MagicMock,
         mock_archive: MagicMock,
     ) -> None:
-        """Auto-generated names should add a numeric suffix on collision."""
+        """Auto-generated names should fail when an unresolved live plan already exists."""
         monkeypatch.chdir(tmp_path)
 
         plan_dir = _runtime_fix_plans_dir(tmp_path) / "fix-refactor-code"
@@ -262,10 +263,9 @@ class TestFixEdgeCases:
 
         result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
 
-        assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
-        assert "Created plan 'fix-refactor-code-2'" in result.output
-        # archive is mocked so new plan dir stays in place
-        assert (_runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-2").exists()
+        assert result.exit_code == 1
+        assert "unresolved fix plan already exists" in result.output
+        assert not (_runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-2").exists()
 
     def test_auto_generated_name_collision_with_archive_uses_suffix(
         self,
@@ -288,6 +288,31 @@ class TestFixEdgeCases:
         assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
         assert "Created plan 'fix-refactor-code-2'" in result.output
         assert (_runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-2").exists()
+
+    def test_auto_generated_name_skips_live_suffixed_collision(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_run: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        """Auto-generated names should skip over live suffixed plans instead of crashing."""
+        monkeypatch.chdir(tmp_path)
+
+        archive_dir = _runtime_fix_plans_dir(tmp_path) / "archive" / "fix-refactor-code"
+        archive_dir.mkdir(parents=True)
+        (archive_dir / "_root.toml").write_text('[plan]\nname = "fix-refactor-code"\n')
+        live_suffix = _runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-2"
+        live_suffix.mkdir(parents=True)
+        (live_suffix / "_root.toml").write_text('[plan]\nname = "fix-refactor-code-2"\n')
+
+        result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
+
+        assert result.exit_code == 0, f"Exit code: {result.exit_code}, output: {result.output}"
+        assert "Created plan 'fix-refactor-code-3'" in result.output
+        assert (_runtime_fix_plans_dir(tmp_path) / "fix-refactor-code-3").exists()
 
     def test_existing_archived_plan_name_fails(
         self,
@@ -384,7 +409,7 @@ class TestFixArchive:
         assert plan_dir.name.startswith("fix-")
         assert str(plan_dir.parent).endswith(".dgov/runtime/fix-plans")
 
-    def test_archives_plan_after_run_failure(
+    def test_retains_plan_after_run_failure(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -392,7 +417,7 @@ class TestFixArchive:
         mock_compile: MagicMock,
         mock_archive: MagicMock,
     ) -> None:
-        """Plan is archived even when run fails."""
+        """Run failures should leave the generated fix plan visible for follow-up."""
         monkeypatch.chdir(tmp_path)
 
         # Mock run to raise an exception
@@ -405,14 +430,11 @@ class TestFixArchive:
 
         assert result.exit_code == 1, f"Expected exit code 1, got {result.exit_code}"
         assert "Run failed" in result.output
+        assert "Retained unresolved fix plan" in result.output
 
-        # Verify archive was called even on failure
-        mock_archive.assert_called_once()
-        call_args = mock_archive.call_args[0]
-        plan_dir = call_args[0]
-        assert plan_dir.name.startswith("fix-")
+        mock_archive.assert_not_called()
 
-    def test_archives_plan_after_compile_failure(
+    def test_retains_plan_after_compile_failure(
         self,
         runner: CliRunner,
         tmp_path: Path,
@@ -420,7 +442,7 @@ class TestFixArchive:
         mock_compile: MagicMock,
         mock_archive: MagicMock,
     ) -> None:
-        """Plan is archived even when compile fails."""
+        """Compile failures should leave the generated fix plan visible for follow-up."""
         monkeypatch.chdir(tmp_path)
 
         # Mock compile to raise an exception
@@ -433,9 +455,24 @@ class TestFixArchive:
 
         assert result.exit_code == 1, f"Expected exit code 1, got {result.exit_code}"
         assert "Compile failed" in result.output
+        assert "Retained unresolved fix plan" in result.output
 
-        # Verify archive was called even on failure
-        mock_archive.assert_called_once()
-        call_args = mock_archive.call_args[0]
-        plan_dir = call_args[0]
-        assert plan_dir.name.startswith("fix-")
+        mock_archive.assert_not_called()
+
+    def test_retains_plan_after_degraded_run(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_compile: MagicMock,
+        mock_archive: MagicMock,
+    ) -> None:
+        """Degraded runs stay in runtime space until the follow-up is resolved."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("dgov.cli.fix._cmd_run_plan", lambda *args, **kwargs: "degraded")
+
+        result = runner.invoke(cli, ["fix", "Refactor code", "--file", "src/foo.py"])
+
+        assert result.exit_code == 0, result.output
+        assert "Retained unresolved fix plan" in result.output
+        mock_archive.assert_not_called()

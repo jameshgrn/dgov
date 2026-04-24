@@ -20,7 +20,11 @@ from dgov.cli.init import (
     _render_project_toml,
 )
 from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
-from dgov.persistence import emit_event, list_runtime_artifacts, record_runtime_artifact
+from dgov.persistence import (
+    emit_event,
+    list_runtime_artifacts,
+    record_runtime_artifact,
+)
 from dgov.persistence.schema import WorkerTask
 from dgov.types import TaskState
 
@@ -112,6 +116,14 @@ def _patched_load_review(monkeypatch, **overrides):
         return review
 
     monkeypatch.setattr("dgov.plan_review.load_review", _fake)
+
+
+def _patched_run_envelope(monkeypatch, **overrides):
+    """Stub load_run_envelope to return a fixed run-level snapshot."""
+    from dgov.plan_review import RunEnvelope
+
+    envelope = overrides.get("envelope", RunEnvelope(plan_name="p", last_run_ts=None))
+    monkeypatch.setattr("dgov.plan_review.load_run_envelope", lambda *_args, **_kwargs: envelope)
 
 
 # -- Bare invocation / status --
@@ -344,22 +356,23 @@ files = ["a.py"]
 
 def test_validate_conflict_plan(runner: CliRunner, tmp_path: Path) -> None:
     with runner.isolated_filesystem(temp_dir=tmp_path):
-        tasks_toml = """
-[tasks.a]
-summary = "a"
-prompt = "a"
-commit_message = "a"
-files.edit = ["shared.py"]
-
-[tasks.b]
-summary = "b"
-prompt = "b"
-commit_message = "b"
-files.edit = ["shared.py"]
-"""
-        # Note: compile handles structural DAG stuff, but we still need validate
-        # to catch cross-task file conflicts in the PlanSpec.
-        compiled_path = compile_plan_tree(tmp_path, "test-conflict", tasks_toml)
+        plan_dir = Path(".dgov") / "plans" / "test-conflict"
+        plan_dir.mkdir(parents=True)
+        compiled_path = plan_dir / "_compiled.toml"
+        compiled_path.write_text(
+            '[plan]\nname = "test-conflict"\nsource_mtime_max = "2026-04-10T12:00:00Z"\n\n'
+            "[tasks.a]\n"
+            'summary = "a"\n'
+            'prompt = "a"\n'
+            'commit_message = "a"\n'
+            'files.edit = ["shared.py"]\n\n'
+            "[tasks.b]\n"
+            'summary = "b"\n'
+            'prompt = "b"\n'
+            'commit_message = "b"\n'
+            'files.edit = ["shared.py"]\n',
+            encoding="utf-8",
+        )
 
         result = runner.invoke(cli, ["validate", str(compiled_path)])
         assert result.exit_code != 0
@@ -382,6 +395,33 @@ commit_message = "a"
         data = json.loads(result.output)
         assert data["valid"] is True
         assert data["tasks"] == 1
+
+
+def test_validate_rejects_department_violation(runner: CliRunner, tmp_path: Path) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        dgov_dir = root / ".dgov"
+        plan_dir = dgov_dir / "plans" / "constitution"
+        plan_dir.mkdir(parents=True)
+        (dgov_dir / "project.toml").write_text(
+            '[departments]\nCore = ["src/dgov/kernel.py"]\n',
+            encoding="utf-8",
+        )
+        compiled_path = plan_dir / "_compiled.toml"
+        compiled_path.write_text(
+            '[plan]\nname = "constitution"\nsource_mtime_max = "2026-04-10T12:00:00Z"\n\n'
+            "[tasks.a]\n"
+            'summary = "Do a"\n'
+            'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+            'commit_message = "a"\n'
+            'files = ["src/dgov/kernel.py"]\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["validate", str(compiled_path)])
+
+        assert result.exit_code != 0
+        assert "Constitutional violation" in result.output
 
 
 def test_validate_bad_toml(runner: CliRunner, tmp_path: Path) -> None:
@@ -757,6 +797,200 @@ def test_watch_help_shows_flags(runner: CliRunner) -> None:
     assert result.exit_code == 0
     assert "--all" in result.output
     assert "--plan" in result.output
+    assert "--root" in result.output
+
+
+def test_watch_root_forwards_resolved_project_root(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_root = tmp_path / "project"
+    nested = project_root / "nested" / "deeper"
+    (project_root / ".dgov").mkdir(parents=True)
+    nested.mkdir(parents=True)
+    captured: dict[str, object] = {}
+
+    def _capture(project_root: str, watch_all: bool = False, plan_name: str | None = None) -> None:
+        captured["project_root"] = project_root
+        captured["watch_all"] = watch_all
+        captured["plan_name"] = plan_name
+
+    monkeypatch.setattr("dgov.cli.watch._cmd_watch", _capture)
+
+    result = runner.invoke(
+        cli,
+        ["watch", "--root", str(nested), "--plan", "constitution"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "project_root": str(project_root),
+        "watch_all": False,
+        "plan_name": "constitution",
+    }
+
+
+def test_plan_remediate_scaffolds_follow_up_plan(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import RunEnvelope
+
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    envelope = RunEnvelope(
+        plan_name="source-plan",
+        last_run_ts="2026-04-10T12:00:00Z",
+        run_status="degraded",
+        sentrux_degradation=True,
+        sentrux_offender_summary="2 offenders in src/a.py",
+    )
+    _patched_run_envelope(monkeypatch, envelope=envelope)
+    monkeypatch.chdir(tmp_path)
+    from dgov.deploy_log import append as deploy_append
+
+    deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    remediation_dir = tmp_path / ".dgov" / "plans" / "source-plan-remediation"
+    assert remediation_dir.exists()
+    assert (remediation_dir / "_root.toml").exists()
+    assert (remediation_dir / "fix" / "_context.md").exists()
+    example_path = remediation_dir / "fix" / "_example.toml"
+    assert example_path.exists()
+    assert "dgov plan review" in example_path.read_text()
+    assert "2 offenders in src/a.py" in (remediation_dir / "fix" / "_context.md").read_text()
+
+
+def test_plan_remediate_rejects_non_degraded_plan(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import RunEnvelope
+
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    envelope = RunEnvelope(
+        plan_name="source-plan",
+        last_run_ts="2026-04-10T12:00:00Z",
+        run_status="complete",
+    )
+    _patched_run_envelope(monkeypatch, envelope=envelope)
+    monkeypatch.chdir(tmp_path)
+    from dgov.deploy_log import append as deploy_append
+
+    deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "fully deployed plans whose last run status is degraded" in result.output
+
+
+def test_plan_remediate_fails_when_live_plan_exists(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import RunEnvelope
+
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    envelope = RunEnvelope(
+        plan_name="source-plan",
+        last_run_ts="2026-04-10T12:00:00Z",
+        run_status="degraded",
+        sentrux_degradation=True,
+        sentrux_offender_summary="1 offender",
+    )
+    _patched_run_envelope(monkeypatch, envelope=envelope)
+    monkeypatch.chdir(tmp_path)
+    from dgov.deploy_log import append as deploy_append
+
+    deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
+    existing = tmp_path / ".dgov" / "plans" / "source-plan-remediation"
+    existing.mkdir(parents=True)
+    (existing / "_root.toml").write_text('[plan]\nname = "source-plan-remediation"\n')
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir)])
+
+    assert result.exit_code == 1
+    assert "remediation plan already exists" in result.output
+
+
+def test_plan_remediate_explicit_name_fails_when_archived_name_exists(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import RunEnvelope
+
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    envelope = RunEnvelope(
+        plan_name="source-plan",
+        last_run_ts="2026-04-10T12:00:00Z",
+        run_status="degraded",
+        sentrux_degradation=True,
+    )
+    _patched_run_envelope(monkeypatch, envelope=envelope)
+    monkeypatch.chdir(tmp_path)
+    from dgov.deploy_log import append as deploy_append
+
+    deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
+    archived = tmp_path / ".dgov" / "plans" / "archive" / "custom-name"
+    archived.mkdir(parents=True)
+    (archived / "_root.toml").write_text('[plan]\nname = "custom-name"\n')
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir), "--name", "custom-name"])
+
+    assert result.exit_code == 1
+    assert "remediation plan already exists" in result.output
+
+
+def test_plan_remediate_generated_name_skips_live_suffixed_collision(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import RunEnvelope
+
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    envelope = RunEnvelope(
+        plan_name="source-plan",
+        last_run_ts="2026-04-10T12:00:00Z",
+        run_status="degraded",
+        sentrux_degradation=True,
+    )
+    _patched_run_envelope(monkeypatch, envelope=envelope)
+    monkeypatch.chdir(tmp_path)
+    from dgov.deploy_log import append as deploy_append
+
+    deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
+    archived = tmp_path / ".dgov" / "plans" / "archive" / "source-plan-remediation"
+    archived.mkdir(parents=True)
+    (archived / "_root.toml").write_text('[plan]\nname = "source-plan-remediation"\n')
+    live_suffix = tmp_path / ".dgov" / "plans" / "source-plan-remediation-2"
+    live_suffix.mkdir(parents=True)
+    (live_suffix / "_root.toml").write_text('[plan]\nname = "source-plan-remediation-2"\n')
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "Created remediation plan 'source-plan-remediation-3'" in result.output
+
+
+def test_plan_remediate_uses_runs_log_fallback(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan_dir = _make_compiled_plan(tmp_path, "source-plan", {"tasks/main.a": "do a"})
+    monkeypatch.chdir(tmp_path)
+    from dgov.deploy_log import append as deploy_append
+
+    deploy_append(str(tmp_path), "source-plan", "tasks/main.a", "sha1")
+    runs_log = tmp_path / ".dgov" / "runs.log"
+    runs_log.parent.mkdir(parents=True, exist_ok=True)
+    runs_log.write_text(
+        "[2026-01-01 00:00:00Z] source-plan (.dgov/plans/source-plan) — warn (10.5s)\n"
+        "  sentrux: 95 -> 85\n"
+        "  sentrux_status: degradation\n"
+    )
+
+    result = runner.invoke(cli, ["plan", "remediate", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    remediation_dir = tmp_path / ".dgov" / "plans" / "source-plan-remediation"
+    assert remediation_dir.exists()
 
 
 def test_infer_plan_name_no_active_tasks(tmp_path: Path) -> None:

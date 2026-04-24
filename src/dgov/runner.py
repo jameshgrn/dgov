@@ -126,6 +126,29 @@ def _build_baseline_diag_note(config: object, session_root: str) -> str:
     )
 
 
+_REVIEW_APPLIES_TO = frozenset({"review", "reviewer"})
+
+
+def _load_review_sop_blocks(session_root: str) -> tuple[str, ...]:
+    """Load SOPs tagged for review and render their prompt blocks.
+
+    Called once at runner init. Returns pre-rendered blocks for injection
+    into self-review prompts. Falls back to empty tuple if SOPs dir is
+    missing or unparseable (self-review still works, just without SOP
+    guidance).
+    """
+    from dgov.sop_bundler import load_sops
+
+    sops_dir = Path(session_root) / ".dgov" / "sops"
+    try:
+        all_sops = load_sops(sops_dir)
+    except (ValueError, OSError) as exc:
+        logger.warning("Failed to load review SOPs from %s: %s", sops_dir, exc)
+        return ()
+    review_sops = [s for s in all_sops if _REVIEW_APPLIES_TO & frozenset(s.applies_to)]
+    return tuple(s.render_prompt_block() for s in review_sops)
+
+
 class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
@@ -162,6 +185,7 @@ class EventDagRunner:
             max_retries=dag.default_max_retries,
         )
         self._baseline_diag_note = _build_baseline_diag_note(self.project_config, session_root)
+        self._review_sop_blocks = _load_review_sop_blocks(session_root)
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._executor = ThreadPoolExecutor(max_workers=8)
@@ -580,6 +604,8 @@ class EventDagRunner:
             task_slug=exit_event.task_slug,
             error=exit_event.last_error if status == TaskState.FAILED else None,
             duration=duration,
+            prompt_tokens=exit_event.prompt_tokens or None,
+            completion_tokens=exit_event.completion_tokens or None,
         )
         return actions
 
@@ -850,30 +876,37 @@ class EventDagRunner:
                 return False, output
             return True, None
 
-    @staticmethod
-    def _build_self_review_prompt(diff_text: str) -> str:
-        """Build a clean-context review prompt. No task prompt, no worker reasoning."""
-        return (
+    def _build_self_review_prompt(self, diff_text: str) -> str:
+        """Build a clean-context review prompt.
+
+        Framing and verdict protocol live here (code). Review criteria come
+        from SOPs loaded at runner init (policy). No task prompt, no worker
+        reasoning — the reviewer sees only the diff and SOP guidance.
+        """
+        parts = [
             "You are reviewing a code change for semantic correctness.\n"
             "You have NO context about what the change was supposed to do.\n"
-            "Reason backward from the implementation itself.\n\n"
-            "Focus on:\n"
-            "- Logic errors (wrong conditions, off-by-one, inverted checks)\n"
-            "- No-ops (code that appears to do something but has no effect)\n"
-            "- Missing edge cases (null/empty/boundary conditions)\n"
-            "- Silently wrong behavior (swallowed errors, wrong variable used)\n"
-            "- API misuse (calling methods that don't exist, wrong arg order)\n\n"
-            "Do NOT flag:\n"
-            "- Style preferences (naming, formatting, comment quality)\n"
-            "- Missing tests (that's a separate concern)\n"
-            "- Architectural opinions\n\n"
-            f"DIFF:\n```diff\n{diff_text}\n```\n\n"
+            "Reason backward from the implementation itself.\n",
+        ]
+        if self._review_sop_blocks:
+            parts.append("\n" + "\n\n".join(self._review_sop_blocks) + "\n")
+        else:
+            parts.append(
+                "\nFocus on:\n"
+                "- Logic errors (wrong conditions, off-by-one, inverted checks)\n"
+                "- No-ops (code that appears to do something but has no effect)\n"
+                "- Silently wrong behavior (swallowed errors, wrong variable used)\n"
+                "- Missing edge cases (null/empty/boundary conditions)\n"
+            )
+        parts.append(
+            f"\nDIFF:\n```diff\n{diff_text}\n```\n\n"
             "Read the surrounding code in the repo for context if needed.\n\n"
             "Respond via the `done` tool with a JSON verdict:\n"
             '{"approved": true, "issues": []}  -- if no semantic issues\n'
             '{"approved": false, "issues": ["description of issue 1", '
             '"description of issue 2"]}  -- if issues found\n'
         )
+        return "".join(parts)
 
     async def _relaunch_worker_with_findings(
         self,
@@ -1144,6 +1177,105 @@ class EventDagRunner:
             )
             on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s", 0, 0)
 
+    def _get_ledger_entries_for_task(self, task: DagTaskSpec) -> list[dict]:
+        """Query ledger for open entries where affected_paths intersects with task claims.
+
+        Returns list of dicts with 'id' and 'content' keys for entries that overlap
+        with the task's file claims.
+        """
+        from dgov.persistence.ledger import list_ledger_entries
+
+        def _normalize(path: str) -> str:
+            return path.strip().lstrip("./").rstrip("/")
+
+        def _overlaps(left: str, right: str) -> bool:
+            left_norm = _normalize(left)
+            right_norm = _normalize(right)
+            if not left_norm or not right_norm:
+                return False
+            return (
+                left_norm == right_norm
+                or left_norm.startswith(right_norm + "/")
+                or right_norm.startswith(left_norm + "/")
+            )
+
+        # Get all file paths this task claims (create, edit, delete, touch)
+        task_paths = {_normalize(path) for path in task.all_touches() if _normalize(path)}
+        if not task_paths:
+            return []
+
+        # Query for open ledger entries
+        entries = list_ledger_entries(self.session_root, status="open")
+
+        # Filter to entries with path overlap
+        overlapping = []
+        for entry in entries:
+            entry_paths = {_normalize(path) for path in entry.affected_paths if _normalize(path)}
+            if any(
+                _overlaps(entry_path, task_path)
+                for entry_path in entry_paths
+                for task_path in task_paths
+            ):
+                overlapping.append({"id": entry.id, "content": entry.content})
+
+        return overlapping
+
+    def _format_probation_section(self, entries: list[dict]) -> str:
+        """Format ledger entries as Active Probation (Case Law) section.
+
+        Each entry is formatted with its ID and content under the probation header.
+        Returns empty string if no entries.
+        """
+        if not entries:
+            return ""
+
+        lines = ["\n## Active Probation (Case Law)\n"]
+        for entry in entries:
+            lines.append(f"**Entry #{entry['id']}:** {entry['content']}\n")
+
+        return "".join(lines)
+
+    def _build_worker_prompt(
+        self,
+        task_slug: str,
+        task: DagTaskSpec,
+        prior_error: str | None = None,
+        attempt: int = 0,
+    ) -> str:
+        """Build the full worker prompt with all enrichments.
+
+        This includes:
+        1. Base prompt (or reviewer-generated prompt for reviewer role)
+        2. Baseline diagnostic note
+        3. Active probation (case law) from ledger entries
+        4. Prior error context for retries
+        """
+        # Build base prompt
+        if task.role == "reviewer":
+            prompt = self._build_reviewer_prompt(task_slug, task)
+        else:
+            prompt = task.prompt or ""
+
+        # Inject baseline diagnostic note so workers don't waste iterations
+        if self._baseline_diag_note:
+            prompt = self._baseline_diag_note + prompt
+
+        # Inject active probation (case law) from ledger
+        ledger_entries = self._get_ledger_entries_for_task(task)
+        probation_section = self._format_probation_section(ledger_entries)
+        if probation_section:
+            prompt = prompt + probation_section
+
+        # Enrich prompt with prior failure context on retry
+        if prior_error:
+            prompt = (
+                f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
+                f"Fix the issue described above, then complete the original task.\n\n"
+                f"ORIGINAL TASK:\n{prompt}"
+            )
+
+        return prompt
+
     def _build_reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
         """Build a reviewer prompt with dependency diffs auto-injected."""
         import subprocess as sp
@@ -1239,27 +1371,9 @@ class EventDagRunner:
         output_dir.mkdir(parents=True, exist_ok=True)
         loop = asyncio.get_running_loop()
 
-        # Reviewer: build prompt from dependency diffs (before retry enrichment
-        # so that retry context wraps the generated prompt, not replaces it)
-        if task.role == "reviewer":
-            prompt = self._build_reviewer_prompt(action.task_slug, task)
-        else:
-            prompt = task.prompt or ""
-
-        # Inject baseline diagnostic note so workers don't waste iterations
-        if self._baseline_diag_note:
-            prompt = self._baseline_diag_note + prompt
-
-        # Enrich prompt with prior failure context on retry
+        # Build worker prompt with all enrichments (baseline diag, ledger probation, retry context)
         ctx = self._ctx(action.task_slug)
-        prior_error = ctx.error
-        if prior_error:
-            attempt = ctx.attempts
-            prompt = (
-                f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
-                f"Fix the issue described above, then complete the original task.\n\n"
-                f"ORIGINAL TASK:\n{prompt}"
-            )
+        prompt = self._build_worker_prompt(action.task_slug, task, ctx.error, ctx.attempts)
 
         # Pillar #3: Snapshot Isolation
         base_ref = self._base_ref_for_task(action.task_slug)
@@ -1350,7 +1464,7 @@ class EventDagRunner:
                 )
                 loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
 
-            dispatch_task = task if not prior_error else task.model_copy(update={"prompt": prompt})
+            dispatch_task = task if not ctx.error else task.model_copy(update={"prompt": prompt})
             # Use re-resolved agent
             dispatch_task = dispatch_task.model_copy(update={"agent": agent})
             timeout_s = task.timeout_s

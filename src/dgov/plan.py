@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from typing import Literal
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
+from dgov.types import ConstitutionalViolation
 
 _TASK_ROLES = frozenset({"worker", "researcher", "reviewer"})
+_CONSTITUTIONAL_VIOLATION_PREFIX = "Constitutional violation:"
 
 # Matches file paths embedded in prompt text: any word/path ending in a known
 # extension (.py, .toml, .json, .yaml, .yml, .md, .txt, .cfg, .ini, .sh)
@@ -181,13 +183,28 @@ class PlanValidationError(ValueError):
         super().__init__("Plan validation failed:\n" + "\n".join(msgs))
 
 
-def compile_plan(plan: PlanSpec, project_agent: str = "") -> DagDefinition:
+def compile_plan(
+    plan: PlanSpec,
+    project_agent: str = "",
+    departments: dict[str, list[str]] | None = None,
+) -> DagDefinition:
     """Compile a PlanSpec into a DagDefinition.
 
     Agent resolution: task.agent → plan.default_agent → project_agent.
     Raises PlanValidationError if the plan has structural errors.
+    Raises ConstitutionalViolation if file claims violate department ownership.
     """
-    issues = validate_plan(plan)
+    issues = validate_plan(plan, departments=departments)
+
+    # Check for constitutional violations first (department ownership)
+    constitutional_errors = [
+        i
+        for i in issues
+        if i.severity == "error" and i.message.startswith(_CONSTITUTIONAL_VIOLATION_PREFIX)
+    ]
+    if constitutional_errors:
+        raise ConstitutionalViolation(constitutional_errors[0].message)
+
     errors = [i for i in issues if i.severity == "error"]
     if errors:
         raise PlanValidationError(errors)
@@ -266,7 +283,10 @@ def _are_independent(a: str, b: str, units: dict[str, PlanUnit]) -> bool:
     return b not in _reachable(a) and a not in _reachable(b)
 
 
-def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
+def validate_plan(
+    plan: PlanSpec,
+    departments: dict[str, list[str]] | None = None,
+) -> list[PlanIssue]:
     """Structural validation of a plan.
 
     Checks:
@@ -274,8 +294,14 @@ def validate_plan(plan: PlanSpec) -> list[PlanIssue]:
     2. Prompt path references not covered by file claims
     3. Verify-only tasks with .py touch/edit claims (likely over-scoped)
     4. Prompt structure (Orient/Edit/Verify headers)
+    5. Department ownership authorization (if departments config provided)
     """
     issues: list[PlanIssue] = []
+
+    # Department ownership authorization check
+    if departments:
+        for _slug, unit in plan.units.items():
+            issues.extend(_check_department_authorization(unit, departments))
 
     # File-claim conflict detection between independent tasks
     slugs = list(plan.units.keys())
@@ -397,6 +423,62 @@ def _check_verify_only_task(slug: str, unit: PlanUnit) -> list[PlanIssue]:
             unit=slug,
         )
     ]
+
+
+def _check_department_authorization(
+    unit: PlanUnit,
+    departments: dict[str, list[str]],
+) -> list[PlanIssue]:
+    """Check if a unit's file claims violate department ownership boundaries.
+
+    A unit is authorized to touch files in a department if its summary
+    contains the department name (case-insensitive substring match).
+    """
+    import fnmatch
+
+    issues: list[PlanIssue] = []
+
+    # touch is write-capable shorthand, so it must be governed like edit/create/delete.
+    modifying_files = [
+        *unit.files.create,
+        *unit.files.edit,
+        *unit.files.delete,
+        *unit.files.touch,
+    ]
+
+    for file_path in modifying_files:
+        norm_path = _normalize_touch_path(file_path)
+        if not norm_path:
+            continue
+
+        # Check which department owns this path
+        for dept_name, patterns in departments.items():
+            dept_owns = False
+            for pattern in patterns:
+                if fnmatch.fnmatch(norm_path, pattern):
+                    dept_owns = True
+                    break
+
+            if dept_owns:
+                # Check if unit is authorized (summary contains department name)
+                summary_lower = (unit.summary or "").lower()
+                dept_lower = dept_name.lower()
+                if dept_lower not in summary_lower:
+                    issues.append(
+                        PlanIssue(
+                            severity="error",
+                            message=(
+                                f"Constitutional violation: unit touches '{norm_path}' "
+                                f"owned by department '{dept_name}' but summary "
+                                f"does not explicitly opt-in. Add '{dept_name}' to summary."
+                            ),
+                            unit=unit.slug,
+                        )
+                    )
+                # Only report once per file, even if multiple patterns match
+                break
+
+    return issues
 
 
 def _check_prompt_structure(slug: str, unit: PlanUnit) -> list[PlanIssue]:

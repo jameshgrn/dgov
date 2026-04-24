@@ -48,6 +48,9 @@ uv run pytest -q -m unit
 # Integration tests (real git repos, mock workers)
 uv run pytest -q -m integration
 
+# Slow tests (longer-running tests)
+uv run pytest -q -m slow
+
 # Specific test file
 uv run pytest tests/test_kernel.py -q
 ```

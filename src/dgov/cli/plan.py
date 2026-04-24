@@ -1,13 +1,16 @@
-"""Plan subcommands — validate, plan status, init-plan, plan create."""
+"""Plan subcommands — validate, status, review, and remediation."""
 
 from __future__ import annotations
 
 import json
+import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import click
 
 from dgov.cli import cli, print_dag_graph, resolve_plan_input, want_json
+from dgov.config import load_project_config
 from dgov.deploy_log import DeployRecord
 from dgov.plan import PlanSpec, PlanUnit, parse_plan_file, validate_plan
 from dgov.plan_tree import parse_compiled_source_mtime
@@ -86,7 +89,9 @@ def validate_cmd(plan_input: Path) -> None:
         click.echo(f"Error: {exc}", err=True)
         raise click.exceptions.Exit(code=1) from None
 
-    issues = validate_plan(plan)
+    project_root_path = resolve_project_root(Path(plan_file))
+    project_config = load_project_config(project_root_path)
+    issues = validate_plan(plan, departments=project_config.departments)
     errors = [i for i in issues if i.severity == "error"]
     warnings = [i for i in issues if i.severity == "warning"]
 
@@ -227,7 +232,7 @@ def plan_cmd() -> None:
 
 
 @plan_cmd.command(name="status")
-@click.argument("plan_input", type=click.Path(path_type=Path, exists=True))
+@click.argument("plan_input", type=click.Path(path_type=Path))
 @click.option(
     "--verbose",
     "-v",
@@ -248,6 +253,10 @@ def plan_status_cmd(plan_input: Path, verbose: bool) -> None:
     Example: dgov plan status .dgov/plans/my-plan/
     Example: dgov plan status .dgov/plans/my-plan/ --verbose
     """
+    plan_input = _resolve_archived_plan_path(plan_input)
+    if not plan_input.exists():
+        click.echo(f"Error: plan path not found: {plan_input}", err=True)
+        raise click.exceptions.Exit(code=1) from None
     try:
         compiled_path, plan_root = resolve_plan_input(plan_input)
     except click.ClickException as exc:
@@ -292,12 +301,11 @@ def _compute_staleness(
         return False
 
 
-def _load_deployed_units(plan_name: str) -> dict[str, DeployRecord]:
+def _load_deployed_units(project_root: Path, plan_name: str) -> dict[str, DeployRecord]:
     """Load deployed units from the deploy log. Returns a dict of unit -> deploy record."""
     from dgov.deploy_log import read as read_deploy_log
 
-    project_root = str(resolve_project_root())
-    deployed = read_deploy_log(project_root, plan_name)
+    deployed = read_deploy_log(str(project_root), plan_name)
     return {r.unit: r for r in deployed}
 
 
@@ -328,6 +336,11 @@ def _render_plan_status_json(
     deployed_count: int,
     pending_count: int,
     stale: bool,
+    run_status: str | None,
+    sentrux_degradation: bool | None,
+    sentrux_offender_summary: str | None,
+    remediation_needed: bool,
+    next_action: str | None,
 ) -> None:
     """Render plan status as JSON output."""
     click.echo(
@@ -338,6 +351,11 @@ def _render_plan_status_json(
                 "deployed": deployed_count,
                 "pending": pending_count,
                 "stale": stale,
+                "run_status": run_status,
+                "sentrux_degradation": sentrux_degradation,
+                "sentrux_offender_summary": sentrux_offender_summary,
+                "remediation_needed": remediation_needed,
+                "next_action": next_action,
                 "unit_statuses": unit_statuses,
             },
             indent=2,
@@ -353,11 +371,29 @@ def _render_plan_status_text(
     stale: bool,
     plan_root: Path | None,
     verbose: bool,
+    run_status: str | None,
+    sentrux_advisory: str | None,
+    remediation_needed: bool,
+    next_action: str | None,
 ) -> None:
     """Render plan status as human-readable text output."""
     total = len(unit_statuses)
     # One-line summary by default. Deep-dive via `dgov plan review`.
     click.echo(f"Plan: {plan_name}  ({deployed_count}/{total} deployed, {pending_count} pending)")
+    if run_status is not None:
+        color = _run_status_color(run_status)
+        line = f"  run status: {run_status}"
+        click.echo(click.style(line, fg=color) if color else line)
+    if sentrux_advisory is not None:
+        click.echo(click.style(f"  advisory: {sentrux_advisory}", fg="yellow"))
+    if remediation_needed and next_action is not None:
+        click.echo(
+            click.style(
+                "  deployed but unresolved — author a remediation follow-up",
+                fg="yellow",
+            )
+        )
+        click.echo(click.style(f"  next: {next_action}", fg="yellow"))
     if stale and plan_root is not None:
         click.echo(
             click.style(
@@ -380,6 +416,23 @@ def _render_plan_status_text(
             click.echo(line)
 
 
+def _needs_remediation(
+    *, run_status: str | None, unit_count: int, deployed_count: int, pending_count: int
+) -> bool:
+    """Return True when a plan is fully deployed but still degraded."""
+    return (
+        run_status == "degraded"
+        and unit_count > 0
+        and deployed_count == unit_count
+        and pending_count == 0
+    )
+
+
+def _status_target(plan_root: Path | None, compiled_path: Path) -> str:
+    """Return the display target users should pass back to plan commands."""
+    return str(plan_root if plan_root is not None else compiled_path)
+
+
 def _cmd_plan_status(
     compiled_path: Path, plan_root: Path | None, *, verbose: bool = False
 ) -> None:
@@ -392,21 +445,54 @@ def _cmd_plan_status(
     plan_section = raw.get("plan", {})
     plan_name = plan_section.get("name", "unknown")
     tasks_raw = raw.get("tasks", {})
+    project_root_path = resolve_project_root(compiled_path)
 
     compiled_source_mtime = plan_section.get("source_mtime_max", "")
     stale = _compute_staleness(compiled_path, plan_root, compiled_source_mtime)
 
-    deployed_units = _load_deployed_units(plan_name)
+    deployed_units = _load_deployed_units(project_root_path, plan_name)
     unit_statuses = _build_unit_statuses(tasks_raw, deployed_units)
-
     deployed_count = sum(1 for u in unit_statuses if u["status"] == "deployed")
     pending_count = len(unit_statuses) - deployed_count
+    from dgov.plan_review import load_run_envelope
+
+    run_envelope = load_run_envelope(str(project_root_path), compiled_path)
+    remediation_needed = _needs_remediation(
+        run_status=run_envelope.run_status,
+        unit_count=len(unit_statuses),
+        deployed_count=deployed_count,
+        pending_count=pending_count,
+    )
+    next_action = None
+    if remediation_needed:
+        next_action = f"dgov plan remediate {_status_target(plan_root, compiled_path)}"
 
     if want_json():
-        _render_plan_status_json(plan_name, unit_statuses, deployed_count, pending_count, stale)
+        _render_plan_status_json(
+            plan_name,
+            unit_statuses,
+            deployed_count,
+            pending_count,
+            stale,
+            run_envelope.run_status,
+            run_envelope.sentrux_degradation,
+            run_envelope.sentrux_offender_summary,
+            remediation_needed,
+            next_action,
+        )
     else:
         _render_plan_status_text(
-            plan_name, unit_statuses, deployed_count, pending_count, stale, plan_root, verbose
+            plan_name,
+            unit_statuses,
+            deployed_count,
+            pending_count,
+            stale,
+            plan_root,
+            verbose,
+            run_envelope.run_status,
+            _format_sentrux_advisory(run_envelope),
+            remediation_needed,
+            next_action,
         )
 
 
@@ -436,6 +522,164 @@ def _resolve_archived_plan_path(plan_input: Path) -> Path:
         )
         return candidate
     return plan_input
+
+
+def _slugify_name(text: str) -> str:
+    """Convert text into a stable kebab-case slug."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug[:50] or "plan"
+
+
+def _allocate_plan_dir(
+    project_root: Path, base_name: str, *, explicit_name: bool = False
+) -> tuple[str, Path]:
+    """Allocate a remediation plan dir with exact-or-fail explicit naming."""
+    plans_dir = project_root / ".dgov" / "plans"
+    archive_dir = plans_dir / "archive"
+    live_plan_dir = plans_dir / base_name
+    archive_plan_dir = archive_dir / base_name
+    if explicit_name and (live_plan_dir.exists() or archive_plan_dir.exists()):
+        existing_path = live_plan_dir if live_plan_dir.exists() else archive_plan_dir
+        click.echo(f"Error: remediation plan already exists at {existing_path}", err=True)
+        click.echo(
+            "Fix: use a different --name or archive/remove the existing remediation plan.",
+            err=True,
+        )
+        raise click.exceptions.Exit(code=1) from None
+    if live_plan_dir.exists():
+        click.echo(f"Error: remediation plan already exists at {live_plan_dir}", err=True)
+        click.echo(
+            "Fix: use that active remediation plan or archive it before creating another.",
+            err=True,
+        )
+        raise click.exceptions.Exit(code=1) from None
+
+    name = base_name
+    plan_dir = live_plan_dir
+    suffix = 2
+    while plan_dir.exists() or (archive_dir / name).exists():
+        name = f"{base_name}-{suffix}"
+        plan_dir = plans_dir / name
+        suffix += 1
+    return name, plan_dir
+
+
+def _toml_str(value: str) -> str:
+    """Render a TOML-safe double-quoted string."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def _render_remediation_context(review, source_target: str) -> str:
+    """Build markdown context for a remediation scaffold."""
+    lines = [
+        "# Remediation Context",
+        "",
+        f"- Source plan: `{review.plan_name}`",
+        f"- Source path: `{source_target}`",
+        f"- Generated: `{datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')}`",
+        f"- Last run status: `{review.run_status or 'unknown'}`",
+    ]
+    advisory = _format_sentrux_advisory(review)
+    if advisory is not None:
+        lines.append(f"- Advisory: {advisory}")
+    lines.extend([
+        "",
+        "Use this context to author concrete remediation tasks with explicit file claims.",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _render_remediation_example(review, source_target: str) -> str:
+    """Render the starter task scaffold for a remediation plan."""
+    advisory = _format_sentrux_advisory(review) or "sentrux degradation detected"
+    return (
+        "# Rename this file to a non-underscore name once you replace the scaffold.\n\n"
+        "[tasks.remediate]\n"
+        f"summary = {_toml_str(f'Address degradation from {review.plan_name}')}\n"
+        'prompt = """\n'
+        "Orient:\n"
+        f"- Read `dgov plan review {source_target}` for the merged units and run-level advisory.\n"
+        "- Run `uv run dgov sentrux offenders` before editing anything.\n"
+        "- This follow-up must stay narrowly scoped to the degradation it is addressing.\n\n"
+        "Edit:\n"
+        "1. Replace this scaffold with concrete remediation steps for the exact offending files.\n"
+        "2. Keep tasks atomic; split separate offender groups into separate tasks if needed.\n"
+        f"3. Preserve the intent of the source plan while fixing this advisory: {advisory}.\n\n"
+        "Verify:\n"
+        "- `uv run dgov sentrux offenders`\n"
+        "- Add targeted `uv run pytest -q ...` commands for the changed files.\n"
+        "- Add targeted `uv run ruff check ...` and `uv run ty check ...` commands.\n"
+        '"""\n'
+        f"commit_message = {_toml_str(f'Address degradation from {review.plan_name}')}\n"
+        '# files.edit = ["src/path.py"]\n'
+        '# files.read = ["tests/test_path.py"]\n'
+    )
+
+
+@plan_cmd.command(name="remediate")
+@click.argument("plan_input", type=click.Path(path_type=Path))
+@click.option("--name", help="Override the generated remediation plan name")
+def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
+    """Scaffold a follow-up plan for a fully deployed but degraded source plan."""
+    plan_input = _resolve_archived_plan_path(plan_input)
+    if not plan_input.exists():
+        click.echo(f"Error: plan path not found: {plan_input}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+    try:
+        compiled_path, plan_root = resolve_plan_input(plan_input)
+    except click.ClickException as exc:
+        click.echo(f"Error: {exc.message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
+
+    _check_compiled_exists(compiled_path, plan_root)
+    import tomllib
+
+    from dgov.plan_review import load_run_envelope
+
+    raw = tomllib.loads(compiled_path.read_text())
+    tasks_raw = raw.get("tasks", {})
+    project_root = resolve_project_root(compiled_path)
+    deployed_units = _load_deployed_units(project_root, raw.get("plan", {}).get("name", "unknown"))
+    deployed_count = sum(1 for uid in tasks_raw if uid in deployed_units)
+    pending_count = len(tasks_raw) - deployed_count
+    run_envelope = load_run_envelope(str(project_root), compiled_path)
+    if not _needs_remediation(
+        run_status=run_envelope.run_status,
+        unit_count=len(tasks_raw),
+        deployed_count=deployed_count,
+        pending_count=pending_count,
+    ):
+        click.echo(
+            "Error: remediation scaffolds only apply to fully deployed plans whose last run "
+            "status is degraded.",
+            err=True,
+        )
+        raise click.exceptions.Exit(code=1) from None
+
+    base_name = name or f"{_slugify_name(run_envelope.plan_name)}-remediation"
+    plan_name, plan_dir = _allocate_plan_dir(
+        project_root, base_name, explicit_name=name is not None
+    )
+    source_target = _status_target(plan_root, compiled_path)
+
+    plan_dir.mkdir(parents=True)
+    fix_dir = plan_dir / "fix"
+    fix_dir.mkdir()
+    (plan_dir / "_root.toml").write_text(
+        "[plan]\n"
+        f"name = {_toml_str(plan_name)}\n"
+        f"summary = {_toml_str(f'Remediate degradation from {run_envelope.plan_name}')}\n"
+        'sections = ["fix"]\n'
+    )
+    (fix_dir / "_context.md").write_text(_render_remediation_context(run_envelope, source_target))
+    (fix_dir / "_example.toml").write_text(
+        _render_remediation_example(run_envelope, source_target)
+    )
+
+    click.echo(f"Created remediation plan '{plan_name}' at {plan_dir}")
+    click.echo(f"Next: replace {fix_dir / '_example.toml'} with concrete tasks, then compile.")
 
 
 @plan_cmd.command(name="review")
@@ -669,6 +913,12 @@ def _render_deployed_unit(unit) -> None:
             if unit.settlement != "n/a"
             else None,
         ),
+        (
+            "tokens",
+            f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
+            if unit.prompt_tokens is not None and unit.completion_tokens is not None
+            else None,
+        ),
     ]
     _render_unit_fields(fields)
     if unit.landed_files:
@@ -742,6 +992,12 @@ def _render_failed_unit(unit) -> None:
         (
             "fork",
             f"{unit.fork_depth} clean-context relaunch(es)" if unit.fork_depth > 0 else None,
+        ),
+        (
+            "tokens",
+            f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
+            if unit.prompt_tokens is not None and unit.completion_tokens is not None
+            else None,
         ),
     ]
     _render_unit_fields(fields)
@@ -880,6 +1136,8 @@ def _review_to_json(review) -> str:
             "full_diff": u.full_diff,
             "duration_s": u.duration_s,
             "iterations": u.iterations,
+            "prompt_tokens": u.prompt_tokens,
+            "completion_tokens": u.completion_tokens,
             "self_corrections": u.self_corrections,
             "fork_depth": u.fork_depth,
             "self_review_outcome": u.self_review_outcome,

@@ -21,6 +21,7 @@ from dgov.plan import (
     parse_plan_file,
     validate_plan,
 )
+from dgov.types import ConstitutionalViolation
 
 # A prompt that passes structure validation for tests that don't care about prompt content.
 _VALID_PROMPT = "Orient:\nContext.\n\nEdit:\n1. Change.\n\nVerify:\n- Check."
@@ -355,6 +356,79 @@ class TestCompilePlan:
         result = compile_plan(plan, project_agent="test-agent")
 
         assert result.tasks["task-1"].agent == "claude-3-opus"
+
+    def test_fails_unauthorized_department_edit(self):
+        plan = PlanSpec(
+            name="constitution",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Fix kernel",
+                    prompt=_VALID_PROMPT,
+                    commit_message="Done",
+                    files=PlanUnitFiles(edit=("src/dgov/kernel.py",)),
+                )
+            },
+        )
+
+        with pytest.raises(
+            ConstitutionalViolation,
+            match="Constitutional violation: unit touches",
+        ):
+            compile_plan(
+                plan,
+                project_agent="test-agent",
+                departments={"Core": ["src/dgov/kernel.py"]},
+            )
+
+    def test_fails_unauthorized_department_touch(self):
+        plan = PlanSpec(
+            name="constitution",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Fix kernel",
+                    prompt=_VALID_PROMPT,
+                    commit_message="Done",
+                    files=PlanUnitFiles(touch=("src/dgov/kernel.py",)),
+                )
+            },
+        )
+
+        with pytest.raises(
+            ConstitutionalViolation,
+            match="Constitutional violation: unit touches",
+        ):
+            compile_plan(
+                plan,
+                project_agent="test-agent",
+                departments={"Core": ["src/dgov/kernel.py"]},
+            )
+
+    def test_allows_authorized_department_edit(self):
+        plan = PlanSpec(
+            name="constitution",
+            goal="Goal",
+            units={
+                "task-1": PlanUnit(
+                    slug="task-1",
+                    summary="Core: fix kernel",
+                    prompt=_VALID_PROMPT,
+                    commit_message="Done",
+                    files=PlanUnitFiles(edit=("src/dgov/kernel.py",)),
+                )
+            },
+        )
+
+        result = compile_plan(
+            plan,
+            project_agent="test-agent",
+            departments={"Core": ["src/dgov/kernel.py"]},
+        )
+
+        assert result.tasks["task-1"].files.edit == ("src/dgov/kernel.py",)
 
     def test_preserves_unit_role_when_specified(self):
         plan = PlanSpec(

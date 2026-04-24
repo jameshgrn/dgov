@@ -119,6 +119,8 @@ class LedgerEntry:
     status: Literal["open", "resolved"] = "open"
     created_at: float = field(default_factory=time.time)
     resolved_at: float | None = None
+    affected_paths: tuple[str, ...] = ()
+    affected_tags: tuple[str, ...] = ()
 
 
 _TASK_COLUMNS = frozenset({

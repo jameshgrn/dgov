@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pytest_mock import MockerFixture
@@ -12,9 +13,9 @@ from dgov.plan_tree import FlatPlan, RootMeta, merge_tree, resolve_refs, walk_tr
 from dgov.sop_bundler import (
     BundleResult,
     IdentityBundler,
-    LLMSopBundler,
     Sop,
     SopBundler,
+    TagBasedSopBundler,
     bundle,
     compute_sop_set_hash,
     load_sops,
@@ -336,67 +337,124 @@ class TestIdentityBundler:
         assert result == {"a": [], "b": []}
 
 
-class TestLLMSopBundler:
-    def test_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("FIREWORKS_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="FIREWORKS_API_KEY missing"):
-            LLMSopBundler().pick({}, [])
+class TestTagBasedSopBundler:
+    """Tests for the deterministic tag-intersection bundler."""
 
-    def test_uses_configured_api_key_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="OPENAI_API_KEY missing"):
-            LLMSopBundler(api_key_env="OPENAI_API_KEY").pick({}, [])
-
-    def test_successful_pick(self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture) -> None:
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
-        mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
-        mock_resp = mocker.MagicMock()
-        mock_resp.choices[0].message.content = '{"mapping": {"a": ["s1"], "b": []}}'
-        mock_client.return_value.chat.completions.create.return_value = mock_resp
-
-        units = {"a": _unit("a"), "b": _unit("b")}
-        sops = [_sop("s1", "S1", path="s1.md")]
-
-        result = LLMSopBundler().pick(units, sops)
-        assert result == {"a": ["s1"], "b": []}
-
-        # Verify prompt contents
-        _, kwargs = mock_client.return_value.chat.completions.create.call_args
-        prompt = kwargs["messages"][1]["content"]
-        assert "s1: S1 | summary: Summary." in prompt
-        assert "applies_to: general" in prompt
-        assert "priority: must" in prompt
-        assert "a: s" in prompt  # summary is "s" from _unit helper
-
-    def test_successful_pick_uses_custom_base_url_and_env(
-        self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
-    ) -> None:
-        monkeypatch.setenv("OPENAI_API_KEY", "fake")
-        mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
-        mock_resp = mocker.MagicMock()
-        mock_resp.choices[0].message.content = '{"mapping": {"a": []}}'
-        mock_client.return_value.chat.completions.create.return_value = mock_resp
-
-        bundler = LLMSopBundler(
-            model="gpt-4.1-mini",
-            base_url="https://api.openai.com/v1",
-            api_key_env="OPENAI_API_KEY",
+    def _unit_with(
+        self,
+        slug: str,
+        summary: str = "s",
+        *,
+        files: PlanUnitFiles | None = None,
+        role: Literal["worker", "researcher", "reviewer"] = "worker",
+    ) -> PlanUnit:
+        return PlanUnit(
+            slug=slug,
+            summary=summary,
+            prompt="do the thing",
+            commit_message="c",
+            files=files or PlanUnitFiles(),
+            role=role,
         )
-        bundler.pick({"a": _unit("a")}, [])
 
-        _, kwargs = mock_client.call_args
-        assert kwargs["base_url"] == "https://api.openai.com/v1"
-        assert kwargs["api_key"] == "fake"
+    def test_matches_python_file_to_python_tag(self) -> None:
+        unit = self._unit_with("a", files=PlanUnitFiles(edit=("src/foo.py",)))
+        sops = [_sop("ps", "Python Style", applies_to=("python", "lint"))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["ps"]}
 
-    def test_api_failure_raises_runtime_error(
-        self, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
-    ) -> None:
-        monkeypatch.setenv("FIREWORKS_API_KEY", "fake")
-        mock_client = mocker.patch("dgov.sop_bundler.OpenAI")
-        mock_client.return_value.chat.completions.create.side_effect = Exception("API Down")
+    def test_matches_js_file_to_javascript_tag(self) -> None:
+        unit = self._unit_with("a", files=PlanUnitFiles(create=("app.tsx",)))
+        sops = [_sop("rv", "Return Values", applies_to=("javascript", "typescript"))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["rv"]}
 
-        with pytest.raises(RuntimeError, match="LLMSopBundler failed: API Down"):
-            LLMSopBundler().pick({"a": _unit("a")}, [])
+    def test_reviewer_role_matches_review_tag(self) -> None:
+        unit = self._unit_with("a", role="reviewer")
+        sops = [_sop("cr", "Code Review", applies_to=("review", "reviewer"))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["cr"]}
+
+    def test_researcher_role_matches_review_tag(self) -> None:
+        unit = self._unit_with("a", role="researcher")
+        sops = [_sop("cr", "Code Review", applies_to=("review",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["cr"]}
+
+    def test_worker_role_does_not_match_review_tag(self) -> None:
+        unit = self._unit_with("a", role="worker")
+        sops = [_sop("cr", "Code Review", applies_to=("review", "reviewer"))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": []}
+
+    def test_summary_word_matches_tag(self) -> None:
+        unit = self._unit_with("a", summary="Refactor the parser")
+        sops = [_sop("rd", "Refactoring", applies_to=("refactor",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["rd"]}
+
+    def test_summary_match_is_case_insensitive(self) -> None:
+        unit = self._unit_with("a", summary="REFACTOR module")
+        sops = [_sop("rd", "Refactoring", applies_to=("refactor",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["rd"]}
+
+    def test_no_match_returns_empty(self) -> None:
+        unit = self._unit_with("a", summary="Add logging")
+        sops = [_sop("gc", "Git Commits", applies_to=("git", "commit"))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": []}
+
+    def test_empty_summary_only_uses_files_and_role(self) -> None:
+        unit = self._unit_with("a", summary="", files=PlanUnitFiles(touch=("x.py",)))
+        sops = [
+            _sop("ps", "Python Style", applies_to=("python",)),
+            _sop("gc", "Git Commits", applies_to=("git",)),
+        ]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["ps"]}
+
+    def test_multiple_sops_matched(self) -> None:
+        unit = self._unit_with("a", summary="Refactor python module")
+        sops = [
+            _sop("ps", "Python Style", applies_to=("python",)),
+            _sop("rd", "Refactoring", applies_to=("refactor",)),
+            _sop("gc", "Git Commits", applies_to=("git",)),
+        ]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert sorted(result["a"]) == ["ps", "rd"]
+
+    def test_multiple_units(self) -> None:
+        units = {
+            "a": self._unit_with("a", summary="Fix git history"),
+            "b": self._unit_with("b", summary="Add tests", files=PlanUnitFiles(edit=("t.py",))),
+        }
+        sops = [
+            _sop("gc", "Git Commits", applies_to=("git",)),
+            _sop("ts", "Testing", applies_to=("tests",)),
+            _sop("ps", "Python Style", applies_to=("python",)),
+        ]
+        result = TagBasedSopBundler().pick(units, sops)
+        assert result["a"] == ["gc"]
+        assert sorted(result["b"]) == ["ps", "ts"]
+
+    def test_punctuation_stripped_from_summary(self) -> None:
+        unit = self._unit_with("a", summary="(refactor) cleanup.")
+        sops = [_sop("rd", "Refactoring", applies_to=("refactor",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["rd"]}
+
+    def test_no_files_no_crash(self) -> None:
+        unit = PlanUnit(
+            slug="a",
+            summary="general task",
+            prompt="do it",
+            commit_message="c",
+            files=PlanUnitFiles(),
+        )
+        sops = [_sop("ps", "Python Style", applies_to=("python",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": []}
 
 
 class TestBundleCaching:

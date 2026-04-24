@@ -121,6 +121,7 @@ def cli(
       dgov archive-plan <name>   Manually archive a plan
       dgov plan create <goal>    Auto-generate an implementation plan
       dgov plan status <dir>     Show pending vs deployed units
+      dgov plan remediate <dir>  Scaffold a follow-up remediation plan
       dgov plan review <dir>     Post-hoc debrief of the last run
       dgov sentrux check         Run architectural quality check
 

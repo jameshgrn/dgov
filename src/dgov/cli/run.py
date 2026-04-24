@@ -360,8 +360,27 @@ def _baseline_from_empty_project(baseline_path: Path) -> bool:
     return bdata.get("total_import_edges") == 0
 
 
+def _bootstrap_sentrux_baseline(project_root: str, baseline_path: Path) -> int | None:
+    """Create a missing baseline once so fresh repos/worktrees can run."""
+    click.echo(f"[sentrux] No baseline found at {baseline_path}; bootstrapping baseline...")
+    try:
+        _run_sentrux(["gate", "--save", project_root], timeout=30.0)
+    except subprocess.CalledProcessError as exc:
+        details = (exc.stderr or exc.stdout or str(exc)).strip()
+        click.echo(f"Error: failed to create sentrux baseline at {baseline_path}.", err=True)
+        if details:
+            click.echo(details, err=True)
+        raise click.exceptions.Exit(code=1) from exc
+    except subprocess.TimeoutExpired as exc:
+        click.echo(f"Error: timed out creating sentrux baseline at {baseline_path}.", err=True)
+        raise click.exceptions.Exit(code=1) from exc
+
+    click.echo(f"[sentrux] Baseline saved at {baseline_path}")
+    return _read_sentrux_baseline_quality(project_root)
+
+
 def _require_sentrux_baseline(project_root: str) -> int | None:
-    """Fail fast unless sentrux is installed and a baseline exists."""
+    """Ensure sentrux is installed and a baseline exists for comparison."""
     if not _sentrux_available():
         click.echo(
             "Error: sentrux not found. Install: https://github.com/sentrux/sentrux",
@@ -371,9 +390,7 @@ def _require_sentrux_baseline(project_root: str) -> int | None:
 
     baseline_path = _sentrux_baseline_path(project_root)
     if not baseline_path.exists():
-        click.echo(f"Error: No sentrux baseline found at {baseline_path}.", err=True)
-        click.echo("Fix: run `dgov sentrux gate-save` before `dgov run`.", err=True)
-        raise click.exceptions.Exit(code=1)
+        return _bootstrap_sentrux_baseline(project_root, baseline_path)
 
     return _read_sentrux_baseline_quality(project_root)
 
@@ -791,15 +808,24 @@ def _cmd_run_plan(
     yes: bool = False,
     stream: bool = False,
     verbose: bool = False,
-) -> None:
+) -> str:
     """Execute a plan TOML with Sentrux quality gates."""
     from dgov.config import load_project_config
+    from dgov.plan import PlanValidationError
+    from dgov.types import ConstitutionalViolation
 
     plan = parse_plan_file(plan_file)
     _ensure_compiled_plan(plan, plan_file)
 
     pc = load_project_config(project_root)
-    dag = compile_plan(plan, project_agent=pc.default_agent)
+    try:
+        dag = compile_plan(
+            plan,
+            project_agent=pc.default_agent,
+            departments=pc.departments,
+        )
+    except (ConstitutionalViolation, PlanValidationError) as exc:
+        raise click.ClickException(str(exc)) from None
     dag = _filter_dag_to_task(dag, only)
 
     _ensure_git_ready(project_root, yes=yes)
@@ -882,6 +908,7 @@ def _cmd_run_plan(
 
     if run_status in ("failed", "partial"):
         raise click.exceptions.Exit(code=1)
+    return run_status
 
 
 def _append_run_log(

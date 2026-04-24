@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
@@ -69,9 +70,18 @@ def _default_watch_state(
 @cli.command(name="watch")
 @click.option("--all", "watch_all", is_flag=True, help="Stream all plans and history")
 @click.option("--plan", "plan_name", help="Stream only events for this plan name")
-def watch_cmd(watch_all: bool, plan_name: str | None) -> None:
+@click.option(
+    "--root",
+    "root_path",
+    type=click.Path(path_type=Path, exists=True),
+    help="Project root or path inside the repo whose state DB you want to watch",
+)
+def watch_cmd(watch_all: bool, plan_name: str | None, root_path: Path | None) -> None:
     """Stream governor events in real time."""
-    _cmd_watch(str(resolve_project_root()), watch_all=watch_all, plan_name=plan_name)
+    project_root = (
+        resolve_project_root(root_path) if root_path is not None else resolve_project_root()
+    )
+    _cmd_watch(str(project_root), watch_all=watch_all, plan_name=plan_name)
 
 
 def _clean_slug(slug: str) -> str:

@@ -12,6 +12,7 @@ was introduced), the whole event log for that plan is considered.
 
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 import tomllib
@@ -22,6 +23,8 @@ from typing import Any, Literal
 from dgov.deploy_log import read as read_deploy_log
 from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
+
+_log = logging.getLogger(__name__)
 
 UnitStatus = Literal["deployed", "failed", "active", "pending", "not_run"]
 SettlementResult = Literal["ok", "ok_retried", "rejected", "n/a"]
@@ -68,6 +71,9 @@ class UnitReview:
     # recovered from en route to a deployed commit. Zero for failed units
     # (no recovery occurred) and for units with no tool activity at all.
     self_corrections: int = 0
+    # Token usage (from task_done/task_failed events)
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
     # Fork and self-review telemetry
     fork_depth: int = 0  # Number of clean-context forks that occurred
     self_review_outcome: str | None = None  # passed | rejected | auto_passed | error | None
@@ -116,6 +122,20 @@ class PlanReview:
     @property
     def pending_count(self) -> int:
         return sum(1 for u in self.units if u.status in ("pending", "not_run"))
+
+
+@dataclass(frozen=True)
+class RunEnvelope:
+    """Lightweight run-level snapshot for status and follow-up decisions."""
+
+    plan_name: str
+    last_run_ts: str | None
+    run_status: str | None = None
+    sentrux_degradation: bool | None = None
+    sentrux_quality_before: int | None = None
+    sentrux_quality_after: int | None = None
+    sentrux_error: str | None = None
+    sentrux_offender_summary: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -484,6 +504,16 @@ def _apply_lifecycle_event(ev: dict, state: dict) -> None:
     if event_type == "dag_task_dispatched" and state["dispatched_ts"] is None:
         state["dispatched_ts"] = ev.get("ts")
         return
+    if event_type in ("task_done", "task_failed"):
+        for field in ("prompt_tokens", "completion_tokens"):
+            val = ev.get(field)
+            if isinstance(val, int):
+                state[field] = state.get(field, 0) + val
+            elif isinstance(val, str):
+                try:
+                    state[field] = state.get(field, 0) + int(val)
+                except ValueError:
+                    _log.warning("Non-numeric %s value %r in %s event", field, val, event_type)
     if event_type in _TERMINAL_EVENTS:
         _apply_terminal_event(event_type, ev, state)
         return
@@ -615,6 +645,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "merged_in_run": state["merged_in_run"],
         "failed_in_run": state["failed_in_run"],
         "ran_in_run": ran_in_run,
+        # Token usage
+        "prompt_tokens": state.get("prompt_tokens") or None,
+        "completion_tokens": state.get("completion_tokens") or None,
         # Fork and self-review telemetry
         "fork_depth": state["fork_depth"],
         "self_review_outcome": state["self_review_outcome"],
@@ -799,6 +832,8 @@ def _build_unit_review(
         thoughts=tuple(rollup["thoughts"]),
         activity=tuple(rollup["activity"]),
         self_corrections=self_corrections,
+        prompt_tokens=rollup["prompt_tokens"],
+        completion_tokens=rollup["completion_tokens"],
         fork_depth=rollup["fork_depth"],
         self_review_outcome=rollup["self_review_outcome"],
         reject_verdict=rollup["reject_verdict"],
@@ -955,6 +990,17 @@ def _parse_runs_log_block(log_text: str, plan_name: str) -> dict[str, Any]:
         block_lines.append(line)
 
     result: dict[str, object] = {}
+    header_match = re.match(r"^\[[^\]]+\]\s+\S+\s+\([^)]+\)\s+—\s+(\w+)", block_lines[0])
+    if header_match:
+        header_status = header_match.group(1)
+        if header_status == "ok":
+            result["run_status"] = "complete"
+        elif header_status == "warn":
+            result["run_status"] = "degraded"
+        elif header_status == "fail":
+            result["run_status"] = "failed"
+        elif header_status in {"complete", "degraded", "failed", "partial"}:
+            result["run_status"] = header_status
     offenders_str: str | None = None
 
     for line in block_lines:
@@ -1080,6 +1126,30 @@ def load_review(
         last_run_ts=last_run_ts,
         last_run_duration_s=run_duration,
         units=unit_reviews,
+        run_status=run_fields.get("run_status"),
+        sentrux_degradation=run_fields.get("sentrux_degradation"),
+        sentrux_quality_before=run_fields.get("sentrux_quality_before"),
+        sentrux_quality_after=run_fields.get("sentrux_quality_after"),
+        sentrux_error=run_fields.get("sentrux_error"),
+        sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
+    )
+
+
+def load_run_envelope(project_root: str, compiled_path: Path) -> RunEnvelope:
+    """Load run-level status without the per-unit review cost."""
+    plan_name = _plan_name_from_compiled(compiled_path)
+    if plan_name is None:
+        return RunEnvelope(plan_name="(unknown)", last_run_ts=None)
+
+    plan_events = read_events(project_root, plan_name=plan_name)
+    run_start_id = _find_run_start_id(plan_events, plan_name)
+    run_fields = _extract_run_completed_fields(plan_events, run_start_id)
+    if not run_fields:
+        run_fields = _load_runs_log_fields(project_root, plan_name)
+
+    return RunEnvelope(
+        plan_name=plan_name,
+        last_run_ts=_extract_run_start_ts(plan_events, run_start_id),
         run_status=run_fields.get("run_status"),
         sentrux_degradation=run_fields.get("sentrux_degradation"),
         sentrux_quality_before=run_fields.get("sentrux_quality_before"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
@@ -41,6 +42,7 @@ class ProjectConfig(AtomicConfig):
     agents: dict[str, str] = field(default_factory=dict)
     scope_ignore_files: tuple[str, ...] = _DEFAULT_SCOPE_IGNORE_FILES
     setup_cmd: str | None = None
+    departments: dict[str, list[str]] = field(default_factory=dict)
 
     def resolve_test_cmd(self, file: str = "") -> str:
         """Build the test command with substitutions."""
@@ -67,6 +69,14 @@ class ProjectConfig(AtomicConfig):
 
     def resolve_type_check_cmd(self) -> str:
         return self.type_check_cmd or ""
+
+    def get_department_for_path(self, path: str) -> str | None:
+        """Return the department name for a given path using fnmatch patterns."""
+        for dept, patterns in self.departments.items():
+            for pattern in patterns:
+                if fnmatch.fnmatch(path, pattern):
+                    return dept
+        return None
 
     def llm_runtime_settings(self) -> tuple[str, str]:
         """Return the configured OpenAI-compatible runtime endpoint settings."""
@@ -129,6 +139,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
     proj = raw.get("project", {})
     agents = raw.get("agents", {})
     conventions = raw.get("conventions", {})
+    departments = raw.get("departments", {})
     markers = proj.get("test_markers", ())
     if isinstance(markers, list):
         markers = tuple(markers)
@@ -184,6 +195,7 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
         scope_ignore_files=scope_ignore_files,
         setup_cmd=proj.get("setup_cmd") or None,
+        departments=departments,
     )
 
 

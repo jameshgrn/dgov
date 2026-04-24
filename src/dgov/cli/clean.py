@@ -1,4 +1,4 @@
-"""Clean subcommand — remove stale worktrees and output directories."""
+"""Clean subcommand — remove stale worktrees and disposable output directories."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 import click
 
 from dgov.cli import cli
-from dgov.live_state import live_plan_names
 from dgov.project_root import resolve_project_root
 from dgov.worktree import prune_orphans
 
@@ -35,8 +34,8 @@ def clean_cmd(dry_run: bool) -> None:
        `.dgov-worktrees-<project>/` dir that git no longer tracks as live,
        plus fully-merged `dgov/*` branches with no attached worktree.
        Uses `git branch -d` (safe, merged-only); never touches unmerged work.
-    3. `.dgov/runtime/fix-plans/` transient one-off fix plans that are not
-       associated with an active task.
+    3. Archived `.dgov/runtime/fix-plans/archive/` plans from resolved one-off
+       fixes. Unresolved runtime fix plans remain operator-visible by design.
 
     Pass `--dry-run` to report what would be removed without touching anything.
     """
@@ -44,13 +43,6 @@ def clean_cmd(dry_run: bool) -> None:
     dgov_dir = project_root / ".dgov"
     out_dir = dgov_dir / "out"
     runtime_fix_plans_dir = dgov_dir / "runtime" / "fix-plans"
-
-    # Collect active plan names from the event log (for runtime fix-plan cleanup).
-    try:
-        active_plan_names = live_plan_names(str(project_root))
-    except Exception as exc:
-        click.echo(f"Error reading live plan state: {exc}", err=True)
-        raise click.exceptions.Exit(code=1) from exc
 
     deleted_count = 0
 
@@ -71,7 +63,7 @@ def clean_cmd(dry_run: bool) -> None:
         f"and {prune_counts['branches']} merged dgov/* branch(es)."
     )
 
-    # 3. Clean .dgov/runtime/fix-plans/ — delete generated fix plans and archives
+    # 3. Clean resolved runtime fix-plan archives. Live runtime fix plans are preserved.
     if runtime_fix_plans_dir.exists():
         archive_dir = runtime_fix_plans_dir / "archive"
         if archive_dir.exists():
@@ -81,17 +73,6 @@ def clean_cmd(dry_run: bool) -> None:
                         deleted_count += int(_delete_dir(item, dry_run))
                     except Exception as exc:
                         click.echo(f"Error deleting {item}: {exc}", err=True)
-
-        for item in runtime_fix_plans_dir.iterdir():
-            if not item.is_dir() or item.name == "archive":
-                continue
-            if item.name in active_plan_names:
-                click.echo(f"Preserved (active): {item}")
-                continue
-            try:
-                deleted_count += int(_delete_dir(item, dry_run))
-            except Exception as exc:
-                click.echo(f"Error deleting {item}: {exc}", err=True)
 
     if dry_run:
         click.echo("Dry run complete. Use without --dry-run to delete.")

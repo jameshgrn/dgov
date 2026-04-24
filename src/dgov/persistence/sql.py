@@ -56,5 +56,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     content TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open', -- open, resolved
     created_at REAL NOT NULL,
-    resolved_at REAL DEFAULT NULL
+    resolved_at REAL DEFAULT NULL,
+    affected_paths TEXT DEFAULT NULL, -- JSON array of affected file paths
+    affected_tags TEXT DEFAULT NULL -- JSON array of tags
 )"""
