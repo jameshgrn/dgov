@@ -584,12 +584,10 @@ def _render_remediation_context(review, source_target: str) -> str:
     advisory = _format_sentrux_advisory(review)
     if advisory is not None:
         lines.append(f"- Advisory: {advisory}")
-    lines.extend(
-        [
-            "",
-            "Use this context to author concrete remediation tasks with explicit file claims.",
-        ]
-    )
+    lines.extend([
+        "",
+        "Use this context to author concrete remediation tasks with explicit file claims.",
+    ])
     return "\n".join(lines) + "\n"
 
 
@@ -599,7 +597,7 @@ def _render_remediation_example(review, source_target: str) -> str:
     return (
         "# Rename this file to a non-underscore name once you replace the scaffold.\n\n"
         "[tasks.remediate]\n"
-        f'summary = {_toml_str(f"Address degradation from {review.plan_name}")}\n'
+        f"summary = {_toml_str(f'Address degradation from {review.plan_name}')}\n"
         'prompt = """\n'
         "Orient:\n"
         f"- Read `dgov plan review {source_target}` for the merged units and run-level advisory.\n"
@@ -614,9 +612,9 @@ def _render_remediation_example(review, source_target: str) -> str:
         "- Add targeted `uv run pytest -q ...` commands for the changed files.\n"
         "- Add targeted `uv run ruff check ...` and `uv run ty check ...` commands.\n"
         '"""\n'
-        f'commit_message = {_toml_str(f"Address degradation from {review.plan_name}")}\n'
-        "# files.edit = [\"src/path.py\"]\n"
-        "# files.read = [\"tests/test_path.py\"]\n"
+        f"commit_message = {_toml_str(f'Address degradation from {review.plan_name}')}\n"
+        '# files.edit = ["src/path.py"]\n'
+        '# files.read = ["tests/test_path.py"]\n'
     )
 
 
@@ -675,9 +673,7 @@ def plan_remediate_cmd(plan_input: Path, name: str | None) -> None:
         f"summary = {_toml_str(f'Remediate degradation from {run_envelope.plan_name}')}\n"
         'sections = ["fix"]\n'
     )
-    (fix_dir / "_context.md").write_text(
-        _render_remediation_context(run_envelope, source_target)
-    )
+    (fix_dir / "_context.md").write_text(_render_remediation_context(run_envelope, source_target))
     (fix_dir / "_example.toml").write_text(
         _render_remediation_example(run_envelope, source_target)
     )

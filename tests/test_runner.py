@@ -700,9 +700,9 @@ class TestProbationPrompt:
     def test_probation_section_formatting(self):
         runner = _make_runner(_single_dag())
 
-        section = runner._format_probation_section(
-            [{"id": 66, "content": "LLMSopBundler is deprecated"}]
-        )
+        section = runner._format_probation_section([
+            {"id": 66, "content": "LLMSopBundler is deprecated"}
+        ])
 
         assert "## Active Probation (Case Law)" in section
         assert "Entry #66" in section

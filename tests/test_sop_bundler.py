@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pytest_mock import MockerFixture
@@ -345,7 +346,7 @@ class TestTagBasedSopBundler:
         summary: str = "s",
         *,
         files: PlanUnitFiles | None = None,
-        role: str = "worker",
+        role: Literal["worker", "researcher", "reviewer"] = "worker",
     ) -> PlanUnit:
         return PlanUnit(
             slug=slug,
@@ -449,7 +450,7 @@ class TestTagBasedSopBundler:
             summary="general task",
             prompt="do it",
             commit_message="c",
-            files=None,
+            files=PlanUnitFiles(),
         )
         sops = [_sop("ps", "Python Style", applies_to=("python",))]
         result = TagBasedSopBundler().pick({"a": unit}, sops)
