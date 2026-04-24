@@ -32,6 +32,7 @@ def compile_cmd(plan_root: Path, dry_run: bool, recompile_sops: bool, graph: boo
 
 def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph: bool) -> None:
     """Compile pipeline: walk → merge → resolve → validate → bundle → write."""
+    from dgov.config import load_project_config
     from dgov.plan_tree import (
         merge_tree,
         resolve_refs,
@@ -78,6 +79,7 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
 
     # 5. Bundle SOPs
     project_root = resolve_project_root()
+    project_config = load_project_config(project_root)
     sops_dir = project_root / ".dgov" / "sops"
     bundler = IdentityBundler() if dry_run else TagBasedSopBundler()
 
@@ -116,8 +118,16 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
     from dgov.plan import parse_plan_file, validate_plan
 
     compiled_spec = parse_plan_file(str(out_path))
-    plan_issues = validate_plan(compiled_spec)
+    plan_issues = validate_plan(compiled_spec, departments=project_config.departments)
+    plan_errors = [i for i in plan_issues if i.severity == "error"]
     plan_warnings = [i for i in plan_issues if i.severity == "warning"]
+
+    if plan_errors:
+        out_path.unlink(missing_ok=True)
+        for issue in plan_errors:
+            unit_info = f" [{issue.unit}]" if issue.unit else ""
+            click.echo(f"  ERROR{unit_info}: {issue.message}", err=True)
+        raise click.exceptions.Exit(code=1) from None
 
     # 7. Summary
     edge_count = sum(len(u.depends_on) for u in resolved.units.values())

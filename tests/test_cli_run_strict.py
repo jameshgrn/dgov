@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -95,6 +96,40 @@ def test_run_plan_dir_compiles_before_execution(
         "stream": False,
         "verbose": False,
     }
+
+
+def test_cmd_run_plan_rejects_department_violation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from dgov.cli.run import _cmd_run_plan
+
+    dgov_dir = tmp_path / ".dgov"
+    plan_dir = dgov_dir / "plans" / "constitution"
+    plan_dir.mkdir(parents=True)
+    (dgov_dir / "project.toml").write_text(
+        '[departments]\nCore = ["src/dgov/kernel.py"]\n',
+        encoding="utf-8",
+    )
+    compiled = plan_dir / "_compiled.toml"
+    compiled.write_text(
+        '[plan]\nname = "constitution"\nsource_mtime_max = "2026-04-08T00:00:00Z"\n\n'
+        "[tasks.a]\n"
+        'summary = "Do a"\n'
+        'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+        'commit_message = "a"\n'
+        'files = ["src/dgov/kernel.py"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(click.ClickException, match="Constitutional violation"):
+        _cmd_run_plan(
+            str(compiled),
+            str(tmp_path),
+            plan_dir=plan_dir,
+        )
 
 
 def test_run_auto_bootstraps_dgov_only_repo(
@@ -203,23 +238,64 @@ def test_run_auto_creates_bootstrap_commit_in_headless(
     _write_compiled(plan_dir, "compiled")
     (tmp_path / "README.md").write_text("hello\n")
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    class _Runner:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @property
+        def task_errors(self):
+            return {}
+
+        @property
+        def task_durations(self):
+            return {"a": 0.1}
+
+        async def run(self) -> dict[str, str]:
+            return {"a": "merged"}
+
+    def _mock_run_sentrux(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        assert args == ["gate", "--save", str(tmp_path)]
+        sentrux_dir = tmp_path / ".sentrux"
+        sentrux_dir.mkdir(parents=True, exist_ok=True)
+        (sentrux_dir / "baseline.json").write_text('{"quality": 100}\n')
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            0,
+            stdout="Quality: 100\n",
+            stderr="",
+        )
+
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.run._run_sentrux", _mock_run_sentrux)
+    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda project_root, baseline_quality: {
+            "degradation": False,
+            "quality_before": baseline_quality,
+            "quality_after": baseline_quality,
+        },
+    )
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
 
     result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     assert "created bootstrap commit from current working tree" in result.output.lower()
-    assert "no sentrux baseline found" in result.output.lower()
+    assert "bootstrapping baseline" in result.output.lower()
+    assert "baseline saved" in result.output.lower()
 
     git_log = subprocess.run(
         ["git", "log", "-n", "1", "--oneline"], cwd=tmp_path, capture_output=True, text=True
     ).stdout
     assert "chore: bootstrap repo for dgov" in git_log
+    assert (tmp_path / ".sentrux" / "baseline.json").exists()
 
 
-def test_run_requires_sentrux_baseline(
+def test_run_bootstraps_missing_sentrux_baseline(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     plan_dir = _write_plan_tree(tmp_path, "compiled")
@@ -232,15 +308,55 @@ def test_run_requires_sentrux_baseline(
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
 
+    class _Runner:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        @property
+        def task_errors(self):
+            return {}
+
+        @property
+        def task_durations(self):
+            return {"a": 0.1}
+
+        async def run(self) -> dict[str, str]:
+            return {"a": "merged"}
+
+    def _mock_run_sentrux(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        assert args == ["gate", "--save", str(tmp_path)]
+        sentrux_dir = tmp_path / ".sentrux"
+        sentrux_dir.mkdir(parents=True, exist_ok=True)
+        (sentrux_dir / "baseline.json").write_text('{"quality_signal": 0.91}\n')
+        return subprocess.CompletedProcess(
+            ["sentrux", *args],
+            0,
+            stdout="Quality: 0.91\n",
+            stderr="",
+        )
+
     monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run._sentrux_available", lambda: True)
+    monkeypatch.setattr("dgov.cli.run._run_sentrux", _mock_run_sentrux)
+    monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
+    monkeypatch.setattr(
+        "dgov.cli.run._sentrux_compare",
+        lambda project_root, baseline_quality: {
+            "degradation": False,
+            "quality_before": baseline_quality,
+            "quality_after": baseline_quality,
+        },
+    )
+    monkeypatch.setattr("dgov.cli.run._append_run_log", lambda *args, **kwargs: None)
     monkeypatch.chdir(tmp_path)
 
     result = runner.invoke(cli, ["run", str(plan_dir)], catch_exceptions=False)
 
-    assert result.exit_code == 1
-    assert "no sentrux baseline found" in result.output.lower()
-    assert "dgov sentrux gate-save" in result.output
+    assert result.exit_code == 0
+    assert "bootstrapping baseline" in result.output.lower()
+    assert "baseline saved" in result.output.lower()
+    assert "[sentrux] baseline quality: 9100" in result.output.lower()
+    assert (tmp_path / ".sentrux" / "baseline.json").exists()
 
 
 def test_run_reports_degraded_when_final_sentrux_compare_degrades(

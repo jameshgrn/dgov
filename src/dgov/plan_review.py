@@ -124,6 +124,20 @@ class PlanReview:
         return sum(1 for u in self.units if u.status in ("pending", "not_run"))
 
 
+@dataclass(frozen=True)
+class RunEnvelope:
+    """Lightweight run-level snapshot for status and follow-up decisions."""
+
+    plan_name: str
+    last_run_ts: str | None
+    run_status: str | None = None
+    sentrux_degradation: bool | None = None
+    sentrux_quality_before: int | None = None
+    sentrux_quality_after: int | None = None
+    sentrux_error: str | None = None
+    sentrux_offender_summary: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Hint synthesis
 # ---------------------------------------------------------------------------
@@ -976,6 +990,17 @@ def _parse_runs_log_block(log_text: str, plan_name: str) -> dict[str, Any]:
         block_lines.append(line)
 
     result: dict[str, object] = {}
+    header_match = re.match(r"^\[[^\]]+\]\s+\S+\s+\([^)]+\)\s+—\s+(\w+)", block_lines[0])
+    if header_match:
+        header_status = header_match.group(1)
+        if header_status == "ok":
+            result["run_status"] = "complete"
+        elif header_status == "warn":
+            result["run_status"] = "degraded"
+        elif header_status == "fail":
+            result["run_status"] = "failed"
+        elif header_status in {"complete", "degraded", "failed", "partial"}:
+            result["run_status"] = header_status
     offenders_str: str | None = None
 
     for line in block_lines:
@@ -1101,6 +1126,30 @@ def load_review(
         last_run_ts=last_run_ts,
         last_run_duration_s=run_duration,
         units=unit_reviews,
+        run_status=run_fields.get("run_status"),
+        sentrux_degradation=run_fields.get("sentrux_degradation"),
+        sentrux_quality_before=run_fields.get("sentrux_quality_before"),
+        sentrux_quality_after=run_fields.get("sentrux_quality_after"),
+        sentrux_error=run_fields.get("sentrux_error"),
+        sentrux_offender_summary=run_fields.get("sentrux_offender_summary"),
+    )
+
+
+def load_run_envelope(project_root: str, compiled_path: Path) -> RunEnvelope:
+    """Load run-level status without the per-unit review cost."""
+    plan_name = _plan_name_from_compiled(compiled_path)
+    if plan_name is None:
+        return RunEnvelope(plan_name="(unknown)", last_run_ts=None)
+
+    plan_events = read_events(project_root, plan_name=plan_name)
+    run_start_id = _find_run_start_id(plan_events, plan_name)
+    run_fields = _extract_run_completed_fields(plan_events, run_start_id)
+    if not run_fields:
+        run_fields = _load_runs_log_fields(project_root, plan_name)
+
+    return RunEnvelope(
+        plan_name=plan_name,
+        last_run_ts=_extract_run_start_ts(plan_events, run_start_id),
         run_status=run_fields.get("run_status"),
         sentrux_degradation=run_fields.get("sentrux_degradation"),
         sentrux_quality_before=run_fields.get("sentrux_quality_before"),

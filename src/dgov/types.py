@@ -11,9 +11,8 @@ from typing import NamedTuple
 class ConstitutionalViolation(ValueError):
     """Raised when a plan unit violates department ownership boundaries.
 
-    This occurs when a unit's file claims (edit/create/delete) touch paths
-    owned by a department, but the unit lacks authorization (via summary
-    or tags) to operate in that department's domain.
+    This occurs when a unit's write-capable file claims touch paths owned by
+    a department, but the unit lacks the required explicit summary opt-in.
     """
 
     pass

@@ -40,7 +40,7 @@ def _init_git_repo(path: Path) -> None:
     )
 
 
-def test_clean_removes_runtime_fix_plan_artifacts_without_touching_authored_plans(
+def test_clean_preserves_runtime_fix_plans_and_removes_archived_fix_plans(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -62,12 +62,12 @@ def test_clean_removes_runtime_fix_plan_artifacts_without_touching_authored_plan
     result = runner.invoke(cli, ["clean"])
 
     assert result.exit_code == 0, result.output
-    assert not runtime_fix_dir.exists()
+    assert runtime_fix_dir.exists()
     assert not runtime_archive_dir.exists()
     assert authored_plan_dir.exists()
 
 
-def test_clean_preserves_active_runtime_fix_plan(
+def test_clean_preserves_runtime_fix_plans_without_requiring_active_events(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -95,11 +95,10 @@ def test_clean_preserves_active_runtime_fix_plan(
 
     assert result.exit_code == 0, result.output
     assert live_plan_dir.exists()
-    assert not stale_plan_dir.exists()
-    assert "Preserved (active)" in result.output
+    assert stale_plan_dir.exists()
 
 
-def test_clean_ignores_stale_prior_run_when_preserving_fix_plan(
+def test_clean_preserves_stale_prior_run_fix_plan(
     runner: CliRunner,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -123,7 +122,7 @@ def test_clean_ignores_stale_prior_run_when_preserving_fix_plan(
     result = runner.invoke(cli, ["clean"])
 
     assert result.exit_code == 0, result.output
-    assert not stale_live_plan_dir.exists()
+    assert stale_live_plan_dir.exists()
 
 
 def test_clean_prunes_orphan_worktree_directory(

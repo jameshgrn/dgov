@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.kernel import DagState
+from dgov.persistence import add_ledger_entry, clear_connection_cache
 from dgov.runner import EventDagRunner
 from dgov.types import Worktree
 
@@ -660,6 +661,52 @@ class TestResearcherRole:
             # Researcher deploy records use the HEAD sha captured at worktree
             # creation (Worktree.commit == "abc123" per the mock helper).
             mock_append.assert_called_once_with("/tmp/test-project", "test-dag", "a", "abc123")
+
+
+class TestProbationPrompt:
+    def test_probation_entries_match_overlapping_paths(self, tmp_path: Path):
+        clear_connection_cache()
+        try:
+            add_ledger_entry(
+                str(tmp_path),
+                "rule",
+                "Kernel case law",
+                affected_paths=("src/dgov",),
+            )
+            task = DagTaskSpec(
+                slug="a",
+                summary="Core: fix kernel",
+                prompt="Orient:\nContext.\n\nEdit:\n1. Change.\n\nVerify:\n- Check.",
+                commit_message="c",
+                agent="test-agent",
+                files=DagFileSpec(edit=("src/dgov/kernel.py",)),
+            )
+            dag = DagDefinition(
+                name="constitution",
+                dag_file="plan.toml",
+                project_root=str(tmp_path),
+                session_root=str(tmp_path),
+                tasks={"a": task},
+            )
+
+            runner = EventDagRunner(dag, session_root=str(tmp_path))
+
+            assert runner._get_ledger_entries_for_task(task) == [
+                {"id": 1, "content": "Kernel case law"}
+            ]
+        finally:
+            clear_connection_cache()
+
+    def test_probation_section_formatting(self):
+        runner = _make_runner(_single_dag())
+
+        section = runner._format_probation_section(
+            [{"id": 66, "content": "LLMSopBundler is deprecated"}]
+        )
+
+        assert "## Active Probation (Case Law)" in section
+        assert "Entry #66" in section
+        assert "LLMSopBundler is deprecated" in section
 
 
 class TestBootstrapPreparation:

@@ -126,6 +126,39 @@ def test_compile_preserves_files(runner: CliRunner, tmp_path: Path) -> None:
     assert init_task["files"]["create"] == ["src/main.py"]
 
 
+def test_compile_rejects_department_violation(runner: CliRunner, tmp_path: Path) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        root = Path(td)
+        dgov_dir = root / ".dgov"
+        dgov_dir.mkdir()
+        (dgov_dir / "project.toml").write_text(
+            '[departments]\nCore = ["src/dgov/kernel.py"]\n',
+            encoding="utf-8",
+        )
+
+        plan_dir = root / "constitution"
+        section_dir = plan_dir / "core"
+        section_dir.mkdir(parents=True)
+        (plan_dir / "_root.toml").write_text(
+            '[plan]\nname = "constitution"\nsummary = "Test"\nsections = ["core"]\n',
+            encoding="utf-8",
+        )
+        (section_dir / "tasks.toml").write_text(
+            "[tasks.kernel]\n"
+            'summary = "Fix kernel"\n'
+            'prompt = "Orient:\\nContext.\\n\\nEdit:\\n1. Change.\\n\\nVerify:\\n- Check."\n'
+            'commit_message = "Fix kernel"\n'
+            'files.edit = ["src/dgov/kernel.py"]\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(cli, ["compile", str(plan_dir), "--dry-run"])
+
+        assert result.exit_code != 0
+        assert "Constitutional violation" in result.output
+        assert not (plan_dir / "_compiled.toml").exists()
+
+
 # -- JSON output --
 
 

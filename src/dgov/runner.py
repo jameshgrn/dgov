@@ -1185,8 +1185,22 @@ class EventDagRunner:
         """
         from dgov.persistence.ledger import list_ledger_entries
 
+        def _normalize(path: str) -> str:
+            return path.strip().lstrip("./").rstrip("/")
+
+        def _overlaps(left: str, right: str) -> bool:
+            left_norm = _normalize(left)
+            right_norm = _normalize(right)
+            if not left_norm or not right_norm:
+                return False
+            return (
+                left_norm == right_norm
+                or left_norm.startswith(right_norm + "/")
+                or right_norm.startswith(left_norm + "/")
+            )
+
         # Get all file paths this task claims (create, edit, delete, touch)
-        task_paths = set(task.all_touches())
+        task_paths = {_normalize(path) for path in task.all_touches() if _normalize(path)}
         if not task_paths:
             return []
 
@@ -1196,8 +1210,12 @@ class EventDagRunner:
         # Filter to entries with path overlap
         overlapping = []
         for entry in entries:
-            entry_paths = set(entry.affected_paths)
-            if entry_paths & task_paths:  # Set intersection
+            entry_paths = {_normalize(path) for path in entry.affected_paths if _normalize(path)}
+            if any(
+                _overlaps(entry_path, task_path)
+                for entry_path in entry_paths
+                for task_path in task_paths
+            ):
                 overlapping.append({"id": entry.id, "content": entry.content})
 
         return overlapping

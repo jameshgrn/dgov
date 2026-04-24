@@ -20,11 +20,22 @@ def ledger_cmd() -> None:
 @ledger_cmd.command(name="add")
 @click.argument("category", type=click.Choice(["bug", "rule", "note", "debt"]))
 @click.argument("content")
+@click.option(
+    "--path",
+    "affected_paths",
+    multiple=True,
+    help="Path claim the entry applies to. Repeat for multiple paths.",
+)
 @click.option("--root", "-r", default=".", help="Project root")
-def ledger_add(category: str, content: str, root: str) -> None:
+def ledger_add(category: str, content: str, affected_paths: tuple[str, ...], root: str) -> None:
     """Add an entry to the ledger."""
     project_root = str(resolve_project_root(Path(root)))
-    entry_id = add_ledger_entry(project_root, category, content)
+    entry_id = add_ledger_entry(
+        project_root,
+        category,
+        content,
+        affected_paths=affected_paths,
+    )
     click.echo(f"Added {category} entry #{entry_id}")
 
 

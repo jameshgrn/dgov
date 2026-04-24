@@ -14,6 +14,7 @@ from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_f
 from dgov.types import ConstitutionalViolation
 
 _TASK_ROLES = frozenset({"worker", "researcher", "reviewer"})
+_CONSTITUTIONAL_VIOLATION_PREFIX = "Constitutional violation:"
 
 # Matches file paths embedded in prompt text: any word/path ending in a known
 # extension (.py, .toml, .json, .yaml, .yml, .md, .txt, .cfg, .ini, .sh)
@@ -197,7 +198,9 @@ def compile_plan(
 
     # Check for constitutional violations first (department ownership)
     constitutional_errors = [
-        i for i in issues if i.severity == "error" and "Constitutional violation" in i.message
+        i
+        for i in issues
+        if i.severity == "error" and i.message.startswith(_CONSTITUTIONAL_VIOLATION_PREFIX)
     ]
     if constitutional_errors:
         raise ConstitutionalViolation(constitutional_errors[0].message)
@@ -435,11 +438,12 @@ def _check_department_authorization(
 
     issues: list[PlanIssue] = []
 
-    # Collect all file claims that modify state (create, edit, delete)
+    # touch is write-capable shorthand, so it must be governed like edit/create/delete.
     modifying_files = [
         *unit.files.create,
         *unit.files.edit,
         *unit.files.delete,
+        *unit.files.touch,
     ]
 
     for file_path in modifying_files:
