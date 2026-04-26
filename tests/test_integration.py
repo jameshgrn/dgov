@@ -417,8 +417,25 @@ class TestSettlementRetry:
                 (worktree_path / "out.py").write_text("print(undefined)\n")
             on_exit(task_slug, pane_slug, 0, "")
 
-        def _capture_event(project_root, event, pane_slug, **kwargs):
-            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+        def _capture_event(project_root, event, pane_slug="", **kwargs):
+            if isinstance(event, str):
+                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+            else:
+                events.append({
+                    "event": getattr(event, "event_type", ""),
+                    **{
+                        k: getattr(event, k, None)
+                        for k in (
+                            "task_slug",
+                            "error",
+                            "pane",
+                            "failure_class",
+                            "gate_name",
+                            "risk_level",
+                            "python_overlap_detected",
+                        )
+                    },
+                })
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _event_tracking_worker)
         monkeypatch.setattr("dgov.runner.emit_event", _capture_event)
@@ -1011,8 +1028,25 @@ class TestPythonSemanticGateIntegration:
             (worktree_path / "module.py").write_text(code)
             on_exit(task_slug, pane_slug, 0, "")
 
-        def _capture_event(project_root, event, pane_slug, **kwargs):
-            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+        def _capture_event(project_root, event, pane_slug="", **kwargs):
+            if isinstance(event, str):
+                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+            else:
+                events.append({
+                    "event": getattr(event, "event_type", ""),
+                    **{
+                        k: getattr(event, k, None)
+                        for k in (
+                            "task_slug",
+                            "error",
+                            "pane",
+                            "failure_class",
+                            "gate_name",
+                            "risk_level",
+                            "python_overlap_detected",
+                        )
+                    },
+                })
 
         # Mock semantic gate to fail with same_symbol_edit
         def _mock_semantic_gate_fail(*args, **kwargs):
@@ -1082,8 +1116,25 @@ class TestPythonSemanticGateIntegration:
             (worktree_path / "module.py").write_text(code)
             on_exit(task_slug, pane_slug, 0, "")
 
-        def _capture_event(project_root, event, pane_slug, **kwargs):
-            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+        def _capture_event(project_root, event, pane_slug="", **kwargs):
+            if isinstance(event, str):
+                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+            else:
+                events.append({
+                    "event": getattr(event, "event_type", ""),
+                    **{
+                        k: getattr(event, k, None)
+                        for k in (
+                            "task_slug",
+                            "error",
+                            "pane",
+                            "failure_class",
+                            "gate_name",
+                            "risk_level",
+                            "python_overlap_detected",
+                        )
+                    },
+                })
 
         # Mock semantic gate to fail with signature_drift
         def _mock_semantic_gate_fail(*args, **kwargs):
@@ -1148,8 +1199,25 @@ def helper(x: int) -> int:
             (worktree_path / "clean.py").write_text(clean_code)
             on_exit(task_slug, pane_slug, 0, "")
 
-        def _capture_event(project_root, event, pane_slug, **kwargs):
-            events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+        def _capture_event(project_root, event, pane_slug="", **kwargs):
+            if isinstance(event, str):
+                events.append({"event": event, "pane_slug": pane_slug, **kwargs})
+            else:
+                events.append({
+                    "event": getattr(event, "event_type", ""),
+                    **{
+                        k: getattr(event, k, None)
+                        for k in (
+                            "task_slug",
+                            "error",
+                            "pane",
+                            "failure_class",
+                            "gate_name",
+                            "risk_level",
+                            "python_overlap_detected",
+                        )
+                    },
+                })
 
         monkeypatch.setattr("dgov.runner.run_headless_worker", _worker_with_clean_code)
         monkeypatch.setattr("dgov.runner.emit_event", _capture_event)

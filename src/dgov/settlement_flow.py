@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,7 @@ from dgov import deploy_log
 from dgov.actions import MergeTask
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagTaskSpec
+from dgov.event_types import DgovEvent, ReviewerVerdict
 from dgov.semantic_settlement import (
     DuplicateDefinition,
     FailureClass,
@@ -319,7 +321,7 @@ class SettlementFlow:
         *,
         action: MergeTask,
         risk_record: IntegrationRiskRecord,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
     ) -> None:
         """Emit semantic-settlement telemetry events for a task."""
         emit_integration_risk_scored(
@@ -343,17 +345,18 @@ class SettlementFlow:
         task: DagTaskSpec,
         action: MergeTask,
         wt: Worktree,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         deploy_append_fn: Any,
     ) -> tuple[str | None, bool]:
         deploy_append_fn(self.session_root, self.plan_name, action.task_slug, wt.commit)
         if task.role == "reviewer":
             emit_event_fn(
                 self.session_root,
-                "reviewer_verdict",
-                action.pane_slug,
-                plan_name=self.plan_name,
-                task_slug=action.task_slug,
+                ReviewerVerdict(
+                    pane=action.pane_slug,
+                    plan_name=self.plan_name,
+                    task_slug=action.task_slug,
+                ),
             )
             logger.info("REVIEWED %s", action.task_slug)
         else:
@@ -366,7 +369,7 @@ class SettlementFlow:
         task: DagTaskSpec,
         action: MergeTask,
         wt: Worktree,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         autofix_fn: Any = None,
         commit_fn: Any = None,
         deploy_append_fn: Any = None,
@@ -401,7 +404,7 @@ class SettlementFlow:
         task: DagTaskSpec,
         action: MergeTask,
         wt: Worktree,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         validate_fn: Any = None,
     ) -> tuple[str | None, IntegrationRiskRecord | None]:
         """Compute integration risk and run isolated validation gates."""
@@ -486,7 +489,7 @@ class SettlementFlow:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         semantic_verdict: SemanticGateVerdict,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any,
         rejected_emit_fn: Any,
     ) -> str:
@@ -521,7 +524,7 @@ class SettlementFlow:
         wt: Worktree,
         candidate_result: IntegrationCandidateResult,
         risk_record: IntegrationRiskRecord,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any = None,
         semantic_gate_fn: Any = None,
         rejected_emit_fn: Any = emit_semantic_gate_rejected,
@@ -561,7 +564,7 @@ class SettlementFlow:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         verdict: IntegrationCandidateVerdict,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any = None,
         failed_emit_fn: Any = emit_integration_candidate_failed,
     ) -> None:
@@ -585,7 +588,7 @@ class SettlementFlow:
         *,
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
-        emit_event_fn: Any,
+        emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any = None,
         passed_emit_fn: Any = emit_integration_candidate_passed,
     ) -> None:

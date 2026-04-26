@@ -161,18 +161,13 @@ VALID_EVENTS = frozenset({
     "run_start",
     "run_completed",
     # Runner lifecycle
-    "task_created",
     "task_done",
     "task_failed",
-    "task_closed",
     "task_abandoned",
-    "task_timed_out",
     "shutdown_requested",
     # DAG lifecycle
     "dag_task_dispatched",
     "dag_task_governor_resumed",
-    "dag_completed",
-    "dag_failed",
     # Review
     "review_pass",
     "review_fail",
@@ -183,14 +178,20 @@ VALID_EVENTS = frozenset({
     "settlement_retry",
     # Worker subprocess
     "worker_log",
-    "worker_done",
-    "worker_error",
     # Semantic Settlement (Phase 1: contract and telemetry)
     "integration_risk_scored",
     "integration_overlap_detected",
     "integration_candidate_passed",
     "integration_candidate_failed",
     "semantic_gate_rejected",
+    # Self-review
+    "self_review_passed",
+    "self_review_rejected",
+    "self_review_auto_passed",
+    "self_review_fix_started",
+    "self_review_error",
+    # Iteration
+    "iteration_fork",
 })
 
 _EVENT_TYPED_COLS = frozenset({

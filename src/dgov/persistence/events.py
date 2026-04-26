@@ -10,14 +10,15 @@ import json
 import logging
 from datetime import UTC, datetime
 
+from dgov.event_types import DgovEvent, serialize_event
 from dgov.persistence.connection import _get_db, _retry_on_lock
 from dgov.persistence.schema import _EVENT_TYPED_COLS, VALID_EVENTS
 
 logger = logging.getLogger(__name__)
 
 
-def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
-    """Write a structured event to the events table in state.db."""
+def _emit_raw(session_root: str, event: str, pane: str, **kwargs) -> None:
+    """Write an event to the events table (internal, untyped)."""
     if event not in VALID_EVENTS:
         raise ValueError(f"Unknown event: {event!r}. Valid: {sorted(VALID_EVENTS)}")
 
@@ -44,6 +45,18 @@ def emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
         _retry_on_lock(_do)
     except Exception:
         logger.warning("emit_event(%s, %s) dropped — database locked", event, pane)
+
+
+def emit_event(session_root: str, event: DgovEvent | str, pane: str = "", **kwargs) -> None:
+    """Write an event to the events table in state.db.
+
+    Accepts either a typed DgovEvent or the legacy (event_name, pane, **kwargs) form.
+    """
+    if isinstance(event, str):
+        _emit_raw(session_root, event, pane, **kwargs)
+    else:
+        event_name, evt_pane, evt_kwargs = serialize_event(event)
+        _emit_raw(session_root, event_name, evt_pane, **evt_kwargs)
 
 
 def read_events(

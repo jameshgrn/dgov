@@ -17,10 +17,20 @@ from __future__ import annotations
 import ast
 import logging
 import subprocess
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+from dgov.event_types import (
+    DgovEvent,
+    IntegrationCandidateFailed,
+    IntegrationCandidatePassed,
+    IntegrationOverlapDetected,
+    IntegrationRiskScored,
+    SemanticGateRejected,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,29 +282,31 @@ def _fc_value(fc: FailureClass | None) -> str | None:
 
 
 def emit_integration_risk_scored(
-    emit_fn,
+    emit_fn: Callable[[str, DgovEvent], None],
     session_root: str,
     plan_name: str,
     record: IntegrationRiskRecord,
     pane: str = "semantic-settlement",
 ) -> None:
     """Emit integration_risk_scored event with structured payload."""
-    payload = {
-        "task_slug": record.task_slug,
-        "target_head_sha": record.target_head_sha,
-        "task_base_sha": record.task_base_sha,
-        "task_commit_sha": record.task_commit_sha,
-        "risk_level": record.risk_level.value,
-        "claimed_files": list(record.claimed_files),
-        "changed_files": list(record.changed_files),
-        "python_overlap_detected": record.python_overlap_detected,
-        "overlap_evidence": _evidence_payload(record.overlap_evidence),
-    }
-    emit_fn(session_root, "integration_risk_scored", pane, plan_name=plan_name, **payload)
+    event = IntegrationRiskScored(
+        pane=pane,
+        plan_name=plan_name,
+        task_slug=record.task_slug,
+        target_head_sha=record.target_head_sha,
+        task_base_sha=record.task_base_sha,
+        task_commit_sha=record.task_commit_sha,
+        risk_level=record.risk_level.value,
+        claimed_files=record.claimed_files,
+        changed_files=record.changed_files,
+        python_overlap_detected=record.python_overlap_detected,
+        overlap_evidence=tuple(_serialize_evidence(e) for e in record.overlap_evidence),
+    )
+    emit_fn(session_root, event)
 
 
 def emit_integration_overlap_detected(
-    emit_fn,
+    emit_fn: Callable[[str, DgovEvent], None],
     session_root: str,
     plan_name: str,
     task_slug: str,
@@ -302,68 +314,76 @@ def emit_integration_overlap_detected(
     pane: str = "semantic-settlement",
 ) -> None:
     """Emit integration_overlap_detected event with evidence payload."""
-    payload = {
-        "task_slug": task_slug,
-        "evidence": _serialize_evidence(evidence),
-    }
-    emit_fn(session_root, "integration_overlap_detected", pane, plan_name=plan_name, **payload)
+    event = IntegrationOverlapDetected(
+        pane=pane,
+        plan_name=plan_name,
+        task_slug=task_slug,
+        evidence=_serialize_evidence(evidence),
+    )
+    emit_fn(session_root, event)
 
 
 def emit_integration_candidate_passed(
-    emit_fn,
+    emit_fn: Callable[[str, DgovEvent], None],
     session_root: str,
     plan_name: str,
     verdict: IntegrationCandidateVerdict,
     pane: str = "semantic-settlement",
 ) -> None:
     """Emit integration_candidate_passed event with verdict payload."""
-    payload = {
-        "task_slug": verdict.task_slug,
-        "candidate_sha": verdict.candidate_sha,
-        "target_head_sha": verdict.target_head_sha,
-        "passed": verdict.passed,
-        "evidence": _evidence_payload(verdict.evidence),
-    }
-    emit_fn(session_root, "integration_candidate_passed", pane, plan_name=plan_name, **payload)
+    event = IntegrationCandidatePassed(
+        pane=pane,
+        plan_name=plan_name,
+        task_slug=verdict.task_slug,
+        candidate_sha=verdict.candidate_sha,
+        target_head_sha=verdict.target_head_sha,
+        passed=verdict.passed,
+        evidence=tuple(_serialize_evidence(e) for e in verdict.evidence),
+    )
+    emit_fn(session_root, event)
 
 
 def emit_integration_candidate_failed(
-    emit_fn,
+    emit_fn: Callable[[str, DgovEvent], None],
     session_root: str,
     plan_name: str,
     verdict: IntegrationCandidateVerdict,
     pane: str = "semantic-settlement",
 ) -> None:
     """Emit integration_candidate_failed event with verdict payload."""
-    payload: dict[str, Any] = {
-        "task_slug": verdict.task_slug,
-        "candidate_sha": verdict.candidate_sha,
-        "target_head_sha": verdict.target_head_sha,
-        "passed": verdict.passed,
-        "failure_class": _fc_value(verdict.failure_class),
-        "error_message": verdict.error_message,
-        "evidence": _evidence_payload(verdict.evidence),
-    }
-    emit_fn(session_root, "integration_candidate_failed", pane, plan_name=plan_name, **payload)
+    event = IntegrationCandidateFailed(
+        pane=pane,
+        plan_name=plan_name,
+        task_slug=verdict.task_slug,
+        candidate_sha=verdict.candidate_sha,
+        target_head_sha=verdict.target_head_sha,
+        passed=verdict.passed,
+        failure_class=_fc_value(verdict.failure_class) or "",
+        error_message=verdict.error_message or "",
+        evidence=tuple(_serialize_evidence(e) for e in verdict.evidence),
+    )
+    emit_fn(session_root, event)
 
 
 def emit_semantic_gate_rejected(
-    emit_fn,
+    emit_fn: Callable[[str, DgovEvent], None],
     session_root: str,
     plan_name: str,
     verdict: SemanticGateVerdict,
     pane: str = "semantic-settlement",
 ) -> None:
     """Emit semantic_gate_rejected event with gate verdict payload."""
-    payload: dict[str, Any] = {
-        "task_slug": verdict.task_slug,
-        "gate_name": verdict.gate_name,
-        "passed": verdict.passed,
-        "failure_class": _fc_value(verdict.failure_class),
-        "error_message": verdict.error_message,
-        "evidence": _evidence_payload(verdict.evidence),
-    }
-    emit_fn(session_root, "semantic_gate_rejected", pane, plan_name=plan_name, **payload)
+    event = SemanticGateRejected(
+        pane=pane,
+        plan_name=plan_name,
+        task_slug=verdict.task_slug,
+        gate_name=verdict.gate_name,
+        passed=verdict.passed,
+        failure_class=_fc_value(verdict.failure_class) or "",
+        error_message=verdict.error_message or "",
+        evidence=tuple(_serialize_evidence(e) for e in verdict.evidence),
+    )
+    emit_fn(session_root, event)
 
 
 # -----------------------------------------------------------------------------

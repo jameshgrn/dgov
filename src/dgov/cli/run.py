@@ -21,6 +21,7 @@ from dgov.archive import archive_plan
 from dgov.cli import _output, cli, want_json
 from dgov.dag_parser import DagDefinition
 from dgov.deploy_log import is_plan_complete
+from dgov.event_types import RunCompleted
 from dgov.persistence.events import emit_event
 from dgov.plan import PlanSpec, compile_plan, parse_plan_file
 from dgov.project_root import resolve_project_root
@@ -566,12 +567,13 @@ def _emit_run_completed(
     """Emit run_completed event with final status and Sentrux gate result."""
     emit_event(
         project_root,
-        event="run_completed",
-        pane=plan_name,
-        plan_name=plan_name,
-        run_status=run_status,
-        duration_s=round(duration.total_seconds(), 2),
-        sentrux=gate_result,
+        RunCompleted(
+            pane=plan_name,
+            plan_name=plan_name,
+            run_status=run_status,
+            duration_s=round(duration.total_seconds(), 2),
+            sentrux=str(gate_result),
+        ),
     )
 
 
