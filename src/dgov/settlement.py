@@ -19,10 +19,11 @@ import shlex
 import shutil
 import subprocess
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from dgov.config import ProjectConfig, load_project_config
 from dgov.persistence import read_events
@@ -30,6 +31,9 @@ from dgov.persistence import read_events
 logger = logging.getLogger(__name__)
 
 _SENTRUX_BASELINE = ".sentrux/baseline.json"
+_COVERAGE_BASELINE_DIR = ".coverage-baseline"
+_COVERAGE_BASELINE = f"{_COVERAGE_BASELINE_DIR}/coverage.json"
+_RESERVED_PATHS = (_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
 
 
 @dataclass(frozen=True)
@@ -252,7 +256,11 @@ def _check_size(actual_files: frozenset[str], max_diff_lines: int) -> ReviewResu
 
 def _check_reserved_paths(actual_files: frozenset[str]) -> ReviewResult | None:
     """Reject worker changes to governor-owned files."""
-    reserved = sorted(path for path in actual_files if path == _SENTRUX_BASELINE)
+    reserved = sorted(
+        path
+        for path in actual_files
+        if any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
+    )
     if reserved:
         return ReviewResult(
             passed=False,
@@ -847,16 +855,10 @@ def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: P
     return related
 
 
-def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_path: Path) -> str:
-    """Return test command scoped to related tests only.
-
-    Changed test files run directly. Changed source files trigger only
-    tests that import from the changed modules — never the full suite.
-    """
-    if not config.test_cmd:
-        return ""
-    if "{test_dir}" not in config.test_cmd:
-        return config.test_cmd
+def _test_targets_for_changed_files(
+    config: ProjectConfig, changed_files: Sequence[str], worktree_path: Path
+) -> list[str]:
+    """Return test targets related to the changed source files."""
     test_dir = config.test_dir.rstrip("/")
     test_files = [f for f in changed_files if f.startswith(test_dir)]
     source_files = [f for f in changed_files if not f.startswith(test_dir)]
@@ -877,6 +879,21 @@ def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_pa
         ):
             targets.append(boundary_test)
 
+    return targets
+
+
+def _build_test_cmd(config: ProjectConfig, changed_files: list[str], worktree_path: Path) -> str:
+    """Return test command scoped to related tests only.
+
+    Changed test files run directly. Changed source files trigger only
+    tests that import from the changed modules — never the full suite.
+    """
+    if not config.test_cmd:
+        return ""
+    if "{test_dir}" not in config.test_cmd:
+        return config.test_cmd
+
+    targets = _test_targets_for_changed_files(config, changed_files, worktree_path)
     if not targets:
         return ""
     return config.test_cmd.replace("{test_dir}", " ".join(shlex.quote(f) for f in targets))
@@ -896,6 +913,158 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
     if res.returncode not in (0, 5):
         output = (res.stdout + res.stderr)[-500:]
         return GateResult(passed=False, error=f"Test failure:\n{output}")
+    return None
+
+
+def _normalize_coverage_path(path: str, worktree_path: Path) -> str:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        with contextlib.suppress(ValueError):
+            candidate = candidate.relative_to(worktree_path)
+    normalized = PurePosixPath(candidate.as_posix()).as_posix()
+    if normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _coverage_percentages(data: object, worktree_path: Path) -> dict[str, float]:
+    if not isinstance(data, Mapping):
+        raise ValueError("coverage JSON root must be an object")
+    root = cast(Mapping[str, object], data)
+    files = root.get("files")
+    if not isinstance(files, Mapping):
+        raise ValueError("coverage JSON missing files object")
+    file_map = cast(Mapping[object, object], files)
+
+    percentages: dict[str, float] = {}
+    for raw_path, payload in file_map.items():
+        if not isinstance(raw_path, str) or not isinstance(payload, Mapping):
+            continue
+        payload_map = cast(Mapping[str, object], payload)
+        summary = payload_map.get("summary")
+        if not isinstance(summary, Mapping):
+            continue
+        summary_map = cast(Mapping[str, object], summary)
+        percent = summary_map.get("percent_covered")
+        if isinstance(percent, int | float):
+            percentages[_normalize_coverage_path(raw_path, worktree_path)] = float(percent)
+    return percentages
+
+
+def _format_percent(value: float) -> str:
+    return f"{value:g}%"
+
+
+def _copy_coverage_baseline_into_worktree(worktree_path: Path, project_root: str) -> Path | None:
+    source = Path(project_root) / _COVERAGE_BASELINE
+    if not source.exists():
+        return None
+
+    dst_dir = worktree_path / _COVERAGE_BASELINE_DIR
+    source_dir = source.parent.resolve()
+    if source_dir != dst_dir.resolve():
+        if dst_dir.exists():
+            shutil.rmtree(dst_dir)
+        shutil.copytree(source.parent, dst_dir)
+    return worktree_path / _COVERAGE_BASELINE
+
+
+def _build_coverage_cmd(
+    config: ProjectConfig,
+    changed_files: Sequence[str],
+    worktree_path: Path,
+    output_path: Path,
+) -> str:
+    if not config.coverage_cmd or "{output}" not in config.coverage_cmd:
+        return ""
+
+    targets = _test_targets_for_changed_files(config, changed_files, worktree_path)
+    if not targets:
+        return ""
+
+    cmd = config.coverage_cmd.replace("{output}", str(output_path))
+    target_args = " ".join(shlex.quote(target) for target in targets)
+    if "{test_dir}" in cmd:
+        return cmd.replace("{test_dir}", target_args)
+    return f"{cmd} {target_args}"
+
+
+def _run_coverage_gate(
+    worktree_path: Path,
+    changed_files: Sequence[str],
+    project_root: str,
+    config: ProjectConfig,
+) -> GateResult | None:
+    """Reject coverage regressions for changed Python files when coverage is configured."""
+    if not config.coverage_cmd:
+        return None
+    if "{output}" not in config.coverage_cmd:
+        logger.warning("Skipping coverage gate: coverage_cmd must include {output}")
+        return None
+
+    try:
+        baseline_path = _copy_coverage_baseline_into_worktree(worktree_path, project_root)
+        if baseline_path is None or not baseline_path.exists():
+            return None
+
+        import json
+        import tempfile
+
+        baseline_data = json.loads(baseline_path.read_text())
+        with tempfile.NamedTemporaryFile(
+            prefix="dgov-coverage-", suffix=".json", dir=worktree_path, delete=False
+        ) as tmp:
+            output_path = Path(tmp.name)
+
+        try:
+            coverage_cmd = _build_coverage_cmd(
+                config,
+                changed_files,
+                worktree_path,
+                output_path,
+            )
+            if not coverage_cmd:
+                return None
+
+            res = subprocess.run(
+                coverage_cmd,
+                shell=True,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=config.settlement_timeout,
+                check=False,
+            )
+            if res.returncode != 0:
+                output = ((res.stdout or "") + (res.stderr or ""))[-500:]
+                logger.warning("Coverage gate measurement failed: %s", output)
+                return None
+
+            current_data = json.loads(output_path.read_text())
+        finally:
+            if output_path.exists():
+                output_path.unlink()
+
+        baseline = _coverage_percentages(baseline_data, worktree_path)
+        current = _coverage_percentages(current_data, worktree_path)
+        threshold = config.coverage_threshold
+
+        for file in changed_files:
+            rel = _normalize_coverage_path(file, worktree_path)
+            if not rel.endswith(".py") or rel not in baseline:
+                continue
+            old = baseline[rel]
+            new = current.get(rel, 0.0)
+            if old - new > threshold:
+                return GateResult(
+                    passed=False,
+                    error=(
+                        f"Coverage regression: {rel} dropped from "
+                        f"{_format_percent(old)} to {_format_percent(new)}"
+                    ),
+                )
+    except Exception as exc:
+        logger.warning("Coverage gate skipped after measurement error: %s", exc)
     return None
 
 
@@ -1310,6 +1479,15 @@ def _run_acceptance_gates(
             )
             if test_failure is not None:
                 return test_failure
+
+        coverage_failure = _run_coverage_gate(
+            worktree_path,
+            changed_files,
+            project_root,
+            config,
+        )
+        if coverage_failure is not None:
+            return coverage_failure
 
         sx_result = _run_sentrux_gate(worktree_path, project_root, config.settlement_timeout)
         if not sx_result.passed:

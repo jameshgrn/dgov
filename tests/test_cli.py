@@ -1150,6 +1150,24 @@ def test_format_event_shows_successful_verify_tool_results() -> None:
     assert "ok" in rendered
 
 
+def test_format_event_renders_task_done_tokens() -> None:
+    renderable = _format_event({
+        "event": "task_done",
+        "task_slug": "task-a",
+        "ts": "2026-04-24T12:34:56Z",
+        "prompt_tokens": 1234,
+        "completion_tokens": 567,
+    })
+
+    assert renderable is not None
+    console = Console(record=True, width=120)
+    console.print(renderable)
+    rendered = console.export_text()
+    assert "done" in rendered
+    assert "task-a" in rendered
+    assert "1,234 prompt + 567 completion tokens" in rendered
+
+
 def test_infer_plan_name_ignores_stale_prior_run(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "run_start", "run-plan-a", plan_name="plan-a")
     emit_event(

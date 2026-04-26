@@ -2226,6 +2226,58 @@ class TestAsyncErrorPaths:
         assert done_events[0]["prompt_tokens"] == 1500
         assert done_events[0]["completion_tokens"] == 500
 
+    @pytest.mark.unit
+    def test_token_usage_accumulates_across_forked_worker_exits(self):
+        """Runner token_usage includes the original and forked worker attempts."""
+        call_count = 0
+        emitted: list[dict] = []
+
+        def _capture_emit(session_root, event, pane, **kwargs):
+            emitted.append({"event": event, **kwargs})
+
+        async def _worker_with_fork_tokens(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            nonlocal call_count
+            call_count += 1
+            await asyncio.sleep(0.01)
+            if call_count == 1:
+                on_exit(task_slug, pane_slug, 1, "Exceeded max iterations (50)", 1000, 200)
+                return
+            on_exit(task_slug, pane_slug, 0, "", 300, 50)
+
+        task = DagTaskSpec(
+            slug="a",
+            summary="Test",
+            prompt="Do a",
+            commit_message="a",
+            agent="test",
+            files=DagFileSpec(create=("a.py",)),
+            max_fork_depth=1,
+        )
+        dag = _dag({"a": task})
+        with (
+            _io_patches(headless=_worker_with_fork_tokens),
+            patch(_P_GET_DIFF, return_value=""),
+            patch(_P_EMIT_EVENT, _capture_emit),
+        ):
+            runner = _make_runner(dag)
+            results = asyncio.run(runner.run())
+
+        assert results["a"] == "merged"
+        assert runner.token_usage == {"a": (1300, 250)}
+        done_events = [e for e in emitted if e["event"] == "task_done"]
+        assert done_events[-1]["prompt_tokens"] == 1300
+        assert done_events[-1]["completion_tokens"] == 250
+
     def test_concurrent_failures_both_reported(self):
         """When two parallel tasks both fail, both are reported as failed."""
         task_a = _task("a")

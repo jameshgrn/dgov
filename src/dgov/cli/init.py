@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import click
@@ -128,6 +129,57 @@ def _detect_scope_ignore_files(root: Path, language: str) -> list[str]:
     if language == "python" and "uv.lock" not in detected:
         detected.append("uv.lock")
     return detected
+
+
+def _dependency_name(dependency: str) -> str:
+    """Return the normalized package name from a PEP 508-ish dependency string."""
+    name = dependency.strip().split(";", 1)[0].strip()
+    for token in ("[", "<", ">", "=", "!", "~", " "):
+        name = name.split(token, 1)[0]
+    return name.replace("_", "-").lower()
+
+
+def _python_project_uses_pytest(root: Path) -> bool:
+    """Detect pytest in common Python dependency manifests."""
+    pyproject = root / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            data = tomllib.loads(pyproject.read_text())
+        except (tomllib.TOMLDecodeError, OSError):
+            data = {}
+
+        candidates: list[object] = []
+        project = data.get("project")
+        if isinstance(project, dict):
+            candidates.append(project.get("dependencies", ()))
+            optional = project.get("optional-dependencies", {})
+            if isinstance(optional, dict):
+                candidates.extend(optional.values())
+        dependency_groups = data.get("dependency-groups", {})
+        if isinstance(dependency_groups, dict):
+            candidates.extend(dependency_groups.values())
+
+        for group in candidates:
+            if not isinstance(group, list):
+                continue
+            for dep in group:
+                if isinstance(dep, str) and _dependency_name(dep) == "pytest":
+                    return True
+
+    for name in ("requirements.txt", "requirements-dev.txt", "dev-requirements.txt"):
+        req = root / name
+        if not req.is_file():
+            continue
+        try:
+            for line in req.read_text().splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if _dependency_name(stripped) == "pytest":
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def _detect_js_tooling(root: Path) -> dict[str, str]:
@@ -339,6 +391,18 @@ def _render_project_toml(
     if language == "javascript" and project_root is not None:
         detected = _detect_js_tooling(project_root)
         cmds = {**cmds, **detected}
+    elif (
+        language == "python"
+        and project_root is not None
+        and _python_project_uses_pytest(project_root)
+    ):
+        coverage_source = src_dir.rstrip("/") or "."
+        cmds = {
+            **cmds,
+            "coverage_cmd": (
+                f"uv run pytest --cov={coverage_source} --cov-report=json:{{output}} -q"
+            ),
+        }
 
     ext_str = ", ".join(f'"{e}"' for e in extensions)
     ignore_files = scope_ignore_files or []
@@ -386,6 +450,16 @@ def _render_project_toml(
         lines.append(render_cmd("type_check_cmd", type_check_hint))
     else:
         lines.append("# type_check_cmd = \"\"  # Optional: e.g. 'uv run ty check' for Python")
+
+    coverage_cmd = cmds.get("coverage_cmd")
+    if coverage_cmd:
+        lines.append(f'coverage_cmd = "{coverage_cmd}"')
+    else:
+        lines.append(
+            '# coverage_cmd = ""  # Optional: e.g. '
+            "'uv run pytest --cov=src --cov-report=json:{output} -q'"
+        )
+    lines.append("coverage_threshold = 2.0")
 
     # setup_cmd: runs in worktree before lint/test/format gates
     if language == "javascript":

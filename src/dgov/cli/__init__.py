@@ -234,6 +234,7 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
 from dgov.cli import (  # noqa: E402
     clean as clean,
     compile as compile,
+    coverage as coverage,
     fix as fix,
     init as init,
     ledger as ledger,

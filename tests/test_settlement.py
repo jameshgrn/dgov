@@ -6,6 +6,8 @@ that gate worker output before merge.
 
 from __future__ import annotations
 
+import json
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from dgov.config import ProjectConfig
 from dgov.persistence import emit_event
 from dgov.settlement import (
     _build_test_cmd,
+    _run_coverage_gate,
     _run_sentrux_gate,
     _sentrux_is_warn_only,
     autofix_sandbox,
@@ -143,6 +146,29 @@ def _add_tracked_file(path: Path, filename: str, content: str) -> None:
 def _modify_tracked(path: Path, filename: str, content: str) -> None:
     """Modify an existing tracked file (unstaged change visible to git diff)."""
     (path / filename).write_text(content)
+
+
+def _coverage_payload(file: str, percent: float) -> str:
+    return json.dumps({"files": {file: {"summary": {"percent_covered": percent}}}})
+
+
+def _coverage_cmd(payload: str) -> str:
+    script = f"from pathlib import Path; Path(r'{{output}}').write_text({payload!r})"
+    return f"python -c {shlex.quote(script)}"
+
+
+def _coverage_worktree(tmp_path: Path, baseline_percent: float) -> tuple[Path, Path]:
+    project_root = tmp_path / "project"
+    worktree_path = tmp_path / "worktree"
+    (project_root / ".coverage-baseline").mkdir(parents=True)
+    (worktree_path / "src").mkdir(parents=True)
+    (worktree_path / "tests").mkdir(parents=True)
+    (worktree_path / "src" / "pkg.py").write_text("VALUE = 1\n")
+    (worktree_path / "tests" / "test_pkg.py").write_text("import pkg\n")
+    (project_root / ".coverage-baseline" / "coverage.json").write_text(
+        _coverage_payload("src/pkg.py", baseline_percent)
+    )
+    return project_root, worktree_path
 
 
 # ---------------------------------------------------------------------------
@@ -917,6 +943,108 @@ class TestValidateSandbox:
         config = ProjectConfig(test_cmd="exit 5", type_check_cmd="")
         result = validate_sandbox(tmp_path, base, str(tmp_path), config=config)
         assert result.passed is True
+
+    @pytest.mark.unit
+    def test_coverage_gate_fails_on_regression(self, tmp_path: Path):
+        project_root, worktree_path = _coverage_worktree(tmp_path, baseline_percent=95.0)
+        config = ProjectConfig(
+            coverage_cmd=_coverage_cmd(_coverage_payload("src/pkg.py", 90.0)),
+            coverage_threshold=2.0,
+        )
+
+        result = _run_coverage_gate(
+            worktree_path,
+            ["src/pkg.py"],
+            str(project_root),
+            config,
+        )
+
+        assert result is not None
+        assert result.passed is False
+        assert "Coverage regression: src/pkg.py dropped from 95% to 90%" in (result.error or "")
+
+    @pytest.mark.unit
+    def test_coverage_gate_passes_without_regression(self, tmp_path: Path):
+        project_root, worktree_path = _coverage_worktree(tmp_path, baseline_percent=95.0)
+        config = ProjectConfig(
+            coverage_cmd=_coverage_cmd(_coverage_payload("src/pkg.py", 94.0)),
+            coverage_threshold=2.0,
+        )
+
+        result = _run_coverage_gate(
+            worktree_path,
+            ["src/pkg.py"],
+            str(project_root),
+            config,
+        )
+
+        assert result is None
+
+    @pytest.mark.unit
+    def test_coverage_gate_skips_without_baseline(self, tmp_path: Path):
+        project_root = tmp_path / "project"
+        worktree_path = tmp_path / "worktree"
+        (project_root / ".dgov").mkdir(parents=True)
+        (worktree_path / "src").mkdir(parents=True)
+        (worktree_path / "tests").mkdir(parents=True)
+        (worktree_path / "src" / "pkg.py").write_text("VALUE = 1\n")
+        (worktree_path / "tests" / "test_pkg.py").write_text("import pkg\n")
+        config = ProjectConfig(
+            coverage_cmd=_coverage_cmd(_coverage_payload("src/pkg.py", 0.0)),
+            coverage_threshold=2.0,
+        )
+
+        result = _run_coverage_gate(
+            worktree_path,
+            ["src/pkg.py"],
+            str(project_root),
+            config,
+        )
+
+        assert result is None
+
+    @pytest.mark.unit
+    def test_coverage_gate_skips_when_disabled(self, tmp_path: Path):
+        project_root, worktree_path = _coverage_worktree(tmp_path, baseline_percent=95.0)
+        config = ProjectConfig(coverage_cmd=None)
+
+        result = _run_coverage_gate(
+            worktree_path,
+            ["src/pkg.py"],
+            str(project_root),
+            config,
+        )
+
+        assert result is None
+
+    @pytest.mark.unit
+    def test_coverage_gate_threshold(self, tmp_path: Path):
+        project_root, worktree_path = _coverage_worktree(tmp_path, baseline_percent=95.0)
+        passing = ProjectConfig(
+            coverage_cmd=_coverage_cmd(_coverage_payload("src/pkg.py", 93.1)),
+            coverage_threshold=2.0,
+        )
+        failing = ProjectConfig(
+            coverage_cmd=_coverage_cmd(_coverage_payload("src/pkg.py", 92.9)),
+            coverage_threshold=2.0,
+        )
+
+        pass_result = _run_coverage_gate(
+            worktree_path,
+            ["src/pkg.py"],
+            str(project_root),
+            passing,
+        )
+        fail_result = _run_coverage_gate(
+            worktree_path,
+            ["src/pkg.py"],
+            str(project_root),
+            failing,
+        )
+
+        assert pass_result is None
+        assert fail_result is not None
+        assert fail_result.passed is False
 
     @pytest.mark.unit
     def test_sentrux_empty_baseline_skipped(self, tmp_path: Path, monkeypatch):

@@ -127,6 +127,8 @@ class TaskContext:
     call_count: int = 0
     fork_depth: int = 0
     review_file_count: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 def _build_baseline_diag_note(config: object, session_root: str) -> str:
@@ -268,6 +270,15 @@ class EventDagRunner:
         """Reconstruct durations dict for CLI consumption."""
         return {
             slug: ctx.duration for slug, ctx in self._tasks.items() if ctx.duration is not None
+        }
+
+    @property
+    def token_usage(self) -> dict[str, tuple[int, int]]:
+        """Return per-task token usage as prompt/completion pairs."""
+        return {
+            slug: (ctx.prompt_tokens, ctx.completion_tokens)
+            for slug, ctx in self._tasks.items()
+            if ctx.prompt_tokens or ctx.completion_tokens
         }
 
     def _run_recovery_pipeline(self, continue_failed: bool = False) -> None:
@@ -619,6 +630,8 @@ class EventDagRunner:
         self._pending_dispatches.discard(exit_event.task_slug)
         ctx = self._ctx(exit_event.task_slug)
         ctx.worker_task = None
+        ctx.prompt_tokens += exit_event.prompt_tokens
+        ctx.completion_tokens += exit_event.completion_tokens
 
         if exit_event.last_error:
             ctx.error = exit_event.last_error
@@ -674,8 +687,8 @@ class EventDagRunner:
             task_slug=exit_event.task_slug,
             error=exit_event.last_error if status == TaskState.FAILED else None,
             duration=duration,
-            prompt_tokens=exit_event.prompt_tokens or None,
-            completion_tokens=exit_event.completion_tokens or None,
+            prompt_tokens=ctx.prompt_tokens or None,
+            completion_tokens=ctx.completion_tokens or None,
         )
         return actions
 
