@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,29 @@ class MockEmit:
 def mock_emit():
     """Create a mock emit function that captures calls."""
     return MockEmit()
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _init_git_repo(repo: Path) -> None:
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.email", "test@test.com")
+    _git(repo, "config", "user.name", "Test")
+
+
+def _commit_all(repo: Path, message: str) -> str:
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
 
 
 class TestFailureClassEnum:
@@ -907,6 +931,159 @@ class MyClass:
             # Production code duplicates should be detected
             assert len(dups) == 1
             assert dups[0].symbol_name == "production_helper"
+
+
+class TestSettlementFlowSemanticRisk:
+    """Tests for Phase 2 semantic risk computation before integration."""
+
+    def test_compute_semantic_risk_populates_symbol_overlap_evidence(self, tmp_path: Path):
+        from dgov.actions import MergeTask
+        from dgov.config import ProjectConfig
+        from dgov.settlement_flow import SettlementFlow
+        from dgov.types import Worktree
+
+        _init_git_repo(tmp_path)
+        module = tmp_path / "module.py"
+        module.write_text("""
+def process(value):
+    return value
+""")
+        base_sha = _commit_all(tmp_path, "base")
+
+        _git(tmp_path, "checkout", "-b", "task-branch")
+        module.write_text("""
+def process(value):
+    cleaned = value.strip()
+    return cleaned
+""")
+        task_sha = _commit_all(tmp_path, "task change")
+
+        _git(tmp_path, "checkout", "main")
+        module.write_text("""
+def process(value, default):
+    return value or default
+""")
+        target_sha = _commit_all(tmp_path, "target change")
+
+        flow = SettlementFlow(
+            session_root=str(tmp_path),
+            plan_name="test-plan",
+            project_config=ProjectConfig(),
+        )
+        record = flow.compute_semantic_risk(
+            action=MergeTask("task", "pane", ("module.py",)),
+            wt=Worktree(path=tmp_path, branch="task-branch", commit=base_sha),
+            file_claims=("module.py",),
+        )
+
+        assert record.target_head_sha == target_sha
+        assert record.task_commit_sha == task_sha
+        assert record.risk_level == RiskLevel.MEDIUM
+        assert record.python_overlap_detected is True
+        overlaps = [
+            evidence for evidence in record.overlap_evidence if isinstance(evidence, SymbolOverlap)
+        ]
+        assert overlaps
+        assert {evidence.symbol_name for evidence in overlaps} == {"process"}
+
+    def test_risk_level_scoring_uses_evidence_severity(self, tmp_path: Path):
+        from dgov.config import ProjectConfig
+        from dgov.settlement_flow import SettlementFlow
+
+        flow = SettlementFlow(
+            session_root=str(tmp_path),
+            plan_name="test-plan",
+            project_config=ProjectConfig(),
+        )
+        drift = SignatureDrift(
+            symbol_name="process",
+            file_path="module.py",
+            base_signature="def process(value)",
+            integrated_signature="def process(value, default)",
+        )
+        overlap = SymbolOverlap(
+            symbol_name="process",
+            symbol_type="function",
+            file_path="module.py",
+        )
+        duplicate = DuplicateDefinition(
+            symbol_name="process",
+            symbol_type="function",
+            file_paths=("a.py", "b.py"),
+        )
+
+        assert flow._risk_level_from_evidence(()) == RiskLevel.NONE
+        assert flow._risk_level_from_evidence((drift,)) == RiskLevel.LOW
+        assert flow._risk_level_from_evidence((overlap,)) == RiskLevel.MEDIUM
+        assert flow._risk_level_from_evidence((duplicate,)) == RiskLevel.HIGH
+        assert flow._risk_level_from_evidence((drift, overlap)) == RiskLevel.CRITICAL
+        assert flow._risk_level_from_evidence((drift, drift, drift, drift)) == RiskLevel.CRITICAL
+
+    def test_critical_risk_short_circuits_candidate_creation(self, tmp_path: Path):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from dgov.actions import MergeTask
+        from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+        from dgov.runner import EventDagRunner
+        from dgov.types import Worktree
+
+        task = DagTaskSpec(
+            slug="task",
+            summary="Task",
+            prompt="Edit module",
+            commit_message="Edit module",
+            files=DagFileSpec(edit=("module.py",)),
+        )
+        runner = EventDagRunner(
+            DagDefinition(
+                name="test-plan",
+                dag_file="test.toml",
+                project_root=str(tmp_path),
+                session_root=str(tmp_path),
+                tasks={"task": task},
+            ),
+            session_root=str(tmp_path),
+            restart=True,
+        )
+        risk_record = IntegrationRiskRecord(
+            task_slug="task",
+            target_head_sha="target",
+            task_base_sha="base",
+            task_commit_sha="task",
+            risk_level=RiskLevel.CRITICAL,
+            claimed_files=("module.py",),
+            changed_files=("module.py",),
+            python_overlap_detected=True,
+            overlap_evidence=(
+                SymbolOverlap(
+                    symbol_name="process",
+                    symbol_type="function",
+                    file_path="module.py",
+                ),
+            ),
+        )
+        create_candidate = AsyncMock()
+        object.__setattr__(runner, "_prepare_and_commit", AsyncMock(return_value=(None, True)))
+        object.__setattr__(
+            runner,
+            "_run_isolated_validation",
+            AsyncMock(return_value=(None, risk_record)),
+        )
+        object.__setattr__(runner, "_create_integration_candidate_with_emit", create_candidate)
+
+        async def _run_check() -> None:
+            error, was_settlement = await runner._settle_and_merge(
+                MergeTask("task", "pane", ("module.py",)),
+                Worktree(path=tmp_path, branch="task-branch", commit="base"),
+            )
+            assert error is not None
+            assert error.startswith("Integration risk CRITICAL:")
+            assert "SymbolOverlap" in error
+            assert was_settlement is True
+
+        asyncio.run(_run_check())
+        create_candidate.assert_not_called()
 
 
 class TestPythonSemanticGateIntegration:

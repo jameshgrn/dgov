@@ -14,7 +14,6 @@ import os
 import subprocess
 import sys
 import time
-from concurrent.futures import Executor
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -24,12 +23,19 @@ from dgov.actions import MergeTask
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagTaskSpec
 from dgov.semantic_settlement import (
+    DuplicateDefinition,
     FailureClass,
     IntegrationCandidateVerdict,
     IntegrationRiskRecord,
+    OverlapEvidence,
     RiskLevel,
     SemanticGateVerdict,
+    SignatureDrift,
     SymbolOverlap,
+    _check_duplicate_definitions,
+    _check_same_symbol_edit,
+    _check_signature_drift,
+    _get_symbols_at_commit,
     emit_integration_candidate_failed,
     emit_integration_candidate_passed,
     emit_integration_overlap_detected,
@@ -178,12 +184,10 @@ class SettlementFlow:
         session_root: str,
         plan_name: str,
         project_config: ProjectConfig,
-        executor: Executor,
     ) -> None:
         self.session_root = session_root
         self.plan_name = plan_name
         self.project_config = project_config
-        self.executor = executor
 
     def _task_config(self, task: DagTaskSpec) -> ProjectConfig:
         if not task.test_cmd:
@@ -214,19 +218,68 @@ class SettlementFlow:
             return ()
         return tuple(path for path in result.stdout.strip().split("\n") if path)
 
-    def _python_overlap_risk(
-        self,
-        changed_files: tuple[str, ...],
-        file_claims: tuple[str, ...],
-    ) -> tuple[RiskLevel, bool]:
-        py_changed = [path for path in changed_files if path.endswith(".py")]
-        if not py_changed:
-            return RiskLevel.NONE, False
+    def _risk_level_from_evidence(
+        self, overlap_evidence: tuple[OverlapEvidence, ...]
+    ) -> RiskLevel:
+        if not overlap_evidence:
+            return RiskLevel.NONE
 
-        claimed_set = set(file_claims)
-        if all(path in claimed_set for path in py_changed):
-            return RiskLevel.NONE, False
-        return RiskLevel.MEDIUM, True
+        evidence_types = {type(evidence) for evidence in overlap_evidence}
+        if len(evidence_types) > 1 or len(overlap_evidence) > 3:
+            return RiskLevel.CRITICAL
+        if any(isinstance(evidence, DuplicateDefinition) for evidence in overlap_evidence):
+            return RiskLevel.HIGH
+        if any(isinstance(evidence, SymbolOverlap) for evidence in overlap_evidence):
+            return RiskLevel.MEDIUM
+        if all(isinstance(evidence, SignatureDrift) for evidence in overlap_evidence):
+            return RiskLevel.LOW
+        return RiskLevel.MEDIUM
+
+    def _collect_overlap_evidence(
+        self,
+        *,
+        wt: Worktree,
+        target_head_sha: str,
+        task_commit_sha: str,
+        py_files: tuple[str, ...],
+    ) -> tuple[OverlapEvidence, ...]:
+        if not py_files or not target_head_sha or not task_commit_sha:
+            return ()
+
+        try:
+            task_base_symbols = _get_symbols_at_commit(
+                self.session_root, wt.commit, list(py_files)
+            )
+            task_commit_symbols = _get_symbols_at_commit(
+                self.session_root, task_commit_sha, list(py_files)
+            )
+            target_head_symbols = _get_symbols_at_commit(
+                self.session_root, target_head_sha, list(py_files)
+            )
+            touched_set = set(py_files)
+            evidence: list[OverlapEvidence] = []
+            evidence.extend(
+                _check_same_symbol_edit(
+                    task_base_symbols,
+                    task_commit_symbols,
+                    target_head_symbols,
+                    touched_set,
+                )
+            )
+            evidence.extend(
+                _check_signature_drift(task_base_symbols, task_commit_symbols, touched_set)
+            )
+            evidence.extend(
+                _check_duplicate_definitions([
+                    wt.path / path
+                    for path in py_files
+                    if (wt.path / path).exists() and (wt.path / path).is_file()
+                ])
+            )
+            return tuple(evidence)
+        except Exception as exc:
+            logger.warning("Failed to compute semantic overlap evidence: %s", exc)
+            return ()
 
     def compute_semantic_risk(
         self,
@@ -238,19 +291,26 @@ class SettlementFlow:
         """Compute a telemetry-only integration risk record for the task commit."""
         target_head = self._git_rev_parse("HEAD") or ""
         changed_files = self._changed_files_between(wt.commit, wt.branch)
-        risk_level, python_overlap = self._python_overlap_risk(changed_files, file_claims)
-        overlap_evidence: list[SymbolOverlap] = []
+        task_commit_sha = self._get_task_commit_sha(wt) or wt.branch
+        py_files = tuple(path for path in changed_files if path.endswith(".py"))
+        overlap_evidence = self._collect_overlap_evidence(
+            wt=wt,
+            target_head_sha=target_head,
+            task_commit_sha=task_commit_sha,
+            py_files=py_files,
+        )
+        risk_level = self._risk_level_from_evidence(overlap_evidence)
 
         return IntegrationRiskRecord(
             task_slug=action.task_slug,
             target_head_sha=target_head,
             task_base_sha=wt.commit,
-            task_commit_sha=wt.branch,
+            task_commit_sha=task_commit_sha,
             risk_level=risk_level,
             claimed_files=file_claims,
             changed_files=changed_files,
-            python_overlap_detected=python_overlap,
-            overlap_evidence=tuple(overlap_evidence),
+            python_overlap_detected=bool(overlap_evidence),
+            overlap_evidence=overlap_evidence,
             computed_at=time.time(),
         )
 
@@ -306,7 +366,6 @@ class SettlementFlow:
         task: DagTaskSpec,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         autofix_fn: Any = None,
         commit_fn: Any = None,
@@ -331,9 +390,9 @@ class SettlementFlow:
 
         file_claims = action.file_claims
         task_config = self._task_config(task)
-        await loop.run_in_executor(self.executor, autofix_fn, wt.path, file_claims, task_config)
+        await asyncio.to_thread(autofix_fn, wt.path, file_claims, task_config)
         msg = task.commit_message or f"feat: completed {action.task_slug}"
-        await loop.run_in_executor(self.executor, commit_fn, wt, msg, file_claims)
+        await asyncio.to_thread(commit_fn, wt, msg, file_claims)
         return None, True
 
     async def run_isolated_validation(
@@ -342,7 +401,6 @@ class SettlementFlow:
         task: DagTaskSpec,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         validate_fn: Any = None,
     ) -> tuple[str | None, IntegrationRiskRecord | None]:
@@ -362,8 +420,7 @@ class SettlementFlow:
             emit_event_fn=emit_event_fn,
         )
 
-        gate_result = await loop.run_in_executor(
-            self.executor,
+        gate_result = await asyncio.to_thread(
             validate_fn,
             wt.path,
             wt.commit,
@@ -381,13 +438,11 @@ class SettlementFlow:
         self,
         *,
         candidate_path: Path | None,
-        loop: asyncio.AbstractEventLoop,
         remove_candidate_fn: Any,
     ) -> None:
         if candidate_path is None:
             return
-        await loop.run_in_executor(
-            self.executor,
+        await asyncio.to_thread(
             remove_candidate_fn,
             self.session_root,
             candidate_path,
@@ -431,14 +486,12 @@ class SettlementFlow:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         semantic_verdict: SemanticGateVerdict,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         remove_candidate_fn: Any,
         rejected_emit_fn: Any,
     ) -> str:
         await self._remove_candidate(
             candidate_path=candidate_result.candidate_path,
-            loop=loop,
             remove_candidate_fn=remove_candidate_fn,
         )
         verdict = SemanticGateVerdict(
@@ -468,7 +521,6 @@ class SettlementFlow:
         wt: Worktree,
         candidate_result: IntegrationCandidateResult,
         risk_record: IntegrationRiskRecord,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         remove_candidate_fn: Any = None,
         semantic_gate_fn: Any = None,
@@ -498,7 +550,6 @@ class SettlementFlow:
             action=action,
             candidate_result=candidate_result,
             semantic_verdict=semantic_verdict,
-            loop=loop,
             emit_event_fn=emit_event_fn,
             remove_candidate_fn=remove_candidate_fn,
             rejected_emit_fn=rejected_emit_fn,
@@ -510,7 +561,6 @@ class SettlementFlow:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         verdict: IntegrationCandidateVerdict,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         remove_candidate_fn: Any = None,
         failed_emit_fn: Any = emit_integration_candidate_failed,
@@ -520,7 +570,6 @@ class SettlementFlow:
             remove_candidate_fn = remove_integration_candidate
         await self._remove_candidate(
             candidate_path=candidate_result.candidate_path,
-            loop=loop,
             remove_candidate_fn=remove_candidate_fn,
         )
         failed_emit_fn(
@@ -536,7 +585,6 @@ class SettlementFlow:
         *,
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         remove_candidate_fn: Any = None,
         passed_emit_fn: Any = emit_integration_candidate_passed,
@@ -546,7 +594,6 @@ class SettlementFlow:
             remove_candidate_fn = remove_integration_candidate
         await self._remove_candidate(
             candidate_path=candidate_result.candidate_path,
-            loop=loop,
             remove_candidate_fn=remove_candidate_fn,
         )
         passed_emit_fn(
@@ -563,7 +610,6 @@ class SettlementFlow:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         task_config: ProjectConfig,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         validate_fn: Any = None,
         remove_candidate_fn: Any = None,
@@ -576,8 +622,7 @@ class SettlementFlow:
         if candidate_result.candidate_path is None:
             return None
 
-        gate_result = await loop.run_in_executor(
-            self.executor,
+        gate_result = await asyncio.to_thread(
             validate_fn,
             candidate_result.candidate_path,
             candidate_result.candidate_sha,
@@ -588,7 +633,6 @@ class SettlementFlow:
             await self.cleanup_passed_candidate(
                 action=action,
                 candidate_result=candidate_result,
-                loop=loop,
                 emit_event_fn=emit_event_fn,
                 remove_candidate_fn=remove_candidate_fn,
                 passed_emit_fn=passed_emit_fn,
@@ -599,7 +643,6 @@ class SettlementFlow:
             action=action,
             candidate_result=candidate_result,
             gate_error=gate_result.error,
-            loop=loop,
             emit_event_fn=emit_event_fn,
             remove_candidate_fn=remove_candidate_fn,
             failed_emit_fn=failed_emit_fn,
@@ -611,7 +654,6 @@ class SettlementFlow:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         gate_error: str | None,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         remove_candidate_fn: Any,
         failed_emit_fn: Any,
@@ -626,7 +668,6 @@ class SettlementFlow:
             action=action,
             candidate_result=candidate_result,
             verdict=verdict,
-            loop=loop,
             emit_event_fn=emit_event_fn,
             remove_candidate_fn=remove_candidate_fn,
             failed_emit_fn=failed_emit_fn,
@@ -638,15 +679,13 @@ class SettlementFlow:
         *,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
         emit_event_fn: Any,
         create_candidate_fn: Any = create_integration_candidate,
         failed_emit_fn: Any = emit_integration_candidate_failed,
     ) -> IntegrationCandidateResult:
         """Create the integration candidate and emit a failure event on replay failure."""
         candidate_slug = f"{action.task_slug}-candidate"
-        candidate_result = await loop.run_in_executor(
-            self.executor,
+        candidate_result = await asyncio.to_thread(
             create_candidate_fn,
             self.session_root,
             wt,
@@ -675,15 +714,13 @@ class SettlementFlow:
         *,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
         merge_fn: Any = merge_worktree,
         deploy_append_fn: Any = None,
     ) -> None:
         """Merge the worktree and record the deploy log entry."""
         if deploy_append_fn is None:
             deploy_append_fn = deploy_log.append
-        merge_sha = await loop.run_in_executor(
-            self.executor,
+        merge_sha = await asyncio.to_thread(
             merge_fn,
             self.session_root,
             wt,

@@ -346,6 +346,7 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
             "create": ["src/new.py"],
             "edit": ["src/existing.py"],
             "read": ["tests/test_existing.py"],
+            "verify_test_targets": ["tests/test_existing.py"],
         },
     )
 
@@ -353,6 +354,7 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
     assert "src/new.py" in prompt
     assert "src/existing.py" in prompt
     assert "tests/test_existing.py" in prompt
+    assert "Verification test targets" in prompt
     assert "files.create already exists" in prompt
 
 

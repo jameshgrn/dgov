@@ -11,15 +11,18 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from dgov.actions import InterruptGovernor, MergeTask
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.kernel import DagState
 from dgov.persistence import add_ledger_entry, clear_connection_cache
 from dgov.runner import EventDagRunner
-from dgov.types import Worktree
+from dgov.types import TaskState, Worktree
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -720,6 +723,26 @@ class TestBootstrapPreparation:
         assert mock_prepare.call_args.kwargs["timeout_s"] == 17
 
 
+class TestTaskContextState:
+    def test_merge_enriches_action_from_task_context(self):
+        captured: dict[str, MergeTask] = {}
+
+        async def _capture_settlement(action: MergeTask, wt: Worktree) -> tuple[str | None, bool]:
+            captured["action"] = action
+            return None, False
+
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            ctx = runner._ctx("a")
+            ctx.pane_slug = "pane-a"
+            ctx.worktree = _mock_create_worktree("/tmp", "a")
+            cast(Any, runner)._settle_and_merge = _capture_settlement
+
+            asyncio.run(runner._merge(MergeTask("a", "", ("a.py",))))
+
+        assert captured["action"] == MergeTask("a", "pane-a", ("a.py",))
+
+
 class TestCleanup:
     def test_cleanup_cancels_workers_and_removes_worktrees(self):
         with _io_patches(headless=_fake_worker_slow):
@@ -737,9 +760,122 @@ class TestCleanup:
                 finally:
                     trigger_task.cancel()
 
-            asyncio.run(_run_with_shutdown())
+            with pytest.raises(KeyboardInterrupt):
+                asyncio.run(_run_with_shutdown())
+
             assert not any(ctx.worker_task for ctx in runner._tasks.values())
             assert not any(ctx.worktree for ctx in runner._tasks.values())
+
+    def test_shutdown_after_successful_merge_returns_results(self):
+        with _io_patches():
+            runner = _make_runner(_single_dag())
+            original_merge = runner._merge
+
+            async def _merge_then_request_shutdown(action):
+                result = await original_merge(action)
+                runner._shutdown_event.set()
+                return result
+
+            object.__setattr__(runner, "_merge", _merge_then_request_shutdown)
+
+            results = asyncio.run(runner.run())
+
+        assert results["a"] == "merged"
+
+
+class TestVerificationScope:
+    def test_dispatch_passes_verify_test_targets(self):
+        captured: dict[str, object] = {}
+
+        async def _capture_scope(
+            project_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            wt_path,
+            task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            captured["task_scope"] = task_scope
+            on_exit(task_slug, pane_slug, 0, "")
+
+        task = DagTaskSpec(
+            slug="a",
+            summary="scope",
+            prompt="Do a",
+            commit_message="feat: a",
+            agent="test-agent",
+            files=DagFileSpec(
+                create=("tests/test_created.py",),
+                edit=("src/core.py",),
+                touch=("tests/test_touch.py",),
+                read=("tests/test_read.py", "README.md"),
+            ),
+        )
+        dag = _dag({"a": task})
+
+        with _io_patches(headless=_capture_scope):
+            runner = _make_runner(dag)
+            asyncio.run(runner._dispatch(MagicMock(task_slug="a")))
+
+        assert captured["task_scope"] == {
+            "task_slug": "a",
+            "create": ["tests/test_created.py"],
+            "edit": ["src/core.py"],
+            "delete": [],
+            "touch": ["tests/test_touch.py"],
+            "read": ["tests/test_read.py", "README.md"],
+            "verify_test_targets": [
+                "tests/test_created.py",
+                "tests/test_touch.py",
+                "tests/test_read.py",
+            ],
+        }
+
+    def test_retry_scope_preserves_verify_test_targets(self):
+        task = DagTaskSpec(
+            slug="a",
+            summary="scope",
+            prompt="Do a",
+            commit_message="feat: a",
+            agent="test-agent",
+            files=DagFileSpec(
+                create=("src/new.py",),
+                touch=("tests/test_touch.py",),
+                read=("tests/test_read.py",),
+            ),
+        )
+        runner = _make_runner(_dag({"a": task}))
+
+        assert runner._retry_scope("a", task) == {
+            "task_slug": "a",
+            "create": ["src/new.py"],
+            "edit": [],
+            "delete": [],
+            "touch": ["tests/test_touch.py"],
+            "read": ["tests/test_read.py"],
+            "verify_test_targets": ["tests/test_touch.py", "tests/test_read.py"],
+        }
+
+
+class TestInterruptHandling:
+    def test_handle_interrupt_marks_task_abandoned_during_shutdown(self):
+        with _io_patches(), patch("dgov.runner.emit_event") as mock_emit:
+            runner = _make_runner(_single_dag())
+            runner.kernel.task_states["a"] = TaskState.ACTIVE
+            runner._ctx("a").attempts = 1
+            runner._ctx("a").error = "worker cancelled"
+            runner._shutdown_event.set()
+
+            actions = runner._handle_interrupt(InterruptGovernor("a", "pane-a", "cancelled"))
+
+        assert actions
+        assert runner.kernel.task_states["a"] == TaskState.ABANDONED
+        assert runner._ctx("a").attempts == 1
+        mock_emit.assert_called_once()
+        assert mock_emit.call_args[0][1] == "task_abandoned"
 
 
 class TestSemanticSettlementShadowMode:
@@ -1396,8 +1532,7 @@ class TestSettlementPhaseBoundaries:
             wt = _mock_create_worktree("/tmp", "a")
 
             async def _test():
-                loop = asyncio.get_running_loop()
-                error, was_settlement = await runner._prepare_and_commit(action, wt, loop)
+                error, was_settlement = await runner._prepare_and_commit(action, wt)
                 assert error is None
                 assert was_settlement is True  # Indicates settlement should continue
 
@@ -1426,8 +1561,7 @@ class TestSettlementPhaseBoundaries:
             wt = _mock_create_worktree("/tmp", "research")
 
             async def _test():
-                loop = asyncio.get_running_loop()
-                error, was_settlement = await runner._prepare_and_commit(action, wt, loop)
+                error, was_settlement = await runner._prepare_and_commit(action, wt)
                 assert error is None
                 assert was_settlement is False  # Indicates settlement should skip
 
@@ -1460,14 +1594,11 @@ class TestSettlementPhaseBoundaries:
             )
 
             async def _test():
-                loop = asyncio.get_running_loop()
                 with (
                     patch("dgov.runner.remove_integration_candidate") as mock_remove,
                     patch("dgov.runner.emit_integration_candidate_failed") as mock_emit,
                 ):
-                    await runner._cleanup_rejected_candidate(
-                        action, candidate_result, verdict, loop
-                    )
+                    await runner._cleanup_rejected_candidate(action, candidate_result, verdict)
 
                     mock_remove.assert_called_once()
                     mock_emit.assert_called_once()
@@ -1491,12 +1622,11 @@ class TestSettlementPhaseBoundaries:
             )
 
             async def _test():
-                loop = asyncio.get_running_loop()
                 with (
                     patch("dgov.runner.remove_integration_candidate") as mock_remove,
                     patch("dgov.runner.emit_integration_candidate_passed") as mock_emit,
                 ):
-                    await runner._cleanup_passed_candidate(action, candidate_result, loop)
+                    await runner._cleanup_passed_candidate(action, candidate_result)
 
                     mock_remove.assert_called_once()
                     mock_emit.assert_called_once()
@@ -1521,8 +1651,7 @@ class TestSettlementPhaseBoundaries:
             runner._run_isolated_validation = AsyncMock()  # type: ignore
 
             async def _test():
-                loop = asyncio.get_running_loop()
-                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                error, was_settlement = await runner._settle_and_merge(action, wt)
                 assert error == "prepare failed"
                 assert was_settlement is True
                 runner._run_isolated_validation.assert_not_called()  # type: ignore
@@ -1543,8 +1672,7 @@ class TestSettlementPhaseBoundaries:
             runner._create_integration_candidate_with_emit = AsyncMock()  # type: ignore
 
             async def _test():
-                loop = asyncio.get_running_loop()
-                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                error, was_settlement = await runner._settle_and_merge(action, wt)
                 assert error == "validation failed"
                 assert was_settlement is True
                 runner._create_integration_candidate_with_emit.assert_not_called()  # type: ignore
@@ -1572,8 +1700,7 @@ class TestSettlementPhaseBoundaries:
             runner._run_semantic_gate_on_candidate = AsyncMock()  # type: ignore
 
             async def _test():
-                loop = asyncio.get_running_loop()
-                error, was_settlement = await runner._settle_and_merge(action, wt, loop)
+                error, was_settlement = await runner._settle_and_merge(action, wt)
                 assert error and "candidate creation failed" in error
                 assert was_settlement is True
                 runner._run_semantic_gate_on_candidate.assert_not_called()  # type: ignore

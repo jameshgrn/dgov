@@ -204,23 +204,116 @@ class TestListDir:
 
 
 class TestRunTests:
-    def test_uses_project_config(self, worktree, worker_module):
+    def test_uses_single_in_scope_target_by_default(self, worktree, worker_module):
         config = worker_module.AtomicConfig(
             test_cmd="echo 'running tests in {test_dir}'",
             test_dir="tests/",
         )
-        t = worker_module.AtomicTools(worktree, config)
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={"verify_test_targets": ["tests/test_foo.py"]},
+        )
         result = t.run_tests()
-        assert "running tests in tests/" in result
+        assert "running tests in tests/test_foo.py" in result
 
-    def test_targets_specific_file(self, worktree, worker_module):
+    def test_targets_specific_file_within_scope(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            test_cmd="echo 'testing {test_dir}'",
+            test_dir="tests/",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={"verify_test_targets": ["tests/"]},
+        )
+        result = t.run_tests("tests/test_foo.py")
+        assert "testing tests/test_foo.py" in result
+
+    def test_rejects_missing_in_scope_targets(self, worktree, worker_module):
         config = worker_module.AtomicConfig(
             test_cmd="echo 'testing {test_dir}'",
             test_dir="tests/",
         )
         t = worker_module.AtomicTools(worktree, config)
+        result = t.run_tests()
+        assert result.startswith("Error:")
+        assert "in-scope test targets" in result
+
+    def test_requires_explicit_target_when_multiple_are_in_scope(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            test_cmd="echo 'testing {test_dir}'",
+            test_dir="tests/",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={
+                "verify_test_targets": [
+                    "tests/test_foo.py",
+                    "tests/test_bar.py",
+                ]
+            },
+        )
+        result = t.run_tests()
+        assert result.startswith("Error:")
+        assert "explicit in-scope target" in result
+
+    def test_rejects_target_outside_verification_scope(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            test_cmd="echo 'testing {test_dir}'",
+            test_dir="tests/",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={"verify_test_targets": ["tests/test_foo.py"]},
+        )
+        result = t.run_tests("tests/test_other.py")
+        assert result.startswith("Error:")
+        assert "outside this task's verification scope" in result
+
+    def test_rejects_unscoped_test_command(self, worktree, worker_module):
+        config = worker_module.AtomicConfig(
+            test_cmd="uv run pytest -q",
+            test_dir="tests/",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={"verify_test_targets": ["tests/test_foo.py"]},
+        )
         result = t.run_tests("tests/test_foo.py")
-        assert "testing tests/test_foo.py" in result
+        assert result.startswith("Error:")
+        assert "contain '{test_dir}'" in result
+
+    def test_quotes_scoped_targets_before_shell_execution(self, worktree, worker_module):
+        (worktree / "tests" / "test space.py").write_text("def test_ok():\n    assert True\n")
+        config = worker_module.AtomicConfig(
+            test_cmd="printf '<%s>\\n' {test_dir}",
+            test_dir="tests/",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={"verify_test_targets": ["tests/test space.py"]},
+        )
+        result = t.run_tests()
+        assert "<tests/test space.py>" in result
+
+    def test_explicit_target_with_spaces_is_treated_as_literal_path(self, worktree, worker_module):
+        (worktree / "tests" / "test space.py").write_text("def test_ok():\n    assert True\n")
+        config = worker_module.AtomicConfig(
+            test_cmd="printf '<%s>\\n' {test_dir}",
+            test_dir="tests/",
+        )
+        t = worker_module.AtomicTools(
+            worktree,
+            config,
+            task_scope={"verify_test_targets": ["tests/test space.py"]},
+        )
+        result = t.run_tests("tests/test space.py")
+        assert "<tests/test space.py>" in result
 
 
 class TestRunBashPolicy:

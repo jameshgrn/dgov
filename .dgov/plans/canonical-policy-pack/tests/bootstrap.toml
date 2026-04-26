@@ -1,0 +1,30 @@
+[tasks.cover-bootstrap-policy-pack]
+summary = "Add targeted tests for canonical init policy pack bootstrap"
+prompt = """
+Orient:
+- Read `src/dgov/cli/init.py`, any new bootstrap policy source added by the runtime task, and the existing init coverage in `tests/test_cli.py`.
+- This task is about proving the new default bootstrap behavior. Do not broaden into unrelated CLI coverage.
+
+Edit:
+1. Extend `tests/test_cli.py` so `dgov init` coverage proves the canonical policy pack is exported by default.
+2. Add assertions for the behavior that matters operationally:
+   - bootstrap creates `.dgov/sops/` and writes the expected standard SOP files
+   - generated governor content is materially richer than the thin scaffold and includes the canonical planning/workflow sections
+   - non-force init still preserves existing bootstrap files when they already exist
+   - `--force` refreshes bootstrap-owned policy files
+3. Keep the tests behavior-focused. Use the existing CLI test style and only mock the sentrux boundary where needed.
+
+Verify:
+- `uv run pytest -q tests/test_cli.py -k 'init'`
+- `uv run ruff check tests/test_cli.py`
+- `uv run ruff format --check tests/test_cli.py`
+"""
+commit_message = "Test canonical init policy pack bootstrap"
+depends_on = ["runtime/bootstrap.export-policy-pack"]
+
+[tasks.cover-bootstrap-policy-pack.files]
+edit = ["tests/test_cli.py"]
+read = [
+  "src/dgov/cli/init.py",
+  "src/dgov/bootstrap_policy.py",
+]

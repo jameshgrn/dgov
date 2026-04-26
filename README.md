@@ -37,28 +37,26 @@ export FIREWORKS_API_KEY=your-key-here
 # 2. Bootstrap your project
 cd /path/to/your/repo
 git init
-dgov init                # Creates .dgov/project.toml and .dgov/governor.md
+dgov init                # Creates .dgov/project.toml, .dgov/governor.md, and .dgov/sops/
 
 # 3. Review bootstrap files
 # .dgov/project.toml: repo toolchain + LLM endpoint config
 # .dgov/governor.md: planning, retry, and done criteria for the governor
+# .dgov/sops/*.md: worker execution guidance and review/testing discipline
 
 # 4. Create a plan tree
 dgov init-plan my-plan
 
-# 5. Save the architectural baseline once for this repo
-dgov sentrux gate-save
-
-# 6. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
+# 5. Edit .dgov/plans/my-plan/tasks/main.toml, then compile it
 dgov compile .dgov/plans/my-plan/
 
-# 7. Run the compiled plan
+# 6. Run the compiled plan
 # If the repo has no commits yet, dgov will create a bootstrap snapshot.
-# dgov run requires an existing .sentrux/baseline.json and fails if the
-# final post-run comparison detects architectural degradation.
+# If the repo has no .sentrux/baseline.json yet, dgov run bootstraps it once,
+# then keeps using explicit baseline comparison on subsequent runs.
 dgov run .dgov/plans/my-plan/
 
-# 8. Monitor progress in another terminal
+# 7. Monitor progress in another terminal
 dgov watch
 ```
 
@@ -67,7 +65,7 @@ dgov watch
 `dgov` treats `.sentrux/baseline.json` as governor-owned state.
 
 - Create or refresh it explicitly with `dgov sentrux gate-save`
-- `dgov run` does not auto-save a new baseline
+- `dgov run` auto-bootstraps a missing baseline once in a fresh repo or clean worktree
 - worker tasks must not edit `.sentrux/baseline.json`
 - a run fails if the final post-run sentrux comparison reports degradation
 
@@ -108,7 +106,12 @@ Then export the matching env var before `dgov compile` or `dgov run`.
 
 ## SOP Format
 
-Worker guidance lives in `.dgov/sops/*.md`. SOP files are standardized:
+`dgov init` scaffolds the policy pack in three layers:
+- `.dgov/project.toml`: repo toolchain, runtime, and provider config
+- `.dgov/governor.md`: governor planning, retry, and done criteria
+- `.dgov/sops/*.md`: worker execution guidance and review/testing discipline
+
+SOP files are standardized:
 - required front matter: `name`, `title`, `summary`, `applies_to`, `priority`
 - required sections: `When`, `Do`, `Do Not`, `Verify`, `Escalate`
 
@@ -126,7 +129,7 @@ State is stored in `.dgov/state.db` (SQLite WAL). The event log is the authority
 dgov                     # Show status
 dgov status              # Show status (explicit)
 dgov --json status       # Show status as JSON
-dgov init                # Bootstrap .dgov/project.toml and .dgov/governor.md
+dgov init                # Bootstrap .dgov/project.toml, .dgov/governor.md, and .dgov/sops/
 dgov init-plan <name>    # Initialize a new plan directory
 dgov fix <prompt>        # Create and run a single-task fix plan
 dgov compile <dir>       # Compile a plan tree to _compiled.toml

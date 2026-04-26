@@ -1,0 +1,32 @@
+[tasks.sync-bootstrap-docs]
+summary = "Document canonical policy pack bootstrap and current sentrux behavior"
+prompt = """
+Orient:
+- Read `README.md`, `src/dgov/cli/init.py`, and `src/dgov/cli/run.py`.
+- The docs should describe current behavior, not aspirational behavior. Keep this task factual and limited to the bootstrap/policy-pack story.
+
+Edit:
+1. Update `README.md` so quick start and bootstrap docs say `dgov init` now scaffolds the canonical policy pack, including `.dgov/sops/`.
+2. Clarify the policy-oriented split between:
+   - `.dgov/project.toml` for toolchain/runtime config
+   - `.dgov/governor.md` for governor contract
+   - `.dgov/sops/*.md` for worker execution guidance
+3. Fix the sentrux baseline docs drift so README matches current behavior: `dgov run` bootstraps a missing baseline once, while `dgov sentrux gate-save` remains the explicit refresh path.
+4. Keep the docs concise. Do not add a new guide or duplicate the full charter/SOP text in README.
+
+Verify:
+- `uv run pytest -q tests/test_cli.py -k 'init'`
+- `uv run ruff check src/dgov/cli/init.py src/dgov/cli/run.py tests/test_cli.py`
+"""
+commit_message = "Document canonical init policy pack bootstrap"
+depends_on = ["runtime/bootstrap.export-policy-pack"]
+
+[tasks.sync-bootstrap-docs.files]
+edit = ["README.md"]
+read = [
+  ".dgov/project.toml",
+  ".dgov/governor.md",
+  "src/dgov/cli/init.py",
+  "src/dgov/cli/run.py",
+  "tests/test_cli.py",
+]

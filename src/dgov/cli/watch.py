@@ -173,6 +173,14 @@ def _format_worker_log(ts: str, task_slug: str, ev: dict) -> RenderableType | No
     """Format worker_log events. Returns Renderable or None to suppress."""
     log_type = ev.get("log_type", "")
     content = ev.get("content")
+    verify_tools = frozenset({
+        "run_tests",
+        "lint_check",
+        "lint_fix",
+        "format_file",
+        "type_check",
+        "check_syntax",
+    })
 
     if log_type == "error":
         return _make_row(ts, "✖", "error", "bold red", task_slug, str(content), full_width=True)
@@ -201,6 +209,13 @@ def _format_worker_log(ts: str, task_slug: str, ev: dict) -> RenderableType | No
         return _make_row(ts, "○", "call", "blue", task_slug, content_text)
 
     if log_type == "result":
+        if isinstance(content, dict) and content.get("status") == "success":
+            tool = content.get("tool", "?")
+            if tool in verify_tools:
+                content_text = Text()
+                content_text.append("tool: ", style="dim")
+                content_text.append(str(tool), style="bold green")
+                return _make_row(ts, "✔", "ok", "green", task_slug, content_text)
         if isinstance(content, dict) and content.get("status") == "failed":
             tool = content.get("tool", "?")
             content_text = Text()

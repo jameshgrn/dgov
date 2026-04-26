@@ -67,7 +67,6 @@ class DagKernel:
 
     deps: dict[str, tuple[str, ...]]
     task_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
-    pane_slugs: dict[str, str] = field(default_factory=dict)
     max_retries: int = 3
 
     # Mutable state
@@ -244,7 +243,7 @@ class DagKernel:
                 return [
                     MergeTask(
                         slug,
-                        self.pane_slugs.get(slug, ""),
+                        "",
                         file_claims=self.task_files.get(slug, ()),
                     )
                 ]

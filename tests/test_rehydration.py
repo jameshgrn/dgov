@@ -69,6 +69,7 @@ def test_rehydration_restores_kernel_state(tmp_path: Path, mock_dag: DagDefiniti
     # 3. Verify kernel state
     assert runner.kernel.task_states["a"] == TaskState.MERGED
     assert runner.kernel.task_states["b"] == TaskState.PENDING
+    assert runner._ctx("a").pane_slug == "p1"
 
     # 4. Verify runner start() unblocks 'b'
     actions = runner.kernel.start()
