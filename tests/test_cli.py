@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 from helpers import compile_plan_tree
+from rich.console import Console
 
+from dgov.bootstrap_policy import BOOTSTRAP_SOP_FILENAMES
 from dgov.cli import cli
 from dgov.cli.init import (
     _detect_project,
@@ -19,7 +21,11 @@ from dgov.cli.init import (
     _render_governor_md,
     _render_project_toml,
 )
-from dgov.cli.watch import _default_watch_state, _format_event, _infer_plan_name_from_active_tasks
+from dgov.cli.watch import (
+    _default_watch_state,
+    _format_event,
+    _infer_plan_name_from_active_tasks,
+)
 from dgov.persistence import (
     emit_event,
     list_runtime_artifacts,
@@ -461,8 +467,10 @@ def test_init_creates_bootstrap_files(
         assert "Created" in result.output
         config = Path(td, ".dgov", "project.toml")
         governor = Path(td, ".dgov", "governor.md")
+        sops_dir = Path(td, ".dgov", "sops")
         assert config.exists()
         assert governor.exists()
+        assert sops_dir.is_dir()
         content = config.read_text()
         assert 'language = "python"' in content
         assert 'src_dir = "src/"' in content
@@ -473,8 +481,12 @@ def test_init_creates_bootstrap_files(
         assert 'test_cmd = "uv run pytest {test_dir} -q --tb=short"' in content
         assert 'lint_cmd = "uv run ruff check {file}"' in content
         assert "# Governor Charter" in governor.read_text()
-        assert "dgov sentrux gate-save" in governor.read_text()
+        assert "## Plan Authoring Workflow" in governor.read_text()
+        assert "## Done Criteria" in governor.read_text()
+        for name in BOOTSTRAP_SOP_FILENAMES:
+            assert (sops_dir / name).exists()
         assert "Next:" in result.output
+        assert ".dgov/sops/" in result.output
         assert "dgov sentrux gate-save" in result.output
 
 
@@ -628,6 +640,10 @@ def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:
         dgov_dir.mkdir()
         (dgov_dir / "project.toml").write_text("[project]\n")
         (dgov_dir / "governor.md").write_text("# existing\n")
+        sops_dir = dgov_dir / "sops"
+        sops_dir.mkdir()
+        for name in BOOTSTRAP_SOP_FILENAMES:
+            (sops_dir / name).write_text(f"# {name}\n")
         result = runner.invoke(cli, ["init"])
         assert result.exit_code != 0
         assert "Already initialized" in result.output
@@ -647,6 +663,30 @@ def test_init_creates_missing_governor_without_overwriting_project(
         assert "governor.md" in result.output
         assert (dgov_dir / "project.toml").read_text() == existing
         assert (dgov_dir / "governor.md").exists()
+        for name in BOOTSTRAP_SOP_FILENAMES:
+            assert (dgov_dir / "sops" / name).exists()
+
+
+def test_init_preserves_existing_bootstrap_policy_files_without_force(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with runner.isolated_filesystem(temp_dir=tmp_path) as td:
+        monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: False)
+        dgov_dir = Path(td, ".dgov")
+        sops_dir = dgov_dir / "sops"
+        sops_dir.mkdir(parents=True)
+        (dgov_dir / "project.toml").write_text('[project]\nlanguage = "rust"\n')
+        (dgov_dir / "governor.md").write_text("# custom governor\n")
+        (sops_dir / "testing.md").write_text("# custom testing\n")
+
+        result = runner.invoke(cli, ["init"])
+
+        assert result.exit_code == 0
+        assert (dgov_dir / "project.toml").read_text() == '[project]\nlanguage = "rust"\n'
+        assert (dgov_dir / "governor.md").read_text() == "# custom governor\n"
+        assert (sops_dir / "testing.md").read_text() == "# custom testing\n"
+        for name in BOOTSTRAP_SOP_FILENAMES:
+            assert (sops_dir / name).exists()
 
 
 def test_init_force_overwrites(
@@ -655,14 +695,19 @@ def test_init_force_overwrites(
     with runner.isolated_filesystem(temp_dir=tmp_path) as td:
         monkeypatch.setattr("dgov.cli.init._sentrux_available", lambda: False)
         dgov_dir = Path(td, ".dgov")
-        dgov_dir.mkdir()
+        sops_dir = dgov_dir / "sops"
+        sops_dir.mkdir(parents=True)
         (dgov_dir / "project.toml").write_text("[project]\n")
         (dgov_dir / "governor.md").write_text("# old\n")
+        (sops_dir / "testing.md").write_text("# old testing\n")
         result = runner.invoke(cli, ["init", "--force"])
         assert result.exit_code == 0
         assert "project.toml" in result.output
         assert "governor.md" in result.output
         assert "# Governor Charter" in (dgov_dir / "governor.md").read_text()
+        assert "Testing Conventions" in (sops_dir / "testing.md").read_text()
+        for name in BOOTSTRAP_SOP_FILENAMES:
+            assert (sops_dir / name).exists()
 
 
 def test_init_auto_creates_sentrux_baseline_in_headless(
@@ -755,9 +800,9 @@ def test_detect_scope_ignore_files_adds_uv_lock_for_python(tmp_path: Path) -> No
 def test_render_governor_md() -> None:
     content = _render_governor_md()
     assert content.startswith("# Governor Charter")
-    assert "## Planning Rules" in content
+    assert "## Plan Authoring Workflow" in content
+    assert "## Done Criteria" in content
     assert ".dgov/sops/" in content
-    assert ".sentrux/baseline.json" in content
 
 
 # -- help / version --
@@ -1086,6 +1131,23 @@ def test_default_watch_state_uses_inferred_plan_history(tmp_path: Path) -> None:
 def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path) -> None:
     emit_event(str(tmp_path), "task_done", "pane-a", plan_name="old-plan")
     assert _default_watch_state(str(tmp_path), watch_all=False, plan_name=None) == (None, 1)
+
+
+def test_format_event_shows_successful_verify_tool_results() -> None:
+    renderable = _format_event({
+        "event": "worker_log",
+        "task_slug": "tasks/main.a",
+        "ts": "2026-04-24T12:34:56Z",
+        "log_type": "result",
+        "content": {"status": "success", "tool": "run_tests"},
+    })
+
+    assert renderable is not None
+    console = Console(record=True, width=120)
+    console.print(renderable)
+    rendered = console.export_text()
+    assert "run_tests" in rendered
+    assert "ok" in rendered
 
 
 def test_infer_plan_name_ignores_stale_prior_run(tmp_path: Path) -> None:

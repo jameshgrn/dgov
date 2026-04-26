@@ -9,6 +9,7 @@ from pathlib import Path
 
 import click
 
+from dgov.bootstrap_policy import GOVERNOR_CHARTER, SOP_FILES
 from dgov.cli import cli, want_json
 from dgov.project_root import resolve_project_root
 
@@ -435,76 +436,32 @@ def _render_project_toml(
 
 def _render_governor_md() -> str:
     """Render the repo-local governor charter."""
-    return """# Governor Charter
+    return GOVERNOR_CHARTER
 
-This file is the repo-local contract for the governor. Read it before authoring
-plans, retrying failed work, or changing task boundaries.
 
-## Purpose
+def _bootstrap_policy_targets(dgov_dir: Path) -> dict[Path, str]:
+    """Return bootstrap-owned policy files under .dgov/."""
+    sops_dir = dgov_dir / "sops"
+    return {
+        dgov_dir / "governor.md": _render_governor_md(),
+        **{sops_dir / name: content for name, content in SOP_FILES.items()},
+    }
 
-The governor is responsible for making AI coding work deterministic at the
-system level. Workers may be probabilistic. Governance should not be.
 
-## Core Principles
-
-- Plan first. Do not dispatch work that has not been thought through.
-- Keep tasks atomic. One task should produce one logical change.
-- Respect file claims. A task must only edit files it explicitly claims.
-- Prefer explicit contracts over clever prompts.
-- Fail closed. If structure or scope is unclear, stop and fix the plan.
-
-## Planning Rules
-
-- Split work into units with clear summaries, prompts, and commit messages.
-- Use dependencies only for real ordering constraints.
-- Avoid broad exploratory tasks. Break them into concrete units.
-- Put repo-wide implementation guidance in `.dgov/sops/`, not in ad hoc task text.
-- Keep provider config and project conventions in `.dgov/project.toml`.
-
-## Task Authoring Rules
-
-- Every task must declare file claims.
-- Prompts should follow: orient, edit, verify.
-- Commit messages must be imperative and reflect one logical change.
-- If a task needs different model behavior, override `agent`; do not restate
-  general governance rules in the task prompt.
-
-## Retry And Failure Rules
-
-- Retry only when the task is still well-scoped and the failure is fixable.
-- If the worker exposed a planning flaw, change the plan before retrying.
-- If settlement rejects for scope, do not brute-force retry.
-- If a failure points to repo-wide guidance drift, update the relevant SOP or
-  this charter.
-
-## Scope Rules
-
-- Governance rules live here.
-- Worker execution guidance lives in `.dgov/sops/*.md`.
-- `.sentrux/baseline.json` is governor-owned state. Refresh it explicitly with
-  `dgov sentrux gate-save`; workers must not edit it.
-- Hard invariants live in code and settlement gates.
-- Do not use this file as a dump for project-specific style trivia. Keep it
-  focused on planning, dispatch, retry, and done criteria.
-
-## State Modeling
-
-- Treat state-model cleanup as architecture work, not incidental polish.
-- If a task reveals state bloat, contradictory flags, or grab-bag models,
-  either make the refactor explicit in the task or split it into a follow-up.
-- Prefer designs where invalid states are impossible, not just discouraged.
-- Prefer derivation from durable evidence like events over storing redundant
-  booleans or cached conclusions.
-- Do not smuggle broad state-model rewrites into unrelated tasks just because
-  the worker noticed a smell.
-
-## Done Criteria
-
-- The plan is structurally valid.
-- Tasks are scoped tightly enough to review and retry safely.
-- Guidance is obvious enough that the worker should not need to infer policy.
-- Settlement can verify the result with declared commands and gates.
-"""
+def _write_bootstrap_files(
+    bootstrap_files: dict[Path, str],
+    *,
+    force: bool,
+) -> list[Path]:
+    """Create missing bootstrap files, or refresh them when force=True."""
+    created: list[Path] = []
+    for path, content in bootstrap_files.items():
+        if not force and path.exists():
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        created.append(path)
+    return created
 
 
 @cli.command(name="init")
@@ -518,14 +475,11 @@ def init_cmd(force: bool, yes: bool) -> None:
     project_root = resolve_project_root()
     dgov_dir = project_root / ".dgov"
     config_path = dgov_dir / "project.toml"
-    governor_path = dgov_dir / "governor.md"
-
     language, src_dir, test_dir, extensions = _detect_project(project_root)
     scope_ignore_files = _detect_scope_ignore_files(project_root, language)
     toml_content = _render_project_toml(
         language, src_dir, test_dir, extensions, scope_ignore_files, project_root
     )
-    governor_content = _render_governor_md()
 
     dgov_dir.mkdir(parents=True, exist_ok=True)
     _ensure_gitignore(dgov_dir, _DGOV_GITIGNORE)
@@ -540,9 +494,12 @@ def init_cmd(force: bool, yes: bool) -> None:
         config_path.write_text(toml_content)
         created.append(config_path)
 
-    if force or not governor_path.exists():
-        governor_path.write_text(governor_content)
-        created.append(governor_path)
+    created.extend(
+        _write_bootstrap_files(
+            _bootstrap_policy_targets(dgov_dir),
+            force=force,
+        )
+    )
 
     if not created:
         click.echo(f"Already initialized: {dgov_dir}")
@@ -587,7 +544,7 @@ def init_cmd(force: bool, yes: bool) -> None:
                     click.echo(f"Could not create sentrux baseline: {details}", err=True)
 
         click.echo("Next:")
-        click.echo("  1. Review .dgov/project.toml and .dgov/governor.md")
+        click.echo("  1. Review .dgov/project.toml, .dgov/governor.md, and .dgov/sops/")
         if baseline_created or baseline_path.exists():
             click.echo(
                 "  2. Refresh the architectural baseline with `dgov sentrux gate-save` "

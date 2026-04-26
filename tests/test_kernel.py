@@ -620,7 +620,7 @@ class TestSerialization:
     def test_structure(self):
         k = _k({"a": (), "b": ("a",)})
         d = k.to_dict()
-        # pane_slugs and attempts moved to runner; kernel no longer tracks these
+        # Pane metadata and attempts live in runner context, not kernel serialization.
         assert set(d.keys()) == {"task_states", "merge_order"}
         assert d["task_states"]["a"] == "pending"
 
@@ -630,4 +630,4 @@ class TestSerialization:
         k.handle(TaskDispatched("a", "p-a"))
         d = k.to_dict()
         assert d["task_states"]["a"] == "active"
-        # pane_slugs moved to runner; kernel no longer tracks this
+        # Pane metadata lives in runner context.

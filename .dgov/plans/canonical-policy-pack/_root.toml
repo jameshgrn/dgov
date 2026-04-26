@@ -1,0 +1,4 @@
+[plan]
+name = "canonical-policy-pack"
+summary = "Make dgov init scaffold the canonical policy pack we actually use."
+sections = ["runtime", "tests", "docs"]

@@ -183,9 +183,15 @@ def _tool_bin_dirs(names: tuple[str, ...]) -> list[str]:
 class AtomicTools:
     """The Actuator Layer: Strict, isolated tools."""
 
-    def __init__(self, worktree: Path, config: AtomicConfig) -> None:
+    def __init__(
+        self,
+        worktree: Path,
+        config: AtomicConfig,
+        task_scope: Mapping[str, object] | None = None,
+    ) -> None:
         self.worktree = worktree.resolve()
         self.config = config
+        self.task_scope = task_scope or {}
         # Resolve python/venv paths once at init, not per-command
         self._python_bin = Path(sys.executable).parent
         self._python = sys.executable
@@ -224,6 +230,33 @@ class AtomicTools:
         activity = self._activity_log[:]
         self._activity_log.clear()
         return activity
+
+    def _normalize_scope_path(self, path: str) -> str:
+        return path.strip().lstrip("./").rstrip("/")
+
+    def _verify_test_targets(self) -> tuple[str, ...]:
+        raw = self.task_scope.get("verify_test_targets", [])
+        if isinstance(raw, list):
+            return tuple(
+                dict.fromkeys(
+                    self._normalize_scope_path(str(item))
+                    for item in raw
+                    if self._normalize_scope_path(str(item))
+                )
+            )
+        return ()
+
+    def _requested_test_target_allowed(self, requested: str, allowed: str) -> bool:
+        requested_norm = self._normalize_scope_path(requested)
+        allowed_norm = self._normalize_scope_path(allowed)
+        if not requested_norm or not allowed_norm:
+            return False
+        allowed_path = self.worktree / allowed_norm
+        if allowed_path.exists() and allowed_path.is_dir():
+            return requested_norm == allowed_norm or requested_norm.startswith(f"{allowed_norm}/")
+        if not allowed_path.exists() and not Path(allowed_norm).suffix:
+            return requested_norm == allowed_norm or requested_norm.startswith(f"{allowed_norm}/")
+        return requested_norm == allowed_norm
 
     def _reject_shell_command(self, cmd: str) -> str | None:
         policy = self.config.tool_policy
@@ -858,10 +891,65 @@ class AtomicTools:
     # -- SOP compound tools --
 
     def run_tests(self, file: str = "") -> str:
-        """Run tests using the project's declared test command."""
-        cmd = self.config.test_cmd.replace("{test_dir}", self.config.test_dir)
-        if file:
-            cmd = cmd.replace(self.config.test_dir, file)
+        """Run tests using the project's declared scoped test command."""
+        if not self.config.test_cmd:
+            return "Error: run_tests() is unavailable because test_cmd is not configured."
+        if "{test_dir}" not in self.config.test_cmd:
+            return (
+                "Error: run_tests() requires project test_cmd to contain '{test_dir}' "
+                "for scoped verification."
+            )
+
+        allowed_targets = self._verify_test_targets()
+        if not allowed_targets:
+            return (
+                "Error: run_tests() requires in-scope test targets. "
+                "Claim relevant tests via files.read/files.edit/files.create first."
+            )
+
+        requested = file.strip()
+        if not requested:
+            if len(allowed_targets) != 1:
+                allowed = ", ".join(allowed_targets)
+                return (
+                    "Error: run_tests() requires an explicit in-scope target for this task. "
+                    f"Allowed targets: {allowed}."
+                )
+            requested_targets = [allowed_targets[0]]
+        else:
+            requested_literal = self._normalize_scope_path(requested)
+            if requested_literal and any(
+                self._requested_test_target_allowed(requested_literal, allowed)
+                for allowed in allowed_targets
+            ):
+                requested_targets = [requested_literal]
+            else:
+                try:
+                    requested_targets = [
+                        self._normalize_scope_path(p) for p in shlex.split(requested)
+                    ]
+                except ValueError as exc:
+                    return f"Error: Invalid run_tests() target: {exc}"
+            if not requested_targets:
+                return "Error: run_tests() target is empty."
+            disallowed = [
+                target
+                for target in requested_targets
+                if not any(
+                    self._requested_test_target_allowed(target, allowed)
+                    for allowed in allowed_targets
+                )
+            ]
+            if disallowed:
+                allowed = ", ".join(allowed_targets)
+                return (
+                    "Error: run_tests() target is outside this task's verification scope. "
+                    f"Requested: {', '.join(disallowed)}. Allowed targets: {allowed}."
+                )
+
+        cmd = self.config.test_cmd.replace(
+            "{test_dir}", " ".join(shlex.quote(target) for target in requested_targets)
+        )
         return self._execute_shell(cmd, enforce_policy=False)
 
     def lint_check(self, file: str = "") -> str:
@@ -1502,13 +1590,19 @@ def get_tool_spec(
             "type": "function",
             "function": {
                 "name": "run_tests",
-                "description": "Run the project's test suite. Optionally target a specific file.",
+                "description": (
+                    "Run the project's scoped test command. "
+                    "You must stay within this task's in-scope test targets."
+                ),
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "file": {
                             "type": "string",
-                            "description": "Specific test file (default: run all)",
+                            "description": (
+                                "Specific in-scope test file or directory. "
+                                "Omit only when exactly one target is in scope."
+                            ),
                             "default": "",
                         },
                     },

@@ -13,9 +13,7 @@ import logging
 import signal
 import time
 from collections.abc import Callable, Coroutine, Mapping
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
-from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +47,7 @@ from dgov.settlement_flow import (
     IntegrationCandidateResult,
     IntegrationCandidateVerdict,
     IntegrationRiskRecord,
+    RiskLevel,
     SettlementFlow,
     autofix_sandbox,
     commit_in_worktree,
@@ -70,6 +69,47 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_scope_path(path: str) -> str:
+    return path.strip().lstrip("./").rstrip("/")
+
+
+def _verify_test_targets(task: DagTaskSpec, test_dir: str) -> tuple[str, ...]:
+    test_root = _normalize_scope_path(test_dir)
+    if not test_root:
+        return ()
+    claimed = (
+        *task.files.create,
+        *task.files.edit,
+        *task.files.touch,
+        *task.files.read,
+    )
+    return tuple(
+        dict.fromkeys(
+            norm
+            for path in claimed
+            if (norm := _normalize_scope_path(path))
+            and (norm == test_root or norm.startswith(f"{test_root}/"))
+        )
+    )
+
+
+def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
+    evidence = risk_record.overlap_evidence
+    if not evidence:
+        return "no semantic evidence"
+
+    parts: list[str] = []
+    for item in evidence:
+        kind = item.__class__.__name__
+        symbol = getattr(item, "symbol_name", "")
+        file_path = getattr(item, "file_path", "")
+        file_paths = getattr(item, "file_paths", ())
+        location = file_path or ", ".join(str(path) for path in file_paths)
+        detail = ": ".join(part for part in (symbol, location) if part)
+        parts.append(f"{kind}({detail})" if detail else kind)
+    return "; ".join(parts)
 
 
 @dataclass
@@ -177,24 +217,22 @@ class EventDagRunner:
         }
         self.task_read_files = {slug: tuple(t.files.read) for slug, t in dag.tasks.items()}
         self._tasks: dict[str, TaskContext] = {}
-        self._pane_slugs: dict[str, str] = {}  # shared ref with kernel
         self.kernel = DagKernel(
             deps=self.deps,
             task_files=self.task_files,
-            pane_slugs=self._pane_slugs,
             max_retries=dag.default_max_retries,
         )
         self._baseline_diag_note = _build_baseline_diag_note(self.project_config, session_root)
         self._review_sop_blocks = _load_review_sop_blocks(session_root)
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
-        self._executor = ThreadPoolExecutor(max_workers=8)
+        self._settlement_semaphore = asyncio.Semaphore(1)
         self._shutdown_event = asyncio.Event()
+        self._shutdown_interrupted = False
         self._settlement_flow = SettlementFlow(
             session_root=session_root,
             plan_name=dag.name,
             project_config=self.project_config,
-            executor=self._executor,
         )
 
         if restart:
@@ -209,6 +247,16 @@ class EventDagRunner:
             ctx = TaskContext()
             self._tasks[slug] = ctx
         return ctx
+
+    def _pane_slug_for_task(self, slug: str) -> str:
+        ctx = self._tasks.get(slug)
+        return ctx.pane_slug if ctx and ctx.pane_slug else ""
+
+    def _merge_action_with_context(self, action: MergeTask) -> MergeTask:
+        pane_slug = action.pane_slug or self._pane_slug_for_task(action.task_slug)
+        if pane_slug == action.pane_slug:
+            return action
+        return MergeTask(action.task_slug, pane_slug, action.file_claims)
 
     @property
     def task_errors(self) -> dict[str, str]:
@@ -330,6 +378,8 @@ class EventDagRunner:
 
         if not task_slug or task_slug not in self.kernel.task_states:
             return
+        if pane:
+            self._ctx(task_slug).pane_slug = pane
 
         if ename == "dag_task_dispatched":
             self.kernel.handle(TaskDispatched(task_slug, pane))
@@ -416,14 +466,13 @@ class EventDagRunner:
         self._pending_dispatches.clear()
 
         # Close all worktrees (including rejected ones for total cleanup ONLY if shutdown was set)
-        loop = asyncio.get_running_loop()
         to_clean = list(active_wts)
         if self._shutdown_event.is_set():
             to_clean += rejected_wts
 
         for wt in to_clean:
             try:
-                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+                await asyncio.to_thread(remove_worktree, self.session_root, wt)
             except Exception as exc:
                 logger.warning("Failed to remove worktree: %s", exc)
 
@@ -432,9 +481,28 @@ class EventDagRunner:
             if self._shutdown_event.is_set():
                 ctx.rejected_worktree = None
 
-        # Shutdown executor
-        self._executor.shutdown(wait=False)
         logger.info("Cleanup complete")
+
+    def _abandon_active_tasks_for_shutdown(self) -> list[DagAction]:
+        actions: list[DagAction] = []
+        for task_slug, state in list(self.kernel.task_states.items()):
+            if state != TaskState.ACTIVE:
+                continue
+            self._shutdown_interrupted = True
+            pane_slug = self._pane_slug_for_task(task_slug)
+            logger.warning("Task %s interrupted by operator — marking ABANDONED", task_slug)
+            emit_event(
+                self.session_root,
+                "task_abandoned",
+                pane_slug or "runner",
+                plan_name=self.dag.name,
+                task_slug=task_slug,
+                reason="shutdown",
+            )
+            actions.extend(
+                self.kernel.handle(TaskWaitDone(task_slug, pane_slug, TaskState.ABANDONED))
+            )
+        return actions
 
     async def run(self) -> dict[str, str]:
         """Execute DAG with high-performance async loop."""
@@ -452,7 +520,10 @@ class EventDagRunner:
         )
 
         try:
-            return await self._run_loop()
+            result = await self._run_loop()
+            if self._shutdown_interrupted:
+                raise KeyboardInterrupt
+            return result
         finally:
             await self._cleanup()
 
@@ -520,9 +591,8 @@ class EventDagRunner:
         if ctx:
             ctx.worktree = None
         if wt:
-            loop = asyncio.get_running_loop()
             try:
-                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+                await asyncio.to_thread(remove_worktree, self.session_root, wt)
                 logger.debug("Cleaned up worktree for failed task: %s", action.task_slug)
             except Exception as exc:
                 logger.warning("CleanupTask failed for %s: %s", action.task_slug, exc)
@@ -613,10 +683,8 @@ class EventDagRunner:
         """Get the diff of uncommitted changes in a worktree."""
         import subprocess as sp
 
-        loop = asyncio.get_running_loop()
         try:
-            diff_result = await loop.run_in_executor(
-                self._executor,
+            diff_result = await asyncio.to_thread(
                 lambda: sp.run(
                     ["git", "diff", "HEAD"],
                     cwd=wt.path,
@@ -642,7 +710,6 @@ class EventDagRunner:
 
         On any failure, pushes a failed WorkerExit so _run_loop never hangs.
         """
-        loop = asyncio.get_running_loop()
         task = self.dag.tasks[task_slug]
         ctx = self._ctx(task_slug)
         fork_pane = f"{pane_slug}-fork-{ctx.fork_depth}"
@@ -664,7 +731,7 @@ class EventDagRunner:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
             )
-            loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
+            self._event_queue.put_nowait(exit_event)
 
         try:
             diff_text = await self._get_worktree_diff(wt) or "(no diff available)"
@@ -968,16 +1035,45 @@ class EventDagRunner:
                     continue
                 actions = []
 
-            if self.kernel.done or self._shutdown_event.is_set():
+            if self._shutdown_event.is_set():
+                actions = self._abandon_active_tasks_for_shutdown()
+                if actions:
+                    continue
+                self._shutdown_interrupted = True
                 break
 
-            # Wait for any worker to finish (hot-path)
+            if self.kernel.done:
+                break
+
+            # Wait for either a worker exit or shutdown request.
+            queue_get = asyncio.create_task(self._event_queue.get())
+            shutdown_wait = asyncio.create_task(self._shutdown_event.wait())
             try:
-                exit_event = await asyncio.wait_for(self._event_queue.get(), timeout=5.0)
-                actions = self._handle_worker_exit(exit_event)
+                done, pending = await asyncio.wait(
+                    {queue_get, shutdown_wait},
+                    timeout=5.0,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                if queue_get in done:
+                    exit_event = queue_get.result()
+                    actions = self._handle_worker_exit(exit_event)
+                    continue
+                if shutdown_wait in done:
+                    continue
+                if not self._pending_dispatches and self.kernel.done:
+                    break
             except TimeoutError:
                 if not self._pending_dispatches and self.kernel.done:
                     break
+            finally:
+                if not queue_get.done():
+                    queue_get.cancel()
+                if not shutdown_wait.done():
+                    shutdown_wait.cancel()
+                await asyncio.gather(queue_get, shutdown_wait, return_exceptions=True)
 
         return self._task_state_snapshot()
 
@@ -1090,6 +1186,25 @@ class EventDagRunner:
         ctx = self._ctx(action.task_slug)
         attempts = ctx.attempts
         error_detail = ctx.error or ""
+
+        if self._shutdown_event.is_set():
+            self._shutdown_interrupted = True
+            logger.warning(
+                "Task %s interrupted during shutdown — marking ABANDONED: %s",
+                action.task_slug,
+                error_detail or action.reason,
+            )
+            emit_event(
+                self.session_root,
+                "task_abandoned",
+                action.pane_slug or "runner",
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                reason="shutdown",
+            )
+            return self.kernel.handle(
+                TaskWaitDone(action.task_slug, action.pane_slug, TaskState.ABANDONED)
+            )
 
         gov_action = GovernorAction.FAIL
         if error_detail in self._NON_RETRYABLE_ERRORS:
@@ -1369,7 +1484,6 @@ class EventDagRunner:
         task = self.dag.tasks[action.task_slug]
         output_dir = Path(self.session_root) / ".dgov" / "out" / action.task_slug
         output_dir.mkdir(parents=True, exist_ok=True)
-        loop = asyncio.get_running_loop()
 
         # Build worker prompt with all enrichments (baseline diag, ledger probation, retry context)
         ctx = self._ctx(action.task_slug)
@@ -1377,8 +1491,8 @@ class EventDagRunner:
 
         # Pillar #3: Snapshot Isolation
         base_ref = self._base_ref_for_task(action.task_slug)
-        wt = await loop.run_in_executor(
-            self._executor, create_worktree, self.session_root, action.task_slug, base_ref
+        wt = await asyncio.to_thread(
+            create_worktree, self.session_root, action.task_slug, base_ref
         )
         ctx.worktree = wt
 
@@ -1389,19 +1503,15 @@ class EventDagRunner:
 
         try:
             if task.role not in ("researcher", "reviewer"):
-                await loop.run_in_executor(
-                    self._executor,
-                    partial(
-                        prepare_worktree,
-                        wt,
-                        language=self.project_config.language,
-                        setup_cmd=self.project_config.setup_cmd or "",
-                        timeout_s=self.project_config.bootstrap_timeout,
-                    ),
+                await asyncio.to_thread(
+                    prepare_worktree,
+                    wt,
+                    language=self.project_config.language,
+                    setup_cmd=self.project_config.setup_cmd or "",
+                    timeout_s=self.project_config.bootstrap_timeout,
                 )
             pane_slug = f"headless-{action.task_slug}-{uuid.uuid4().hex[:8]}"
             ctx.pane_slug = pane_slug
-            self._pane_slugs[action.task_slug] = pane_slug  # kernel shared ref
             self._pending_dispatches.add(action.task_slug)
             ctx.start_time = time.time()
             task_scope = {
@@ -1411,6 +1521,9 @@ class EventDagRunner:
                 "delete": list(task.files.delete),
                 "touch": list(task.files.touch),
                 "read": list(task.files.read),
+                "verify_test_targets": list(
+                    _verify_test_targets(task, self.project_config.test_dir)
+                ),
             }
 
             # Record runtime artifact metadata for cleanup and debugging only.
@@ -1462,7 +1575,7 @@ class EventDagRunner:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                 )
-                loop.call_soon_threadsafe(self._event_queue.put_nowait, exit_event)
+                self._event_queue.put_nowait(exit_event)
 
             dispatch_task = task if not ctx.error else task.model_copy(update={"prompt": prompt})
             # Use re-resolved agent
@@ -1495,7 +1608,7 @@ class EventDagRunner:
             ctx.error = str(exc)
             self._pending_dispatches.discard(action.task_slug)
             try:
-                await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+                await asyncio.to_thread(remove_worktree, self.session_root, wt)
             except Exception as cleanup_exc:
                 logger.warning("Worktree cleanup after dispatch failure: %s", cleanup_exc)
             ctx.worktree = None
@@ -1505,7 +1618,6 @@ class EventDagRunner:
         self,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
     ) -> tuple[str | None, bool]:
         """Autofix, commit, and handle read-only roles."""
         from dgov import deploy_log
@@ -1514,7 +1626,6 @@ class EventDagRunner:
             task=self.dag.tasks[action.task_slug],
             action=action,
             wt=wt,
-            loop=loop,
             emit_event_fn=emit_event,
             autofix_fn=autofix_sandbox,
             commit_fn=commit_in_worktree,
@@ -1525,14 +1636,12 @@ class EventDagRunner:
         self,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
     ) -> tuple[str | None, IntegrationRiskRecord | None]:
         """Compute risk and run isolated validation gate."""
         return await self._settlement_flow.run_isolated_validation(
             task=self.dag.tasks[action.task_slug],
             action=action,
             wt=wt,
-            loop=loop,
             emit_event_fn=emit_event,
             validate_fn=validate_sandbox,
         )
@@ -1543,7 +1652,6 @@ class EventDagRunner:
         wt: Worktree,
         candidate_result: IntegrationCandidateResult,
         risk_record: IntegrationRiskRecord,
-        loop: asyncio.AbstractEventLoop,
     ) -> str | None:
         """Run deterministic Python semantic gate on the integrated candidate."""
         return await self._settlement_flow.run_semantic_gate_on_candidate(
@@ -1551,7 +1659,6 @@ class EventDagRunner:
             wt=wt,
             candidate_result=candidate_result,
             risk_record=risk_record,
-            loop=loop,
             emit_event_fn=emit_event,
             remove_candidate_fn=remove_integration_candidate,
             semantic_gate_fn=run_python_semantic_gate_in_subprocess,
@@ -1563,14 +1670,12 @@ class EventDagRunner:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         task_config: ProjectConfig,
-        loop: asyncio.AbstractEventLoop,
     ) -> str | None:
         """Validate candidate with same gates as isolated validation."""
         return await self._settlement_flow.validate_and_finalize_candidate(
             action=action,
             candidate_result=candidate_result,
             task_config=task_config,
-            loop=loop,
             emit_event_fn=emit_event,
             validate_fn=validate_sandbox,
             remove_candidate_fn=remove_integration_candidate,
@@ -1582,13 +1687,11 @@ class EventDagRunner:
         self,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
     ) -> IntegrationCandidateResult:
         """Create integration candidate and emit failure event if replay fails."""
         return await self._settlement_flow.create_integration_candidate_with_emit(
             action=action,
             wt=wt,
-            loop=loop,
             emit_event_fn=emit_event,
             create_candidate_fn=create_integration_candidate,
             failed_emit_fn=emit_integration_candidate_failed,
@@ -1598,7 +1701,6 @@ class EventDagRunner:
         self,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
     ) -> None:
         """Merge worktree into main and record deployment."""
         from dgov import deploy_log
@@ -1606,7 +1708,6 @@ class EventDagRunner:
         await self._settlement_flow.finalize_merge(
             action=action,
             wt=wt,
-            loop=loop,
             merge_fn=merge_worktree,
             deploy_append_fn=deploy_log.append,
         )
@@ -1616,14 +1717,12 @@ class EventDagRunner:
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
         verdict: IntegrationCandidateVerdict,
-        loop: asyncio.AbstractEventLoop,
     ) -> None:
         """Clean up rejected candidate and emit failure event."""
         await self._settlement_flow.cleanup_rejected_candidate(
             action=action,
             candidate_result=candidate_result,
             verdict=verdict,
-            loop=loop,
             emit_event_fn=emit_event,
             remove_candidate_fn=remove_integration_candidate,
             failed_emit_fn=emit_integration_candidate_failed,
@@ -1633,13 +1732,11 @@ class EventDagRunner:
         self,
         action: MergeTask,
         candidate_result: IntegrationCandidateResult,
-        loop: asyncio.AbstractEventLoop,
     ) -> None:
         """Clean up passed candidate and emit success event."""
         await self._settlement_flow.cleanup_passed_candidate(
             action=action,
             candidate_result=candidate_result,
-            loop=loop,
             emit_event_fn=emit_event,
             remove_candidate_fn=remove_integration_candidate,
             passed_emit_fn=emit_integration_candidate_passed,
@@ -1649,7 +1746,6 @@ class EventDagRunner:
         self,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
     ) -> tuple[str | None, bool]:
         """Run settlement phases: prepare → validate → candidate → merge.
 
@@ -1661,36 +1757,36 @@ class EventDagRunner:
         task_config = replace(pc, test_cmd=task.test_cmd) if task.test_cmd else pc
 
         # Phase 1: Prepare and commit (or handle read-only roles)
-        error, was_settlement = await self._prepare_and_commit(action, wt, loop)
+        error, was_settlement = await self._prepare_and_commit(action, wt)
         if error or was_settlement is False:
             return error, was_settlement
 
         # Phase 2: Isolated validation (compute risk + run gate)
-        error, risk_record = await self._run_isolated_validation(action, wt, loop)
+        error, risk_record = await self._run_isolated_validation(action, wt)
         if error or risk_record is None:
             return error, True
+        if risk_record.risk_level == RiskLevel.CRITICAL:
+            return f"Integration risk CRITICAL: {_summarize_evidence(risk_record)}", True
 
         # Phase 3: Create integration candidate
-        candidate_result = await self._create_integration_candidate_with_emit(action, wt, loop)
+        candidate_result = await self._create_integration_candidate_with_emit(action, wt)
         if not candidate_result.passed:
             return candidate_result.error or "Integration candidate replay failed", True
 
         # Phase 4: Run semantic gate on candidate
         error = await self._run_semantic_gate_on_candidate(
-            action, wt, candidate_result, risk_record, loop
+            action, wt, candidate_result, risk_record
         )
         if error:
             return error, True
 
         # Phase 5: Validate candidate with same gates as isolated validation
-        error = await self._validate_and_finalize_candidate(
-            action, candidate_result, task_config, loop
-        )
+        error = await self._validate_and_finalize_candidate(action, candidate_result, task_config)
         if error:
             return error, True
 
         # Phase 6: Final merge and deploy
-        await self._finalize_merge(action, wt, loop)
+        await self._finalize_merge(action, wt)
         return None, False
 
     async def _settlement_retry(
@@ -1747,6 +1843,7 @@ class EventDagRunner:
             "delete": list(task.files.delete),
             "touch": list(task.files.touch),
             "read": list(task.files.read),
+            "verify_test_targets": list(_verify_test_targets(task, self.project_config.test_dir)),
         }
 
     def _noop_retry_exit(
@@ -1765,7 +1862,6 @@ class EventDagRunner:
         self,
         action: MergeTask,
         wt: Worktree,
-        loop: asyncio.AbstractEventLoop,
         error: str,
     ) -> tuple[str | None, bool]:
         logger.info("SETTLEMENT RETRY %s — feeding error back to worker", action.task_slug)
@@ -1778,7 +1874,8 @@ class EventDagRunner:
             error=error,
         )
         await self._settlement_retry(action, wt, error)
-        retry_error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
+        async with self._settlement_semaphore:
+            retry_error, settlement_rejected = await self._settle_and_merge(action, wt)
         if settlement_rejected:
             logger.warning("REJECTED %s after retry: %s", action.task_slug, retry_error)
         return retry_error, settlement_rejected
@@ -1789,7 +1886,6 @@ class EventDagRunner:
         action: MergeTask,
         wt: Worktree,
         settlement_rejected: bool,
-        loop: asyncio.AbstractEventLoop,
     ) -> None:
         ctx = self._ctx(action.task_slug)
         if settlement_rejected:
@@ -1799,7 +1895,7 @@ class EventDagRunner:
             return
 
         try:
-            await loop.run_in_executor(self._executor, remove_worktree, self.session_root, wt)
+            await asyncio.to_thread(remove_worktree, self.session_root, wt)
         except Exception as exc:
             logger.warning("Worktree cleanup failed for %s: %s", action.task_slug, exc)
         ctx.worktree = None
@@ -1828,21 +1924,22 @@ class EventDagRunner:
 
     async def _merge(self, action: MergeTask) -> list[DagAction]:
         """Commit-or-Kill: Merge worktree branch into base (Pillar #2)."""
+        action = self._merge_action_with_context(action)
         ctx = self._tasks.get(action.task_slug)
         wt = ctx.worktree if ctx else None
         if not wt:
             return self.kernel.handle(TaskMergeDone(action.task_slug))
 
-        loop = asyncio.get_running_loop()
         error = None
         settlement_rejected = False
 
         try:
-            error, settlement_rejected = await self._settle_and_merge(action, wt, loop)
+            async with self._settlement_semaphore:
+                error, settlement_rejected = await self._settle_and_merge(action, wt)
 
             if settlement_rejected and error:
                 error, settlement_rejected = await self._retry_after_settlement_rejection(
-                    action, wt, loop, error
+                    action, wt, error
                 )
         except Exception as exc:
             logger.error("Merge execution failed for %s: %s", action.task_slug, exc)
@@ -1852,7 +1949,6 @@ class EventDagRunner:
             action=action,
             wt=wt,
             settlement_rejected=settlement_rejected,
-            loop=loop,
         )
 
         if error:

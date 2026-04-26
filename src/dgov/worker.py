@@ -221,6 +221,9 @@ def _task_scope_section(task_scope: Mapping[str, object] | None) -> str:
     )
     if read_only:
         lines.append(f"- Read-only context: {', '.join(read_only)}")
+    verify_test_targets = _paths("verify_test_targets")
+    if verify_test_targets:
+        lines.append(f"- Verification test targets: {', '.join(verify_test_targets)}")
     lines.extend([
         "- Every other path is out of scope, even if it looks related.",
         "- If a path claimed under files.create already exists in this worktree, treat it as"
@@ -302,7 +305,7 @@ WORKFLOW — follow this order:
    If you make a mistake, use revert_file(path) to start over from HEAD.
 3. VERIFY: check_syntax immediately after editing (instant).
    lint_fix to auto-clean trivial issues (unused imports/vars).
-   search_tests_for to find relevant tests, then run_tests on those files.
+   search_tests_for to find relevant tests, then run_tests only on in-scope test files.
 4. FINISH: git_diff to review all your changes.
    assert_file_unchanged on files you should NOT have touched.
    Call done with a summary.
@@ -315,6 +318,7 @@ ITERATION BUDGET:
 DO NOT:
 - Debug PATH, PYTHONPATH, or venv issues. Everything works already.
 - Run raw bash for things tools handle (use run_tests not 'python -m pytest').
+- Do NOT use broad run_tests(). If more than one test target is in scope, choose one explicitly.
 - Modify .git/, .dgov/, or config files unless your task says to.
 - Rewrite entire files when editing a few lines.
 - Spend iterations exploring when file_symbols + head gives you what you need.
@@ -472,11 +476,11 @@ def run_worker(
         sys.exit(1)
 
     client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
-    actuators = AtomicTools(worktree, config)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None
     except json.JSONDecodeError:
         task_scope = None
+    actuators = AtomicTools(worktree, config, task_scope=task_scope)
 
     def _cleanup() -> None:
         shutil.rmtree(actuators._sandbox_home, ignore_errors=True)
