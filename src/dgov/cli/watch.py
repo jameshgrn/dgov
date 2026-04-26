@@ -95,16 +95,30 @@ def _clean_slug(slug: str) -> str:
     return slug
 
 
+def _format_token_summary(ev: dict) -> Text | None:
+    prompt_tokens = int(ev.get("prompt_tokens") or 0)
+    completion_tokens = int(ev.get("completion_tokens") or 0)
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        return None
+    return Text(
+        f"({prompt_tokens:,} prompt + {completion_tokens:,} completion tokens)",
+        style="dim",
+    )
+
+
 def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableType | None:
     """Format a single event. Returns a Renderable or None to suppress."""
     event_type = ev.get("event", "?")
     task_slug = ev.get("task_slug") or ev.get("slug") or ""
     ts_raw = ev.get("ts", "")
     ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+    token_summary = _format_token_summary(ev)
 
-    # Suppress lifecycle done — worker_log done already has the summary
+    # Suppress lifecycle done without token metadata — worker_log done already has the summary
     if event_type == "task_done":
-        return None
+        if token_summary is None:
+            return None
+        return _make_row(ts, "✓", "done", "green", task_slug, token_summary)
     # Suppress review_pass — merged line is enough for happy path
     if event_type == "review_pass":
         return None
@@ -122,7 +136,22 @@ def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableT
         return _make_row(ts, "⚙", "start", "bold blue", task_slug, f"agent: {agent_short}")
 
     # Failure events
-    if event_type in ("task_failed", "review_fail", "task_merge_failed"):
+    if event_type == "task_failed":
+        label = _EVENT_LABELS.get(event_type, event_type)
+        error = str(ev.get("error") or "")
+        content: str | Text = error
+        full_width = bool(error)
+        if token_summary is not None:
+            if error:
+                content_text = Text(error)
+                content_text.append(f"  {token_summary.plain}", style="dim")
+                content = content_text
+            else:
+                content = token_summary
+                full_width = False
+        return _make_row(ts, "✖", label, "bold red", task_slug, content, full_width=full_width)
+
+    if event_type in ("review_fail", "task_merge_failed"):
         label = _EVENT_LABELS.get(event_type, event_type)
         error = ev.get("error") or ev.get("verdict") or ""
         return _make_row(ts, "✖", label, "bold red", task_slug, error, full_width=True)

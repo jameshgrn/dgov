@@ -6,12 +6,16 @@ Pillar #4: Determinism - Validates all inputs and dependencies before dispatch.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec, parse_dag_file
+from dgov.import_graph import build_import_graph, detect_cross_task_import_conflicts
 from dgov.types import ConstitutionalViolation
+
+logger = logging.getLogger(__name__)
 
 _TASK_ROLES = frozenset({"worker", "researcher", "reviewer"})
 _CONSTITUTIONAL_VIOLATION_PREFIX = "Constitutional violation:"
@@ -283,6 +287,84 @@ def _are_independent(a: str, b: str, units: dict[str, PlanUnit]) -> bool:
     return b not in _reachable(a) and a not in _reachable(b)
 
 
+def _all_python_claims(units: dict[str, PlanUnit]) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for unit in units.values():
+        for raw_path in (
+            *unit.files.create,
+            *unit.files.edit,
+            *unit.files.delete,
+            *unit.files.touch,
+            *unit.files.read,
+        ):
+            path = _normalize_touch_path(raw_path)
+            if not path.endswith(".py") or path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _to_dag_definition_for_import_analysis(plan: PlanSpec) -> DagDefinition:
+    tasks: dict[str, DagTaskSpec] = {}
+    for slug, unit in plan.units.items():
+        tasks[slug] = DagTaskSpec(
+            slug=slug,
+            summary=unit.summary,
+            prompt=unit.prompt,
+            prompt_file=unit.prompt_file,
+            commit_message=unit.commit_message,
+            agent=unit.agent,
+            role=unit.role,
+            depends_on=unit.depends_on,
+            files=DagFileSpec(
+                create=unit.files.create,
+                edit=unit.files.edit,
+                delete=unit.files.delete,
+                read=unit.files.read,
+                touch=unit.files.touch,
+            ),
+            timeout_s=unit.timeout_s or plan.default_timeout_s,
+            iteration_budget=unit.iteration_budget,
+            test_cmd=unit.test_cmd,
+        )
+    return DagDefinition(
+        name=plan.name,
+        dag_file="plan-validation",
+        project_root=plan.project_root,
+        session_root=plan.session_root,
+        tasks=tasks,
+    )
+
+
+def _check_import_graph_conflicts(plan: PlanSpec) -> list[PlanIssue]:
+    python_files = _all_python_claims(plan.units)
+    if not python_files:
+        return []
+
+    try:
+        import_graph = build_import_graph(plan.project_root, python_files)
+        dag = _to_dag_definition_for_import_analysis(plan)
+        conflicts = detect_cross_task_import_conflicts(dag, import_graph)
+    except Exception as exc:
+        logger.debug("Skipping import graph conflict analysis: %s", exc)
+        return []
+
+    return [
+        PlanIssue(
+            severity="warning",
+            message=(
+                f"tasks '{conflict.task_a}' and '{conflict.task_b}' may conflict: "
+                f"'{conflict.task_a}' writes {conflict.written_file} which is imported by "
+                f"{conflict.importing_file} (written by '{conflict.task_b}'). "
+                "Consider adding depends_on."
+            ),
+        )
+        for conflict in conflicts
+    ]
+
+
 def validate_plan(
     plan: PlanSpec,
     departments: dict[str, list[str]] | None = None,
@@ -328,6 +410,8 @@ def validate_plan(
                                 ),
                             )
                         )
+
+    issues.extend(_check_import_graph_conflicts(plan))
 
     # Unclaimed prompt path reference check
     # Workers that touch unclaimed files get scope_violation (terminal, no retry).

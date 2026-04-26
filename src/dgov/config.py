@@ -42,6 +42,8 @@ class ProjectConfig(AtomicConfig):
     agents: dict[str, str] = field(default_factory=dict)
     scope_ignore_files: tuple[str, ...] = _DEFAULT_SCOPE_IGNORE_FILES
     setup_cmd: str | None = None
+    coverage_cmd: str | None = None
+    coverage_threshold: float = 2.0
     departments: dict[str, list[str]] = field(default_factory=dict)
 
     def resolve_test_cmd(self, file: str = "") -> str:
@@ -160,8 +162,12 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         configured_scope_ignores = ()
     # Reserved-path guard: the scope ignore list must not shadow governor-owned
     # files, otherwise a worker could silently mutate them.
-    _RESERVED_PATHS = frozenset({".sentrux/baseline.json"})
-    bad = sorted(set(configured_scope_ignores) & _RESERVED_PATHS)
+    _RESERVED_PATHS = (".sentrux/baseline.json", ".coverage-baseline/")
+    bad = sorted(
+        path
+        for path in configured_scope_ignores
+        if any(path == reserved or path.startswith(reserved) for reserved in _RESERVED_PATHS)
+    )
     if bad:
         raise ValueError(f"project.toml [scope] ignore_files cannot include reserved paths: {bad}")
     scope_ignore_files = tuple(
@@ -195,6 +201,8 @@ def load_project_config(root: str | Path) -> ProjectConfig:
         tool_policy=parse_tool_policy(raw.get("tool_policy", {})),
         scope_ignore_files=scope_ignore_files,
         setup_cmd=proj.get("setup_cmd") or None,
+        coverage_cmd=proj.get("coverage_cmd") or None,
+        coverage_threshold=proj.get("coverage_threshold", 2.0),
         departments=departments,
     )
 

@@ -38,6 +38,7 @@ dgov = "dgov.cli:cli"
 dev = [
     "ty>=0.0.1",
     "pytest>=8.0",
+    "pytest-cov>=5.0",
     "pytest-mock>=3.0",
     "ruff>=0.4",
     "hypothesis>=6.151.9",

@@ -675,6 +675,19 @@ def _append_task_duration_line(lines: list[str], task_durations: dict[str, float
     lines.append(f"  durations: {dur_str}")
 
 
+def _format_token_totals(prompt_tokens: int, completion_tokens: int) -> str:
+    return f"{prompt_tokens:,} prompt + {completion_tokens:,} completion"
+
+
+def _append_token_usage_lines(
+    lines: list[str],
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> None:
+    lines.append(f"  prompt_tokens: {prompt_tokens:,}")
+    lines.append(f"  completion_tokens: {completion_tokens:,}")
+
+
 def _append_sentrux_log_lines(lines: list[str], gate_result: dict[str, object]) -> None:
     quality_before = gate_result.get("quality_before")
     quality_after = gate_result.get("quality_after")
@@ -753,6 +766,7 @@ def _emit_verbose_task_durations(
     *,
     verbose: bool,
     task_durations: dict[str, float],
+    token_usage: dict[str, tuple[int, int]],
     results: dict[str, str],
 ) -> None:
     if not verbose or want_json() or not task_durations:
@@ -760,7 +774,11 @@ def _emit_verbose_task_durations(
     click.echo("  per-task:", err=True)
     for slug in sorted(task_durations):
         status = results.get(slug, "?")
-        click.echo(f"    {slug}  {status}  {task_durations[slug]}s", err=True)
+        line = f"    {slug}: {task_durations[slug]}s"
+        if slug in token_usage:
+            prompt_tokens, completion_tokens = token_usage[slug]
+            line = f"{line}  ({prompt_tokens:,} + {completion_tokens:,} tokens)"
+        click.echo(f"{line}  {status}", err=True)
 
 
 def _emit_post_run_hint(
@@ -845,6 +863,9 @@ def _cmd_run_plan(
     gate_result = _sentrux_compare(project_root, baseline_quality)
     failed_now = [s for s, st in results.items() if st == "failed"]
     task_errors = {slug: err for slug, err in runner.task_errors.items() if slug in failed_now}
+    token_usage = cast(dict[str, tuple[int, int]], getattr(runner, "token_usage", {}))
+    total_prompt_tokens = sum(prompt for prompt, _ in token_usage.values())
+    total_completion_tokens = sum(completion for _, completion in token_usage.values())
     run_status, failed, abandoned, skipped, succeeded, _ = _run_status_and_summary(
         results,
         task_errors,
@@ -861,7 +882,7 @@ def _cmd_run_plan(
         duration=duration,
     )
 
-    _output({
+    output_data = {
         "status": run_status,
         "succeeded": len(succeeded),
         "failed": len(failed),
@@ -872,10 +893,19 @@ def _cmd_run_plan(
         "task_errors": task_errors if task_errors else None,
         "sentrux": gate_result,
         "duration_s": round(duration.total_seconds(), 2),
-    })
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+    }
+    if want_json():
+        _output(output_data)
+    else:
+        hidden_human_fields = {"total_prompt_tokens", "total_completion_tokens"}
+        _output({k: v for k, v in output_data.items() if k not in hidden_human_fields})
+        click.echo(f"tokens: {_format_token_totals(total_prompt_tokens, total_completion_tokens)}")
     _emit_verbose_task_durations(
         verbose=verbose,
         task_durations=runner.task_durations,
+        token_usage=token_usage,
         results=results,
     )
     _emit_post_run_hint(stream=stream, plan_dir=plan_dir, plan_file=plan_file)
@@ -889,6 +919,8 @@ def _cmd_run_plan(
         duration,
         runner.task_durations,
         task_errors,
+        total_prompt_tokens,
+        total_completion_tokens,
     )
     _maybe_archive_completed_plan(
         run_status=run_status,
@@ -920,6 +952,8 @@ def _append_run_log(
     duration: timedelta,
     task_durations: dict[str, float] | None = None,
     task_errors: dict[str, str] | None = None,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
 ) -> None:
     """Append a run summary to .dgov/runs.log — permanent, git-tracked."""
     log_path = Path(project_root) / ".dgov" / "runs.log"
@@ -939,6 +973,7 @@ def _append_run_log(
     if abandoned:
         lines.append(f"  abandoned: {', '.join(abandoned)}")
     _append_task_error_lines(lines, task_errors)
+    _append_token_usage_lines(lines, prompt_tokens, completion_tokens)
     _append_task_duration_line(lines, task_durations)
     _append_sentrux_log_lines(lines, gate_result)
     lines.append("")
