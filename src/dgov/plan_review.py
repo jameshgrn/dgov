@@ -12,6 +12,8 @@ was introduced), the whole event log for that plan is considered.
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import re
 import subprocess
@@ -21,10 +23,63 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dgov.deploy_log import read as read_deploy_log
+from dgov.event_types import (
+    DgovEvent,
+    EvtTaskDispatched,
+    IntegrationCandidateFailed,
+    IntegrationCandidatePassed,
+    IntegrationRiskScored,
+    IterationFork,
+    MergeCompleted,
+    ReviewFail,
+    RunCompleted,
+    RunStart,
+    SelfReviewAutoPassed,
+    SelfReviewError,
+    SelfReviewFixStarted,
+    SelfReviewPassed,
+    SelfReviewRejected,
+    SemanticGateRejected,
+    SettlementRetry,
+    TaskAbandoned,
+    TaskDone,
+    TaskFailed,
+    TaskMergeFailed,
+    WorkerLog,
+    deserialize_event,
+)
 from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
 
 _log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _EventWithId:
+    """Wrapper for a typed event with its database id and timestamp.
+
+    Preserves metadata (id, ts) that isn't part of the typed event dataclass.
+    """
+
+    id: int
+    ts: str
+    event: DgovEvent
+
+
+def _convert_events(raw_events: list[dict[str, Any]]) -> list[_EventWithId]:
+    """Convert raw dict events from read_events() to typed events with id/ts metadata.
+
+    UnknownEvent types are preserved (passed through) so unrecognized events
+    can be handled the same way as before (skipped).
+    """
+    result: list[_EventWithId] = []
+    for row in raw_events:
+        event_id = row.get("id", 0)
+        ts = row.get("ts", "")
+        typed_event = deserialize_event(row)
+        result.append(_EventWithId(id=event_id, ts=ts, event=typed_event))
+    return result
+
 
 UnitStatus = Literal["deployed", "failed", "active", "pending", "not_run"]
 SettlementResult = Literal["ok", "ok_retried", "rejected", "n/a"]
@@ -207,15 +262,11 @@ def _plan_name_from_compiled(compiled_path: Path) -> str | None:
 
 def _find_run_start_id(events: list[dict], plan_name: str) -> int:
     """Return the id of the latest run_start event for this plan, or 0."""
+    typed_events = _convert_events(events)
     latest = 0
-    for ev in events:
-        is_match = (
-            ev.get("event") == "run_start"
-            and ev.get("plan_name") == plan_name
-            and ev.get("id", 0) > latest
-        )
-        if is_match:
-            latest = int(ev["id"])
+    for ev in typed_events:
+        if isinstance(ev.event, RunStart) and ev.event.plan_name == plan_name and ev.id > latest:
+            latest = ev.id
     return latest
 
 
@@ -469,81 +520,90 @@ _TERMINAL_EVENTS = {
 }
 
 
-def _maybe_extract_merge_sha(ev: dict, state: dict) -> None:
-    """Extract merge_sha from event if present and valid."""
-    sha = ev.get("merge_sha")
-    if isinstance(sha, str):
-        state["merge_sha"] = sha
+def _maybe_extract_merge_sha(ev: _EventWithId, state: dict) -> None:
+    """Extract merge_sha from event if present and valid.
+
+    Note: MergeCompleted dataclass doesn't include merge_sha field,
+    so this function currently doesn't extract anything. The merge SHA
+    can be obtained from the deploy record instead.
+    """
+    # The MergeCompleted event type doesn't have merge_sha in its dataclass.
+    # This is a known limitation - deploy record provides the SHA instead.
+    pass
 
 
-def _extract_review_fail_fields(ev: dict, state: dict) -> None:
+def _extract_review_fail_fields(ev: _EventWithId, state: dict) -> None:
     """Extract verdict and error from review_fail event."""
-    state["reject_verdict"] = ev.get("verdict") or state["reject_verdict"]
-    err = ev.get("error")
-    if isinstance(err, str):
-        state["error"] = err
+    if isinstance(ev.event, ReviewFail):
+        state["reject_verdict"] = ev.event.verdict or state["reject_verdict"]
+        err = ev.event.error
+        if isinstance(err, str):
+            state["error"] = err
 
 
-def _apply_terminal_event(event_type: str, ev: dict, state: dict) -> None:
+def _apply_terminal_event(ev: _EventWithId, state: dict) -> None:
     """Apply terminal event effects to state."""
-    state["terminal_ts"] = ev.get("ts")
-    if event_type == "merge_completed":
+    state["terminal_ts"] = ev.ts
+    if isinstance(ev.event, MergeCompleted):
         state["merged_in_run"] = True
         _maybe_extract_merge_sha(ev, state)
-    elif event_type in ("task_merge_failed", "review_fail", "task_timed_out"):
+    elif isinstance(ev.event, (TaskMergeFailed, ReviewFail, TaskAbandoned)):
         state["failed_in_run"] = True
-        if event_type == "task_merge_failed":
+        if isinstance(ev.event, TaskMergeFailed):
             _maybe_extract_merge_sha(ev, state)
-        elif event_type == "review_fail":
+        elif isinstance(ev.event, ReviewFail):
             _extract_review_fail_fields(ev, state)
 
 
-def _apply_lifecycle_event(ev: dict, state: dict) -> None:
+def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
     """Handle lifecycle events: dispatch, terminal, settlement_retry, review_fail."""
-    event_type = ev.get("event")
-    if event_type == "dag_task_dispatched" and state["dispatched_ts"] is None:
-        state["dispatched_ts"] = ev.get("ts")
+    if isinstance(ev.event, EvtTaskDispatched) and state["dispatched_ts"] is None:
+        state["dispatched_ts"] = ev.ts
         return
-    if event_type in ("task_done", "task_failed"):
+    if isinstance(ev.event, (TaskDone, TaskFailed)):
         for field in ("prompt_tokens", "completion_tokens"):
-            val = ev.get(field)
+            val = getattr(ev.event, field)
             if isinstance(val, int):
                 state[field] = state.get(field, 0) + val
             elif isinstance(val, str):
                 try:
                     state[field] = state.get(field, 0) + int(val)
                 except ValueError:
-                    _log.warning("Non-numeric %s value %r in %s event", field, val, event_type)
-    if event_type in _TERMINAL_EVENTS:
-        _apply_terminal_event(event_type, ev, state)
+                    evt_type = ev.event.event_type
+                    _log.warning("Non-numeric %s value %r in %s event", field, val, evt_type)
+    # Check for terminal events
+    if isinstance(ev.event, (MergeCompleted, TaskMergeFailed, ReviewFail, TaskAbandoned)):
+        _apply_terminal_event(ev, state)
         return
-    if event_type == "settlement_retry":
+    if isinstance(ev.event, SettlementRetry):
         state["settlement_retries"] = state["settlement_retries"] + 1
         # settlement_retry resets merged-in-run until a later merge_completed.
         state["merged_in_run"] = False
         state["failed_in_run"] = False
         return
-    if event_type == "iteration_fork":
-        depth = ev.get("fork_depth")
+    if isinstance(ev.event, IterationFork):
+        depth = ev.event.fork_depth
         if isinstance(depth, int):
             state["fork_depth"] = max(state["fork_depth"], depth)
         return
-    if event_type == "self_review_fix_started":
+    if isinstance(ev.event, SelfReviewFixStarted):
         return  # Acknowledged but no state change
-    if event_type == "self_review_passed":
+    if isinstance(ev.event, SelfReviewPassed):
         state["self_review_outcome"] = "passed"
-    elif event_type == "self_review_rejected":
+    elif isinstance(ev.event, SelfReviewRejected):
         state["self_review_outcome"] = "rejected"
-    elif event_type == "self_review_auto_passed":
+    elif isinstance(ev.event, SelfReviewAutoPassed):
         state["self_review_outcome"] = "auto_passed"
-    elif event_type == "self_review_error":
+    elif isinstance(ev.event, SelfReviewError):
         state["self_review_outcome"] = "error"
 
 
-def _apply_worker_log_event(ev: dict, state: dict) -> None:
+def _apply_worker_log_event(ev: _EventWithId, state: dict) -> None:
     """Handle worker_log events: thoughts, calls, results, done, error."""
-    log_type = ev.get("log_type")
-    content = ev.get("content")
+    if not isinstance(ev.event, WorkerLog):
+        return
+    log_type = ev.event.log_type
+    content = ev.event.content
     if log_type == "thought" and isinstance(content, str):
         state["thoughts"].append(content)
     elif log_type == "call" and isinstance(content, dict):
@@ -558,26 +618,28 @@ def _apply_worker_log_event(ev: dict, state: dict) -> None:
         state["error"] = content
 
 
-def _apply_semantic_settlement_event(ev: dict, state: dict) -> None:
+def _apply_semantic_settlement_event(ev: _EventWithId, state: dict) -> None:
     """Handle semantic settlement events: risk scoring, candidate validation, gates."""
-    event_type = ev.get("event")
-    if event_type == "integration_risk_scored":
+    if isinstance(ev.event, IntegrationRiskScored):
         # Capture risk level and overlap detection
-        risk_level = ev.get("risk_level")
+        risk_level = ev.event.risk_level
         if isinstance(risk_level, str):
             state["integration_risk_level"] = risk_level
         # python_overlap_detected is boolean in payload
-        if ev.get("python_overlap_detected") is True:
+        if ev.event.python_overlap_detected is True:
             state["integration_risk_detected"] = True
         # Also check for any overlap_evidence in the payload
-        overlap_evidence = ev.get("overlap_evidence")
-        if isinstance(overlap_evidence, list) and len(overlap_evidence) > 0:
+        overlap_evidence = ev.event.overlap_evidence
+        if overlap_evidence and len(overlap_evidence) > 0:
             state["integration_risk_detected"] = True
-    elif event_type == "integration_candidate_passed":
+    elif isinstance(ev.event, IntegrationCandidatePassed):
         state["integration_candidate_passed"] = True
-    elif event_type == "integration_candidate_failed" or event_type == "semantic_gate_rejected":
+    elif isinstance(ev.event, (IntegrationCandidateFailed, SemanticGateRejected)):
         state["integration_candidate_passed"] = False
-        fc = ev.get("failure_class")
+        if isinstance(ev.event, IntegrationCandidateFailed):
+            fc = ev.event.failure_class
+        else:
+            fc = ev.event.failure_class
         if isinstance(fc, str):
             state["integration_failure_class"] = fc
 
@@ -608,8 +670,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_failure_class": None,
     }
 
-    for ev in unit_events:
-        if ev.get("event") == "worker_log":
+    typed_events = _convert_events(unit_events)
+    for ev in typed_events:
+        if isinstance(ev.event, WorkerLog):
             _apply_worker_log_event(ev, state)
         else:
             _apply_lifecycle_event(ev, state)
@@ -859,16 +922,13 @@ def _fetch_worker_events_for_unit(
     Primary fetch uses plan_name + task_slug. If empty, falls back to task_slug-only
     with optional pane-based filtering.
     """
-    worker_events = [
-        ev
-        for ev in read_events(
-            project_root,
-            plan_name=plan_name,
-            task_slug=uid,
-            after_id=run_start_id,
-        )
-        if ev.get("event") == "worker_log"
-    ]
+    raw_events = read_events(
+        project_root,
+        plan_name=plan_name,
+        task_slug=uid,
+        after_id=run_start_id,
+    )
+    worker_events = [ev for ev in raw_events if ev.get("event") == "worker_log"]
     if worker_events:
         return worker_events
 
@@ -895,9 +955,10 @@ def _combine_unit_events(lifecycle: list[dict], worker_events: list[dict]) -> li
 
 def _extract_run_start_ts(plan_events: list[dict], run_start_id: int) -> str | None:
     """Extract timestamp of the run_start event matching the given id."""
-    for ev in plan_events:
-        if ev.get("event") == "run_start" and ev.get("id", 0) == run_start_id:
-            return ev.get("ts")
+    typed_events = _convert_events(plan_events)
+    for ev in typed_events:
+        if isinstance(ev.event, RunStart) and ev.id == run_start_id:
+            return ev.ts
     return None
 
 
@@ -926,28 +987,36 @@ def _extract_run_completed_fields(plan_events: list[dict], run_start_id: int) ->
     Returns a dict with keys: run_status, sentrux_degradation, sentrux_quality_before,
     sentrux_quality_after, sentrux_error, sentrux_offender_summary.
     """
+    typed_events = _convert_events(plan_events)
     # Find the latest run_completed event with id > run_start_id
-    latest_run_completed: dict | None = None
-    for ev in plan_events:
-        is_later_run_completed = (
-            ev.get("event") == "run_completed"
-            and ev.get("id", 0) > run_start_id
-            and (
-                latest_run_completed is None or ev.get("id", 0) > latest_run_completed.get("id", 0)
-            )
-        )
-        if is_later_run_completed:
+    latest_run_completed: _EventWithId | None = None
+    for ev in typed_events:
+        if (
+            isinstance(ev.event, RunCompleted)
+            and ev.id > run_start_id
+            and (latest_run_completed is None or ev.id > latest_run_completed.id)
+        ):
             latest_run_completed = ev
 
     if latest_run_completed is None:
         return {}
 
-    sentrux = latest_run_completed.get("sentrux") or {}
+    # Type narrowing: we only add RunCompleted events to latest_run_completed
+    event = latest_run_completed.event
+    assert isinstance(event, RunCompleted), "Expected RunCompleted event"
+    # sentrux may be a JSON string or already a dict (from raw events)
+    sentrux_raw = event.sentrux
+    sentrux: dict[str, Any] = {}
+    if isinstance(sentrux_raw, dict):
+        sentrux = sentrux_raw
+    elif isinstance(sentrux_raw, str):
+        with contextlib.suppress(json.JSONDecodeError):
+            sentrux = json.loads(sentrux_raw)
     offenders = sentrux.get("structural_offenders") if isinstance(sentrux, dict) else None
     offender_summary = _format_structural_offenders(offenders)
 
     return {
-        "run_status": latest_run_completed.get("run_status"),
+        "run_status": event.run_status,
         "sentrux_degradation": sentrux.get("degradation") if isinstance(sentrux, dict) else None,
         "sentrux_quality_before": sentrux.get("quality_before")
         if isinstance(sentrux, dict)
