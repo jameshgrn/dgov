@@ -6,7 +6,7 @@ providing type safety and serialization/deserialization logic.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 
@@ -436,14 +436,14 @@ def deserialize_event(row: dict[str, Any]) -> DgovEvent:
             raw_data={k: v for k, v in row.items() if k not in ("event", "pane")},
         )
 
-    # Build kwargs from row data, excluding event_type and pane
+    # Build kwargs from row data, filtering to only fields the dataclass accepts
+    valid_fields = {f.name for f in fields(event_class)} - {"event_type", "pane"}
     kwargs: dict[str, Any] = {}
     for key, value in row.items():
-        if key in ("event", "event_type", "id", "ts"):
+        if key in ("event", "event_type", "id", "ts", "pane"):
             continue
-        if key == "pane":
-            continue
-        kwargs[key] = value
+        if key in valid_fields:
+            kwargs[key] = value
 
     # Construct the event with pane from row
     pane = row.get("pane", "")

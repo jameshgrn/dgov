@@ -47,6 +47,7 @@ from dgov.event_types import (
     SelfReviewFixStarted,
     SelfReviewPassed,
     SelfReviewRejected,
+    SettlementRetry,
     ShutdownRequested,
     TaskAbandoned,
     TaskDone,
@@ -1942,11 +1943,12 @@ class EventDagRunner:
         logger.info("SETTLEMENT RETRY %s — feeding error back to worker", action.task_slug)
         emit_event(
             self.session_root,
-            "settlement_retry",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            error=error,
+            SettlementRetry(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                error=error,
+            ),
         )
         await self._settlement_retry(action, wt, error)
         async with self._settlement_semaphore:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -472,7 +473,12 @@ def test_run_emits_run_completed_event_with_degraded_status(
     assert run_completed.plan_name == "compiled"
     assert run_completed.run_status == "degraded"
     assert isinstance(run_completed.duration_s, float)
-    assert "degradation" in run_completed.sentrux
+    sentrux = json.loads(run_completed.sentrux)
+    assert sentrux == {
+        "degradation": True,
+        "quality_before": 100,
+        "quality_after": 90,
+    }
 
 
 def test_run_reports_structural_offenders_when_sentrux_degrades(

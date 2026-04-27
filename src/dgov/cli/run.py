@@ -572,7 +572,7 @@ def _emit_run_completed(
             plan_name=plan_name,
             run_status=run_status,
             duration_s=round(duration.total_seconds(), 2),
-            sentrux=str(gate_result),
+            sentrux=json.dumps(gate_result, default=str),
         ),
     )
 
