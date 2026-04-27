@@ -14,6 +14,27 @@ from rich.table import Table
 from rich.text import Text
 
 from dgov.cli import cli
+from dgov.event_types import (
+    DgovEvent,
+    EvtTaskDispatched,
+    IterationFork,
+    MergeCompleted,
+    ReviewFail,
+    ReviewPass,
+    SelfReviewAutoPassed,
+    SelfReviewError,
+    SelfReviewFixStarted,
+    SelfReviewPassed,
+    SelfReviewRejected,
+    SettlementRetry,
+    TaskAbandoned,
+    TaskDone,
+    TaskFailed,
+    TaskMergeFailed,
+    UnknownEvent,
+    WorkerLog,
+    deserialize_event,
+)
 from dgov.live_state import live_plan_names
 from dgov.persistence import latest_event_id, read_events
 from dgov.project_root import resolve_project_root
@@ -95,9 +116,9 @@ def _clean_slug(slug: str) -> str:
     return slug
 
 
-def _format_token_summary(ev: dict) -> Text | None:
-    prompt_tokens = int(ev.get("prompt_tokens") or 0)
-    completion_tokens = int(ev.get("completion_tokens") or 0)
+def _format_token_summary(event: TaskDone | TaskFailed) -> Text | None:
+    prompt_tokens = event.prompt_tokens or 0
+    completion_tokens = event.completion_tokens or 0
     if prompt_tokens <= 0 and completion_tokens <= 0:
         return None
     return Text(
@@ -106,39 +127,41 @@ def _format_token_summary(ev: dict) -> Text | None:
     )
 
 
-def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableType | None:
+def _format_event(
+    event: DgovEvent, ts: str, agents: dict[str, str] | None = None
+) -> RenderableType | None:
     """Format a single event. Returns a Renderable or None to suppress."""
-    event_type = ev.get("event", "?")
-    task_slug = ev.get("task_slug") or ev.get("slug") or ""
-    ts_raw = ev.get("ts", "")
-    ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
-    token_summary = _format_token_summary(ev)
+    task_slug = getattr(event, "task_slug", "")
 
-    # Suppress lifecycle done without token metadata — worker_log done already has the summary
-    if event_type == "task_done":
-        if token_summary is None:
-            return None
-        return _make_row(ts, "✓", "done", "green", task_slug, token_summary)
+    # Handle WorkerLog separately
+    if isinstance(event, WorkerLog):
+        return _format_worker_log(event, ts, task_slug)
+
     # Suppress review_pass — merged line is enough for happy path
-    if event_type == "review_pass":
+    if isinstance(event, ReviewPass):
         return None
 
-    if event_type == "worker_log":
-        return _format_worker_log(ts, task_slug, ev)
-
     # Dispatch header
-    if event_type == "dag_task_dispatched":
-        agent = ev.get("agent", "")
+    if isinstance(event, EvtTaskDispatched):
+        agent = event.agent
         # Resolve from project config mapping if available
         if agents and agent in agents:
             agent = agents[agent]
         agent_short = agent.rsplit("/", 1)[-1] if agent else ""
         return _make_row(ts, "⚙", "start", "bold blue", task_slug, f"agent: {agent_short}")
 
-    # Failure events
-    if event_type == "task_failed":
-        label = _EVENT_LABELS.get(event_type, event_type)
-        error = str(ev.get("error") or "")
+    # task_done - suppress lifecycle done without token metadata
+    if isinstance(event, TaskDone):
+        token_summary = _format_token_summary(event)
+        if token_summary is None:
+            return None
+        return _make_row(ts, "✓", "done", "green", task_slug, token_summary)
+
+    # task_failed
+    if isinstance(event, TaskFailed):
+        token_summary = _format_token_summary(event)
+        label = "FAILED"
+        error = event.error or ""
         content: str | Text = error
         full_width = bool(error)
         if token_summary is not None:
@@ -151,38 +174,46 @@ def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableT
                 full_width = False
         return _make_row(ts, "✖", label, "bold red", task_slug, content, full_width=full_width)
 
-    if event_type in ("review_fail", "task_merge_failed"):
-        label = _EVENT_LABELS.get(event_type, event_type)
-        error = ev.get("error") or ev.get("verdict") or ""
-        return _make_row(ts, "✖", label, "bold red", task_slug, error, full_width=True)
+    # review_fail
+    if isinstance(event, ReviewFail):
+        error = event.verdict or ""
+        return _make_row(ts, "✖", "rev FAIL", "bold red", task_slug, error, full_width=True)
+
+    # task_merge_failed
+    if isinstance(event, TaskMergeFailed):
+        error = event.error or ""
+        return _make_row(ts, "✖", "merge FAIL", "bold red", task_slug, error, full_width=True)
 
     # Merged
-    if event_type == "merge_completed":
+    if isinstance(event, MergeCompleted):
         return _make_row(ts, "●", "merged", "bold green", task_slug, "")
 
     # Settlement retry
-    if event_type == "settlement_retry":
-        error = ev.get("error", "")
-        return _make_row(ts, "⟳", "retry", "bold yellow", task_slug, error, full_width=True)
+    if isinstance(event, SettlementRetry):
+        return _make_row(ts, "⟳", "retry", "bold yellow", task_slug, event.error, full_width=True)
 
     # Iteration fork
-    if event_type == "iteration_fork":
-        depth = ev.get("fork_depth", "?")
+    if isinstance(event, IterationFork):
+        depth = event.fork_depth
         return _make_row(ts, "⑂", "fork", "bold yellow", task_slug, f"depth {depth}")
 
     # Self-review events
-    if event_type == "self_review_passed":
+    if isinstance(event, SelfReviewPassed):
         return _make_row(ts, "✔", "self-rev ok", "green", task_slug, "")
-    if event_type == "self_review_rejected":
-        findings = ev.get("findings") or ""
+
+    if isinstance(event, SelfReviewRejected):
+        findings = event.findings or ""
         preview = findings[:120] + "…" if len(findings) > 120 else findings
         return _make_row(ts, "✖", "self-rev ✗", "bold yellow", task_slug, preview, full_width=True)
-    if event_type == "self_review_auto_passed":
+
+    if isinstance(event, SelfReviewAutoPassed):
         return _make_row(ts, "⟳", "self-rev auto", "yellow", task_slug, "auto-passed after fix")
-    if event_type == "self_review_fix_started":
+
+    if isinstance(event, SelfReviewFixStarted):
         return _make_row(ts, "⟳", "self-rev fix", "yellow", task_slug, "relaunching worker")
-    if event_type == "self_review_error":
-        error = ev.get("error", "")
+
+    if isinstance(event, SelfReviewError):
+        error = event.error or ""
         return _make_row(
             ts,
             "✖",
@@ -193,15 +224,24 @@ def _format_event(ev: dict, agents: dict[str, str] | None = None) -> RenderableT
             full_width=True,
         )
 
-    # Everything else
-    label = _EVENT_LABELS.get(event_type, event_type)
+    # TaskAbandoned - no special formatting, uses default label
+    if isinstance(event, TaskAbandoned):
+        return _make_row(ts, " ", "task_abandoned", "dim", task_slug, "")
+
+    # UnknownEvent - fall through to default label rendering
+    if isinstance(event, UnknownEvent):
+        label = event.event_name or "unknown_event"
+        return _make_row(ts, " ", label, "dim", task_slug, "")
+
+    # Everything else - use event_type as label
+    label = getattr(event, "event_type", "unknown")
     return _make_row(ts, " ", label, "dim", task_slug, "")
 
 
-def _format_worker_log(ts: str, task_slug: str, ev: dict) -> RenderableType | None:
+def _format_worker_log(event: WorkerLog, ts: str, task_slug: str) -> RenderableType | None:
     """Format worker_log events. Returns Renderable or None to suppress."""
-    log_type = ev.get("log_type", "")
-    content = ev.get("content")
+    log_type = event.log_type
+    content = event.content
     verify_tools = frozenset({
         "run_tests",
         "lint_check",
@@ -377,14 +417,16 @@ def _cmd_watch(
             events = read_events(project_root, after_id=last_id, plan_name=active_plan_name)
             for ev in events:
                 last_id = max(last_id, ev.get("id", 0))
-                line = _format_event(ev, agents=agents)
+                ts_raw = ev.get("ts", "")
+                ts = ts_raw[11:19] if len(ts_raw) >= 19 else ts_raw
+                typed_event = deserialize_event(ev)
+                line = _format_event(typed_event, ts, agents=agents)
                 if line is None:
                     continue
 
                 # Blank line between tasks
-                task = ev.get("task_slug") or ev.get("slug") or ""
-                event_type = ev.get("event", "")
-                if event_type == "dag_task_dispatched" and last_task:
+                task = getattr(typed_event, "task_slug", "")
+                if isinstance(typed_event, EvtTaskDispatched) and last_task:
                     console.print("")
                 if task:
                     last_task = task
