@@ -2,7 +2,7 @@
 name: return-values
 title: Assign Return Values at API Boundaries
 summary: Prevent silent no-ops from unassigned getter, factory, and builder calls.
-applies_to: [python, javascript, typescript, api, plugin]
+applies_to: [python, javascript, typescript, api, plugin, return, interface, contract]
 priority: must
 ---
 ## When

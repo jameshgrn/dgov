@@ -91,6 +91,13 @@ class IdentityBundler:
         return {uid: [] for uid in units}
 
 
+def _normalize(word: str) -> str:
+    """Strip trailing 's' for basic plural normalization."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        return word[:-1]
+    return word
+
+
 class TagBasedSopBundler:
     """Deterministic bundler — assigns SOPs by tag intersection.
 
@@ -104,12 +111,19 @@ class TagBasedSopBundler:
         units: dict[str, PlanUnit],
         sops: list[Sop],
     ) -> dict[str, list[str]]:
-        return {uid: self._match(unit, sops) for uid, unit in units.items()}
+        # Precompute normalized tags once per SOP
+        normalized_tags = {s.name: frozenset(_normalize(t) for t in s.applies_to) for s in sops}
+        return {uid: self._match(unit, sops, normalized_tags) for uid, unit in units.items()}
 
     @staticmethod
-    def _match(unit: PlanUnit, sops: list[Sop]) -> list[str]:
+    def _match(
+        unit: PlanUnit,
+        sops: list[Sop],
+        normalized_tags: dict[str, frozenset[str]],
+    ) -> list[str]:
         keywords = TagBasedSopBundler._extract_keywords(unit)
-        return [s.name for s in sops if frozenset(s.applies_to) & keywords]
+        normalized_kw = frozenset(_normalize(k) for k in keywords)
+        return [s.name for s in sops if normalized_tags[s.name] & normalized_kw]
 
     @staticmethod
     def _extract_keywords(unit: PlanUnit) -> frozenset[str]:

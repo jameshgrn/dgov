@@ -2,7 +2,7 @@
 name: python-style
 title: Python Toolchain & Code Style
 summary: Python toolchain defaults and code-style rules for focused, explicit changes.
-applies_to: [python, lint, format, style]
+applies_to: [python, lint, format, style, ruff, naming, convention]
 priority: must
 ---
 ## When

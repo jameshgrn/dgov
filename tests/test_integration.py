@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
+from dgov.event_types import EvtTaskDispatched
 from dgov.runner import EventDagRunner
 from dgov.settlement import GateResult
 
@@ -690,10 +691,12 @@ class TestOrphanAbandon:
         record_runtime_artifact(session_root, record)
         emit_event(
             session_root,
-            "dag_task_dispatched",
-            "pane-crashed",
-            plan_name=dag.name,
-            task_slug=slug,
+            EvtTaskDispatched(
+                pane="pane-crashed",
+                plan_name=dag.name,
+                task_slug=slug,
+                agent="mock",
+            ),
         )
 
         # Re-run bare (no --continue, no --restart)
@@ -737,10 +740,12 @@ class TestOrphanAbandon:
         record_runtime_artifact(session_root, record)
         emit_event(
             session_root,
-            "dag_task_dispatched",
-            "pane-crashed-2",
-            plan_name=dag.name,
-            task_slug=slug,
+            EvtTaskDispatched(
+                pane="pane-crashed-2",
+                plan_name=dag.name,
+                task_slug=slug,
+                agent="mock",
+            ),
         )
 
         clear_connection_cache()
