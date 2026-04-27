@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dgov.event_types import WorkerLog
 from dgov.persistence import emit_event
 
 if TYPE_CHECKING:
@@ -105,12 +106,13 @@ async def run_headless_worker(
                     content = ev.get("content")
                     emit_event(
                         project_root,
-                        "worker_log",
-                        pane_slug,
-                        plan_name=plan_name,
-                        task_slug=task_slug,
-                        log_type=log_type,
-                        content=content,
+                        WorkerLog(
+                            pane=pane_slug,
+                            plan_name=plan_name,
+                            task_slug=task_slug,
+                            log_type=log_type,
+                            content=content,
+                        ),
                     )
                     if log_type == "error":
                         last_error = str(content) if content else ""

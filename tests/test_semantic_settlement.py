@@ -38,15 +38,10 @@ class MockEmit:
     """Callable mock that captures emit calls for verification."""
 
     def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
+        self.calls: list[tuple[str, Any]] = []
 
-    def __call__(self, session_root: str, event: str, pane: str, **kwargs: Any) -> None:
-        self.calls.append({
-            "session_root": session_root,
-            "event": event,
-            "pane": pane,
-            "kwargs": kwargs,
-        })
+    def __call__(self, session_root: str, event: Any) -> None:
+        self.calls.append((session_root, event))
 
 
 @pytest.fixture
@@ -404,11 +399,11 @@ class TestEventEmitters:
         emit_integration_risk_scored(mock_emit, str(tmp_path), "test-plan", record)
 
         assert len(mock_emit.calls) == 1
-        call = mock_emit.calls[0]
-        assert call["event"] == "integration_risk_scored"
-        assert call["pane"] == "semantic-settlement"
-        assert call["kwargs"]["task_slug"] == "task-123"
-        assert call["kwargs"]["risk_level"] == "high"
+        _root, evt = mock_emit.calls[0]
+        assert evt.event_type == "integration_risk_scored"
+        assert evt.pane == "semantic-settlement"
+        assert evt.task_slug == "task-123"
+        assert evt.risk_level == "high"
 
     def test_emit_integration_overlap_detected(self, tmp_path, mock_emit):
         """Overlap detected event emits with evidence."""
@@ -423,8 +418,9 @@ class TestEventEmitters:
         )
 
         assert len(mock_emit.calls) == 1
-        assert mock_emit.calls[0]["event"] == "integration_overlap_detected"
-        assert mock_emit.calls[0]["kwargs"]["evidence"]["_kind"] == "SymbolOverlap"
+        _root, evt = mock_emit.calls[0]
+        assert evt.event_type == "integration_overlap_detected"
+        assert evt.evidence["_kind"] == "SymbolOverlap"
 
     def test_emit_integration_candidate_passed(self, tmp_path, mock_emit):
         """Candidate passed event emits with verdict."""
@@ -438,8 +434,9 @@ class TestEventEmitters:
         emit_integration_candidate_passed(mock_emit, str(tmp_path), "test-plan", verdict)
 
         assert len(mock_emit.calls) == 1
-        assert mock_emit.calls[0]["event"] == "integration_candidate_passed"
-        assert mock_emit.calls[0]["kwargs"]["passed"] is True
+        _root, evt = mock_emit.calls[0]
+        assert evt.event_type == "integration_candidate_passed"
+        assert evt.passed is True
 
     def test_emit_integration_candidate_failed(self, tmp_path, mock_emit):
         """Candidate failed event emits with failure details."""
@@ -457,10 +454,10 @@ class TestEventEmitters:
         emit_integration_candidate_failed(mock_emit, str(tmp_path), "test-plan", verdict)
 
         assert len(mock_emit.calls) == 1
-        call = mock_emit.calls[0]
-        assert call["event"] == "integration_candidate_failed"
-        assert call["kwargs"]["failure_class"] == "text_conflict"
-        assert call["kwargs"]["error_message"] == "Merge conflict"
+        _root, evt = mock_emit.calls[0]
+        assert evt.event_type == "integration_candidate_failed"
+        assert evt.failure_class == "text_conflict"
+        assert evt.error_message == "Merge conflict"
 
     def test_emit_semantic_gate_rejected(self, tmp_path, mock_emit):
         """Semantic gate rejected event emits with gate details."""
@@ -475,10 +472,10 @@ class TestEventEmitters:
         emit_semantic_gate_rejected(mock_emit, str(tmp_path), "test-plan", verdict)
 
         assert len(mock_emit.calls) == 1
-        call = mock_emit.calls[0]
-        assert call["event"] == "semantic_gate_rejected"
-        assert call["kwargs"]["gate_name"] == "same_symbol_edit"
-        assert call["kwargs"]["failure_class"] == "same_symbol_edit"
+        _root, evt = mock_emit.calls[0]
+        assert evt.event_type == "semantic_gate_rejected"
+        assert evt.gate_name == "same_symbol_edit"
+        assert evt.failure_class == "same_symbol_edit"
 
 
 class TestPayloadDeserialization:

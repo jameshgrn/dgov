@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -437,10 +438,10 @@ def test_run_emits_run_completed_event_with_degraded_status(
         async def run(self) -> dict[str, str]:
             return {"a": "merged"}
 
-    captured_events: list[dict] = []
+    captured_events: list = []
 
-    def _capture_emit_event(session_root: str, event: str, pane: str, **kwargs) -> None:
-        captured_events.append({"event": event, "pane": pane, **kwargs})
+    def _capture_emit_event(session_root, event, pane="", **kwargs):
+        captured_events.append(event)
 
     monkeypatch.setattr("dgov.cli.run._compile_plan_for_run", lambda path: None)
     monkeypatch.setattr("dgov.cli.run.EventDagRunner", _Runner)
@@ -462,16 +463,18 @@ def test_run_emits_run_completed_event_with_degraded_status(
     assert result.exit_code == 0
 
     # Find run_completed event
-    run_completed_events = [e for e in captured_events if e.get("event") == "run_completed"]
+    run_completed_events = [
+        e for e in captured_events if getattr(e, "event_type", None) == "run_completed"
+    ]
     assert len(run_completed_events) == 1
 
     run_completed = run_completed_events[0]
-    assert run_completed["pane"] == "compiled"
-    assert run_completed["plan_name"] == "compiled"
-    assert run_completed["run_status"] == "degraded"
-    assert "duration_s" in run_completed
-    assert isinstance(run_completed["duration_s"], float)
-    assert run_completed["sentrux"] == {
+    assert run_completed.pane == "compiled"
+    assert run_completed.plan_name == "compiled"
+    assert run_completed.run_status == "degraded"
+    assert isinstance(run_completed.duration_s, float)
+    sentrux = json.loads(run_completed.sentrux)
+    assert sentrux == {
         "degradation": True,
         "quality_before": 100,
         "quality_after": 90,

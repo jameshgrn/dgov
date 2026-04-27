@@ -34,6 +34,26 @@ from dgov.actions import (
 )
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagTaskSpec
+from dgov.event_types import (
+    EvtTaskDispatched,
+    GovernorResumed,
+    IterationFork,
+    MergeCompleted,
+    ReviewFail,
+    ReviewPass,
+    RunStart,
+    SelfReviewAutoPassed,
+    SelfReviewError,
+    SelfReviewFixStarted,
+    SelfReviewPassed,
+    SelfReviewRejected,
+    SettlementRetry,
+    ShutdownRequested,
+    TaskAbandoned,
+    TaskDone,
+    TaskFailed,
+    TaskMergeFailed,
+)
 from dgov.kernel import DagKernel
 from dgov.live_state import latest_run_start_ids
 from dgov.persistence import (
@@ -330,10 +350,11 @@ class EventDagRunner:
         )
         emit_event(
             self.session_root,
-            "task_abandoned",
-            "cleanup",
-            plan_name=self.dag.name,
-            task_slug=slug,
+            TaskAbandoned(
+                pane="cleanup",
+                plan_name=self.dag.name,
+                task_slug=slug,
+            ),
         )
 
     def _phase_resume_failed(self) -> None:
@@ -358,11 +379,12 @@ class EventDagRunner:
         self.kernel.handle(TaskGovernorResumed(slug, GovernorAction.RETRY))
         emit_event(
             self.session_root,
-            "dag_task_governor_resumed",
-            "runner",
-            plan_name=self.dag.name,
-            task_slug=slug,
-            action=GovernorAction.RETRY.value,
+            GovernorResumed(
+                pane="runner",
+                plan_name=self.dag.name,
+                task_slug=slug,
+                action=GovernorAction.RETRY.value,
+            ),
         )
 
     def _phase_rehydrate(self) -> None:
@@ -442,10 +464,11 @@ class EventDagRunner:
         self._shutdown_event.set()
         emit_event(
             self.session_root,
-            "shutdown_requested",
-            "runner",
-            plan_name=self.dag.name,
-            reason="signal",
+            ShutdownRequested(
+                pane="runner",
+                plan_name=self.dag.name,
+                reason="signal",
+            ),
         )
 
     async def _cleanup(self) -> None:
@@ -504,11 +527,12 @@ class EventDagRunner:
             logger.warning("Task %s interrupted by operator — marking ABANDONED", task_slug)
             emit_event(
                 self.session_root,
-                "task_abandoned",
-                pane_slug or "runner",
-                plan_name=self.dag.name,
-                task_slug=task_slug,
-                reason="shutdown",
+                TaskAbandoned(
+                    pane=pane_slug or "runner",
+                    plan_name=self.dag.name,
+                    task_slug=task_slug,
+                    reason="shutdown",
+                ),
             )
             actions.extend(
                 self.kernel.handle(TaskWaitDone(task_slug, pane_slug, TaskState.ABANDONED))
@@ -525,9 +549,10 @@ class EventDagRunner:
         # is passed, so review needs an explicit lower bound.
         emit_event(
             self.session_root,
-            "run_start",
-            f"run-{self.dag.name}",
-            plan_name=self.dag.name,
+            RunStart(
+                pane=f"run-{self.dag.name}",
+                plan_name=self.dag.name,
+            ),
         )
 
         try:
@@ -656,11 +681,12 @@ class EventDagRunner:
             )
             emit_event(
                 self.session_root,
-                "iteration_fork",
-                exit_event.pane_slug,
-                plan_name=self.dag.name,
-                task_slug=exit_event.task_slug,
-                fork_depth=ctx.fork_depth,
+                IterationFork(
+                    pane=exit_event.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=exit_event.task_slug,
+                    fork_depth=ctx.fork_depth,
+                ),
             )
             ctx.worker_task = asyncio.create_task(
                 self._fork_worker(exit_event.task_slug, ctx.worktree, exit_event.pane_slug)
@@ -679,17 +705,32 @@ class EventDagRunner:
         actions = self.kernel.handle(
             TaskWaitDone(exit_event.task_slug, exit_event.pane_slug, status)
         )
-        emit_event(
-            self.session_root,
-            "task_done" if status == TaskState.DONE else "task_failed",
-            exit_event.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=exit_event.task_slug,
-            error=exit_event.last_error if status == TaskState.FAILED else None,
-            duration=duration,
-            prompt_tokens=ctx.prompt_tokens or None,
-            completion_tokens=ctx.completion_tokens or None,
-        )
+        if status == TaskState.DONE:
+            emit_event(
+                self.session_root,
+                TaskDone(
+                    pane=exit_event.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=exit_event.task_slug,
+                    error=None,
+                    duration=duration,
+                    prompt_tokens=ctx.prompt_tokens or None,
+                    completion_tokens=ctx.completion_tokens or None,
+                ),
+            )
+        else:
+            emit_event(
+                self.session_root,
+                TaskFailed(
+                    pane=exit_event.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=exit_event.task_slug,
+                    error=exit_event.last_error or "",
+                    duration=duration,
+                    prompt_tokens=ctx.prompt_tokens or None,
+                    completion_tokens=ctx.completion_tokens or None,
+                ),
+            )
         return actions
 
     async def _get_worktree_diff(self, wt: Worktree) -> str:
@@ -820,11 +861,12 @@ class EventDagRunner:
 
         emit_event(
             self.session_root,
-            "review_pass",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            verdict="structural_pass",
+            ReviewPass(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                verdict="structural_pass",
+            ),
         )
 
         # Self-review is advisory — any failure auto-passes to settlement
@@ -834,19 +876,21 @@ class EventDagRunner:
             if passed:
                 emit_event(
                     self.session_root,
-                    "self_review_passed",
-                    action.pane_slug,
-                    plan_name=self.dag.name,
-                    task_slug=action.task_slug,
+                    SelfReviewPassed(
+                        pane=action.pane_slug,
+                        plan_name=self.dag.name,
+                        task_slug=action.task_slug,
+                    ),
                 )
             else:
                 emit_event(
                     self.session_root,
-                    "self_review_rejected",
-                    action.pane_slug,
-                    plan_name=self.dag.name,
-                    task_slug=action.task_slug,
-                    findings=findings,
+                    SelfReviewRejected(
+                        pane=action.pane_slug,
+                        plan_name=self.dag.name,
+                        task_slug=action.task_slug,
+                        findings=findings or "",
+                    ),
                 )
                 # Re-launch worker in same worktree with findings
                 await self._relaunch_worker_with_findings(
@@ -856,24 +900,35 @@ class EventDagRunner:
                 passed2, findings2 = await self._run_self_review(
                     action.task_slug, wt, action.pane_slug
                 )
-                event_name = "self_review_passed" if passed2 else "self_review_auto_passed"
-                emit_event(
-                    self.session_root,
-                    event_name,
-                    action.pane_slug,
-                    plan_name=self.dag.name,
-                    task_slug=action.task_slug,
-                    findings=findings2,
-                )
+                if passed2:
+                    emit_event(
+                        self.session_root,
+                        SelfReviewPassed(
+                            pane=action.pane_slug,
+                            plan_name=self.dag.name,
+                            task_slug=action.task_slug,
+                        ),
+                    )
+                else:
+                    emit_event(
+                        self.session_root,
+                        SelfReviewAutoPassed(
+                            pane=action.pane_slug,
+                            plan_name=self.dag.name,
+                            task_slug=action.task_slug,
+                            findings=findings2,
+                        ),
+                    )
         except Exception as exc:
             logger.warning("Self-review failed for %s, auto-passing: %s", action.task_slug, exc)
             emit_event(
                 self.session_root,
-                "self_review_error",
-                action.pane_slug,
-                plan_name=self.dag.name,
-                task_slug=action.task_slug,
-                error=str(exc),
+                SelfReviewError(
+                    pane=action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    error=str(exc),
+                ),
             )
 
         # Always pass to settlement
@@ -1013,10 +1068,11 @@ class EventDagRunner:
 
         emit_event(
             self.session_root,
-            "self_review_fix_started",
-            self._ctx(task_slug).pane_slug or "",
-            plan_name=self.dag.name,
-            task_slug=task_slug,
+            SelfReviewFixStarted(
+                pane=self._ctx(task_slug).pane_slug or "",
+                plan_name=self.dag.name,
+                task_slug=task_slug,
+            ),
         )
 
         await asyncio.wait_for(
@@ -1099,11 +1155,12 @@ class EventDagRunner:
         if task.role in ("researcher", "reviewer"):
             emit_event(
                 self.session_root,
-                "review_pass",
-                action.pane_slug,
-                plan_name=self.dag.name,
-                task_slug=action.task_slug,
-                verdict="read_only",
+                ReviewPass(
+                    pane=action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    verdict="read_only",
+                ),
             )
             return self.kernel.handle(
                 TaskReviewDone(
@@ -1143,12 +1200,13 @@ class EventDagRunner:
         if not review_result.passed:
             emit_event(
                 self.session_root,
-                "review_fail",
-                action.pane_slug,
-                plan_name=self.dag.name,
-                task_slug=action.task_slug,
-                verdict=review_result.verdict,
-                error=review_result.error,
+                ReviewFail(
+                    pane=action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    verdict=review_result.verdict,
+                    error=review_result.error or "",
+                ),
             )
             if review_result.error:
                 error_msg = f"review:{review_result.verdict} — {review_result.error}"
@@ -1175,11 +1233,12 @@ class EventDagRunner:
 
         emit_event(
             self.session_root,
-            "review_pass",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            verdict=review_result.verdict,
+            ReviewPass(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                verdict=review_result.verdict,
+            ),
         )
         return self.kernel.handle(
             TaskReviewDone(
@@ -1209,11 +1268,12 @@ class EventDagRunner:
             )
             emit_event(
                 self.session_root,
-                "task_abandoned",
-                action.pane_slug or "runner",
-                plan_name=self.dag.name,
-                task_slug=action.task_slug,
-                reason="shutdown",
+                TaskAbandoned(
+                    pane=action.pane_slug or "runner",
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    reason="shutdown",
+                ),
             )
             return self.kernel.handle(
                 TaskWaitDone(action.task_slug, action.pane_slug, TaskState.ABANDONED)
@@ -1246,11 +1306,12 @@ class EventDagRunner:
 
         emit_event(
             self.session_root,
-            "dag_task_governor_resumed",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            action=gov_action.value,
+            GovernorResumed(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                action=gov_action.value,
+            ),
         )
         return self.kernel.handle(TaskGovernorResumed(action.task_slug, gov_action))
 
@@ -1297,11 +1358,12 @@ class EventDagRunner:
             logger.error("Task %s timed out after %ds", task_slug, timeout_s)
             emit_event(
                 self.session_root,
-                "task_failed",
-                pane_slug,
-                plan_name=self.dag.name,
-                task_slug=task_slug,
-                error=f"Wall-clock timeout after {timeout_s}s",
+                TaskFailed(
+                    pane=pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=task_slug,
+                    error=f"Wall-clock timeout after {timeout_s}s",
+                ),
             )
             on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s", 0, 0)
 
@@ -1564,11 +1626,12 @@ class EventDagRunner:
 
             emit_event(
                 self.session_root,
-                "dag_task_dispatched",
-                pane_slug,
-                plan_name=self.dag.name,
-                task_slug=action.task_slug,
-                agent=agent,
+                EvtTaskDispatched(
+                    pane=pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    agent=agent,
+                ),
             )
 
             def _on_worker_exit(
@@ -1880,11 +1943,12 @@ class EventDagRunner:
         logger.info("SETTLEMENT RETRY %s — feeding error back to worker", action.task_slug)
         emit_event(
             self.session_root,
-            "settlement_retry",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            error=error,
+            SettlementRetry(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                error=error,
+            ),
         )
         await self._settlement_retry(action, wt, error)
         async with self._settlement_semaphore:
@@ -1926,14 +1990,26 @@ class EventDagRunner:
             logger.warning("DB state sync failed for %s: %s", task_slug, exc)
 
     def _emit_merge_completion(self, action: MergeTask, error: str | None) -> None:
-        emit_event(
-            self.session_root,
-            "merge_completed" if not error else "task_merge_failed",
-            action.pane_slug,
-            plan_name=self.dag.name,
-            task_slug=action.task_slug,
-            error=error,
-        )
+        if error:
+            emit_event(
+                self.session_root,
+                TaskMergeFailed(
+                    pane=action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    error=error,
+                ),
+            )
+        else:
+            emit_event(
+                self.session_root,
+                MergeCompleted(
+                    pane=action.pane_slug,
+                    plan_name=self.dag.name,
+                    task_slug=action.task_slug,
+                    error=None,
+                ),
+            )
 
     async def _merge(self, action: MergeTask) -> list[DagAction]:
         """Commit-or-Kill: Merge worktree branch into base (Pillar #2)."""

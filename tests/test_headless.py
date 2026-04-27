@@ -129,7 +129,7 @@ def test_run_headless_worker_emits_plan_name_on_worker_logs(
         agent="test-agent",
         files=DagFileSpec(create=("x.py",)),
     )
-    emitted: list[tuple[str, str, dict[str, object]]] = []
+    emitted: list = []
 
     class _Stdout:
         def __init__(self) -> None:
@@ -150,8 +150,8 @@ def test_run_headless_worker_emits_plan_name_on_worker_logs(
     async def _mock_create_subprocess_exec(*args, **kwargs):
         return _Process()
 
-    def _capture_emit(session_root: str, event: str, pane: str, **kwargs) -> None:
-        emitted.append((event, pane, kwargs))
+    def _capture_emit(session_root, event, pane="", **kwargs):
+        emitted.append(event)
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _mock_create_subprocess_exec)
     monkeypatch.setattr("dgov.workers.headless.emit_event", _capture_emit)
@@ -169,15 +169,11 @@ def test_run_headless_worker_emits_plan_name_on_worker_logs(
         )
     )
 
-    assert emitted == [
-        (
-            "worker_log",
-            "pane-1",
-            {
-                "plan_name": "plan-1",
-                "task_slug": "t1",
-                "log_type": "thought",
-                "content": "hi",
-            },
-        )
-    ]
+    assert len(emitted) == 1
+    evt = emitted[0]
+    assert evt.event_type == "worker_log"
+    assert evt.pane == "pane-1"
+    assert evt.plan_name == "plan-1"
+    assert evt.task_slug == "t1"
+    assert evt.log_type == "thought"
+    assert evt.content == "hi"

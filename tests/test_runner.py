@@ -585,26 +585,25 @@ class TestRunStartMarker:
     """
 
     def test_run_start_emitted_once_per_run(self):
-        emitted: list[tuple[str, str, dict]] = []
+        emitted: list = []
 
-        def _capture(session_root, event, pane, **kwargs):
-            emitted.append((event, pane, kwargs))
+        def _capture(session_root, event, pane="", **kwargs):
+            emitted.append(event)
 
         with _io_patches(), patch(_P_EMIT_EVENT, side_effect=_capture):
             runner = _make_runner(_single_dag())
             asyncio.run(runner.run())
 
-        run_starts = [(pane, kw) for ev, pane, kw in emitted if ev == "run_start"]
+        run_starts = [e for e in emitted if getattr(e, "event_type", None) == "run_start"]
         assert len(run_starts) == 1
-        pane, kw = run_starts[0]
-        assert pane == "run-test-dag"
-        assert kw.get("plan_name") == "test-dag"
+        assert run_starts[0].pane == "run-test-dag"
+        assert run_starts[0].plan_name == "test-dag"
 
     def test_run_start_precedes_task_events(self):
         seen: list[str] = []
 
-        def _capture(session_root, event, pane, **kwargs):
-            seen.append(event)
+        def _capture(session_root, event, pane="", **kwargs):
+            seen.append(getattr(event, "event_type", str(event)))
 
         with _io_patches(), patch(_P_EMIT_EVENT, side_effect=_capture):
             runner = _make_runner(_single_dag())
@@ -612,7 +611,6 @@ class TestRunStartMarker:
 
         assert "run_start" in seen
         run_start_idx = seen.index("run_start")
-        # Every task-lifecycle event comes after the run_start marker.
         for i, ev in enumerate(seen):
             if ev in {"dag_task_dispatched", "merge_completed", "dag_completed"}:
                 assert i > run_start_idx, f"{ev} emitted before run_start"
@@ -875,7 +873,11 @@ class TestInterruptHandling:
         assert runner.kernel.task_states["a"] == TaskState.ABANDONED
         assert runner._ctx("a").attempts == 1
         mock_emit.assert_called_once()
-        assert mock_emit.call_args[0][1] == "task_abandoned"
+        # Check typed event (new signature: session_root, DgovEvent)
+        event = mock_emit.call_args[0][1]
+        assert event.event_type == "task_abandoned"
+        assert event.task_slug == "a"
+        assert event.reason == "shutdown"
 
 
 class TestSemanticSettlementShadowMode:
@@ -890,17 +892,19 @@ class TestSemanticSettlementShadowMode:
             # Task should still succeed (shadow mode)
             assert results["a"] == "merged"
 
-            # Verify integration_risk_scored was emitted
+            # Verify integration_risk_scored was emitted (typed event signature)
             risk_calls = [
-                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "integration_risk_scored"
             ]
             assert len(risk_calls) == 1
             # Verify payload contains expected fields
-            call = risk_calls[0]
-            assert call.kwargs.get("task_slug") == "a"
-            assert "risk_level" in call.kwargs
-            assert "claimed_files" in call.kwargs
-            assert "changed_files" in call.kwargs
+            event = risk_calls[0].args[1]
+            assert event.task_slug == "a"
+            assert hasattr(event, "risk_level")
+            assert hasattr(event, "claimed_files")
+            assert hasattr(event, "changed_files")
 
     def test_integration_risk_scored_emitted_even_when_merge_fails(self):
         """Risk scored even if settlement gate rejects (before failure path)."""
@@ -913,7 +917,9 @@ class TestSemanticSettlementShadowMode:
 
             # Risk should still be scored (happens before merge)
             risk_calls = [
-                c for c in mock_emit.call_args_list if c.args[1] == "integration_risk_scored"
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "integration_risk_scored"
             ]
             assert len(risk_calls) == 1
 
@@ -1022,15 +1028,17 @@ class TestIntegrationCandidate:
 
             assert results["a"] == "merged"
 
-            # Verify integration_candidate_passed was emitted
+            # Verify integration_candidate_passed was emitted (typed event signature)
             passed_calls = [
-                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_passed"
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "integration_candidate_passed"
             ]
             assert len(passed_calls) == 1
             # Verify payload has expected fields
-            kwargs = passed_calls[0].kwargs
-            assert kwargs.get("task_slug") == "a"
-            assert "candidate_sha" in kwargs
+            event = passed_calls[0].args[1]
+            assert event.task_slug == "a"
+            assert hasattr(event, "candidate_sha")
 
     def test_integration_candidate_fail_rejects_task(self):
         """When replay fails, task is rejected with integration_candidate_failed."""
@@ -1044,15 +1052,17 @@ class TestIntegrationCandidate:
             # Task should fail due to candidate failure
             assert results["a"] == "failed"
 
-            # Verify integration_candidate_failed was emitted
+            # Verify integration_candidate_failed was emitted (typed event signature)
             failed_calls = [
-                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_failed"
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "integration_candidate_failed"
             ]
             assert len(failed_calls) == 1
             # Verify error details in payload
-            kwargs = failed_calls[0].kwargs
-            assert kwargs.get("task_slug") == "a"
-            assert "failure_class" in kwargs
+            event = failed_calls[0].args[1]
+            assert event.task_slug == "a"
+            assert hasattr(event, "failure_class")
 
     def test_original_worktree_preserved_on_candidate_failure(self):
         """When candidate fails, original task worktree is kept for inspection."""
@@ -1087,9 +1097,11 @@ class TestIntegrationCandidate:
             assert results["a"] == "failed"
 
             # Verify both candidate creation and cleanup were called
-            # and integration_candidate_failed was emitted
+            # and integration_candidate_failed was emitted (typed event signature)
             failed_calls = [
-                c for c in mock_emit.call_args_list if c.args[1] == "integration_candidate_failed"
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "integration_candidate_failed"
             ]
             assert len(failed_calls) == 1
 
@@ -1144,14 +1156,16 @@ class TestPythonSemanticGateRunner:
             # Task should fail due to semantic gate rejection
             assert results["a"] == "failed"
 
-            # Verify semantic_gate_rejected was emitted
+            # Verify semantic_gate_rejected was emitted (typed event signature)
             rejected_calls = [
-                c for c in mock_emit.call_args_list if c.args[1] == "semantic_gate_rejected"
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "semantic_gate_rejected"
             ]
             assert len(rejected_calls) == 1
-            kwargs = rejected_calls[0].kwargs
-            assert kwargs.get("gate_name") == "same_symbol_edit"
-            assert kwargs.get("failure_class") == "same_symbol_edit"
+            event = rejected_calls[0].args[1]
+            assert event.gate_name == "same_symbol_edit"
+            assert event.failure_class == "same_symbol_edit"
 
     def test_python_semantic_gate_passes_for_non_python_files(self):
         """Non-Python tasks bypass semantic gate and proceed normally."""
@@ -1447,9 +1461,11 @@ class TestRecoveryPipeline:
             assert mock_update.call_args[0][1] == "a"
             assert mock_update.call_args[0][2] == TaskState.ABANDONED.value
 
-            # Verify event was emitted (emit_event: positional args)
+            # Verify event was emitted (typed event signature)
             mock_emit.assert_called_once()
-            assert mock_emit.call_args[0][1] == "task_abandoned"
+            event = mock_emit.call_args[0][1]
+            assert event.event_type == "task_abandoned"
+            assert event.task_slug == "a"
 
     def test_resume_single_task_emits_event(self):
         """Resume emits governor-resumed event for auditability."""
@@ -1470,10 +1486,12 @@ class TestRecoveryPipeline:
             assert isinstance(call_args, TaskGovernorResumed)
             assert call_args.action == GovernorAction.RETRY
 
-            # Verify event was emitted (emit_event: positional args)
+            # Verify event was emitted (typed event signature)
             mock_emit.assert_called_once()
-            assert mock_emit.call_args[0][1] == "dag_task_governor_resumed"
-            assert mock_emit.call_args[1]["action"] == GovernorAction.RETRY.value
+            event = mock_emit.call_args[0][1]
+            assert event.event_type == "dag_task_governor_resumed"
+            assert event.task_slug == "a"
+            assert event.action == GovernorAction.RETRY.value
 
     def test_resume_skips_non_terminal_states(self):
         """Resume only processes terminal states (FAILED, ABANDONED, TIMED_OUT, SKIPPED)."""
@@ -2196,11 +2214,11 @@ class TestAsyncErrorPaths:
 
     def test_worker_tokens_propagate_through_events(self):
         """Worker token counts flow through emit_event to event log."""
-        emitted: list[dict] = []
+        emitted: list = []
 
-        # Capture emit_event calls
-        def _capture_emit(session_root, event, pane, **kwargs):
-            emitted.append({"event": event, **kwargs})
+        # Capture emit_event calls (typed event signature)
+        def _capture_emit(session_root, event):
+            emitted.append(event)
 
         async def _worker_with_tokens(
             project_root,
@@ -2221,19 +2239,19 @@ class TestAsyncErrorPaths:
             runner = _make_runner(dag)
             asyncio.run(runner.run())
 
-        done_events = [e for e in emitted if e["event"] == "task_done"]
+        done_events = [e for e in emitted if getattr(e, "event_type", None) == "task_done"]
         assert len(done_events) >= 1
-        assert done_events[0]["prompt_tokens"] == 1500
-        assert done_events[0]["completion_tokens"] == 500
+        assert done_events[0].prompt_tokens == 1500
+        assert done_events[0].completion_tokens == 500
 
     @pytest.mark.unit
     def test_token_usage_accumulates_across_forked_worker_exits(self):
         """Runner token_usage includes the original and forked worker attempts."""
         call_count = 0
-        emitted: list[dict] = []
+        emitted: list = []
 
-        def _capture_emit(session_root, event, pane, **kwargs):
-            emitted.append({"event": event, **kwargs})
+        def _capture_emit(session_root, event):
+            emitted.append(event)
 
         async def _worker_with_fork_tokens(
             project_root,
@@ -2274,9 +2292,9 @@ class TestAsyncErrorPaths:
 
         assert results["a"] == "merged"
         assert runner.token_usage == {"a": (1300, 250)}
-        done_events = [e for e in emitted if e["event"] == "task_done"]
-        assert done_events[-1]["prompt_tokens"] == 1300
-        assert done_events[-1]["completion_tokens"] == 250
+        done_events = [e for e in emitted if getattr(e, "event_type", None) == "task_done"]
+        assert done_events[-1].prompt_tokens == 1300
+        assert done_events[-1].completion_tokens == 250
 
     def test_concurrent_failures_both_reported(self):
         """When two parallel tasks both fail, both are reported as failed."""
