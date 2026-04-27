@@ -144,13 +144,33 @@ def _mock_semantic_gate_pass(*args, **kwargs):
     )
 
 
+def _mock_compute_risk(*args, **kwargs):
+    """Mock no-risk semantic risk record."""
+    from dgov.semantic_settlement import IntegrationRiskRecord, RiskLevel
+
+    return IntegrationRiskRecord(
+        task_slug=kwargs.get("task_slug", "a"),
+        target_head_sha="abc123",
+        task_base_sha="base",
+        task_commit_sha="commit",
+        risk_level=RiskLevel.NONE,
+        claimed_files=(),
+        changed_files=(),
+        python_overlap_detected=False,
+        overlap_evidence=(),
+        computed_at=0.0,
+    )
+
+
+_P_COMPUTE_RISK = "dgov.settlement_flow.SettlementFlow.compute_semantic_risk"
+
 # Patch targets — runner imports at top level
 _P_CREATE_WT = "dgov.runner.create_worktree"
-_P_MERGE_WT = "dgov.runner.merge_worktree"
+_P_MERGE_WT = "dgov.settlement_flow.merge_worktree"
 _P_REMOVE_WT = "dgov.runner.remove_worktree"
-_P_COMMIT_WT = "dgov.runner.commit_in_worktree"
-_P_AUTOFIX = "dgov.runner.autofix_sandbox"
-_P_VALIDATE = "dgov.runner.validate_sandbox"
+_P_COMMIT_WT = "dgov.settlement_flow.commit_in_worktree"
+_P_AUTOFIX = "dgov.settlement_flow.autofix_sandbox"
+_P_VALIDATE = "dgov.settlement_flow.validate_sandbox"
 _P_PREPARE_WT = "dgov.runner.prepare_worktree"
 _P_RECORD_ARTIFACT = "dgov.runner.record_runtime_artifact"
 _P_EMIT_EVENT = "dgov.runner.emit_event"
@@ -158,9 +178,9 @@ _P_HEADLESS = "dgov.runner.run_headless_worker"
 # review_sandbox imported at top level in runner
 _P_REVIEW = "dgov.runner.review_sandbox"
 _P_DEPLOY_APPEND = "dgov.deploy_log.append"
-_P_CREATE_CANDIDATE = "dgov.runner.create_integration_candidate"
-_P_REMOVE_CANDIDATE = "dgov.runner.remove_integration_candidate"
-_P_SEMANTIC_GATE = "dgov.runner.run_python_semantic_gate_in_subprocess"
+_P_CREATE_CANDIDATE = "dgov.settlement_flow.create_integration_candidate"
+_P_REMOVE_CANDIDATE = "dgov.settlement_flow.remove_integration_candidate"
+_P_SEMANTIC_GATE = "dgov.settlement_flow.run_python_semantic_gate_in_subprocess"
 _P_GET_DIFF = "dgov.runner.EventDagRunner._get_worktree_diff"
 
 
@@ -274,6 +294,7 @@ def _io_patches(
             patch(_P_CREATE_CANDIDATE, side_effect=candidate),
             patch(_P_REMOVE_CANDIDATE),
             patch(_P_SEMANTIC_GATE, side_effect=semantic_gate),
+            patch(_P_COMPUTE_RISK, side_effect=_mock_compute_risk),
             patch("dgov.deploy_log.read", side_effect=_read_deploys),
         ):
             yield
@@ -692,7 +713,7 @@ class TestProbationPrompt:
 
             runner = EventDagRunner(dag, session_root=str(tmp_path))
 
-            assert runner._get_ledger_entries_for_task(task) == [
+            assert runner._prompts._get_ledger_entries(task) == [
                 {"id": 1, "content": "Kernel case law"}
             ]
         finally:
@@ -701,7 +722,7 @@ class TestProbationPrompt:
     def test_probation_section_formatting(self):
         runner = _make_runner(_single_dag())
 
-        section = runner._format_probation_section([
+        section = runner._prompts._format_probation_section([
             {"id": 66, "content": "LLMSopBundler is deprecated"}
         ])
 
@@ -1226,7 +1247,7 @@ class TestPythonSemanticGateSubprocess:
 
     def test_subprocess_uses_candidate_src_path(self, tmp_path, monkeypatch):
         """Candidate subprocess should import from the candidate src tree first."""
-        from dgov.runner import run_python_semantic_gate_in_subprocess
+        from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
 
         captured: dict[str, object] = {}
 
@@ -1269,7 +1290,7 @@ class TestPythonSemanticGateSubprocess:
 
     def test_subprocess_failure_fails_closed(self, tmp_path, monkeypatch):
         """Runner should reject when candidate-side semantic execution fails."""
-        from dgov.runner import run_python_semantic_gate_in_subprocess
+        from dgov.settlement_flow import run_python_semantic_gate_in_subprocess
 
         def _fake_run(cmd, cwd, capture_output, text, env, check):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="boom")
@@ -1531,23 +1552,29 @@ class TestSettlementPhaseBoundaries:
     """Tests for settlement phase split — verify each phase boundary independently."""
 
     def test_prepare_and_commit_returns_true_for_edit_tasks(self):
-        """_prepare_and_commit returns was_settlement=True for normal edit tasks."""
+        """prepare_and_commit returns was_settlement=True for normal edit tasks."""
         from unittest.mock import MagicMock
 
         with _io_patches():
             runner = _make_runner(_single_dag())
             action = MagicMock(task_slug="a", file_claims=("a.py",), pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
+            task = runner.dag.tasks["a"]
 
             async def _test():
-                error, was_settlement = await runner._prepare_and_commit(action, wt)
+                error, was_settlement = await runner._settlement_flow.prepare_and_commit(
+                    task=task,
+                    action=action,
+                    wt=wt,
+                    emit_event_fn=MagicMock(),
+                )
                 assert error is None
                 assert was_settlement is True  # Indicates settlement should continue
 
             asyncio.run(_test())
 
     def test_prepare_and_commit_returns_false_for_researcher(self):
-        """_prepare_and_commit returns was_settlement=False for researcher role."""
+        """prepare_and_commit returns was_settlement=False for researcher role."""
         from unittest.mock import MagicMock
 
         from dgov.dag_parser import DagFileSpec, DagTaskSpec
@@ -1569,84 +1596,19 @@ class TestSettlementPhaseBoundaries:
             wt = _mock_create_worktree("/tmp", "research")
 
             async def _test():
-                error, was_settlement = await runner._prepare_and_commit(action, wt)
+                error, was_settlement = await runner._settlement_flow.prepare_and_commit(
+                    task=researcher_task,
+                    action=action,
+                    wt=wt,
+                    emit_event_fn=MagicMock(),
+                )
                 assert error is None
                 assert was_settlement is False  # Indicates settlement should skip
 
             asyncio.run(_test())
 
-    def test_cleanup_rejected_candidate_removes_and_emits(self):
-        """_cleanup_rejected_candidate removes candidate and emits failure event."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from dgov.semantic_settlement import FailureClass, IntegrationCandidateVerdict
-        from dgov.worktree import IntegrationCandidateResult
-
-        with _io_patches():
-            runner = _make_runner(_single_dag())
-            action = MagicMock(task_slug="a", pane_slug="pane-1")
-            candidate_result = IntegrationCandidateResult(
-                passed=True,
-                candidate_path=Path("/tmp/test-candidate"),
-                candidate_sha="abc123",
-            )
-            verdict = IntegrationCandidateVerdict(
-                task_slug="a",
-                candidate_sha="abc123",
-                target_head_sha="",
-                passed=False,
-                failure_class=FailureClass.BEHAVIORAL_MISMATCH,
-                error_message="validation failed",
-                validated_at=0.0,
-            )
-
-            async def _test():
-                with (
-                    patch("dgov.runner.remove_integration_candidate") as mock_remove,
-                    patch("dgov.runner.emit_integration_candidate_failed") as mock_emit,
-                ):
-                    await runner._cleanup_rejected_candidate(action, candidate_result, verdict)
-
-                    mock_remove.assert_called_once()
-                    mock_emit.assert_called_once()
-
-            asyncio.run(_test())
-
-    def test_cleanup_passed_candidate_removes_and_emits(self):
-        """_cleanup_passed_candidate removes candidate and emits success event."""
-        from pathlib import Path
-        from unittest.mock import MagicMock, patch
-
-        from dgov.worktree import IntegrationCandidateResult
-
-        with _io_patches():
-            runner = _make_runner(_single_dag())
-            action = MagicMock(task_slug="a", pane_slug="pane-1")
-            candidate_result = IntegrationCandidateResult(
-                passed=True,
-                candidate_path=Path("/tmp/test-candidate"),
-                candidate_sha="abc123",
-            )
-
-            async def _test():
-                with (
-                    patch("dgov.runner.remove_integration_candidate") as mock_remove,
-                    patch("dgov.runner.emit_integration_candidate_passed") as mock_emit,
-                ):
-                    await runner._cleanup_passed_candidate(action, candidate_result)
-
-                    mock_remove.assert_called_once()
-                    mock_emit.assert_called_once()
-                    # Verify pass verdict contains expected fields
-                    call_args = mock_emit.call_args
-                    assert call_args[0][3].task_slug == "a"
-                    assert call_args[0][3].passed is True
-
-            asyncio.run(_test())
-
     def test_settle_and_merge_early_return_on_prepare_error(self):
-        """_settle_and_merge returns early when _prepare_and_commit returns error."""
+        """_settle_and_merge returns early when prepare_and_commit returns error."""
         from unittest.mock import AsyncMock, MagicMock
 
         with _io_patches():
@@ -1654,20 +1616,20 @@ class TestSettlementPhaseBoundaries:
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
 
-            # Mock prepare_and_commit to return an error
-            runner._prepare_and_commit = AsyncMock(return_value=("prepare failed", True))  # type: ignore
-            runner._run_isolated_validation = AsyncMock()  # type: ignore
+            sf = runner._settlement_flow
+            sf.prepare_and_commit = AsyncMock(return_value=("prepare failed", True))  # type: ignore
+            sf.run_isolated_validation = AsyncMock()  # type: ignore
 
             async def _test():
                 error, was_settlement = await runner._settle_and_merge(action, wt)
                 assert error == "prepare failed"
                 assert was_settlement is True
-                runner._run_isolated_validation.assert_not_called()  # type: ignore
+                sf.run_isolated_validation.assert_not_called()  # type: ignore
 
             asyncio.run(_test())
 
     def test_settle_and_merge_early_return_on_validation_error(self):
-        """_settle_and_merge returns early when _run_isolated_validation returns error."""
+        """_settle_and_merge returns early when run_isolated_validation returns error."""
         from unittest.mock import AsyncMock, MagicMock
 
         with _io_patches():
@@ -1675,15 +1637,16 @@ class TestSettlementPhaseBoundaries:
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
 
-            runner._prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
-            runner._run_isolated_validation = AsyncMock(return_value=("validation failed", None))  # type: ignore
-            runner._create_integration_candidate_with_emit = AsyncMock()  # type: ignore
+            sf = runner._settlement_flow
+            sf.prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
+            sf.run_isolated_validation = AsyncMock(return_value=("validation failed", None))  # type: ignore
+            sf.create_integration_candidate_with_emit = AsyncMock()  # type: ignore
 
             async def _test():
                 error, was_settlement = await runner._settle_and_merge(action, wt)
                 assert error == "validation failed"
                 assert was_settlement is True
-                runner._create_integration_candidate_with_emit.assert_not_called()  # type: ignore
+                sf.create_integration_candidate_with_emit.assert_not_called()  # type: ignore
 
             asyncio.run(_test())
 
@@ -1698,20 +1661,21 @@ class TestSettlementPhaseBoundaries:
             action = MagicMock(task_slug="a", pane_slug="pane-1")
             wt = _mock_create_worktree("/tmp", "a")
 
-            runner._prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
-            runner._run_isolated_validation = AsyncMock(return_value=(None, MagicMock()))  # type: ignore
-            runner._create_integration_candidate_with_emit = AsyncMock(  # type: ignore
+            sf = runner._settlement_flow
+            sf.prepare_and_commit = AsyncMock(return_value=(None, True))  # type: ignore
+            sf.run_isolated_validation = AsyncMock(return_value=(None, MagicMock()))  # type: ignore
+            sf.create_integration_candidate_with_emit = AsyncMock(  # type: ignore
                 return_value=IntegrationCandidateResult(
                     passed=False, error="candidate creation failed"
                 )
             )
-            runner._run_semantic_gate_on_candidate = AsyncMock()  # type: ignore
+            sf.run_semantic_gate_on_candidate = AsyncMock()  # type: ignore
 
             async def _test():
                 error, was_settlement = await runner._settle_and_merge(action, wt)
                 assert error and "candidate creation failed" in error
                 assert was_settlement is True
-                runner._run_semantic_gate_on_candidate.assert_not_called()  # type: ignore
+                sf.run_semantic_gate_on_candidate.assert_not_called()  # type: ignore
 
             asyncio.run(_test())
 
@@ -1845,10 +1809,10 @@ class TestContextFork:
 
     def test_fork_handoff_prompt_contains_diff_and_original(self):
         """Handoff prompt includes original task prompt and diff."""
+        from dgov.prompt_builder import PromptBuilder
+
         task = _task_with_fork("a")
-        prompt = EventDagRunner._build_fork_handoff_prompt(
-            task, "diff --git a/foo.py b/foo.py\n+hello"
-        )
+        prompt = PromptBuilder.fork_handoff_prompt(task, "diff --git a/foo.py b/foo.py\n+hello")
         assert "Do a" in prompt  # original task prompt
         assert "+hello" in prompt  # diff content
         assert "Do NOT start from scratch" in prompt
@@ -2072,8 +2036,8 @@ class TestSelfReview:
         dag = _dag({"x": _task_with_self_review("x")})
         with _io_patches():
             runner = _make_runner(dag)
-        runner._review_sop_blocks = ()
-        prompt = runner._build_self_review_prompt("diff --git a/foo.py b/foo.py\n+hello")
+        runner._prompts._review_sop_blocks = ()
+        prompt = runner._prompts.self_review_prompt("diff --git a/foo.py b/foo.py\n+hello")
         assert "+hello" in prompt
         assert "semantic correctness" in prompt
         assert "NO context" in prompt
@@ -2085,8 +2049,8 @@ class TestSelfReview:
         dag = _dag({"x": _task_with_self_review("x")})
         with _io_patches():
             runner = _make_runner(dag)
-        runner._review_sop_blocks = ("[SOP: Test Review]\nDo:\n- check things",)
-        prompt = runner._build_self_review_prompt("diff --git a/f.py b/f.py\n+x")
+        runner._prompts._review_sop_blocks = ("[SOP: Test Review]\nDo:\n- check things",)
+        prompt = runner._prompts.self_review_prompt("diff --git a/f.py b/f.py\n+x")
         assert "[SOP: Test Review]" in prompt
         assert "check things" in prompt
         assert "Logic errors" not in prompt

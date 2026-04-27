@@ -32,7 +32,6 @@ from dgov.actions import (
     TaskReviewDone,
     TaskWaitDone,
 )
-from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.event_types import (
     DgovEvent,
@@ -64,23 +63,12 @@ from dgov.persistence import (
     update_runtime_artifact_state,
 )
 from dgov.persistence.schema import TaskState, WorkerTask
+from dgov.prompt_builder import PromptBuilder, build_baseline_diag_note, load_review_sop_blocks
 from dgov.settlement import review_sandbox
 from dgov.settlement_flow import (
-    IntegrationCandidateResult,
-    IntegrationCandidateVerdict,
     IntegrationRiskRecord,
     RiskLevel,
     SettlementFlow,
-    autofix_sandbox,
-    commit_in_worktree,
-    create_integration_candidate,
-    emit_integration_candidate_failed,
-    emit_integration_candidate_passed,
-    emit_semantic_gate_rejected,
-    merge_worktree,
-    remove_integration_candidate,
-    run_python_semantic_gate_in_subprocess,
-    validate_sandbox,
 )
 from dgov.types import WorkerExit, Worktree
 from dgov.workers.headless import run_headless_worker
@@ -153,66 +141,6 @@ class TaskContext:
     completion_tokens: int = 0
 
 
-def _build_baseline_diag_note(config: object, session_root: str) -> str:
-    """Capture baseline type-check diagnostic count for worker context.
-
-    Returns a short note string to prepend to worker prompts, or empty
-    string if no type checker is configured or baseline is clean.
-    """
-    import subprocess
-
-    from dgov.settlement import _count_diagnostics
-
-    type_check_cmd = getattr(config, "type_check_cmd", None)
-    if not type_check_cmd:
-        return ""
-    try:
-        res = subprocess.run(
-            type_check_cmd,
-            shell=True,
-            cwd=session_root,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception:
-        return ""
-    if res.returncode == 0:
-        return ""
-    count = _count_diagnostics((res.stdout or "") + (res.stderr or ""))
-    if count == 0:
-        return ""
-    return (
-        f"\nNOTE: The type checker (`{type_check_cmd}`) has {count} pre-existing "
-        f"diagnostic(s) at HEAD. These are NOT your responsibility — do not "
-        f"attempt to fix them. Settlement compares against this baseline and "
-        f"will only reject if you introduce NEW diagnostics.\n"
-    )
-
-
-_REVIEW_APPLIES_TO = frozenset({"review", "reviewer"})
-
-
-def _load_review_sop_blocks(session_root: str) -> tuple[str, ...]:
-    """Load SOPs tagged for review and render their prompt blocks.
-
-    Called once at runner init. Returns pre-rendered blocks for injection
-    into self-review prompts. Falls back to empty tuple if SOPs dir is
-    missing or unparseable (self-review still works, just without SOP
-    guidance).
-    """
-    from dgov.sop_bundler import load_sops
-
-    sops_dir = Path(session_root) / ".dgov" / "sops"
-    try:
-        all_sops = load_sops(sops_dir)
-    except (ValueError, OSError) as exc:
-        logger.warning("Failed to load review SOPs from %s: %s", sops_dir, exc)
-        return ()
-    review_sops = [s for s in all_sops if _REVIEW_APPLIES_TO & frozenset(s.applies_to)]
-    return tuple(s.render_prompt_block() for s in review_sops)
-
-
 class EventDagRunner:
     """Async DAG runner — pure event-driven dispatch."""
 
@@ -246,8 +174,12 @@ class EventDagRunner:
             task_files=self.task_files,
             max_retries=dag.default_max_retries,
         )
-        self._baseline_diag_note = _build_baseline_diag_note(self.project_config, session_root)
-        self._review_sop_blocks = _load_review_sop_blocks(session_root)
+        self._prompts = PromptBuilder(
+            session_root=session_root,
+            dag=dag,
+            baseline_diag_note=build_baseline_diag_note(self.project_config, session_root),
+            review_sop_blocks=load_review_sop_blocks(session_root),
+        )
         self._pending_dispatches: set[str] = set()
         self._event_queue: asyncio.Queue[WorkerExit] = asyncio.Queue()
         self._settlement_semaphore = asyncio.Semaphore(1)
@@ -791,7 +723,7 @@ class EventDagRunner:
 
         try:
             diff_text = await self._get_worktree_diff(wt) or "(no diff available)"
-            handoff_prompt = self._build_fork_handoff_prompt(task, diff_text)
+            handoff_prompt = PromptBuilder.fork_handoff_prompt(task, diff_text)
 
             forked_task = task.model_copy(
                 update={
@@ -822,27 +754,6 @@ class EventDagRunner:
         except Exception as exc:
             logger.error("Fork failed for %s: %s", task_slug, exc)
             _push_exit(task_slug, fork_pane, 1, f"Fork failed: {exc}")
-
-    @staticmethod
-    def _build_fork_handoff_prompt(task: DagTaskSpec, diff_text: str) -> str:
-        """Build a clean-context handoff prompt for a forked worker."""
-        return (
-            "You are continuing work that a previous worker started but did not "
-            "complete. The previous worker ran out of iterations. Their changes "
-            "are already in the worktree.\n\n"
-            "YOUR TASK (original):\n"
-            f"{task.prompt or ''}\n\n"
-            "CHANGES MADE SO FAR:\n"
-            f"```diff\n{diff_text}\n```\n\n"
-            "INSTRUCTIONS:\n"
-            "1. Use git_diff to see the current state of all changes.\n"
-            "2. Complete any remaining work for the task.\n"
-            "3. If the changes look complete, verify them (check_syntax, "
-            "run_tests) and call done.\n"
-            "4. If the changes are incomplete or incorrect, fix them and call "
-            "done.\n"
-            "Do NOT start from scratch. Build on the existing work.\n"
-        )
 
     # ---- Self-review (clean-context semantic review) ----
 
@@ -958,7 +869,7 @@ class EventDagRunner:
         if not diff_text.strip():
             return True, None
 
-        review_prompt = self._build_self_review_prompt(diff_text)
+        review_prompt = self._prompts.self_review_prompt(diff_text)
 
         # Capture reviewer output via on_event
         captured: list[str] = []
@@ -1012,38 +923,6 @@ class EventDagRunner:
             if any(w in lower for w in ("issue", "bug", "error", "incorrect", "wrong", "missing")):
                 return False, output
             return True, None
-
-    def _build_self_review_prompt(self, diff_text: str) -> str:
-        """Build a clean-context review prompt.
-
-        Framing and verdict protocol live here (code). Review criteria come
-        from SOPs loaded at runner init (policy). No task prompt, no worker
-        reasoning — the reviewer sees only the diff and SOP guidance.
-        """
-        parts = [
-            "You are reviewing a code change for semantic correctness.\n"
-            "You have NO context about what the change was supposed to do.\n"
-            "Reason backward from the implementation itself.\n",
-        ]
-        if self._review_sop_blocks:
-            parts.append("\n" + "\n\n".join(self._review_sop_blocks) + "\n")
-        else:
-            parts.append(
-                "\nFocus on:\n"
-                "- Logic errors (wrong conditions, off-by-one, inverted checks)\n"
-                "- No-ops (code that appears to do something but has no effect)\n"
-                "- Silently wrong behavior (swallowed errors, wrong variable used)\n"
-                "- Missing edge cases (null/empty/boundary conditions)\n"
-            )
-        parts.append(
-            f"\nDIFF:\n```diff\n{diff_text}\n```\n\n"
-            "Read the surrounding code in the repo for context if needed.\n\n"
-            "Respond via the `done` tool with a JSON verdict:\n"
-            '{"approved": true, "issues": []}  -- if no semantic issues\n'
-            '{"approved": false, "issues": ["description of issue 1", '
-            '"description of issue 2"]}  -- if issues found\n'
-        )
-        return "".join(parts)
 
     async def _relaunch_worker_with_findings(
         self,
@@ -1369,157 +1248,6 @@ class EventDagRunner:
             )
             on_exit(task_slug, pane_slug, 1, f"Timed out after {timeout_s}s", 0, 0)
 
-    def _get_ledger_entries_for_task(self, task: DagTaskSpec) -> list[dict]:
-        """Query ledger for open entries where affected_paths intersects with task claims.
-
-        Returns list of dicts with 'id' and 'content' keys for entries that overlap
-        with the task's file claims.
-        """
-        from dgov.persistence.ledger import list_ledger_entries
-
-        def _normalize(path: str) -> str:
-            return path.strip().lstrip("./").rstrip("/")
-
-        def _overlaps(left: str, right: str) -> bool:
-            left_norm = _normalize(left)
-            right_norm = _normalize(right)
-            if not left_norm or not right_norm:
-                return False
-            return (
-                left_norm == right_norm
-                or left_norm.startswith(right_norm + "/")
-                or right_norm.startswith(left_norm + "/")
-            )
-
-        # Get all file paths this task claims (create, edit, delete, touch)
-        task_paths = {_normalize(path) for path in task.all_touches() if _normalize(path)}
-        if not task_paths:
-            return []
-
-        # Query for open ledger entries
-        entries = list_ledger_entries(self.session_root, status="open")
-
-        # Filter to entries with path overlap
-        overlapping = []
-        for entry in entries:
-            entry_paths = {_normalize(path) for path in entry.affected_paths if _normalize(path)}
-            if any(
-                _overlaps(entry_path, task_path)
-                for entry_path in entry_paths
-                for task_path in task_paths
-            ):
-                overlapping.append({"id": entry.id, "content": entry.content})
-
-        return overlapping
-
-    def _format_probation_section(self, entries: list[dict]) -> str:
-        """Format ledger entries as Active Probation (Case Law) section.
-
-        Each entry is formatted with its ID and content under the probation header.
-        Returns empty string if no entries.
-        """
-        if not entries:
-            return ""
-
-        lines = ["\n## Active Probation (Case Law)\n"]
-        for entry in entries:
-            lines.append(f"**Entry #{entry['id']}:** {entry['content']}\n")
-
-        return "".join(lines)
-
-    def _build_worker_prompt(
-        self,
-        task_slug: str,
-        task: DagTaskSpec,
-        prior_error: str | None = None,
-        attempt: int = 0,
-    ) -> str:
-        """Build the full worker prompt with all enrichments.
-
-        This includes:
-        1. Base prompt (or reviewer-generated prompt for reviewer role)
-        2. Baseline diagnostic note
-        3. Active probation (case law) from ledger entries
-        4. Prior error context for retries
-        """
-        # Build base prompt
-        if task.role == "reviewer":
-            prompt = self._build_reviewer_prompt(task_slug, task)
-        else:
-            prompt = task.prompt or ""
-
-        # Inject baseline diagnostic note so workers don't waste iterations
-        if self._baseline_diag_note:
-            prompt = self._baseline_diag_note + prompt
-
-        # Inject active probation (case law) from ledger
-        ledger_entries = self._get_ledger_entries_for_task(task)
-        probation_section = self._format_probation_section(ledger_entries)
-        if probation_section:
-            prompt = prompt + probation_section
-
-        # Enrich prompt with prior failure context on retry
-        if prior_error:
-            prompt = (
-                f"PREVIOUS ATTEMPT ({attempt}) FAILED:\n{prior_error}\n\n"
-                f"Fix the issue described above, then complete the original task.\n\n"
-                f"ORIGINAL TASK:\n{prompt}"
-            )
-
-        return prompt
-
-    def _build_reviewer_prompt(self, task_slug: str, task: DagTaskSpec) -> str:
-        """Build a reviewer prompt with dependency diffs auto-injected."""
-        import subprocess as sp
-
-        from dgov import deploy_log
-
-        sections: list[str] = []
-        sections.append(
-            "Review the following changes for semantic correctness.\n"
-            "Focus on: logic errors, no-ops, silently wrong behavior, "
-            "missing edge cases, and whether the code matches its stated intent.\n"
-        )
-
-        records = deploy_log.read(self.session_root, self.dag.name)
-        sha_by_unit = {r.unit: r.sha for r in records}
-
-        for dep_slug in task.depends_on:
-            dep_task = self.dag.tasks.get(dep_slug)
-            if not dep_task:
-                continue
-            sha = sha_by_unit.get(dep_slug)
-            if not sha:
-                sections.append(f"## {dep_slug}\nNo deploy record found (not yet merged).\n")
-                continue
-
-            diff_result = sp.run(
-                ["git", "show", "--stat", "--patch", sha],
-                cwd=self.session_root,
-                capture_output=True,
-                text=True,
-            )
-            diff_text = diff_result.stdout if diff_result.returncode == 0 else "(diff unavailable)"
-
-            sections.append(
-                f"## Task: {dep_slug}\n"
-                f"Summary: {dep_task.summary}\n"
-                f"Commit: {dep_task.commit_message}\n\n"
-                f"```diff\n{diff_text}\n```\n"
-            )
-
-        # Append user-provided prompt guidance if any
-        if task.prompt and task.prompt.strip():
-            sections.append(f"## Additional review guidance\n{task.prompt}\n")
-
-        sections.append(
-            "Respond via the `done` tool with your verdict as a JSON object:\n"
-            '{"approved": true/false, "issues": ["issue 1", ...]}\n'
-            'If approved with no issues, use: {"approved": true, "issues": []}'
-        )
-
-        return "\n".join(sections)
-
     def _upstream_units(self, task_slug: str) -> tuple[str, ...]:
         """Return the transitive dependency closure for a task."""
         seen: set[str] = set()
@@ -1564,7 +1292,7 @@ class EventDagRunner:
 
         # Build worker prompt with all enrichments (baseline diag, ledger probation, retry context)
         ctx = self._ctx(action.task_slug)
-        prompt = self._build_worker_prompt(action.task_slug, task, ctx.error, ctx.attempts)
+        prompt = self._prompts.worker_prompt(action.task_slug, task, ctx.error, ctx.attempts)
 
         # Pillar #3: Snapshot Isolation
         base_ref = self._base_ref_for_task(action.task_slug)
@@ -1692,134 +1420,6 @@ class EventDagRunner:
             ctx.worktree = None
             raise
 
-    async def _prepare_and_commit(
-        self,
-        action: MergeTask,
-        wt: Worktree,
-    ) -> tuple[str | None, bool]:
-        """Autofix, commit, and handle read-only roles."""
-        from dgov import deploy_log
-
-        return await self._settlement_flow.prepare_and_commit(
-            task=self.dag.tasks[action.task_slug],
-            action=action,
-            wt=wt,
-            emit_event_fn=emit_event,
-            autofix_fn=autofix_sandbox,
-            commit_fn=commit_in_worktree,
-            deploy_append_fn=deploy_log.append,
-        )
-
-    async def _run_isolated_validation(
-        self,
-        action: MergeTask,
-        wt: Worktree,
-    ) -> tuple[str | None, IntegrationRiskRecord | None]:
-        """Compute risk and run isolated validation gate."""
-        return await self._settlement_flow.run_isolated_validation(
-            task=self.dag.tasks[action.task_slug],
-            action=action,
-            wt=wt,
-            emit_event_fn=emit_event,
-            validate_fn=validate_sandbox,
-        )
-
-    async def _run_semantic_gate_on_candidate(
-        self,
-        action: MergeTask,
-        wt: Worktree,
-        candidate_result: IntegrationCandidateResult,
-        risk_record: IntegrationRiskRecord,
-    ) -> str | None:
-        """Run deterministic Python semantic gate on the integrated candidate."""
-        return await self._settlement_flow.run_semantic_gate_on_candidate(
-            action=action,
-            wt=wt,
-            candidate_result=candidate_result,
-            risk_record=risk_record,
-            emit_event_fn=emit_event,
-            remove_candidate_fn=remove_integration_candidate,
-            semantic_gate_fn=run_python_semantic_gate_in_subprocess,
-            rejected_emit_fn=emit_semantic_gate_rejected,
-        )
-
-    async def _validate_and_finalize_candidate(
-        self,
-        action: MergeTask,
-        candidate_result: IntegrationCandidateResult,
-        task_config: ProjectConfig,
-    ) -> str | None:
-        """Validate candidate with same gates as isolated validation."""
-        return await self._settlement_flow.validate_and_finalize_candidate(
-            action=action,
-            candidate_result=candidate_result,
-            task_config=task_config,
-            emit_event_fn=emit_event,
-            validate_fn=validate_sandbox,
-            remove_candidate_fn=remove_integration_candidate,
-            failed_emit_fn=emit_integration_candidate_failed,
-            passed_emit_fn=emit_integration_candidate_passed,
-        )
-
-    async def _create_integration_candidate_with_emit(
-        self,
-        action: MergeTask,
-        wt: Worktree,
-    ) -> IntegrationCandidateResult:
-        """Create integration candidate and emit failure event if replay fails."""
-        return await self._settlement_flow.create_integration_candidate_with_emit(
-            action=action,
-            wt=wt,
-            emit_event_fn=emit_event,
-            create_candidate_fn=create_integration_candidate,
-            failed_emit_fn=emit_integration_candidate_failed,
-        )
-
-    async def _finalize_merge(
-        self,
-        action: MergeTask,
-        wt: Worktree,
-    ) -> None:
-        """Merge worktree into main and record deployment."""
-        from dgov import deploy_log
-
-        await self._settlement_flow.finalize_merge(
-            action=action,
-            wt=wt,
-            merge_fn=merge_worktree,
-            deploy_append_fn=deploy_log.append,
-        )
-
-    async def _cleanup_rejected_candidate(
-        self,
-        action: MergeTask,
-        candidate_result: IntegrationCandidateResult,
-        verdict: IntegrationCandidateVerdict,
-    ) -> None:
-        """Clean up rejected candidate and emit failure event."""
-        await self._settlement_flow.cleanup_rejected_candidate(
-            action=action,
-            candidate_result=candidate_result,
-            verdict=verdict,
-            emit_event_fn=emit_event,
-            remove_candidate_fn=remove_integration_candidate,
-            failed_emit_fn=emit_integration_candidate_failed,
-        )
-
-    async def _cleanup_passed_candidate(
-        self,
-        action: MergeTask,
-        candidate_result: IntegrationCandidateResult,
-    ) -> None:
-        """Clean up passed candidate and emit success event."""
-        await self._settlement_flow.cleanup_passed_candidate(
-            action=action,
-            candidate_result=candidate_result,
-            emit_event_fn=emit_event,
-            remove_candidate_fn=remove_integration_candidate,
-            passed_emit_fn=emit_integration_candidate_passed,
-        )
-
     async def _settle_and_merge(
         self,
         action: MergeTask,
@@ -1833,38 +1433,62 @@ class EventDagRunner:
         task = self.dag.tasks[action.task_slug]
         pc = self.project_config
         task_config = replace(pc, test_cmd=task.test_cmd) if task.test_cmd else pc
+        sf = self._settlement_flow
 
         # Phase 1: Prepare and commit (or handle read-only roles)
-        error, was_settlement = await self._prepare_and_commit(action, wt)
+        error, was_settlement = await sf.prepare_and_commit(
+            task=task,
+            action=action,
+            wt=wt,
+            emit_event_fn=emit_event,
+        )
         if error or was_settlement is False:
             return error, was_settlement
 
         # Phase 2: Isolated validation (compute risk + run gate)
-        error, risk_record = await self._run_isolated_validation(action, wt)
+        error, risk_record = await sf.run_isolated_validation(
+            task=task,
+            action=action,
+            wt=wt,
+            emit_event_fn=emit_event,
+        )
         if error or risk_record is None:
             return error, True
         if risk_record.risk_level == RiskLevel.CRITICAL:
             return f"Integration risk CRITICAL: {_summarize_evidence(risk_record)}", True
 
         # Phase 3: Create integration candidate
-        candidate_result = await self._create_integration_candidate_with_emit(action, wt)
+        candidate_result = await sf.create_integration_candidate_with_emit(
+            action=action,
+            wt=wt,
+            emit_event_fn=emit_event,
+        )
         if not candidate_result.passed:
             return candidate_result.error or "Integration candidate replay failed", True
 
         # Phase 4: Run semantic gate on candidate
-        error = await self._run_semantic_gate_on_candidate(
-            action, wt, candidate_result, risk_record
+        error = await sf.run_semantic_gate_on_candidate(
+            action=action,
+            wt=wt,
+            candidate_result=candidate_result,
+            risk_record=risk_record,
+            emit_event_fn=emit_event,
         )
         if error:
             return error, True
 
         # Phase 5: Validate candidate with same gates as isolated validation
-        error = await self._validate_and_finalize_candidate(action, candidate_result, task_config)
+        error = await sf.validate_and_finalize_candidate(
+            action=action,
+            candidate_result=candidate_result,
+            task_config=task_config,
+            emit_event_fn=emit_event,
+        )
         if error:
             return error, True
 
         # Phase 6: Final merge and deploy
-        await self._finalize_merge(action, wt)
+        await sf.finalize_merge(action=action, wt=wt)
         return None, False
 
     async def _settlement_retry(
@@ -1883,7 +1507,7 @@ class EventDagRunner:
         retry_task = DagTaskSpec(
             slug=action.task_slug,
             summary=f"[retry] {task.summary}",
-            prompt=self._settlement_retry_prompt(task, settlement_error),
+            prompt=PromptBuilder.settlement_retry_prompt(task, settlement_error),
             commit_message=task.commit_message,
             depends_on=task.depends_on,
             files=task.files,
@@ -1901,16 +1525,6 @@ class EventDagRunner:
             self._retry_scope(action.task_slug, task),
             self._noop_retry_exit,
             on_event=self.on_event,
-        )
-
-    def _settlement_retry_prompt(self, task: DagTaskSpec, settlement_error: str) -> str:
-        return (
-            "Your previous attempt was REJECTED by settlement. "
-            "Fix the issue and call done.\n\n"
-            f"SETTLEMENT ERROR:\n{settlement_error}\n\n"
-            f"ORIGINAL TASK:\n{task.prompt or ''}\n\n"
-            "The worktree has your changes (uncommitted). "
-            "Use git_diff to see them, fix the problem, then call done."
         )
 
     def _retry_scope(self, task_slug: str, task: DagTaskSpec) -> dict[str, object]:

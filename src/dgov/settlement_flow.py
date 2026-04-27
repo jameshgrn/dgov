@@ -527,13 +527,15 @@ class SettlementFlow:
         emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any = None,
         semantic_gate_fn: Any = None,
-        rejected_emit_fn: Any = emit_semantic_gate_rejected,
+        rejected_emit_fn: Any = None,
     ) -> str | None:
         """Run the deterministic Python semantic gate on the integrated candidate."""
         if remove_candidate_fn is None:
             remove_candidate_fn = remove_integration_candidate
         if semantic_gate_fn is None:
             semantic_gate_fn = run_python_semantic_gate_in_subprocess
+        if rejected_emit_fn is None:
+            rejected_emit_fn = emit_semantic_gate_rejected
         if candidate_result.candidate_path is None:
             return None
 
@@ -566,11 +568,13 @@ class SettlementFlow:
         verdict: IntegrationCandidateVerdict,
         emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any = None,
-        failed_emit_fn: Any = emit_integration_candidate_failed,
+        failed_emit_fn: Any = None,
     ) -> None:
         """Remove a rejected candidate and emit the failure event."""
         if remove_candidate_fn is None:
             remove_candidate_fn = remove_integration_candidate
+        if failed_emit_fn is None:
+            failed_emit_fn = emit_integration_candidate_failed
         await self._remove_candidate(
             candidate_path=candidate_result.candidate_path,
             remove_candidate_fn=remove_candidate_fn,
@@ -590,11 +594,13 @@ class SettlementFlow:
         candidate_result: IntegrationCandidateResult,
         emit_event_fn: Callable[[str, DgovEvent], None],
         remove_candidate_fn: Any = None,
-        passed_emit_fn: Any = emit_integration_candidate_passed,
+        passed_emit_fn: Any = None,
     ) -> None:
         """Remove a passed candidate and emit the success event."""
         if remove_candidate_fn is None:
             remove_candidate_fn = remove_integration_candidate
+        if passed_emit_fn is None:
+            passed_emit_fn = emit_integration_candidate_passed
         await self._remove_candidate(
             candidate_path=candidate_result.candidate_path,
             remove_candidate_fn=remove_candidate_fn,
@@ -616,12 +622,16 @@ class SettlementFlow:
         emit_event_fn: Any,
         validate_fn: Any = None,
         remove_candidate_fn: Any = None,
-        failed_emit_fn: Any = emit_integration_candidate_failed,
-        passed_emit_fn: Any = emit_integration_candidate_passed,
+        failed_emit_fn: Any = None,
+        passed_emit_fn: Any = None,
     ) -> str | None:
         """Validate the integrated candidate with the same gates as isolated validation."""
         if validate_fn is None:
             validate_fn = validate_sandbox
+        if failed_emit_fn is None:
+            failed_emit_fn = emit_integration_candidate_failed
+        if passed_emit_fn is None:
+            passed_emit_fn = emit_integration_candidate_passed
         if candidate_result.candidate_path is None:
             return None
 
@@ -683,10 +693,14 @@ class SettlementFlow:
         action: MergeTask,
         wt: Worktree,
         emit_event_fn: Any,
-        create_candidate_fn: Any = create_integration_candidate,
-        failed_emit_fn: Any = emit_integration_candidate_failed,
+        create_candidate_fn: Any = None,
+        failed_emit_fn: Any = None,
     ) -> IntegrationCandidateResult:
         """Create the integration candidate and emit a failure event on replay failure."""
+        if create_candidate_fn is None:
+            create_candidate_fn = create_integration_candidate
+        if failed_emit_fn is None:
+            failed_emit_fn = emit_integration_candidate_failed
         candidate_slug = f"{action.task_slug}-candidate"
         candidate_result = await asyncio.to_thread(
             create_candidate_fn,
@@ -717,10 +731,12 @@ class SettlementFlow:
         *,
         action: MergeTask,
         wt: Worktree,
-        merge_fn: Any = merge_worktree,
+        merge_fn: Any = None,
         deploy_append_fn: Any = None,
     ) -> None:
         """Merge the worktree and record the deploy log entry."""
+        if merge_fn is None:
+            merge_fn = merge_worktree
         if deploy_append_fn is None:
             deploy_append_fn = deploy_log.append
         merge_sha = await asyncio.to_thread(

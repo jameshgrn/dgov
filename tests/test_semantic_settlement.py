@@ -1061,13 +1061,14 @@ def process(value, default):
             ),
         )
         create_candidate = AsyncMock()
-        object.__setattr__(runner, "_prepare_and_commit", AsyncMock(return_value=(None, True)))
+        sf = runner._settlement_flow
+        object.__setattr__(sf, "prepare_and_commit", AsyncMock(return_value=(None, True)))
         object.__setattr__(
-            runner,
-            "_run_isolated_validation",
+            sf,
+            "run_isolated_validation",
             AsyncMock(return_value=(None, risk_record)),
         )
-        object.__setattr__(runner, "_create_integration_candidate_with_emit", create_candidate)
+        object.__setattr__(sf, "create_integration_candidate_with_emit", create_candidate)
 
         async def _run_check() -> None:
             error, was_settlement = await runner._settle_and_merge(
