@@ -114,16 +114,17 @@ def _cmd_compile(plan_root: Path, *, dry_run: bool, recompile_sops: bool, graph:
     if dry_run:
         result = replace(result, sop_set_hash="")
 
-    # 5c. Show SOP assignments
-    for uid, names in sorted(result.sop_mapping.items()):
-        if names:
-            click.echo(f"  SOPs: {uid.split('.')[-1]} → {', '.join(names)}", err=True)
-    no_sop_units = [uid for uid, names in result.sop_mapping.items() if not names]
-    if no_sop_units and not dry_run:
-        click.echo(
-            f"  WARNING: {len(no_sop_units)} unit(s) matched zero SOPs",
-            err=True,
-        )
+    # 5c. Show SOP assignments (skip during dry-run — output would reflect cache, not bundler)
+    if not dry_run:
+        for uid, names in sorted(result.sop_mapping.items()):
+            if names:
+                click.echo(f"  SOPs: {uid.split('.')[-1]} → {', '.join(names)}", err=True)
+        no_sop_units = [uid for uid, names in result.sop_mapping.items() if not names]
+        if no_sop_units:
+            click.echo(
+                f"  WARNING: {len(no_sop_units)} unit(s) matched zero SOPs",
+                err=True,
+            )
 
     # 6. Serialize + write
     toml_str = serialize_compiled_toml(result, resolved.source_mtime_max)

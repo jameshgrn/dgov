@@ -111,15 +111,19 @@ class TagBasedSopBundler:
         units: dict[str, PlanUnit],
         sops: list[Sop],
     ) -> dict[str, list[str]]:
-        return {uid: self._match(unit, sops) for uid, unit in units.items()}
+        # Precompute normalized tags once per SOP
+        normalized_tags = {s.name: frozenset(_normalize(t) for t in s.applies_to) for s in sops}
+        return {uid: self._match(unit, sops, normalized_tags) for uid, unit in units.items()}
 
     @staticmethod
-    def _match(unit: PlanUnit, sops: list[Sop]) -> list[str]:
+    def _match(
+        unit: PlanUnit,
+        sops: list[Sop],
+        normalized_tags: dict[str, frozenset[str]],
+    ) -> list[str]:
         keywords = TagBasedSopBundler._extract_keywords(unit)
         normalized_kw = frozenset(_normalize(k) for k in keywords)
-        return [
-            s.name for s in sops if frozenset(_normalize(t) for t in s.applies_to) & normalized_kw
-        ]
+        return [s.name for s in sops if normalized_tags[s.name] & normalized_kw]
 
     @staticmethod
     def _extract_keywords(unit: PlanUnit) -> frozenset[str]:
