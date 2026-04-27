@@ -2,7 +2,7 @@
 name: refactoring-discipline
 title: Refactoring Discipline
 summary: Constrain refactoring to the task's logical change; note unrelated smells instead of fixing them.
-applies_to: [refactor, rename, extract, cleanup]
+applies_to: [refactor, rename, extract, cleanup, convert, move, split, reduce, restructure]
 priority: must
 ---
 ## When

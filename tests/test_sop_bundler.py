@@ -16,6 +16,7 @@ from dgov.sop_bundler import (
     Sop,
     SopBundler,
     TagBasedSopBundler,
+    _normalize,
     bundle,
     compute_sop_set_hash,
     load_sops,
@@ -674,3 +675,61 @@ class TestBundleIntegration:
         for uid in plan.units:
             assert result.plan.units[uid].prompt == plan.units[uid].prompt
         assert result.sop_set_hash != ""
+
+
+# =============================================================================
+# Normalization
+# =============================================================================
+
+
+class TestNormalize:
+    def test_strips_trailing_s(self) -> None:
+        assert _normalize("tests") == "test"
+        assert _normalize("errors") == "error"
+        assert _normalize("types") == "type"
+
+    def test_preserves_short_words(self) -> None:
+        assert _normalize("bus") == "bus"
+        assert _normalize("as") == "as"
+
+    def test_preserves_double_s(self) -> None:
+        assert _normalize("class") == "class"
+        assert _normalize("pass") == "pass"
+
+    def test_preserves_non_s_endings(self) -> None:
+        assert _normalize("python") == "python"
+        assert _normalize("refactor") == "refactor"
+
+
+class TestTagNormalizationMatching:
+    """Verify that plural normalization connects summaries to SOP tags."""
+
+    def _unit_with(self, summary: str) -> PlanUnit:
+        return PlanUnit(
+            slug="a",
+            summary=summary,
+            prompt="p",
+            commit_message="c",
+            files=PlanUnitFiles(),
+        )
+
+    def test_plural_summary_matches_singular_tag(self) -> None:
+        """'tests' in summary matches SOP with 'test' tag."""
+        unit = self._unit_with("Update tests for module")
+        sops = [_sop("ts", "Testing", applies_to=("test",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["ts"]}
+
+    def test_singular_summary_matches_plural_tag(self) -> None:
+        """'error' in summary matches SOP with 'errors' tag."""
+        unit = self._unit_with("Fix error handling")
+        sops = [_sop("eh", "Error Handling", applies_to=("errors",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["eh"]}
+
+    def test_plural_tag_matches_singular_summary(self) -> None:
+        """SOP with 'exceptions' tag matches summary containing 'exception'."""
+        unit = self._unit_with("Handle exception in parser")
+        sops = [_sop("eh", "Error Handling", applies_to=("exceptions",))]
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+        assert result == {"a": ["eh"]}

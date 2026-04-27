@@ -2,7 +2,7 @@
 name: architecture
 title: System Architecture & State Management
 summary: Architectural invariants, state-modeling rules, and deterministic system boundaries.
-applies_to: [architecture, state, kernel, model]
+applies_to: [architecture, state, kernel, model, layer, boundary, import, coupling, runner, settlement]
 priority: must
 ---
 ## When

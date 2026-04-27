@@ -2,7 +2,7 @@
 name: code-review
 title: Code Review Standards
 summary: What to look for and how to structure findings when reviewing code changes.
-applies_to: [review, reviewer, diff, audit]
+applies_to: [review, reviewer, diff, audit, inspect, finding]
 priority: must
 ---
 ## When

@@ -2,7 +2,7 @@
 name: state-modeling-review
 title: State Modeling Review
 summary: Flag state bloat, sentinel values, grab-bag models, and mutation ambiguity in reviewed code.
-applies_to: [state, model, dataclass, pydantic, types, review]
+applies_to: [state, model, dataclass, pydantic, types, review, typed, sentinel, optional, frozen, getattr, enum]
 priority: must
 ---
 ## When
