@@ -35,6 +35,7 @@ from dgov.actions import (
 from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagTaskSpec
 from dgov.event_types import (
+    DgovEvent,
     EvtTaskDispatched,
     GovernorResumed,
     IterationFork,
@@ -53,6 +54,7 @@ from dgov.event_types import (
     TaskDone,
     TaskFailed,
     TaskMergeFailed,
+    deserialize_event,
 )
 from dgov.kernel import DagKernel
 from dgov.live_state import latest_run_start_ids
@@ -401,47 +403,49 @@ class EventDagRunner:
         for ev in events:
             if int(ev.get("id", 0)) <= run_start_id:
                 continue
-            self._apply_rehydrate_event(ev)
+            typed_event = deserialize_event(ev)
+            self._apply_rehydrate_event(typed_event)
 
-    def _apply_rehydrate_event(self, ev: dict[str, Any]) -> None:
+    def _apply_rehydrate_event(self, event: DgovEvent) -> None:
         """Apply a single event during rehydration. Extracted for testability."""
-        ename = ev["event"]
-        task_slug = ev.get("task_slug")
-        pane = ev["pane"]
+        task_slug = getattr(event, "task_slug", None)
+        pane = getattr(event, "pane", "")
 
         if not task_slug or task_slug not in self.kernel.task_states:
             return
         if pane:
             self._ctx(task_slug).pane_slug = pane
 
-        if ename == "dag_task_dispatched":
+        if isinstance(event, EvtTaskDispatched):
             self.kernel.handle(TaskDispatched(task_slug, pane))
-        elif ename == "task_done":
+        elif isinstance(event, TaskDone):
             self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.DONE))
-        elif ename == "task_abandoned":
+        elif isinstance(event, TaskAbandoned):
             self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
-        elif ename == "task_failed":
+        elif isinstance(event, TaskFailed):
             # Check error string for specific terminal states like TIMED_OUT
-            error = ev.get("error", "").lower()
+            error = getattr(event, "error", "").lower()
             status = TaskState.FAILED
             if "timeout" in error:
                 status = TaskState.TIMED_OUT
             self.kernel.handle(TaskWaitDone(task_slug, pane, status))
-        elif ename == "review_pass":
+        elif isinstance(event, ReviewPass):
             self.kernel.handle(
                 TaskReviewDone(task_slug, passed=True, verdict="rehydrated", commit_count=1)
             )
-        elif ename == "review_fail":
+        elif isinstance(event, ReviewFail):
             self.kernel.handle(
                 TaskReviewDone(task_slug, passed=False, verdict="rehydrated", commit_count=0)
             )
-        elif ename == "merge_completed":
+        elif isinstance(event, MergeCompleted):
             self.kernel.handle(TaskMergeDone(task_slug, error=None))
-        elif ename == "task_merge_failed":
-            self.kernel.handle(TaskMergeDone(task_slug, error=ev.get("error", "unknown error")))
-        elif ename == "dag_task_governor_resumed":
+        elif isinstance(event, TaskMergeFailed):
+            self.kernel.handle(
+                TaskMergeDone(task_slug, error=getattr(event, "error", "unknown error"))
+            )
+        elif isinstance(event, GovernorResumed):
             # Restore attempt counts and retry/skip/fail state
-            action_str = ev.get("action")
+            action_str = getattr(event, "action", None)
             if action_str:
                 try:
                     action = GovernorAction(action_str)

@@ -1342,10 +1342,11 @@ class TestRecoveryPipeline:
     def test_apply_rehydrate_event_dispatched(self):
         """Rehydration applies dispatched events to kernel."""
         from dgov.actions import TaskDispatched
+        from dgov.event_types import EvtTaskDispatched
 
         with _io_patches():
             runner = _make_runner(_single_dag())
-            ev = {"event": "dag_task_dispatched", "task_slug": "a", "pane": "pane-1"}
+            ev = EvtTaskDispatched(task_slug="a", pane="pane-1")
 
             with patch.object(runner.kernel, "handle") as mock_handle:
                 runner._apply_rehydrate_event(ev)
@@ -1359,11 +1360,12 @@ class TestRecoveryPipeline:
     def test_apply_rehydrate_event_task_done(self):
         """Rehydration applies task_done events to kernel."""
         from dgov.actions import TaskWaitDone
+        from dgov.event_types import TaskDone
         from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
-            ev = {"event": "task_done", "task_slug": "a", "pane": "pane-1"}
+            ev = TaskDone(task_slug="a", pane="pane-1")
 
             with patch.object(runner.kernel, "handle") as mock_handle:
                 runner._apply_rehydrate_event(ev)
@@ -1375,16 +1377,12 @@ class TestRecoveryPipeline:
     def test_apply_rehydrate_event_task_failed(self):
         """Rehydration applies task_failed events with FAILED state."""
         from dgov.actions import TaskWaitDone
+        from dgov.event_types import TaskFailed
         from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
-            ev = {
-                "event": "task_failed",
-                "task_slug": "a",
-                "pane": "pane-1",
-                "error": "test error",
-            }
+            ev = TaskFailed(task_slug="a", pane="pane-1", error="test error")
 
             with patch.object(runner.kernel, "handle") as mock_handle:
                 runner._apply_rehydrate_event(ev)
@@ -1396,16 +1394,12 @@ class TestRecoveryPipeline:
     def test_apply_rehydrate_event_task_failed_timeout(self):
         """Rehydration detects timeout from error string and sets TIMED_OUT state."""
         from dgov.actions import TaskWaitDone
+        from dgov.event_types import TaskFailed
         from dgov.persistence.schema import TaskState
 
         with _io_patches():
             runner = _make_runner(_single_dag())
-            ev = {
-                "event": "task_failed",
-                "task_slug": "a",
-                "pane": "pane-1",
-                "error": "worker timeout exceeded",
-            }
+            ev = TaskFailed(task_slug="a", pane="pane-1", error="worker timeout exceeded")
 
             with patch.object(runner.kernel, "handle") as mock_handle:
                 runner._apply_rehydrate_event(ev)
@@ -1417,15 +1411,11 @@ class TestRecoveryPipeline:
     def test_apply_rehydrate_event_governor_resumed(self):
         """Rehydration restores governor-resume events for retry state."""
         from dgov.actions import GovernorAction, TaskGovernorResumed
+        from dgov.event_types import GovernorResumed
 
         with _io_patches():
             runner = _make_runner(_single_dag())
-            ev = {
-                "event": "dag_task_governor_resumed",
-                "task_slug": "a",
-                "pane": "pane-1",
-                "action": "retry",
-            }
+            ev = GovernorResumed(task_slug="a", pane="pane-1", action="retry")
 
             with patch.object(runner.kernel, "handle") as mock_handle:
                 runner._apply_rehydrate_event(ev)
