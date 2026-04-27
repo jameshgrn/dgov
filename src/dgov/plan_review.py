@@ -508,29 +508,6 @@ def _worker_note_mismatches(
 # Per-unit event rollup
 # ---------------------------------------------------------------------------
 
-# Events terminal to this run's task lifecycle. review_fail is included
-# because a review rejection prevents merge and is the last thing we'll
-# see for that task, even though task_merge_failed is the "proper"
-# terminal. task_timed_out is also terminal.
-_TERMINAL_EVENTS = {
-    "merge_completed",
-    "task_merge_failed",
-    "review_fail",
-    "task_timed_out",
-}
-
-
-def _maybe_extract_merge_sha(ev: _EventWithId, state: dict) -> None:
-    """Extract merge_sha from event if present and valid.
-
-    Note: MergeCompleted dataclass doesn't include merge_sha field,
-    so this function currently doesn't extract anything. The merge SHA
-    can be obtained from the deploy record instead.
-    """
-    # The MergeCompleted event type doesn't have merge_sha in its dataclass.
-    # This is a known limitation - deploy record provides the SHA instead.
-    pass
-
 
 def _extract_review_fail_fields(ev: _EventWithId, state: dict) -> None:
     """Extract verdict and error from review_fail event."""
@@ -546,12 +523,9 @@ def _apply_terminal_event(ev: _EventWithId, state: dict) -> None:
     state["terminal_ts"] = ev.ts
     if isinstance(ev.event, MergeCompleted):
         state["merged_in_run"] = True
-        _maybe_extract_merge_sha(ev, state)
     elif isinstance(ev.event, (TaskMergeFailed, ReviewFail, TaskAbandoned)):
         state["failed_in_run"] = True
-        if isinstance(ev.event, TaskMergeFailed):
-            _maybe_extract_merge_sha(ev, state)
-        elif isinstance(ev.event, ReviewFail):
+        if isinstance(ev.event, ReviewFail):
             _extract_review_fail_fields(ev, state)
 
 
