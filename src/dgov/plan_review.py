@@ -260,9 +260,8 @@ def _plan_name_from_compiled(compiled_path: Path) -> str | None:
     return raw.get("plan", {}).get("name")
 
 
-def _find_run_start_id(events: list[dict], plan_name: str) -> int:
+def _find_run_start_id(typed_events: list[_EventWithId], plan_name: str) -> int:
     """Return the id of the latest run_start event for this plan, or 0."""
-    typed_events = _convert_events(events)
     latest = 0
     for ev in typed_events:
         if isinstance(ev.event, RunStart) and ev.event.plan_name == plan_name and ev.id > latest:
@@ -610,10 +609,7 @@ def _apply_semantic_settlement_event(ev: _EventWithId, state: dict) -> None:
         state["integration_candidate_passed"] = True
     elif isinstance(ev.event, (IntegrationCandidateFailed, SemanticGateRejected)):
         state["integration_candidate_passed"] = False
-        if isinstance(ev.event, IntegrationCandidateFailed):
-            fc = ev.event.failure_class
-        else:
-            fc = ev.event.failure_class
+        fc = ev.event.failure_class
         if isinstance(fc, str):
             state["integration_failure_class"] = fc
 
@@ -927,9 +923,8 @@ def _combine_unit_events(lifecycle: list[dict], worker_events: list[dict]) -> li
     return combined
 
 
-def _extract_run_start_ts(plan_events: list[dict], run_start_id: int) -> str | None:
+def _extract_run_start_ts(typed_events: list[_EventWithId], run_start_id: int) -> str | None:
     """Extract timestamp of the run_start event matching the given id."""
-    typed_events = _convert_events(plan_events)
     for ev in typed_events:
         if isinstance(ev.event, RunStart) and ev.id == run_start_id:
             return ev.ts
@@ -955,13 +950,14 @@ def _format_structural_offenders(offenders: object) -> str | None:
     return ", ".join(f"{key}: {value}" for key, value in normalized.items())
 
 
-def _extract_run_completed_fields(plan_events: list[dict], run_start_id: int) -> dict[str, Any]:
+def _extract_run_completed_fields(
+    typed_events: list[_EventWithId], run_start_id: int
+) -> dict[str, Any]:
     """Extract run-level fields from the latest run_completed event after run_start_id.
 
     Returns a dict with keys: run_status, sentrux_degradation, sentrux_quality_before,
     sentrux_quality_after, sentrux_error, sentrux_offender_summary.
     """
-    typed_events = _convert_events(plan_events)
     # Find the latest run_completed event with id > run_start_id
     latest_run_completed: _EventWithId | None = None
     for ev in typed_events:
@@ -1121,7 +1117,8 @@ def load_review(
     # Pull all events for this plan in one shot, then split per unit in-memory.
     # Worker_log events do not carry plan_name, so we fetch those per task_slug.
     plan_events = read_events(project_root, plan_name=plan_name)
-    run_start_id = _find_run_start_id(plan_events, plan_name)
+    typed_plan_events = _convert_events(plan_events)
+    run_start_id = _find_run_start_id(typed_plan_events, plan_name)
 
     # Lifecycle events scoped to this run only.
     scoped_plan_events = [ev for ev in plan_events if ev.get("id", 0) > run_start_id]
@@ -1155,11 +1152,11 @@ def load_review(
         )
 
     # Last-run envelope: extract timestamp and aggregate unit durations.
-    last_run_ts = _extract_run_start_ts(plan_events, run_start_id)
+    last_run_ts = _extract_run_start_ts(typed_plan_events, run_start_id)
     run_duration = _compute_run_duration(unit_reviews)
 
     # Extract run-level fields from structured events (preferred) or runs.log fallback
-    run_fields = _extract_run_completed_fields(plan_events, run_start_id)
+    run_fields = _extract_run_completed_fields(typed_plan_events, run_start_id)
     if not run_fields:
         run_fields = _load_runs_log_fields(project_root, plan_name)
 
@@ -1185,14 +1182,15 @@ def load_run_envelope(project_root: str, compiled_path: Path) -> RunEnvelope:
         return RunEnvelope(plan_name="(unknown)", last_run_ts=None)
 
     plan_events = read_events(project_root, plan_name=plan_name)
-    run_start_id = _find_run_start_id(plan_events, plan_name)
-    run_fields = _extract_run_completed_fields(plan_events, run_start_id)
+    typed_plan_events = _convert_events(plan_events)
+    run_start_id = _find_run_start_id(typed_plan_events, plan_name)
+    run_fields = _extract_run_completed_fields(typed_plan_events, run_start_id)
     if not run_fields:
         run_fields = _load_runs_log_fields(project_root, plan_name)
 
     return RunEnvelope(
         plan_name=plan_name,
-        last_run_ts=_extract_run_start_ts(plan_events, run_start_id),
+        last_run_ts=_extract_run_start_ts(typed_plan_events, run_start_id),
         run_status=run_fields.get("run_status"),
         sentrux_degradation=run_fields.get("sentrux_degradation"),
         sentrux_quality_before=run_fields.get("sentrux_quality_before"),

@@ -13,6 +13,7 @@ from dgov.plan_review import (
     PlanReview,
     UnitReview,
     _build_unit_review,
+    _convert_events,
     _extract_run_completed_fields,
     _find_run_start_id,
     _load_runs_log_fields,
@@ -295,18 +296,18 @@ class TestFindRunStartId:
             {"id": 100, "event": "run_start", "plan_name": "p"},
             {"id": 150, "event": "run_start", "plan_name": "other"},
         ]
-        assert _find_run_start_id(events, "p") == 100
+        assert _find_run_start_id(_convert_events(events), "p") == 100
 
     def test_returns_zero_when_absent(self):
         events = [{"id": 1, "event": "worker_log"}]
-        assert _find_run_start_id(events, "p") == 0
+        assert _find_run_start_id(_convert_events(events), "p") == 0
 
     def test_ignores_other_plans(self):
         events = [
             {"id": 5, "event": "run_start", "plan_name": "other"},
             {"id": 10, "event": "run_start", "plan_name": "mine"},
         ]
-        assert _find_run_start_id(events, "mine") == 10
+        assert _find_run_start_id(_convert_events(events), "mine") == 10
 
 
 # ---------------------------------------------------------------------------
@@ -1087,7 +1088,7 @@ class TestExtractRunCompletedFields:
                 },
             },
         ]
-        fields = _extract_run_completed_fields(events, 1)
+        fields = _extract_run_completed_fields(_convert_events(events), 1)
         assert fields["run_status"] == "degraded"
         assert fields["sentrux_degradation"] is True
         assert fields["sentrux_quality_before"] == 100
@@ -1105,7 +1106,7 @@ class TestExtractRunCompletedFields:
                 "sentrux": {"degradation": False, "error": "Sentrux gate failed: timeout"},
             },
         ]
-        fields = _extract_run_completed_fields(events, 1)
+        fields = _extract_run_completed_fields(_convert_events(events), 1)
         assert fields["run_status"] == "failed"
         assert fields["sentrux_error"] == "Sentrux gate failed: timeout"
         assert fields["sentrux_degradation"] is False
@@ -1115,7 +1116,7 @@ class TestExtractRunCompletedFields:
             {"id": 1, "event": "run_start", "plan_name": "p"},
             {"id": 5, "event": "dag_completed", "plan_name": "p"},
         ]
-        fields = _extract_run_completed_fields(events, 1)
+        fields = _extract_run_completed_fields(_convert_events(events), 1)
         assert fields == {}
 
     def test_ignores_run_completed_before_run_start_id(self):
@@ -1124,7 +1125,7 @@ class TestExtractRunCompletedFields:
             {"id": 20, "event": "run_start", "plan_name": "p"},
             {"id": 30, "event": "run_completed", "plan_name": "p", "run_status": "new"},
         ]
-        fields = _extract_run_completed_fields(events, 20)
+        fields = _extract_run_completed_fields(_convert_events(events), 20)
         assert fields["run_status"] == "new"
 
     def test_uses_latest_run_completed_when_multiple_exist(self):
@@ -1133,7 +1134,7 @@ class TestExtractRunCompletedFields:
             {"id": 10, "event": "run_completed", "plan_name": "p", "run_status": "first"},
             {"id": 20, "event": "run_completed", "plan_name": "p", "run_status": "second"},
         ]
-        fields = _extract_run_completed_fields(events, 1)
+        fields = _extract_run_completed_fields(_convert_events(events), 1)
         assert fields["run_status"] == "second"
 
 

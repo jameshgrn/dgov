@@ -424,7 +424,7 @@ class EventDagRunner:
             self.kernel.handle(TaskWaitDone(task_slug, pane, TaskState.ABANDONED))
         elif isinstance(event, TaskFailed):
             # Check error string for specific terminal states like TIMED_OUT
-            error = getattr(event, "error", "").lower()
+            error = (event.error or "").lower()
             status = TaskState.FAILED
             if "timeout" in error:
                 status = TaskState.TIMED_OUT
@@ -440,12 +440,10 @@ class EventDagRunner:
         elif isinstance(event, MergeCompleted):
             self.kernel.handle(TaskMergeDone(task_slug, error=None))
         elif isinstance(event, TaskMergeFailed):
-            self.kernel.handle(
-                TaskMergeDone(task_slug, error=getattr(event, "error", "unknown error"))
-            )
+            self.kernel.handle(TaskMergeDone(task_slug, error=event.error or "unknown error"))
         elif isinstance(event, GovernorResumed):
             # Restore attempt counts and retry/skip/fail state
-            action_str = getattr(event, "action", None)
+            action_str = event.action or None
             if action_str:
                 try:
                     action = GovernorAction(action_str)

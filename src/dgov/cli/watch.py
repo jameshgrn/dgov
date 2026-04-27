@@ -354,27 +354,6 @@ def _make_row(
     return table
 
 
-_EVENT_LABELS: dict[str, str] = {
-    "dag_task_dispatched": "start",
-    "task_done": "done",
-    "task_failed": "FAILED",
-    "review_pass": "rev ok",
-    "review_fail": "rev FAIL",
-    "merge_completed": "merged",
-    "task_merge_failed": "merge FAIL",
-    "shutdown_requested": "shutdown",
-    "dag_completed": "dag done",
-    "dag_failed": "dag FAIL",
-    "settlement_retry": "retry",
-    "iteration_fork": "fork",
-    "self_review_passed": "self-rev ok",
-    "self_review_rejected": "self-rev ✗",
-    "self_review_auto_passed": "self-rev auto",
-    "self_review_fix_started": "self-rev fix",
-    "self_review_error": "self-rev err",
-}
-
-
 def _cmd_watch(
     project_root: str,
     watch_all: bool = False,
