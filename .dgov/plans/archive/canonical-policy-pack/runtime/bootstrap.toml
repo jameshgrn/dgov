@@ -1,0 +1,45 @@
+[tasks.export-policy-pack]
+summary = "Export the canonical init policy pack from runtime bootstrap"
+prompt = """
+Orient:
+- Read `src/dgov/cli/init.py` to understand the current bootstrap path and force semantics.
+- Read `.dgov/governor.md` and the SOP files in `.dgov/sops/` to capture the policy pack this repo actually uses today.
+- This task is about canonical bootstrap output. Do not add a new CLI flag or mode, and do not weaken existing guardrails around `.sentrux` or scope policy.
+- The generated assets must come from installed `dgov` code, not by reading the source repo's own `.dgov/` directory at runtime.
+
+Edit:
+1. Add a runtime-owned source for the canonical policy pack under `src/dgov/` so installed `dgov` can materialize:
+   - a richer governor charter aligned with the current repo-local charter structure
+   - the standard SOP bundle currently living in `.dgov/sops/`
+2. Update `src/dgov/cli/init.py` so `dgov init` creates `.dgov/sops/` and writes the canonical SOP files by default alongside `.dgov/project.toml` and `.dgov/governor.md`.
+3. Preserve the existing overwrite contract:
+   - without `--force`, only create missing bootstrap files
+   - with `--force`, refresh bootstrap-owned files
+   - do not overwrite unrelated user-authored files outside the bootstrap set
+4. Keep the implementation explicit and local. Do not add speculative templating layers or new config knobs just for this export.
+5. Update the init output text if needed so users can see that the policy pack is now part of bootstrap.
+
+Verify:
+- `uv run ruff check src/dgov/cli/init.py src/dgov`
+- `uv run ruff format --check src/dgov/cli/init.py src/dgov`
+"""
+commit_message = "Export canonical policy pack from init"
+self_review = true
+
+[tasks.export-policy-pack.files]
+create = ["src/dgov/bootstrap_policy.py"]
+edit = ["src/dgov/cli/init.py"]
+read = [
+  ".dgov/project.toml",
+  ".dgov/governor.md",
+  ".dgov/sops/architecture.md",
+  ".dgov/sops/code-review.md",
+  ".dgov/sops/error-handling.md",
+  ".dgov/sops/git-commits.md",
+  ".dgov/sops/large-file-handling.md",
+  ".dgov/sops/python-style.md",
+  ".dgov/sops/refactoring-discipline.md",
+  ".dgov/sops/return-values.md",
+  ".dgov/sops/state-modeling-review.md",
+  ".dgov/sops/testing.md",
+]

@@ -1,0 +1,4 @@
+[plan]
+name = "typed-event-consumers"
+summary = "Convert event consumers from dict string-dispatch to typed DgovEvent pattern matching"
+sections = ["tasks"]

@@ -1,4 +1,5 @@
 .dgov/*
+!.dgov/.gitignore
 !.dgov/project.toml
 !.dgov/governor.md
 !.dgov/plans/
