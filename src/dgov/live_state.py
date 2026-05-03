@@ -67,6 +67,19 @@ def latest_run_start_ids(events: list[dict]) -> dict[str, int]:
     return latest
 
 
+def latest_run_completed_ids(events: list[dict]) -> dict[str, int]:
+    """Return the latest run_completed id for each plan present in the event log."""
+    latest: dict[str, int] = {}
+    for event in events:
+        if event.get("event") != "run_completed":
+            continue
+        plan_name = event.get("plan_name")
+        if not plan_name:
+            continue
+        latest[str(plan_name)] = max(latest.get(str(plan_name), 0), int(event.get("id", 0)))
+    return latest
+
+
 def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[str, str]]:
     """Build task snapshots from lifecycle events instead of mutable task rows."""
     events = read_events(project_root)
@@ -74,6 +87,7 @@ def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[
         return []
 
     latest_run_ids = latest_run_start_ids(events) if latest_run_only else {}
+    latest_completed_ids = latest_run_completed_ids(events) if latest_run_only else {}
     task_statuses: dict[tuple[str, str], dict[str, str]] = {}
 
     for event in events:
@@ -81,8 +95,12 @@ def tasks_from_events(project_root: str, *, latest_run_only: bool) -> list[dict[
         if not task_slug:
             continue
         plan_name = str(event.get("plan_name") or "")
-        if latest_run_only and int(event.get("id", 0)) <= latest_run_ids.get(plan_name, 0):
-            continue
+        if latest_run_only:
+            latest_run_id = latest_run_ids.get(plan_name, 0)
+            if int(event.get("id", 0)) <= latest_run_id:
+                continue
+            if latest_completed_ids.get(plan_name, 0) > latest_run_id:
+                continue
         state = state_from_event(event)
         if state is None:
             continue

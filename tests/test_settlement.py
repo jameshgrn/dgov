@@ -652,6 +652,24 @@ class TestValidateSandbox:
         assert "tests/test_boundaries.py" in cmd
 
     @pytest.mark.unit
+    def test_build_test_cmd_does_not_match_every_dgov_import(self, tmp_path: Path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_related.py").write_text(
+            "from dgov.policy_drift import find_policy_drift\n"
+        )
+        (tests_dir / "test_unrelated.py").write_text("from dgov.cli import cli\n")
+
+        cmd = _build_test_cmd(
+            ProjectConfig(test_cmd="uv run pytest {test_dir} -q"),
+            ["src/dgov/policy_drift.py"],
+            tmp_path,
+        )
+
+        assert "tests/test_related.py" in cmd
+        assert "tests/test_unrelated.py" not in cmd
+
+    @pytest.mark.unit
     def test_build_test_cmd_literal_no_placeholder_returns_unchanged(self, tmp_path: Path):
         """Literal test_cmd (no {test_dir} placeholder) returns unchanged even with no targets."""
         literal_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"

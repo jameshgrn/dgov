@@ -2,7 +2,7 @@
 name: error-handling
 title: Error Handling & Philosophy
 summary: Error handling rules for failing fast, preserving context, and avoiding silent failure.
-applies_to: [errors, exceptions, failure]
+applies_to: [errors, error, exceptions, failure, raise, catch, fallback, validation]
 priority: must
 ---
 ## When

@@ -830,11 +830,6 @@ def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: P
                 mod = mod[len(prefix) :]
         mod = mod.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
         modules.add(mod)
-        # Also match partial: dgov.cli matches "from dgov.cli import"
-        parts = mod.split(".")
-        for i in range(1, len(parts) + 1):
-            modules.add(".".join(parts[:i]))
-
     if not modules:
         return []
 

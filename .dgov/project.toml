@@ -4,7 +4,7 @@ src_dir = "src/"
 test_dir = "tests/"
 source_extensions = [".py"]
 default_agent = "accounts/fireworks/routers/kimi-k2p5-turbo"
-test_cmd = "uv run pytest {test_dir} -q --tb=short"
+test_cmd = "uv run pytest -q -m unit {test_dir} --tb=short"
 lint_cmd = "uv run ruff check {file}"
 format_cmd = "uv run ruff format {file}"
 lint_fix_cmd = "uv run ruff check --fix {file}"
