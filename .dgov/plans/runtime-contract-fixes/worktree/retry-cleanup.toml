@@ -1,0 +1,22 @@
+[tasks.prune-stale-worktree-metadata-before-retry]
+summary = "Make same-slug worktree recreation survive stale git metadata."
+prompt = """
+Orient:
+- Read `src/dgov/worktree.py` around `create_worktree`, `_list_git_worktrees`, `prune_orphans`, and `_prune_orphan_branches`.
+- Read `tests/test_worktree.py` around `TestCreateWorktree` and `TestPruneOrphans`.
+- Bug context: ledger #81. After a rejected task or interrupted cleanup, git can retain stale worktree metadata for a `dgov/<slug>` branch whose directory is gone. Retrying the same slug should be idempotent instead of failing at `git worktree add -b`.
+- Keep global cleanup safety: do not make `prune_orphans(...)` delete arbitrary unmerged `dgov/*` branches.
+
+Edit:
+1. In `src/dgov/worktree.py`, update `create_worktree(...)` so same-slug recreation first prunes stale git worktree metadata before it removes the old path and deletes the old `dgov/<slug>` branch.
+2. Keep the existing behavior that the same slug can be recreated from a clean base and that a live existing path is removed before recreation.
+3. Add a focused regression test in `tests/test_worktree.py`: create a worktree for a slug, make an unmerged commit on its branch, delete the worktree directory directly to leave stale git metadata, then call `create_worktree(...)` for the same slug and assert it succeeds with a fresh worktree.
+4. Do not change `prune_orphans(...)` semantics for unmerged orphan branches in this task.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_worktree.py`
+- `uv run ruff check src/dgov/worktree.py tests/test_worktree.py`
+- `uv run ty check src/dgov/worktree.py tests/test_worktree.py`
+"""
+commit_message = "Prune stale worktree metadata before retry"
+files.edit = ["src/dgov/worktree.py", "tests/test_worktree.py"]
