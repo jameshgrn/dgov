@@ -564,6 +564,88 @@ class TestReviewSandbox:
         assert result.verdict == "reserved_path"
         assert ".sentrux/baseline.json" in (result.error or "")
 
+    def test_transient_read_only_activity_ignored(self, tmp_path: Path):
+        """Read-only activity (read_file, grep, etc.) is not treated as a touch.
+
+        Regression test for ledger #80: files.read grants read-only context.
+        Transient scope enforcement should reject write-capable tool activity
+        outside write claims, but read-only activity must not be treated as a touch.
+        """
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        # Worker used read_file on an unclaimed file - this is read-only activity
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "read_file",
+                "status": "success",
+                "activity": [
+                    {"kind": "read_file", "path": "unclaimed_context.py"},
+                    {"kind": "grep", "path": "unclaimed_context.py"},
+                    {"kind": "edit_file", "path": "claimed.py", "mode": "edit"},
+                ],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+        # Should pass - only claimed file was edited, read-only activity on
+        # unclaimed files is not a scope violation.
+        assert result.passed, f"Expected pass but got: {result.verdict} - {result.error}"
+
+    def test_transient_unclaimed_write_still_fails_with_read_only_mixed(self, tmp_path: Path):
+        """Unclaimed write-capable activity still fails even with read-only activity mixed in."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        # Worker has both read-only activity AND unclaimed write activity
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "edit_file",
+                "status": "success",
+                "activity": [
+                    {"kind": "read_file", "path": "unclaimed_context.py"},  # read-only
+                    {"kind": "write_file", "path": "scratch.py", "mode": "create"},  # write
+                    {"kind": "edit_file", "path": "claimed.py", "mode": "edit"},  # claimed
+                ],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+        # Should fail - unclaimed write_file is a scope violation
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "scratch.py" in (result.error or "")
+
 
 # ---------------------------------------------------------------------------
 # autofix_sandbox

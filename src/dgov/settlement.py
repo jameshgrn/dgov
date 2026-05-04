@@ -394,9 +394,16 @@ def _check_transient_scope(
     Checks ALL panes for this task across the current run (not just the current
     pane). This ensures unclaimed writes from earlier retries are still caught
     even if a later retry cleans the worktree and succeeds.
+
+    Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
+    are checked. Read-only activity such as read_file is ignored.
     """
     if not session_root or not task_slug or not claimed_files:
         return None
+
+    # Write-capable tool kinds and modes that indicate file modification.
+    _WRITE_KINDS = {"write_file", "edit_file", "apply_patch", "revert_file"}
+    _WRITE_MODES = {"create", "edit", "patch", "revert"}
 
     claimed = frozenset(claimed_files)
     ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
@@ -421,7 +428,12 @@ def _check_transient_scope(
             if not isinstance(item, dict):
                 continue
             path = item.get("path")
-            if isinstance(path, str):
+            if not isinstance(path, str):
+                continue
+            # Only collect write-capable activity; ignore read-only operations.
+            kind = item.get("kind")
+            mode = item.get("mode")
+            if kind in _WRITE_KINDS or mode in _WRITE_MODES:
                 transient_paths.add(path)
 
     unclaimed = sorted(
