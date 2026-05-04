@@ -51,7 +51,7 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
     branch_name = f"dgov/{slug}"
     git_env = _git_env(project_root)
 
-    # Idempotent cleanup of existing worktree/branch (skip prune — done once at end)
+    # Idempotent cleanup of existing worktree/branch (prune first for interrupted cleanups)
     if wt_path.exists():
         subprocess.run(
             ["git", "worktree", "remove", "-f", str(wt_path)],
@@ -59,6 +59,14 @@ def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Wor
             env=git_env,
             capture_output=True,
         )
+    # Prune stale git worktree metadata before branch delete (handles interrupted cleanups)
+    subprocess.run(
+        ["git", "worktree", "prune"],
+        cwd=project_root,
+        env=git_env,
+        capture_output=True,
+        check=False,
+    )
     subprocess.run(
         ["git", "branch", "-D", branch_name],
         cwd=project_root,

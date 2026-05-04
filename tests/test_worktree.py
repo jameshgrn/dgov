@@ -6,6 +6,7 @@ Real git repos via tmp_path, no mocking.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -47,6 +48,7 @@ def git_repo(tmp_path):
     return str(tmp_path)
 
 
+@pytest.mark.unit
 class TestCreateWorktree:
     def test_creates_at_expected_path(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -77,6 +79,27 @@ class TestCreateWorktree:
         assert wt2.path == first_path
         assert not (wt2.path / "marker.txt").exists()
 
+    def test_idempotent_recreate_after_orphaned_metadata(self, git_repo):
+        """Retry after interrupted cleanup: dir deleted but git metadata remains."""
+        slug = "retry-task"
+        wt1 = create_worktree(git_repo, slug)
+        first_path = wt1.path
+
+        # Make an unmerged commit (simulates real work)
+        (wt1.path / "file.txt").write_text("contents\n")
+        commit_in_worktree(wt1, "unmerged change", file_claims=("file.txt",))
+
+        # Simulate interrupted cleanup: delete directory directly without git worktree remove
+        shutil.rmtree(wt1.path)
+        # Note: git still has worktree metadata at this point
+
+        # Retry with same slug should succeed and create fresh worktree
+        wt2 = create_worktree(git_repo, slug)
+        assert wt2.path == first_path
+        assert wt2.path.exists()
+        # Fresh worktree should not have the uncommitted file
+        assert not (wt2.path / "file.txt").exists()
+
     def test_links_root_venv_into_worktree(self, git_repo):
         repo = Path(git_repo)
         (repo / ".venv").mkdir()
@@ -96,6 +119,7 @@ class TestCreateWorktree:
         assert not (wt.path / ".venv").exists()
 
 
+@pytest.mark.unit
 class TestPrepareWorktree:
     def test_python_pyproject_runs_uv_sync_locked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -153,6 +177,7 @@ class TestPrepareWorktree:
             prepare_worktree(wt, language="python")
 
 
+@pytest.mark.unit
 class TestCommitInWorktree:
     def test_commit_with_file_claims(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -169,6 +194,7 @@ class TestCommitInWorktree:
         assert sha != wt.commit
 
 
+@pytest.mark.unit
 class TestMergeWorktree:
     def test_merge_brings_file_to_root(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -185,6 +211,7 @@ class TestMergeWorktree:
         assert len(sha) == 40
 
 
+@pytest.mark.unit
 class TestRemoveWorktree:
     def test_removes_directory(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -204,6 +231,7 @@ class TestRemoveWorktree:
         assert wt.branch not in res.stdout
 
 
+@pytest.mark.unit
 class TestPruneOrphans:
     def test_noop_on_clean_repo(self, git_repo):
         """Nothing to clean → counts are zero."""
@@ -317,6 +345,7 @@ class TestPruneOrphans:
         assert orphan.exists()
 
 
+@pytest.mark.unit
 class TestIntegrationCandidate:
     """Tests for integration candidate creation and validation."""
 
