@@ -34,6 +34,8 @@ _SENTRUX_BASELINE = ".sentrux/baseline.json"
 _COVERAGE_BASELINE_DIR = ".coverage-baseline"
 _COVERAGE_BASELINE = f"{_COVERAGE_BASELINE_DIR}/coverage.json"
 _RESERVED_PATHS = (_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
+_WRITE_ACTIVITY_KINDS = frozenset({"write_file", "edit_file", "apply_patch", "revert_file"})
+_WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,32 @@ def _check_scope(
     )
 
 
+def _worker_log_activity(event: Mapping[str, object]) -> list[object]:
+    if event.get("event") != "worker_log" or event.get("log_type") != "result":
+        return []
+    content = event.get("content")
+    if not isinstance(content, Mapping):
+        return []
+    content_map = cast(Mapping[str, object], content)
+    activity = content_map.get("activity")
+    return cast(list[object], activity) if isinstance(activity, list) else []
+
+
+def _transient_write_path(item: object) -> str | None:
+    if not isinstance(item, Mapping):
+        return None
+    item_map = cast(Mapping[str, object], item)
+    path = item_map.get("path")
+    if not isinstance(path, str):
+        return None
+    if (
+        item_map.get("kind") in _WRITE_ACTIVITY_KINDS
+        or item_map.get("mode") in _WRITE_ACTIVITY_MODES
+    ):
+        return path
+    return None
+
+
 def _check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
@@ -401,10 +429,6 @@ def _check_transient_scope(
     if not session_root or not task_slug or not claimed_files:
         return None
 
-    # Write-capable tool kinds and modes that indicate file modification.
-    _WRITE_KINDS = {"write_file", "edit_file", "apply_patch", "revert_file"}
-    _WRITE_MODES = {"create", "edit", "patch", "revert"}
-
     claimed = frozenset(claimed_files)
     ignored_exact, ignored_prefix_dirs, ignored_named_dirs, ignored_globs = _split_ignore_entries(
         scope_ignore_files
@@ -416,24 +440,9 @@ def _check_transient_scope(
     events = read_events(session_root, task_slug=task_slug)
 
     for event in events:
-        if event.get("event") != "worker_log" or event.get("log_type") != "result":
-            continue
-        content = event.get("content")
-        if not isinstance(content, dict):
-            continue
-        activity = content.get("activity")
-        if not isinstance(activity, list):
-            continue
-        for item in activity:
-            if not isinstance(item, dict):
-                continue
-            path = item.get("path")
-            if not isinstance(path, str):
-                continue
-            # Only collect write-capable activity; ignore read-only operations.
-            kind = item.get("kind")
-            mode = item.get("mode")
-            if kind in _WRITE_KINDS or mode in _WRITE_MODES:
+        for item in _worker_log_activity(event):
+            path = _transient_write_path(item)
+            if path is not None:
                 transient_paths.add(path)
 
     unclaimed = sorted(
