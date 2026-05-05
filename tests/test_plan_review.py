@@ -1450,3 +1450,109 @@ class TestForkAndSelfReviewRollup:
         assert review.fork_depth == 1
         assert review.self_review_outcome == "passed"
         assert review.status == "deployed"
+
+
+# ---------------------------------------------------------------------------
+# Settlement phase tracking
+# ---------------------------------------------------------------------------
+
+
+class TestSettlementPhaseTracking:
+    """Tests for settlement_phase_started/completed event tracking."""
+
+    def test_settlement_phase_started_captured(self):
+        """rollup should capture phase from settlement_phase_started."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(2, "task_done", "t", "plan"),
+            _lifecycle(3, "review_pass", "t", "plan"),
+            _lifecycle(4, "settlement_phase_started", "t", "plan", phase="integration"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["phase"] == "integration"
+
+    def test_settlement_phase_started_cleared_on_completed(self):
+        """Phase should be cleared when settlement_phase_completed arrives."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(2, "task_done", "t", "plan"),
+            _lifecycle(3, "review_pass", "t", "plan"),
+            _lifecycle(4, "settlement_phase_started", "t", "plan", phase="integration"),
+            _lifecycle(
+                5, "settlement_phase_completed", "t", "plan", phase="integration", status="ok"
+            ),
+            _lifecycle(6, "merge_completed", "t", "plan"),
+        ]
+        rollup = _rollup_unit_events(events)
+        # Phase cleared after terminal event (merge_completed)
+        assert rollup["phase"] is None
+
+    def test_settlement_phase_cleared_on_terminal_event(self):
+        """Phase should be cleared on terminal events (merge_completed, task_merge_failed)."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(2, "settlement_phase_started", "t", "plan", phase="merge"),
+            _lifecycle(3, "merge_completed", "t", "plan"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["phase"] is None
+
+    def test_active_unit_has_phase_in_review(self):
+        """UnitReview should include phase for active units with settlement_phase_started."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p", ts="2026-04-10T12:00:00+00:00"),
+            _lifecycle(2, "task_done", "t", "p"),
+            _lifecycle(3, "review_pass", "t", "p"),
+            _lifecycle(4, "settlement_phase_started", "t", "p", phase="semantic_gate"),
+        ]
+        review = _build_unit_review(
+            unit_id="t",
+            task_data={"summary": "test"},
+            deploy_record=None,
+            unit_events=events,
+            project_root="/fake",
+            include_full_diff=False,
+            iteration_budget=30,
+        )
+        assert review.status == "active"
+        assert review.phase == "semantic_gate"
+
+    def test_deployed_unit_has_no_phase(self):
+        """UnitReview should not include phase for deployed units (terminal state)."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "p", ts="2026-04-10T12:00:00+00:00"),
+            _lifecycle(2, "task_done", "t", "p"),
+            _lifecycle(3, "review_pass", "t", "p"),
+            _lifecycle(4, "settlement_phase_started", "t", "p", phase="integration"),
+            _lifecycle(
+                5, "settlement_phase_completed", "t", "p", phase="integration", status="ok"
+            ),
+            _lifecycle(6, "merge_completed", "t", "p", ts="2026-04-10T12:01:00+00:00"),
+        ]
+        deploy = _FakeDeploy(plan="p", unit="t", sha="abc123", ts="2026-04-10T12:01:00")
+        with (
+            patch("dgov.plan_review._git_show_stat", return_value=None),
+            patch("dgov.plan_review._git_show_paths", return_value=()),
+            patch("dgov.plan_review._git_show_message", return_value="msg"),
+        ):
+            review = _build_unit_review(
+                unit_id="t",
+                task_data={"summary": "test"},
+                deploy_record=deploy,
+                unit_events=events,
+                project_root="/fake",
+                include_full_diff=False,
+                iteration_budget=30,
+            )
+        assert review.status == "deployed"
+        assert review.phase is None
+
+    def test_multiple_settlement_phases_last_wins(self):
+        """If multiple settlement phases start, the last one wins."""
+        events = [
+            _lifecycle(1, "dag_task_dispatched", "t", "plan"),
+            _lifecycle(2, "settlement_phase_started", "t", "plan", phase="integration"),
+            _lifecycle(3, "settlement_phase_started", "t", "plan", phase="semantic_gate"),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["phase"] == "semantic_gate"

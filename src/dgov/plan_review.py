@@ -40,6 +40,8 @@ from dgov.event_types import (
     SelfReviewPassed,
     SelfReviewRejected,
     SemanticGateRejected,
+    SettlementPhaseCompleted,
+    SettlementPhaseStarted,
     SettlementRetry,
     TaskAbandoned,
     TaskDone,
@@ -105,6 +107,9 @@ class UnitReview:
     unit: str
     summary: str
     status: UnitStatus
+    # Phase detail for in-flight tasks (e.g., "integration", "semantic_gate", "merge")
+    # Only populated when status is "active" and settlement phase events exist
+    phase: str | None = None
     agent: str = ""
     # Deployment info (populated for status == "deployed")
     commit_sha: str | None = None
@@ -547,6 +552,8 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
     # Check for terminal events
     if isinstance(ev.event, (MergeCompleted, TaskMergeFailed, ReviewFail, TaskAbandoned)):
         _apply_terminal_event(ev, state)
+        # Clear phase on terminal events
+        state["phase"] = None
         return
     if isinstance(ev.event, SettlementRetry):
         state["settlement_retries"] = state["settlement_retries"] + 1
@@ -569,6 +576,16 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
         state["self_review_outcome"] = "auto_passed"
     elif isinstance(ev.event, SelfReviewError):
         state["self_review_outcome"] = "error"
+    # Handle settlement phase events
+    if isinstance(ev.event, SettlementPhaseStarted):
+        phase = ev.event.phase
+        if isinstance(phase, str) and phase:
+            state["phase"] = phase
+        return
+    if isinstance(ev.event, SettlementPhaseCompleted):
+        # Phase completed - clear it (final state comes from merge events)
+        state["phase"] = None
+        return
 
 
 def _apply_worker_log_event(ev: _EventWithId, state: dict) -> None:
@@ -638,6 +655,8 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_risk_detected": False,
         "integration_candidate_passed": None,
         "integration_failure_class": None,
+        # Settlement phase tracking
+        "phase": None,
     }
 
     typed_events = _convert_events(unit_events)
@@ -689,6 +708,8 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_risk_detected": state["integration_risk_detected"],
         "integration_candidate_passed": state["integration_candidate_passed"],
         "integration_failure_class": state["integration_failure_class"],
+        # Settlement phase
+        "phase": state["phase"],
     }
 
 
@@ -849,6 +870,7 @@ def _build_unit_review(
         unit=unit_id,
         summary=task_data.get("summary", ""),
         status=status,
+        phase=rollup["phase"] if status == "active" else None,
         agent=task_data.get("agent", ""),
         commit_sha=commit_info["commit_sha"],
         commit_message=commit_info["commit_message"],

@@ -195,7 +195,14 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
 
     live = [t for t in live_history if t.get("state") in _LIVE_STATES]
     active = [t for t in live if t.get("state") == "active"]
+    settling = [t for t in live if t.get("state") == "settling"]
     visible = all_history if show_all else live
+
+    # Build per-state counts for detailed visibility
+    state_counts: dict[str, int] = {}
+    for t in live:
+        state = t.get("state", "unknown")
+        state_counts[state] = state_counts.get(state, 0) + 1
 
     if want_json():
         click.echo(
@@ -204,11 +211,14 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
                     "status": "active" if live else "idle",
                     "tasks": len(all_history),
                     "active": len(active),
+                    "settling": len(settling),
+                    "state_counts": state_counts,
                     "task_list": [
                         {
                             "slug": t.get("slug"),
                             "state": t.get("state"),
                             "plan_name": t.get("plan_name"),
+                            "phase": t.get("phase"),
                         }
                         for t in visible
                     ],
@@ -220,12 +230,18 @@ def _cmd_status(project_root: str, show_all: bool = False) -> None:
         click.echo(f"status: {'active' if live else 'idle'}")
         click.echo(f"tasks: {len(all_history)} total")
         click.echo(f"active: {len(active)}")
+        if settling:
+            click.echo(f"settling: {len(settling)}")
         if visible:
             click.echo("tasks:")
             for t in visible:
                 state = t.get("state", "?")
                 slug = t.get("slug", "?")
-                click.echo(f"  {state:14s}  {slug}")
+                phase = t.get("phase")
+                if phase:
+                    click.echo(f"  {state:14s}  {slug}  ({phase})")
+                else:
+                    click.echo(f"  {state:14s}  {slug}")
         elif not show_all:
             click.echo("  (no live tasks — use --all to show history)")
 

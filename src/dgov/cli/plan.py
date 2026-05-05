@@ -1014,7 +1014,8 @@ def _render_failed_unit(unit) -> None:
 def _render_active_unit(unit) -> None:
     """Render an in-flight UnitReview block."""
     marker = click.style("…", fg="cyan")
-    click.echo(f"  {marker} {unit.unit}  (active)")
+    phase_suffix = f" — {unit.phase}" if unit.phase else ""
+    click.echo(f"  {marker} {unit.unit}  (active{phase_suffix})")
     fields: list[tuple[str, str | None]] = [
         ("task", unit.summary),
         ("agent", unit.agent),
@@ -1121,6 +1122,7 @@ def _review_to_json(review) -> str:
             "unit": u.unit,
             "summary": u.summary,
             "status": u.status,
+            "phase": u.phase,
             "agent": u.agent,
             "commit_sha": u.commit_sha,
             "commit_message": u.commit_message,

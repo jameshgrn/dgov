@@ -369,6 +369,107 @@ def test_status_all_shows_reviewed_failure(
     assert "failed-review-task" in result.output
 
 
+def test_status_shows_settling_task_after_review_pass(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task in settlement phase should remain visible as settling after review_pass."""
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "settlement_phase_started",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+        phase="integration",
+    )
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: active" in result.output
+    assert "settling-task" in result.output
+    assert "settling" in result.output
+
+
+def test_status_json_includes_phase_and_state_counts(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON status output should include phase and state_counts."""
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-active",
+        plan_name="plan-a",
+        task_slug="active-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "settlement_phase_started",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+        phase="integration",
+    )
+
+    result = runner.invoke(cli, ["--json", "status"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "state_counts" in data
+    assert "settling" in data.get("state_counts", {})
+    assert data["settling"] == 1
+    # Check task_list includes phase
+    task_list = data.get("task_list", [])
+    settling_tasks = [t for t in task_list if t.get("slug") == "settling-task"]
+    assert len(settling_tasks) == 1
+    assert settling_tasks[0].get("phase") == "integration"
+
+
 # -- validate --
 
 
