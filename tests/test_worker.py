@@ -7,6 +7,7 @@ the AtomicTools class against real temp directories. No network calls.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,9 +22,11 @@ from dgov.tool_policy import ToolPolicy  # noqa: E402
 from dgov.worker import (  # noqa: E402
     _build_system_prompt,
     _clip_tool_result,
+    _diff_stat_for_error,
     _iteration_budget,
     _load_project_config,
     _repo_map_snapshot,
+    _tool_choice_for_iteration,
     run_worker,
 )
 from dgov.workers.atomic import AtomicConfig, AtomicTools, get_tool_spec  # noqa: E402
@@ -362,6 +365,44 @@ def test_iteration_budget_clamps_nonpositive_values() -> None:
     assert _iteration_budget(AtomicConfig(worker_iteration_budget=0)) == 1
 
 
+def test_tool_choice_for_iteration_forces_done_only_near_real_budget_end() -> None:
+    assert _tool_choice_for_iteration(iteration=7, budget=10) == "auto"
+    assert _tool_choice_for_iteration(iteration=8, budget=10) == {
+        "type": "function",
+        "function": {"name": "done"},
+    }
+    assert _tool_choice_for_iteration(iteration=1, budget=2) == "auto"
+
+
+def test_diff_stat_for_error_summarizes_worktree_changes(tmp_path: Path) -> None:
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "test"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "tracked.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "tracked.py"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    (tmp_path / "tracked.py").write_text("x = 2\n")
+
+    summary = _diff_stat_for_error(tmp_path)
+
+    assert "tracked.py" in summary
+
+
 def test_run_worker_uses_configured_iteration_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -407,4 +448,79 @@ def test_run_worker_uses_configured_iteration_budget(
 
     assert excinfo.value.code == 1
     assert call_count == 2
-    assert events[-1] == ("error", "Exceeded max iterations (2)")
+    assert events[-1][0] == "error"
+    assert str(events[-1][1]).startswith("Exceeded max iterations (2)")
+
+
+def test_run_worker_forces_done_near_iteration_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FIREWORKS_API_KEY", "test-key")
+    events: list[tuple[str, object]] = []
+    tool_choices: list[object] = []
+
+    class _FakeMessage:
+        content = None
+
+        def __init__(self, tool_calls=None) -> None:
+            self.tool_calls = tool_calls or []
+
+        def model_dump(self, exclude_none: bool = True):
+            data = {"role": "assistant"}
+            if self.tool_calls:
+                data["tool_calls"] = [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {
+                            "name": call.function.name,
+                            "arguments": call.function.arguments,
+                        },
+                    }
+                    for call in self.tool_calls
+                ]
+            return data
+
+    class _FakeOpenAI:
+        def __init__(self, *args, **kwargs):
+            completions = SimpleNamespace(create=self._create)
+            self.chat = SimpleNamespace(completions=completions)
+
+        def _create(self, **kwargs):
+            tool_choice = kwargs["tool_choice"]
+            tool_choices.append(tool_choice)
+            tool_calls = []
+            if isinstance(tool_choice, dict):
+                tool_calls = [
+                    SimpleNamespace(
+                        id="call-1",
+                        function=SimpleNamespace(
+                            name="done",
+                            arguments=json.dumps({"summary": "Reached finalization handoff."}),
+                        ),
+                    )
+                ]
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(message=_FakeMessage(tool_calls), finish_reason="length")
+                ],
+                usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            )
+
+    monkeypatch.setattr("dgov.worker.OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(
+        "dgov.worker.WorkerEvent.emit",
+        lambda self: events.append((self.type, self.content)),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        run_worker(
+            "do it",
+            tmp_path,
+            "test-model",
+            json.dumps({"worker_iteration_budget": 10, "worker_iteration_warn_at": 8}),
+        )
+
+    assert excinfo.value.code == 0
+    assert tool_choices[-1] == {"type": "function", "function": {"name": "done"}}
+    assert ("done", "Reached finalization handoff.") in events
