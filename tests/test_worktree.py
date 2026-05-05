@@ -413,7 +413,7 @@ class TestIntegrationCandidate:
         # Create second task worktree that modifies the same file
         task_wt2 = create_worktree(git_repo, "task-conflict")
         (task_wt2.path / "base.py").write_text("x = 2\n")  # Different content
-        commit_in_worktree(task_wt2, "modify base", file_claims=("base.py",))
+        failed_sha = commit_in_worktree(task_wt2, "modify base", file_claims=("base.py",))
 
         # Meanwhile, modify the file on main to create a conflict
         (Path(git_repo) / "base.py").write_text("x = 3\n")
@@ -432,13 +432,30 @@ class TestIntegrationCandidate:
             capture_output=True,
             env=env,
         )
+        target_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.strip()
 
         # Now try to create integration candidate - should fail
         result = create_integration_candidate(git_repo, task_wt2, "task-conflict-candidate")
 
         assert result.passed is False
         assert result.error is not None
-        assert "Failed to replay" in result.error
+        assert "Replay failed" in result.error
+        assert "task-conflict-candidate" in result.error
+        assert task_wt2.branch in result.error
+        assert target_head[:8] in result.error
+        assert failed_sha[:8] in result.error
+        assert "base.py" in result.error
+        assert result.target_head_sha == target_head
+        assert result.failed_commit_sha == failed_sha
+        assert result.conflict_files == ("base.py",)
+        assert result.conflict_marker_counts["base.py"] >= 1
 
         # Verify main repo is clean (no partial cherry-pick state)
         status = subprocess.run(

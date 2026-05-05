@@ -1085,6 +1085,47 @@ class TestIntegrationCandidate:
             assert event.task_slug == "a"
             assert hasattr(event, "failure_class")
 
+    def test_integration_candidate_fail_includes_text_conflict_evidence(self):
+        """Replay conflicts are attributed in the emitted failure payload."""
+        from dgov.worktree import IntegrationCandidateResult
+
+        target_sha = "abc123targethead"
+
+        def _mock_candidate_with_conflicts(project_root, task_wt, candidate_slug):
+            return IntegrationCandidateResult(
+                passed=False,
+                error="Replay failed for candidate 'a-candidate'",
+                target_head_sha=target_sha,
+                failed_commit_sha="def456failedcommit",
+                conflict_files=("conflict.py",),
+                conflict_marker_counts={"conflict.py": 3},
+            )
+
+        with (
+            _io_patches(candidate=_mock_candidate_with_conflicts) as _,
+            patch(_P_EMIT_EVENT) as mock_emit,
+        ):
+            runner = _make_runner(_single_dag())
+            results = asyncio.run(runner.run())
+
+            assert results["a"] == "failed"
+
+            failed_calls = [
+                c
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "integration_candidate_failed"
+            ]
+            assert len(failed_calls) == 1
+            event = failed_calls[0].args[1]
+            assert event.task_slug == "a"
+            assert event.target_head_sha == target_sha
+            assert event.failure_class == "text_conflict"
+            assert len(event.evidence) == 1
+            evidence = event.evidence[0]
+            assert evidence["_kind"] == "TextConflict"
+            assert evidence["file_path"] == "conflict.py"
+            assert evidence["conflict_markers"] == 3
+
     def test_original_worktree_preserved_on_candidate_failure(self):
         """When candidate fails, original task worktree is kept for inspection."""
         with _io_patches(candidate=_mock_integration_candidate_fail) as _:
