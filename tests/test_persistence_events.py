@@ -515,3 +515,203 @@ class TestSemanticSettlementEvents:
         assert len(task_1_events) == 2
         assert len(task_2_events) == 1
         assert task_2_events[0]["candidate_sha"] == "candidate-task-2"
+
+
+class TestSettlementPhaseEvents:
+    """Tests for settlement phase telemetry events."""
+
+    def test_valid_events_contains_settlement_phase_events(self):
+        """VALID_EVENTS should contain settlement phase event types."""
+        assert "settlement_phase_started" in VALID_EVENTS
+        assert "settlement_phase_completed" in VALID_EVENTS
+
+    def test_emit_settlement_phase_started_roundtrip(self, tmp_path):
+        """settlement_phase_started event emits and reads back correctly."""
+        from dgov.event_types import SettlementPhaseStarted, serialize_event
+
+        session_root = _session(tmp_path)
+
+        event = SettlementPhaseStarted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-123",
+            phase="risk_assessment",
+        )
+
+        event_name, pane, kwargs = serialize_event(event)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "settlement_phase_started"
+        assert ev["pane"] == "test-pane"
+        assert ev["plan_name"] == "test-plan"
+        assert ev["task_slug"] == "task-123"
+        assert ev["phase"] == "risk_assessment"
+
+    def test_emit_settlement_phase_completed_success_roundtrip(self, tmp_path):
+        """settlement_phase_completed success event emits and reads back correctly."""
+        from dgov.event_types import SettlementPhaseCompleted, serialize_event
+
+        session_root = _session(tmp_path)
+
+        event = SettlementPhaseCompleted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-123",
+            phase="risk_assessment",
+            status="success",
+            duration_s=1.5,
+            error=None,
+        )
+
+        event_name, pane, kwargs = serialize_event(event)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "settlement_phase_completed"
+        assert ev["pane"] == "test-pane"
+        assert ev["plan_name"] == "test-plan"
+        assert ev["task_slug"] == "task-123"
+        assert ev["phase"] == "risk_assessment"
+        assert ev["status"] == "success"
+        assert ev["duration_s"] == 1.5
+        assert "error" not in ev
+
+    def test_emit_settlement_phase_completed_failure_roundtrip(self, tmp_path):
+        """settlement_phase_completed failure event emits and reads back correctly."""
+        from dgov.event_types import SettlementPhaseCompleted, serialize_event
+
+        session_root = _session(tmp_path)
+
+        event = SettlementPhaseCompleted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-456",
+            phase="semantic_gate",
+            status="failed",
+            duration_s=0.8,
+            error="Gate rejected: syntax conflict detected",
+        )
+
+        event_name, pane, kwargs = serialize_event(event)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        events = read_events(session_root)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "settlement_phase_completed"
+        assert ev["pane"] == "test-pane"
+        assert ev["plan_name"] == "test-plan"
+        assert ev["task_slug"] == "task-456"
+        assert ev["phase"] == "semantic_gate"
+        assert ev["status"] == "failed"
+        assert ev["duration_s"] == 0.8
+        assert ev["error"] == "Gate rejected: syntax conflict detected"
+
+    def test_settlement_phase_events_filter_by_plan_name(self, tmp_path):
+        """Settlement phase events can be filtered by plan_name."""
+        from dgov.event_types import SettlementPhaseStarted, serialize_event
+
+        session_root = _session(tmp_path)
+
+        for plan in ["plan-a", "plan-b", "plan-a"]:
+            event = SettlementPhaseStarted(
+                pane="pane-1",
+                plan_name=plan,
+                task_slug="task-1",
+                phase="risk_assessment",
+            )
+            event_name, pane, kwargs = serialize_event(event)
+            emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        plan_a_events = read_events(session_root, plan_name="plan-a")
+        plan_b_events = read_events(session_root, plan_name="plan-b")
+
+        assert len(plan_a_events) == 2
+        assert len(plan_b_events) == 1
+        assert plan_b_events[0]["plan_name"] == "plan-b"
+
+    def test_settlement_phase_events_filter_by_task_slug(self, tmp_path):
+        """Settlement phase events can be filtered by task_slug."""
+        from dgov.event_types import SettlementPhaseCompleted, serialize_event
+
+        session_root = _session(tmp_path)
+
+        for slug in ["task-x", "task-y", "task-x"]:
+            event = SettlementPhaseCompleted(
+                pane="pane-1",
+                plan_name="plan",
+                task_slug=slug,
+                phase="integration",
+                status="success",
+                duration_s=1.0,
+            )
+            event_name, pane, kwargs = serialize_event(event)
+            emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        task_x_events = read_events(session_root, task_slug="task-x")
+        task_y_events = read_events(session_root, task_slug="task-y")
+
+        assert len(task_x_events) == 2
+        assert len(task_y_events) == 1
+
+    def test_settlement_phase_events_typed_deserialization(self, tmp_path):
+        """Settlement phase events deserialize correctly via deserialize_event."""
+        from dgov.event_types import (
+            SettlementPhaseCompleted,
+            SettlementPhaseStarted,
+            deserialize_event,
+            serialize_event,
+        )
+
+        session_root = _session(tmp_path)
+
+        # Emit started event
+        started = SettlementPhaseStarted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-789",
+            phase="candidate_validation",
+        )
+        event_name, pane, kwargs = serialize_event(started)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        # Emit completed event
+        completed = SettlementPhaseCompleted(
+            pane="test-pane",
+            plan_name="test-plan",
+            task_slug="task-789",
+            phase="candidate_validation",
+            status="success",
+            duration_s=2.5,
+            error=None,
+        )
+        event_name, pane, kwargs = serialize_event(completed)
+        emit_event(session_root, event=event_name, pane=pane, **kwargs)
+
+        # Read back and deserialize
+        events = read_events(session_root)
+        assert len(events) == 2
+
+        # First event should deserialize to SettlementPhaseStarted
+        deserialized_start = deserialize_event(events[0])
+        assert isinstance(deserialized_start, SettlementPhaseStarted)
+        assert deserialized_start.pane == "test-pane"
+        assert deserialized_start.plan_name == "test-plan"
+        assert deserialized_start.task_slug == "task-789"
+        assert deserialized_start.phase == "candidate_validation"
+
+        # Second event should deserialize to SettlementPhaseCompleted
+        deserialized_complete = deserialize_event(events[1])
+        assert isinstance(deserialized_complete, SettlementPhaseCompleted)
+        assert deserialized_complete.pane == "test-pane"
+        assert deserialized_complete.plan_name == "test-plan"
+        assert deserialized_complete.task_slug == "task-789"
+        assert deserialized_complete.phase == "candidate_validation"
+        assert deserialized_complete.status == "success"
+        assert deserialized_complete.duration_s == 2.5
+        assert deserialized_complete.error is None

@@ -184,6 +184,9 @@ VALID_EVENTS = frozenset({
     "integration_candidate_passed",
     "integration_candidate_failed",
     "semantic_gate_rejected",
+    # Settlement phase telemetry
+    "settlement_phase_started",
+    "settlement_phase_completed",
     # Self-review
     "self_review_passed",
     "self_review_rejected",
