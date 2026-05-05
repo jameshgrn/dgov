@@ -1,0 +1,40 @@
+[tasks.runner-timing]
+summary = "Emit timed settlement phase events from the runner"
+commit_message = "Emit settlement phase timing"
+depends_on = [
+  "events/event-contract.event-contract",
+  "review/status-review.status-review",
+]
+files.edit = [
+  "src/dgov/runner.py",
+  "tests/test_runner.py",
+]
+files.read = [
+  "src/dgov/event_types.py",
+  "src/dgov/settlement_flow.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/runner.py around EventDagRunner._settle_and_merge, src/dgov/event_types.py for the new settlement phase event classes, and tests/test_runner.py for existing settlement tests. Keep settlement behavior unchanged; this task only adds telemetry.
+
+Edit:
+1. In src/dgov/runner.py, emit settlement_phase_started and settlement_phase_completed events around each phase inside _settle_and_merge:
+   - prepare_commit
+   - isolated_validation
+   - integration_candidate
+   - semantic_gate
+   - candidate_validation
+   - final_merge
+2. Use monotonic timing for duration_s. Emit status="passed" for completed phases, status="failed" for phases that return or raise an error, and status="skipped" when prepare_and_commit returns was_settlement=False.
+3. Preserve existing returns and error strings exactly where practical. If a phase raises, emit a failed completion event before re-raising.
+4. Keep helper functions private to src/dgov/runner.py. Avoid adding mutable state fields to TaskContext or EventDagRunner for this.
+5. In tests/test_runner.py, add or update targeted tests proving:
+   - a successful settlement emits started/completed events in phase order with nonnegative durations.
+   - an early validation failure emits a failed completed event for isolated_validation and does not emit later phase starts.
+
+Verify:
+uv run pytest -q tests/test_runner.py::TestIntegrationCandidate
+uv run ruff check src/dgov/runner.py tests/test_runner.py
+uv run ruff format --check src/dgov/runner.py tests/test_runner.py
+uv run ty check src/dgov/runner.py
+'''

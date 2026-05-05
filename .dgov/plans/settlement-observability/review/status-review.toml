@@ -1,0 +1,36 @@
+[tasks.status-review]
+summary = "Surface live task phases in status and plan review"
+commit_message = "Show live settlement phases"
+depends_on = ["events/event-contract.event-contract"]
+files.edit = [
+  "src/dgov/live_state.py",
+  "src/dgov/cli/__init__.py",
+  "src/dgov/plan_review.py",
+  "src/dgov/cli/plan.py",
+  "tests/test_cli.py",
+  "tests/test_plan_review.py",
+]
+files.read = [
+  "src/dgov/event_types.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/live_state.py, src/dgov/cli/__init__.py, src/dgov/plan_review.py, src/dgov/cli/plan.py, tests/test_cli.py, tests/test_plan_review.py, and src/dgov/event_types.py before editing. Follow the event-derived state model: derive phase from events; do not add cached state flags.
+
+Edit:
+1. In src/dgov/live_state.py, derive live settlement visibility from settlement_phase_started and settlement_phase_completed events. A task with an open settlement phase should remain visible as settling until merge_completed or task_merge_failed. Keep run_completed terminal behavior.
+2. In src/dgov/cli/__init__.py, keep the existing status and active fields compatible, but add phase/count visibility so done/reviewed/settling tasks are not collapsed into a misleading active count. JSON output should include per-state or per-phase counts and each task's current phase/state.
+3. In src/dgov/plan_review.py, add a derived phase field to UnitReview from lifecycle and settlement phase events. Preserve existing status meanings: deployed/failed/pending/not_run remain outcome states; in-flight tasks may carry phase detail.
+4. In src/dgov/cli/plan.py, render the phase for active/in-flight units and include it in JSON output. Keep existing integration telemetry output intact.
+5. In tests/test_cli.py and tests/test_plan_review.py, add targeted tests for:
+   - dgov status showing a task in settlement instead of hiding it after review_pass.
+   - JSON status including phase/count data.
+   - plan review rendering and JSON including an in-flight settlement phase.
+
+Verify:
+uv run pytest -q tests/test_cli.py::test_status_json tests/test_cli.py::test_status_hides_history_by_default tests/test_cli.py::test_status_treats_run_completed_as_terminal tests/test_cli.py::TestReviewIntegrationTelemetry
+uv run pytest -q tests/test_plan_review.py::TestPlanReviewCounts tests/test_plan_review.py::TestIntegrationRiskTelemetry
+uv run ruff check src/dgov/live_state.py src/dgov/cli/__init__.py src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_cli.py tests/test_plan_review.py
+uv run ruff format --check src/dgov/live_state.py src/dgov/cli/__init__.py src/dgov/plan_review.py src/dgov/cli/plan.py tests/test_cli.py tests/test_plan_review.py
+uv run ty check src/dgov/live_state.py src/dgov/cli/__init__.py src/dgov/plan_review.py src/dgov/cli/plan.py
+'''

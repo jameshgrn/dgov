@@ -1,0 +1,4 @@
+[plan]
+name = "settlement-observability"
+summary = "Expose settlement phase timing and live task phase visibility."
+sections = ["events", "runtime", "review"]
