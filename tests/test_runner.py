@@ -1679,6 +1679,122 @@ class TestSettlementPhaseBoundaries:
 
             asyncio.run(_test())
 
+    @pytest.mark.unit
+    def test_settlement_phase_events_emitted_in_order(self):
+        """Successful settlement emits started/completed events for all phases."""
+        from unittest.mock import patch
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+            asyncio.run(runner.run())
+
+            # Collect settlement phase events
+            started_events = []
+            completed_events = []
+            for call in mock_emit.call_args_list:
+                event = call.args[1]
+                if getattr(event, "event_type", None) == "settlement_phase_started":
+                    started_events.append(event)
+                elif getattr(event, "event_type", None) == "settlement_phase_completed":
+                    completed_events.append(event)
+
+            # Expected phases in order
+            expected_phases = [
+                "prepare_commit",
+                "isolated_validation",
+                "integration_candidate",
+                "semantic_gate",
+                "candidate_validation",
+                "final_merge",
+            ]
+
+            # Verify we have the right number of events
+            assert len(started_events) == len(expected_phases)
+            assert len(completed_events) == len(expected_phases)
+
+            # Verify phases are in order and match between started/completed
+            for i, phase in enumerate(expected_phases):
+                assert started_events[i].phase == phase
+                assert started_events[i].task_slug == "a"
+                assert completed_events[i].phase == phase
+                assert completed_events[i].task_slug == "a"
+                assert completed_events[i].status == "passed"
+                assert completed_events[i].duration_s >= 0.0
+
+    @pytest.mark.unit
+    def test_settlement_phase_skipped_for_read_only_role(self):
+        """Researcher role skips settlement phases after prepare_commit."""
+        from unittest.mock import patch
+
+        from dgov.dag_parser import DagFileSpec, DagTaskSpec
+
+        researcher_task = DagTaskSpec(
+            slug="research",
+            summary="Research task",
+            prompt="Investigate something",
+            commit_message="research: notes",
+            agent="test-agent",
+            role="researcher",
+            files=DagFileSpec(read=("src/foo.py",)),
+        )
+        dag = _dag({"research": researcher_task})
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(dag)
+            asyncio.run(runner.run())
+
+            # Collect settlement phase completed events
+            completed_events = [
+                c.args[1]
+                for c in mock_emit.call_args_list
+                if getattr(c.args[1], "event_type", None) == "settlement_phase_completed"
+            ]
+
+            # Should only have prepare_commit phase with skipped status
+            assert len(completed_events) == 1
+            assert completed_events[0].phase == "prepare_commit"
+            assert completed_events[0].status == "skipped"
+            assert completed_events[0].task_slug == "research"
+
+    @pytest.mark.unit
+    def test_settlement_phase_failed_on_validation_error(self):
+        """Early validation failure emits failed completed event and no later phase starts."""
+        from unittest.mock import AsyncMock, patch
+
+        with _io_patches() as _, patch(_P_EMIT_EVENT) as mock_emit:
+            runner = _make_runner(_single_dag())
+
+            # Make isolated validation fail
+            sf = runner._settlement_flow
+            sf.run_isolated_validation = AsyncMock(return_value=("lint failed", None))  # type: ignore
+
+            asyncio.run(runner.run())
+
+            # Collect settlement phase events
+            started_events = []
+            completed_events = []
+            for call in mock_emit.call_args_list:
+                event = call.args[1]
+                if getattr(event, "event_type", None) == "settlement_phase_started":
+                    started_events.append(event)
+                elif getattr(event, "event_type", None) == "settlement_phase_completed":
+                    completed_events.append(event)
+
+            # Should have prepare_commit started/completed
+            # and isolated_validation started/completed
+            started_phases = [e.phase for e in started_events]
+            assert started_phases == ["prepare_commit", "isolated_validation"]
+
+            # Verify prepare_commit passed and isolated_validation failed
+            assert completed_events[0].phase == "prepare_commit"
+            assert completed_events[0].status == "passed"
+            assert completed_events[1].phase == "isolated_validation"
+            assert completed_events[1].status == "failed"
+            assert completed_events[1].error == "lint failed"
+
+            # No later phases should have started
+            assert len(started_events) == 2
+
 
 # ---------------------------------------------------------------------------
 # Feature A: Clean-Context Fork on Iteration Exhaustion
