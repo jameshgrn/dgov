@@ -101,6 +101,16 @@ class DiffStat:
 
 
 @dataclass(frozen=True)
+class SettlementPhaseTiming:
+    """Completed settlement phase timing for one unit."""
+
+    phase: str
+    duration_s: float
+    status: str
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class UnitReview:
     """Per-unit review snapshot."""
 
@@ -110,6 +120,7 @@ class UnitReview:
     # Phase detail for in-flight tasks (e.g., "integration", "semantic_gate", "merge")
     # Only populated when status is "active" and settlement phase events exist
     phase: str | None = None
+    phase_timings: tuple[SettlementPhaseTiming, ...] = ()
     agent: str = ""
     # Deployment info (populated for status == "deployed")
     commit_sha: str | None = None
@@ -583,6 +594,18 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
             state["phase"] = phase
         return
     if isinstance(ev.event, SettlementPhaseCompleted):
+        phase = ev.event.phase
+        if isinstance(phase, str) and phase:
+            duration = ev.event.duration_s
+            if isinstance(duration, int | float):
+                state["phase_timings"].append(
+                    SettlementPhaseTiming(
+                        phase=phase,
+                        duration_s=float(duration),
+                        status=ev.event.status,
+                        error=ev.event.error,
+                    )
+                )
         # Phase completed - clear it (final state comes from merge events)
         state["phase"] = None
         return
@@ -657,6 +680,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_failure_class": None,
         # Settlement phase tracking
         "phase": None,
+        "phase_timings": [],
     }
 
     typed_events = _convert_events(unit_events)
@@ -710,6 +734,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_failure_class": state["integration_failure_class"],
         # Settlement phase
         "phase": state["phase"],
+        "phase_timings": tuple(state["phase_timings"]),
     }
 
 
@@ -871,6 +896,7 @@ def _build_unit_review(
         summary=task_data.get("summary", ""),
         status=status,
         phase=rollup["phase"] if status == "active" else None,
+        phase_timings=rollup["phase_timings"],
         agent=task_data.get("agent", ""),
         commit_sha=commit_info["commit_sha"],
         commit_message=commit_info["commit_message"],

@@ -11,6 +11,7 @@ import pytest
 from dgov.plan_review import (
     DiffStat,
     PlanReview,
+    SettlementPhaseTiming,
     UnitReview,
     _build_unit_review,
     _convert_events,
@@ -1486,6 +1487,53 @@ class TestSettlementPhaseTracking:
         rollup = _rollup_unit_events(events)
         # Phase cleared after terminal event (merge_completed)
         assert rollup["phase"] is None
+        assert rollup["phase_timings"] == (
+            SettlementPhaseTiming(
+                phase="integration",
+                duration_s=0.0,
+                status="ok",
+                error=None,
+            ),
+        )
+
+    def test_settlement_phase_completed_captures_duration_and_status(self):
+        """Completed phase events should retain duration/status for review."""
+        events = [
+            _lifecycle(
+                1,
+                "settlement_phase_completed",
+                "t",
+                "plan",
+                phase="isolated_validation",
+                status="passed",
+                duration_s=76.5,
+            ),
+            _lifecycle(
+                2,
+                "settlement_phase_completed",
+                "t",
+                "plan",
+                phase="candidate_validation",
+                status="failed",
+                duration_s=2.25,
+                error="tests failed",
+            ),
+        ]
+        rollup = _rollup_unit_events(events)
+        assert rollup["phase_timings"] == (
+            SettlementPhaseTiming(
+                phase="isolated_validation",
+                duration_s=76.5,
+                status="passed",
+                error=None,
+            ),
+            SettlementPhaseTiming(
+                phase="candidate_validation",
+                duration_s=2.25,
+                status="failed",
+                error="tests failed",
+            ),
+        )
 
     def test_settlement_phase_cleared_on_terminal_event(self):
         """Phase should be cleared on terminal events (merge_completed, task_merge_failed)."""
@@ -1546,6 +1594,14 @@ class TestSettlementPhaseTracking:
             )
         assert review.status == "deployed"
         assert review.phase is None
+        assert review.phase_timings == (
+            SettlementPhaseTiming(
+                phase="integration",
+                duration_s=0.0,
+                status="ok",
+                error=None,
+            ),
+        )
 
     def test_multiple_settlement_phases_last_wins(self):
         """If multiple settlement phases start, the last one wins."""

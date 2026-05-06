@@ -883,6 +883,18 @@ def _render_unit_fields(fields: list[tuple[str, str | None]]) -> None:
             click.echo(f"    {label:12s} {value}")
 
 
+def _format_phase_timings(unit) -> str | None:
+    if not unit.phase_timings:
+        return None
+    parts = []
+    for timing in unit.phase_timings:
+        label = f"{timing.phase}={_fmt_duration(timing.duration_s)}"
+        if timing.status and timing.status not in ("passed", "success", "ok"):
+            label += f"/{timing.status}"
+        parts.append(label)
+    return ", ".join(parts)
+
+
 def _render_deployed_unit(unit) -> None:
     """Render a deployed UnitReview block."""
     marker = click.style("✓", fg="green")
@@ -913,6 +925,7 @@ def _render_deployed_unit(unit) -> None:
             if unit.settlement != "n/a"
             else None,
         ),
+        ("phases", _format_phase_timings(unit)),
         (
             "tokens",
             f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
@@ -993,6 +1006,7 @@ def _render_failed_unit(unit) -> None:
             "fork",
             f"{unit.fork_depth} clean-context relaunch(es)" if unit.fork_depth > 0 else None,
         ),
+        ("phases", _format_phase_timings(unit)),
         (
             "tokens",
             f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
@@ -1026,6 +1040,7 @@ def _render_active_unit(unit) -> None:
             if unit.iterations is not None
             else None,
         ),
+        ("phases", _format_phase_timings(unit)),
     ]
     _render_unit_fields(fields)
     if unit.last_thought:
@@ -1123,6 +1138,15 @@ def _review_to_json(review) -> str:
             "summary": u.summary,
             "status": u.status,
             "phase": u.phase,
+            "phase_timings": [
+                {
+                    "phase": timing.phase,
+                    "duration_s": timing.duration_s,
+                    "status": timing.status,
+                    "error": timing.error,
+                }
+                for timing in u.phase_timings
+            ],
             "agent": u.agent,
             "commit_sha": u.commit_sha,
             "commit_message": u.commit_message,

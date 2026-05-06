@@ -486,6 +486,76 @@ def test_review_json_includes_self_corrections(
     assert data["units"][0]["self_corrections"] == 3
 
 
+def test_review_renders_settlement_phase_timings(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        settlement="ok",
+        phase_timings=(
+            SettlementPhaseTiming("prepare_commit", 0.5, "passed"),
+            SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
+        ),
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "phases" in result.output
+    assert "prepare_commit=0.5s" in result.output
+    assert "isolated_validation=1m 16s" in result.output
+
+
+def test_review_json_includes_settlement_phase_timings(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        phase_timings=(SettlementPhaseTiming("isolated_validation", 76.0, "passed"),),
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["units"][0]["phase_timings"] == [
+        {
+            "phase": "isolated_validation",
+            "duration_s": 76.0,
+            "status": "passed",
+            "error": None,
+        }
+    ]
+
+
 def test_review_only_nonexistent_errors_out(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
