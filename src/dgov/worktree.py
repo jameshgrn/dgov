@@ -37,6 +37,15 @@ def _git_env(cwd: str | Path | None = None) -> dict[str, str]:
     return env
 
 
+def _git_commit_env(cwd: str | Path | None = None) -> dict[str, str]:
+    env = _git_env(cwd)
+    env["GIT_AUTHOR_NAME"] = "dgov-worker"
+    env["GIT_AUTHOR_EMAIL"] = "agent@dgov.local"
+    env["GIT_COMMITTER_NAME"] = "dgov-worker"
+    env["GIT_COMMITTER_EMAIL"] = "agent@dgov.local"
+    return env
+
+
 def create_worktree(project_root: str, slug: str, base_ref: str = "HEAD") -> Worktree:
     """Create an isolated worktree for an Atomic Attempt.
 
@@ -224,6 +233,7 @@ def _run_prepare_cmd(
 def merge_worktree(project_root: str, wt: Worktree) -> str:
     """Commit-or-Kill: Merge the worktree branch into base."""
     git_env = _git_env(project_root)
+    git_commit_env = _git_commit_env(project_root)
 
     # Try fast-forward first (hot-path)
     try:
@@ -250,7 +260,7 @@ def merge_worktree(project_root: str, wt: Worktree) -> str:
                 subprocess.run(
                     ["git", "cherry-pick", c],
                     cwd=project_root,
-                    env=git_env,
+                    env=git_commit_env,
                     check=True,
                     capture_output=True,
                 )
@@ -259,7 +269,7 @@ def merge_worktree(project_root: str, wt: Worktree) -> str:
                 subprocess.run(
                     ["git", "cherry-pick", "--abort"],
                     cwd=project_root,
-                    env=git_env,
+                    env=git_commit_env,
                     capture_output=True,
                 )
                 raise
@@ -383,10 +393,11 @@ def _conflict_marker_counts(worktree_path: Path, paths: tuple[str, ...]) -> dict
 
 
 def _replay_commit(candidate_wt: Worktree, commit_sha: str) -> _ReplayFailure | None:
+    git_commit_env = _git_commit_env(candidate_wt.path)
     pick_res = subprocess.run(
         ["git", "cherry-pick", commit_sha],
         cwd=candidate_wt.path,
-        env=_git_env(candidate_wt.path),
+        env=git_commit_env,
         capture_output=True,
         text=True,
     )
@@ -397,7 +408,7 @@ def _replay_commit(candidate_wt: Worktree, commit_sha: str) -> _ReplayFailure | 
     subprocess.run(
         ["git", "cherry-pick", "--abort"],
         cwd=candidate_wt.path,
-        env=_git_env(candidate_wt.path),
+        env=git_commit_env,
         capture_output=True,
     )
     return _ReplayFailure(
@@ -715,11 +726,7 @@ def _prune_orphan_branches(
 
 def commit_in_worktree(wt: Worktree, message: str, file_claims: tuple[str, ...] = ()) -> str:
     """Stage claimed files + commit. Falls back to git add . if no claims."""
-    env = _git_env(wt.path)
-    env["GIT_AUTHOR_NAME"] = "dgov-worker"
-    env["GIT_AUTHOR_EMAIL"] = "agent@dgov.local"
-    env["GIT_COMMITTER_NAME"] = "dgov-worker"
-    env["GIT_COMMITTER_EMAIL"] = "agent@dgov.local"
+    env = _git_commit_env(wt.path)
 
     if file_claims:
         # Stage only claimed files (avoids pre-existing lint failures)

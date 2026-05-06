@@ -210,6 +210,35 @@ class TestMergeWorktree:
         sha = merge_worktree(git_repo, wt)
         assert len(sha) == 40
 
+    def test_cherry_pick_merge_uses_dgov_committer_identity(self, git_repo):
+        wt = create_worktree(git_repo, "task-a")
+        (wt.path / "hello.py").write_text("print('hi')\n")
+        commit_in_worktree(wt, "add hello.py", file_claims=("hello.py",))
+
+        env = {**os.environ, **_GIT_ENV}
+        (Path(git_repo) / "main.py").write_text("# main code\n")
+        subprocess.run(["git", "add", "main.py"], cwd=git_repo, check=True, env=env)
+        subprocess.run(
+            ["git", "commit", "-m", "progress on main"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+
+        merge_worktree(git_repo, wt)
+
+        assert (Path(git_repo) / "hello.py").exists()
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ce"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.stdout.strip() == "agent@dgov.local"
+
 
 @pytest.mark.unit
 class TestRemoveWorktree:
@@ -371,6 +400,15 @@ class TestIntegrationCandidate:
         assert len(result.candidate_sha) == 40
         # File should be replayed onto candidate
         assert (result.candidate_path / "hello.py").exists()
+        log = subprocess.run(
+            ["git", "log", "-1", "--format=%ce"],
+            cwd=result.candidate_path,
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **_GIT_ENV},
+        )
+        assert log.stdout.strip() == "agent@dgov.local"
 
         # Clean up
         from dgov.worktree import remove_integration_candidate
