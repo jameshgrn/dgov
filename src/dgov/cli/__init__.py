@@ -118,6 +118,7 @@ def cli(
       dgov init-plan <name>      Initialize a new plan directory
       dgov fix <prompt>          Create and run a one-off fix plan
       dgov watch                 Stream events live
+      dgov tools audit           Summarize worker tool-call telemetry
       dgov archive-plan <name>   Manually archive a plan
       dgov plan create <goal>    Auto-generate an implementation plan
       dgov plan status <dir>     Show pending vs deployed units
@@ -258,5 +259,6 @@ from dgov.cli import (  # noqa: E402
     preflight as preflight,
     run as run,
     sentrux as sentrux,
+    tools as tools,
     watch as watch,
 )
