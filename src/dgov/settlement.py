@@ -213,6 +213,29 @@ def _run_cmd(
     )
 
 
+def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def _is_ruff_command(cmd_template: str) -> bool:
+    return "ruff" in cmd_template
+
+
+def _gate_failure_output(result: subprocess.CompletedProcess[str], *, preserve_full: bool) -> str:
+    output = _combined_output(result)
+    return output.strip() if preserve_full else output[-500:].strip()
+
+
+def _lint_failure_error(result: subprocess.CompletedProcess[str], cmd_template: str) -> str:
+    output = _gate_failure_output(result, preserve_full=_is_ruff_command(cmd_template))
+    return f"Lint failure:\n{output}"
+
+
+def _format_failure_error(result: subprocess.CompletedProcess[str], cmd_template: str) -> str:
+    output = _gate_failure_output(result, preserve_full=_is_ruff_command(cmd_template))
+    return f"Format failure:\n{output}"
+
+
 def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     """Get ALL changed/new files via git status --porcelain.
 
@@ -927,7 +950,7 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
     )
     # Exit code 5 = "no tests were collected" — not a failure (e.g. scaffold tasks)
     if res.returncode not in (0, 5):
-        output = (res.stdout + res.stderr)[-500:]
+        output = _combined_output(res)[-500:]
         return GateResult(passed=False, error=f"Test failure:\n{output}")
     return None
 
@@ -1287,7 +1310,7 @@ def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> G
     except subprocess.TimeoutExpired:
         return GateResult(passed=False, error=f"setup_cmd timed out after {timeout}s")
     if res.returncode != 0:
-        output = (res.stdout + res.stderr)[-500:]
+        output = _combined_output(res)[-500:]
         return GateResult(passed=False, error=f"setup_cmd failed:\n{output}")
     return None
 
@@ -1356,8 +1379,7 @@ def _scoped_lint_check(
         diagnostics = json_mod.loads(res.stdout)
     except (json_mod.JSONDecodeError, ValueError):
         # Can't parse JSON — fall back to full lint (fail-closed)
-        output = (res.stdout + res.stderr)[-500:]
-        return GateResult(passed=False, error=f"Lint failure:\n{output}")
+        return GateResult(passed=False, error=_lint_failure_error(res, config.lint_cmd))
 
     scoped_issues: list[str] = []
     for diag in diagnostics:
@@ -1374,7 +1396,7 @@ def _scoped_lint_check(
             scoped_issues.append(f"{rel_name}:{row} {code} {msg}")
 
     if scoped_issues:
-        detail = "\n".join(scoped_issues[:10])
+        detail = "\n".join(scoped_issues)
         return GateResult(passed=False, error=f"Lint failure (worker-changed lines):\n{detail}")
     return None
 
@@ -1425,8 +1447,10 @@ def _run_acceptance_gates(
                         timeout=config.settlement_timeout,
                     )
                     if res_lint.returncode != 0:
-                        output = (res_lint.stdout + res_lint.stderr)[-500:]
-                        return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                        return GateResult(
+                            passed=False,
+                            error=_lint_failure_error(res_lint, config.lint_cmd),
+                        )
                     res_fmt = _run_cmd(
                         config.format_check_cmd,
                         new_in_commit,
@@ -1434,8 +1458,10 @@ def _run_acceptance_gates(
                         timeout=config.settlement_timeout,
                     )
                     if res_fmt.returncode != 0:
-                        output = (res_fmt.stdout + res_fmt.stderr)[-500:]
-                        return GateResult(passed=False, error=f"Format failure:\n{output}")
+                        return GateResult(
+                            passed=False,
+                            error=_format_failure_error(res_fmt, config.format_check_cmd),
+                        )
 
                 # Existing files: scoped lint when Ruff available, else full lint
                 if preexisting:
@@ -1454,8 +1480,10 @@ def _run_acceptance_gates(
                             timeout=config.settlement_timeout,
                         )
                         if res_lint.returncode != 0:
-                            output = (res_lint.stdout + res_lint.stderr)[-500:]
-                            return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                            return GateResult(
+                                passed=False,
+                                error=_lint_failure_error(res_lint, config.lint_cmd),
+                            )
             else:
                 # Pre-commit / preflight: full checks (current behavior)
                 res_lint = _run_cmd(
@@ -1465,8 +1493,10 @@ def _run_acceptance_gates(
                     timeout=config.settlement_timeout,
                 )
                 if res_lint.returncode != 0:
-                    output = (res_lint.stdout + res_lint.stderr)[-500:]
-                    return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                    return GateResult(
+                        passed=False,
+                        error=_lint_failure_error(res_lint, config.lint_cmd),
+                    )
 
                 res_fmt = _run_cmd(
                     config.format_check_cmd,
@@ -1475,8 +1505,10 @@ def _run_acceptance_gates(
                     timeout=config.settlement_timeout,
                 )
                 if res_fmt.returncode != 0:
-                    output = (res_fmt.stdout + res_fmt.stderr)[-500:]
-                    return GateResult(passed=False, error=f"Format failure:\n{output}")
+                    return GateResult(
+                        passed=False,
+                        error=_format_failure_error(res_fmt, config.format_check_cmd),
+                    )
 
         if config.type_check_cmd:
             ty_failure = _type_check_gate(

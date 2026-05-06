@@ -19,6 +19,7 @@ from dgov.settlement import (
     _build_test_cmd,
     _run_coverage_gate,
     _run_sentrux_gate,
+    _scoped_lint_check,
     _sentrux_is_warn_only,
     autofix_sandbox,
     preflight_sandbox,
@@ -99,6 +100,74 @@ def test_validate_sandbox_surfaces_stderr_from_lint_failures(tmp_path: Path) -> 
     assert result.passed is False
     assert result.error is not None
     assert "lint missing" in result.error
+
+
+@pytest.mark.unit
+def test_validate_sandbox_preserves_full_ruff_lint_output(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    script = tmp_path / "fake_ruff.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'FIRST_RUFF_DIAGNOSTIC'\n"
+        f"printf '%s\\n' '{'middle-' * 120}'\n"
+        "printf '%s\\n' 'LAST_RUFF_DIAGNOSTIC'\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+    (tmp_path / "bad.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "bad.py")
+    _git(tmp_path, "commit", "-m", "add bad")
+
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd="/bin/sh fake_ruff.sh {file}",
+            format_check_cmd="true {file}",
+            test_cmd="",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "FIRST_RUFF_DIAGNOSTIC" in result.error
+    assert "LAST_RUFF_DIAGNOSTIC" in result.error
+
+
+@pytest.mark.unit
+def test_validate_sandbox_preserves_full_ruff_format_output(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    script = tmp_path / "fake_ruff_format.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'FIRST_FORMAT_DIAGNOSTIC'\n"
+        f"printf '%s\\n' '{'format-' * 120}'\n"
+        "printf '%s\\n' 'LAST_FORMAT_DIAGNOSTIC'\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+    (tmp_path / "ugly.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "ugly.py")
+    _git(tmp_path, "commit", "-m", "add ugly")
+
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd="true {file}",
+            format_check_cmd="/bin/sh fake_ruff_format.sh {file}",
+            test_cmd="",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "FIRST_FORMAT_DIAGNOSTIC" in result.error
+    assert "LAST_FORMAT_DIAGNOSTIC" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -787,6 +856,42 @@ class TestValidateSandbox:
         result = validate_sandbox(tmp_path, base, str(tmp_path))
         assert not result.passed
         assert "Lint failure" in (result.error or "")
+
+    def test_scoped_ruff_lint_reports_all_worker_changed_diagnostics(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        original = "".join(f"value_{i} = {i}\n" for i in range(1, 13))
+        _add_tracked_file(tmp_path, "bad.py", original)
+        base = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+        changed = "".join(f"value_{i} = missing_{i}\n" for i in range(1, 13))
+        (tmp_path / "bad.py").write_text(changed)
+        _git(tmp_path, "add", "bad.py")
+        _git(tmp_path, "commit", "-m", "change bad")
+
+        diagnostics = [
+            {
+                "filename": "bad.py",
+                "location": {"row": row},
+                "code": f"E{row:03}",
+                "message": f"diagnostic {row}",
+            }
+            for row in range(1, 13)
+        ]
+        script = tmp_path / "fake_ruff_json.sh"
+        script.write_text(f"#!/bin/sh\ncat <<'JSON'\n{json.dumps(diagnostics)}\nJSON\nexit 1\n")
+        script.chmod(0o755)
+
+        result = _scoped_lint_check(
+            tmp_path,
+            ["bad.py"],
+            base,
+            ProjectConfig(lint_cmd="/bin/sh fake_ruff_json.sh {file}", settlement_timeout=5),
+        )
+
+        assert result is not None
+        assert result.passed is False
+        assert result.error is not None
+        assert "E001 diagnostic 1" in result.error
+        assert "E012 diagnostic 12" in result.error
 
     def test_fail_format_error(self, tmp_path: Path):
         base = _init_repo(tmp_path)
