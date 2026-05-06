@@ -364,6 +364,21 @@ class TestTagBasedSopBundler:
         result = TagBasedSopBundler().pick({"a": unit}, sops)
         assert result == {"a": ["ps"]}
 
+    def test_matches_edited_test_file_to_testing_tag(self) -> None:
+        unit = self._unit_with(
+            "a",
+            summary="Populate connector temporal metadata",
+            files=PlanUnitFiles(edit=("tests/pressure_test/test_stac_connector.py",)),
+        )
+        sops = [
+            _sop("testing", "Testing", applies_to=("tests",)),
+            _sop("ps", "Python Style", applies_to=("python",)),
+        ]
+
+        result = TagBasedSopBundler().pick({"a": unit}, sops)
+
+        assert sorted(result["a"]) == ["ps", "testing"]
+
     def test_matches_js_file_to_javascript_tag(self) -> None:
         unit = self._unit_with("a", files=PlanUnitFiles(create=("app.tsx",)))
         sops = [_sop("rv", "Return Values", applies_to=("javascript", "typescript"))]
