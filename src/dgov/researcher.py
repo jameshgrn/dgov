@@ -17,7 +17,7 @@ import shutil
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from openai import OpenAI
 
@@ -26,6 +26,7 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
+from dgov.llm_backoff import create_chat_completion_with_backoff  # noqa: E402
 from dgov.worker import (  # noqa: E402
     WorkerEvent,
     _execute_tool_call,
@@ -159,7 +160,7 @@ def run_researcher(
         WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
+    client = OpenAI(base_url=config.llm_base_url, api_key=api_key, max_retries=0)
     actuators = AtomicTools(worktree, config)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None
@@ -179,7 +180,8 @@ def run_researcher(
 
     for _ in range(budget):
         try:
-            resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
+            resp = create_chat_completion_with_backoff(
+                client,
                 model=model,
                 messages=messages,
                 tools=get_tool_spec("researcher"),
@@ -223,7 +225,7 @@ def run_researcher(
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "name": cast(Any, call).function.name,
+                "name": call.function.name,
                 "content": result,
             })
 

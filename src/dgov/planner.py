@@ -16,7 +16,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from openai import OpenAI
 
@@ -25,6 +25,7 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root / "src") not in sys.path:
     sys.path.append(str(_project_root / "src"))
 
+from dgov.llm_backoff import create_chat_completion_with_backoff  # noqa: E402
 from dgov.worker import (  # noqa: E402
     WorkerEvent,
     _execute_tool_call,
@@ -201,7 +202,7 @@ def run_planner(
         WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
+    client = OpenAI(base_url=config.llm_base_url, api_key=api_key, max_retries=0)
     actuators = AtomicTools(worktree, config)
 
     def _cleanup() -> None:
@@ -219,7 +220,8 @@ def run_planner(
 
     for _ in range(budget):
         try:
-            resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
+            resp = create_chat_completion_with_backoff(
+                client,
                 model=model,
                 messages=messages,
                 tools=get_tool_spec("planner", interactive=interactive),
@@ -265,7 +267,7 @@ def run_planner(
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "name": cast(Any, call).function.name,
+                "name": call.function.name,
                 "content": result,
             })
 

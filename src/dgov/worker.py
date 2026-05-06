@@ -34,6 +34,7 @@ if str(_project_root / "src") not in sys.path:
 import re  # noqa: E402
 from collections.abc import Callable  # noqa: E402
 
+from dgov.llm_backoff import create_chat_completion_with_backoff  # noqa: E402
 from dgov.workers.atomic import (  # noqa: E402
     AtomicConfig,
     AtomicTools,
@@ -570,7 +571,7 @@ def run_worker(
         WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
+    client = OpenAI(base_url=config.llm_base_url, api_key=api_key, max_retries=0)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None
     except json.JSONDecodeError:
@@ -617,7 +618,8 @@ def run_worker(
 
         tool_choice = cast(Any, _tool_choice_for_iteration(iteration, budget))
         try:
-            resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
+            resp = create_chat_completion_with_backoff(
+                client,
                 model=model,
                 messages=messages,
                 tools=get_tool_spec(),
@@ -674,7 +676,7 @@ def run_worker(
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "name": cast(Any, call).function.name,
+                "name": call.function.name,
                 "content": result,
             })
 
