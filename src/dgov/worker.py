@@ -19,6 +19,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -190,6 +191,44 @@ def _clip_tool_result(result: str, max_chars: int = _TOOL_RESULT_MAX_CHARS) -> s
     if budget <= 0:
         return notice.lstrip("\n")
     return result[:budget] + notice
+
+
+def _clip_tool_result_with_stats(
+    result: str,
+    max_chars: int = _TOOL_RESULT_MAX_CHARS,
+) -> tuple[str, dict[str, int | bool]]:
+    clipped = _clip_tool_result(result, max_chars=max_chars)
+    return clipped, {
+        "result_chars": len(clipped),
+        "raw_result_chars": len(result),
+        "result_clipped": clipped != result,
+    }
+
+
+def _classify_tool_error(result: str) -> str:
+    text = result.lower()
+    if "not allowed" in text:
+        return "policy_blocked"
+    if "not found" in text or "no such file" in text or "does not exist" in text:
+        return "not_found"
+    if "multiple" in text or "ambiguous" in text:
+        return "ambiguous_match"
+    if "timed out" in text or "timeout" in text:
+        return "timeout"
+    if "exit code" in text or "command failed" in text:
+        return "command_failed"
+    if "requires" in text or "invalid" in text or "malformed" in text or "must" in text:
+        return "validation_failed"
+    return "unknown"
+
+
+def _tool_call_id(call: Any) -> str:
+    call_id = getattr(call, "id", "")
+    return call_id if isinstance(call_id, str) else ""
+
+
+def _duration_ms(start: float) -> float:
+    return round(max(0.0, time.perf_counter() - start) * 1000, 3)
 
 
 def _iteration_budget(config: AtomicConfig) -> int:
@@ -495,67 +534,79 @@ def _execute_tool_call(
     actuators: AtomicTools,
     allowed_tools: frozenset[str] | None = None,
     ask_user_fn: Callable[[str], str] | None = None,
+    *,
+    role: str = "worker",
+    turn_index: int = 0,
+    tool_index: int = 0,
 ) -> tuple[str, bool]:
     """Execute one tool call. Returns (result_text, is_done_signal)."""
     name = call.function.name
     args = json.loads(call.function.arguments)
-    WorkerEvent("call", {"tool": name, "args": args}).emit()
+    call_id = _tool_call_id(call)
+    start = time.perf_counter()
+    base_event = {
+        "tool": name,
+        "args": args,
+        "arg_keys": sorted(args),
+        "call_id": call_id,
+        "role": role,
+        "turn_index": turn_index,
+        "tool_index": tool_index,
+    }
+    WorkerEvent("call", base_event).emit()
+
+    def _emit_result(result: str, status: str, activity: list[dict[str, Any]]) -> str:
+        clipped_result, result_stats = _clip_tool_result_with_stats(result)
+        content: dict[str, Any] = {
+            "tool": name,
+            "status": status,
+            "activity": activity,
+            "call_id": call_id,
+            "role": role,
+            "turn_index": turn_index,
+            "tool_index": tool_index,
+            "duration_ms": _duration_ms(start),
+            **result_stats,
+        }
+        if status == "failed":
+            content["error_kind"] = _classify_tool_error(result)
+        WorkerEvent("result", content).emit()
+        return clipped_result
 
     if allowed_tools is not None and name not in allowed_tools:
         result = f"Error: Tool {name} is not allowed in this worker role."
-        WorkerEvent(
-            "result",
-            {
-                "tool": name,
-                "status": "failed",
-                "activity": [],
-            },
-        ).emit()
-        return result, False
+        return _emit_result(result, "failed", []), False
 
     if name == "done":
         verification_error = actuators._done_verification_error()
         if verification_error is not None:
-            WorkerEvent(
-                "result",
-                {
-                    "tool": name,
-                    "status": "failed",
-                    "activity": [],
-                },
-            ).emit()
-            return verification_error, False
+            return _emit_result(verification_error, "failed", []), False
+        summary = args.get("summary", "")
+        _emit_result(summary, "success", [])
         WorkerEvent("done", args.get("summary")).emit()
         return args.get("summary", ""), True
 
     if name == "emit_plan":
         error = _validate_plan(args)
         if error:
-            WorkerEvent("result", {"tool": name, "status": "failed", "activity": []}).emit()
-            return error, False
+            return _emit_result(error, "failed", []), False
+        result = args.get("summary", "Plan emitted.")
+        _emit_result(result, "success", [])
         WorkerEvent("plan", args).emit()
         return args.get("summary", "Plan emitted."), True
 
     if name == "ask_user":
         if ask_user_fn is None:
-            return "Error: ask_user is not available in autonomous mode.", False
+            result = "Error: ask_user is not available in autonomous mode."
+            return _emit_result(result, "failed", []), False
         answer = ask_user_fn(args.get("question", ""))
-        WorkerEvent("result", {"tool": name, "status": "success", "activity": []}).emit()
-        return answer, False
+        return _emit_result(answer, "success", []), False
 
     func = getattr(actuators, name, None)
     result = func(**args) if func else f"Error: Unknown tool {name}"
     activity = actuators._consume_activity()
-    result = _clip_tool_result(result)
-    WorkerEvent(
-        "result",
-        {
-            "tool": name,
-            "status": "failed" if result.startswith("Error:") else "success",
-            "activity": activity,
-        },
-    ).emit()
-    return result, False
+    status = "failed" if result.startswith("Error:") else "success"
+    return _emit_result(result, status, activity), False
 
 
 def run_worker(
@@ -659,8 +710,15 @@ def run_worker(
                 sys.exit(1)
             continue
 
-        for call in msg.tool_calls:
-            result, is_done = _execute_tool_call(call, actuators, allowed_tools=allowed_tools)
+        for tool_index, call in enumerate(msg.tool_calls, start=1):
+            result, is_done = _execute_tool_call(
+                call,
+                actuators,
+                allowed_tools=allowed_tools,
+                role="worker",
+                turn_index=iteration + 1,
+                tool_index=tool_index,
+            )
             if is_done:
                 _cleanup()
                 print(
