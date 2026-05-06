@@ -236,6 +236,11 @@ def _format_failure_error(result: subprocess.CompletedProcess[str], cmd_template
     return f"Format failure:\n{output}"
 
 
+def _test_failure_error(result: subprocess.CompletedProcess[str], test_cmd: str) -> str:
+    output = _combined_output(result).strip()
+    return f"Test failure from `{test_cmd}`:\n{output}"
+
+
 def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     """Get ALL changed/new files via git status --porcelain.
 
@@ -950,8 +955,7 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
     )
     # Exit code 5 = "no tests were collected" — not a failure (e.g. scaffold tasks)
     if res.returncode not in (0, 5):
-        output = _combined_output(res)[-500:]
-        return GateResult(passed=False, error=f"Test failure:\n{output}")
+        return GateResult(passed=False, error=_test_failure_error(res, test_cmd))
     return None
 
 

@@ -170,6 +170,41 @@ def test_validate_sandbox_preserves_full_ruff_format_output(tmp_path: Path) -> N
     assert "LAST_FORMAT_DIAGNOSTIC" in result.error
 
 
+@pytest.mark.unit
+def test_validate_sandbox_preserves_full_test_gate_output(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    script = tmp_path / "fake_pytest.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'FIRST_TEST_FAILURE'\n"
+        f"printf '%s\\n' '{'pytest-' * 120}'\n"
+        "printf '%s\\n' 'LAST_TEST_FAILURE'\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+    (tmp_path / "bad.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "bad.py")
+    _git(tmp_path, "commit", "-m", "add bad")
+
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd="true {file}",
+            format_check_cmd="true {file}",
+            test_cmd="/bin/sh fake_pytest.sh",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "Test failure from `/bin/sh fake_pytest.sh`" in result.error
+    assert "FIRST_TEST_FAILURE" in result.error
+    assert "LAST_TEST_FAILURE" in result.error
+
+
 # ---------------------------------------------------------------------------
 # Helpers — create real git repos in tmp_path
 # ---------------------------------------------------------------------------
