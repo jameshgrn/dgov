@@ -895,6 +895,13 @@ def _format_phase_timings(unit) -> str | None:
     return ", ".join(parts)
 
 
+def _format_tool_calls(unit) -> str | None:
+    count = unit.tool_calls if unit.tool_calls is not None else unit.iterations
+    if count is None:
+        return None
+    return f"{count} tool call{'s' if count != 1 else ''}"
+
+
 def _render_deployed_unit(unit) -> None:
     """Render a deployed UnitReview block."""
     marker = click.style("✓", fg="green")
@@ -911,12 +918,7 @@ def _render_deployed_unit(unit) -> None:
         ("agent", unit.agent),
         ("diff", unit.diff_stat.summary() if unit.diff_stat is not None else None),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
-        (
-            "iterations",
-            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
-            if unit.iterations is not None
-            else None,
-        ),
+        ("tool calls", _format_tool_calls(unit)),
         (
             "settlement",
             {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
@@ -995,12 +997,7 @@ def _render_failed_unit(unit) -> None:
         ("agent", unit.agent),
         ("attempts", str(unit.attempts) if unit.attempts > 1 else None),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
-        (
-            "iterations",
-            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
-            if unit.iterations is not None
-            else None,
-        ),
+        ("tool calls", _format_tool_calls(unit)),
         ("reject", unit.reject_verdict),
         (
             "fork",
@@ -1034,12 +1031,7 @@ def _render_active_unit(unit) -> None:
         ("task", unit.summary),
         ("agent", unit.agent),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
-        (
-            "iterations",
-            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
-            if unit.iterations is not None
-            else None,
-        ),
+        ("tool calls", _format_tool_calls(unit)),
         ("phases", _format_phase_timings(unit)),
     ]
     _render_unit_fields(fields)
@@ -1162,6 +1154,7 @@ def _review_to_json(review) -> str:
             "full_diff": u.full_diff,
             "duration_s": u.duration_s,
             "iterations": u.iterations,
+            "tool_calls": u.tool_calls,
             "prompt_tokens": u.prompt_tokens,
             "completion_tokens": u.completion_tokens,
             "self_corrections": u.self_corrections,

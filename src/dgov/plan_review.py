@@ -54,6 +54,7 @@ from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
 
 _log = logging.getLogger(__name__)
+_ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -131,7 +132,9 @@ class UnitReview:
     full_diff: str | None = None  # Populated only when caller asks for it
     # Execution info (populated for any unit that actually ran)
     duration_s: float | None = None
+    # Legacy JSON/API field. Mirrors tool_calls until true model-turn telemetry exists.
     iterations: int | None = None
+    tool_calls: int | None = None
     attempts: int = 0
     settlement: SettlementResult = "n/a"
     done_summary: str | None = None
@@ -225,11 +228,20 @@ def synthesize_hint(
     Pure lookup over verdict + a few context signals. Returns None when
     nothing useful can be said so the formatter can fall back silently.
     """
-    if iterations is not None and iteration_budget and iterations >= iteration_budget:
-        return (
-            f"worker hit the {iteration_budget}-iteration budget — task is probably too "
-            "large; split it or clarify the Edit section"
-        )
+    _ = iterations  # Legacy tool-call count; not a model-turn budget signal.
+    if error:
+        match = _ITERATION_EXHAUSTED_RE.search(error)
+        if match:
+            budget = match.group("budget")
+            return (
+                f"worker hit the {budget}-iteration model-turn budget — task is probably "
+                "too large; split it or clarify the Edit section"
+            )
+        if "exceeded max iterations" in error.lower() and iteration_budget:
+            return (
+                f"worker hit the {iteration_budget}-iteration model-turn budget — task is "
+                "probably too large; split it or clarify the Edit section"
+            )
 
     if verdict is None:
         return None
@@ -640,7 +652,7 @@ def _apply_worker_log_event(ev: _EventWithId, state: dict) -> None:
     if log_type == "thought" and isinstance(content, str):
         state["thoughts"].append(content)
     elif log_type == "call" and isinstance(content, dict):
-        state["iterations"] = state["iterations"] + 1
+        state["tool_calls"] = state["tool_calls"] + 1
         state["activity"].append(content)
     elif log_type == "result" and isinstance(content, dict):
         if content.get("status") == "failed":
@@ -679,7 +691,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
     state: dict = {
         "thoughts": [],
         "activity": [],
-        "iterations": 0,
+        "tool_calls": 0,
         "failed_tool_calls": 0,
         "done_summary": None,
         "error": None,
@@ -725,12 +737,13 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
     # Used by _build_unit_review to distinguish current-run outcomes from
     # stale deploy-log records.
     ran_in_run = bool(unit_events)
-    iterations = state["iterations"]
+    tool_calls = state["tool_calls"]
 
     return {
         "thoughts": state["thoughts"],
         "activity": state["activity"],
-        "iterations": iterations if iterations > 0 else None,
+        "iterations": tool_calls if tool_calls > 0 else None,
+        "tool_calls": tool_calls if tool_calls > 0 else None,
         "failed_tool_calls": state["failed_tool_calls"],
         "done_summary": state["done_summary"],
         "error": state["error"],
@@ -926,6 +939,7 @@ def _build_unit_review(
         full_diff=commit_info["full_diff"],
         duration_s=rollup["duration_s"],
         iterations=rollup["iterations"],
+        tool_calls=rollup["tool_calls"],
         attempts=attempts,
         settlement=settlement,
         done_summary=rollup["done_summary"],
