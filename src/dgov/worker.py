@@ -303,6 +303,11 @@ def _task_scope_section(task_scope: Mapping[str, object] | None) -> str:
     verify_test_targets = _paths("verify_test_targets")
     if verify_test_targets:
         lines.append(f"- Verification test targets: {', '.join(verify_test_targets)}")
+    if task_scope.get("require_successful_test_verification") is True:
+        lines.append("- Retry completion gate: run_tests() must pass before done.")
+        command = str(task_scope.get("required_verification_command", "")).strip()
+        if command:
+            lines.append(f"- Settlement failing command: {command}")
     lines.extend([
         "- Every other path is out of scope, even if it looks related.",
         "- If a path claimed under files.create already exists in this worktree, treat it as"
@@ -508,6 +513,17 @@ def _execute_tool_call(
         return result, False
 
     if name == "done":
+        verification_error = actuators._done_verification_error()
+        if verification_error is not None:
+            WorkerEvent(
+                "result",
+                {
+                    "tool": name,
+                    "status": "failed",
+                    "activity": [],
+                },
+            ).emit()
+            return verification_error, False
         WorkerEvent("done", args.get("summary")).emit()
         return args.get("summary", ""), True
 

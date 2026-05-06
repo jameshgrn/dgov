@@ -23,6 +23,7 @@ from dgov.worker import (  # noqa: E402
     _build_system_prompt,
     _clip_tool_result,
     _diff_stat_for_error,
+    _execute_tool_call,
     _iteration_budget,
     _load_project_config,
     _repo_map_snapshot,
@@ -350,6 +351,8 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
             "edit": ["src/existing.py"],
             "read": ["tests/test_existing.py"],
             "verify_test_targets": ["tests/test_existing.py"],
+            "require_successful_test_verification": True,
+            "required_verification_command": "uv run pytest tests/test_existing.py -q",
         },
     )
 
@@ -358,7 +361,56 @@ def test_build_system_prompt_injects_task_scope(tmp_path: Path) -> None:
     assert "src/existing.py" in prompt
     assert "tests/test_existing.py" in prompt
     assert "Verification test targets" in prompt
+    assert "Retry completion gate" in prompt
+    assert "uv run pytest tests/test_existing.py -q" in prompt
     assert "files.create already exists" in prompt
+
+
+def test_done_is_blocked_until_required_retry_tests_pass(tmp_path: Path) -> None:
+    call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="done",
+            arguments=json.dumps({"summary": "fixed"}),
+        )
+    )
+    actuators = AtomicTools(
+        tmp_path,
+        AtomicConfig(test_cmd="true {test_dir}", test_dir="tests/"),
+        task_scope={
+            "verify_test_targets": ["tests/test_existing.py"],
+            "require_successful_test_verification": True,
+            "required_verification_command": "uv run pytest tests/test_existing.py -q",
+        },
+    )
+
+    result, is_done = _execute_tool_call(call, actuators, allowed_tools=frozenset({"done"}))
+
+    assert is_done is False
+    assert result.startswith("Error:")
+    assert "requires a successful run_tests() call" in result
+
+
+def test_successful_retry_tests_unlock_done(tmp_path: Path) -> None:
+    call = SimpleNamespace(
+        function=SimpleNamespace(
+            name="done",
+            arguments=json.dumps({"summary": "fixed"}),
+        )
+    )
+    actuators = AtomicTools(
+        tmp_path,
+        AtomicConfig(test_cmd="true {test_dir}", test_dir="tests/"),
+        task_scope={
+            "verify_test_targets": ["tests/test_existing.py"],
+            "require_successful_test_verification": True,
+        },
+    )
+
+    assert "EXIT:0" in actuators.run_tests()
+    result, is_done = _execute_tool_call(call, actuators, allowed_tools=frozenset({"done"}))
+
+    assert is_done is True
+    assert result == "fixed"
 
 
 def test_iteration_budget_clamps_nonpositive_values() -> None:
@@ -466,7 +518,7 @@ def test_run_worker_forces_done_near_iteration_limit(
             self.tool_calls = tool_calls or []
 
         def model_dump(self, exclude_none: bool = True):
-            data = {"role": "assistant"}
+            data: dict[str, object] = {"role": "assistant"}
             if self.tool_calls:
                 data["tool_calls"] = [
                     {

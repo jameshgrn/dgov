@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import signal
 import time
 from collections.abc import Callable, Coroutine, Mapping
@@ -81,6 +82,7 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
+_TEST_FAILURE_COMMAND_RE = re.compile(r"^Test failure from `(?P<command>[^`]+)`:", re.MULTILINE)
 
 
 def _normalize_scope_path(path: str) -> str:
@@ -105,6 +107,13 @@ def _verify_test_targets(task: DagTaskSpec, test_dir: str) -> tuple[str, ...]:
             and (norm == test_root or norm.startswith(f"{test_root}/"))
         )
     )
+
+
+def _test_failure_command(error: str) -> str | None:
+    match = _TEST_FAILURE_COMMAND_RE.search(error)
+    if match is None:
+        return None
+    return match.group("command").strip() or None
 
 
 def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
@@ -1598,6 +1607,13 @@ class EventDagRunner:
             timeout_s=task.timeout_s,
             test_cmd=task.test_cmd,
         )
+        retry_scope = self._retry_scope(action.task_slug, task)
+        if (command := _test_failure_command(settlement_error)) and retry_scope[
+            "verify_test_targets"
+        ]:
+            retry_scope["require_successful_test_verification"] = True
+            retry_scope["required_verification_command"] = command
+
         await run_headless_worker(
             self.session_root,
             self.dag.name,
@@ -1605,7 +1621,7 @@ class EventDagRunner:
             f"{action.pane_slug}-retry",
             wt.path,
             retry_task,
-            self._retry_scope(action.task_slug, task),
+            retry_scope,
             self._noop_retry_exit,
             on_event=self.on_event,
         )

@@ -21,7 +21,7 @@ from dgov.config import ProjectConfig
 from dgov.dag_parser import DagDefinition, DagFileSpec, DagTaskSpec
 from dgov.kernel import DagState
 from dgov.persistence import add_ledger_entry, clear_connection_cache
-from dgov.runner import EventDagRunner
+from dgov.runner import EventDagRunner, _test_failure_command
 from dgov.types import TaskState, Worktree
 
 # ---------------------------------------------------------------------------
@@ -876,6 +876,64 @@ class TestVerificationScope:
             "touch": ["tests/test_touch.py"],
             "read": ["tests/test_read.py"],
             "verify_test_targets": ["tests/test_touch.py", "tests/test_read.py"],
+        }
+
+    def test_test_failure_command_parses_settlement_error(self):
+        assert (
+            _test_failure_command(
+                "Test failure from `uv run pytest tests/test_a.py -q`:\nFAILED test_a"
+            )
+            == "uv run pytest tests/test_a.py -q"
+        )
+        assert _test_failure_command("Lint failure:\nE501") is None
+
+    def test_settlement_retry_requires_successful_tests_after_test_failure(self, tmp_path: Path):
+        task = DagTaskSpec(
+            slug="a",
+            summary="scope",
+            prompt="Do a",
+            commit_message="feat: a",
+            agent="test-agent",
+            files=DagFileSpec(
+                create=("src/new.py",),
+                read=("tests/test_a.py",),
+            ),
+        )
+        runner = _make_runner(_dag({"a": task}))
+        captured: dict[str, object] = {}
+
+        async def _capture_retry(
+            session_root,
+            plan_name,
+            task_slug,
+            pane_slug,
+            worktree,
+            retry_task,
+            task_scope,
+            on_exit,
+            on_event=None,
+        ):
+            captured["task_scope"] = task_scope
+
+        with patch("dgov.runner.run_headless_worker", _capture_retry):
+            asyncio.run(
+                runner._settlement_retry(
+                    MergeTask("a", "pane-a", ("src/new.py",)),
+                    Worktree(path=tmp_path, branch="dgov/a", commit="abc123"),
+                    "Test failure from `uv run pytest tests/test_a.py -q`:\nFAILED test_a",
+                )
+            )
+
+        assert captured["task_scope"] == {
+            "task_slug": "a",
+            "create": ["src/new.py"],
+            "edit": [],
+            "delete": [],
+            "touch": [],
+            "read": ["tests/test_a.py"],
+            "verify_test_targets": ["tests/test_a.py"],
+            "require_successful_test_verification": True,
+            "required_verification_command": "uv run pytest tests/test_a.py -q",
         }
 
 
