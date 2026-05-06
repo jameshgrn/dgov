@@ -134,6 +134,7 @@ dgov init-plan <name>    # Initialize a new plan directory
 dgov fix <prompt>        # Create and run a single-task fix plan
 dgov compile <dir>       # Compile a plan tree to _compiled.toml
 dgov run <dir>           # Compile and run a plan directory
+dgov run --continue <dir> # Retry failed/abandoned tasks after a transient failure
 dgov validate plan.toml  # Validate a plan without running
 dgov watch               # Stream events live
 dgov plan status <dir>   # Show pending vs deployed units

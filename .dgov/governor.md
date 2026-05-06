@@ -172,6 +172,8 @@ only, and `files.read` for any source files the task needs to inspect.
 ## Retry And Failure Rules
 
 - Retry only when the task is still well-scoped and the failure is fixable.
+- After a transient infrastructure failure, use `dgov run --continue <plan-dir>`
+  to retry failed or abandoned tasks without restarting already merged work.
 - If the worker exposed a planning flaw, change the plan before retrying.
 - If settlement rejects for scope, do not brute-force retry. Scope violations
   are terminal — the review gate is before settlement and is not retryable.
