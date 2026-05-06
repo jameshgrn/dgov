@@ -544,55 +544,48 @@ def _apply_terminal_event(ev: _EventWithId, state: dict) -> None:
             _extract_review_fail_fields(ev, state)
 
 
-def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
-    """Handle lifecycle events: dispatch, terminal, settlement_retry, review_fail."""
-    if isinstance(ev.event, EvtTaskDispatched) and state["dispatched_ts"] is None:
-        state["dispatched_ts"] = ev.ts
+def _apply_task_token_event(ev: _EventWithId, state: dict) -> None:
+    """Accumulate token usage from task_done/task_failed events."""
+    if not isinstance(ev.event, (TaskDone, TaskFailed)):
         return
-    if isinstance(ev.event, (TaskDone, TaskFailed)):
-        for field in ("prompt_tokens", "completion_tokens"):
-            val = getattr(ev.event, field)
-            if isinstance(val, int):
-                state[field] = state.get(field, 0) + val
-            elif isinstance(val, str):
-                try:
-                    state[field] = state.get(field, 0) + int(val)
-                except ValueError:
-                    evt_type = ev.event.event_type
-                    _log.warning("Non-numeric %s value %r in %s event", field, val, evt_type)
-    # Check for terminal events
-    if isinstance(ev.event, (MergeCompleted, TaskMergeFailed, ReviewFail, TaskAbandoned)):
-        _apply_terminal_event(ev, state)
-        # Clear phase on terminal events
-        state["phase"] = None
-        return
-    if isinstance(ev.event, SettlementRetry):
-        state["settlement_retries"] = state["settlement_retries"] + 1
-        # settlement_retry resets merged-in-run until a later merge_completed.
-        state["merged_in_run"] = False
-        state["failed_in_run"] = False
-        return
-    if isinstance(ev.event, IterationFork):
-        depth = ev.event.fork_depth
-        if isinstance(depth, int):
-            state["fork_depth"] = max(state["fork_depth"], depth)
-        return
+    for token_field in ("prompt_tokens", "completion_tokens"):
+        val = getattr(ev.event, token_field)
+        if isinstance(val, int):
+            state[token_field] = state.get(token_field, 0) + val
+        elif isinstance(val, str):
+            try:
+                state[token_field] = state.get(token_field, 0) + int(val)
+            except ValueError:
+                evt_type = ev.event.event_type
+                _log.warning("Non-numeric %s value %r in %s event", token_field, val, evt_type)
+
+
+def _apply_self_review_event(ev: _EventWithId, state: dict) -> bool:
+    """Apply self-review lifecycle events. Returns True when handled."""
     if isinstance(ev.event, SelfReviewFixStarted):
-        return  # Acknowledged but no state change
+        return True
     if isinstance(ev.event, SelfReviewPassed):
         state["self_review_outcome"] = "passed"
-    elif isinstance(ev.event, SelfReviewRejected):
+        return True
+    if isinstance(ev.event, SelfReviewRejected):
         state["self_review_outcome"] = "rejected"
-    elif isinstance(ev.event, SelfReviewAutoPassed):
+        return True
+    if isinstance(ev.event, SelfReviewAutoPassed):
         state["self_review_outcome"] = "auto_passed"
-    elif isinstance(ev.event, SelfReviewError):
+        return True
+    if isinstance(ev.event, SelfReviewError):
         state["self_review_outcome"] = "error"
-    # Handle settlement phase events
+        return True
+    return False
+
+
+def _apply_settlement_phase_event(ev: _EventWithId, state: dict) -> bool:
+    """Apply settlement phase start/completion telemetry. Returns True when handled."""
     if isinstance(ev.event, SettlementPhaseStarted):
         phase = ev.event.phase
         if isinstance(phase, str) and phase:
             state["phase"] = phase
-        return
+        return True
     if isinstance(ev.event, SettlementPhaseCompleted):
         phase = ev.event.phase
         if isinstance(phase, str) and phase:
@@ -606,8 +599,35 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
                         error=ev.event.error,
                     )
                 )
-        # Phase completed - clear it (final state comes from merge events)
         state["phase"] = None
+        return True
+    return False
+
+
+def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
+    """Handle lifecycle events: dispatch, terminal, settlement_retry, review_fail."""
+    if isinstance(ev.event, EvtTaskDispatched) and state["dispatched_ts"] is None:
+        state["dispatched_ts"] = ev.ts
+        return
+    _apply_task_token_event(ev, state)
+    if isinstance(ev.event, (MergeCompleted, TaskMergeFailed, ReviewFail, TaskAbandoned)):
+        _apply_terminal_event(ev, state)
+        state["phase"] = None
+        return
+    if isinstance(ev.event, SettlementRetry):
+        state["settlement_retries"] = state["settlement_retries"] + 1
+        # settlement_retry resets merged-in-run until a later merge_completed.
+        state["merged_in_run"] = False
+        state["failed_in_run"] = False
+        return
+    if isinstance(ev.event, IterationFork):
+        depth = ev.event.fork_depth
+        if isinstance(depth, int):
+            state["fork_depth"] = max(state["fork_depth"], depth)
+        return
+    if _apply_self_review_event(ev, state):
+        return
+    if _apply_settlement_phase_event(ev, state):
         return
 
 
