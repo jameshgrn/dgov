@@ -1,0 +1,5 @@
+[plan]
+name = "tool-telemetry-audit"
+summary = "Track tool-call behavior and expose an audit command for tool design decisions."
+sections = ["runtime", "audit"]
+
