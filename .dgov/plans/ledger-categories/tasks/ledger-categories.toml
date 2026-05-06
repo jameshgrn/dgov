@@ -1,0 +1,29 @@
+[tasks.ledger-categories]
+summary = "Allow documented ledger categories in the CLI"
+commit_message = "Align ledger CLI categories"
+iteration_budget = 20
+files.edit = [
+  "src/dgov/cli/ledger.py",
+  "tests/test_cli_ledger.py",
+]
+prompt = '''
+Orient:
+- Read `src/dgov/cli/ledger.py` to see the current category choices and display colors.
+- Read `tests/test_cli_ledger.py` to follow existing CLI test style.
+- The mismatch to fix: documented ledger categories include `bug`, `fix`, `rule`, `pattern`, `note`, `debt`, `capability`, and `decision`, but the CLI currently only accepts `bug`, `rule`, `note`, and `debt`.
+- Do not change persistence schema or ledger status semantics.
+
+Edit:
+1. In `src/dgov/cli/ledger.py`, define one shared category tuple for the CLI choices:
+   `bug`, `fix`, `rule`, `pattern`, `note`, `debt`, `capability`, `decision`.
+2. Use that tuple for both `ledger add` and `ledger list --category`.
+3. Update the ledger group help/docstring so it no longer names only the old subset.
+4. Extend category colors for the new categories if useful, but keep unknown category fallback behavior.
+5. In `tests/test_cli_ledger.py`, add a focused test proving `ledger add decision ...` succeeds and `ledger list -c decision` can read it back.
+
+Verify:
+- `uv run pytest -q tests/test_cli_ledger.py`
+- `uv run ruff check src/dgov/cli/ledger.py tests/test_cli_ledger.py`
+- `uv run ruff format --check src/dgov/cli/ledger.py tests/test_cli_ledger.py`
+- `uv run ty check src/dgov/cli/ledger.py`
+'''
