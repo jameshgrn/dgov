@@ -10,15 +10,18 @@ from dgov.cli import cli
 from dgov.persistence import add_ledger_entry, list_ledger_entries, resolve_ledger_entry
 from dgov.project_root import resolve_project_root
 
+#: Valid ledger entry categories
+LEDGER_CATEGORIES = ("bug", "fix", "rule", "pattern", "note", "debt", "capability", "decision")
+
 
 @cli.group(name="ledger")
 def ledger_cmd() -> None:
-    """Operational ledger — record and list bugs, rules, notes, and debt."""
+    """Operational ledger — bugs, fixes, rules, patterns, notes, debt, capabilities, decisions."""
     pass
 
 
 @ledger_cmd.command(name="add")
-@click.argument("category", type=click.Choice(["bug", "rule", "note", "debt"]))
+@click.argument("category", type=click.Choice(LEDGER_CATEGORIES))
 @click.argument("content")
 @click.option(
     "--path",
@@ -43,7 +46,7 @@ def ledger_add(category: str, content: str, affected_paths: tuple[str, ...], roo
 @click.option(
     "--category",
     "-c",
-    type=click.Choice(["bug", "rule", "note", "debt"]),
+    type=click.Choice(LEDGER_CATEGORIES),
     help="Filter by category",
 )
 @click.option(
@@ -68,8 +71,17 @@ def ledger_list(category: str | None, status: str, query: str | None, root: str)
         return
 
     for entry in entries:
-        # category in cyan, id in dim
-        _cat_colors = {"rule": "cyan", "note": "blue", "bug": "yellow", "debt": "magenta"}
+        # category colors for visual distinction
+        _cat_colors = {
+            "bug": "yellow",
+            "fix": "green",
+            "rule": "cyan",
+            "pattern": "bright_blue",
+            "note": "blue",
+            "debt": "magenta",
+            "capability": "bright_green",
+            "decision": "bright_magenta",
+        }
         cat_colored = click.style(
             f"[{entry.category}]", fg=_cat_colors.get(entry.category, "yellow")
         )
