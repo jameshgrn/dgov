@@ -199,6 +199,7 @@ class AtomicTools:
         # Sandbox HOME outside worktree — prevents macOS Library/ polluting git status
         self._sandbox_home = Path(tempfile.mkdtemp(prefix="dgov-sandbox-"))
         self._activity_log: list[dict[str, Any]] = []
+        self._successful_test_verification = False
 
     def _sandbox_env(self) -> dict[str, str]:
         path_parts = [
@@ -245,6 +246,19 @@ class AtomicTools:
                 )
             )
         return ()
+
+    def _done_verification_error(self) -> str | None:
+        if (
+            self.task_scope.get("require_successful_test_verification") is True
+            and not self._successful_test_verification
+        ):
+            command = str(self.task_scope.get("required_verification_command", "")).strip()
+            command_hint = f" Failing settlement command: `{command}`." if command else ""
+            return (
+                "Error: Settlement retry after a test failure requires a successful "
+                f"run_tests() call before done.{command_hint}"
+            )
+        return None
 
     def _requested_test_target_allowed(self, requested: str, allowed: str) -> bool:
         requested_norm = self._normalize_scope_path(requested)
@@ -950,7 +964,10 @@ class AtomicTools:
         cmd = self.config.test_cmd.replace(
             "{test_dir}", " ".join(shlex.quote(target) for target in requested_targets)
         )
-        return self._execute_shell(cmd, enforce_policy=False)
+        result = self._execute_shell(cmd, enforce_policy=False)
+        if result.splitlines()[-1:] == ["EXIT:0"]:
+            self._successful_test_verification = True
+        return result
 
     def lint_check(self, file: str = "") -> str:
         """Run lint using the project's declared lint command."""

@@ -319,6 +319,31 @@ class SemanticGateRejected:
 
 
 @dataclass(frozen=True)
+class SettlementPhaseStarted:
+    """Emitted when a settlement phase begins."""
+
+    event_type: Literal["settlement_phase_started"] = "settlement_phase_started"
+    pane: str = ""
+    plan_name: str = ""
+    task_slug: str = ""
+    phase: str = ""
+
+
+@dataclass(frozen=True)
+class SettlementPhaseCompleted:
+    """Emitted when a settlement phase completes."""
+
+    event_type: Literal["settlement_phase_completed"] = "settlement_phase_completed"
+    pane: str = ""
+    plan_name: str = ""
+    task_slug: str = ""
+    phase: str = ""
+    status: str = ""
+    duration_s: float = 0.0
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class UnknownEvent:
     """Fallback for unrecognized event types during deserialization."""
 
@@ -365,6 +390,8 @@ DgovEvent = (
     | IntegrationCandidatePassed
     | IntegrationCandidateFailed
     | SemanticGateRejected
+    | SettlementPhaseStarted
+    | SettlementPhaseCompleted
     | UnknownEvent
 )
 
@@ -397,6 +424,8 @@ _EVENT_TYPE_MAP: dict[str, type[DgovEvent]] = {
     "integration_candidate_passed": IntegrationCandidatePassed,
     "integration_candidate_failed": IntegrationCandidateFailed,
     "semantic_gate_rejected": SemanticGateRejected,
+    "settlement_phase_started": SettlementPhaseStarted,
+    "settlement_phase_completed": SettlementPhaseCompleted,
 }
 
 
@@ -471,6 +500,8 @@ __all__ = [
     "SelfReviewPassed",
     "SelfReviewRejected",
     "SemanticGateRejected",
+    "SettlementPhaseCompleted",
+    "SettlementPhaseStarted",
     "SettlementRetry",
     "ShutdownRequested",
     "StoredEvent",

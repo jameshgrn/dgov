@@ -1,0 +1,24 @@
+[tasks.ignore-read-only-transient-activity]
+summary = "Stop treating read-only worker activity as transient write scope."
+prompt = """
+Orient:
+- Read `src/dgov/settlement.py` around `_check_scope`, `_check_transient_scope`, and `review_sandbox`.
+- Read `tests/test_settlement.py` around `TestReviewSandbox`.
+- Read `src/dgov/workers/atomic.py` only to confirm which worker activities are write-capable.
+- Bug context: ledger #80. `files.read` grants read-only context. Transient scope enforcement should reject write-capable tool activity outside write claims, but read-only activity must not be treated as a touch.
+- Keep fail-closed retry semantics for earlier write activity. Do not weaken unclaimed write detection.
+
+Edit:
+1. In `src/dgov/settlement.py`, make `_check_transient_scope(...)` collect only write-capable worker activity paths. Treat activities such as `write_file`, `edit_file`, `apply_patch`, and `revert_file` or modes such as `create`, `edit`, `patch`, and `revert` as write-capable. Ignore read-only activity such as `read_file` or mode `read`.
+2. Preserve the current behavior for unclaimed write-capable activity, claimed write-capable activity, and ignored paths.
+3. Add a focused regression test in `tests/test_settlement.py` showing a worker_log result with read-only activity on a `files.read` path passes review when the actual diff only changes claimed files.
+4. Add or keep coverage proving unclaimed write-capable activity still fails scope.
+
+Verify:
+- `uv run pytest -q -m unit tests/test_settlement.py`
+- `uv run ruff check src/dgov/settlement.py tests/test_settlement.py`
+- `uv run ty check src/dgov/settlement.py tests/test_settlement.py`
+"""
+commit_message = "Ignore read-only transient activity in scope gate"
+files.edit = ["src/dgov/settlement.py", "tests/test_settlement.py"]
+files.read = ["src/dgov/workers/atomic.py"]

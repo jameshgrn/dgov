@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import signal
 import time
 from collections.abc import Callable, Coroutine, Mapping
@@ -47,6 +48,8 @@ from dgov.event_types import (
     SelfReviewFixStarted,
     SelfReviewPassed,
     SelfReviewRejected,
+    SettlementPhaseCompleted,
+    SettlementPhaseStarted,
     SettlementRetry,
     ShutdownRequested,
     TaskAbandoned,
@@ -79,6 +82,7 @@ from dgov.worktree import (
 )
 
 logger = logging.getLogger(__name__)
+_TEST_FAILURE_COMMAND_RE = re.compile(r"^Test failure from `(?P<command>[^`]+)`:", re.MULTILINE)
 
 
 def _normalize_scope_path(path: str) -> str:
@@ -103,6 +107,13 @@ def _verify_test_targets(task: DagTaskSpec, test_dir: str) -> tuple[str, ...]:
             and (norm == test_root or norm.startswith(f"{test_root}/"))
         )
     )
+
+
+def _test_failure_command(error: str) -> str | None:
+    match = _TEST_FAILURE_COMMAND_RE.search(error)
+    if match is None:
+        return None
+    return match.group("command").strip() or None
 
 
 def _summarize_evidence(risk_record: IntegrationRiskRecord) -> str:
@@ -1420,6 +1431,40 @@ class EventDagRunner:
             ctx.worktree = None
             raise
 
+    def _emit_settlement_phase_started(self, action: MergeTask, phase: str) -> None:
+        """Emit settlement_phase_started event."""
+        emit_event(
+            self.session_root,
+            SettlementPhaseStarted(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                phase=phase,
+            ),
+        )
+
+    def _emit_settlement_phase_completed(
+        self,
+        action: MergeTask,
+        phase: str,
+        status: str,
+        duration_s: float,
+        error: str | None = None,
+    ) -> None:
+        """Emit settlement_phase_completed event."""
+        emit_event(
+            self.session_root,
+            SettlementPhaseCompleted(
+                pane=action.pane_slug,
+                plan_name=self.dag.name,
+                task_slug=action.task_slug,
+                phase=phase,
+                status=status,
+                duration_s=duration_s,
+                error=error,
+            ),
+        )
+
     async def _settle_and_merge(
         self,
         action: MergeTask,
@@ -1436,37 +1481,64 @@ class EventDagRunner:
         sf = self._settlement_flow
 
         # Phase 1: Prepare and commit (or handle read-only roles)
+        phase = "prepare_commit"
+        start_ts = time.monotonic()
+        self._emit_settlement_phase_started(action, phase)
         error, was_settlement = await sf.prepare_and_commit(
             task=task,
             action=action,
             wt=wt,
             emit_event_fn=emit_event,
         )
-        if error or was_settlement is False:
+        duration = time.monotonic() - start_ts
+        if error:
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, error)
             return error, was_settlement
+        if was_settlement is False:
+            self._emit_settlement_phase_completed(action, phase, "skipped", duration)
+            return error, was_settlement
+        self._emit_settlement_phase_completed(action, phase, "passed", duration)
 
         # Phase 2: Isolated validation (compute risk + run gate)
+        phase = "isolated_validation"
+        start_ts = time.monotonic()
+        self._emit_settlement_phase_started(action, phase)
         error, risk_record = await sf.run_isolated_validation(
             task=task,
             action=action,
             wt=wt,
             emit_event_fn=emit_event,
         )
+        duration = time.monotonic() - start_ts
         if error or risk_record is None:
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, error)
             return error, True
         if risk_record.risk_level == RiskLevel.CRITICAL:
-            return f"Integration risk CRITICAL: {_summarize_evidence(risk_record)}", True
+            crit_error = f"Integration risk CRITICAL: {_summarize_evidence(risk_record)}"
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, crit_error)
+            return crit_error, True
+        self._emit_settlement_phase_completed(action, phase, "passed", duration)
 
         # Phase 3: Create integration candidate
+        phase = "integration_candidate"
+        start_ts = time.monotonic()
+        self._emit_settlement_phase_started(action, phase)
         candidate_result = await sf.create_integration_candidate_with_emit(
             action=action,
             wt=wt,
             emit_event_fn=emit_event,
         )
+        duration = time.monotonic() - start_ts
         if not candidate_result.passed:
-            return candidate_result.error or "Integration candidate replay failed", True
+            cand_error = candidate_result.error or "Integration candidate replay failed"
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, cand_error)
+            return cand_error, True
+        self._emit_settlement_phase_completed(action, phase, "passed", duration)
 
         # Phase 4: Run semantic gate on candidate
+        phase = "semantic_gate"
+        start_ts = time.monotonic()
+        self._emit_settlement_phase_started(action, phase)
         error = await sf.run_semantic_gate_on_candidate(
             action=action,
             wt=wt,
@@ -1474,21 +1546,41 @@ class EventDagRunner:
             risk_record=risk_record,
             emit_event_fn=emit_event,
         )
+        duration = time.monotonic() - start_ts
         if error:
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, error)
             return error, True
+        self._emit_settlement_phase_completed(action, phase, "passed", duration)
 
         # Phase 5: Validate candidate with same gates as isolated validation
+        phase = "candidate_validation"
+        start_ts = time.monotonic()
+        self._emit_settlement_phase_started(action, phase)
         error = await sf.validate_and_finalize_candidate(
             action=action,
             candidate_result=candidate_result,
             task_config=task_config,
             emit_event_fn=emit_event,
         )
+        duration = time.monotonic() - start_ts
         if error:
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, error)
             return error, True
+        self._emit_settlement_phase_completed(action, phase, "passed", duration)
 
         # Phase 6: Final merge and deploy
-        await sf.finalize_merge(action=action, wt=wt)
+        phase = "final_merge"
+        start_ts = time.monotonic()
+        self._emit_settlement_phase_started(action, phase)
+        try:
+            await sf.finalize_merge(action=action, wt=wt)
+            duration = time.monotonic() - start_ts
+            self._emit_settlement_phase_completed(action, phase, "passed", duration)
+        except Exception as exc:
+            duration = time.monotonic() - start_ts
+            merge_error = str(exc)
+            self._emit_settlement_phase_completed(action, phase, "failed", duration, merge_error)
+            raise
         return None, False
 
     async def _settlement_retry(
@@ -1515,6 +1607,13 @@ class EventDagRunner:
             timeout_s=task.timeout_s,
             test_cmd=task.test_cmd,
         )
+        retry_scope = self._retry_scope(action.task_slug, task)
+        if (command := _test_failure_command(settlement_error)) and retry_scope[
+            "verify_test_targets"
+        ]:
+            retry_scope["require_successful_test_verification"] = True
+            retry_scope["required_verification_command"] = command
+
         await run_headless_worker(
             self.session_root,
             self.dag.name,
@@ -1522,7 +1621,7 @@ class EventDagRunner:
             f"{action.pane_slug}-retry",
             wt.path,
             retry_task,
-            self._retry_scope(action.task_slug, task),
+            retry_scope,
             self._noop_retry_exit,
             on_event=self.on_event,
         )

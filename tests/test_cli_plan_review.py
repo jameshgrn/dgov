@@ -69,6 +69,7 @@ def _patched_load_review(monkeypatch, **overrides):
         landed_files=("src/dgov/example.py",),
         duration_s=12.5,
         iterations=4,
+        tool_calls=4,
         attempts=1,
         settlement="ok",
         done_summary="Added the thing.",
@@ -120,7 +121,7 @@ def test_review_renders_deployed_unit(
     assert "diff         1 file, +10 -0" in result.output
     assert "files        src/dgov/example.py" in result.output
     assert "duration     12.5s" in result.output
-    assert "iterations   4 tool calls" in result.output
+    assert "tool calls   4 tool calls" in result.output
     assert "settlement   ok (first try)" in result.output
     assert "worker note  Added the thing." in result.output
     assert "Added the thing." in result.output
@@ -229,6 +230,8 @@ def test_review_json_output_is_valid(
     assert unit["status"] == "deployed"
     assert unit["diff_stat"]["files_changed"] == 1
     assert unit["landed_files"] == ["src/dgov/example.py"]
+    assert unit["iterations"] == 4
+    assert unit["tool_calls"] == 4
     assert unit["worker_note_mismatches"] == []
     assert unit["settlement"] == "ok"
 
@@ -435,6 +438,7 @@ def test_review_renders_self_corrections_for_deployed_unit(
         diff_stat=DiffStat(files_changed=1, insertions=2, deletions=0),
         landed_files=("src/a.py",),
         iterations=7,
+        tool_calls=7,
         self_corrections=2,
         attempts=1,
         settlement="ok",
@@ -484,6 +488,76 @@ def test_review_json_includes_self_corrections(
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["units"][0]["self_corrections"] == 3
+
+
+def test_review_renders_settlement_phase_timings(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        settlement="ok",
+        phase_timings=(
+            SettlementPhaseTiming("prepare_commit", 0.5, "passed"),
+            SettlementPhaseTiming("isolated_validation", 76.0, "passed"),
+        ),
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "phases" in result.output
+    assert "prepare_commit=0.5s" in result.output
+    assert "isolated_validation=1m 16s" in result.output
+
+
+def test_review_json_includes_settlement_phase_timings(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.plan_review import PlanReview, SettlementPhaseTiming, UnitReview
+
+    unit = UnitReview(
+        unit="tasks/main.a",
+        summary="do a",
+        status="deployed",
+        phase_timings=(SettlementPhaseTiming("isolated_validation", 76.0, "passed"),),
+    )
+    review = PlanReview(
+        plan_name="p",
+        source_dir=None,
+        last_run_ts=None,
+        last_run_duration_s=None,
+        units=[unit],
+    )
+    plan_dir = _make_compiled_plan(tmp_path, "p", {"tasks/main.a": "a"})
+    _patched_load_review(monkeypatch, review=review)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli, ["--json", "plan", "review", str(plan_dir)])
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)
+    assert data["units"][0]["phase_timings"] == [
+        {
+            "phase": "isolated_validation",
+            "duration_s": 76.0,
+            "status": "passed",
+            "error": None,
+        }
+    ]
 
 
 def test_review_only_nonexistent_errors_out(

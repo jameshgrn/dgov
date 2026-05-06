@@ -26,6 +26,7 @@ from dgov.cli.watch import (
     _format_event,
     _infer_plan_name_from_active_tasks,
 )
+from dgov.event_types import SettlementRetry, TaskDone, WorkerLog
 from dgov.persistence import (
     emit_event,
     list_runtime_artifacts,
@@ -270,6 +271,34 @@ def test_status_scopes_live_view_to_latest_run_start(
     assert "stale-task" not in result.output
 
 
+def test_status_treats_run_completed_as_terminal(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-stale",
+        plan_name="plan-a",
+        task_slug="stale-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "run_completed",
+        "run-plan",
+        plan_name="plan-a",
+        run_status="degraded",
+    )
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: idle" in result.output
+    assert "active: 0" in result.output
+    assert "stale-task" not in result.output
+
+
 def test_status_hides_reviewed_failure_by_default(
     runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -338,6 +367,107 @@ def test_status_all_shows_reviewed_failure(
     assert "status: idle" in result.output
     assert "reviewed_fail" in result.output
     assert "failed-review-task" in result.output
+
+
+def test_status_shows_settling_task_after_review_pass(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task in settlement phase should remain visible as settling after review_pass."""
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "settlement_phase_started",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+        phase="integration",
+    )
+
+    result = runner.invoke(cli, ["status"])
+
+    assert result.exit_code == 0
+    assert "status: active" in result.output
+    assert "settling-task" in result.output
+    assert "settling" in result.output
+
+
+def test_status_json_includes_phase_and_state_counts(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """JSON status output should include phase and state_counts."""
+    monkeypatch.chdir(tmp_path)
+    emit_event(str(tmp_path), "run_start", "run-plan", plan_name="plan-a")
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-active",
+        plan_name="plan-a",
+        task_slug="active-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "dag_task_dispatched",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "task_done",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "review_pass",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+    )
+    emit_event(
+        str(tmp_path),
+        "settlement_phase_started",
+        "pane-settling",
+        plan_name="plan-a",
+        task_slug="settling-task",
+        phase="integration",
+    )
+
+    result = runner.invoke(cli, ["--json", "status"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert "state_counts" in data
+    assert "settling" in data.get("state_counts", {})
+    assert data["settling"] == 1
+    # Check task_list includes phase
+    task_list = data.get("task_list", [])
+    settling_tasks = [t for t in task_list if t.get("slug") == "settling-task"]
+    assert len(settling_tasks) == 1
+    assert settling_tasks[0].get("phase") == "integration"
 
 
 # -- validate --
@@ -605,6 +735,7 @@ def test_preflight_command_reports_pass(
     from dgov.settlement import GateResult
 
     monkeypatch.setattr("dgov.cli.preflight.resolve_project_root", lambda: tmp_path)
+    monkeypatch.setattr("dgov.cli.preflight.find_policy_drift", lambda project_root: [])
     monkeypatch.setattr(
         "dgov.cli.preflight.preflight_sandbox",
         lambda worktree_path, project_root: GateResult(passed=True),
@@ -622,6 +753,7 @@ def test_preflight_command_reports_failure(
     from dgov.settlement import GateResult
 
     monkeypatch.setattr("dgov.cli.preflight.resolve_project_root", lambda: tmp_path)
+    monkeypatch.setattr("dgov.cli.preflight.find_policy_drift", lambda project_root: [])
     monkeypatch.setattr(
         "dgov.cli.preflight.preflight_sandbox",
         lambda worktree_path, project_root: GateResult(passed=False, error="Lint failure:\nboom"),
@@ -632,6 +764,28 @@ def test_preflight_command_reports_failure(
     assert result.exit_code == 1
     assert "Preflight failed:" in result.output
     assert "Lint failure" in result.output
+
+
+def test_preflight_command_reports_policy_drift(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dgov.settlement import GateResult
+
+    monkeypatch.setattr("dgov.cli.preflight.resolve_project_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        "dgov.cli.preflight.find_policy_drift",
+        lambda project_root: ["AGENTS.md differs from CLAUDE.md"],
+    )
+    monkeypatch.setattr(
+        "dgov.cli.preflight.preflight_sandbox",
+        lambda worktree_path, project_root: GateResult(passed=True),
+    )
+
+    result = runner.invoke(cli, ["preflight"])
+
+    assert result.exit_code == 1
+    assert "Policy drift:" in result.output
+    assert "AGENTS.md differs from CLAUDE.md" in result.output
 
 
 def test_init_refuses_overwrite(runner: CliRunner, tmp_path: Path) -> None:
@@ -1134,13 +1288,14 @@ def test_default_watch_state_tails_from_latest_event_without_plan(tmp_path: Path
 
 
 def test_format_event_shows_successful_verify_tool_results() -> None:
-    renderable = _format_event({
-        "event": "worker_log",
-        "task_slug": "tasks/main.a",
-        "ts": "2026-04-24T12:34:56Z",
-        "log_type": "result",
-        "content": {"status": "success", "tool": "run_tests"},
-    })
+    renderable = _format_event(
+        WorkerLog(
+            task_slug="tasks/main.a",
+            log_type="result",
+            content={"status": "success", "tool": "run_tests"},
+        ),
+        "2026-04-24T12:34:56Z",
+    )
 
     assert renderable is not None
     console = Console(record=True, width=120)
@@ -1151,13 +1306,10 @@ def test_format_event_shows_successful_verify_tool_results() -> None:
 
 
 def test_format_event_renders_task_done_tokens() -> None:
-    renderable = _format_event({
-        "event": "task_done",
-        "task_slug": "task-a",
-        "ts": "2026-04-24T12:34:56Z",
-        "prompt_tokens": 1234,
-        "completion_tokens": 567,
-    })
+    renderable = _format_event(
+        TaskDone(task_slug="task-a", prompt_tokens=1234, completion_tokens=567),
+        "2026-04-24T12:34:56Z",
+    )
 
     assert renderable is not None
     console = Console(record=True, width=120)
@@ -1309,13 +1461,8 @@ def test_format_event_settlement_retry() -> None:
     """Test that _format_event renders settlement_retry events correctly."""
     from rich.console import Console
 
-    ev = {
-        "event": "settlement_retry",
-        "task_slug": "fix-lint",
-        "ts": "2026-04-06T12:34:56Z",
-        "error": "ruff check failed: E501 line too long",
-    }
-    result = _format_event(ev, agents={})
+    ev = SettlementRetry(task_slug="fix-lint", error="ruff check failed: E501 line too long")
+    result = _format_event(ev, "2026-04-06T12:34:56Z", agents={})
     assert result is not None
     # Use a dummy console to capture output from the Table renderable
     console = Console(width=100)

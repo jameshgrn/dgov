@@ -1,0 +1,192 @@
+[tasks.convert-rehydrate]
+summary = "Convert _apply_rehydrate_event from dict string-dispatch to typed event matching"
+prompt = """
+## Orient
+
+`EventDagRunner._apply_rehydrate_event` in `src/dgov/runner.py` (around line 406)
+is the #1 cognitive hotspot (complexity 85). It takes a raw `dict` from
+`read_events()` and dispatches on `ev["event"]` strings to reconstruct kernel state.
+
+The typed event system was just added in `src/dgov/event_types.py`. It provides:
+- 25 frozen dataclasses (one per event type) with typed fields
+- `deserialize_event(row: dict) -> DgovEvent` to convert dicts to typed events
+- `DgovEvent` discriminated union of all event types
+
+Read `src/dgov/event_types.py` to understand the typed event API.
+Read `src/dgov/runner.py` lines 390-454 to understand the current rehydrate logic.
+
+## Edit
+
+1. In `_phase_rehydrate` (~line 401), after iterating `read_events()` dicts,
+   call `deserialize_event(ev)` to convert each dict, then pass the typed
+   event to `_apply_rehydrate_event`.
+
+2. Change `_apply_rehydrate_event` signature from `(self, ev: dict[str, Any])`
+   to `(self, event: DgovEvent)`.
+
+3. Replace the if/elif chain on string names with `isinstance` checks:
+   - `EvtTaskDispatched` → `TaskDispatched` kernel event
+   - `TaskDone` → `TaskWaitDone(... TaskState.DONE)`
+   - `TaskAbandoned` → `TaskWaitDone(... TaskState.ABANDONED)`
+   - `TaskFailed` → check `event.error` for timeout heuristic
+   - `ReviewPass` / `ReviewFail` → `TaskReviewDone`
+   - `MergeCompleted` → `TaskMergeDone(error=None)`
+   - `TaskMergeFailed` → `TaskMergeDone(error=event.error)`
+   - `GovernorResumed` → `TaskGovernorResumed` with `GovernorAction(event.action)`
+   - All other types → return early (no-op, same as current fallthrough)
+
+4. Read `task_slug` and `pane` from event attributes, not dict lookups.
+
+5. Add `deserialize_event` and needed event classes to the existing
+   `from dgov.event_types import (...)` block.
+
+## Verify
+
+Run: `uv run ruff check src/dgov/runner.py`
+Run: `uv run pytest -q -k "rehydrate or recovery" -x`
+
+Constraints:
+- Do NOT change `read_events()` return type — it still returns `list[dict]`.
+- Do NOT change kernel event types (`TaskDispatched`, `TaskWaitDone`, etc.).
+- Keep the function pure — no new I/O.
+"""
+commit_message = "Convert _apply_rehydrate_event to typed event matching"
+files.edit = ["src/dgov/runner.py", "tests/test_runner.py"]
+files.read = ["src/dgov/event_types.py"]
+
+[tasks.convert-watch]
+summary = "Convert _format_event in watch.py from dict string-dispatch to typed events"
+prompt = """
+## Orient
+
+`_format_event` in `src/dgov/cli/watch.py` (around line 109) has cyclomatic
+complexity 26. It dispatches on `ev.get("event")` strings to format Rich output.
+
+Read `src/dgov/event_types.py` to understand the typed event API.
+Read `src/dgov/cli/watch.py` lines 90-230 to understand current formatting logic.
+Read how `_poll_and_render` calls `_format_event` to understand the call site.
+
+## Edit
+
+1. In `_poll_and_render` (the caller), add `deserialize_event()` conversion
+   where `read_events()` dicts are iterated. Pass `(ts, typed_event)` pairs
+   downstream (ts comes from the dict's "ts" field before deserialization).
+
+2. Change `_format_event` to accept `(event: DgovEvent, ts: str, agents=None)`
+   instead of `(ev: dict, agents=None)`.
+
+3. Replace string dispatch with `isinstance` checks on typed event classes.
+   Read typed fields directly (e.g., `event.error` not `ev.get("error")`).
+
+4. For `_format_worker_log`, change to accept the typed `WorkerLog` event.
+   Access `event.log_type` and `event.content` directly.
+
+5. For `_format_token_summary`, adapt to read `prompt_tokens` and
+   `completion_tokens` from `TaskDone`/`TaskFailed` events directly.
+   Simplest: inline the token check at the isinstance branch.
+
+6. Handle `UnknownEvent` by falling through to the default label rendering.
+
+7. Add `deserialize_event` and needed event classes to watch.py imports.
+
+## Verify
+
+Run: `uv run ruff check src/dgov/cli/watch.py`
+Run: `uv run pytest -q tests/ -k watch -x` (if watch tests exist, otherwise skip)
+
+Constraints:
+- Do NOT change `read_events()` return type.
+- Keep all Rich rendering logic unchanged — only change how event data is accessed.
+- Preserve suppression logic (task_done without tokens → None, review_pass → None).
+"""
+commit_message = "Convert watch.py event formatting to typed event matching"
+files.edit = ["src/dgov/cli/watch.py"]
+files.read = ["src/dgov/event_types.py"]
+depends_on = ["convert-rehydrate"]
+
+[tasks.convert-plan-review]
+summary = "Convert plan_review.py event consumers from dict to typed events"
+prompt = """
+## Orient
+
+`src/dgov/plan_review.py` reads events via `read_events()` (returns `list[dict]`)
+and dispatches on `ev["event"]` or `ev.get("event")` strings in multiple functions.
+
+Read `src/dgov/event_types.py` for the typed event API.
+Read `src/dgov/plan_review.py` — search for all `ev["event"]` and `ev.get("event")`
+occurrences to find every dispatch site. Key functions to convert:
+- Event classification / filtering functions
+- Lifecycle event handling
+- Review data extraction (worker_log parsing for tool calls, findings, etc.)
+
+## Edit
+
+1. Add a conversion point as early as possible — where `read_events()` results
+   are first consumed. Convert dicts to typed events via `deserialize_event()`.
+
+2. For each function that dispatches on event type strings, replace with
+   `isinstance` checks on the corresponding typed event classes.
+
+3. Replace dict `.get()` field access with typed attribute access
+   (e.g., `event.task_slug` not `ev.get("task_slug")`).
+
+4. For `WorkerLog` events, access `event.log_type` and `event.content` directly.
+
+5. Handle `UnknownEvent` same as unrecognized events today (skip/pass through).
+
+6. Add `deserialize_event` and needed event classes to plan_review.py imports.
+
+## Verify
+
+Run: `uv run ruff check src/dgov/plan_review.py`
+Run: `uv run pytest -q tests/ -k plan_review -x` (if tests exist, otherwise skip)
+
+Constraints:
+- Do NOT change `read_events()` return type.
+- Do NOT change public API of `load_run_envelope` or `load_review`.
+- Pure refactor — preserve all existing behavior.
+"""
+commit_message = "Convert plan_review.py event consumers to typed events"
+files.edit = ["src/dgov/plan_review.py"]
+files.read = ["src/dgov/event_types.py"]
+depends_on = ["convert-rehydrate"]
+
+[tasks.update-tests]
+summary = "Update tests for typed event consumers"
+prompt = """
+## Orient
+
+The three consumer functions were converted to accept typed `DgovEvent` objects
+instead of raw dicts. Tests that construct event dicts and pass them to these
+functions need updating.
+
+Read `tests/test_runner.py` — search for `_apply_rehydrate_event` and any
+test that constructs event dicts for rehydration testing.
+Read `tests/test_integration.py` — check if rehydration-related integration
+tests exist.
+
+## Edit
+
+1. In `test_runner.py`, find tests for `_apply_rehydrate_event` and the
+   rehydration pipeline. These currently construct raw event dicts.
+   Replace with typed event objects constructed directly (preferred) or
+   dicts passed through `deserialize_event()`.
+
+2. In `test_integration.py`, verify the `_capture_event` helpers still work.
+   No changes expected unless rehydration tests construct raw dicts.
+
+3. Update any mock signatures that match the old `(ev: dict)` parameter.
+
+## Verify
+
+Run: `uv run ruff check tests/test_runner.py tests/test_integration.py`
+Run: `uv run pytest -q tests/test_runner.py tests/test_integration.py -x`
+
+Constraints:
+- Do NOT add new test files — update existing ones.
+- Do NOT change tests unrelated to the consumer conversion.
+"""
+commit_message = "Update tests for typed event consumer conversion"
+files.edit = ["tests/test_runner.py", "tests/test_integration.py"]
+files.read = ["src/dgov/event_types.py"]
+depends_on = ["convert-rehydrate", "convert-watch", "convert-plan-review"]

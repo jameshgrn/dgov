@@ -17,6 +17,7 @@ import ast
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -33,6 +34,7 @@ if str(_project_root / "src") not in sys.path:
 import re  # noqa: E402
 from collections.abc import Callable  # noqa: E402
 
+from dgov.llm_backoff import create_chat_completion_with_backoff  # noqa: E402
 from dgov.workers.atomic import (  # noqa: E402
     AtomicConfig,
     AtomicTools,
@@ -85,6 +87,10 @@ def _resolve_config(worktree: Path, project_config_json: str) -> AtomicConfig:
 _PROMPT_CONTEXT_MAX_CHARS = 12_000
 _TOOL_RESULT_MAX_CHARS = 12_000
 _REPO_MAP_TRUNCATION_NOTICE = "\n... [repo map truncated for prompt budget]"
+_ENDGAME_MIN_BUDGET = 10
+_ENDGAME_REMAINING_CALLS = 8
+_FORCE_DONE_REMAINING_CALLS = 2
+_EXHAUSTION_SUMMARY_MAX_CHARS = 2_000
 
 
 def _iter_repo_map_files(worktree: Path, config: AtomicConfig) -> list[Path]:
@@ -192,6 +198,80 @@ def _iteration_budget(config: AtomicConfig) -> int:
     return budget if budget > 0 else 1
 
 
+def _remaining_iterations(iteration: int, budget: int) -> int:
+    return max(0, budget - iteration)
+
+
+def _should_enter_endgame(iteration: int, budget: int) -> bool:
+    return (
+        budget >= _ENDGAME_MIN_BUDGET
+        and _remaining_iterations(iteration, budget) <= _ENDGAME_REMAINING_CALLS
+    )
+
+
+def _should_force_done(iteration: int, budget: int) -> bool:
+    return (
+        budget >= _ENDGAME_MIN_BUDGET
+        and _remaining_iterations(iteration, budget) <= _FORCE_DONE_REMAINING_CALLS
+    )
+
+
+def _tool_choice_for_iteration(iteration: int, budget: int) -> str | dict[str, object]:
+    if _should_force_done(iteration, budget):
+        return {"type": "function", "function": {"name": "done"}}
+    return "auto"
+
+
+def _endgame_prompt(iteration: int, budget: int) -> str:
+    remaining = _remaining_iterations(iteration, budget)
+    return (
+        f"FINALIZATION MODE: {remaining}/{budget} tool calls remain before the hard "
+        "iteration limit. Stop broad implementation and stop exploring. Use the "
+        "remaining calls only to review the current diff, run the narrowest relevant "
+        "verification that has not already run, make tiny fixes for direct syntax, "
+        "lint, or test failures, and call `done`. If the work is incomplete or "
+        "blocked, call `done` with an INCOMPLETE summary that names the changed "
+        "files, verification status, and blocker. The Governor validates after "
+        "`done`; exhausting the budget is worse than an explicit incomplete handoff."
+    )
+
+
+def _force_done_prompt() -> str:
+    return (
+        "HARD STOP: call the `done` tool now. Summarize changed files, verification "
+        "commands and results, and any incomplete work or blocker. Do not call any "
+        "other tool."
+    )
+
+
+def _diff_stat_for_error(worktree: Path) -> str:
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--stat", "HEAD"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        summary = diff.stdout.strip()
+        if not summary:
+            status = subprocess.run(
+                ["git", "status", "--short"],
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            summary = status.stdout.strip() or "No changes."
+        if len(summary) <= _EXHAUSTION_SUMMARY_MAX_CHARS:
+            return summary
+        return summary[:_EXHAUSTION_SUMMARY_MAX_CHARS] + "\n... [diff summary truncated]"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"Unavailable: {exc}"
+
+
 def _task_scope_section(task_scope: Mapping[str, object] | None) -> str:
     """Render task file claims as hard scope constraints for the system prompt."""
     if not task_scope:
@@ -224,6 +304,11 @@ def _task_scope_section(task_scope: Mapping[str, object] | None) -> str:
     verify_test_targets = _paths("verify_test_targets")
     if verify_test_targets:
         lines.append(f"- Verification test targets: {', '.join(verify_test_targets)}")
+    if task_scope.get("require_successful_test_verification") is True:
+        lines.append("- Retry completion gate: run_tests() must pass before done.")
+        command = str(task_scope.get("required_verification_command", "")).strip()
+        if command:
+            lines.append(f"- Settlement failing command: {command}")
     lines.extend([
         "- Every other path is out of scope, even if it looks related.",
         "- If a path claimed under files.create already exists in this worktree, treat it as"
@@ -429,6 +514,17 @@ def _execute_tool_call(
         return result, False
 
     if name == "done":
+        verification_error = actuators._done_verification_error()
+        if verification_error is not None:
+            WorkerEvent(
+                "result",
+                {
+                    "tool": name,
+                    "status": "failed",
+                    "activity": [],
+                },
+            ).emit()
+            return verification_error, False
         WorkerEvent("done", args.get("summary")).emit()
         return args.get("summary", ""), True
 
@@ -475,7 +571,7 @@ def run_worker(
         WorkerEvent("error", f"{config.llm_api_key_env} missing").emit()
         sys.exit(1)
 
-    client = OpenAI(base_url=config.llm_base_url, api_key=api_key)
+    client = OpenAI(base_url=config.llm_base_url, api_key=api_key, max_retries=0)
     try:
         task_scope = json.loads(task_scope_json) if task_scope_json else None
     except json.JSONDecodeError:
@@ -491,6 +587,8 @@ def run_worker(
     ]
     nudged = False
     warned_budget = False
+    endgame_started = False
+    force_done_prompted = False
     allowed_tools = get_allowed_tool_names("worker")
     budget = _iteration_budget(config)
     warn_at = config.worker_iteration_warn_at
@@ -510,12 +608,22 @@ def run_worker(
                 ),
             })
 
+        if not endgame_started and _should_enter_endgame(iteration, budget):
+            endgame_started = True
+            messages.append({"role": "system", "content": _endgame_prompt(iteration, budget)})
+
+        if not force_done_prompted and _should_force_done(iteration, budget):
+            force_done_prompted = True
+            messages.append({"role": "system", "content": _force_done_prompt()})
+
+        tool_choice = cast(Any, _tool_choice_for_iteration(iteration, budget))
         try:
-            resp = client.chat.completions.create(  # type: ignore[invalid-argument-type]
+            resp = create_chat_completion_with_backoff(
+                client,
                 model=model,
                 messages=messages,
                 tools=get_tool_spec(),
-                tool_choice="auto",
+                tool_choice=tool_choice,
             )
         except Exception as e:
             WorkerEvent("error", f"API Failure: {e!s}").emit()
@@ -568,11 +676,17 @@ def run_worker(
             messages.append({
                 "role": "tool",
                 "tool_call_id": call.id,
-                "name": cast(Any, call).function.name,
+                "name": call.function.name,
                 "content": result,
             })
 
-    WorkerEvent("error", f"Exceeded max iterations ({budget})").emit()
+    WorkerEvent(
+        "error",
+        (
+            f"Exceeded max iterations ({budget}). Worktree diff summary at exhaustion:\n"
+            f"{_diff_stat_for_error(worktree)}"
+        ),
+    ).emit()
     _cleanup()
     print(
         json.dumps({

@@ -2,7 +2,7 @@
 name: testing
 title: Testing Conventions
 summary: Testing rules for targeted execution, scope discipline, and behavior-first verification.
-applies_to: [tests, pytest, verification]
+applies_to: [tests, test, pytest, verification, coverage, assert, unit]
 priority: must
 ---
 ## When

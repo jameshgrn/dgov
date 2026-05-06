@@ -6,6 +6,7 @@ Real git repos via tmp_path, no mocking.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -47,6 +48,7 @@ def git_repo(tmp_path):
     return str(tmp_path)
 
 
+@pytest.mark.unit
 class TestCreateWorktree:
     def test_creates_at_expected_path(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -77,6 +79,27 @@ class TestCreateWorktree:
         assert wt2.path == first_path
         assert not (wt2.path / "marker.txt").exists()
 
+    def test_idempotent_recreate_after_orphaned_metadata(self, git_repo):
+        """Retry after interrupted cleanup: dir deleted but git metadata remains."""
+        slug = "retry-task"
+        wt1 = create_worktree(git_repo, slug)
+        first_path = wt1.path
+
+        # Make an unmerged commit (simulates real work)
+        (wt1.path / "file.txt").write_text("contents\n")
+        commit_in_worktree(wt1, "unmerged change", file_claims=("file.txt",))
+
+        # Simulate interrupted cleanup: delete directory directly without git worktree remove
+        shutil.rmtree(wt1.path)
+        # Note: git still has worktree metadata at this point
+
+        # Retry with same slug should succeed and create fresh worktree
+        wt2 = create_worktree(git_repo, slug)
+        assert wt2.path == first_path
+        assert wt2.path.exists()
+        # Fresh worktree should not have the uncommitted file
+        assert not (wt2.path / "file.txt").exists()
+
     def test_links_root_venv_into_worktree(self, git_repo):
         repo = Path(git_repo)
         (repo / ".venv").mkdir()
@@ -96,6 +119,7 @@ class TestCreateWorktree:
         assert not (wt.path / ".venv").exists()
 
 
+@pytest.mark.unit
 class TestPrepareWorktree:
     def test_python_pyproject_runs_uv_sync_locked(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -153,6 +177,7 @@ class TestPrepareWorktree:
             prepare_worktree(wt, language="python")
 
 
+@pytest.mark.unit
 class TestCommitInWorktree:
     def test_commit_with_file_claims(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -169,6 +194,7 @@ class TestCommitInWorktree:
         assert sha != wt.commit
 
 
+@pytest.mark.unit
 class TestMergeWorktree:
     def test_merge_brings_file_to_root(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -184,7 +210,37 @@ class TestMergeWorktree:
         sha = merge_worktree(git_repo, wt)
         assert len(sha) == 40
 
+    def test_cherry_pick_merge_uses_dgov_committer_identity(self, git_repo):
+        wt = create_worktree(git_repo, "task-a")
+        (wt.path / "hello.py").write_text("print('hi')\n")
+        commit_in_worktree(wt, "add hello.py", file_claims=("hello.py",))
 
+        env = {**os.environ, **_GIT_ENV}
+        (Path(git_repo) / "main.py").write_text("# main code\n")
+        subprocess.run(["git", "add", "main.py"], cwd=git_repo, check=True, env=env)
+        subprocess.run(
+            ["git", "commit", "-m", "progress on main"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            env=env,
+        )
+
+        merge_worktree(git_repo, wt)
+
+        assert (Path(git_repo) / "hello.py").exists()
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ce"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert result.stdout.strip() == "agent@dgov.local"
+
+
+@pytest.mark.unit
 class TestRemoveWorktree:
     def test_removes_directory(self, git_repo):
         wt = create_worktree(git_repo, "task-a")
@@ -204,6 +260,7 @@ class TestRemoveWorktree:
         assert wt.branch not in res.stdout
 
 
+@pytest.mark.unit
 class TestPruneOrphans:
     def test_noop_on_clean_repo(self, git_repo):
         """Nothing to clean → counts are zero."""
@@ -317,6 +374,7 @@ class TestPruneOrphans:
         assert orphan.exists()
 
 
+@pytest.mark.unit
 class TestIntegrationCandidate:
     """Tests for integration candidate creation and validation."""
 
@@ -342,6 +400,15 @@ class TestIntegrationCandidate:
         assert len(result.candidate_sha) == 40
         # File should be replayed onto candidate
         assert (result.candidate_path / "hello.py").exists()
+        log = subprocess.run(
+            ["git", "log", "-1", "--format=%ce"],
+            cwd=result.candidate_path,
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, **_GIT_ENV},
+        )
+        assert log.stdout.strip() == "agent@dgov.local"
 
         # Clean up
         from dgov.worktree import remove_integration_candidate
@@ -384,7 +451,7 @@ class TestIntegrationCandidate:
         # Create second task worktree that modifies the same file
         task_wt2 = create_worktree(git_repo, "task-conflict")
         (task_wt2.path / "base.py").write_text("x = 2\n")  # Different content
-        commit_in_worktree(task_wt2, "modify base", file_claims=("base.py",))
+        failed_sha = commit_in_worktree(task_wt2, "modify base", file_claims=("base.py",))
 
         # Meanwhile, modify the file on main to create a conflict
         (Path(git_repo) / "base.py").write_text("x = 3\n")
@@ -403,13 +470,30 @@ class TestIntegrationCandidate:
             capture_output=True,
             env=env,
         )
+        target_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=env,
+        ).stdout.strip()
 
         # Now try to create integration candidate - should fail
         result = create_integration_candidate(git_repo, task_wt2, "task-conflict-candidate")
 
         assert result.passed is False
         assert result.error is not None
-        assert "Failed to replay" in result.error
+        assert "Replay failed" in result.error
+        assert "task-conflict-candidate" in result.error
+        assert task_wt2.branch in result.error
+        assert target_head[:8] in result.error
+        assert failed_sha[:8] in result.error
+        assert "base.py" in result.error
+        assert result.target_head_sha == target_head
+        assert result.failed_commit_sha == failed_sha
+        assert result.conflict_files == ("base.py",)
+        assert result.conflict_marker_counts["base.py"] >= 1
 
         # Verify main repo is clean (no partial cherry-pick state)
         status = subprocess.run(

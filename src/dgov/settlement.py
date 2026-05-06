@@ -34,6 +34,8 @@ _SENTRUX_BASELINE = ".sentrux/baseline.json"
 _COVERAGE_BASELINE_DIR = ".coverage-baseline"
 _COVERAGE_BASELINE = f"{_COVERAGE_BASELINE_DIR}/coverage.json"
 _RESERVED_PATHS = (_SENTRUX_BASELINE, _COVERAGE_BASELINE_DIR + "/")
+_WRITE_ACTIVITY_KINDS = frozenset({"write_file", "edit_file", "apply_patch", "revert_file"})
+_WRITE_ACTIVITY_MODES = frozenset({"create", "edit", "patch", "revert"})
 
 
 @dataclass(frozen=True)
@@ -211,6 +213,34 @@ def _run_cmd(
     )
 
 
+def _combined_output(result: subprocess.CompletedProcess[str]) -> str:
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def _is_ruff_command(cmd_template: str) -> bool:
+    return "ruff" in cmd_template
+
+
+def _gate_failure_output(result: subprocess.CompletedProcess[str], *, preserve_full: bool) -> str:
+    output = _combined_output(result)
+    return output.strip() if preserve_full else output[-500:].strip()
+
+
+def _lint_failure_error(result: subprocess.CompletedProcess[str], cmd_template: str) -> str:
+    output = _gate_failure_output(result, preserve_full=_is_ruff_command(cmd_template))
+    return f"Lint failure:\n{output}"
+
+
+def _format_failure_error(result: subprocess.CompletedProcess[str], cmd_template: str) -> str:
+    output = _gate_failure_output(result, preserve_full=_is_ruff_command(cmd_template))
+    return f"Format failure:\n{output}"
+
+
+def _test_failure_error(result: subprocess.CompletedProcess[str], test_cmd: str) -> str:
+    output = _combined_output(result).strip()
+    return f"Test failure from `{test_cmd}`:\n{output}"
+
+
 def _get_all_changes(worktree_path: Path) -> frozenset[str] | ReviewResult:
     """Get ALL changed/new files via git status --porcelain.
 
@@ -381,6 +411,32 @@ def _check_scope(
     )
 
 
+def _worker_log_activity(event: Mapping[str, object]) -> list[object]:
+    if event.get("event") != "worker_log" or event.get("log_type") != "result":
+        return []
+    content = event.get("content")
+    if not isinstance(content, Mapping):
+        return []
+    content_map = cast(Mapping[str, object], content)
+    activity = content_map.get("activity")
+    return cast(list[object], activity) if isinstance(activity, list) else []
+
+
+def _transient_write_path(item: object) -> str | None:
+    if not isinstance(item, Mapping):
+        return None
+    item_map = cast(Mapping[str, object], item)
+    path = item_map.get("path")
+    if not isinstance(path, str):
+        return None
+    if (
+        item_map.get("kind") in _WRITE_ACTIVITY_KINDS
+        or item_map.get("mode") in _WRITE_ACTIVITY_MODES
+    ):
+        return path
+    return None
+
+
 def _check_transient_scope(
     session_root: str | None,
     task_slug: str | None,
@@ -394,6 +450,9 @@ def _check_transient_scope(
     Checks ALL panes for this task across the current run (not just the current
     pane). This ensures unclaimed writes from earlier retries are still caught
     even if a later retry cleans the worktree and succeeds.
+
+    Only write-capable activities (write_file, edit_file, apply_patch, revert_file)
+    are checked. Read-only activity such as read_file is ignored.
     """
     if not session_root or not task_slug or not claimed_files:
         return None
@@ -409,19 +468,9 @@ def _check_transient_scope(
     events = read_events(session_root, task_slug=task_slug)
 
     for event in events:
-        if event.get("event") != "worker_log" or event.get("log_type") != "result":
-            continue
-        content = event.get("content")
-        if not isinstance(content, dict):
-            continue
-        activity = content.get("activity")
-        if not isinstance(activity, list):
-            continue
-        for item in activity:
-            if not isinstance(item, dict):
-                continue
-            path = item.get("path")
-            if isinstance(path, str):
+        for item in _worker_log_activity(event):
+            path = _transient_write_path(item)
+            if path is not None:
                 transient_paths.add(path)
 
     unclaimed = sorted(
@@ -830,11 +879,6 @@ def _find_related_tests(source_files: list[str], test_dir: str, worktree_path: P
                 mod = mod[len(prefix) :]
         mod = mod.replace("/", ".").removesuffix(".py").removesuffix(".__init__")
         modules.add(mod)
-        # Also match partial: dgov.cli matches "from dgov.cli import"
-        parts = mod.split(".")
-        for i in range(1, len(parts) + 1):
-            modules.add(".".join(parts[:i]))
-
     if not modules:
         return []
 
@@ -911,8 +955,7 @@ def _run_test_gate(test_cmd: str, worktree_path: Path, timeout: int = 120) -> Ga
     )
     # Exit code 5 = "no tests were collected" — not a failure (e.g. scaffold tasks)
     if res.returncode not in (0, 5):
-        output = (res.stdout + res.stderr)[-500:]
-        return GateResult(passed=False, error=f"Test failure:\n{output}")
+        return GateResult(passed=False, error=_test_failure_error(res, test_cmd))
     return None
 
 
@@ -1271,7 +1314,7 @@ def _run_setup_cmd(setup_cmd: str, worktree_path: Path, timeout: int = 300) -> G
     except subprocess.TimeoutExpired:
         return GateResult(passed=False, error=f"setup_cmd timed out after {timeout}s")
     if res.returncode != 0:
-        output = (res.stdout + res.stderr)[-500:]
+        output = _combined_output(res)[-500:]
         return GateResult(passed=False, error=f"setup_cmd failed:\n{output}")
     return None
 
@@ -1340,8 +1383,7 @@ def _scoped_lint_check(
         diagnostics = json_mod.loads(res.stdout)
     except (json_mod.JSONDecodeError, ValueError):
         # Can't parse JSON — fall back to full lint (fail-closed)
-        output = (res.stdout + res.stderr)[-500:]
-        return GateResult(passed=False, error=f"Lint failure:\n{output}")
+        return GateResult(passed=False, error=_lint_failure_error(res, config.lint_cmd))
 
     scoped_issues: list[str] = []
     for diag in diagnostics:
@@ -1358,7 +1400,7 @@ def _scoped_lint_check(
             scoped_issues.append(f"{rel_name}:{row} {code} {msg}")
 
     if scoped_issues:
-        detail = "\n".join(scoped_issues[:10])
+        detail = "\n".join(scoped_issues)
         return GateResult(passed=False, error=f"Lint failure (worker-changed lines):\n{detail}")
     return None
 
@@ -1409,8 +1451,10 @@ def _run_acceptance_gates(
                         timeout=config.settlement_timeout,
                     )
                     if res_lint.returncode != 0:
-                        output = (res_lint.stdout + res_lint.stderr)[-500:]
-                        return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                        return GateResult(
+                            passed=False,
+                            error=_lint_failure_error(res_lint, config.lint_cmd),
+                        )
                     res_fmt = _run_cmd(
                         config.format_check_cmd,
                         new_in_commit,
@@ -1418,8 +1462,10 @@ def _run_acceptance_gates(
                         timeout=config.settlement_timeout,
                     )
                     if res_fmt.returncode != 0:
-                        output = (res_fmt.stdout + res_fmt.stderr)[-500:]
-                        return GateResult(passed=False, error=f"Format failure:\n{output}")
+                        return GateResult(
+                            passed=False,
+                            error=_format_failure_error(res_fmt, config.format_check_cmd),
+                        )
 
                 # Existing files: scoped lint when Ruff available, else full lint
                 if preexisting:
@@ -1438,8 +1484,10 @@ def _run_acceptance_gates(
                             timeout=config.settlement_timeout,
                         )
                         if res_lint.returncode != 0:
-                            output = (res_lint.stdout + res_lint.stderr)[-500:]
-                            return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                            return GateResult(
+                                passed=False,
+                                error=_lint_failure_error(res_lint, config.lint_cmd),
+                            )
             else:
                 # Pre-commit / preflight: full checks (current behavior)
                 res_lint = _run_cmd(
@@ -1449,8 +1497,10 @@ def _run_acceptance_gates(
                     timeout=config.settlement_timeout,
                 )
                 if res_lint.returncode != 0:
-                    output = (res_lint.stdout + res_lint.stderr)[-500:]
-                    return GateResult(passed=False, error=f"Lint failure:\n{output}")
+                    return GateResult(
+                        passed=False,
+                        error=_lint_failure_error(res_lint, config.lint_cmd),
+                    )
 
                 res_fmt = _run_cmd(
                     config.format_check_cmd,
@@ -1459,8 +1509,10 @@ def _run_acceptance_gates(
                     timeout=config.settlement_timeout,
                 )
                 if res_fmt.returncode != 0:
-                    output = (res_fmt.stdout + res_fmt.stderr)[-500:]
-                    return GateResult(passed=False, error=f"Format failure:\n{output}")
+                    return GateResult(
+                        passed=False,
+                        error=_format_failure_error(res_fmt, config.format_check_cmd),
+                    )
 
         if config.type_check_cmd:
             ty_failure = _type_check_gate(

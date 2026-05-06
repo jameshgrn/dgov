@@ -1,0 +1,4 @@
+[plan]
+name = "runtime-contract-fixes"
+summary = "Fix the files.read transient scope contract and same-slug worktree retry cleanup."
+sections = ["scope", "worktree"]

@@ -1,0 +1,4 @@
+[plan]
+name = "ledger-categories"
+summary = "Align ledger CLI categories with documented operational memory categories."
+sections = ["tasks"]

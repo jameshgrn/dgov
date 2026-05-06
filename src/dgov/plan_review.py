@@ -40,6 +40,8 @@ from dgov.event_types import (
     SelfReviewPassed,
     SelfReviewRejected,
     SemanticGateRejected,
+    SettlementPhaseCompleted,
+    SettlementPhaseStarted,
     SettlementRetry,
     TaskAbandoned,
     TaskDone,
@@ -52,6 +54,7 @@ from dgov.persistence import read_events
 from dgov.repo_snapshot import format_structural_offender_report
 
 _log = logging.getLogger(__name__)
+_ITERATION_EXHAUSTED_RE = re.compile(r"Exceeded max iterations \((?P<budget>\d+)\)", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -99,12 +102,26 @@ class DiffStat:
 
 
 @dataclass(frozen=True)
+class SettlementPhaseTiming:
+    """Completed settlement phase timing for one unit."""
+
+    phase: str
+    duration_s: float
+    status: str
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class UnitReview:
     """Per-unit review snapshot."""
 
     unit: str
     summary: str
     status: UnitStatus
+    # Phase detail for in-flight tasks (e.g., "integration", "semantic_gate", "merge")
+    # Only populated when status is "active" and settlement phase events exist
+    phase: str | None = None
+    phase_timings: tuple[SettlementPhaseTiming, ...] = ()
     agent: str = ""
     # Deployment info (populated for status == "deployed")
     commit_sha: str | None = None
@@ -115,7 +132,9 @@ class UnitReview:
     full_diff: str | None = None  # Populated only when caller asks for it
     # Execution info (populated for any unit that actually ran)
     duration_s: float | None = None
+    # Legacy JSON/API field. Mirrors tool_calls until true model-turn telemetry exists.
     iterations: int | None = None
+    tool_calls: int | None = None
     attempts: int = 0
     settlement: SettlementResult = "n/a"
     done_summary: str | None = None
@@ -209,11 +228,20 @@ def synthesize_hint(
     Pure lookup over verdict + a few context signals. Returns None when
     nothing useful can be said so the formatter can fall back silently.
     """
-    if iterations is not None and iteration_budget and iterations >= iteration_budget:
-        return (
-            f"worker hit the {iteration_budget}-iteration budget — task is probably too "
-            "large; split it or clarify the Edit section"
-        )
+    _ = iterations  # Legacy tool-call count; not a model-turn budget signal.
+    if error:
+        match = _ITERATION_EXHAUSTED_RE.search(error)
+        if match:
+            budget = match.group("budget")
+            return (
+                f"worker hit the {budget}-iteration model-turn budget — task is probably "
+                "too large; split it or clarify the Edit section"
+            )
+        if "exceeded max iterations" in error.lower() and iteration_budget:
+            return (
+                f"worker hit the {iteration_budget}-iteration model-turn budget — task is "
+                "probably too large; split it or clarify the Edit section"
+            )
 
     if verdict is None:
         return None
@@ -528,25 +556,75 @@ def _apply_terminal_event(ev: _EventWithId, state: dict) -> None:
             _extract_review_fail_fields(ev, state)
 
 
+def _apply_task_token_event(ev: _EventWithId, state: dict) -> None:
+    """Accumulate token usage from task_done/task_failed events."""
+    if not isinstance(ev.event, (TaskDone, TaskFailed)):
+        return
+    for token_field in ("prompt_tokens", "completion_tokens"):
+        val = getattr(ev.event, token_field)
+        if isinstance(val, int):
+            state[token_field] = state.get(token_field, 0) + val
+        elif isinstance(val, str):
+            try:
+                state[token_field] = state.get(token_field, 0) + int(val)
+            except ValueError:
+                evt_type = ev.event.event_type
+                _log.warning("Non-numeric %s value %r in %s event", token_field, val, evt_type)
+
+
+def _apply_self_review_event(ev: _EventWithId, state: dict) -> bool:
+    """Apply self-review lifecycle events. Returns True when handled."""
+    if isinstance(ev.event, SelfReviewFixStarted):
+        return True
+    if isinstance(ev.event, SelfReviewPassed):
+        state["self_review_outcome"] = "passed"
+        return True
+    if isinstance(ev.event, SelfReviewRejected):
+        state["self_review_outcome"] = "rejected"
+        return True
+    if isinstance(ev.event, SelfReviewAutoPassed):
+        state["self_review_outcome"] = "auto_passed"
+        return True
+    if isinstance(ev.event, SelfReviewError):
+        state["self_review_outcome"] = "error"
+        return True
+    return False
+
+
+def _apply_settlement_phase_event(ev: _EventWithId, state: dict) -> bool:
+    """Apply settlement phase start/completion telemetry. Returns True when handled."""
+    if isinstance(ev.event, SettlementPhaseStarted):
+        phase = ev.event.phase
+        if isinstance(phase, str) and phase:
+            state["phase"] = phase
+        return True
+    if isinstance(ev.event, SettlementPhaseCompleted):
+        phase = ev.event.phase
+        if isinstance(phase, str) and phase:
+            duration = ev.event.duration_s
+            if isinstance(duration, int | float):
+                state["phase_timings"].append(
+                    SettlementPhaseTiming(
+                        phase=phase,
+                        duration_s=float(duration),
+                        status=ev.event.status,
+                        error=ev.event.error,
+                    )
+                )
+        state["phase"] = None
+        return True
+    return False
+
+
 def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
     """Handle lifecycle events: dispatch, terminal, settlement_retry, review_fail."""
     if isinstance(ev.event, EvtTaskDispatched) and state["dispatched_ts"] is None:
         state["dispatched_ts"] = ev.ts
         return
-    if isinstance(ev.event, (TaskDone, TaskFailed)):
-        for field in ("prompt_tokens", "completion_tokens"):
-            val = getattr(ev.event, field)
-            if isinstance(val, int):
-                state[field] = state.get(field, 0) + val
-            elif isinstance(val, str):
-                try:
-                    state[field] = state.get(field, 0) + int(val)
-                except ValueError:
-                    evt_type = ev.event.event_type
-                    _log.warning("Non-numeric %s value %r in %s event", field, val, evt_type)
-    # Check for terminal events
+    _apply_task_token_event(ev, state)
     if isinstance(ev.event, (MergeCompleted, TaskMergeFailed, ReviewFail, TaskAbandoned)):
         _apply_terminal_event(ev, state)
+        state["phase"] = None
         return
     if isinstance(ev.event, SettlementRetry):
         state["settlement_retries"] = state["settlement_retries"] + 1
@@ -559,16 +637,10 @@ def _apply_lifecycle_event(ev: _EventWithId, state: dict) -> None:
         if isinstance(depth, int):
             state["fork_depth"] = max(state["fork_depth"], depth)
         return
-    if isinstance(ev.event, SelfReviewFixStarted):
-        return  # Acknowledged but no state change
-    if isinstance(ev.event, SelfReviewPassed):
-        state["self_review_outcome"] = "passed"
-    elif isinstance(ev.event, SelfReviewRejected):
-        state["self_review_outcome"] = "rejected"
-    elif isinstance(ev.event, SelfReviewAutoPassed):
-        state["self_review_outcome"] = "auto_passed"
-    elif isinstance(ev.event, SelfReviewError):
-        state["self_review_outcome"] = "error"
+    if _apply_self_review_event(ev, state):
+        return
+    if _apply_settlement_phase_event(ev, state):
+        return
 
 
 def _apply_worker_log_event(ev: _EventWithId, state: dict) -> None:
@@ -580,7 +652,7 @@ def _apply_worker_log_event(ev: _EventWithId, state: dict) -> None:
     if log_type == "thought" and isinstance(content, str):
         state["thoughts"].append(content)
     elif log_type == "call" and isinstance(content, dict):
-        state["iterations"] = state["iterations"] + 1
+        state["tool_calls"] = state["tool_calls"] + 1
         state["activity"].append(content)
     elif log_type == "result" and isinstance(content, dict):
         if content.get("status") == "failed":
@@ -619,7 +691,7 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
     state: dict = {
         "thoughts": [],
         "activity": [],
-        "iterations": 0,
+        "tool_calls": 0,
         "failed_tool_calls": 0,
         "done_summary": None,
         "error": None,
@@ -638,6 +710,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_risk_detected": False,
         "integration_candidate_passed": None,
         "integration_failure_class": None,
+        # Settlement phase tracking
+        "phase": None,
+        "phase_timings": [],
     }
 
     typed_events = _convert_events(unit_events)
@@ -662,12 +737,13 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
     # Used by _build_unit_review to distinguish current-run outcomes from
     # stale deploy-log records.
     ran_in_run = bool(unit_events)
-    iterations = state["iterations"]
+    tool_calls = state["tool_calls"]
 
     return {
         "thoughts": state["thoughts"],
         "activity": state["activity"],
-        "iterations": iterations if iterations > 0 else None,
+        "iterations": tool_calls if tool_calls > 0 else None,
+        "tool_calls": tool_calls if tool_calls > 0 else None,
         "failed_tool_calls": state["failed_tool_calls"],
         "done_summary": state["done_summary"],
         "error": state["error"],
@@ -689,6 +765,9 @@ def _rollup_unit_events(unit_events: list[dict]) -> dict:
         "integration_risk_detected": state["integration_risk_detected"],
         "integration_candidate_passed": state["integration_candidate_passed"],
         "integration_failure_class": state["integration_failure_class"],
+        # Settlement phase
+        "phase": state["phase"],
+        "phase_timings": tuple(state["phase_timings"]),
     }
 
 
@@ -849,6 +928,8 @@ def _build_unit_review(
         unit=unit_id,
         summary=task_data.get("summary", ""),
         status=status,
+        phase=rollup["phase"] if status == "active" else None,
+        phase_timings=rollup["phase_timings"],
         agent=task_data.get("agent", ""),
         commit_sha=commit_info["commit_sha"],
         commit_message=commit_info["commit_message"],
@@ -858,6 +939,7 @@ def _build_unit_review(
         full_diff=commit_info["full_diff"],
         duration_s=rollup["duration_s"],
         iterations=rollup["iterations"],
+        tool_calls=rollup["tool_calls"],
         attempts=attempts,
         settlement=settlement,
         done_summary=rollup["done_summary"],

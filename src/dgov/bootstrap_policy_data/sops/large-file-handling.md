@@ -2,7 +2,7 @@
 name: large-file-handling
 title: Large File Handling
 summary: Use targeted reads and surgical edits on large files to preserve context window and diff clarity.
-applies_to: [python, javascript, typescript, large-file]
+applies_to: [python, javascript, typescript, large-file, chunk, binary]
 priority: must
 ---
 ## When

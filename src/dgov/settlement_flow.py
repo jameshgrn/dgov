@@ -34,6 +34,7 @@ from dgov.semantic_settlement import (
     SemanticGateVerdict,
     SignatureDrift,
     SymbolOverlap,
+    TextConflict,
     _check_duplicate_definitions,
     _check_same_symbol_edit,
     _check_signature_drift,
@@ -87,6 +88,20 @@ print(
     )
 )
 """
+
+
+def _candidate_text_conflicts(
+    candidate_result: IntegrationCandidateResult,
+) -> tuple[OverlapEvidence, ...]:
+    evidence: list[OverlapEvidence] = []
+    for file_path in candidate_result.conflict_files:
+        evidence.append(
+            TextConflict(
+                file_path=file_path,
+                conflict_markers=candidate_result.conflict_marker_counts.get(file_path, 0),
+            )
+        )
+    return tuple(evidence)
 
 
 def _semantic_gate_payload(
@@ -455,16 +470,20 @@ class SettlementFlow:
         self,
         *,
         action: MergeTask,
-        candidate_sha: str,
+        candidate_result: IntegrationCandidateResult | None,
         error_message: str,
         failure_class: FailureClass,
     ) -> IntegrationCandidateVerdict:
+        candidate_sha = candidate_result.candidate_sha if candidate_result else ""
+        target_head_sha = candidate_result.target_head_sha if candidate_result else ""
+        evidence = _candidate_text_conflicts(candidate_result) if candidate_result else ()
         return IntegrationCandidateVerdict(
             task_slug=action.task_slug,
             candidate_sha=candidate_sha,
-            target_head_sha="",
+            target_head_sha=target_head_sha,
             passed=False,
             failure_class=failure_class,
+            evidence=evidence,
             error_message=error_message,
             validated_at=time.time(),
         )
@@ -478,7 +497,7 @@ class SettlementFlow:
         return IntegrationCandidateVerdict(
             task_slug=action.task_slug,
             candidate_sha=candidate_result.candidate_sha or "",
-            target_head_sha="",
+            target_head_sha=candidate_result.target_head_sha,
             passed=True,
             validated_at=time.time(),
         )
@@ -673,7 +692,7 @@ class SettlementFlow:
     ) -> str:
         verdict = self._failed_candidate_verdict(
             action=action,
-            candidate_sha=candidate_result.candidate_sha,
+            candidate_result=candidate_result,
             error_message=gate_error or "Integrated candidate failed validation gates",
             failure_class=FailureClass.BEHAVIORAL_MISMATCH,
         )
@@ -713,7 +732,7 @@ class SettlementFlow:
 
         verdict = self._failed_candidate_verdict(
             action=action,
-            candidate_sha="",
+            candidate_result=candidate_result,
             error_message=candidate_result.error or "Failed to create integration candidate",
             failure_class=FailureClass.TEXT_CONFLICT,
         )

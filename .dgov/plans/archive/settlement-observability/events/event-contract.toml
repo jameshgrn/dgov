@@ -1,0 +1,26 @@
+[tasks.event-contract]
+summary = "Add typed settlement phase telemetry events"
+commit_message = "Add settlement phase telemetry events"
+files.edit = [
+  "src/dgov/event_types.py",
+  "src/dgov/persistence/schema.py",
+  "tests/test_persistence_events.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/event_types.py, src/dgov/persistence/schema.py, and tests/test_persistence_events.py before editing. The event log is the authority; do not add cached task-state columns or schema migrations. Keep the event contract small and typed.
+
+Edit:
+1. In src/dgov/event_types.py, add typed dataclasses for settlement phase telemetry:
+   - settlement_phase_started with pane, plan_name, task_slug, and phase.
+   - settlement_phase_completed with pane, plan_name, task_slug, phase, status, duration_s, and error.
+2. Add both event types to the DgovEvent union, _EVENT_TYPE_MAP, and __all__.
+3. In src/dgov/persistence/schema.py, add both event names to VALID_EVENTS. Store phase/status/duration_s in the existing JSON data path; do not add typed SQL columns.
+4. In tests/test_persistence_events.py, add targeted unit tests proving both typed settlement phase events can be emitted, read back, and deserialized with their fields intact. Include VALID_EVENTS coverage.
+
+Verify:
+uv run pytest -q tests/test_persistence_events.py
+uv run ruff check src/dgov/event_types.py src/dgov/persistence/schema.py tests/test_persistence_events.py
+uv run ruff format --check src/dgov/event_types.py src/dgov/persistence/schema.py tests/test_persistence_events.py
+uv run ty check src/dgov/event_types.py src/dgov/persistence/schema.py
+'''

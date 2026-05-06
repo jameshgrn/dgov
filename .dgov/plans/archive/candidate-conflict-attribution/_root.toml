@@ -1,0 +1,4 @@
+[plan]
+name = "candidate-conflict-attribution"
+summary = "Improve integration candidate replay conflict attribution."
+sections = ["settlement"]

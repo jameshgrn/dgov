@@ -1,0 +1,42 @@
+[tasks.conflict-attribution]
+summary = "Add conflicted path attribution to integration candidate failures"
+commit_message = "Attribute candidate replay conflicts"
+files.edit = [
+  "src/dgov/worktree.py",
+  "src/dgov/settlement_flow.py",
+  "tests/test_worktree.py",
+  "tests/test_runner.py",
+]
+files.read = [
+  "src/dgov/semantic_settlement.py",
+  "tests/test_semantic_settlement.py",
+]
+prompt = '''
+Orient:
+Read src/dgov/worktree.py around IntegrationCandidateResult, _replay_commit(), and create_integration_candidate().
+Read src/dgov/settlement_flow.py around _failed_candidate_verdict() and create_integration_candidate_with_emit().
+Read src/dgov/semantic_settlement.py for TextConflict and IntegrationCandidateVerdict evidence.
+Read tests/test_worktree.py::TestIntegrationCandidate and tests/test_runner.py::TestIntegrationCandidate.
+Do not weaken plan validation or permit overlapping task write claims. This task only improves attribution for runtime candidate replay failures that can still occur when target HEAD moved after a task started.
+
+Edit:
+1. In src/dgov/worktree.py, enrich IntegrationCandidateResult for replay failures with:
+   - target_head_sha: the HEAD sha the candidate attempted to replay onto.
+   - failed_commit_sha: the task commit that failed to replay.
+   - conflict_files: tuple of conflicted relative file paths discovered before cherry-pick abort.
+   - conflict_marker_counts: a mapping from relative file path to conflict marker count, where available.
+   Keep defaults so existing tests and mocks constructing IntegrationCandidateResult still work.
+2. In _replay_commit(), when cherry-pick fails, collect unmerged paths from the candidate worktree before aborting. Count conflict marker starts ("<<<<<<< ") in those files if they still exist. Return structured failure data rather than only raw stderr.
+3. In create_integration_candidate(), include the candidate slug, task branch, target head, failed commit prefix, and conflicted file list in the error message when replay fails. Main repo and candidate cleanup behavior must remain unchanged.
+4. In src/dgov/settlement_flow.py, propagate candidate_result.target_head_sha into failed/passed IntegrationCandidateVerdict values. When candidate_result.conflict_files is non-empty, attach TextConflict evidence with the marker count for each file.
+5. Add tests:
+   - tests/test_worktree.py: real git conflict test asserts result.error includes the conflicted path, task branch, candidate slug, target head prefix, failed commit prefix, and result.conflict_files contains the path.
+   - tests/test_runner.py: mocked candidate failure with conflict_files asserts the emitted integration_candidate_failed event has target_head_sha and TextConflict evidence for the conflicted file.
+6. Keep the returned task error actionable and concise; do not paste full git stderr ahead of the attribution summary.
+
+Verify:
+uv run pytest -q tests/test_worktree.py::TestIntegrationCandidate tests/test_runner.py::TestIntegrationCandidate
+uv run ruff check src/dgov/worktree.py src/dgov/settlement_flow.py tests/test_worktree.py tests/test_runner.py
+uv run ruff format --check src/dgov/worktree.py src/dgov/settlement_flow.py tests/test_worktree.py tests/test_runner.py
+uv run ty check src/dgov/worktree.py src/dgov/settlement_flow.py
+'''

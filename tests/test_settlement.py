@@ -19,6 +19,7 @@ from dgov.settlement import (
     _build_test_cmd,
     _run_coverage_gate,
     _run_sentrux_gate,
+    _scoped_lint_check,
     _sentrux_is_warn_only,
     autofix_sandbox,
     preflight_sandbox,
@@ -99,6 +100,109 @@ def test_validate_sandbox_surfaces_stderr_from_lint_failures(tmp_path: Path) -> 
     assert result.passed is False
     assert result.error is not None
     assert "lint missing" in result.error
+
+
+@pytest.mark.unit
+def test_validate_sandbox_preserves_full_ruff_lint_output(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    script = tmp_path / "fake_ruff.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'FIRST_RUFF_DIAGNOSTIC'\n"
+        f"printf '%s\\n' '{'middle-' * 120}'\n"
+        "printf '%s\\n' 'LAST_RUFF_DIAGNOSTIC'\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+    (tmp_path / "bad.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "bad.py")
+    _git(tmp_path, "commit", "-m", "add bad")
+
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd="/bin/sh fake_ruff.sh {file}",
+            format_check_cmd="true {file}",
+            test_cmd="",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "FIRST_RUFF_DIAGNOSTIC" in result.error
+    assert "LAST_RUFF_DIAGNOSTIC" in result.error
+
+
+@pytest.mark.unit
+def test_validate_sandbox_preserves_full_ruff_format_output(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    script = tmp_path / "fake_ruff_format.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'FIRST_FORMAT_DIAGNOSTIC'\n"
+        f"printf '%s\\n' '{'format-' * 120}'\n"
+        "printf '%s\\n' 'LAST_FORMAT_DIAGNOSTIC'\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+    (tmp_path / "ugly.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "ugly.py")
+    _git(tmp_path, "commit", "-m", "add ugly")
+
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd="true {file}",
+            format_check_cmd="/bin/sh fake_ruff_format.sh {file}",
+            test_cmd="",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "FIRST_FORMAT_DIAGNOSTIC" in result.error
+    assert "LAST_FORMAT_DIAGNOSTIC" in result.error
+
+
+@pytest.mark.unit
+def test_validate_sandbox_preserves_full_test_gate_output(tmp_path: Path) -> None:
+    base = _init_repo(tmp_path)
+    script = tmp_path / "fake_pytest.sh"
+    script.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' 'FIRST_TEST_FAILURE'\n"
+        f"printf '%s\\n' '{'pytest-' * 120}'\n"
+        "printf '%s\\n' 'LAST_TEST_FAILURE'\n"
+        "exit 1\n"
+    )
+    script.chmod(0o755)
+    (tmp_path / "bad.py").write_text("x = 1\n")
+    _git(tmp_path, "add", "bad.py")
+    _git(tmp_path, "commit", "-m", "add bad")
+
+    result = validate_sandbox(
+        tmp_path,
+        base,
+        str(tmp_path),
+        ProjectConfig(
+            source_extensions=(".py",),
+            lint_cmd="true {file}",
+            format_check_cmd="true {file}",
+            test_cmd="/bin/sh fake_pytest.sh",
+        ),
+    )
+
+    assert result.passed is False
+    assert result.error is not None
+    assert "Test failure from `/bin/sh fake_pytest.sh`" in result.error
+    assert "FIRST_TEST_FAILURE" in result.error
+    assert "LAST_TEST_FAILURE" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -564,6 +668,88 @@ class TestReviewSandbox:
         assert result.verdict == "reserved_path"
         assert ".sentrux/baseline.json" in (result.error or "")
 
+    def test_transient_read_only_activity_ignored(self, tmp_path: Path):
+        """Read-only activity (read_file, grep, etc.) is not treated as a touch.
+
+        Regression test for ledger #80: files.read grants read-only context.
+        Transient scope enforcement should reject write-capable tool activity
+        outside write claims, but read-only activity must not be treated as a touch.
+        """
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        # Worker used read_file on an unclaimed file - this is read-only activity
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "read_file",
+                "status": "success",
+                "activity": [
+                    {"kind": "read_file", "path": "unclaimed_context.py"},
+                    {"kind": "grep", "path": "unclaimed_context.py"},
+                    {"kind": "edit_file", "path": "claimed.py", "mode": "edit"},
+                ],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+        # Should pass - only claimed file was edited, read-only activity on
+        # unclaimed files is not a scope violation.
+        assert result.passed, f"Expected pass but got: {result.verdict} - {result.error}"
+
+    def test_transient_unclaimed_write_still_fails_with_read_only_mixed(self, tmp_path: Path):
+        """Unclaimed write-capable activity still fails even with read-only activity mixed in."""
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        _init_repo(worktree)
+        _add_tracked_file(worktree, "claimed.py", "x = 1\n")
+        _modify_tracked(worktree, "claimed.py", "x = 2\n")
+
+        session_root = tmp_path / "session"
+        # Worker has both read-only activity AND unclaimed write activity
+        emit_event(
+            str(session_root),
+            "worker_log",
+            "pane-1",
+            plan_name="plan",
+            task_slug="task-1",
+            log_type="result",
+            content={
+                "tool": "edit_file",
+                "status": "success",
+                "activity": [
+                    {"kind": "read_file", "path": "unclaimed_context.py"},  # read-only
+                    {"kind": "write_file", "path": "scratch.py", "mode": "create"},  # write
+                    {"kind": "edit_file", "path": "claimed.py", "mode": "edit"},  # claimed
+                ],
+            },
+        )
+
+        result = review_sandbox(
+            worktree,
+            claimed_files=["claimed.py"],
+            project_root=str(session_root),
+            task_slug="task-1",
+        )
+        # Should fail - unclaimed write_file is a scope violation
+        assert not result.passed
+        assert result.verdict == "scope_violation"
+        assert "scratch.py" in (result.error or "")
+
 
 # ---------------------------------------------------------------------------
 # autofix_sandbox
@@ -652,6 +838,24 @@ class TestValidateSandbox:
         assert "tests/test_boundaries.py" in cmd
 
     @pytest.mark.unit
+    def test_build_test_cmd_does_not_match_every_dgov_import(self, tmp_path: Path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_related.py").write_text(
+            "from dgov.policy_drift import find_policy_drift\n"
+        )
+        (tests_dir / "test_unrelated.py").write_text("from dgov.cli import cli\n")
+
+        cmd = _build_test_cmd(
+            ProjectConfig(test_cmd="uv run pytest {test_dir} -q"),
+            ["src/dgov/policy_drift.py"],
+            tmp_path,
+        )
+
+        assert "tests/test_related.py" in cmd
+        assert "tests/test_unrelated.py" not in cmd
+
+    @pytest.mark.unit
     def test_build_test_cmd_literal_no_placeholder_returns_unchanged(self, tmp_path: Path):
         """Literal test_cmd (no {test_dir} placeholder) returns unchanged even with no targets."""
         literal_cmd = "./scripts/qgis-python.sh -m pytest tests/plugin/test_task.py"
@@ -687,6 +891,42 @@ class TestValidateSandbox:
         result = validate_sandbox(tmp_path, base, str(tmp_path))
         assert not result.passed
         assert "Lint failure" in (result.error or "")
+
+    def test_scoped_ruff_lint_reports_all_worker_changed_diagnostics(self, tmp_path: Path):
+        _init_repo(tmp_path)
+        original = "".join(f"value_{i} = {i}\n" for i in range(1, 13))
+        _add_tracked_file(tmp_path, "bad.py", original)
+        base = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+        changed = "".join(f"value_{i} = missing_{i}\n" for i in range(1, 13))
+        (tmp_path / "bad.py").write_text(changed)
+        _git(tmp_path, "add", "bad.py")
+        _git(tmp_path, "commit", "-m", "change bad")
+
+        diagnostics = [
+            {
+                "filename": "bad.py",
+                "location": {"row": row},
+                "code": f"E{row:03}",
+                "message": f"diagnostic {row}",
+            }
+            for row in range(1, 13)
+        ]
+        script = tmp_path / "fake_ruff_json.sh"
+        script.write_text(f"#!/bin/sh\ncat <<'JSON'\n{json.dumps(diagnostics)}\nJSON\nexit 1\n")
+        script.chmod(0o755)
+
+        result = _scoped_lint_check(
+            tmp_path,
+            ["bad.py"],
+            base,
+            ProjectConfig(lint_cmd="/bin/sh fake_ruff_json.sh {file}", settlement_timeout=5),
+        )
+
+        assert result is not None
+        assert result.passed is False
+        assert result.error is not None
+        assert "E001 diagnostic 1" in result.error
+        assert "E012 diagnostic 12" in result.error
 
     def test_fail_format_error(self, tmp_path: Path):
         base = _init_repo(tmp_path)

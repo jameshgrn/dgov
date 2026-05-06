@@ -883,6 +883,25 @@ def _render_unit_fields(fields: list[tuple[str, str | None]]) -> None:
             click.echo(f"    {label:12s} {value}")
 
 
+def _format_phase_timings(unit) -> str | None:
+    if not unit.phase_timings:
+        return None
+    parts = []
+    for timing in unit.phase_timings:
+        label = f"{timing.phase}={_fmt_duration(timing.duration_s)}"
+        if timing.status and timing.status not in ("passed", "success", "ok"):
+            label += f"/{timing.status}"
+        parts.append(label)
+    return ", ".join(parts)
+
+
+def _format_tool_calls(unit) -> str | None:
+    count = unit.tool_calls if unit.tool_calls is not None else unit.iterations
+    if count is None:
+        return None
+    return f"{count} tool call{'s' if count != 1 else ''}"
+
+
 def _render_deployed_unit(unit) -> None:
     """Render a deployed UnitReview block."""
     marker = click.style("✓", fg="green")
@@ -899,12 +918,7 @@ def _render_deployed_unit(unit) -> None:
         ("agent", unit.agent),
         ("diff", unit.diff_stat.summary() if unit.diff_stat is not None else None),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
-        (
-            "iterations",
-            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
-            if unit.iterations is not None
-            else None,
-        ),
+        ("tool calls", _format_tool_calls(unit)),
         (
             "settlement",
             {"ok": "ok (first try)", "ok_retried": "ok (after retry)"}.get(
@@ -913,6 +927,7 @@ def _render_deployed_unit(unit) -> None:
             if unit.settlement != "n/a"
             else None,
         ),
+        ("phases", _format_phase_timings(unit)),
         (
             "tokens",
             f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
@@ -982,17 +997,13 @@ def _render_failed_unit(unit) -> None:
         ("agent", unit.agent),
         ("attempts", str(unit.attempts) if unit.attempts > 1 else None),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
-        (
-            "iterations",
-            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
-            if unit.iterations is not None
-            else None,
-        ),
+        ("tool calls", _format_tool_calls(unit)),
         ("reject", unit.reject_verdict),
         (
             "fork",
             f"{unit.fork_depth} clean-context relaunch(es)" if unit.fork_depth > 0 else None,
         ),
+        ("phases", _format_phase_timings(unit)),
         (
             "tokens",
             f"{unit.prompt_tokens:,} prompt + {unit.completion_tokens:,} completion"
@@ -1014,17 +1025,14 @@ def _render_failed_unit(unit) -> None:
 def _render_active_unit(unit) -> None:
     """Render an in-flight UnitReview block."""
     marker = click.style("…", fg="cyan")
-    click.echo(f"  {marker} {unit.unit}  (active)")
+    phase_suffix = f" — {unit.phase}" if unit.phase else ""
+    click.echo(f"  {marker} {unit.unit}  (active{phase_suffix})")
     fields: list[tuple[str, str | None]] = [
         ("task", unit.summary),
         ("agent", unit.agent),
         ("duration", _fmt_duration(unit.duration_s) if unit.duration_s is not None else None),
-        (
-            "iterations",
-            f"{unit.iterations} tool call{'s' if unit.iterations != 1 else ''}"
-            if unit.iterations is not None
-            else None,
-        ),
+        ("tool calls", _format_tool_calls(unit)),
+        ("phases", _format_phase_timings(unit)),
     ]
     _render_unit_fields(fields)
     if unit.last_thought:
@@ -1121,6 +1129,16 @@ def _review_to_json(review) -> str:
             "unit": u.unit,
             "summary": u.summary,
             "status": u.status,
+            "phase": u.phase,
+            "phase_timings": [
+                {
+                    "phase": timing.phase,
+                    "duration_s": timing.duration_s,
+                    "status": timing.status,
+                    "error": timing.error,
+                }
+                for timing in u.phase_timings
+            ],
             "agent": u.agent,
             "commit_sha": u.commit_sha,
             "commit_message": u.commit_message,
@@ -1136,6 +1154,7 @@ def _review_to_json(review) -> str:
             "full_diff": u.full_diff,
             "duration_s": u.duration_s,
             "iterations": u.iterations,
+            "tool_calls": u.tool_calls,
             "prompt_tokens": u.prompt_tokens,
             "completion_tokens": u.completion_tokens,
             "self_corrections": u.self_corrections,

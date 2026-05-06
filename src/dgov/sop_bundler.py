@@ -98,6 +98,15 @@ def _normalize(word: str) -> str:
     return word
 
 
+def _looks_like_test_path(path: str) -> bool:
+    normalized = path.strip().lstrip("./")
+    parts = tuple(part for part in normalized.split("/") if part)
+    if any(part in {"test", "tests"} for part in parts[:-1]):
+        return True
+    name = parts[-1] if parts else normalized
+    return name.startswith("test_") or name.endswith("_test.py")
+
+
 class TagBasedSopBundler:
     """Deterministic bundler — assigns SOPs by tag intersection.
 
@@ -143,6 +152,8 @@ class TagBasedSopBundler:
             *(unit.files.edit if unit.files else ()),
             *(unit.files.touch if unit.files else ()),
         ):
+            if _looks_like_test_path(path):
+                tokens.update(("test", "tests"))
             if path.endswith(".py"):
                 tokens.add("python")
             elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
